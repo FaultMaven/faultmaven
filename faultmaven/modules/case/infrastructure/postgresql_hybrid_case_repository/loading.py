@@ -472,6 +472,7 @@ async def _row_to_case(
     case_data: Dict[str, Any] = {
         "case_id": row.case_id,
         "user_id": row.user_id,
+        "driver_id": row.driver_id,
         "enterprise_id": row.enterprise_id,
         "organization_id": row.organization_id,
         "source": getattr(row, "source", "copilot"),
@@ -492,6 +493,7 @@ async def _row_to_case(
         "last_suggestions": metadata.get("last_suggestions"),
         # Pre-fetched runbooks (the KB push channel, fm#1360).
         "kb_context": metadata.get("kb_context"),
+        "kb_context_origin": metadata.get("kb_context_origin"),
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

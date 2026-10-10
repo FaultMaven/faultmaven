@@ -207,13 +207,20 @@ class _TeamCaseService(CaseService):
     """The real ``CaseService``; its read arm also admits ``TEAMMATE`` (a team
     share, which the standalone wiring has no resolver for)."""
 
-    async def get_case(self, case_id, user_id=None, *, owner_only=False):
+    async def get_case(
+        self, case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
         case = await self.repository.get(case_id)
         if case is None:
             return None
-        if user_id in (case.user_id, None) or (user_id == TEAMMATE and not owner_only):
+        if user_id is None:
             return case
-        return None
+        if creator_only:
+            return case if user_id == case.user_id else None
+        reads = user_id in (case.user_id, TEAMMATE)
+        if driver_only:
+            return case if reads and user_id == case.effective_driver_id else None
+        return case if reads else None
 
 
 @dataclass
@@ -978,7 +985,7 @@ class TestWithoutAClaim:
 
 class TestKeyScoping:
     async def test_a_teammate_with_the_owners_key_is_refused_as_today(self, world):
-        """A5: only the owner may submit a turn. The teammate can SEE the case,
+        """A5: only the DRIVER may submit a turn (ADR-020 D2). The teammate can SEE the case,
         so the idempotency step runs for them, and must find nothing: the
         receipt is keyed on the caller. A lookup that ignored the author would
         replay the owner's turn to them instead of the 403."""
@@ -990,6 +997,37 @@ class TestKeyScoping:
 
         assert theirs.status_code == 403, theirs.text
         assert IDEMPOTENCY_REPLAYED_HEADER not in theirs.headers
+        assert world.generate.await_count == 1
+
+    async def test_a_former_driver_gets_their_turn_replayed_and_a_new_one_refused(
+        self, world
+    ):
+        """The driver gate sits AFTER the replay (ADR-020 D2): the driver commits
+        a keyed turn, the case is handed back, and the same-key retry is still
+        answered with the committed turn — while a fresh key, a NEW write by a
+        former driver, is refused 403. A driver gate at the route, ahead of the
+        replay, refuses the retry; no gate refuses nothing."""
+        case = _investigating_case()
+        case.driver_id = TEAMMATE
+        await world.seed(case)
+        world.user["id"] = TEAMMATE
+        first = await world.post(QUERY)
+        assert first.status_code == 200, first.text
+
+        # The creator takes the wheel back: what reassign_driver writes.
+        async with world.sessions() as session:
+            await session.execute(
+                text("UPDATE cases SET driver_id = NULL, version = version + 1")
+            )
+            await session.commit()
+
+        retry = await world.post(QUERY)
+        assert retry.status_code == 200, retry.text
+        assert retry.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
+        assert retry.content == first.content
+
+        fresh = await world.post(QUERY, key="another-key-0002")
+        assert fresh.status_code == 403, fresh.text
         assert world.generate.await_count == 1
 
     async def test_the_same_key_on_another_case_is_another_turn(self, world):

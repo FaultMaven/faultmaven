@@ -269,20 +269,15 @@ async def resume_case_in_session(
         # returns False and is a 500 below. Keeping those apart is the point —
         # conflating them reported a working resume as an absence (#1390).
         #
-        # OWNER only (`owner_only=True`), like every other write on a case: a
-        # share is read-only until hand-off ships (ADR-013 D4, amended
-        # 2026-10-09, #1898). This is a POST that writes `cases.last_activity`
-        # through `update_activity_timestamp` and moves the session's
-        # current-case pointer, so it resolves through ownership — the same
-        # rule `sessions.py` picks by HTTP method. A teammate holding a share
-        # gets the answer an absent case gets.
-        #
-        # This used to admit owner ∪ shared "matching `submit_turn`", on the
-        # premise that a teammate may post a turn into a shared case. They may
-        # not: the turn service has refused every non-owner since before team
-        # sharing existed (`InvestigationService._verify_access_and_reserve`).
+        # DRIVER only (`driver_only=True`), like every other investigation
+        # write on a case (ADR-020 D2). This is a POST that writes
+        # `cases.last_activity` through `update_activity_timestamp` and moves
+        # the session's current-case pointer, so it resolves through the
+        # driver — the same rule `sessions.py` picks by HTTP method, and the
+        # turn's own gate. A reader who does not drive gets the answer an
+        # absent case gets.
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         if case is None:
             raise HTTPException(
@@ -652,18 +647,17 @@ async def submit_turn(
 
         # Verify case exists and user has access.
         #
-        # The READ resolver (owner ∪ shared), deliberately NOT `owner_only`,
-        # although a share is read-only until hand-off ships (ADR-013 D4,
-        # amended 2026-10-09). Only the owner may submit a turn, and the gate
-        # that says so is `InvestigationService._verify_access_and_reserve`,
-        # which this request reaches only AFTER the idempotency step below
-        # (#1888). Receipts are keyed on the caller, and a retry of a turn that
-        # committed must get that turn back from its receipt; an ownership gate
-        # here, ahead of the replay, would refuse that retry once the caller
-        # stopped owning (with hand-off, driving) the case while they can still
-        # read it — chiefly once hand-off lets the driver change. A teammate is
-        # therefore admitted here and refused with 403 in the service, before
-        # the turn cap is charged or anything is written (#1898).
+        # The READ resolver (creator ∪ shared), deliberately NOT
+        # `driver_only`. Only the case's driver may submit a turn (ADR-020
+        # D2), and the gate that says so is
+        # `InvestigationService._verify_access_and_reserve`, which this request
+        # reaches only AFTER the idempotency step below (#1888). Receipts are
+        # keyed on the caller, and a retry of a turn that committed must get
+        # that turn back from its receipt; a driver gate here, ahead of the
+        # replay, would refuse that retry once the case was reassigned away
+        # from the caller while they can still read it. A reader who does not
+        # drive is therefore admitted here and refused with 403 in the
+        # service, before the turn cap is charged or anything is written.
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
@@ -1060,7 +1054,13 @@ async def submit_case_query_gone(case_id: str):
     )
 
 
-@router.patch("/{case_id}/evidence/{evidence_id}/classification")
+@router.patch(
+    "/{case_id}/evidence/{evidence_id}/classification",
+    # Route-level, ahead of every provider (#1494's shape): the handler also
+    # resolves the case service now (ADR-020 D2), and an anonymous caller must
+    # be refused before any collaborator resolves.
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_reclassify_evidence")
 async def reclassify_evidence(
     case_id: str,
@@ -1074,6 +1074,7 @@ async def reclassify_evidence(
         ),
     ),
     investigation_service=Depends(get_investigation_service),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """Reclassify an existing evidence row under a user-specified data type.
@@ -1092,7 +1093,8 @@ async def reclassify_evidence(
       (``NotFoundError``).
     - ``409`` — evidence has no backing file (``ConflictError`` with
       ``conflict_reason="no_backing_file"``).
-    - ``403`` — caller does not own the case (``AuthorizationError``).
+    - ``403`` — caller does not drive the case, or drives it but can no
+      longer read it (``AuthorizationError``, ADR-020 D2).
     - ``422`` — invalid or missing ``data_type``, OR the case is terminal
       (both ``ValidationException``). A closed or resolved investigation
       accepts questions, not mutation; the terminal refusal is raised after
@@ -1117,12 +1119,22 @@ async def reclassify_evidence(
             f"Unknown data_type '{data_type_raw}'. Valid: {valid}"
         )
 
+    # Whether the caller READS the case, for the driver gate in the service
+    # (ADR-020 D2): an assigned driver is admitted only while they still read
+    # it. Not a refusal here — the service keeps this route's refusal shapes
+    # (404 absent, 403 not the driver) — only the fact the service cannot
+    # resolve for itself.
+    caller_reads_case = (
+        case_service is not None
+        and await case_service.get_case(case_id, current_user.user_id) is not None
+    )
     updated_evidence = await investigation_service.reclassify_evidence(
         case_id=case_id,
         evidence_id=evidence_id,
         user_id=current_user.user_id,
         data_type=data_type,
         trigger="api",
+        caller_reads_case=caller_reads_case,
     )
 
     return {

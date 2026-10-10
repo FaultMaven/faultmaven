@@ -20,6 +20,7 @@ each turn.
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -254,7 +255,8 @@ async def test_reassignment_records_one_audit_row_per_case(db):
     rows = await _rows(
         db,
         "SELECT event_type, event_category, resource_type, resource_id, "
-        "enterprise_id, details FROM user_audit_log ORDER BY resource_id",
+        "enterprise_id, details FROM user_audit_log "
+        "WHERE event_type = 'case_reassigned' ORDER BY resource_id",
     )
     assert [r[3] for r in rows] == sorted(MOVED)
     assert {r[0] for r in rows} == {"case_reassigned"}
@@ -262,6 +264,50 @@ async def test_reassignment_records_one_audit_row_per_case(db):
     assert {r[2] for r in rows} == {"case"}
     assert {r[4] for r in rows} == {ENTERPRISE}
     assert all(OLD_OWNER in r[5] and NEW_OWNER in r[5] for r in rows)
+
+
+async def test_the_driver_goes_with_the_creator(db):
+    """ADR-020 D3: a moved case's ``driver_id`` is cleared in the owner swap,
+    so the NEW creator drives it, and each case whose effective driver moved
+    gets its own ``case_driver_changed`` row — naming the assigned driver it
+    was taken from where there was one."""
+    async with db.begin() as conn:
+        await conn.execute(
+            text("UPDATE cases SET driver_id = :d WHERE case_id = :c"),
+            {"d": BYSTANDER, "c": MOVED[0]},
+        )
+
+    await _apply(
+        enterprise_id=ENTERPRISE,
+        case_ids=MOVED,
+        from_user_id=OLD_OWNER,
+        to_user_id=NEW_OWNER,
+        team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
+    )
+
+    drivers = await _rows(
+        db,
+        "SELECT case_id, driver_id FROM cases WHERE case_id IN (:a, :b, :c)",
+        {"a": MOVED[0], "b": MOVED[1], "c": MOVED[2]},
+    )
+    assert {r[1] for r in drivers} == {None}
+    rows = await _rows(
+        db,
+        "SELECT resource_id, user_id, event_category, details FROM user_audit_log "
+        "WHERE event_type = 'case_driver_changed' ORDER BY resource_id",
+    )
+    assert [r[0] for r in rows] == sorted(MOVED)
+    assert {r[1] for r in rows} == {None}
+    assert {r[2] for r in rows} == {"authorization"}
+    details = {r[0]: json.loads(r[3]) for r in rows}
+    assert details[MOVED[0]] == {
+        "from_driver_id": BYSTANDER,
+        "to_driver_id": NEW_OWNER,
+        "reason": "creator_reassigned",
+    }
+    assert details[MOVED[1]]["from_driver_id"] == OLD_OWNER
 
 
 async def test_attribution_is_not_rewritten(db):
@@ -548,7 +594,11 @@ async def test_the_audit_row_names_no_false_actor(db):
         actor="alice@ops-box",
     )
 
-    rows = await _rows(db, "SELECT user_id, details FROM user_audit_log")
+    rows = await _rows(
+        db,
+        "SELECT user_id, details FROM user_audit_log "
+        "WHERE event_type = 'case_reassigned'",
+    )
     assert {r[0] for r in rows} == {None}
     assert all("alice@ops-box" in r[1] for r in rows)
     assert all("team-old" in r[1] for r in rows)

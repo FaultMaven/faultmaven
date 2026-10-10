@@ -819,8 +819,8 @@ async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
     await pg_repo.save(case)
 
     # The three author states a transcript can hold: the owner, a second account
-    # (a former owner after ``fm-reassign-cases``, or a driver once hand-off
-    # ships — a share alone is read-only, ADR-013 D4 as amended 2026-10-09), and
+    # (a former owner after ``fm-reassign-cases``, or a teammate the case was
+    # handed to — only the driver writes turns, ADR-020 D2), and
     # an unauthored assistant turn.
     for idx, (role, content, author_id) in enumerate(
         [

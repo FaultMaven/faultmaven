@@ -135,6 +135,11 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
 )
 from faultmaven.modules.auth.exceptions import SSOProvisioningError
+from faultmaven.modules.case.contracts import (
+    CaseDriverChange,
+    CaseDriverChangeReason,
+)
+from faultmaven.modules.case.infrastructure import case_driver_sql
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -746,6 +751,49 @@ async def reanchor(*, subject: str, enterprise_id: str, apply: bool) -> int:
     print(f"Moving to:    {enterprise.enterprise_id} ({enterprise.name})")
 
     steps: list[Step] = []
+
+    # Release FIRST (ADR-020 D3): the cases this account drives in any other
+    # enterprise go back to their creators before the anchor moves. Once it
+    # moves, the account can no longer read them, and a release after the move
+    # could leave a driver pinned to cases nobody else can write.
+    async with get_db_session() as session:
+        stranded = [
+            row
+            for row in await case_driver_sql.list_cases_driven_by(session, user.user_id)
+            if row[1] != enterprise.enterprise_id
+        ]
+    if stranded:
+
+        async def _release_driven() -> bool:
+            released = False
+            for case_id, case_enterprise, creator_id, driver_id in stranded:
+                async with get_db_session() as session:
+                    released |= await case_driver_sql.release_driver(
+                        session,
+                        case_id=case_id,
+                        driver_id=driver_id,
+                        enterprise_id=case_enterprise,
+                        actor_user_id=None,
+                        details=CaseDriverChange(
+                            case_id=case_id,
+                            enterprise_id=case_enterprise,
+                            from_driver_id=driver_id,
+                            to_driver_id=creator_id,
+                            reason=CaseDriverChangeReason.REANCHORED,
+                            actor_user_id=None,
+                        ).audit_details(),
+                    )
+            return released
+
+        steps.append(
+            Step(
+                "driver_released",
+                f"hand the {len(stranded)} case(s) {user.user_id} drives outside "
+                f"enterprise {enterprise.enterprise_id} back to their creators",
+                _release_driven,
+            )
+        )
+
     if not already_moved:
 
         async def _move() -> bool:

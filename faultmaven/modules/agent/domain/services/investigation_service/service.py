@@ -673,24 +673,25 @@ class InvestigationService:
         if not case:
             raise NotFoundError("Case", case_id)
 
-        # Only the OWNER may submit a turn. A team share is read-only until
-        # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898), so a teammate
-        # who can read this case is refused here with 403.
+        # Only the case's effective DRIVER may submit a turn (ADR-020 D2), so a
+        # reader who does not drive — the creator included, while someone else
+        # drives — is refused here with 403. The route resolved ``case``
+        # through the READ allowlist, so a driver who has lost read access
+        # never reaches this line.
         #
         # The check sits HERE, after the route's ``Idempotency-Key`` step
-        # (#1888), and not as ``owner_only`` on the route's case lookup. A
+        # (#1888), and not as ``driver_only`` on the route's case lookup. A
         # receipt is keyed on the caller, and a retry of a turn that committed
         # is answered from its receipt without reaching this method; a gate
         # ahead of that replay would refuse the retry of a turn the caller did
-        # commit once they stopped owning (with hand-off, driving) the case,
-        # though they can still read it — a hand-off is the main case; a
-        # reassignment leaves the former owner reading it only through one of
-        # the new owner's teams. After the replay, the
-        # check still runs before the turn cap is charged and before anything
-        # is written, so a refused teammate costs nobody a unit.
-        if case.user_id != user_id:
+        # commit once the case was reassigned away from them, though they can
+        # still read it. After the replay, the check still runs before the
+        # turn cap is charged and before anything is written, so a refused
+        # reader costs nobody a unit.
+        if case.effective_driver_id != user_id:
             logger.warning(
-                f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
+                f"User {user_id} denied a turn on case {case_id} "
+                f"(driver: {case.effective_driver_id})"
             )
             raise PermissionDeniedException(
                 f"User {user_id} not authorized for case {case_id}"
@@ -1392,6 +1393,7 @@ class InvestigationService:
         data_type: DataType,
         trigger: str = "api",
         in_flight_case: Optional["Case"] = None,
+        caller_reads_case: bool = False,
     ) -> Evidence:
         """Re-run preprocessing on the file behind an existing evidence row
         under a user-specified data type.
@@ -1426,6 +1428,9 @@ class InvestigationService:
                 endpoint, which runs outside any turn) keeps the
                 load-mutate-save this method has always done. See the
                 WRITE MODEL note below — this parameter is #1465's fix.
+            caller_reads_case: The caller resolved this case through the
+                read allowlist. An assigned driver is admitted only with it
+                (or inside a turn); the creator needs no such proof.
 
         Returns:
             The ADDRESSED Evidence row, with the re-aligned
@@ -1509,7 +1514,17 @@ class InvestigationService:
             case = await self.repository.get(case_id)
         if not case:
             raise NotFoundError("Case", case_id)
-        if case.user_id != user_id:
+        # The case's effective DRIVER only (ADR-020 D2), and one who still READS
+        # it. The creator always reads their case, and an in-flight case means
+        # the turn route resolved it through the read allowlist; an assigned
+        # driver on the PATCH route reads it only if the route says so
+        # (``caller_reads_case``). Without that last arm this route — which
+        # has no read check of its own ahead of this 403 — would admit a
+        # driver who had lost every share before a release reached the row.
+        reads = (
+            caller_reads_case or in_flight_case is not None or case.user_id == user_id
+        )
+        if case.effective_driver_id != user_id or not reads:
             raise AuthorizationError(
                 f"User {user_id} not authorized for case {case_id}"
             )

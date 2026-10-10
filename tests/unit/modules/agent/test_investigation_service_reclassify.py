@@ -164,6 +164,77 @@ class TestAuthAndLookup:
         assert exc.value.conflict_reason == "no_backing_file"
 
 
+class TestTheDriverGate:
+    """Reclassification is an investigation write: the case's effective
+    DRIVER's, and only while they still read it (ADR-020 D2)."""
+
+    @pytest.mark.asyncio
+    async def test_the_creator_is_refused_while_another_drives(
+        self, service, repo_with_case
+    ):
+        _, case = repo_with_case
+        case.driver_id = "user_driver"
+        with pytest.raises(AuthorizationError):
+            await service.reclassify_evidence(
+                case_id=case.case_id,
+                evidence_id="ev_aaaaaaaaaaaa",
+                user_id="user_owner",
+                data_type=DataType.LOGS_AND_ERRORS,
+                caller_reads_case=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_assigned_driver_who_reads_the_case_reclassifies(
+        self, service, repo_with_case
+    ):
+        _, case = repo_with_case
+        case.driver_id = "user_driver"
+        updated = await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_driver",
+            data_type=DataType.LOGS_AND_ERRORS,
+            caller_reads_case=True,
+        )
+        assert updated.evidence_id == "ev_aaaaaaaaaaaa"
+
+    @pytest.mark.asyncio
+    async def test_an_assigned_driver_who_no_longer_reads_is_refused(
+        self, service, repo_with_case
+    ):
+        """The PATCH route has no read check ahead of this 403; without the
+        read fact a driver whose every share was withdrawn — before any release
+        reached the row — would be admitted. The gate split must not widen
+        it."""
+        _, case = repo_with_case
+        case.driver_id = "user_driver"
+        with pytest.raises(AuthorizationError):
+            await service.reclassify_evidence(
+                case_id=case.case_id,
+                evidence_id="ev_aaaaaaaaaaaa",
+                user_id="user_driver",
+                data_type=DataType.LOGS_AND_ERRORS,
+            )
+
+    @pytest.mark.asyncio
+    async def test_inside_a_turn_the_driver_needs_no_separate_read_fact(
+        self, service, repo_with_case
+    ):
+        """The turn route resolved the case through the read allowlist, so an
+        in-flight case is the read fact."""
+        _, case = repo_with_case
+        case.driver_id = "user_driver"
+        updated = await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_driver",
+            data_type=DataType.LOGS_AND_ERRORS,
+            trigger="agent_tool",
+            in_flight_case=case,
+        )
+        assert updated.evidence_id == "ev_aaaaaaaaaaaa"
+
+
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_reclassification_updates_file_and_evidence_source_type(

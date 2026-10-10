@@ -150,7 +150,18 @@ class CaseSummary(BaseModel):
     last_activity_at: datetime
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
+    #: The CREATOR (ADR-020 D1): the account that opened the case. Holds
+    #: governance — delete, share, unshare — and may reassign the driver.
     user_id: str
+    #: The EFFECTIVE DRIVER (ADR-020 D1): who holds the investigation writes —
+    #: turns, edits, close, reports. The creator unless the case was handed to
+    #: someone; ``None`` only when neither account exists any more. A client
+    #: compares it with its own user id to decide whether to offer a composer.
+    driver_id: Optional[str] = None
+    #: Display names, never email addresses (ADR-020 D5). ``None`` when the
+    #: account is gone or the server could not resolve it.
+    creator_display_name: Optional[str] = None
+    driver_display_name: Optional[str] = None
     #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
     #: it, so a client can key its own caches on it.
     enterprise_id: str
@@ -221,6 +232,7 @@ class CaseSummary(BaseModel):
             resolved_at=case.resolved_at,
             closed_at=case.closed_at,
             user_id=case.user_id,
+            driver_id=case.effective_driver_id,
             enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             source=getattr(case, "source", "copilot"),
@@ -250,7 +262,18 @@ class CaseDetail(BaseModel):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
 
+    #: The CREATOR (ADR-020 D1): the account that opened the case. Holds
+    #: governance — delete, share, unshare — and may reassign the driver.
     user_id: str
+    #: The EFFECTIVE DRIVER (ADR-020 D1): who holds the investigation writes —
+    #: turns, edits, close, reports. The creator unless the case was handed to
+    #: someone; ``None`` only when neither account exists any more. A client
+    #: compares it with its own user id to decide whether to offer a composer.
+    driver_id: Optional[str] = None
+    #: Display names, never email addresses (ADR-020 D5). ``None`` when the
+    #: account is gone or the server could not resolve it.
+    creator_display_name: Optional[str] = None
+    driver_display_name: Optional[str] = None
     #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
     #: it, so a client can key its own caches on it.
     enterprise_id: str
@@ -323,6 +346,7 @@ class CaseDetail(BaseModel):
             resolved_at=case.resolved_at,
             closed_at=case.closed_at,
             user_id=case.user_id,
+            driver_id=case.effective_driver_id,
             enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             source=getattr(case, "source", "copilot"),
@@ -366,6 +390,19 @@ def bound_to_utc(value: Optional[datetime]) -> Optional[datetime]:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+class CaseAccess(str, Enum):
+    """Which cases a listing returns, by the caller's ACCESS (ADR-020 D8).
+
+    Named for access, not identity, so a later rule changes what ``write``
+    resolves to without changing the contract.
+    """
+
+    #: Every case the caller can read: created ∪ shared with their teams.
+    READ = "read"
+    #: The cases the caller can write: those whose effective driver is them.
+    WRITE = "write"
 
 
 class CaseListFilter(BaseModel):
@@ -443,6 +480,14 @@ class CaseListFilter(BaseModel):
     include_empty: bool = Field(
         default=True,
         description="Include cases with no conversation (current_turn == 0)",
+    )
+
+    access: CaseAccess = Field(
+        default=CaseAccess.READ,
+        description=(
+            "``read`` (default): every case the caller can read. ``write``: "
+            "only the cases the caller drives (ADR-020 D8)."
+        ),
     )
 
     @field_validator("created_after", "created_before")
@@ -921,6 +966,46 @@ class CaseSearchRequest(BaseModel):
     )
 
     limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
+
+    access: CaseAccess = Field(
+        default=CaseAccess.READ,
+        description=(
+            "`read` (default): search every case the caller can read. `write`: "
+            "only the cases the caller drives — whose effective `driver_id` is "
+            "the caller (ADR-020 D8). Applied in the same query as the text "
+            "search."
+        ),
+    )
+
+
+class CaseDriverUpdateRequest(BaseModel):
+    """Hand a case's driving to another account (ADR-020 D4)."""
+
+    driver_id: str = Field(
+        min_length=1,
+        max_length=36,
+        description=(
+            "The new driver: one of `GET /cases/{case_id}/driver-candidates`. "
+            "Naming the creator hands the case back to them."
+        ),
+    )
+
+
+class CaseDriverCandidate(BaseModel):
+    """An account a case's driver may be handed to. Never an email address."""
+
+    user_id: str
+    display_name: Optional[str] = Field(
+        default=None,
+        description="The account's display name; null when it cannot be resolved.",
+    )
+
+
+class CaseDriverCandidateList(BaseModel):
+    """Who a case's driver may be handed to (ADR-020 D4): the creator first,
+    then the active individual members of the teams the case is shared with."""
+
+    candidates: List[CaseDriverCandidate]
 
 
 class CaseSearchResponse(BaseModel):

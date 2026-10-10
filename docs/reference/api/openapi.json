@@ -1390,6 +1390,15 @@
         "title": "BreakGlassGrantRequest",
         "type": "object"
       },
+      "CaseAccess": {
+        "description": "Which cases a listing returns, by the caller's ACCESS (ADR-020 D8).\n\nNamed for access, not identity, so a later rule changes what ``write``\nresolves to without changing the contract.",
+        "enum": [
+          "read",
+          "write"
+        ],
+        "title": "CaseAccess",
+        "type": "string"
+      },
       "CaseCreateRequest": {
         "description": "Request to create a new case (v2.0).\n\nUser identity is derived from authentication token, not request body.\nThis ensures security and prevents user_id spoofing.",
         "properties": {
@@ -1484,6 +1493,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "creator_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Creator Display Name"
+          },
           "current_stage": {
             "anyOf": [
               {
@@ -1502,6 +1522,28 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "driver_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Display Name"
+          },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
           },
           "enterprise_id": {
             "title": "Enterprise Id",
@@ -1647,6 +1689,66 @@
           "escalated"
         ],
         "title": "CaseDetail",
+        "type": "object"
+      },
+      "CaseDriverCandidate": {
+        "description": "An account a case's driver may be handed to. Never an email address.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The account's display name; null when it cannot be resolved.",
+            "title": "Display Name"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "CaseDriverCandidate",
+        "type": "object"
+      },
+      "CaseDriverCandidateList": {
+        "description": "Who a case's driver may be handed to (ADR-020 D4): the creator first,\nthen the active individual members of the teams the case is shared with.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CaseDriverCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidates"
+        ],
+        "title": "CaseDriverCandidateList",
+        "type": "object"
+      },
+      "CaseDriverUpdateRequest": {
+        "description": "Hand a case's driving to another account (ADR-020 D4).",
+        "properties": {
+          "driver_id": {
+            "description": "The new driver: one of `GET /cases/{case_id}/driver-candidates`. Naming the creator hands the case back to them.",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Driver Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "driver_id"
+        ],
+        "title": "CaseDriverUpdateRequest",
         "type": "object"
       },
       "CaseEvidenceListResponse": {
@@ -1891,6 +1993,11 @@
       "CaseSearchRequest": {
         "description": "Request to search cases.\n\n``user_id`` and ``organization_id`` used to be declared here, were published\nin ``docs/reference/api/openapi.json``, and were read by nothing. They were\nremoved rather than implemented (#1416): this endpoint is scoped to the\nAUTHENTICATED caller, so a request-supplied user id is either redundant or a\ncross-tenant read, and under ADR-017 the organization bills and is never a\nvisibility predicate.\n\nEvery remaining field does reach the repository query \u2014 and that is stated\nHERE as history rather than as a promise, on purpose. This text is published\nverbatim as the schema's description, and a description is the one part of\nthe contract nothing checks: ``scripts/check_contract_version.py`` strips\nprose before comparing, precisely because no client breaks on a reworded\nsentence. So a blanket guarantee written here could go stale the next time\nsomeone adds a field and forgets to wire it, with every gate still green and\nthe published contract now asserting the very thing #1416 was. The\nguarantee lives where it can fail:\n``tests/unit/modules/case/test_declared_filters_reach_the_query.py``\nclassifies every field on this model and goes red on one that reaches no\nquery.",
         "properties": {
+          "access": {
+            "$ref": "#/components/schemas/CaseAccess",
+            "default": "read",
+            "description": "`read` (default): search every case the caller can read. `write`: only the cases the caller drives \u2014 whose effective `driver_id` is the caller (ADR-020 D8). Applied in the same query as the text search."
+          },
           "limit": {
             "default": 20,
             "description": "Maximum results",
@@ -1982,6 +2089,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "creator_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Creator Display Name"
+          },
           "current_turn": {
             "description": "The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn \u2014 and prefer `investigation_turn` to DISPLAY one.",
             "title": "Current Turn",
@@ -1990,6 +2108,28 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "driver_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Display Name"
+          },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
           },
           "enterprise_id": {
             "title": "Enterprise Id",
@@ -7055,7 +7195,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "13.1.0"
+    "version": "13.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9640,6 +9780,17 @@
               "title": "Include Empty",
               "type": "boolean"
             }
+          },
+          {
+            "description": "`read` (default): every case the caller can read \u2014 created by them or shared with one of their teams. `write`: only the cases the caller can write, those whose effective `driver_id` is the caller (ADR-020 D8). Applied in the same query as every other filter, so `total_count` describes the same set as the page.",
+            "in": "query",
+            "name": "access",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CaseAccess",
+              "default": "read",
+              "description": "`read` (default): every case the caller can read \u2014 created by them or shared with one of their teams. `write`: only the cases the caller can write, those whose effective `driver_id` is the caller (ADR-020 D8). Applied in the same query as every other filter, so `total_count` describes the same set as the page."
+            }
           }
         ],
         "responses": {
@@ -9856,7 +10007,7 @@
     },
     "/api/v1/cases/{case_id}": {
       "delete": {
-        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the OWNER may delete. A teammate who can read the case through a team\nshare is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is\nread-only until hand-off ships).\n\nReturns 204 No Content on success.",
+        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the case's CREATOR may delete it: delete is governance (ADR-020 D2).\nAny other reader \u2014 the driver included \u2014 is refused with 403.\n\nReturns 204 No Content on success.",
         "operationId": "delete_case_api_v1_cases__case_id__delete",
         "parameters": [
           {
@@ -9949,7 +10100,7 @@
         ]
       },
       "put": {
-        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's OWNER may update it: a team share is read-only, and a\nteammate gets the answer an absent case gets.",
+        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's DRIVER may update it (ADR-020 D2); any other reader gets\nthe answer an absent case gets.",
         "operationId": "update_case_api_v1_cases__case_id__put",
         "parameters": [
           {
@@ -10259,7 +10410,7 @@
     },
     "/api/v1/cases/{case_id}/data/{data_id}": {
       "delete": {
-        "description": "Remove data file from a case. Returns 204 No Content on success.\n\nOnly the case's OWNER may call it; anyone else gets 404.",
+        "description": "Remove data file from a case. Returns 204 No Content on success.\n\nOnly the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.",
         "operationId": "delete_case_data_api_v1_cases__case_id__data__data_id__delete",
         "parameters": [
           {
@@ -10367,6 +10518,124 @@
           }
         ],
         "summary": "Get Case Data",
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/driver": {
+      "put": {
+        "description": "Hand the case's investigation writes to another account (ADR-020 D4). The caller must be the case's creator or its current driver; the target must be one of `GET /cases/{case_id}/driver-candidates`. Naming the creator hands the case back to them; naming the current driver changes nothing. A change bumps the case's version, so a turn in flight fails with 409 `CASE_VERSION_CONFLICT`, and is recorded in the audit log.",
+        "operationId": "reassign_case_driver_api_v1_cases__case_id__driver_put",
+        "parameters": [
+          {
+            "description": "Case ID",
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "description": "Case ID",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseDriverUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "The caller reads the case but neither created nor drives it"
+          },
+          "404": {
+            "description": "No such case, or the caller cannot read it"
+          },
+          "409": {
+            "description": "`CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. A resolved or closed case is NOT refused: its driver can still be changed."
+          },
+          "422": {
+            "description": "The target is not a candidate for this case"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reassign Case Driver",
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/driver-candidates": {
+      "get": {
+        "description": "Who the case's driver may be handed to (ADR-020 D4): the creator, then the active individual members of the teams the case is shared with, in the case's enterprise. Display names only, never email addresses. Readable by the case's creator and its current driver.",
+        "operationId": "list_driver_candidates_api_v1_cases__case_id__driver_candidates_get",
+        "parameters": [
+          {
+            "description": "Case ID",
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "description": "Case ID",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseDriverCandidateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "The caller reads the case but neither created nor drives it"
+          },
+          "404": {
+            "description": "No such case, or the caller cannot read it"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Case Driver Candidates",
         "tags": [
           "cases"
         ]
@@ -10485,7 +10754,7 @@
     },
     "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification": {
       "patch": {
-        "description": "Reclassify an existing evidence row under a user-specified data type.\n\nPhase 1.5 \u2014 the escape hatch for \"the classifier was confidently\nwrong\". Re-runs the preprocessing pipeline on the stored raw file\nwith ``user_override=data_type``, overwrites the evidence's\nstructural index, and appends to its extractor.attempts history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the\nflag is off so the endpoint is invisible in production by default.\n\nError responses (dispatched by ``api/exception_handlers.py``):\n\n- ``404`` \u2014 feature disabled, case not found, or evidence not in case\n  (``NotFoundError``).\n- ``409`` \u2014 evidence has no backing file (``ConflictError`` with\n  ``conflict_reason=\"no_backing_file\"``).\n- ``403`` \u2014 caller does not own the case (``AuthorizationError``).\n- ``422`` \u2014 invalid or missing ``data_type``, OR the case is terminal\n  (both ``ValidationException``). A closed or resolved investigation\n  accepts questions, not mutation; the terminal refusal is raised after\n  the evidence lookup, so a missing evidence id is still a ``404``.\n- ``500`` \u2014 storage/preprocessing failure (``ServiceException``).",
+        "description": "Reclassify an existing evidence row under a user-specified data type.\n\nPhase 1.5 \u2014 the escape hatch for \"the classifier was confidently\nwrong\". Re-runs the preprocessing pipeline on the stored raw file\nwith ``user_override=data_type``, overwrites the evidence's\nstructural index, and appends to its extractor.attempts history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the\nflag is off so the endpoint is invisible in production by default.\n\nError responses (dispatched by ``api/exception_handlers.py``):\n\n- ``404`` \u2014 feature disabled, case not found, or evidence not in case\n  (``NotFoundError``).\n- ``409`` \u2014 evidence has no backing file (``ConflictError`` with\n  ``conflict_reason=\"no_backing_file\"``).\n- ``403`` \u2014 caller does not drive the case, or drives it but can no\n  longer read it (``AuthorizationError``, ADR-020 D2).\n- ``422`` \u2014 invalid or missing ``data_type``, OR the case is terminal\n  (both ``ValidationException``). A closed or resolved investigation\n  accepts questions, not mutation; the terminal refusal is raised after\n  the evidence lookup, so a missing evidence id is still a ``404``.\n- ``500`` \u2014 storage/preprocessing failure (``ServiceException``).",
         "operationId": "reclassify_evidence_api_v1_cases__case_id__evidence__evidence_id__classification_patch",
         "parameters": [
           {
@@ -11426,7 +11695,7 @@
     },
     "/api/v1/cases/{case_id}/team-shares": {
       "post": {
-        "description": "Share a case with a Team (ADR-013 \u00a7D4). Owner-only; the Team must be one the caller belongs to. Idempotent.",
+        "description": "Share a case with a Team (ADR-013 \u00a7D4). Creator-only (ADR-020 D2); the Team must be one the caller belongs to. Idempotent.",
         "operationId": "share_case_with_team_api_v1_cases__case_id__team_shares_post",
         "parameters": [
           {
@@ -11484,7 +11753,7 @@
     },
     "/api/v1/cases/{case_id}/team-shares/{team_id}": {
       "delete": {
-        "description": "Remove a case's share to a Team (ADR-013 \u00a7D4). Owner-only.",
+        "description": "Remove a case's share to a Team (ADR-013 \u00a7D4). Creator-only (ADR-020 D2). If the share was the case's driver's last way to read it, the case is handed back to its creator first (ADR-020 D3).",
         "operationId": "unshare_case_from_team_api_v1_cases__case_id__team_shares__team_id__delete",
         "parameters": [
           {
@@ -11538,7 +11807,7 @@
     },
     "/api/v1/cases/{case_id}/title": {
       "post": {
-        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 404: the case does not exist or the caller does not own it. Naming a\n  case writes it, and a team share is read-only, so a teammate is refused\n  here before any title is generated.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.",
+        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 404: the case does not exist or the caller does not drive it. Naming a\n  case writes it, an investigation write that is the driver's (ADR-020\n  D2), so any other reader is refused here before any title is generated.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.",
         "operationId": "generate_case_title_api_v1_cases__case_id__title_post",
         "parameters": [
           {

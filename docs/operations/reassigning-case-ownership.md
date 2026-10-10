@@ -20,10 +20,11 @@ All in one transaction, so a failure part-way leaves the deployment as it was:
 
 | table | change |
 |---|---|
-| `cases` | `user_id` → the new owner, `version + 1`, `updated_at` |
+| `cases` | `user_id` → the new owner, `driver_id` → NULL (the new owner drives, ADR-020 D3), `version + 1`, `updated_at` |
 | `resource_shares` | one `case`→`team` row per case per Team the **new** owner is in |
 | `resource_shares` | **deletes** rows for teams the **old** owner was in and the new one is not |
 | `user_audit_log` | one `case_reassigned` row per case |
+| `user_audit_log` | one `case_driver_changed` row per case whose effective driver moved (`reason: creator_reassigned`) |
 
 It does **not** touch `cases.organization_id`, `cases.last_activity_at`,
 `case_messages.author_id`, or `uploaded_files.uploaded_by`. The last two are

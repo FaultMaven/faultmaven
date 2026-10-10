@@ -1240,6 +1240,10 @@ class MilestoneEngine:
             # hold what a pre-fetch fired during application below (Gate 1,
             # the root-cause edge) wrote AFTER the answer.
             metadata[TURN_METADATA_KB_PROMPTED] = []
+            # Context pre-fetched for a previous driver is re-fetched for this
+            # one before the prompt is built (ADR-020 D9), or cleared if it
+            # cannot be.
+            await self.kb_prefetcher.refresh_for_driver(case)
             redaction_ctx, response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
                 self.deps.llm_provider,

@@ -38,6 +38,7 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import ErrorDetail, ErrorResponse, TitleResponse
 from faultmaven.models.api_models import (
+    CaseAccess,
     CaseCreateRequest,
     CaseDetail,
     CaseListFilter,
@@ -106,9 +107,8 @@ async def delete_case(
     204 No Content even if the case has already been deleted, and so does a
     request naming a case the caller cannot see.
 
-    Only the OWNER may delete. A teammate who can read the case through a team
-    share is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is
-    read-only until hand-off ships).
+    Only the case's CREATOR may delete it: delete is governance (ADR-020 D2).
+    Any other reader — the driver included — is refused with 403.
 
     Returns 204 No Content on success.
     """
@@ -335,8 +335,11 @@ async def create_case(
         response.headers["Location"] = f"/api/v1/cases/{case_entity.case_id}"
         response.headers["x-correlation-id"] = correlation_id
 
-        # Return summary (v2.0 API model)
-        return CaseSummary.from_case(case_entity)
+        # Return summary (v2.0 API model), with the creator's name (ADR-020
+        # D5): the creator drives a new case.
+        summary = CaseSummary.from_case(case_entity)
+        await case_service.fill_display_names([summary])
+        return summary
 
     except ValidationException as e:
         logger.error(
@@ -411,6 +414,16 @@ async def list_cases(
     # Changed default to True - new cases should be visible immediately
     include_empty: bool = Query(
         True, description="Include cases with current_turn == 0 (newly created)"
+    ),
+    access: CaseAccess = Query(
+        CaseAccess.READ,
+        description=(
+            "`read` (default): every case the caller can read — created by them "
+            "or shared with one of their teams. `write`: only the cases the "
+            "caller can write, those whose effective `driver_id` is the caller "
+            "(ADR-020 D8). Applied in the same query as every other filter, so "
+            "`total_count` describes the same set as the page."
+        ),
     ),
 ):
     """
@@ -495,6 +508,7 @@ async def list_cases(
             limit=limit,
             offset=offset,
             include_empty=include_empty,
+            access=access,
         )
 
         # Get case summaries (already converted by service). The service returns
@@ -671,6 +685,8 @@ async def get_case(
         detail = CaseDetail.from_case(case)
         # Enrich with team shares (ADR-013 §D4); empty in standalone.
         detail.shared_team_ids = await case_service.get_case_team_ids(case_id)
+        # Creator and driver names (ADR-020 D5).
+        await case_service.fill_display_names([detail])
         return detail
 
     except HTTPException:
@@ -823,22 +839,21 @@ async def update_case(
     Update case details
 
     Updates case metadata such as title, description, state, priority, and tags.
-    Only the case's OWNER may update it: a team share is read-only, and a
-    teammate gets the answer an absent case gets.
+    Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
+    the answer an absent case gets.
     """
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
 
     try:
-        # OWNER only, at the route as well as in ``update_case``: a share is
-        # read-only until hand-off ships (ADR-013 D4, amended 2026-10-09,
-        # #1898). Resolved through ownership so a teammate is answered exactly
-        # as an absent case is (the 404 from ``update_case`` below). Through
-        # the read allowlist, a teammate's PUT on a terminal shared case was
-        # answered 409 CASE_TERMINAL instead — a write refused for the case's
-        # state rather than for who asked.
+        # DRIVER only, at the route as well as in ``update_case`` (ADR-020
+        # D2). Resolved through the driver so a reader who does not drive is
+        # answered exactly as an absent case is (the 404 from ``update_case``
+        # below). Through the read allowlist, such a reader's PUT on a terminal
+        # case was answered 409 CASE_TERMINAL instead — a write refused for the
+        # case's state rather than for who asked.
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         # Reject writes on terminal or archived cases
         if case:
@@ -979,9 +994,9 @@ async def generate_case_title(
 
     **Returns:**
     - 200: TitleResponse with X-Correlation-ID header
-    - 404: the case does not exist or the caller does not own it. Naming a
-      case writes it, and a team share is read-only, so a teammate is refused
-      here before any title is generated.
+    - 404: the case does not exist or the caller does not drive it. Naming a
+      case writes it, an investigation write that is the driver's (ADR-020
+      D2), so any other reader is refused here before any title is generated.
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate
@@ -1024,13 +1039,13 @@ async def generate_case_title(
                 "effective_force": effective_force,
             },
         )
-        # OWNER only, and BEFORE any title is generated: naming a case writes
-        # its title, and a share is read-only until hand-off ships (ADR-013 D4,
-        # amended 2026-10-09, #1898). Through the read allowlist a teammate was
-        # admitted here, could spend an LLM call generating a title, and was
-        # then refused by ``update_case``'s owner check — a 500 after the spend.
+        # DRIVER only, and BEFORE any title is generated: naming a case
+        # writes its title, an investigation write (ADR-020 D2). Through the
+        # read allowlist a reader was admitted here, could spend an LLM call
+        # generating a title, and was then refused by ``update_case``'s gate —
+        # a 500 after the spend.
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         if not case:
             raise HTTPException(

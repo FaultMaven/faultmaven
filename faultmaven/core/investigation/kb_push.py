@@ -44,6 +44,7 @@ __all__ = [
     "kb_push_enabled",
     "prompt_kb_entries",
     "visible_kb_context",
+    "kb_context_is_stale",
 ]
 
 #: How many pre-fetched entries a prompt renders.
@@ -89,8 +90,30 @@ def visible_kb_context(case: Any) -> List[Dict[str, Any]]:
     """
     if not kb_push_enabled():
         return []
+    if kb_context_is_stale(case):
+        return []
     entries = getattr(case, "kb_context", None) or []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def kb_context_is_stale(case: Any) -> bool:
+    """Whether the case carries pre-fetched context fetched for a driver who
+    no longer drives it (ADR-020 D9).
+
+    Read through :func:`visible_kb_context` by every consumer, so stale context
+    is hidden from the prompt, the turn's sources, telemetry and reports from
+    the moment the driver changes — not from the next turn. Context with no
+    recorded origin was fetched for the creator (every fetch before the origin
+    existed was keyed on ``cases.user_id``).
+    """
+    if not getattr(case, "kb_context", None):
+        return False
+    origin = getattr(case, "kb_context_origin", None) or {}
+    fetched_for = origin.get("driver_id") or getattr(case, "user_id", None)
+    effective = getattr(case, "effective_driver_id", None) or getattr(
+        case, "user_id", None
+    )
+    return fetched_for != effective
 
 
 def prompt_kb_entries(case: Any) -> List[Dict[str, Any]]:

@@ -16,6 +16,7 @@ from faultmaven.modules.case.api.routes.conversation import (
     router as conversation_router,
 )
 from faultmaven.modules.case.api.routes.data import router as data_router
+from faultmaven.modules.case.api.routes.driver import router as driver_router
 from faultmaven.modules.case.api.routes.evidence import router as evidence_router
 from faultmaven.modules.case.api.routes.reports import router as reports_router
 from faultmaven.modules.case.api.routes.sharing import router as sharing_router
@@ -27,3 +28,4 @@ router.include_router(data_router)
 router.include_router(reports_router)
 router.include_router(evidence_router)
 router.include_router(sharing_router)
+router.include_router(driver_router)

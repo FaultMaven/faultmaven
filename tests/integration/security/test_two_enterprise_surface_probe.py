@@ -189,7 +189,7 @@ confinement)                                        enterprises_user``,
                                                     ADR-017 forbids by name.
 ``require_case_access`` resolves every session      1: ``test_a_share_grants_
 method through the READ allowlist                   read_not_write_on_the_
-(``owner_only=False``, the router-level gate's      derived_surfaces``. The
+(``driver_only=False``, the router-level gate's     derived_surfaces``. The
 choice of resolver by request method)               teammate's PATCH answers
                                                     **200** and rewrites the
                                                     OWNER's ``session_goal`` to
@@ -199,33 +199,33 @@ choice of resolver by request method)               teammate's PATCH answers
                                                     which this gate does not
                                                     guard.
 ``InvestigationService._verify_access_and_reserve`` 1: ``test_a_teammates_turn_
-drops its ``case.user_id != user_id`` refusal       is_refused_by_the_service_
-(the turn's owner check, #1898)                     and_costs_nothing``. The
+drops its ``effective_driver_id != user_id``        is_refused_by_the_service_
+refusal (the turn's driver check, ADR-020 D2)       and_costs_nothing``. The
                                                     teammate's turn runs into the
                                                     engine instead of a 403.
 The resume route's case lookup drops                1: ``test_a_teammate_cannot_
-``owner_only=True`` (#1898)                         resume_the_owners_case_in_a_
+``driver_only=True`` (ADR-020 D2)                   resume_the_owners_case_in_a_
                                                     session`` — still a 404, but
                                                     from the service's gate, not
                                                     the route's, which is why the
                                                     test pins the ``detail``.
-``link_session_to_case`` drops ``owner_only=True``  **nothing** here: the route's
-(the resume's service-side gate, #1898)             gate refuses first. Pinned
+``link_session_to_case`` drops ``driver_only``      **nothing** here: the route's
+(the resume's service-side gate, ADR-020 D2)        gate refuses first. Pinned
                                                     by ``TestTheLinkGatesTheCase
                                                     ::test_a_teammate_holding_a_
                                                     share_is_refused`` (unit).
                                                     Both dropped together: the
                                                     teammate's resume is a 200.
-``POST /cases/{id}/title`` drops ``owner_only``     1: ``..._cannot_name_the_
-(#1898)                                             owners_case_or_spend_a_model_
+``POST /cases/{id}/title`` drops ``driver_only``    1: ``..._cannot_name_the_
+(ADR-020 D2)                                        owners_case_or_spend_a_model_
                                                     call``. A model call, then a
                                                     500 from ``update_case``.
-``PUT /cases/{id}`` drops ``owner_only`` (#1898)    1: ``..._put_is_refused_as_an_
+``PUT /cases/{id}`` drops ``driver_only``           1: ``..._put_is_refused_as_an_
                                                     absent_case_even_when_
                                                     terminal`` — 409
                                                     CASE_TERMINAL, not 404.
 ``DELETE /cases/{id}/data/{id}`` drops              1: ``..._cannot_delete_the_
-``owner_only`` (#1898)                              owners_case_data`` — 204.
+``driver_only`` (ADR-020 D2)                        owners_case_data`` — 204.
 ==================================================  ============================
 """
 
@@ -1133,7 +1133,14 @@ def _wire_services(app, chroma) -> None:
         settings=settings,
         team_service=team_service,
         share_repository=share_repository,
+        # The account store's directory read, as the composition root wires it
+        # (ADR-020 D4/D5): driver candidates and the creator/driver names.
+        account_reader=SessionlessUserRepository(),
     )
+    # The driver releases (ADR-020 D3), bound as the composition root binds
+    # them: a leave or a deactivation hands the driver's cases back first.
+    team_service.bind_case_driver_release(app.state.case_service)
+    app.state.user_service.bind_case_driver_release(app.state.case_service)
     app.state.team_service = team_service
     # A session service that can actually HOLD a session, which this app did
     # not have. ``AuthSessionService(settings=settings)`` takes
@@ -4511,7 +4518,7 @@ async def test_a_share_grants_read_not_write(shared_world):
 async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_world):
     """The other half of the battery: everything that hangs OFF the case.
 
-    A share is read visibility (ADR-013 D4, as amended 2026-10-09), and the
+    A share is read visibility; the writes are the driver's (ADR-020 D2), and the
     surfaces above are the ones that name the case row itself. These name
     something derived from it — an investigation session, the case's report
     set — and every one of them was reachable to a teammate, because the gate they
@@ -4668,7 +4675,8 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
 # The writes a share used to be thought to grant (#1898)
 # -----------------------------------------------------------------------------
 #
-# A share is read-only until hand-off ships (ADR-013 D4, amended 2026-10-09).
+# A share is read visibility; every investigation write is the DRIVER's
+# (ADR-020 D2), and a teammate drives only once the case is handed to them.
 # The four surfaces below were the ones a teammate still reached: the turn (the
 # route admits them and the SERVICE refuses), and three routes that resolved the
 # case through the READ allowlist — resume, ``/title`` and ``PUT`` — plus the
@@ -4877,7 +4885,7 @@ async def test_a_teammates_turn_is_refused_by_the_service_and_costs_nothing(
 
 
 async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_world):
-    """``POST /cases/sessions/{sid}/resume/{case_id}`` is OWNER only (#1898).
+    """``POST /cases/sessions/{sid}/resume/{case_id}`` is DRIVER only (ADR-020 D2).
 
     It writes ``cases.last_activity_at`` and points the session's
     ``current_case_id`` at the case, and it used to admit a teammate "matching
@@ -5061,11 +5069,11 @@ async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
 
 
 async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
-    """``DELETE /cases/{id}/data/{data_id}`` is OWNER only (#1898).
+    """``DELETE /cases/{id}/data/{data_id}`` is DRIVER only (ADR-020 D2).
 
     The route is a stub: it deletes nothing and answers 204. Through the read
-    allowlist it told a teammate "deleted"; owner-only, the teammate gets the
-    404 an absent case gets and the owner keeps the stub's 204.
+    allowlist it told a teammate "deleted"; driver-only, the teammate gets the
+    404 an absent case gets and the driver (here the creator) keeps the stub's 204.
     """
     world = shared_world
     path = (
@@ -5084,6 +5092,241 @@ async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
     assert (
         owner.status_code == 204
     ), f"control: the owner's own DELETE was refused: {owner.text[:300]}"
+
+
+# =============================================================================
+# The case driver (ADR-020, #1898): who may move it, and to whom
+# =============================================================================
+
+
+async def _driver_state(world, case_id: str):
+    """``(driver_id, version)`` and the case's ``case_driver_changed`` rows,
+    read as the superuser so RLS cannot hide a write the API denied."""
+    async with world.superuser_engine.begin() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT driver_id, version FROM cases WHERE case_id = :c"),
+                {"c": case_id},
+            )
+        ).first()
+        audits = (
+            await conn.execute(
+                text(
+                    "SELECT user_id, details FROM user_audit_log "
+                    "WHERE event_type = 'case_driver_changed' AND resource_id = :c "
+                    "ORDER BY audit_id"
+                ),
+                {"c": case_id},
+            )
+        ).all()
+    return tuple(row), [tuple(a) for a in audits]
+
+
+async def test_the_driver_routes_refuse_the_other_party(world):
+    """Across the wall (both arms): A can neither read B's candidates nor take
+    B's case, and B cannot hand its case to A — A is in no team the case is
+    shared with, so A is not a candidate. In the same-enterprise arm RLS admits
+    both accounts, so that 422 is the server's candidate check alone."""
+    case_id = world.b.case.case_id
+    candidates_path = f"/api/v1/cases/{case_id}/driver-candidates"
+    driver_path = f"/api/v1/cases/{case_id}/driver"
+    before = await _driver_state(world, case_id)
+
+    candidates = await as_a(world, "GET", candidates_path)
+    take = await as_a(world, "PUT", driver_path, json={"driver_id": world.a.user_id})
+    for label, response in (
+        (f"GET {candidates_path}", candidates),
+        (f"PUT {driver_path}", take),
+    ):
+        assert response.status_code == 404, (
+            f"{label}: the other party must get the absent-case answer, got "
+            f"{response.status_code}: {response.text[:300]}"
+        )
+        assert_no_b_content(response, label)
+
+    handed = await as_b(world, "PUT", driver_path, json={"driver_id": world.a.user_id})
+    assert handed.status_code == 422, (
+        "B handed its case to an account in no team the case is shared with "
+        f"({handed.status_code}): {handed.text[:300]}"
+    )
+
+    assert (
+        await _driver_state(world, case_id) == before
+    ), "a refused driver change moved the row or wrote an audit row"
+
+    # The control: B reads its own candidates, and A is not one of them.
+    own = await as_b(world, "GET", candidates_path)
+    assert own.status_code == 200, f"control: {own.text[:300]}"
+    ids = [c["user_id"] for c in own.json()["candidates"]]
+    assert ids[0] == world.b.user_id
+    assert world.a.user_id not in ids
+
+
+async def test_a_teammate_can_neither_take_the_wheel_nor_list_the_candidates(
+    shared_world,
+):
+    """No open takeover (ADR-020 D4): B reads A's case through T, and that is
+    all — 403, not 404, because B demonstrably sees the case."""
+    world = shared_world
+    case_id = world.shared_case.case_id
+    before = await _driver_state(world, case_id)
+
+    candidates = await as_teammate(
+        world, "GET", f"/api/v1/cases/{case_id}/driver-candidates"
+    )
+    take = await as_teammate(
+        world,
+        "PUT",
+        f"/api/v1/cases/{case_id}/driver",
+        json={"driver_id": world.user_b},
+    )
+
+    assert (candidates.status_code, take.status_code) == (403, 403), (
+        candidates.text[:200],
+        take.text[:200],
+    )
+    assert_no_private_content(candidates, "GET .../driver-candidates")
+    assert_no_private_content(take, "PUT .../driver")
+    assert await _driver_state(world, case_id) == before
+
+
+async def test_a_hand_off_moves_the_investigation_writes_and_not_governance(
+    shared_world,
+):
+    """The whole of ADR-020 D2-D4 on one shared case, end to end, as rows.
+
+    A hands the case to B: B now holds the investigation writes and A does
+    not; A keeps governance and B does not get it; each side's ``access=write``
+    list follows; B hands it back and the stored driver returns to NULL.
+    """
+    world = shared_world
+    case_id = world.shared_case.case_id
+
+    listed = await as_owner(world, "GET", f"/api/v1/cases/{case_id}/driver-candidates")
+    assert listed.status_code == 200, listed.text[:300]
+    candidates = listed.json()["candidates"]
+    assert [c["user_id"] for c in candidates] == [world.user_a, world.user_b]
+    assert "@" not in listed.text, "a candidate list leaked an email address"
+
+    handed = await as_owner(
+        world,
+        "PUT",
+        f"/api/v1/cases/{case_id}/driver",
+        json={"driver_id": world.user_b},
+    )
+    assert handed.status_code == 200, handed.text[:300]
+    assert handed.json()["driver_id"] == world.user_b
+    (driver, version), audits = await _driver_state(world, case_id)
+    assert driver == world.user_b
+    assert [a[0] for a in audits] == [world.user_a]
+
+    # Investigation writes: the driver's, not the creator's.
+    by_driver = await as_teammate(
+        world, "PUT", f"/api/v1/cases/{case_id}", json={"title": "Driven by B"}
+    )
+    by_creator = await as_owner(
+        world, "PUT", f"/api/v1/cases/{case_id}", json={"title": "Creator write"}
+    )
+    assert by_driver.status_code == 200, by_driver.text[:300]
+    assert by_creator.status_code == 404, by_creator.text[:300]
+
+    # Governance: the creator's, not the driver's.
+    driver_delete = await as_teammate(world, "DELETE", f"/api/v1/cases/{case_id}")
+    driver_unshare = await as_teammate(
+        world,
+        "DELETE",
+        f"/api/v1/cases/{case_id}/team-shares/{world.team_shared}",
+    )
+    assert driver_delete.status_code == 403, driver_delete.text[:300]
+    assert driver_unshare.status_code == 403, driver_unshare.text[:300]
+
+    # access=write follows the wheel on both sides.
+    b_writes = await as_teammate(world, "GET", "/api/v1/cases?access=write")
+    a_writes = await as_owner(world, "GET", "/api/v1/cases?access=write")
+    assert case_id in _ids(b_writes.json(), "case_id")
+    assert case_id not in _ids(a_writes.json(), "case_id")
+    assert world.private_case.case_id in _ids(a_writes.json(), "case_id")
+
+    back = await as_teammate(
+        world,
+        "PUT",
+        f"/api/v1/cases/{case_id}/driver",
+        json={"driver_id": world.user_a},
+    )
+    assert back.status_code == 200, back.text[:300]
+    (driver, later_version), audits = await _driver_state(world, case_id)
+    assert driver is None, "naming the creator must store NULL"
+    assert later_version > version
+    assert [a[0] for a in audits] == [world.user_a, world.user_b]
+
+    async with world.superuser_engine.begin() as conn:
+        title = (
+            await conn.execute(
+                text("SELECT title FROM cases WHERE case_id = :c"), {"c": case_id}
+            )
+        ).scalar()
+    assert title == "Driven by B"
+
+
+async def test_unsharing_the_drivers_last_read_path_hands_the_case_back(
+    shared_world,
+):
+    """Release on unshare (ADR-020 D3), as rows: the creator withdraws T while
+    B drives through it; B's driving goes back to the creator, with its audit
+    row, and B can no longer write the case."""
+    world = shared_world
+    case_id = world.shared_case.case_id
+    handed = await as_owner(
+        world,
+        "PUT",
+        f"/api/v1/cases/{case_id}/driver",
+        json={"driver_id": world.user_b},
+    )
+    assert handed.status_code == 200, handed.text[:300]
+
+    unshared = await as_owner(
+        world,
+        "DELETE",
+        f"/api/v1/cases/{case_id}/team-shares/{world.team_shared}",
+    )
+    assert unshared.status_code in (200, 204), unshared.text[:300]
+
+    (driver, _), audits = await _driver_state(world, case_id)
+    assert driver is None
+    assert '"reason": "unshared"' in audits[-1][1]
+    write = await as_teammate(
+        world, "PUT", f"/api/v1/cases/{case_id}", json={"title": "After unshare"}
+    )
+    assert write.status_code == 404, write.text[:300]
+
+
+async def test_a_driver_who_leaves_the_team_hands_the_case_back(shared_world):
+    """Release on leaving a team (ADR-020 D3), through the real leave route:
+    B drives A's case through T and leaves T, so the case goes back to A —
+    before the membership write, with B's own audit row."""
+    world = shared_world
+    case_id = world.shared_case.case_id
+    handed = await as_owner(
+        world,
+        "PUT",
+        f"/api/v1/cases/{case_id}/driver",
+        json={"driver_id": world.user_b},
+    )
+    assert handed.status_code == 200, handed.text[:300]
+
+    left = await as_teammate(
+        world, "DELETE", f"/api/v1/teams/{world.team_shared}/members/me"
+    )
+    assert left.status_code in (200, 204), left.text[:300]
+
+    (driver, _), audits = await _driver_state(world, case_id)
+    assert driver is None
+    assert audits[-1][0] == world.user_b
+    assert '"reason": "left_team"' in audits[-1][1]
+    owner_write = await as_owner(
+        world, "PUT", f"/api/v1/cases/{case_id}", json={"title": "Mine again"}
+    )
+    assert owner_write.status_code == 200, owner_write.text[:300]
 
 
 # =============================================================================
@@ -5201,6 +5444,14 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("DELETE", "/api/v1/cases/{case_id}/team-shares/{team_id}"): (
         _PROBED,
         "unshare, resource_shares checked",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/driver-candidates"): (
+        _PROBED,
+        "both walls (404) and the teammate (403); names only, no email",
+    ),
+    ("PUT", "/api/v1/cases/{case_id}/driver"): (
+        _PROBED,
+        "both walls, the teammate's takeover (403), a non-candidate (422); rows",
     ),
     # --- evidence, files, case data ---------------------------------------
     ("GET", "/api/v1/cases/{case_id}/evidence"): (_PROBED, "evidence listing"),

@@ -603,3 +603,32 @@ class TestTitlingOrdering:
 
         assert seen["write"] == TENANT_ORG
         assert seen["write"] != STANDALONE_ENTERPRISE_ID
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_auto_title_asks_for_the_driver():
+    """Naming the case is an investigation write (ADR-020 D2): the auto-title
+    resolves the case through the DRIVER gate, so a caller who no longer drives
+    — the case was handed on while their turn ran — spends no model call."""
+    case = _make_case()
+    case.inquiry.proposed_problem_statement = (
+        "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+    )
+    service = _service_for(case)
+
+    async def driver_gate(case_id, user_id=None, *, driver_only=False, **_):
+        return case if driver_only and user_id == "user_123" else None
+
+    service.get_case = AsyncMock(side_effect=driver_gate)
+
+    await _auto_title_case_if_default(
+        case_id=case.case_id,
+        user_id="user_123",
+        case_service=service,
+        llm_provider=None,
+    )
+
+    assert not _is_default_case_title(case.title), "the driver's case was named"
+    # The FIRST read is the gate; a later one is the title's verification read.
+    assert service.get_case.await_args_list[0].kwargs.get("driver_only") is True

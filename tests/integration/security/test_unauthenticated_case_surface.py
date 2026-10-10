@@ -145,6 +145,20 @@ DRIVEN: dict[tuple[str, str], dict] = {
         "url": "/api/v1/cases/c1",
         "json": {"title": "anything"},
     },
+    # ADR-020 D4: the driver routes.
+    ("GET", "/api/v1/cases/{case_id}/driver-candidates"): {
+        "url": "/api/v1/cases/c1/driver-candidates"
+    },
+    ("PUT", "/api/v1/cases/{case_id}/driver"): {
+        "url": "/api/v1/cases/c1/driver",
+        "json": {"driver_id": "u1"},
+    },
+    # Joins the set because the handler now asks the case service whether the
+    # caller reads the case (ADR-020 D2).
+    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): {
+        "url": "/api/v1/cases/c1/evidence/e1/classification",
+        "json": {"data_type": "logs_and_errors"},
+    },
 }
 
 

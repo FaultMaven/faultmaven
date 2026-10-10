@@ -331,6 +331,11 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
     return {
         "case_id": case.case_id,
         "user_id": case.user_id,
+        # ADR-020 D1: the stored driver, NULL = the creator drives. Bound for
+        # the INSERT of a new case only: the full-row UPDATE does not write it,
+        # because its one writer is the versioned reassign/release
+        # (``case_driver_sql``), so no save can write a driver back.
+        "driver_id": case.driver_id,
         "enterprise_id": case.enterprise_id,
         "organization_id": case.organization_id,
         "title": case.title,
@@ -425,6 +430,12 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
                     # ``.get`` produces.
                     "kb_context": (
                         to_json_compatible(case.kb_context) if case.kb_context else None
+                    ),
+                    # Its origin (ADR-020 D9) — see the SQLite writer.
+                    "kb_context_origin": (
+                        to_json_compatible(case.kb_context_origin)
+                        if case.kb_context_origin
+                        else None
                     ),
                 }.items()
                 if v

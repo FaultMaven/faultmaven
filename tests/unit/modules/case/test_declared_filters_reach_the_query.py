@@ -100,7 +100,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.api.routes import admin_cases
 from faultmaven.infrastructure.persistence import database as database_module
-from faultmaven.models.api_models import CaseListFilter, CaseSearchRequest
+from faultmaven.models.api_models import CaseAccess, CaseListFilter, CaseSearchRequest
 from faultmaven.modules.case.api.routes import cases as case_routes
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -125,6 +125,12 @@ pytestmark = [pytest.mark.unit, pytest.mark.api]
 
 SEED_OWNER = "owner"
 SEED_ENTERPRISE = "ent_guard_0001"
+#: The account one seeded case was handed to (ADR-020): the creator reads that
+#: case, and ``access=write`` must drop it because the creator no longer drives
+#: it.
+SEED_DRIVER = "driver"
+#: The seeded case whose driver is ``SEED_DRIVER``.
+DRIVEN_AWAY_CASE = 3
 #: Two teams with disjoint, non-empty share sets. The team pair is what makes
 #: `team_id` provable: a filter that merely SHORT-CIRCUITS to empty (no
 #: membership, no share repository) would also "discriminate" against an
@@ -306,6 +312,7 @@ LIST_ROUTE_RULES: Mapping[str, Rule] = {
     "limit": reaches(),
     "offset": reaches(),
     "include_empty": reaches(),
+    "access": reaches(),
     # `include_archived` was here, `route_exempt(..., issue="#1413")`: declared
     # on the route, dropped by CaseListFilter's default extra='ignore', carried
     # by no repository. REMOVED from the route in API contract 4.0.0 rather than
@@ -344,6 +351,8 @@ LIST_FILTER_RULES: Mapping[str, Rule] = {
         {"created_before": lambda: _day(3)}, {"created_before": lambda: _day(5)}
     ),
     "include_empty": narrows({"include_empty": True}, {"include_empty": False}),
+    # ADR-020 D8: `write` drops the case the creator handed to SEED_DRIVER.
+    "access": narrows({"access": CaseAccess.READ}, {"access": CaseAccess.WRITE}),
     "limit": pages({"limit": 2}, {"limit": 4}),
     "offset": pages({"limit": 2, "offset": 0}, {"limit": 2, "offset": 2}),
     # `user_id` and `organization_id` were here, both `field_exempt` and both
@@ -400,6 +409,12 @@ SEARCH_REQUEST_RULES: Mapping[str, Rule] = {
         {"query": "widget", "state": CaseState.INQUIRY},
         {"query": "widget", "state": CaseState.INVESTIGATING},
     ),
+    # ADR-020 D8: "gadget" matches the case handed to SEED_DRIVER and one the
+    # creator still drives, so `write` keeps one of the two.
+    "access": narrows(
+        {"query": "gadget", "access": CaseAccess.READ},
+        {"query": "gadget", "access": CaseAccess.WRITE},
+    ),
     # `user_id` and `organization_id` were here, both `field_exempt(issue="#1416")`:
     # declared on `CaseSearchRequest`, published in openapi.json, read by
     # nothing. REMOVED from the model in API contract 4.0.0 rather than
@@ -418,6 +433,8 @@ SEARCH_REQUEST_RULES: Mapping[str, Rule] = {
 def _seed_case(
     index: int, *, title: str, state: CaseState, source: str, turn: int
 ) -> Case:
+    # ``driver_id`` set on one case only, so ``access=write`` has something to
+    # drop and both halves of its pair stay non-empty.
     """One seeded case. Built fresh per fixture — the in-memory repository
     stores the instance itself and applies optimistic concurrency to it, so a
     module-level corpus would carry version bumps between tests."""
@@ -442,6 +459,7 @@ def _seed_case(
         created_at=stamp,
         updated_at=stamp,
         last_activity_at=stamp,
+        driver_id=SEED_DRIVER if index == DRIVEN_AWAY_CASE else None,
         **extra,
     )
 
@@ -547,6 +565,23 @@ def sqlite_schema_template(case_schema_template) -> Path:
     return case_schema_template(SEED_ENTERPRISE, SEED_OWNER)
 
 
+def _add_seed_driver(database: Path) -> None:
+    """The account ``driver_id`` names, which ``cases.driver_id``'s foreign key
+    requires wherever foreign keys are enforced."""
+    import sqlite3
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "INSERT INTO users (user_id, enterprise_id, username, email, "
+            "display_name) VALUES (?, ?, ?, ?, 'Seed Driver')",
+            (SEED_DRIVER, SEED_ENTERPRISE, SEED_DRIVER, f"{SEED_DRIVER}@test"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 @asynccontextmanager
 async def _in_memory_repository():
     repository = InMemoryCaseRepository()
@@ -558,6 +593,7 @@ async def _in_memory_repository():
 async def _sqlite_repository(template: Path, tmp_path: Path):
     database = tmp_path / "sqlite-arm.db"
     shutil.copyfile(template, database)
+    _add_seed_driver(database)
     engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
     try:
         maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -582,6 +618,7 @@ async def _sessionless_repository(template: Path, tmp_path: Path):
     """
     database = tmp_path / "sessionless-arm.db"
     shutil.copyfile(template, database)
+    _add_seed_driver(database)
     previous_engine = database_module._engine
     previous_factory = database_module._session_factory
     database_module.reset_engine()
@@ -987,6 +1024,7 @@ ROUTE_SURFACES = (
             "limit": 7,
             "offset": 3,
             "include_empty": False,
+            "access": CaseAccess.WRITE,
         },
         capture=_capture_list_filter,
     ),

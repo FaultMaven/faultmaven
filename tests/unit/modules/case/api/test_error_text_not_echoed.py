@@ -85,7 +85,7 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
     """
     from types import SimpleNamespace
 
-    async def get_case(case_id, user_id=None, *, owner_only=False):
+    async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
         return SimpleNamespace(case_id=CASE_ID, user_id="user-1")
 
     async def resume_case_in_session(case_id, session_id, user_id):

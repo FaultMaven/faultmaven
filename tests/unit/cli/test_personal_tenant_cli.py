@@ -1007,3 +1007,61 @@ async def test_the_command_drives_the_real_adapter_against_the_real_sdk(db):
     orgs.delete_organization.assert_called_once_with(IDP_ORG_A)
     members.delete_organization_membership.assert_called_once_with("om_1")
     orgs.get_organization_by_external_id.assert_not_called()
+
+
+# =============================================================================
+# re-anchor releases the account's driven cases first (ADR-020 D3)
+# =============================================================================
+
+DRIVEN_ELSEWHERE = "case_00000000aa01"
+DRIVEN_AT_DESTINATION = "case_00000000aa02"
+
+
+async def _seed_driven_cases(db):
+    await _exec(
+        db,
+        "INSERT INTO cases (case_id, enterprise_id, user_id, driver_id, title) "
+        "VALUES (:c, :e, :u, :d, 't')",
+        {"c": DRIVEN_ELSEWHERE, "e": ENT_B, "u": USER_B, "d": USER_A},
+    )
+    await _exec(
+        db,
+        "INSERT INTO cases (case_id, enterprise_id, user_id, driver_id, title) "
+        "VALUES (:c, :e, :u, :d, 't')",
+        {"c": DRIVEN_AT_DESTINATION, "e": ENT_CO, "u": USER_B, "d": USER_A},
+    )
+
+
+async def test_re_anchor_hands_back_what_the_account_drives_elsewhere(db):
+    await _seed_driven_cases(db)
+
+    assert await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True) == 0
+
+    drivers = dict(
+        (r.case_id, r.driver_id)
+        for r in await _rows(db, "SELECT case_id, driver_id FROM cases")
+    )
+    assert drivers[DRIVEN_ELSEWHERE] is None
+    assert drivers[DRIVEN_AT_DESTINATION] == USER_A
+    (row,) = await _rows(
+        db,
+        "SELECT user_id, enterprise_id, details FROM user_audit_log "
+        "WHERE event_type = 'case_driver_changed'",
+    )
+    assert row.user_id is None and row.enterprise_id == ENT_B
+    assert '"reason": "reanchored"' in row.details
+
+
+async def test_re_anchor_releases_before_it_moves_the_anchor(db, capsys):
+    """Release-first (ADR-020 D3): the dry run lists the release ahead of the
+    move, and that list is the order ``--apply`` runs."""
+    await _seed_driven_cases(db)
+
+    assert await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=False) == 0
+
+    out = capsys.readouterr().out
+    assert out.index("back to their creators") < out.index("anchor " + USER_A)
+    (row,) = await _rows(
+        db, "SELECT driver_id FROM cases WHERE case_id = :c", {"c": DRIVEN_ELSEWHERE}
+    )
+    assert row.driver_id == USER_A

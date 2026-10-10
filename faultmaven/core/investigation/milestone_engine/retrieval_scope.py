@@ -8,16 +8,25 @@ reads the case. Stored COPIES of runbook text (a turn's ``sources``) are a
 different matter: they are access-checked per viewer when they are read back
 (``gate_kb_sources`` in ``modules/knowledge/contracts.py``).
 
-Until #1898 adds a driver, the driver is the case's creator, ``cases.user_id``,
-who is also the only user who may submit a turn. #1898 changes the key to the
-effective driver HERE, in this one function: the pre-fetch (push), ``kb_qa``
-(pull) and the runbook dedup all take their scope from it.
+The driver is the case's EFFECTIVE driver (ADR-020 D1):
+``COALESCE(driver_id, user_id)`` — the creator unless the case was handed to
+someone. It is keyed HERE, in this one function: the pre-fetch (push),
+``kb_qa`` (pull) and the runbook dedup all take their scope from it, and the
+pre-fetch stamps the same key on ``kb_context_origin`` (ADR-020 D9).
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def retrieval_principal(case: Any) -> Optional[str]:
+    """The account whose knowledge a case retrieves with: its effective driver
+    (ADR-020 D1/D9). The scope below keys on it, and the pre-fetch stamps it on
+    ``kb_context_origin`` so the stamp and the fetch always name the same
+    account."""
+    return getattr(case, "effective_driver_id", None) or getattr(case, "user_id", None)
 
 
 async def case_retrieval_scope(
@@ -29,11 +38,11 @@ async def case_retrieval_scope(
 ) -> Dict[str, Any]:
     """The vector-store ``where`` filter for the case driver's knowledge.
 
-    The driver is ``case.user_id`` until #1898. ``team_service`` is ``None``
+    The driver is :func:`retrieval_principal`. ``team_service`` is ``None``
     only in standalone, where team collaboration is off
     (``create_team_service``): the scope is then global ∪ the driver's personal
-    KB. A case with no driver (``cases.user_id`` is set NULL when the creator's
-    account is deleted) reads global only.
+    KB. A case with no driver (no assigned driver, and ``cases.user_id`` set
+    NULL when the creator's account was deleted) reads global only.
 
     The team arm comes from ``list_all_user_team_ids``, which joins through
     ``teams`` and excludes retired ones, so a runbook shared only to a retired
@@ -49,7 +58,7 @@ async def case_retrieval_scope(
         resolve_shared_kb_ids,
     )
 
-    driver_id = getattr(case, "user_id", None)
+    driver_id = retrieval_principal(case)
     shared_kb_ids: List[str] = []
     if driver_id and team_service is not None and share_repository is not None:
         try:

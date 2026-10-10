@@ -105,6 +105,12 @@ class AuditEventType(str, Enum):
     # for the same reason ROLE_REMOVED is not a flag on ROLE_ASSIGNED:
     # "which cases changed hands" must not require parsing `details`.
     CASE_REASSIGNED = "case_reassigned"
+    # Who DRIVES a case changed (ADR-020 D4): a reassignment, or a release
+    # that handed it back to its creator (D3). Its own indexed value, apart
+    # from CASE_REASSIGNED (the creator changing), for the same reason: "who
+    # could write this case, and since when" must not require parsing
+    # `details`. One row per case whose effective driver actually changed.
+    CASE_DRIVER_CHANGED = "case_driver_changed"
     KB_DOCUMENT_SHARED = "kb_document_shared"
     TEAM_CREATED = "team_created"
 

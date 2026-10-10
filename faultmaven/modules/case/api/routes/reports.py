@@ -253,12 +253,12 @@ async def generate_case_reports(
     case_service = check_case_service_available(case_service)
 
     try:
-        # ``owner_only``: regeneration flips ``is_current`` across the case's
-        # reports, so it is a WRITE on rows a read share never covered (ADR-013
-        # D4, as amended 2026-10-09). Inside one enterprise nothing else separates a teammate from the
-        # owner, so this flag is the whole of the boundary here.
+        # ``driver_only``: regeneration flips ``is_current`` across the case's
+        # reports, an investigation write (ADR-020 D2). Inside one enterprise
+        # nothing else separates a reader from the driver, so this flag is the
+        # whole of the boundary here.
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")

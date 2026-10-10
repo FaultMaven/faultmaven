@@ -1444,7 +1444,25 @@ class CaseModel(Base):
         nullable=True,
         index=True,
     )
+    # The CREATOR (ADR-020 D1): the account that opened the case, changed only
+    # by an operator's ``fm-reassign-cases``. It holds governance — delete,
+    # share, unshare, reassign — and is the case's "mine" read arm.
     user_id = Column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The DRIVER (ADR-020 D1): who holds the investigation writes. NULL means
+    # the creator drives, so the effective driver is
+    # ``COALESCE(driver_id, user_id)`` and "the creator drives" has one stored
+    # form. ``ON DELETE SET NULL`` hands a deleted driver's cases back to their
+    # creators through the key itself. Changed only by a VERSIONED write
+    # (reassignment or a release), never by ``update_metadata_fields``. It
+    # grants no visibility: no read path keys on it. The index serves the
+    # release queries (``WHERE driver_id = :account``) and the FK's own
+    # ON DELETE scan.
+    driver_id = Column(
         String(36),
         ForeignKey("users.user_id", ondelete="SET NULL"),
         nullable=True,
@@ -2525,11 +2543,11 @@ class CaseMessageModel(Base):
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     # Who wrote this turn (ADR-013 D4's per-turn authorship, ADR-011 D5). Only
-    # the case's owner can write a turn today — a team share is read-only until
-    # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898) — but the owner is
-    # not a constant: ``fm-reassign-cases`` moves a case to another account,
-    # and hand-off will let a teammate drive it. So authorship is recorded on
-    # the row rather than read off ``cases.user_id`` afterwards.
+    # the case's DRIVER can write a turn (ADR-020 D2), and the driver is not a
+    # constant: a reassignment hands the case to a teammate, a release hands it
+    # back, and ``fm-reassign-cases`` moves the creator too. So authorship is
+    # recorded on the row rather than read off ``cases.driver_id`` or
+    # ``cases.user_id`` afterwards.
     #
     # Nullable — assistant and system turns have no human author, and rows
     # predating migration 037 have one we do not know.

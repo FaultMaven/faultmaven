@@ -236,7 +236,7 @@ async def authorize_case_access(
     case_service: Optional[ICaseService],
     not_found_detail: str,
     *,
-    owner_only: bool = False,
+    driver_only: bool = False,
 ) -> Case:
     """Authorize the caller against the case a report hangs off.
 
@@ -248,13 +248,12 @@ async def authorize_case_access(
     leaving the tenant as the only boundary: two users in one tenant could read,
     edit and delete each other's reports. Both meanings must deny.
 
-    ``owner_only`` drops the shared arm for the MUTATING endpoints. A report
-    hangs off its case, so a teammate who may read the case may read its
-    reports — and must not be able to rewrite, delete or close-link them
-    (ADR-013 D4, as amended 2026-10-09: a share is read-only until hand-off
-    ships). Inside one
-    enterprise nothing else separates the two callers, so this flag is the whole
-    of that boundary on this surface.
+    ``driver_only`` narrows the gate to the case's effective DRIVER for the
+    MUTATING endpoints. A report hangs off its case, so every reader of the
+    case may read its reports — and only the driver may generate, rewrite,
+    delete or close-link them: reports are investigation writes (ADR-020 D2).
+    Inside one enterprise nothing else separates two callers, so this flag is
+    the whole of that boundary on this surface.
 
     The enterprise check stays second and is now an unconditional comparison
     against the request binding (see :func:`validate_enterprise_access`) rather
@@ -278,7 +277,8 @@ async def authorize_case_access(
         case_service: Case service carrying the access gate
         not_found_detail: 404 body — phrase it after the resource the caller named
             (the report, not the case) so the response does not confirm existence
-        owner_only: Resolve through ownership alone (the mutating endpoints)
+        driver_only: Admit only the case's effective driver (the mutating
+            endpoints)
 
     Returns:
         The authorized case
@@ -291,7 +291,7 @@ async def authorize_case_access(
 
     case = (
         await case_service.get_case(
-            case_id, user_id=current_user.user_id, owner_only=owner_only
+            case_id, user_id=current_user.user_id, driver_only=driver_only
         )
         if case_id
         else None
@@ -363,17 +363,17 @@ async def generate_report(
     )
 
     try:
-        # ``owner_only``: generation is a WRITE — it mints report rows against
-        # the case and moves which one is current — so it resolves through
-        # ownership, like the edit/delete/link-case endpoints below. A read
-        # share opens the reports; it does not authorise rewriting them
-        # (ADR-013 D4, as amended 2026-10-09).
+        # ``driver_only``: generation is a WRITE — it mints report rows
+        # against the case and moves which one is current — so it is the
+        # driver's, like the edit/delete/link-case endpoints below (ADR-020
+        # D2). Reading the case opens its reports; it does not authorise
+        # rewriting them.
         case = await authorize_case_access(
             case_id,
             current_user,
             case_service,
             f"Case {case_id} not found",
-            owner_only=True,
+            driver_only=True,
         )
 
         # Validate generation service is available
@@ -526,16 +526,15 @@ async def update_report(
         if not existing_report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Authorize against the parent case (owner ∪ shared), then its organization
+        # Authorize against the parent case (its driver), then its organization
         await authorize_case_access(
             existing_report.case_id,
             current_user,
             case_service,
             f"Report {report_id} not found",
-            # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-013 D4, as amended
-            # 2026-10-09).
-            owner_only=True,
+            # Every reader may read the report; only the case's driver
+            # may rewrite, delete or close-link it (ADR-020 D2).
+            driver_only=True,
         )
 
         # Update fields
@@ -629,7 +628,7 @@ async def delete_report(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Authorize against the parent case (owner ∪ shared), then its organization.
+        # Authorize against the parent case (its driver), then its organization.
         # Ordered ahead of the runbook rule so the 403 below cannot tell an
         # unauthorized caller what type someone else's report is.
         await authorize_case_access(
@@ -637,10 +636,9 @@ async def delete_report(
             current_user,
             case_service,
             f"Report {report_id} not found",
-            # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-013 D4, as amended
-            # 2026-10-09).
-            owner_only=True,
+            # Every reader may read the report; only the case's driver
+            # may rewrite, delete or close-link it (ADR-020 D2).
+            driver_only=True,
         )
 
         # Check if runbook - runbooks cannot be deleted
@@ -888,16 +886,15 @@ async def link_report_to_case_closure(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Authorize against the parent case (owner ∪ shared), then its organization
+        # Authorize against the parent case (its driver), then its organization
         await authorize_case_access(
             report.case_id,
             current_user,
             case_service,
             f"Report {report_id} not found",
-            # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-013 D4, as amended
-            # 2026-10-09).
-            owner_only=True,
+            # Every reader may read the report; only the case's driver
+            # may rewrite, delete or close-link it (ADR-020 D2).
+            driver_only=True,
         )
 
         # Check if already linked

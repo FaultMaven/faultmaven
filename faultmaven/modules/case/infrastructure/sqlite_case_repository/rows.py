@@ -252,6 +252,11 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
     return {
         "case_id": case.case_id,
         "user_id": case.user_id,
+        # ADR-020 D1: the stored driver, NULL = the creator drives. Bound for
+        # the INSERT of a new case only: the full-row UPDATE does not write it,
+        # because its one writer is the versioned reassign/release
+        # (``case_driver_sql``), so no save can write a driver back.
+        "driver_id": case.driver_id,
         "enterprise_id": case.enterprise_id,
         "organization_id": case.organization_id,
         "title": case.title,
@@ -345,6 +350,15 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
                 "kb_context": (
                     to_json_compatible(case.kb_context) if case.kb_context else None
                 ),
+                # Its origin (ADR-020 D9): which driver it was fetched for, and
+                # the query that fetched it. Must round trip with it, or the
+                # staleness check reads every reloaded context as the
+                # creator's.
+                "kb_context_origin": (
+                    to_json_compatible(case.kb_context_origin)
+                    if case.kb_context_origin
+                    else None
+                ),
             }
         ),
     }
@@ -434,6 +448,7 @@ def _row_to_case(
     case_data = {
         "case_id": row.case_id,
         "user_id": row.user_id,
+        "driver_id": row.driver_id,
         "enterprise_id": row.enterprise_id,  # NOT NULL in DB
         "organization_id": row.organization_id,  # nullable billing
         "source": getattr(row, "source", "copilot"),
@@ -451,6 +466,7 @@ def _row_to_case(
         # Pre-fetched runbooks (the KB push channel, fm#1360). See the
         # writer for why dropping this made the channel inert.
         "kb_context": metadata.get("kb_context"),
+        "kb_context_origin": metadata.get("kb_context_origin"),
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

@@ -1,12 +1,11 @@
-"""``POST /reports/generate`` writes, so it resolves the case by OWNERSHIP.
+"""``POST /reports/generate`` writes, so it resolves the case by its DRIVER.
 
-The three mutating report endpoints (edit, delete, link-case) already pass
-``owner_only=True`` through ``authorize_case_access``. Generation did not, and it
-is a write too: it mints report rows against the owner's case and flips which
-one is current. A teammate holding a read share on the case could therefore
-overwrite the owner's report set through this route while being refused on every
-other one — a share is read visibility, not ownership (ADR-013 D4, as amended
-2026-10-09).
+The mutating report endpoints (generate, edit, delete, link-case) pass
+``driver_only=True`` through ``authorize_case_access``: generation mints report
+rows against the case and flips which one is current, an investigation write
+that is the case's effective driver's (ADR-020 D2). Every other reader — a
+teammate holding a share, or the creator while someone else drives — is
+refused.
 """
 
 from types import SimpleNamespace
@@ -26,6 +25,7 @@ ENTERPRISE = "22222222-2222-2222-2222-222222222222"
 CASE_ID = "case_aaaabbbbcccc"
 OWNER = "user_owner"
 TEAMMATE = "user_teammate"
+DRIVER = "user_driver"
 
 
 @pytest.fixture(autouse=True)
@@ -41,14 +41,14 @@ def _user(user_id: str) -> SimpleNamespace:
     )
 
 
-def _case_service() -> MagicMock:
-    """Owner ∪ shared by default; owner alone under ``owner_only``."""
+def _case_service(driver: str = OWNER) -> MagicMock:
+    """Everyone here reads the case; ``driver_only`` admits ``driver`` alone."""
     service = MagicMock()
 
-    async def get_case(case_id, user_id=None, *, owner_only=False):
+    async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
         if case_id != CASE_ID:
             return None
-        if owner_only and user_id != OWNER:
+        if driver_only and user_id != driver:
             return None
         return SimpleNamespace(
             case_id=CASE_ID, user_id=OWNER, enterprise_id=ENTERPRISE, title="Outage"
@@ -80,7 +80,7 @@ async def test_a_teammate_with_a_read_share_cannot_generate_reports():
         )
 
     assert exc.value.status_code == 404
-    assert case_service.get_case.await_args.kwargs.get("owner_only") is True
+    assert case_service.get_case.await_args.kwargs.get("driver_only") is True
     generation.generate_reports.assert_not_awaited()
 
 
@@ -94,6 +94,37 @@ async def test_the_owner_still_generates_reports():
         case_service=_case_service(),
         generation_service=generation,
         current_user=_user(OWNER),
+    )
+
+    assert response.reports == []
+    generation.generate_reports.assert_awaited_once()
+
+
+async def test_the_creator_cannot_generate_while_another_drives():
+    generation = _generation_service()
+
+    with pytest.raises(HTTPException) as exc:
+        await generate_report(
+            request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
+            case_id=CASE_ID,
+            case_service=_case_service(driver=DRIVER),
+            generation_service=generation,
+            current_user=_user(OWNER),
+        )
+
+    assert exc.value.status_code == 404
+    generation.generate_reports.assert_not_awaited()
+
+
+async def test_the_assigned_driver_generates_reports():
+    generation = _generation_service()
+
+    response = await generate_report(
+        request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
+        case_id=CASE_ID,
+        case_service=_case_service(driver=DRIVER),
+        generation_service=generation,
+        current_user=_user(DRIVER),
     )
 
     assert response.reports == []

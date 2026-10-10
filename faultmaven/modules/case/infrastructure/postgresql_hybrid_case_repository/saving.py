@@ -83,6 +83,9 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
     update_query = text(f"""
             UPDATE cases SET
                 user_id = :user_id,
+                -- driver_id is NOT written here (ADR-020): its one writer
+                -- is the versioned reassign/release (case_driver_sql), so a
+                -- full-row save can never write a driver back.
                 enterprise_id = :enterprise_id,
                 organization_id = :organization_id,
                 title = :title,
@@ -125,7 +128,7 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
         # New case — plain INSERT with version = 1.
         insert_query = text(f"""
                 INSERT INTO cases (
-                    case_id, user_id, enterprise_id, organization_id, title, description, investigation_strategy,
+                    case_id, user_id, driver_id, enterprise_id, organization_id, title, description, investigation_strategy,
                     state, source, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
@@ -134,7 +137,7 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
-                    :case_id, :user_id, :enterprise_id, :organization_id, :title, :description, :investigation_strategy,
+                    :case_id, :user_id, :driver_id, :enterprise_id, :organization_id, :title, :description, :investigation_strategy,
                     :state, :source, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,

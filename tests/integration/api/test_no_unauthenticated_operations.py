@@ -926,10 +926,6 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
         _MISORDERED,
         "knowledge_service=get_knowledge_service resolves first. #1494.",
     ),
-    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
-        _MISORDERED,
-        "investigation_service=get_investigation_service resolves first. #1494.",
-    ),
     ("POST", "/api/v1/knowledge/documents"): (
         _MISORDERED,
         "knowledge_service=get_knowledge_service resolves first. #1494.",

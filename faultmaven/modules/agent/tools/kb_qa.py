@@ -3,8 +3,8 @@ Unified Knowledge Base Q&A Tool
 
 Single tool that searches the case driver's knowledge: global runbooks, the
 driver's personal runbooks and the runbooks shared to the driver's teams
-(``case_retrieval_scope``, #1919; the driver is the case's creator until
-#1898).
+(``case_retrieval_scope``, #1919; the driver is the case's effective driver,
+ADR-020).
 
 The agent doesn't choose a scope. The orchestrator resolves the case's scope
 filter into the ``ToolContext``, and the tool searches under it unchanged.

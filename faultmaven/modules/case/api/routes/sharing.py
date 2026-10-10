@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
     "/{case_id}/team-shares",
     status_code=status.HTTP_201_CREATED,
     summary="Share Case With Team",
-    description="Share a case with a Team (ADR-013 §D4). Owner-only; the Team must "
+    description="Share a case with a Team (ADR-013 §D4). Creator-only (ADR-020 "
+    "D2); the Team must "
     "be one the caller belongs to. Idempotent.",
     dependencies=[Depends(require_authentication)],
 )
@@ -82,7 +83,11 @@ async def share_case_with_team(
     "/{case_id}/team-shares/{team_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Unshare Case From Team",
-    description="Remove a case's share to a Team (ADR-013 §D4). Owner-only.",
+    description=(
+        "Remove a case's share to a Team (ADR-013 §D4). Creator-only (ADR-020 "
+        "D2). If the share was the case's driver's last way to read it, the "
+        "case is handed back to its creator first (ADR-020 D3)."
+    ),
     dependencies=[Depends(require_authentication)],
 )
 async def unshare_case_from_team(

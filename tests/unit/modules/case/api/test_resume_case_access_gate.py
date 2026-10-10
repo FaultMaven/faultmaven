@@ -38,8 +38,10 @@ CALLER = "user-1"
 PATH = f"/api/v1/cases/sessions/{SESSION_ID}/resume/{CASE_ID}"
 
 
-def _make_case_service(factory, *, owner=CALLER, shared_to=(), resume=True):
-    """The shared owner ∪ shared resolver, plus the member the route calls.
+def _make_case_service(
+    factory, *, owner=CALLER, shared_to=(), driver=None, resume=True
+):
+    """The shared creator/driver resolver, plus the member the route calls.
 
     `resume_case_in_session` takes three arguments and is signature-faithful on
     purpose: a stand-in accepting `**kwargs` would let the route stop
@@ -55,6 +57,7 @@ def _make_case_service(factory, *, owner=CALLER, shared_to=(), resume=True):
         owner=owner,
         shared_to=shared_to,
         case_id=CASE_ID,
+        driver=driver,
         resume_case_in_session=resume_mock,
     )
     # Record what the route asked the gate, so an unscoped early resolution is
@@ -63,11 +66,20 @@ def _make_case_service(factory, *, owner=CALLER, shared_to=(), resume=True):
     service.calls = []
     inner = service.get_case
 
-    async def recording_get_case(case_id, user_id=None, *, owner_only=False):
+    async def recording_get_case(
+        case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
         service.calls.append(
-            {"case_id": case_id, "user_id": user_id, "owner_only": owner_only}
+            {
+                "case_id": case_id,
+                "user_id": user_id,
+                "driver_only": driver_only,
+                "creator_only": creator_only,
+            }
         )
-        return await inner(case_id, user_id, owner_only=owner_only)
+        return await inner(
+            case_id, user_id, driver_only=driver_only, creator_only=creator_only
+        )
 
     service.get_case = recording_get_case
     return service
@@ -93,11 +105,15 @@ async def test_forwards_the_caller_to_the_gate(
     assert response.status_code == 200, response.text
     service.resume_case_in_session.assert_awaited_once_with(CASE_ID, SESSION_ID, CALLER)
     # …and the route's own early gate resolved against the CALLER, through
-    # OWNERSHIP: a resume writes the case, and a share is read-only (ADR-013
-    # D4, amended 2026-10-09, #1898). Without this an unscoped
-    # `get_case(case_id)` passes every test here.
+    # the DRIVER: a resume is an investigation write (ADR-020 D2). Without
+    # this an unscoped `get_case(case_id)` passes every test here.
     assert service.calls == [
-        {"case_id": CASE_ID, "user_id": CALLER, "owner_only": True}
+        {
+            "case_id": CASE_ID,
+            "user_id": CALLER,
+            "driver_only": True,
+            "creator_only": False,
+        }
     ]
 
 
@@ -123,12 +139,9 @@ async def test_a_case_the_caller_cannot_reach_is_a_404(
 async def test_refuses_a_teammate_holding_a_share(
     build_app, call_api, owner_or_shared_case_service
 ):
-    """Owner only — a share is read-only until hand-off ships (#1898).
-
-    This route used to admit a teammate "matching `submit_turn`", on the false
-    premise that a teammate may post turns into a shared case; the turn service
-    has always refused one. The teammate gets exactly the answer an absent case
-    gets, and neither the session nor the link is reached.
+    """Driver only (ADR-020 D2): a teammate who reads the case but does not
+    drive it gets exactly the answer an absent case gets, and neither the
+    session nor the link is reached.
     """
     service = _make_case_service(
         owner_or_shared_case_service, owner="user-owner", shared_to=(CALLER,)
@@ -140,6 +153,42 @@ async def test_refuses_a_teammate_holding_a_share(
     assert response.status_code == 404, response.text
     assert response.json()["detail"] == "Case not found or resume not permitted"
     service.resume_case_in_session.assert_not_awaited()
+
+
+async def test_refuses_the_creator_while_another_drives(
+    build_app, call_api, owner_or_shared_case_service
+):
+    """The split: the creator reads the case but, once it is handed on, no
+    longer holds its investigation writes."""
+    service = _make_case_service(
+        owner_or_shared_case_service,
+        owner=CALLER,
+        shared_to=("user-driver",),
+        driver="user-driver",
+    )
+    app = build_app(session=_session(), case_service=service)
+
+    response = await call_api(app, "POST", PATH)
+
+    assert response.status_code == 404, response.text
+    service.resume_case_in_session.assert_not_awaited()
+
+
+async def test_resumes_for_the_assigned_driver(
+    build_app, call_api, owner_or_shared_case_service
+):
+    service = _make_case_service(
+        owner_or_shared_case_service,
+        owner="user-owner",
+        shared_to=(CALLER,),
+        driver=CALLER,
+    )
+    app = build_app(session=_session(), case_service=service)
+
+    response = await call_api(app, "POST", PATH)
+
+    assert response.status_code == 200, response.text
+    service.resume_case_in_session.assert_awaited_once_with(CASE_ID, SESSION_ID, CALLER)
 
 
 async def test_the_services_access_verdict_is_a_404_not_a_500(

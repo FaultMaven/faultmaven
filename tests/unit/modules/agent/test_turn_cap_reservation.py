@@ -247,3 +247,39 @@ async def test_an_uninjected_cap_refuses_under_multi_tenant(monkeypatch):
     monkeypatch.setattr(module, "_is_multi_tenant", lambda: True)
     with pytest.raises(TenantTurnCapUnavailable):
         await UnconfiguredTurnCap().reserve(OWNER_SUBJECT)
+
+
+# ---------------------------------------------------------------------------
+# The driver gate (ADR-020 D2): the turn is the effective DRIVER's, refused for
+# anyone else BEFORE the cap is charged.
+# ---------------------------------------------------------------------------
+
+DRIVER = "user-driver"
+DRIVER_SUBJECT = BillingSubject(SUBJECT_ACCOUNT, DRIVER)
+
+
+async def test_the_creator_is_refused_while_another_drives_and_pays_nothing(
+    monkeypatch,
+):
+    ledger = InMemoryTurnLedger()
+    service = _service(ledger, monkeypatch, case=_case(driver_id=DRIVER))
+
+    with pytest.raises(PermissionDeniedException):
+        await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
+
+    assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
+    assert await ledger.usage(DRIVER_SUBJECT, utc_day()) == 0
+
+
+async def test_the_assigned_driver_passes_the_gate_and_pays_for_the_turn(
+    monkeypatch,
+):
+    """The control for the case above: the driver reaches the cap, which
+    charges the CALLER's subject — the driver's, not the creator's."""
+    ledger = InMemoryTurnLedger()
+    service = _service(ledger, monkeypatch, case=_case(driver_id=DRIVER), default=0)
+
+    with pytest.raises(TenantTurnCapExceeded):
+        await service.process_turn(CASE_ID, DRIVER, TurnPayload(query="hello"))
+
+    assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0

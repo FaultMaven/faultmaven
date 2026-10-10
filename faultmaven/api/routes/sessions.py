@@ -17,9 +17,9 @@ Authentication:
 
 Authorization: two predicates, both required.
 - ``require_case_access`` (router-level) gates on the case named in the path: on a
-  READ the caller must own it or have it shared to one of their teams; on a WRITE
-  the caller must OWN it. Sharing an enterprise with the owner is not enough, and
-  neither is a read share.
+  READ the caller must have created it or have it shared to one of their teams; on
+  a WRITE the caller must DRIVE it (ADR-020 D2). Sharing an enterprise with the
+  creator is not enough, and neither is reading the case.
 - The service binds the session to that same case before mutating it, so a session
   id belonging to another case cannot be reached by naming a case you do own.
 
@@ -69,15 +69,15 @@ async def require_case_access(
     enterprise check stays where it is — this is an additional predicate, not a
     replacement.
 
-    **A share grants read visibility, not the right to write** (ADR-013 D4, as
-    amended 2026-10-09: read-only until hand-off ships). The read allowlist is
-    the wrong resolver for a mutation: a teammate holding a read share on the
-    owner's case could create, patch, pause, resume and complete the owner's
-    sessions, because the only predicate left downstream is
-    ``case.enterprise_id`` and inside one enterprise that admits both parties. So
-    the resolver is chosen from the request METHOD — reads resolve through
-    owner ∪ shared, writes through ``owner_only`` — and it is chosen HERE, in the
-    one router-level dependency, rather than route by route. A session route added
+    **Reading a case is not the right to write it** (ADR-020 D2: the
+    investigation writes are the effective driver's). The read allowlist is the
+    wrong resolver for a mutation: a reader holding a share on the case could
+    create, patch, pause, resume and complete its sessions, because the only
+    predicate left downstream is ``case.enterprise_id`` and inside one
+    enterprise that admits both parties. So the resolver is chosen from the
+    request METHOD — reads resolve through creator ∪ shared, writes through
+    ``driver_only`` — and it is chosen HERE, in the one router-level dependency,
+    rather than route by route. A session route added
     later inherits the correct half without having to know which it is.
 
     Declared as a router-level dependency so a route added later cannot omit it.
@@ -91,8 +91,8 @@ async def require_case_access(
     Raises:
         HTTPException: 503 if the case service is unavailable (the gate cannot be
             evaluated, so nothing is served)
-        NotFoundError: 404 if the case does not exist, is not the caller's, or —
-            on a write — is only shared to the caller
+        NotFoundError: 404 if the case does not exist, the caller cannot read
+            it, or — on a write — the caller does not drive it
     """
     if case_service is None:
         raise HTTPException(status_code=503, detail="Case service unavailable")
@@ -100,7 +100,7 @@ async def require_case_access(
     case = await case_service.get_case(
         case_id,
         user_id=current_user.user_id,
-        owner_only=request.method.upper() not in _SAFE_METHODS,
+        driver_only=request.method.upper() not in _SAFE_METHODS,
     )
     if case is None:
         raise NotFoundError("Case", case_id)

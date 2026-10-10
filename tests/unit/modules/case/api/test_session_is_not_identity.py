@@ -45,7 +45,7 @@ SCOPE. This file is about the case router and about AUTH sessions — the ones
 ``/api/v1/cases/{case_id}/sessions/{session_id}/…`` is a different thing (an
 INVESTIGATION session), served by a different router
 (``faultmaven/api/routes/sessions.py``) which gates on the CASE named in its
-path with ``owner_only`` chosen from the HTTP method. Those routes are not
+path with ``driver_only`` chosen from the HTTP method. Those routes are not
 missing from the lists below; they are not in this router.
 """
 
@@ -194,7 +194,7 @@ def _permissive_case_service() -> SimpleNamespace:
     """
     reached: list[str] = []
 
-    async def get_case(case_id, user_id=None, *, owner_only=False):
+    async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
         return SimpleNamespace(case_id=CASE_ID, user_id=CALLER)
 
     async def create_case(

@@ -325,7 +325,7 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def close_case(self, case_id: str, user_id: str) -> Case:
-        """Close a case (user-initiated terminal transition, owner-only).
+        """Close a case (user-initiated terminal transition, driver-only).
 
         Implementations must route through the engine's closure executor
         (derived closure_reason, closed_at, action history) — never mutate
@@ -333,15 +333,41 @@ class ICaseService(ABC):
 
         Args:
             case_id: Case identifier
-            user_id: Caller — must own the case
+            user_id: Caller — must be the case's effective driver (ADR-020 D2)
 
         Returns:
             The closed Case
 
         Raises:
-            NotFoundError: Unknown case, or caller is not the owner
+            NotFoundError: Unknown case, or caller is not its driver
             ConflictError: Case is already resolved/closed
         """
+        pass
+
+    @abstractmethod
+    async def reassign_driver(
+        self, case_id: str, actor_user_id: str, target_user_id: str
+    ) -> Case:
+        """Hand the case's driving to ``target_user_id`` (ADR-020 D4).
+
+        The caller must be the creator or the effective driver; the target
+        must be one of :meth:`list_driver_candidates`. Versioned: bumps
+        ``cases.version`` and writes a ``case_driver_changed`` audit row.
+
+        Raises:
+            NotFoundError: the case is absent or the caller cannot read it.
+            AuthorizationError: a reader who is neither creator nor driver.
+            ValidationException: the target is not a candidate.
+            ConflictError: a lost version race (``CASE_VERSION_CONFLICT``).
+                A terminal case is not refused.
+        """
+        pass
+
+    @abstractmethod
+    async def list_driver_candidates(self, case_id: str, actor_user_id: str) -> list:
+        """Who the case's driver may be handed to: the creator, then the active
+        individual members of the teams it is shared with (ADR-020 D4). Same
+        refusals as :meth:`reassign_driver`'s caller check."""
         pass
 
     @abstractmethod
@@ -374,9 +400,8 @@ class ICaseService(ABC):
         Args:
             session_id: Session identifier
             case_id: Case identifier
-            user_id: The caller, who must OWN the case: the link is a write,
-                and a team share is read-only until hand-off ships (ADR-013 D4,
-                amended 2026-10-09). REQUIRED — a gate whose enforcement
+            user_id: The caller, who must be the case's effective DRIVER: the
+                link is an investigation write (ADR-020 D2). REQUIRED — a gate whose enforcement
                 depends on a caller remembering a keyword is the omission this
                 member is being fixed for (#1393/#1398). ``None`` means an
                 internal caller with no user, passed deliberately rather than
@@ -386,7 +411,7 @@ class ICaseService(ABC):
             True if the link was made and persisted
 
         Raises:
-            NotFoundError: the case does not exist, or the caller does not own
+            NotFoundError: the case does not exist, or the caller does not drive
                 it. Distinct from returning False, which means the link itself
                 failed — a 404 and a 500 respectively.
         """

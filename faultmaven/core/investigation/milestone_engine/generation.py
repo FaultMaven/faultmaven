@@ -1206,8 +1206,8 @@ class StructuredOutputGenerator:
         The KB scope ``kb_qa`` reads is keyed on the CASE, not on this
         principal: the case driver's knowledge (``case_retrieval_scope``,
         #1919), the same scope the pre-fetch and the runbook dedup use. The
-        driver is ``case.user_id`` until #1898, the only user who may submit a
-        turn, so today the two coincide.
+        driver is the case's effective driver (ADR-020), the only user who may
+        submit a turn, so on a turn the two coincide.
         """
         from faultmaven.modules.agent.tools.base import ToolContext
 

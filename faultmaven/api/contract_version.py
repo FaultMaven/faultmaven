@@ -1950,4 +1950,28 @@ asked to accept, and it belongs to a person.
 # "Source N" without a title, no link without a `document_id`, and no preview
 # for empty `content`. Clients adopt by showing "a runbook you don't have access
 # to" for `metadata.access == "restricted"`. The Slack agent only regenerates.
-API_CONTRACT_VERSION = "13.1.0"
+#
+# 13.2.0 — MINOR. The case driver and hand-off (ADR-020, #1898). A case has a
+# creator (`user_id`, unchanged) and a DRIVER, who holds the investigation
+# writes (turns, edits, close, reports); the creator keeps delete, share and
+# unshare. Additive:
+#
+# * `PUT /api/v1/cases/{case_id}/driver` (`CaseDriverUpdateRequest`
+#   `{driver_id}`, answers `CaseSummary`) hands the case to a candidate; the
+#   creator or the current driver may call it. 404 to a non-reader, 403 to any
+#   other reader, 422 for a non-candidate, 409 `CASE_VERSION_CONFLICT` on a lost
+#   race; a resolved or closed case is NOT refused.
+# * `GET /api/v1/cases/{case_id}/driver-candidates` (`CaseDriverCandidateList`
+#   `{candidates: [{user_id, display_name}]}`), same callers and refusals.
+# * `CaseSummary` and `CaseDetail` gain `driver_id` (always the EFFECTIVE
+#   driver — the creator unless the case was handed on), `creator_display_name`
+#   and `driver_display_name` (display names, never email).
+# * `GET /api/v1/cases` gains `access` (`read` default | `write`: the cases the
+#   caller drives), and `CaseSearchRequest` gains the same `access` field.
+#
+# Behaviour a client may notice without a schema change: a reader who does not
+# drive a case is refused its investigation writes exactly as a teammate was
+# before (404 or 403 per route), now including the creator once someone else
+# drives. Clients adopt by judging the composer on `driver_id == me` and by
+# listing the extension's cases with `access=write`.
+API_CONTRACT_VERSION = "13.2.0"

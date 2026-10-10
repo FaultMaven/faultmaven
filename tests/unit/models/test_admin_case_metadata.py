@@ -28,10 +28,23 @@ pytestmark = pytest.mark.unit
 # Fields of ``CaseSummary`` that are NOT content but are still left out of the
 # operator metadata row, each for a reason that is not "it leaks user text":
 #
-#   valid_next_states — the transitions the *owner* may drive from the dashboard.
-#       An operator does not act on tenant cases from this list, so it is an
-#       affordance with no consumer here.
-DELIBERATELY_OMITTED_FIELDS = frozenset({"valid_next_states"})
+#   valid_next_states — the transitions the *driver* may drive from the
+#       dashboard. An operator does not act on tenant cases from this list, so
+#       it is an affordance with no consumer here.
+#   driver_id — who holds the investigation writes (ADR-020). Not on the
+#       cross-enterprise metadata read (its definer function predates the
+#       column), and the operator list answers "which tenant's cases are stuck",
+#       not "who is working them"; ``user_id`` already names an account.
+#   creator_display_name / driver_display_name — a person's chosen name, text
+#       a user typed: the same reason titles stay off this row (ADR-012 D9).
+DELIBERATELY_OMITTED_FIELDS = frozenset(
+    {
+        "valid_next_states",
+        "driver_id",
+        "creator_display_name",
+        "driver_display_name",
+    }
+)
 
 
 def test_every_case_summary_field_is_classified():

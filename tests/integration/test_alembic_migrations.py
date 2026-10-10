@@ -38,8 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 011_remove_knowledge_suggestions
-HEAD_REVISION = "2d05706532a9"  # pragma: allowlist secret
+#: 012_case_driver
+HEAD_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -66,6 +66,9 @@ TURN_RECEIPTS_REVISION = "afdd293ca6ab"  # pragma: allowlist secret
 #: ``011_remove_knowledge_suggestions``: the knowledge-suggestion table and
 #: ``knowledge_items.source_suggestion_id`` are dropped (#1897).
 REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
+#: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
+#: writes (ADR-020, #1898).
+CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -1383,6 +1386,120 @@ class TestRemoveKnowledgeSuggestionsRevision:
         ) in sql
 
 
+class TestCaseDriverRevision:
+    """012 adds ``cases.driver_id`` (ADR-020, #1898): one nullable column, its
+    foreign key to ``users`` (ON DELETE SET NULL) and its index; the downgrade
+    removes exactly that."""
+
+    @staticmethod
+    def _driver_column() -> list:
+        return [
+            row
+            for row in query_rows(TEST_DB, 'PRAGMA table_info("cases")')
+            if row[1] == "driver_id"
+        ]
+
+    @staticmethod
+    def _cases_indexes() -> list:
+        return sorted(
+            row[1] for row in query_rows(TEST_DB, 'PRAGMA index_list("cases")')
+        )
+
+    @staticmethod
+    def _cases_foreign_keys() -> list:
+        return sorted(
+            (row[2], row[3], row[4], row[6])
+            for row in query_rows(TEST_DB, 'PRAGMA foreign_key_list("cases")')
+        )
+
+    def test_upgrade_adds_the_column_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        tables = get_tables(TEST_DB)
+        indexes = self._cases_indexes()
+        foreign_keys = self._cases_foreign_keys()
+        assert self._driver_column() == []
+
+        result = run_alembic(f"upgrade {CASE_DRIVER_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_tables(TEST_DB) == tables
+        column = self._driver_column()
+        assert len(column) == 1
+        _, _, col_type, notnull, default, pk = column[0]
+        assert (col_type, notnull, default, pk) == ("VARCHAR(36)", 0, None, 0)
+        assert self._cases_indexes() == sorted(indexes + ["ix_cases_driver_id"])
+        assert self._cases_foreign_keys() == sorted(
+            foreign_keys + [("users", "driver_id", "user_id", "SET NULL")]
+        )
+
+        result = run_alembic(f"downgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == REMOVE_SUGGESTIONS_REVISION
+        assert self._driver_column() == []
+        assert self._cases_indexes() == indexes
+        assert self._cases_foreign_keys() == foreign_keys
+        assert get_tables(TEST_DB) == tables
+
+    def test_a_deleted_driver_hands_the_case_back_through_the_key(
+        self, clean_database, database_url
+    ):
+        """ON DELETE SET NULL on the driver: the creator drives again, and the
+        case row survives."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            enterprise = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()[0]
+            for uid in ("creator-0000", "driver-00000"):
+                conn.execute(
+                    "INSERT INTO users (user_id, enterprise_id, username, email, "
+                    "display_name, hashed_password) VALUES (?, ?, ?, ?, ?, 'x')",
+                    (uid, enterprise, uid, f"{uid}@example.com", uid),
+                )
+            conn.execute(
+                "INSERT INTO cases (case_id, enterprise_id, user_id, driver_id, "
+                "title) VALUES ('case_000000000001', ?, 'creator-0000', "
+                "'driver-00000', 't')",
+                (enterprise,),
+            )
+            conn.execute("DELETE FROM users WHERE user_id = 'driver-00000'")
+            row = conn.execute(
+                "SELECT user_id, driver_id FROM cases "
+                "WHERE case_id = 'case_000000000001'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row == ("creator-0000", None)
+
+    def test_the_postgresql_upgrade_names_the_key_and_changes_no_policy(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {REMOVE_SUGGESTIONS_REVISION}:{CASE_DRIVER_REVISION} --sql", pg
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        assert "ALTER TABLE cases ADD COLUMN driver_id VARCHAR(36);" in sql
+        assert (
+            "ALTER TABLE cases ADD CONSTRAINT cases_driver_id_fkey FOREIGN "
+            "KEY(driver_id) REFERENCES users (user_id) ON DELETE SET NULL;"
+        ) in sql
+        assert "CREATE INDEX ix_cases_driver_id ON cases (driver_id);" in sql
+        # ``cases`` is already enterprise-scoped: no RLS statement here.
+        assert "ROW LEVEL SECURITY" not in sql
+        assert "CREATE POLICY" not in sql
+
+        down = run_alembic(
+            f"downgrade {CASE_DRIVER_REVISION}:{REMOVE_SUGGESTIONS_REVISION} --sql", pg
+        )
+        assert down.returncode == 0, down.stderr
+        assert "DROP INDEX ix_cases_driver_id;" in down.stdout
+        assert "ALTER TABLE cases DROP COLUMN driver_id;" in down.stdout
+
+
 class TestRbacSeed:
     """Migration 029 seeds the system RBAC roles/permissions/grants.
 
@@ -1612,6 +1729,9 @@ class TestDatabaseSchemaIntegrity:
             # billing attribution beside it (ADR-017 D2).
             "enterprise_id",
             "organization_id",
+            # The driver beside the creator (ADR-020 D1): NULL = the creator
+            # drives.
+            "driver_id",
             "title",
             "state",
             "created_at",

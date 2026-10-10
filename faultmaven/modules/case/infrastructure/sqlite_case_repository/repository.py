@@ -34,9 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseDriverChange,
     CaseEntity,
     CaseReport,
     CaseState,
+    DrivenCase,
     EntityType,
     Evidence,
     ReportType,
@@ -45,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.case.infrastructure import case_driver_sql
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
 from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
@@ -356,6 +359,54 @@ class SQLiteCaseRepository(CaseRepository):
             ),
         )
 
+    async def reassign_driver(
+        self,
+        case_id: str,
+        *,
+        driver_id: Optional[str],
+        expected_version: int,
+        change: CaseDriverChange,
+    ) -> Optional[int]:
+        """Versioned change of the stored driver plus its audit row, one
+        transaction (ADR-020 D4)."""
+        return await case_driver_sql.reassign_driver(
+            self.db,
+            case_id=case_id,
+            driver_id=driver_id,
+            expected_version=expected_version,
+            enterprise_id=change.enterprise_id,
+            actor_user_id=change.actor_user_id,
+            details=change.audit_details(),
+        )
+
+    async def release_driver(
+        self, case_id: str, *, driver_id: str, change: CaseDriverChange
+    ) -> bool:
+        """Hand the case back to its creator iff ``driver_id`` drives it by
+        assignment, plus the audit row, one transaction (ADR-020 D3)."""
+        return await case_driver_sql.release_driver(
+            self.db,
+            case_id=case_id,
+            driver_id=driver_id,
+            enterprise_id=change.enterprise_id,
+            actor_user_id=change.actor_user_id,
+            details=change.audit_details(),
+        )
+
+    async def list_cases_driven_by(self, user_id: str) -> List[DrivenCase]:
+        """Every case ``user_id`` drives by assignment (ADR-020 D3)."""
+        return [
+            DrivenCase(
+                case_id=case_id,
+                enterprise_id=enterprise_id,
+                creator_id=creator_id,
+                driver_id=driver_id,
+            )
+            for case_id, enterprise_id, creator_id, driver_id in (
+                await case_driver_sql.list_cases_driven_by(self.db, user_id)
+            )
+        ]
+
     async def get(self, case_id: str) -> Case | None:
         """Retrieve case by ID using separate queries for normalized tables."""
         try:
@@ -424,6 +475,7 @@ class SQLiteCaseRepository(CaseRepository):
         include_empty: bool = True,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        driven_only: bool = False,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -445,6 +497,7 @@ class SQLiteCaseRepository(CaseRepository):
                 user_id,
                 shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                driven_only=driven_only,
             )
             if scope_clause:
                 where_clauses.append(scope_clause)
@@ -873,6 +926,7 @@ class SQLiteCaseRepository(CaseRepository):
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
+        driven_only: bool = False,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases using SQLite LIKE pattern matching (no full-text search)."""
         try:
@@ -892,6 +946,7 @@ class SQLiteCaseRepository(CaseRepository):
                 user_id,
                 shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                driven_only=driven_only,
             )
             if scope_clause:
                 where_clauses.append(scope_clause)

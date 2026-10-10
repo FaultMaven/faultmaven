@@ -347,7 +347,7 @@ class RunbookCreator:
         """Build the resolver for the runbook dedup's KB scope: the case driver's.
 
         Dedup answers for the principal who will act on the answer, the case
-        driver (``case.user_id`` until #1898), whose Dashboard the suggestion
+        driver (the effective driver, ADR-020), whose Dashboard the suggestion
         points at (owner decision, fm#1030). It searches the same scope as the
         pre-fetch and ``kb_qa`` (``case_retrieval_scope``, #1919): global ∪ the
         driver's personal KB ∪ the runbooks shared to the driver's teams.
