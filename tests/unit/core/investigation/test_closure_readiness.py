@@ -98,9 +98,11 @@ def _attach_evidence(case: Case) -> None:
     )
 
 
-def _attach_causal_absence(case: Case) -> None:
-    """The required RESOLVED proof: the root cause is confirmed eliminated
-    after the fix, recorded as a ``causal_absence_evidence`` row."""
+def _attach_confirmation(case: Case) -> None:
+    """The RESOLVED proof, gone ⇒ gone: the root cause confirmed eliminated
+    after the fix (a ``causal_absence_evidence`` row) and the reported
+    symptom confirmed gone with it (a ``symptom_absence_evidence`` row at
+    the same turn, #1906)."""
     case.evidence.append(
         Evidence(
             summary="Post-fix logs confirm pool exhaustion no longer occurs",
@@ -109,6 +111,21 @@ def _attach_causal_absence(case: Case) -> None:
             collected_at=datetime.now(UTC),
             collected_by="user_test",
             primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="no pool exhaustion after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_postfix000001",
+            collected_at_turn=3,
+        )
+    )
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix check: the reported symptom no longer occurs",
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_test",
+            primary_purpose="Confirm the reported symptom is gone",
             preprocessed_content="no pool exhaustion after fix",
             content_size_bytes=80,
             preprocessing_method="manual",
@@ -137,7 +154,7 @@ class TestSuggestResolveVerdict:
         _attach_solution(case)
         # SUGGEST_RESOLVE now requires the cause confirmed eliminated, not
         # merely a solution row on record.
-        _attach_causal_absence(case)
+        _attach_confirmation(case)
 
         readiness = assess_closure_readiness(case)
 
@@ -160,7 +177,7 @@ class TestSuggestResolveVerdict:
         _attach_evidence(case)
         _attach_root_cause(case)
         _attach_solution(case)
-        _attach_causal_absence(case)
+        _attach_confirmation(case)
 
         readiness = assess_closure_readiness(case)
 
@@ -262,7 +279,7 @@ class TestSolutionTitleFallback:
         "Solution 2", "Solution 3"."""
         case = _make_investigating_case()
         _attach_root_cause(case)
-        _attach_causal_absence(case)
+        _attach_confirmation(case)
         # First solution titled normally; next two bypass validation to
         # simulate the schema-bypass / future-relaxation scenario.
         case.solutions.append(

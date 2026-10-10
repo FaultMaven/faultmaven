@@ -134,11 +134,22 @@ def _case(*evidence: Evidence) -> Case:
     )
 
 
-def test_causal_absence_makes_case_resolution_ready():
-    """The migration's payoff: emitting causal_absence_evidence is the bar that
-    makes a case RESOLVED — no separate solution record required."""
-    case = _case(_ev(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE))
+def test_the_absence_pair_makes_case_resolution_ready():
+    """The migration's payoff: emitting the absence pair — causal_absence (the
+    cause gone) and symptom_absence (the reported problem gone with it, #1906) —
+    is the bar that makes a case RESOLVED; no separate solution record required."""
+    case = _case(
+        _ev(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, 1),
+        _ev(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, 2),
+    )
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_causal_absence_alone_does_not_resolve():
+    """The cause gone with the reported problem unchecked is half of gone ⇒ gone
+    (#1906): it asks for the problem's re-check, it does not resolve."""
+    case = _case(_ev(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE))
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
 
 
 def test_symptom_absence_only_does_not_resolve():
@@ -155,9 +166,12 @@ def test_symptom_absence_only_does_not_resolve():
     assert verdict == ResolutionReadiness.NEEDS_INFO
 
 
-def test_causal_absence_pivots_close_to_resolve():
-    """Closing a causal-absence (resolution-grade) case pivots to RESOLVE."""
-    case = _case(_ev(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE))
+def test_the_absence_pair_pivots_close_to_resolve():
+    """Closing a resolution-grade case (both absence rows) pivots to RESOLVE."""
+    case = _case(
+        _ev(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, 1),
+        _ev(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, 2),
+    )
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
 
 

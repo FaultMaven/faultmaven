@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.cause_assurance import has_resolution_confirmation
 from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.affordances import (
     engine_owned_affordances,
@@ -334,6 +335,19 @@ class TestInvalidationGuard:
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
         case.evidence.append(_evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g"))
         assert "eliminated" in invalidation_refusal(case, absent, "nothing failed")
+
+    def test_the_cause_leg_alone_proves_the_problem_existed(self):
+        """#1906: a cause observed removed is not yet a resolution confirmation
+        (the problem leg is missing), but it still proves there was a problem."""
+        case = _case(ProblemStatus.VERIFIED)
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        cause_gone = _evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g")
+        cause_gone.collected_at_turn = 5  # after the quiet reading at turn 3
+        case.evidence.append(cause_gone)
+        assert not has_resolution_confirmation(case)
+        assert invalidation_refusal(case, absent, "nothing failed") == (
+            "a cause was confirmed eliminated, so the problem existed"
+        )
 
     def test_only_an_unverified_or_verified_problem_is_found_false(self):
         case = _case()

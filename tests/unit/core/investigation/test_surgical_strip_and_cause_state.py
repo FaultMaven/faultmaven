@@ -179,7 +179,7 @@ class TestDeferredImplementationClose:
         pending=None,
         terminal=False,
         cause_identified=True,
-        causal_absence=False,
+        confirmed=False,
         inquiry=False,
     ):
         """A REAL ``Case`` — not a SimpleNamespace.
@@ -228,16 +228,27 @@ class TestDeferredImplementationClose:
         if cause_identified:
             case.progress.cause_state = CauseState.IDENTIFIED
         case.pending_transition = pending
-        if causal_absence:
-            # A qualifying gone=>gone confirmation: user-authored (not the
-            # engine's M6 failed-fix disconfirmation) causal_absence row. This
-            # is what actually flips assess_closure_readiness to SUGGEST_RESOLVE.
+        if confirmed:
+            # A qualifying gone=>gone confirmation: a user-authored (not the
+            # engine's M6 failed-fix disconfirmation) causal_absence row and the
+            # symptom_absence row beside it (#1906). This is what actually
+            # flips assess_closure_readiness to SUGGEST_RESOLVE.
             case.evidence.append(
                 Evidence(
                     category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                     primary_purpose="confirm the cause was eliminated",
                     summary="After the provider client-ID correction the pods "
                     "obtained credentials and the AssumeRole failures stopped.",
+                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    collected_by="user",
+                    collected_at_turn=9,
+                )
+            )
+            case.evidence.append(
+                Evidence(
+                    category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                    primary_purpose="re-check the reported symptom after the fix",
+                    summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
                     source_type=EvidenceSourceType.USER_DESCRIPTION,
                     collected_by="user",
                     collected_at_turn=9,
@@ -334,7 +345,7 @@ class TestDeferredImplementationClose:
         case = self._case(
             feasible=SolutionFeasible.DEFERRED,
             solution_proposed=True,
-            causal_absence=True,
+            confirmed=True,
         )
         case.solutions = [_solution()]
         # Precondition asserted through the REAL predicate, not assumed: if the
@@ -368,8 +379,8 @@ class TestDeferredImplementationClose:
         labels = [s["label"] for s in meta["override_suggestions"]]
         assert "Yes, close this case" in labels
 
-    @pytest.mark.parametrize("causal_absence", [False, True])
-    def test_publishes_a_rationale_for_the_composer(self, causal_absence):
+    @pytest.mark.parametrize("confirmed", [False, True])
+    def test_publishes_a_rationale_for_the_composer(self, confirmed):
         """The engine-proposed disposition publishes its reason.
 
         The old key (``deferred_solution_closure_message``) was written and read
@@ -384,7 +395,7 @@ class TestDeferredImplementationClose:
         case = self._case(
             feasible=SolutionFeasible.DEFERRED,
             solution_proposed=True,
-            causal_absence=causal_absence,
+            confirmed=confirmed,
         )
         case.solutions = [_solution()]
         meta = {}
@@ -416,7 +427,7 @@ class TestDeferredImplementationClose:
         case = self._case(
             feasible=SolutionFeasible.DEFERRED,
             solution_proposed=True,
-            causal_absence=True,
+            confirmed=True,
         )
         case.solutions = [_solution()]
         borrowed = assess_closure_readiness(case).message
@@ -672,13 +683,24 @@ class TestDeferredImplementationClose:
         _maybe_propose_deferred_close(case, meta)
         assert case.pending_transition["to_state"] == "closed"
 
-        # A qualifying gone=>gone row lands after the offer was made.
+        # A qualifying gone=>gone confirmation (both rows) lands after the
+        # offer was made.
         case.evidence.append(
             Evidence(
                 category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                 primary_purpose="confirm the cause was eliminated",
                 summary="After the provider client-ID correction the pods "
                 "obtained credentials and the AssumeRole failures stopped.",
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="user",
+                collected_at_turn=9,
+            )
+        )
+        case.evidence.append(
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                primary_purpose="re-check the reported symptom after the fix",
+                summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
                 collected_by="user",
                 collected_at_turn=9,
@@ -743,7 +765,7 @@ class TestDeferredImplementationClose:
         case = self._case(
             feasible=SolutionFeasible.DEFERRED,
             solution_proposed=True,
-            causal_absence=True,
+            confirmed=True,
             inquiry=True,
         )
         case.solutions = [_solution()]

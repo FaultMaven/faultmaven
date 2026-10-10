@@ -123,10 +123,11 @@ def _attach_evidence(case: Case) -> None:
     )
 
 
-def _attach_causal_absence(case: Case) -> None:
-    """The required RESOLVED proof: the root cause is confirmed eliminated
-    after the fix, recorded as a ``causal_absence_evidence`` row. Without it
-    a case with root cause + solution is only CLOSE-grade, not READY."""
+def _attach_confirmation(case: Case) -> None:
+    """The RESOLVED proof, gone ⇒ gone: the root cause confirmed eliminated
+    after the fix (a ``causal_absence_evidence`` row) and the reported
+    symptom confirmed gone with it (a ``symptom_absence_evidence`` row at
+    the same turn, #1906)."""
     case.evidence.append(
         Evidence(
             summary="Post-fix verification: root cause no longer present",
@@ -135,6 +136,21 @@ def _attach_causal_absence(case: Case) -> None:
             collected_at=datetime.now(UTC),
             collected_by="user_test",
             primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="cause absent after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_postfix000001",
+            collected_at_turn=3,
+        )
+    )
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix check: the reported symptom no longer occurs",
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_test",
+            primary_purpose="Confirm the reported symptom is gone",
             preprocessed_content="cause absent after fix",
             content_size_bytes=80,
             preprocessing_method="manual",
@@ -196,7 +212,7 @@ class TestDeriveDispositionEligibility:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
-        _attach_causal_absence(case)  # cause confirmed eliminated → READY
+        _attach_confirmation(case)  # cause confirmed eliminated → READY
         result = derive_disposition_eligibility(case)
         assert result["resolved"] == DISPOSITION_ELIGIBILITY_READY
         assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
@@ -276,7 +292,7 @@ class TestRepositorySaveChokepoint:
         # at the chokepoint picks up the new content automatically.
         _attach_root_cause(case)
         _attach_solution(case)
-        _attach_causal_absence(case)
+        _attach_confirmation(case)
         await repo.save(case)
 
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
@@ -399,7 +415,7 @@ class TestLifecycleIntegration:
         # confirmed eliminated) → resolution-grade.
         _attach_root_cause(case)
         _attach_solution(case)
-        _attach_causal_absence(case)
+        _attach_confirmation(case)
         await repo.save(case)
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
         # Close warns now — SUGGEST_RESOLVE → suggests_alternative.
@@ -452,7 +468,7 @@ class TestEligibilityValuesAreSemanticallyDisjoint:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
-        _attach_causal_absence(case)  # cause confirmed eliminated → SUGGEST_RESOLVE
+        _attach_confirmation(case)  # cause confirmed eliminated → SUGGEST_RESOLVE
 
         result = derive_disposition_eligibility(case)
 

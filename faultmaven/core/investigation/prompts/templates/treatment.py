@@ -90,8 +90,8 @@ Do NOT continue proposing further variants after offering this choice.
   Do NOT emit `causal_absence_evidence` here: a mitigation (failover/
   workaround) does NOT eliminate the root cause, so the cause is still present.
   `causal_absence_evidence` is recorded only in TREATMENT, when the PERMANENT
-  fix has eliminated the cause — and only that row qualifies a case for
-  RESOLVED. A stabilized case CLOSES (with the fix documented), it does not
+  fix has eliminated the cause — and a case RESOLVES only on that row with a
+  symptom_absence row at or after it. A stabilized case CLOSES (with the fix documented), it does not
   resolve. Stand-alone audit row; do NOT link it to a hypothesis or a causal
   node.
 
@@ -133,16 +133,25 @@ verify the outcome.
    - Evidence submitted: assess it from the structural index in <evidence_collected>.
      Call search_file if you need specific patterns (e.g., error rate after the fix).
    - No evidence yet: ask once for post-fix metrics, error rates, or user observation
-   - Outcome confirmed (the cause is verifiably gone): record a
-     `causal_absence_evidence` row in evidence_to_add — the positive proof the
-     ROOT CAUSE is eliminated (the bar for RESOLVED; see COMPLETION):
-       summary: "Root cause no longer present after the fix: [what resolved and how]"
+   - Outcome confirmed — the cause is verifiably gone AND the problem the user
+     reported is gone with it: record TWO rows in evidence_to_add, together the
+     positive proof the fix worked (the bar for RESOLVED; see COMPLETION):
+       summary: "Root cause no longer present after the fix: [what changed]"
        category: causal_absence_evidence
-       source_type: logs | metrics | text (use text for verbal confirmation only)
-     Stand-alone audit row — do NOT link it to a hypothesis or a causal node
-     (a REFUTES on it reads as a FAILED fix). If only the symptom
-     was relieved while the cause persists, record `symptom_absence_evidence`
-     instead and propose CLOSED (see COMPLETION). Then → Proceed to COMPLETION
+       ---
+       summary: "Reported symptom no longer present after the fix: [what shows it]"
+       category: symptom_absence_evidence
+       source_type (each): logs | metrics | text (use text for verbal confirmation only)
+     The same pasted output or the same user words may source both. Stand-alone
+     audit rows — do NOT link them to a hypothesis or a causal node (a REFUTES
+     on one reads as a FAILED fix). Then → Proceed to COMPLETION
+   - The cause is shown gone, but the reported symptom is not yet re-checked
+     (the process runs again; the alert, check or error the user reported has
+     not been looked at since the fix): record the `causal_absence_evidence`
+     row only, ask for that check, and do not propose a transition. The case
+     is not resolved until the problem the user reported is seen gone.
+   - Only the symptom was relieved while the cause persists: record
+     `symptom_absence_evidence` only and propose CLOSED (see COMPLETION).
    - Partial success: → Identify what remains and provide specific next steps to complete
      the fix (SUGGEST, don't execute — NEVER say "I will run" or "Let me execute")
    - ACCEPT SUBJECTIVE CONFIRMATION: "It's working now" or "looks good" is sufficient
@@ -196,7 +205,7 @@ REQUIRED EMISSIONS IN THE SAME TURN:
      in the graph.
    evidence_ids: include the IDs of the diagnostic evidence rows from
      prior turns that matched the Cause's Indicator entries. Do NOT
-     reference the same-turn causal_absence_evidence row — its id is not
+     reference the same-turn absence rows — their ids are not
      resolvable at write-time.
    ```
 
@@ -221,10 +230,13 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    yourself — `MilestoneUpdates` rejects `solution_verified`, and
    `solution_proposed` is engine-derived.
 
-5. **`state_updates.evidence_to_add`** — the `causal_absence_evidence` row that
-   lets the case RESOLVE. The user's "it worked" IS the source:
+5. **`state_updates.evidence_to_add`** — the two rows that let the case
+   RESOLVE, a `causal_absence_evidence` row and a `symptom_absence_evidence`
+   row. The user's "it worked" IS the source of both:
    `source_type=user_description`, `source_file_id` null, `extract` = their quoted
-   words, `summary` = "<the attributed Cause> is no longer present after the fix".
+   words; `summary` = "<the attributed Cause> is no longer present after the fix"
+   on the first, "<the reported symptom> is no longer present after the fix" on
+   the second.
 
 6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
    as documented in COMPLETION below. The engine holds it pending and asks
@@ -314,16 +326,18 @@ The process:
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **causal_absence_evidence**: Re-verification row confirming the ROOT CAUSE
   itself is no longer present after the permanent fix (the specific cause you
-  identified is verifiably gone — not just the symptom relieved). The REQUIRED
-  positive proof of resolution: a case is RESOLVED only when this row is on
-  record; without it it can only be CLOSED. When the user confirms the fix
-  worked you MUST record it — do not merely narrate. Source: the user's
+  identified is verifiably gone — not just the symptom relieved). It says the
+  cause is gone, not that the reported problem went with it. Source: the user's
   confirmation (`source_type=user_description`, no file) or post-fix output they
   paste — an out-of-band fix the user simply reports is valid.
-- **symptom_absence_evidence**: Re-verification row confirming the symptom is
-  gone. Necessary but NOT sufficient for RESOLVED — a mitigation produces
-  symptom_absence while the cause persists. Pair it with causal_absence only
-  when the cause itself was eliminated.
+- **symptom_absence_evidence**: Re-verification row confirming the symptom the
+  user reported is gone. A mitigation produces symptom_absence while the cause
+  persists.
+- **RESOLVED needs both**: a case is RESOLVED only when a causal_absence row AND
+  a symptom_absence row recorded at or after it are on record — the cause
+  removed and the reported problem gone with it; without both it can only be
+  CLOSED. When the user confirms the fix worked you MUST record both — do not
+  merely narrate.
   Both absence categories are stand-alone audit rows; do NOT link them to a
   hypothesis or to a causal node (a fix confirms the cause; a
   confidence-bearing link would erode it, and a REFUTES reads as a FAILED
@@ -352,16 +366,18 @@ not alternative. The variant adds structured attribution; COMPLETION fires the
 transition handshake either way.
 
 **RESOLVED IS BACKED BY CAUSAL-ABSENCE (the cause VERIFIED gone):**
-Propose `to_state: resolved` only once the cause is VERIFIED eliminated — the user
-confirms the fix worked, or post-fix data shows the problem gone. That
-verification IS the `causal_absence_evidence` row (see EVIDENCE TYPES FOR THIS
-STAGE); emit it in the same turn you propose. causal_absence records a
-VERIFICATION — never a mere application or a bare request:
+Propose `to_state: resolved` only once the fix is VERIFIED — the cause is gone AND
+the problem the user reported is gone with it: the user confirms the fix worked,
+or post-fix data shows both. That verification IS the pair of rows, a
+`causal_absence_evidence` row and a `symptom_absence_evidence` row (see EVIDENCE
+TYPES FOR THIS STAGE); emit them in the same turn you propose. The absence rows
+record a VERIFICATION — never a mere application or a bare request:
 - User only APPLIED the fix ("I ran it") → that's `solution_accepted`: record it,
-  stay in TREATMENT, do not emit causal_absence or propose resolved.
-- User ASKS to resolve without that verification → do NOT fabricate the row;
+  stay in TREATMENT, do not emit an absence row or propose resolved.
+- User ASKS to resolve without that verification → do NOT fabricate the rows;
   propose the transition and let the confirmation step ask them to confirm the
-  cause is gone (the engine solicits it, their answer becomes the row).
+  cause and the reported problem are gone (the engine solicits it, their answer
+  becomes the rows).
 - Case only stabilized/deferred (symptom relieved, cause persists) → emit
   `symptom_absence_evidence` and propose `closed`, not resolved.
 
@@ -382,18 +398,21 @@ Do not write the confirmation question itself, and do not imply the case
 is already resolved. The transition occurs only after the user confirms
 on the next turn.
 
-CO-EMIT BOTH, OR NARRATE NEITHER: the `proposed_transition` and its backing
-`causal_absence_evidence` row are one unit — emit both this turn or emit
-neither. Never let your prose call the case resolved/closed/fixed/done while
-those two fields are absent: the engine cannot honor an unbacked disposition
+CO-EMIT ALL, OR NARRATE NONE: the `proposed_transition` and its backing
+`causal_absence_evidence` and `symptom_absence_evidence` rows are one unit — emit
+all three this turn or emit none. Never let your prose call the case
+resolved/closed/fixed/done while those fields are absent: the engine cannot honor an unbacked disposition
 claim, so it holds the case open while the user reads "resolved" — a false
 statement the engine then has to append a correction beneath. If you are
 confident enough to write that the fix worked, you are confident enough to emit
-the row and the transition alongside it.
+the rows and the transition alongside them.
   CORRECT: prose "the fix appears to have resolved this" + evidence_to_add
-    [causal_absence_evidence] + proposed_transition {{ "to_state": "resolved" }}.
-  WRONG: prose "Case resolved." with no causal_absence row and no
+    [causal_absence_evidence, symptom_absence_evidence] + proposed_transition
+    {{ "to_state": "resolved" }}.
+  WRONG: prose "Case resolved." with no absence rows and no
     proposed_transition.
+  WRONG: the service is shown running again, the check the user reported is
+    not yet re-checked, and the reply says the fix worked or proposes resolved.
 
 Do not suggest additional evidence collection (logs, metrics, monitoring).
 If the user declines, they are choosing to continue the investigation,

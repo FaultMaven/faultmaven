@@ -199,9 +199,10 @@ class CaseAction(BaseModel):
 #: ``cases_description_required_for_investigation`` makes that structural).
 #:
 #: INVESTIGATING → RESOLVED is legal and the disposition handshake performs it,
-#: but it is earned by a qualifying ``causal_absence_evidence`` row — the cause
-#: confirmed eliminated — which the engine reads for itself and offers on
-#: (INV-43).
+#: but it is earned by a qualifying ``causal_absence_evidence`` row and a
+#: ``symptom_absence_evidence`` row at or after it — the cause confirmed
+#: eliminated and the problem gone with it — which the engine reads for itself
+#: and offers on (INV-43).
 #:
 #: v3: INQUIRY → RESOLVED removed. KB-resolution flows through INVESTIGATING via
 #: the milestone collapse — state authored in one turn, disposition still

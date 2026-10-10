@@ -74,10 +74,11 @@ def _make_investigating_case():
 def _fill_for_resolution_ready(case):
     """Promote an investigating case to assess_resolution_readiness=READY.
 
-    READY now requires the root cause to be confirmed ELIMINATED — recorded
-    as a ``causal_absence_evidence`` row — not merely that a solution exists.
-    So this attaches root cause + solution AND a causal_absence evidence row.
-    A case with only root cause + solution (no causal_absence) is CLOSE-grade
+    READY requires gone ⇒ gone confirmed — the root cause ELIMINATED (a
+    ``causal_absence_evidence`` row) and the reported symptom gone with it (a
+    ``symptom_absence_evidence`` row at or after it, #1906) — not merely that a
+    solution exists. So this attaches root cause + solution AND both rows. A
+    case with only root cause + solution (no absence rows) is CLOSE-grade
     (stabilized / deferred), not resolution-grade. Mutates and returns ``case``.
     """
     case.root_cause_conclusion = RootCauseConclusion(
@@ -93,7 +94,8 @@ def _fill_for_resolution_ready(case):
             longterm_fix="Apply correct configuration",
         )
     )
-    # The required RESOLVED proof: the root cause is confirmed gone after the fix.
+    # The required RESOLVED proof: the root cause is confirmed gone after the
+    # fix, and the reported symptom with it.
     case.evidence.append(
         Evidence(
             summary="Post-fix verification confirms the root cause is gone",
@@ -102,6 +104,21 @@ def _fill_for_resolution_ready(case):
             collected_at=datetime.now(timezone.utc),
             collected_by="user_test",
             primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="cause absent after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_a1b2c3d4e5f6",
+            collected_at_turn=2,
+        )
+    )
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix verification: the reported symptom no longer occurs",
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(timezone.utc),
+            collected_by="user_test",
+            primary_purpose="re-check the reported symptom after the fix",
             preprocessed_content="cause absent after fix",
             content_size_bytes=80,
             preprocessing_method="manual",

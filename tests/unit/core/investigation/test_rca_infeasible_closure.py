@@ -289,6 +289,16 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
             collected_at_turn=1,
         )
     )
+    case.evidence.append(
+        Evidence(
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            primary_purpose="re-check the reported symptom after the fix",
+            summary="the 5xx rate is 0 since the vendor rollback",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="user",
+            collected_at_turn=1,
+        )
+    )
     engine = _turn_engine(model_proposes)
     result = await engine.process_turn(
         case=case, user_message="the failover held, error rate is 0"

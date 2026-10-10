@@ -118,7 +118,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | ID | Invariant (must always hold) | Graceful denial (Gate-2 exit) | Planned enforcement |
 |----|------------------------------|-------------------------------|---------------------|
 | **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Schema + engine-guard |
-| **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` (`causal_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard, **built**: resolution gate + the §9.5 assurance grades (`CONFIRMED` requires a root-linked counterfactual; the engine mirror caps at `CONFIDENT`/0.8 without one) |
+| **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` — two observations, two rows: the cause seen gone (`causal_absence_evidence`) and `D` seen gone at or after it (`symptom_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard, **built**: resolution gate + the §9.5 assurance grades (`CONFIRMED` requires a root-linked counterfactual; the engine mirror caps at `CONFIDENT`/0.8 without one) |
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
@@ -619,8 +619,8 @@ bar, each restating its siblings — terminates `NO_ROOT`: the genuinely-solved
 case is **under-certified, not mis-certified**. This is the deliberate recall
 cost of the soundness bar, and it **fails safe** — NO INCORRECT CONCLUSION holds
 (the engine certifies nothing rather than guess which fragment is the cause), the
-case still resolves (the RESOLVED gate keys on the `causal_absence` confirmation,
-not the grade), and nothing is harvested to the KB (harvest requires `CONFIRMED`).
+case still resolves (the RESOLVED gate keys on the absence confirmation —
+`causal_absence` plus `symptom_absence` at or after it — not the grade), and nothing is harvested to the KB (harvest requires `CONFIRMED`).
 The two obvious closers were evaluated and rejected as soundness-touching:
 *merging* the duplicate roots (the over-merge trap, §7.1.2 — a paraphrase may be
 a distinct OR-sibling) and *pooling* their support via a lexical same-cause
@@ -821,12 +821,23 @@ token-layer limits shared with the §7.1 guards, pinned in the tests.
 | Grade | Established by | Unlocks |
 |-------|----------------|---------|
 | **Mechanistically validated** | The cause and its mechanism are *observed* (pre-intervention). | Entry to **TREATMENT** — a solution may now be proposed. |
-| **Counterfactually confirmed** | *Removing* the cause makes `D` disappear (post-intervention). Recorded as `causal_absence_evidence`. | **RESOLVED** — the resolution gate. |
+| **Counterfactually confirmed** | *Removing* the cause makes `D` disappear (post-intervention). Recorded as two rows: `causal_absence_evidence` (the cause seen gone) and `symptom_absence_evidence` at or after it (`D` seen gone). | **RESOLVED** — the resolution gate. |
 
 These grades resolve the latent contradiction in "transition to treatment the
 moment the root cause is validated, but treatment may fail." Treatment begins at
 *mechanistic* validation; the case resolves only at *counterfactual*
 confirmation. The window between them is exactly where a fix can fail.
+
+The counterfactual is two observations, and neither implies the other. The cause
+seen gone ("the config now reads 100", "`ExecStart` now names the installed
+binary") says the fix took; only `D` seen gone afterwards says removing the cause
+removed the problem. Each is its own row (`causal_absence_evidence`,
+`symptom_absence_evidence`), and the gate needs both, the symptom row at or after
+the earliest cause row: a symptom row from before the cause was removed is a
+mitigation's relief or a "not there now", not the counterfactual. Reading the
+cause row alone as the counterfactual let a service shown running again read
+resolution-ready while the scrape target the user reported down was still
+unchecked, and the engine then told the user the problem had gone with it (#1906).
 
 ### 7.3 A failed treatment is a falsification event
 
@@ -1020,7 +1031,7 @@ override them.
 
 | Intervention quadrant (§7.4) | Unified-flow term | Disposition | Absence evidence |
 |---|---|---|---|
-| Remediation (perm @ root) | permanent fix + verified root cause | **RESOLVED** | causal_absence |
+| Remediation (perm @ root) | permanent fix + verified root cause | **RESOLVED** | causal_absence + symptom_absence |
 | Defensive fix (perm @ intermediate) | accepted permanent workaround (often `rca_infeasible`) | **CLOSED** (`closed_rca_infeasible` / `mitigation_sufficient`) | symptom_absence |
 | Mitigation (temp @ intermediate) | mitigation insert | buy time → forward → RESOLVED / CLOSED (revert reminder) | symptom_absence (interim) |
 | Loop-break (R9) | mitigate the cycle | **CLOSED** / stabilized | symptom_absence |
@@ -1410,7 +1421,7 @@ LLM-agnostic testing invariant).*
 
 *Elicitation companion (frequency, not blast radius).* The guard bounds the
 blast radius of an over-claim; the TREATMENT/verify-turn prompt reduces how
-often one occurs — a user-confirmed fix must elicit the `causal_absence` row +
+often one occurs — a user-confirmed fix must elicit the two absence rows +
 `proposed_transition` reliably, even on long context (the #668 incident skipped
 both 3/3 on a long-context haiku turn). Prompt guidance is the frequency lever;
 the engine append is the guarantee.
@@ -1505,8 +1516,8 @@ soundness never rests on the chain alone while models under-build it.
 
 - The two validation grades (§7.2) map onto existing signals: **mechanistic
   validation → `cause_state=IDENTIFIED`** (enter solution / TREATMENT);
-  **counterfactual confirmation → `causal_absence_evidence` → `solution_verified`
-  → RESOLVED**.
+  **counterfactual confirmation → `causal_absence_evidence` + `symptom_absence_evidence`
+  → `solution_verified` → RESOLVED**.
 - **Intervention quadrants ↔ dispositions** per the §7.5 table; the mitigation
   insert reuses the existing `progress.mitigation` record and gate milestones
   (`mitigation_accepted` / `mitigation_verified`).

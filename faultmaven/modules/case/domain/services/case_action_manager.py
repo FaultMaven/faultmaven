@@ -20,7 +20,9 @@ an edge whose precondition is a fact about the case.
 - INQUIRY → INVESTIGATING is earned by a confirmed problem statement and
   performed by the Gate 1 handshake (#1608).
 - INVESTIGATING → RESOLVED is earned by a confirmed root-cause elimination —
-  a qualifying ``causal_absence_evidence`` row — and offered by the engine
+  a qualifying ``causal_absence_evidence`` row and a ``symptom_absence_evidence``
+  row at or after it, the cause gone and the problem gone with it — and
+  offered by the engine
   when it sees the case reach it (INV-43), or when the user says so in
   conversation. The readiness check that used to run AFTER the user picked
   "Mark as resolved" now decides whether the offer is made at all.

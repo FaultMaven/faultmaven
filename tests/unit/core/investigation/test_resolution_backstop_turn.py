@@ -1,7 +1,8 @@
 """The engine's RESOLVED backstop (INV-43), observed through a REAL turn.
 
 The bar for RESOLVED — a qualifying ``causal_absence_evidence`` row, the cause
-confirmed gone — was well covered by ``test_resolution_causal_absence_gate.py``,
+confirmed gone, and a ``symptom_absence_evidence`` row at or after it, the
+reported problem gone with it (#1906) — was well covered by ``test_resolution_causal_absence_gate.py``,
 which pins what ``assess_resolution_readiness`` DECIDES. What nothing pinned is
 who ASKS. Before this, the RESOLVED handshake had three openers (the model's
 ``proposed_transition``, the user's own request, and the DEFERRED-feasibility
@@ -95,10 +96,28 @@ def _absence_row(*, category, collected_by="user", turn=1) -> Evidence:
     )
 
 
-def _case(*, absence: EvidenceCategory | None, collected_by="user") -> Case:
+def _problem_gone_row(*, turn=1) -> Evidence:
+    """The problem leg: the symptom the user reported, observed gone."""
+    return Evidence(
+        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        primary_purpose="re-check the reported symptom after the fix",
+        summary="AssumeRoleWithWebIdentity succeeds for the data-processor pods.",
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="user",
+        collected_at_turn=turn,
+    )
+
+
+def _case(
+    *,
+    absence: EvidenceCategory | None,
+    collected_by="user",
+    problem_gone: bool = False,
+) -> Case:
     """An INVESTIGATING case with a cause on record, parameterized on the
-    post-fix row — which is the only thing separating a resolution from a
-    stabilization."""
+    post-fix rows — which are the only thing separating a resolution from a
+    stabilization. ``problem_gone`` adds the user's symptom_absence row at the
+    same turn (the problem leg, #1906)."""
     case = Case(
         title="Cross-account AssumeRole failures",
         enterprise_id="org_test",
@@ -138,11 +157,14 @@ def _case(*, absence: EvidenceCategory | None, collected_by="user") -> Case:
     ]
     if absence is not None:
         case.evidence.append(_absence_row(category=absence, collected_by=collected_by))
+    if problem_gone:
+        case.evidence.append(_problem_gone_row())
     return case
 
 
 def _confirmed_case() -> Case:
-    return _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    """Gone ⇒ gone on record: the cause observed removed, the problem with it."""
+    return _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, problem_gone=True)
 
 
 @pytest.mark.asyncio
@@ -240,6 +262,7 @@ async def test_engine_authored_failed_fix_row_does_not_open_the_handshake():
     case = _case(
         absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         collected_by=ENGINE_EVIDENCE_AUTHOR,
+        problem_gone=True,
     )
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
 
@@ -401,3 +424,65 @@ async def test_offer_returns_on_the_next_turn():
 
     assert case.pending_transition["to_state"] == "resolved"
     assert RESOLVE_LABEL in [s["label"] for s in result["suggested_follow_ups"]]
+
+
+def _recording(category: str, summary: str, extract: str):
+    """A REAL response that records one absence row and proposes nothing."""
+    return InvestigationResponse_Diagnosis(
+        agent_response=LLM_ANALYSIS,
+        state_updates={
+            "evidence_to_add": [
+                {
+                    "summary": summary,
+                    "extract": extract,
+                    "category": category,
+                    "source_type": "user_description",
+                }
+            ]
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is():
+    """#1906, the systemd shape on a real turn. The model reads the post-fix
+    status (the unit running, ExecStart naming the installed binary), records
+    the cause gone and asks whether the scrape target is back. The engine used
+    to append "the problem went with it" and the resolve pair to that very
+    reply. Only once the reported problem is seen gone does the offer come."""
+    case = _case(absence=None)
+    engine = _engine(
+        _recording(
+            "causal_absence_evidence",
+            "Root cause no longer present after the fix: the unit's ExecStart "
+            "now names /usr/bin/billing-exporter and the service is running.",
+            "Active: active (running) since Mon 2026-09-21 08:11:03 UTC",
+        )
+    )
+    case.current_turn = 5
+    result = await engine.process_turn(case=case, user_message="status after restart")
+
+    labels = [s["label"] for s in result["suggested_follow_ups"]]
+    assert any(
+        e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE for e in case.evidence
+    ), "premise: the cause leg was recorded"
+    assert getattr(case, "pending_transition", None) is None
+    assert RESOLVE_LABEL not in labels
+    assert "problem went with it" not in result["agent_response"]
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
+
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=_recording(
+            "symptom_absence_evidence",
+            "Reported symptom no longer present after the fix: Prometheus shows "
+            "the billing target UP.",
+            "billing-exporter (1/1 up)",
+        )
+    )
+    case.current_turn = 6
+    result = await engine.process_turn(case=case, user_message="the target is UP")
+
+    labels = [s["label"] for s in result["suggested_follow_ups"]]
+    assert case.pending_transition["to_state"] == "resolved"
+    assert labels == [RESOLVE_LABEL, DECLINE_LABEL]
+    assert "problem went with it" in result["agent_response"]

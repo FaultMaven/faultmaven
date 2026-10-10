@@ -142,9 +142,11 @@ confirm the symptom (or cause) it captured is no longer present.
   confirms the root-cause hypothesis, so a confidence-bearing link would
   erode the very hypothesis it proves; re-verification records that the fix
   held, not a change to the diagnosis. A REFUTES on one of these rows reads
-  as a FAILED fix — the opposite of what it records. The absence row is the audit record
-  that the fix
-  held — without it the case has no positive proof of resolution.
+  as a FAILED fix — the opposite of what it records. The absence rows are the
+  audit record that the fix held, and a resolution needs both kinds: a
+  re-checked cause (causal_absence) and a re-checked symptom (symptom_absence)
+  at or after it. A cause re-checked gone with the reported symptom not yet
+  re-checked is not proof of resolution: ask for the symptom's check.
 - If the original signature REAPPEARS, the fix did not hold —
   surface that as a new finding rather than declaring success.
 """

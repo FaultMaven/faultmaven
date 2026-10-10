@@ -108,7 +108,7 @@ CATEGORY_MILESTONE_MAP = {
     # *attribution* (intersect category-eligible milestones with what the LLM
     # completed this turn), and these gates are not evidence-attributed.
     # The absence rows' disposition role is read DIRECTLY by the readiness
-    # checks: assess_resolution_readiness/_closure consult _has_causal_absence()
+    # checks: assess_resolution_readiness/_closure consult _resolution_confirmed()
     # to decide RESOLVED vs CLOSED. So absence evidence drives dispositions
     # through readiness, not through this map — keep these at [].
     EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [],

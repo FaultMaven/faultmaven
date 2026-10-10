@@ -308,12 +308,14 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
 def _investigation_propose_resolved_response() -> InvestigationResponse_Treatment:
     """Investigation response: agent proposes resolution.
 
-    Co-emits the backing ``causal_absence_evidence`` row, as the COMPLETION
-    prompt requires ("emit both this turn or emit neither"). Without it the
-    readiness gate returns NEEDS_INFO and the proposal is flagged accordingly —
-    which is what these tests used to produce, and they then confirmed it
-    anyway through the dropdown arm that did not re-read readiness. The bar is
-    the row; a fixture that proposes without one is testing the bypass.
+    Co-emits the backing ``causal_absence_evidence`` and
+    ``symptom_absence_evidence`` rows, as the COMPLETION prompt requires ("emit
+    all three this turn or emit none"; the problem leg is #1906). Without them
+    the readiness gate returns NEEDS_INFO and the proposal is flagged
+    accordingly — which is what these tests used to produce, and they then
+    confirmed it anyway through the dropdown arm that did not re-read
+    readiness. The bar is the rows; a fixture that proposes without them is
+    testing the bypass.
     """
     return InvestigationResponse_Treatment(
         agent_response=(
@@ -336,11 +338,20 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                 EvidenceToAdd(
                     summary=(
                         "Root cause no longer present after the rollback: the "
-                        "connection leak is gone and p99 is back to 200ms"
+                        "connection leak is gone"
                     ),
                     category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                     source_type=EvidenceSourceType.USER_DESCRIPTION,
-                    extract="p99 is back to 200ms, no further connection errors",
+                    extract="no further connection errors since the rollback",
+                ),
+                EvidenceToAdd(
+                    summary=(
+                        "Reported symptom no longer present after the rollback: "
+                        "p99 is back to 200ms"
+                    ),
+                    category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    extract="p99 is back to 200ms",
                 ),
             ],
             proposed_transition=ProposedTransition(

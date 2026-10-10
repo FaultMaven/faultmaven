@@ -103,26 +103,34 @@ an evidence row.
 3. Is this evidence RE-CHECKING a previously verified symptom or cause to
    confirm a fix held (re-verification)? Two distinct outcomes — the
    difference decides RESOLVED vs CLOSED, so classify carefully:
-   - **Symptom no longer present** (service restored, errors stopped) →
+   - **Symptom no longer present** (service restored, errors stopped, the
+     check or alert the user reported now passes) →
      `symptom_absence_evidence`. A MITIGATION — failover, workaround,
-     traffic-shift, scale-out, restart — produces THIS: the symptom is
+     traffic-shift, scale-out, restart — produces ONLY this: the symptom is
      relieved but the underlying cause may still be present (e.g. failover
      restores writes while the failed hardware is still failed). Emit
      symptom_absence; do NOT emit causal_absence for a mitigation.
    - **The cause itself is gone** (the permanent fix ELIMINATED the root
      cause — the specific thing you identified as the cause is verifiably no
      longer present, not merely worked around) → `causal_absence_evidence`.
-     This is the ONLY positive proof a case is RESOLVED: the system marks a
-     case RESOLVED only when a `causal_absence_evidence` row is on record.
-     Without it the case can only be CLOSED (with the documented or deferred
-     solution preserved).
-   When the user confirms a PERMANENT fix worked — the original error is gone
-   after correcting the actual cause, post-fix logs/status show it no longer
-   occurs — you MUST record a `causal_absence_evidence` row; do not merely
-   narrate it. If instead service was restored via a mitigation while the
-   real fix is still pending, or the cause persists, record ONLY
-   symptom_absence — that case CLOSES with the solution documented, it does
-   not resolve.
+     This row says the cause is gone, NOT that the reported problem went
+     with it.
+   RESOLVED needs BOTH rows: the system marks a case RESOLVED only when a
+   `causal_absence_evidence` row AND a `symptom_absence_evidence` row
+   recorded at or after it are on record — the cause removed, and the
+   problem the user reported gone with it. Without both the case can only be
+   CLOSED (with the documented or deferred solution preserved). When the
+   cause is shown gone but the reported symptom is not yet re-checked (the
+   process runs again, but the alert, check or error the user reported has
+   not been looked at since), record causal_absence only and ask for that
+   check.
+   When the user confirms a PERMANENT fix worked — the original problem is
+   gone after correcting the actual cause, post-fix logs/status show it no
+   longer occurs — you MUST record BOTH rows in that turn; the same words or
+   output may source both. Do not merely narrate it. If instead service was
+   restored via a mitigation while the real fix is still pending, or the
+   cause persists, record ONLY symptom_absence — that case CLOSES with the
+   solution documented, it does not resolve.
    Both absence categories are STAND-ALONE audit rows — do NOT link them to a
    hypothesis (`hypothesis_evidence_links`) OR to a causal node
    (`node_evidence_links`): a successful fix CONFIRMS the root-cause

@@ -53,7 +53,8 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     Which disposition is proposed follows ``assess_closure_readiness``, the same
     resolve-preservation pivot the LLM-proposal path and the confirm-time INV-37
     guard apply. Its trigger is a QUALIFYING COUNTERFACTUAL CONFIRMATION —
-    ``_has_causal_absence``, a gone=>gone row, the same bar
+    ``_resolution_confirmed``, gone=>gone (the cause-gone and problem-gone
+    rows), the same bar
     ``assess_resolution_readiness`` uses for READY — NOT merely "a root cause
     and a solution are on record" (that phrasing survives in
     ``assess_closure_readiness``'s own summary line and is stale there too).
@@ -245,7 +246,8 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     already behind us when the offer is made.
 
     The trigger is the resolution bar itself, ``assess_resolution_readiness``
-    READY — a QUALIFYING ``causal_absence_evidence`` row, gone=>gone. Not a
+    READY — gone=>gone: a QUALIFYING ``causal_absence_evidence`` row and a
+    ``symptom_absence_evidence`` row at or after it. Not a
     second, looser reading of "looks finished": a stabilized case carries
     ``symptom_absence`` and is correctly left alone, and the engine's own M6
     failed-fix rows are excluded by ``resolution_confirmation_rows``.
@@ -303,7 +305,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # Same signature space as the deferred proposer, deliberately: both offer
     # RESOLVED off the same justifying state, so one refusal must silence both.
     # The verdict is SUGGEST_RESOLVE on every case that clears the READY bar
-    # (both gate on ``_has_causal_absence``), so this is the same string that
+    # (both gate on ``_resolution_confirmed``), so this is the same string that
     # proposer would compute — computed rather than hardcoded so the two cannot
     # drift if either gate is re-scoped, and taken through ``closure_verdict``
     # so the user-facing message this call would otherwise build and throw away

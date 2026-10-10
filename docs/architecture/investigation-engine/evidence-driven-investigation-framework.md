@@ -282,7 +282,7 @@ Extended diagnosis may take multiple turns (e.g., requesting data, analyzing, re
 
 **Evidence types accepted**:
 
-- `causal_absence_evidence` — positive proof the root cause is eliminated after the fix (post-fix metrics, logs, user confirmation)
+- `causal_absence_evidence` — positive proof the root cause is eliminated after the fix (post-fix metrics, logs, user confirmation); RESOLVED also needs a `symptom_absence_evidence` row at or after it, the reported problem seen gone (#1906)
 - `symptom_evidence` — new symptoms discovered after fix attempt
 - `causal_evidence` — new causal insights from failure analysis (requires hypothesis)
 
@@ -480,7 +480,7 @@ two tables play distinct roles and never carry duplicate information.
 | `symptom_evidence` | Data showing the problem exists | DIAGNOSIS, TREATMENT | Error logs, latency spikes, alert notifications |
 | `causal_evidence` | Data bearing on why the problem happened: a change, OR a measured state that is the hypothesised mechanism itself | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes; a filesystem at 100%, an exhausted pool, a reached limit |
 | `symptom_absence_evidence` | Confirmation the symptom is gone after a workaround (cause may persist) | MITIGATION | Post-mitigation metrics, error-rate drop |
-| `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix | TREATMENT | Post-fix metrics, clean logs, user confirmation |
+| `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix (RESOLVED also needs the symptom row at or after it) | TREATMENT | Post-fix metrics, clean logs, user confirmation |
 
 Contextual material (architecture diagrams, baseline configs,
 deployment timestamps) is data, not evidence — it lives on

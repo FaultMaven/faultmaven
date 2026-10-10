@@ -708,7 +708,7 @@ def engine_owned_affordances(
     # offer once and then went quiet was served "Describe the expected vs.
     # observed behavior" about a problem they had already confirmed gone.
     #
-    # Vetoing the readings on ``_has_causal_absence`` is the obvious fix and is
+    # Vetoing the readings on ``_resolution_confirmed`` is the obvious fix and is
     # WRONG as a drive-by: the #1136 fixtures build work-gate-passing cases out
     # of absence rows, so the veto also silences ``treatment_blocked`` on every
     # case they represent. Whether a resolution confirmation should override

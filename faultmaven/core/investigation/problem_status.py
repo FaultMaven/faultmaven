@@ -201,7 +201,7 @@ def revision_refusal(
 def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str | None:
     """Why the problem cannot be found a false alarm now, or None."""
     from faultmaven.core.investigation.cause_assurance import (
-        has_resolution_confirmation,
+        cause_elimination_rows,
     )
 
     status = case.progress.problem_status
@@ -217,7 +217,7 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     bar = _acted_on_bar(case)
     if bar:
         return bar
-    if has_resolution_confirmation(case):
+    if cause_elimination_rows(case):
         return "a cause was confirmed eliminated, so the problem existed"
     return None
 
