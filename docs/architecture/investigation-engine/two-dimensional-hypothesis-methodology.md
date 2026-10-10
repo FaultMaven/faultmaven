@@ -122,7 +122,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
-| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it (after the cause's observed removal, when one was observed), and no resolution confirmed (INV-42) — and it reads them off the record itself: the cause seen gone after the fix with `D` seen present after that demotes without a model refutation (#1927). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
+| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it (after the cause's observed removal, when one was observed), and no resolution confirmed since that persistence (INV-42) — and it reads them off the record itself: the cause seen gone after the fix with `D` seen present after that demotes without a model refutation (#1927). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
 | **M7** | An **AND-node** is `validated` ⇔ *all* co-necessary members are validated; refuting *any one* member refutes the chain. | Withholds validation until members prove out (normal flow); any refutation prunes. | Schema + engine |
 
 Each F / S / R rule in §4–§7 exists to make one or more of these hold; §9
@@ -920,9 +920,19 @@ records only what it can substantiate:
   establish that the cause was addressed), dated by its **execution** turn and
   not the turn it was offered; a **positive** persistence observation at/after
   it (a `symptom_evidence` row — "nothing said it was fixed" is not an
-  observation that it stayed broken); and **no** resolution confirmed
-  (`has_resolution_confirmation`: the problem seen gone after the fix), which
-  would be direct evidence the problem did not persist. Refusals are labeled
+  observation that it stayed broken); and the problem **not** seen gone at
+  or after that persistence (`_confirmed_from`: a problem-leg row since),
+  which would be direct evidence the problem did not persist. A problem-gone
+  row from *before* the persistence is overtaken by it — an earlier fix
+  window the problem relapsed from; read case-wide, it withheld the demotion
+  and the case resolved on the disproven cause. A row in the persistence's
+  own turn still withholds: turn granularity cannot order the two, and a
+  same-turn ambiguity resolves toward the confirmation, as for the
+  disconfirmation window and the mixed single-turn shape ("the restart
+  didn't fix it, but correcting resolv.conf did"). Accepted residual: "still
+  503, so I restarted it, now it's up" in one turn after the cause row
+  withholds the demotion, and that relief can complete both legs on the
+  failed fix's cause row. Refusals are labeled
   (`m6_demotion_refused_total{reason}`); a nonzero `resolution_confirmed` rate
   is a *defect* signal, not elicitation drift.
 
@@ -938,7 +948,16 @@ records only what it can substantiate:
   after the cause row, and in a turn after the fix's execution turn, whose
   pasted output may still quote the pre-fix failures); a symptom row from
   before the cause row shows the problem present while the cause may still
-  have been there.
+  have been there. Read for the identified cause, the record also takes only
+  rows about it: a persistence row must bear on the problem or the cause's
+  chain (`BearingFrame.bears`, ≥2 shared content tokens — 133 of 136 stored
+  symptom rows on cases with a validated root do), so a new, unrelated
+  symptom after a fix that worked is not the problem persisting; and a cause
+  row affirmatively about another candidate chain
+  (`BearingFrame.about_another_chain`, the confirm-stamp's mis-citation
+  guard) is not this cause's removal. A positive bearing bar on cause rows
+  was measured and rejected: 4 of 54 stored cause rows, the systemd charter's
+  among them, share one token with their cause's frame.
 
   **The record is a trigger, not only a precondition (#1927).** The ingest
   gate leaves the engine as the only author of a node-side counterfactual
@@ -950,8 +969,12 @@ records only what it can substantiate:
   to refute (§9.3). It requires the cause row: "I ran it, still failing"
   with no cause re-check may be an implementation error (the cause is still
   present), which disconfirms nothing. When M6 demotes the identified
-  (validated) cause on a recorded fix with no resolution confirmed, by either
-  arm, it also REFUTES-links that fix's cause rows to the root — never on the
+  (validated) cause and the record shows its latest fix FAILED (the problem
+  seen present at or after the cause's removal, nothing confirmed since), by
+  either arm, it also REFUTES-links that fix's cause rows to the root. The
+  evidence arm also fires on a net-refutation unrelated to any fix, so with
+  no failure observed nothing is marked and a fix that worked keeps its cause
+  row — never on the
   representative proxy's unvalidated pick, which no fix addressed — so they stop standing as a resolution's cause
   leg (§9.5) — the disconfirmation window alone keeps a row from M6's own
   turn.
@@ -1637,9 +1660,9 @@ confirmation must not retroactively mask it; and the mixed single-turn shape
 failed fix and the genuine confirmation at the SAME turn — masking that
 confirmation would strand the resolve behind an ask the user just answered.
 A failed fix's own cause row in M6's turn is dropped by the disconfirmation
-rule instead: when M6 demotes the identified cause on a recorded fix with no
-resolution confirmed, it REFUTES-links the cause rows recorded since that fix to the
-root (#1927), so a later mitigation's problem-gone row cannot complete both
+rule instead: when M6 demotes the identified cause and the record shows its
+latest fix failed, it REFUTES-links the cause rows recorded since that fix (all
+but those affirmatively about another chain) to the root (#1927), so a later mitigation's problem-gone row cannot complete both
 legs on them. The engine marker is reliable because M6 mints its row even when the model
 already recorded the failure with its own decisive refute
 (`_attach_engine_refutation` idempotence is scoped to the ENGINE's own row —

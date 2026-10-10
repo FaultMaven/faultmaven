@@ -25,6 +25,7 @@ imports and re-exports it.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -802,6 +803,48 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
     INCONCLUSIVE and no conclusion is minted).
 
     Returns None when every candidate is refused."""
+    bearing = bearing_frame(case, root)
+    survivors: list = []
+    for row in candidates:
+        if bearing.about_another_chain(row):
+            absence_confirmation_bearing_rejected_total.inc()
+            continue
+        survivors.append(row)
+    if not survivors:
+        return None
+    return max(survivors, key=lambda e: e.collected_at_turn or 0)
+
+
+@dataclass(frozen=True)
+class BearingFrame:
+    """What a row about ``root`` may legitimately talk about (``frame``), and
+    the rest of the graph's statements (``elsewhere``), as content-token sets.
+    Built by ``bearing_frame``; read by the confirm stamp's mis-citation guard
+    (``_select_bearing_row``) and by M6's failed-fix record (#1927)."""
+
+    frame: frozenset[str]
+    elsewhere: tuple[frozenset[str], ...]
+
+    def bears(self, row) -> bool:
+        """The row shares at least ``_BEARING_MIN_SHARED_TOKENS`` content
+        tokens with the frame."""
+        return len(_row_content_tokens(row) & self.frame) >= _BEARING_MIN_SHARED_TOKENS
+
+    def about_another_chain(self, row) -> bool:
+        """The row bears on another chain while bearing on nothing in the
+        frame: affirmatively about a DIFFERENT candidate cause. A terse row
+        bearing on neither is not refused."""
+        row_tokens = _row_content_tokens(row)
+        return len(row_tokens & self.frame) < _BEARING_MIN_SHARED_TOKENS and any(
+            len(row_tokens & other) >= _BEARING_MIN_SHARED_TOKENS
+            for other in self.elsewhere
+        )
+
+
+def bearing_frame(case: "Case", root: "CausalNode") -> BearingFrame:
+    """``root``'s bearing frame: the problem anchors, the root's statement, its
+    chain's mechanism rungs and its attached hypotheses; ``elsewhere`` is every
+    other non-problem node and every hypothesis attached to another root."""
     frame: set[str] = set()
     for anchor in problem_anchor_statements(case):
         frame |= content_tokens(anchor)
@@ -831,20 +874,9 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
             toks = content_tokens(h.statement)
             if toks:
                 elsewhere_sets.append(toks)
-
-    survivors: list = []
-    for row in candidates:
-        row_tokens = _row_content_tokens(row)
-        if len(row_tokens & frame) < _BEARING_MIN_SHARED_TOKENS and any(
-            len(row_tokens & other) >= _BEARING_MIN_SHARED_TOKENS
-            for other in elsewhere_sets
-        ):
-            absence_confirmation_bearing_rejected_total.inc()
-            continue
-        survivors.append(row)
-    if not survivors:
-        return None
-    return max(survivors, key=lambda e: e.collected_at_turn or 0)
+    return BearingFrame(
+        frozenset(frame), tuple(frozenset(toks) for toks in elsewhere_sets)
+    )
 
 
 def _chain_descendant_ids(case: "Case", root_id: str) -> set[str]:

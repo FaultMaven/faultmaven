@@ -22,6 +22,9 @@ from unittest.mock import patch
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    m6_disconfirmation_basis,
+)
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
@@ -611,3 +614,241 @@ def test_only_a_record_demotion_counts_as_one():
     with patch(target) as counter:
         _recompute_at(case, 9)
     counter.inc.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Review round (PR #1929): only a confirmation at or after the persistence
+# contradicts it; the record reads rows about THIS cause and THIS problem;
+# the marking takes rows only from a fix seen failing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mitigated", [False, True], ids=["delayed-effect", "restart-in-the-turn"]
+)
+def test_the_problem_seen_gone_in_the_persistence_turn_holds_it_off(mitigated):
+    """ "Still 503... now it's up" in one turn after the cause was seen gone:
+    the persistence and the problem-gone row cannot be ordered, and a
+    same-turn ambiguity resolves toward the confirmation, as for the
+    disconfirmation window and the mixed single-turn shape. With or without a
+    restart recorded that turn, nothing is demoted (the accepted residual of
+    ``_confirmed_from``)."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    _recompute_at(case, 9)
+    if mitigated:
+        _accept(case, InvestigationActionType.MITIGATION, 10)
+    case.evidence += [_still_failing(10), _problem_gone(10, label="up_again")]
+    _recompute_at(case, 10)
+
+    assert hyp.state != HypothesisState.REFUTED
+    assert _engine_rows(case) == []
+    assert has_resolution_confirmation(case) is True
+
+
+def test_a_confirmation_from_an_earlier_fix_window_does_not_hold_it_off():
+    """A first fix confirmed at turns 4-5, a relapse, and a second fix whose
+    cause is seen gone at 9 with the problem still there at 10. The first
+    window's two legs are older than the persistence; they must not withhold
+    the second fix's disconfirmation."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 3)
+    case.evidence += [
+        _row(
+            "first_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections now reads 60 after the first change",
+        ),
+        _problem_gone(5, label="first_relief"),
+    ]
+    _recompute_at(case, 5)
+    case.evidence.append(_still_failing(6, label="relapse"))
+    _recompute_at(case, 6)
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    case.evidence.append(_still_failing(10, label="still_503_after_second_fix"))
+    _recompute_at(case, 10)
+
+    _assert_demoted(case, root, hyp)
+
+
+def test_persistence_and_a_fresh_confirmation_in_one_turn_withhold_it():
+    """The mixed single-turn shape: "the first change didn't fix it, but
+    pooling the connections did" records the persistence, a new cause row and
+    the problem gone in ONE turn. Turn granularity cannot order them, so the
+    confirmation stands and nothing is demoted (NO-COLLAPSE)."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    _recompute_at(case, 9)
+    case.evidence += [
+        _still_failing(10),
+        _row(
+            "pool_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            10,
+            "max_connections headroom is now 80 free slots with pgbouncer",
+        ),
+        _problem_gone(10),
+    ]
+    _recompute_at(case, 10)
+
+    assert hyp.state != HypothesisState.REFUTED
+    assert _engine_rows(case) == []
+    assert has_resolution_confirmation(case) is True
+
+
+def test_a_symptom_the_cause_does_not_explain_is_not_persistence():
+    """The fix worked (the cause seen gone at 9), and at 10 the user mentions
+    an unrelated symptom. The record arm demotes with no model judgment, so a
+    symptom row sharing nothing with the problem or the cause is not the
+    problem persisting."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _row(
+            "billing_latency",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "also seeing latency on the billing service",
+        ),
+    ]
+    _recompute_at(case, 10)
+
+    assert hyp.state != HypothesisState.REFUTED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert _engine_rows(case) == []
+
+
+def _add_sibling_chain(case) -> CausalNode:
+    """Another candidate cause in the graph, sharing no content with the
+    identified one; the conclusion keeps naming the identified cause."""
+    sibling = CausalNode(
+        node_id="cn_00000000eeee",
+        statement="a memory leak in the gunicorn worker",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.3,
+        actionable=True,
+        generated_at_turn=1,
+    )
+    case.causal_nodes[sibling.node_id] = sibling
+    case.hypotheses["hyp_00000000eeee"] = Hypothesis(
+        hypothesis_id="hyp_00000000eeee",
+        statement="a memory leak in the gunicorn worker",
+        category=HypothesisCategory.CODE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="initial",
+        root_node_id=sibling.node_id,
+        initial_likelihood=0.2,
+        generated_at_turn=1,
+    )
+    return sibling
+
+
+def test_a_fix_of_another_candidate_does_not_disconfirm_the_identified_cause():
+    """The latest fix addressed another candidate in the graph: its cause row
+    is about that chain and nothing in the identified cause's frame. That
+    cause going away while the problem stays says nothing about the
+    identified cause."""
+    case, root, hyp = _identified_case()
+    _add_sibling_chain(case)
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _row(
+            "leak_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "gunicorn worker memory leak patched, worker RSS now flat",
+        ),
+        _still_failing(10),
+    ]
+    _recompute_at(case, 10)
+
+    assert hyp.state != HypothesisState.REFUTED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert _engine_rows(case) == []
+
+
+def test_a_demotion_with_no_failure_observed_marks_no_cause_row():
+    """The model refutes the cause in the turn its fix's cause row lands, with
+    no persistence observed. The evidence arm demotes, but no fix was seen
+    failing: the cause row is not marked, and the user's problem-gone row
+    still completes the resolution, as on main."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    hyp.state = HypothesisState.REFUTED
+    hyp.refutation_reason = "the pool exhaustion pattern does not match"
+    _recompute_at(case, 9)
+    _assert_demoted(case, root, hyp)
+    case.evidence.append(_problem_gone(10))
+    _recompute_at(case, 10)
+
+    assert _eid("cause_gone") not in _refuting_row_ids(root)
+    assert has_resolution_confirmation(case) is True
+
+
+def test_a_cause_row_the_root_supports_still_gets_its_refutation():
+    """The marking is idempotent on REFUTES links only. A cause row the root
+    already SUPPORTS-links would otherwise keep standing as the cause leg, and
+    a later mitigation's relief would resolve the case on it."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    cause_row = _cause_gone(9)
+    case.evidence += [cause_row, _still_failing(9)]
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=cause_row.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="stamped",
+            linked_at_turn=9,
+        )
+    )
+    _recompute_at(case, 9)
+    _assert_demoted(case, root, hyp)
+    _mitigate(case)
+
+    assert cause_row.evidence_id in _refuting_row_ids(root)
+    _assert_not_resolved_on_the_failed_cause(case)
+
+
+def test_the_latest_persistence_is_what_a_confirmation_must_follow():
+    """The cause seen gone at 9, the problem at 10, both legs at 11, and the
+    problem back at 12. The latest observation governs: the turn-11
+    confirmation is overtaken by the turn-12 persistence."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _still_failing(10),
+        _row(
+            "cause_gone_again",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            11,
+            "max_connections still reads 100",
+        ),
+        _problem_gone(11),
+        _still_failing(12, label="back_to_503"),
+    ]
+    _recompute_at(case, 12)
+
+    _assert_demoted(case, root, hyp)
+
+
+def test_a_standing_confirmation_with_no_persistence_is_metered_as_one():
+    """With nothing observed persisting, a confirmed resolution is what the
+    refusal reports, not the missing persistence."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [_cause_gone(9), _problem_gone(9)]
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
+        "m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="resolution_confirmed")

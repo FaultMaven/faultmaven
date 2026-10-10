@@ -399,10 +399,11 @@ cause_identification_held_mece_total = Counter(
 #   after the fix, but no symptom_evidence is ordered after that observation:
 #   it predates the cause row, or sits in the fix's own execution turn, where
 #   a pasted journal still carries the pre-fix failures (#1927).
-# - ``resolution_confirmed`` — the case confirms a resolution
-#   (``has_resolution_confirmation``: the cause observed removed AND the
-#   problem observed gone after the fix), so the problem demonstrably did NOT
-#   persist. This is the #987 incident shape, and a nonzero rate here means
+# - ``resolution_confirmed`` — the problem is observed gone at or after the
+#   latest observed persistence (same turn included), or a resolution is
+#   confirmed with no persistence observed, so the problem demonstrably did
+#   NOT persist. A problem-gone row older than the persistence is overtaken
+#   by it (#1927). This is the #987 incident shape, and a nonzero rate here means
 #   something upstream is still routing a successful fix into the failed-fix
 #   path.
 #
