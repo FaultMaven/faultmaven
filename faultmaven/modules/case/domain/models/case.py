@@ -280,6 +280,19 @@ class Case(BaseModel):
         ),
     )
 
+    kb_context_origin: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Where ``kb_context`` came from (ADR-020 D9): ``driver_id`` — the "
+            "effective driver it was fetched for — plus the ``query`` and "
+            "``trigger`` that produced it, so it can be re-run. Context whose "
+            "driver is not the case's current effective driver is never shown "
+            "(``kb_push.visible_kb_context``) and is re-fetched at the next "
+            "turn's start. ``None`` with context present means it was fetched "
+            "for the creator."
+        ),
+    )
+
     # ============================================================
     # Investigation Progress (SECONDARY - Internal Detail)
     # ============================================================

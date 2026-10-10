@@ -350,6 +350,15 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
                 "kb_context": (
                     to_json_compatible(case.kb_context) if case.kb_context else None
                 ),
+                # Its origin (ADR-020 D9): which driver it was fetched for, and
+                # the query that fetched it. Must round trip with it, or the
+                # staleness check reads every reloaded context as the
+                # creator's.
+                "kb_context_origin": (
+                    to_json_compatible(case.kb_context_origin)
+                    if case.kb_context_origin
+                    else None
+                ),
             }
         ),
     }
@@ -457,6 +466,7 @@ def _row_to_case(
         # Pre-fetched runbooks (the KB push channel, fm#1360). See the
         # writer for why dropping this made the channel inert.
         "kb_context": metadata.get("kb_context"),
+        "kb_context_origin": metadata.get("kb_context_origin"),
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

@@ -153,7 +153,7 @@ class KbPrefetcher:
         case: "Case",
         query: str,
         trigger: str,
-    ) -> None:
+    ) -> bool:
         """Search KB for runbooks matching the query, store on case.
 
         Args:
@@ -163,11 +163,16 @@ class KbPrefetcher:
 
         Side effect only: writes the top ``KB_CONTEXT_MAX_ENTRIES`` admitted
         hits to ``case.kb_context`` (or clears it on a miss) for the prompt
-        builder. Nothing consumes a return value since the KB cause seeder
-        was removed (fm#1295).
+        builder, with ``case.kb_context_origin`` naming the driver it was
+        fetched for and the query that fetched it (ADR-020 D9).
+
+        Returns whether the search COMPLETED (a hit or a miss) — ``False`` when
+        it could not run or failed, leaving ``kb_context`` untouched. Only
+        :meth:`refresh_for_driver` reads it: a failed re-fetch there must clear
+        the previous driver's context rather than leave it standing.
         """
         if not self.deps.knowledge_service:
-            return None
+            return False
 
         # Policy gate on the PUSH channel (fm#1360, Option B). Off means the
         # search does not run AT ALL — the cost this gate exists to control is
@@ -187,7 +192,8 @@ class KbPrefetcher:
 
         if not get_settings().knowledge.kb_prefetch_enabled:
             case.kb_context = None
-            return None
+            case.kb_context_origin = None
+            return True
 
         try:
             # Owner-aware scope. The pre-fetch may
@@ -285,6 +291,15 @@ class KbPrefetcher:
                     }
                     for r in _admit_diverse(relevant)
                 ]
+                # Who the context was fetched FOR (ADR-020 D9), and how to
+                # fetch it again. A driver change makes it stale: it is hidden
+                # from every reader (``kb_push.visible_kb_context``) and
+                # re-run by :meth:`refresh_for_driver` at the next turn.
+                case.kb_context_origin = {
+                    "driver_id": case.effective_driver_id,
+                    "query": query,
+                    "trigger": trigger,
+                }
                 # Identity, not just a count (fm#1361). "3 matches" cannot
                 # answer "which runbook informed this answer?" or "was
                 # retrieval any good?" — both need to know WHICH documents were
@@ -341,10 +356,41 @@ class KbPrefetcher:
                 # the search ran and produced nothing worth showing, which is
                 # precisely when stale context should go.
                 case.kb_context = None
-            return None
+                case.kb_context_origin = None
+            return True
         except Exception:
             logger.warning(
                 f"KB pre-fetch ({trigger}) failed for case {case.case_id}",
                 exc_info=True,
             )
-            return None
+            return False
+
+    async def refresh_for_driver(self, case: "Case") -> None:
+        """Re-fetch ``kb_context`` when it was fetched for a different driver.
+
+        Run at the start of every turn, before the prompt is built (ADR-020
+        D9). The pre-fetch fires only at three edges, so context fetched while
+        one account drove would otherwise stand in every later prompt, under
+        the next driver, until an edge happened to fire again. Checked here, at
+        the consumer, rather than cleared by every writer that can change the
+        driver: a reassignment, each release, ``fm-reassign-cases`` and the
+        foreign key's own ``ON DELETE SET NULL`` all change it, and none of
+        them has to know this field exists.
+
+        Re-run with the stored query under the current driver; if the re-run
+        cannot complete — or there is no query to re-run — the stale context is
+        cleared, so a failure can never leave the previous driver's runbooks in
+        the prompt. Context already fetched for this driver is left alone.
+        """
+        from faultmaven.core.investigation.kb_push import kb_context_is_stale
+
+        if not kb_context_is_stale(case):
+            return
+        origin = case.kb_context_origin or {}
+        query = origin.get("query")
+        refreshed = bool(query) and await self.prefetch_kb_context(
+            case, query, origin.get("trigger") or "symptom"
+        )
+        if not refreshed:
+            case.kb_context = None
+            case.kb_context_origin = None

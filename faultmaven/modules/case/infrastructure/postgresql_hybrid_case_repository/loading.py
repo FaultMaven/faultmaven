@@ -493,6 +493,7 @@ async def _row_to_case(
         "last_suggestions": metadata.get("last_suggestions"),
         # Pre-fetched runbooks (the KB push channel, fm#1360).
         "kb_context": metadata.get("kb_context"),
+        "kb_context_origin": metadata.get("kb_context_origin"),
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

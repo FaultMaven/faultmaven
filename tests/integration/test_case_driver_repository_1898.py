@@ -214,6 +214,24 @@ async def test_a_full_row_save_never_writes_the_driver(world):
     assert stored.driver_id == world.driver
 
 
+async def test_the_kb_context_origin_round_trips(world):
+    """Who the pre-fetched context was fetched for (ADR-020 D9) must survive a
+    save, or every reloaded context would read as the creator's and stale
+    context would reach the next driver's prompt."""
+    case = world.case(driver_id=world.driver)
+    case.kb_context = [{"title": "rb", "summary": "s", "parent_document_id": "rb1"}]
+    case.kb_context_origin = {
+        "driver_id": world.driver,
+        "query": "etcd member",
+        "trigger": "symptom",
+    }
+    await world.run("save", case)
+
+    stored = await world.run("get", case.case_id)
+
+    assert stored.kb_context_origin == case.kb_context_origin
+
+
 async def test_a_creator_driven_case_stores_null(world):
     case = world.case()
     await world.run("save", case)

@@ -431,6 +431,12 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
                     "kb_context": (
                         to_json_compatible(case.kb_context) if case.kb_context else None
                     ),
+                    # Its origin (ADR-020 D9) — see the SQLite writer.
+                    "kb_context_origin": (
+                        to_json_compatible(case.kb_context_origin)
+                        if case.kb_context_origin
+                        else None
+                    ),
                 }.items()
                 if v
             }
