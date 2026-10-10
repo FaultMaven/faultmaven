@@ -110,6 +110,19 @@ async def _gate_sources_for_viewer(
     )
 
 
+async def _gate_page_sources(
+    request: Request, viewer: Any, page: CaseMessagesResponse
+) -> None:
+    """Gate every row's stored ``sources`` on a transcript page, in place.
+
+    One visibility check for the whole page (``gate_kb_sources``).
+    """
+    rows = page.messages
+    gated = await _gate_sources_for_viewer(request, viewer, [r.sources for r in rows])
+    for row, sources in zip(rows, gated):
+        row.sources = sources
+
+
 async def _turn_gated_for_viewer(
     request: Request, viewer: Any, turn: TurnResponse
 ) -> TurnResponse:
@@ -164,17 +177,7 @@ async def get_case_messages_enhanced(
             case_id=case_id, limit=limit, offset=offset, include_debug=include_debug
         )
         # Stored runbook excerpts are checked against THIS viewer (#1919).
-        gated = await _gate_sources_for_viewer(
-            request, current_user, [m.sources for m in message_response.messages]
-        )
-        message_response = message_response.model_copy(
-            update={
-                "messages": [
-                    m.model_copy(update={"sources": sources})
-                    for m, sources in zip(message_response.messages, gated)
-                ]
-            }
-        )
+        await _gate_page_sources(request, current_user, message_response)
 
         # Add headers for metadata. X-Total-Count is the canonical pagination
         # header used by every other list endpoint (and expected by the contract
