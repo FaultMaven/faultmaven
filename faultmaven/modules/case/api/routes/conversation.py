@@ -162,6 +162,12 @@ async def get_case_messages_enhanced(
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
+    # The body varies by viewer: stored runbook excerpts are gated for the
+    # requester (#1919), so no shared or browser cache may serve one reader's
+    # page to another. The same headers ``list_cases`` sets.
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
     try:
         # Verify user has access to the case

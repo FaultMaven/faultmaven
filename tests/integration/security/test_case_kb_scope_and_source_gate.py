@@ -540,8 +540,13 @@ def _request(world: _World) -> Any:
     )
 
 
-async def _messages_as(world: _World, viewer_id: str, case: Case) -> List[Source]:
-    """``GET /cases/{id}/messages`` through the route, as ``viewer_id``."""
+async def _messages_as(
+    world: _World, viewer_id: str, case: Case, *, http: Any = None
+) -> List[Source]:
+    """``GET /cases/{id}/messages`` through the route, as ``viewer_id``.
+
+    ``http``: the ``Response`` the route writes its headers on, when a test
+    reads them."""
     from faultmaven.modules.case.api.routes.conversation import (
         get_case_messages_enhanced,
     )
@@ -553,7 +558,7 @@ async def _messages_as(world: _World, viewer_id: str, case: Case) -> List[Source
     response = await get_case_messages_enhanced(
         case_id=case.case_id,
         request=_request(world),
-        response=Response(),
+        response=http if http is not None else Response(),
         limit=50,
         offset=0,
         include_debug=False,
@@ -667,24 +672,37 @@ def _turn(sources: List[Source]) -> TurnResponse:
     )
 
 
-async def _turn_as(
-    world: _World, viewer_id: str, sources: List[Source], *, replayed: bool = False
-):
-    """``POST /cases/{id}/turns`` through the route, returning ``sources``.
+#: How the turn route answers: ``live`` runs the turn; ``replayed`` carries an
+#: ``Idempotency-Key`` whose turn already committed, answered from the receipt at
+#: the idempotency step (#1888); ``receipt_race`` runs, but its commit meets a
+#: receipt another request under the same key wrote meanwhile
+#: (``TurnReceiptExistsError``), and is answered with that committed turn.
+TURN_ANSWERS = ["live", "replayed", "receipt_race"]
 
-    ``replayed``: the request carries an ``Idempotency-Key`` whose turn already
-    committed, so the route answers from the receipt (#1888) without running.
-    """
+
+async def _turn_as(
+    world: _World, viewer_id: str, sources: List[Source], *, answer: str = "live"
+):
+    """``POST /cases/{id}/turns`` through the route, returning ``sources``."""
     from faultmaven.modules.case.api.routes import conversation
+    from faultmaven.modules.case.contracts import TurnReceiptExistsError
 
     case = _case()
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=case)
     investigation_service = MagicMock()
     investigation_service.prepare_turn = AsyncMock(return_value=_turn(sources))
-    investigation_service.commit_turn = AsyncMock(side_effect=lambda p, **_: p)
+    investigation_service.commit_turn = AsyncMock(
+        side_effect=(
+            TurnReceiptExistsError(case.case_id, "retry-key-0001")
+            if answer == "receipt_race"
+            else (lambda p, **_: p)
+        )
+    )
     keyed = SimpleNamespace(
-        replay=_turn(sources), receipt_key=None, release=AsyncMock()
+        replay=_turn(sources) if answer == "replayed" else None,
+        receipt_key=None,
+        release=AsyncMock(),
     )
     with (
         patch.object(
@@ -694,6 +712,11 @@ async def _turn_as(
         ),
         patch.object(
             conversation, "open_keyed_turn", new=AsyncMock(return_value=keyed)
+        ),
+        patch.object(
+            conversation,
+            "replay_committed_turn",
+            new=AsyncMock(return_value=_turn(sources)),
         ),
     ):
         return await conversation.submit_turn(
@@ -710,20 +733,18 @@ async def _turn_as(
             case_service=case_service,
             investigation_service=investigation_service,
             current_user=_viewer(viewer_id),
-            idempotency_key="retry-key-0001" if replayed else None,
+            idempotency_key=None if answer == "live" else "retry-key-0001",
         )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("replayed", [False, True], ids=["live", "replayed"])
-async def test_the_turn_response_is_gated_for_its_requester(world, replayed):
+@pytest.mark.parametrize("answer", TURN_ANSWERS)
+async def test_the_turn_response_is_gated_for_its_requester(world, answer):
     stored = [Source.model_validate(_stored_source(d)) for d in STORED]
 
-    driver_view = _shown(
-        (await _turn_as(world, DRIVER, stored, replayed=replayed)).sources
-    )
+    driver_view = _shown((await _turn_as(world, DRIVER, stored, answer=answer)).sources)
     outsider_view = _shown(
-        (await _turn_as(world, OUTSIDER, stored, replayed=replayed)).sources
+        (await _turn_as(world, OUTSIDER, stored, answer=answer)).sources
     )
 
     assert driver_view[RB_DRIVER_PERSONAL] == f"excerpt MARKER::{RB_DRIVER_PERSONAL}::"
@@ -750,3 +771,16 @@ async def test_an_unpublished_runbook_is_redacted_for_everyone_but_its_owner(wor
 
     assert RB_GLOBAL not in shown
     assert RB_DRIVER_TEAM in shown, "positive control"
+
+
+@pytest.mark.asyncio
+async def test_the_gated_transcript_is_never_cached(world):
+    """The page varies by viewer, so no cache may serve one reader's page to
+    another: the same no-store headers ``GET /cases`` sets."""
+    http = Response()
+
+    await _messages_as(world, TEAMMATE, _case_with_transcript(), http=http)
+
+    assert http.headers["Cache-Control"] == "no-cache, no-store, must-revalidate"
+    assert http.headers["Pragma"] == "no-cache"
+    assert http.headers["Expires"] == "0"

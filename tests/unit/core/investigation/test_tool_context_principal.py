@@ -7,7 +7,7 @@ resolved to ``"system"``. These cases pin the delivery of the principal from the
 authenticated entry point, because a test that hands ``build_tool_context`` a
 principal directly cannot tell whether anything upstream supplies one.
 
-The KB scope is NOT keyed on this principal: it is the case's audience
+The KB scope is NOT keyed on this principal: it is the case driver's knowledge
 (``case_retrieval_scope``, #1919), pinned in ``test_case_retrieval_scope.py``.
 """
 

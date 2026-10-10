@@ -325,7 +325,7 @@ its own copy of the test. Two of them **refuse**: `bind_request_enterprise_conte
 at the request front door and `require_actor_enterprise` at the route, both 403
 with `UNSCOPED_REQUEST_MSG`. The rest **degrade** — the case read allowlist
 (`CaseService._resolve_shared_case_ids`, `_resolve_team_filter_case_ids`), the KB
-team arm (`resolve_shared_kb_ids`), the agent's shared-KB arm, and both
+team arm (`resolve_shared_kb_ids`), the engine's case scope (`case_retrieval_scope`), and both
 runbook-similarity consumers collapse to the empty set. **Degrading is deliberate
 there**, because those arms already collapse on every other resolution failure
 and narrowing an allowlist is the fail-closed direction — the owner arm still

@@ -754,7 +754,8 @@ async def test_the_system_sentinel_is_a_real_owner_arm_not_an_inert_one(store):
 
     ``build_tool_context`` defaults an unresolved principal to ``"system"``.
     That sentinel used to key ``kb_qa``'s owner arm; since #1919 the tool's
-    scope is the case's audience and the principal reaches no KB filter. The
+    scope is the case driver's knowledge, keyed on the case, and the turn's
+    principal reaches no KB filter. The
     property below is still true of the builder: "matches no owner" is a claim
     about DATA, not an enforced invariant, so any chunk ever stamped
     ``owner_id="system"`` becomes readable to any filter keyed on that string.
@@ -1045,13 +1046,14 @@ def _filter_expressions(name: str, node: ast.Call) -> list[ast.AST]:
 
 
 #: Every place a KB read filter is CONSTRUCTED, with the principal it is keyed
-#: on. Five sites; each passes ids belonging to the caller (or, for the two
-#: case-owner paths, to the case's owner — deliberate, so a user's own resolved
-#: cases seed their own future investigations).
+#: on. Three sites; each passes ids belonging to the caller, or, for the
+#: engine's one site, to the case driver (the case owner until #1898 —
+#: deliberate, so a user's own resolved cases seed their own future
+#: investigations).
 _FILTER_ORIGINS = {
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
-    # The case's audience (#1919): the pre-fetch, kb_qa and the runbook dedup
-    # all take their filter from here.
+    # The case driver's knowledge (#1919): the pre-fetch, kb_qa and the
+    # runbook dedup all take their filter from here.
     (
         "core/investigation/milestone_engine/retrieval_scope.py",
         "case_retrieval_scope",
@@ -1131,7 +1133,8 @@ def test_every_kb_read_filter_originates_from_build_kb_scope_filter():
     return the whole corpus. Nothing in the store can tell such a clause from a
     legitimate one, so the property that keeps it unreachable is a property of
     the CALL SITES: every filter comes from ``build_kb_scope_filter``, at three
-    places, keyed on ids the caller owns or on the case's audience. This pins both halves of that —
+    places, keyed on ids the caller owns or on the case driver's knowledge.
+    This pins both halves of that —
     the set of constructors and the set of forwarders — so a new read path
     fails here until someone states which it is.
     """
