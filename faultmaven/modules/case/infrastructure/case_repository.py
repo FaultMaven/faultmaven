@@ -1104,6 +1104,11 @@ class InMemoryCaseRepository(CaseRepository):
             self.restore_save_stamps(case, stamps)
             raise
         case.version = 1 if existing is None else case.version + 1
+        if existing is not None:
+            # The stored driver is authoritative, as the SQL repositories'
+            # UPDATE never writes ``driver_id`` (ADR-020): its one writer is
+            # ``reassign_driver`` / ``release_driver``.
+            case.driver_id = existing.driver_id
 
         self._cases[case.case_id] = case
         for report in reports:

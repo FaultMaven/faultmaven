@@ -196,6 +196,24 @@ async def test_the_driver_round_trips_through_insert_update_get_and_list(world):
     assert [c.driver_id for c in listed if c.case_id == case.case_id] == [world.driver]
 
 
+async def test_a_full_row_save_never_writes_the_driver(world):
+    """The driver's one writer is the versioned reassign/release: a save
+    carrying a different ``driver_id`` in memory leaves the stored one alone,
+    so no turn's save can ever write a driver back (plan risk 1, closed
+    structurally)."""
+    case = world.case(driver_id=world.driver)
+    await world.run("save", case)
+    loaded = await world.run("get", case.case_id)
+
+    loaded.driver_id = world.mate
+    loaded.title = "Saved by a turn"
+    await world.run("save", loaded)
+
+    stored = await world.run("get", case.case_id)
+    assert stored.title == "Saved by a turn"
+    assert stored.driver_id == world.driver
+
+
 async def test_a_creator_driven_case_stores_null(world):
     case = world.case()
     await world.run("save", case)

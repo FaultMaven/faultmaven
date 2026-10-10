@@ -55,7 +55,9 @@ async def _upsert_case_record(db, case: Case) -> None:
     update_query = text("""
             UPDATE cases SET
                 user_id = :user_id,
-                driver_id = :driver_id,
+                -- driver_id is NOT written here (ADR-020): its one writer
+                -- is the versioned reassign/release (case_driver_sql), so a
+                -- full-row save can never write a driver back.
                 enterprise_id = :enterprise_id,
                 organization_id = :organization_id,
                 title = :title,

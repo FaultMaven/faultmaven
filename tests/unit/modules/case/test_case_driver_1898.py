@@ -293,6 +293,15 @@ class TestTheWriteSplit:
             closed = await world.service.close_case(CASE_ID, DRIVER)
             assert closed.state == CaseState.CLOSED
 
+    async def test_a_reader_closing_a_terminal_case_is_told_nothing(self, world):
+        """The gate runs before the terminal check: a reader who does not drive
+        gets the absent-case answer, not ``CASE_TERMINAL``, which would tell
+        them the case's state through a write they may not make."""
+        await _case(world.repository, driver_id=DRIVER, state=CaseState.CLOSED)
+
+        with pytest.raises(NotFoundError):
+            await world.service.close_case(CASE_ID, CREATOR)
+
     async def test_close_is_the_drivers(self, world):
         await _case(world.repository, driver_id=DRIVER)
 
@@ -628,6 +637,21 @@ class TestReleaseOnTeamLeave:
         assert change.reason is CaseDriverChangeReason.LEFT_TEAM
         assert change.actor_user_id == DRIVER
 
+    async def test_a_case_not_shared_with_the_left_team_is_not_touched(self, world):
+        """Only cases the leave affects are released: a release carries an
+        audited reason, and ``left_team`` on a case the team never held would
+        be a false record — even for a driver who has no read path to it
+        already (security does not depend on the release; see the resolver)."""
+        world.shares.shares[CASE_ID] = set()
+        await _case(world.repository, driver_id=DRIVER)
+
+        released = await world.service.release_driver_before_team_leave(
+            enterprise_id=ENTERPRISE, team_id="t1", user_id=DRIVER
+        )
+
+        assert released == 0
+        assert world.repository.driver_changes == []
+
     async def test_another_enterprises_case_is_not_touched(self, world):
         await _case(world.repository, driver_id=DRIVER, enterprise_id=OTHER_ENTERPRISE)
 
@@ -739,11 +763,15 @@ class TestAccessWrite:
 # ============================================================
 
 
-async def test_a_full_save_carries_the_stored_driver(world):
-    """A turn's save writes every column back; it must carry ``driver_id``."""
+async def test_a_full_save_never_writes_the_driver(world):
+    """A turn's save writes the case back; the stored driver is authoritative
+    there, as in the SQL repositories, whose UPDATE does not write it."""
     await _case(world.repository, driver_id=DRIVER)
-    case = await world.repository.get(CASE_ID)
+    # A COPY, as a SQL load is: the in-memory repository hands out the stored
+    # object itself, and editing that would edit the store, not a save.
+    case = (await world.repository.get(CASE_ID)).model_copy(deep=True)
     case.inquiry = InquiryData(proposed_problem_statement="p")
+    case.driver_id = TEAMMATE
 
     await world.repository.save(case)
 
