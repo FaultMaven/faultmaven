@@ -387,7 +387,9 @@ class InvestigationService:
             # no offer is refused at no cost, and the classification below sees
             # the attachment the turn really carries.
             chat_data_save = (
-                admit_chat_data_save(case, payload) if case is not None else None
+                admit_chat_data_save(case, payload, user_id)
+                if case is not None
+                else None
             )
             classification, next_turn, processing_mode = (
                 await self._verify_access_and_reserve(
@@ -424,6 +426,7 @@ class InvestigationService:
                 record_chat_data_save(
                     chat_data_save,
                     turn=next_turn,
+                    attachments=payload.attachments,
                     preprocess_results=preprocess_results,
                 )
 

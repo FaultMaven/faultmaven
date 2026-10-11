@@ -742,7 +742,11 @@ class EvidenceToAdd(NullTolerantModel):
     )
     category: EvidenceCategory
     source_type: SubmittedSourceType
+    # Defaults to "" so a row that omits the key is refused at apply, in place,
+    # like a null — failing it here would drop it from the list and shift every
+    # later ``new_index_N`` ref.
     source_file_id: str = Field(
+        default="",
         description=(
             "The uploaded file this extract came from: copy the file_id "
             'verbatim from the <evidence file_id="..."> or '
@@ -1747,15 +1751,16 @@ class ChatDataBlock(NullTolerantModel):
     what the user wrote, never the model's copy of it.
     """
 
+    # Uncapped: the model copies the line EXACTLY, and a long log line (a JSON
+    # record, a stack-trace header) is exactly what users paste. A cap would
+    # prune the block and silently drop the offer.
     first_line: str = Field(
-        max_length=500,
         description=(
             "The block's first line, copied exactly as it appears in the "
             "user's message."
         ),
     )
     last_line: str = Field(
-        max_length=500,
         description=(
             "The block's last line, copied exactly as it appears in the "
             "user's message (the same as first_line for a one-line block)."
@@ -1831,9 +1836,11 @@ class OpenCaseResponse(BaseInteractionResponse):
     message (#1930); a resolved or closed case takes no new data, so its
     schema has no such field."""
 
+    # No ``max_length``: a sixth block on a provider that does not enforce
+    # ``maxItems`` would fail the whole response, which nothing can prune. The
+    # engine reads the first ``MAX_CHAT_DATA_BLOCKS``.
     chat_data_blocks: Optional[List[ChatDataBlock]] = Field(
         default=None,
-        max_length=5,
         description=(
             "Output a system produced (command output, log lines, a config "
             "excerpt, an error a program printed) that the user typed or "

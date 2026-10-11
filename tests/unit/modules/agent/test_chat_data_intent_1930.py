@@ -26,7 +26,7 @@ from faultmaven.core.investigation.chat_data import (
     TURN_METADATA_CHAT_DATA_OFFER,
     mint_chat_data_offer,
 )
-from faultmaven.core.investigation.schemas import TurnPayload
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import ValidationException
 from faultmaven.models.api import DataType
@@ -35,13 +35,19 @@ from faultmaven.modules.agent.domain.services.investigation_service.chat_data im
     RESUBMIT_LABEL,
     SAVE_LABEL,
     SUBMIT_LABEL,
+    _handle_save_chat_data,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _INTENT_DISPATCH,
     InvestigationService,
     _IntentDispatchKind,
 )
-from faultmaven.modules.case.contracts import ChatDataOffer, ChatDataOfferState
+from faultmaven.modules.case.contracts import (
+    ChatDataOffer,
+    ChatDataOfferState,
+    TurnOutcome,
+    TurnProgress,
+)
 
 from .conftest import MockCaseRepository, MockMilestoneEngine, create_sample_case
 
@@ -323,3 +329,100 @@ class TestRefusals:
         assert (
             _INTENT_DISPATCH[IntentType.SAVE_CHAT_DATA] == _IntentDispatchKind.SERVICE
         )
+
+
+class TestReviewRound:
+    """#1931 review: what a save records and who it answers."""
+
+    async def test_a_save_records_its_own_paste_and_drops_the_blocks(
+        self, repo_and_case, preprocessing, file_storage
+    ):
+        """The click carries another file too: the offer names the file ITS
+        paste produced, and keeps only the blocks' keys."""
+        repo, case = repo_and_case
+        offer = _with_offer(case)
+        hashes = iter(["a" * 64, "b" * 64])
+        preprocessing.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: _preprocessed(next(hashes))
+        )
+        blobs = iter([{"file_path": "x/1.txt"}, {"file_path": "x/2.txt"}])
+        file_storage.store_file = AsyncMock(side_effect=lambda *a, **k: next(blobs))
+        payload = _click(offer.offer_id)
+        payload.attachments.append(
+            Attachment(
+                content=b"another file",
+                filename="other.log",
+                content_type="text/plain",
+                source_metadata={"source_type": "file_upload"},
+            )
+        )
+        service = _service(MockMilestoneEngine(), repo, preprocessing, file_storage)
+
+        await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        saved = await repo.get(case.case_id)
+        paste = next(f for f in saved.uploaded_files if f.filename.startswith("chat-"))
+        (settled,) = saved.chat_data_offers
+        assert settled.file_ids == [paste.file_id]
+        assert settled.blocks == [] and settled.block_keys
+
+    async def test_a_reader_who_does_not_drive_is_refused_first(
+        self, repo_and_case, preprocessing, file_storage
+    ):
+        """The offer ids are the driver's business: anyone else gets the
+        refusal every other turn gives them, before any offer lookup."""
+        from faultmaven.exceptions import PermissionDeniedException
+
+        repo, case = repo_and_case
+        service = _service(MockMilestoneEngine(), repo, preprocessing, file_storage)
+
+        with pytest.raises(PermissionDeniedException):
+            await service.process_turn(
+                case_id=case.case_id,
+                user_id="someone_else",
+                payload=_click("cdo_000000000000"),
+            )
+
+    async def test_the_reply_names_the_turn_the_user_sees(self, repo_and_case):
+        """The investigation ordinal, not the message clock: an aside on turn 2
+        makes message 4 the user's turn 3."""
+        _, case = repo_and_case
+        case.current_turn = 5
+        case.turn_history = [
+            TurnProgress(
+                turn_number=2, progress_made=False, outcome=TurnOutcome.OUT_OF_BAND
+            ),
+        ]
+        offer = _with_offer(case, state=ChatDataOfferState.SAVED)
+        offer.turn = 4
+
+        result = await _handle_save_chat_data(case, offer_id=offer.offer_id)
+
+        assert "(turn 3)" in result["agent_response"]
+
+
+def test_six_named_blocks_do_not_fail_the_response():
+    """No cap on the list in the schema: a provider that ignores maxItems must
+    not fail the whole turn; the engine reads the first five."""
+    from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+
+    response = InvestigationResponse_Diagnosis.model_validate(
+        {
+            "agent_response": "x",
+            "state_updates": {},
+            "chat_data_blocks": [
+                {"first_line": f"ERROR {i}", "last_line": f"ERROR {i}"}
+                for i in range(6)
+            ],
+        }
+    )
+    assert len(response.chat_data_blocks) == 6
+
+
+def test_a_long_log_line_can_be_an_anchor():
+    from faultmaven.core.investigation.schemas import ChatDataBlock
+
+    line = '{"level":"error","msg":"' + "x" * 800 + '"}'
+    assert ChatDataBlock(first_line=line, last_line=line).first_line == line

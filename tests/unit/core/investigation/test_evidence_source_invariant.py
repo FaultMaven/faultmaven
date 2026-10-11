@@ -146,12 +146,22 @@ class TestEvidenceToAddInvariant:
         )
         assert ev.source_file_id == "file_aabb12345678"
 
-    def test_the_schema_requires_the_file_id(self):
-        """Required in the schema the model fills, so a strict provider always
-        sends it."""
-        schema = EvidenceToAdd.model_json_schema()
-        assert "source_file_id" in schema["required"]
-        assert "anyOf" not in schema["properties"]["source_file_id"]
+    def test_the_strict_schema_requires_the_file_id(self):
+        """Required in the schema a strict provider fills, so it always sends
+        it."""
+        from faultmaven.utils.schema_converter import to_strict_schema
+
+        strict = to_strict_schema(EvidenceToAdd.model_json_schema())
+        assert "source_file_id" in strict["required"]
+        assert "REQUIRED" in strict["properties"]["source_file_id"]["description"]
+
+    def test_an_omitted_file_id_parses_as_empty_for_refusal_at_apply(self):
+        """A best-effort provider can leave the key out; failing the row here
+        would drop it from the list and shift every later new_index_N ref."""
+        ev = EvidenceToAdd.model_validate(
+            {"summary": "s", "category": "symptom_evidence", "source_type": "logs"}
+        )
+        assert ev.source_file_id == ""
 
     def test_a_null_file_id_parses_as_empty_for_refusal_at_apply(self):
         ev = EvidenceToAdd.model_validate(

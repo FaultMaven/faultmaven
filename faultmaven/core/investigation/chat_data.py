@@ -18,7 +18,6 @@ block is dropped. Dropping is the safe direction — the block stays a claim, as
 it would have without the offer.
 """
 
-import hashlib
 import logging
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -30,6 +29,7 @@ from faultmaven.modules.case.contracts import (
     MAX_CHAT_DATA_BLOCKS,
     Case,
     ChatDataOffer,
+    block_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,34 +93,32 @@ def locate_blocks(
     return blocks, unmatched
 
 
-def block_key(block: str) -> str:
-    """One block's identity for "already answered": its lines, trailing
-    whitespace ignored, hashed."""
-    normalised = "\n".join(line.rstrip() for line in block.splitlines()).strip()
-    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
-
-
 def _offered_block_keys(case: Case) -> set[str]:
     """Every block already offered on this case, whatever became of it: the
     user saw it once, and offering it again would be nagging."""
-    return {
-        block_key(block) for offer in case.chat_data_offers for block in offer.blocks
-    }
+    return {key for offer in case.chat_data_offers for key in offer.block_keys}
 
 
 def _state_request_open(case: Case) -> bool:
-    """Is a state request still waiting, with no data submitted since it was
-    made? Then a new state report is not asked about again: asking every time the
-    user says "still stable" would be nagging, not cooperation."""
-    last = next(
-        (offer for offer in reversed(case.chat_data_offers) if offer.request),
-        None,
+    """Is a state request still waiting? Then a new state report is not asked
+    about again: asking every time the user says "still stable" would be
+    nagging, not cooperation. A request closes on the first later turn that
+    submits data (``close_state_requests``)."""
+    return any(
+        offer.request and offer.decided_at_turn is None
+        for offer in case.chat_data_offers
     )
-    if last is None:
-        return False
-    return not any(
-        (uploaded.uploaded_at_turn or 0) > last.turn for uploaded in case.uploaded_files
-    )
+
+
+def close_state_requests(case: Case) -> None:
+    """A turn submitted data: every waiting state request is answered by it.
+
+    Keyed on the TURN carrying data, not on a new ``UploadedFile`` row: a
+    re-submission that matches an earlier file by content adds no row, and
+    would otherwise leave the request waiting for the rest of the case."""
+    for offer in case.chat_data_offers:
+        if offer.request and offer.decided_at_turn is None:
+            offer.decided_at_turn = case.current_turn
 
 
 def mint_chat_data_offer(
@@ -148,6 +146,8 @@ def mint_chat_data_offer(
     Nothing is offered on a terminal case (it takes no new data) or for an empty
     message.
     """
+    if submitted_data:
+        close_state_requests(case)
     if not (user_message or "").strip() or case.is_terminal:
         return None
     blocks: List[str] = []
@@ -169,14 +169,19 @@ def mint_chat_data_offer(
                 case.current_turn,
                 unmatched,
             )
-        already_offered = _offered_block_keys(case)
-        blocks = [
-            block
-            for block in found
-            if block.strip()
-            and len(block) <= MAX_CHAT_DATA_BLOCK_CHARS
-            and block_key(block) not in already_offered
-        ]
+        # Seeded with the case's earlier offers and grown as this message's own
+        # blocks are taken, so output pasted twice in one message is offered
+        # once.
+        seen = _offered_block_keys(case)
+        for block in found:
+            key = block_key(block)
+            if (
+                block.strip()
+                and len(block) <= MAX_CHAT_DATA_BLOCK_CHARS
+                and key not in seen
+            ):
+                seen.add(key)
+                blocks.append(block)
     request = (getattr(state_report, "request", None) or "").strip() or None
     if request is not None and (submitted_data or _state_request_open(case)):
         request = None

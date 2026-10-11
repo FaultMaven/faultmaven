@@ -834,12 +834,15 @@ class TestStructuredOutputDegradation:
             "agent_response": "Here is my analysis.",
             "state_updates": {
                 "evidence_to_add": [
-                    # invalid: source_type=text without source_file_id (the S4 trigger)
+                    # invalid: an unknown category. (A missing source_file_id,
+                    # the original S4 trigger, no longer fails validation: it
+                    # parses as "" and is refused at apply, in place — #1930.)
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "causal_evidence",
+                        "category": "not_a_category",
                         "source_type": "text",
+                        "source_file_id": "file_123",
                     },
                     # valid: source_file_id present
                     {
@@ -883,8 +886,9 @@ class TestStructuredOutputDegradation:
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "causal_evidence",
+                        "category": "not_a_category",
                         "source_type": "text",
+                        "source_file_id": "file_123",
                     }
                 ]
             },

@@ -26,7 +26,6 @@ import pytest
 
 from faultmaven.core.investigation.chat_data import (
     TURN_METADATA_CHAT_DATA_OFFER,
-    block_key,
     locate_blocks,
     mint_chat_data_offer,
 )
@@ -48,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     ProblemVerification,
     UploadedFile,
+    block_key,
 )
 
 pytestmark = pytest.mark.unit
@@ -330,8 +330,8 @@ class TestTheStateRequest:
         )
 
     def test_not_asked_again_while_a_request_waits(self):
-        """The user who keeps saying "still stable" is not asked every turn; a
-        file submitted since the request reopens it."""
+        """The user who keeps saying "still stable" is not asked every turn;
+        a later turn that submits data answers the request."""
         case = _case()
         mint_chat_data_offer(
             case, user_message="stable", named_blocks=None, state_report=self._report()
@@ -347,14 +347,15 @@ class TestTheStateRequest:
             is None
         )
 
-        case.uploaded_files = [
-            UploadedFile(
-                file_id="file_0123456789ab",
-                filename="pods.txt",
-                size_bytes=10,
-                uploaded_at_turn=case.current_turn,
-            )
-        ]
+        # A turn that submits data answers the request — even a re-submission
+        # that matches an earlier file by content and adds no UploadedFile row.
+        case.current_turn += 1
+        mint_chat_data_offer(
+            case,
+            user_message="here is the pod list",
+            named_blocks=None,
+            submitted_data=True,
+        )
         case.current_turn += 1
         assert (
             mint_chat_data_offer(
@@ -365,6 +366,16 @@ class TestTheStateRequest:
             )
             is not None
         )
+
+    def test_output_pasted_twice_in_one_message_is_offered_once(self):
+        case = _case()
+        anchor = _block(_PODS.splitlines()[0], _PODS.splitlines()[-1])
+        offer = mint_chat_data_offer(
+            case,
+            user_message=f"{_PODS}\nand again:\n{_PODS}",
+            named_blocks=[anchor, anchor],
+        )
+        assert offer.blocks == [_PODS]
 
     def test_placeholders_in_the_request_are_reversed(self):
         case = _case()

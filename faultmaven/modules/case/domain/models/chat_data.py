@@ -18,6 +18,7 @@ the model's copy), so what a save stores is what the user wrote, and the output
 asked for when the message reported a state.
 """
 
+import hashlib
 from enum import Enum
 from typing import List, Optional
 from uuid import uuid4
@@ -29,6 +30,13 @@ MAX_CHAT_DATA_BLOCKS = 5
 #: Longest block an offer carries, in characters. A paste this long belongs in
 #: the client's data box, which every client opens for a multi-line paste.
 MAX_CHAT_DATA_BLOCK_CHARS = 100_000
+
+
+def block_key(block: str) -> str:
+    """One block's identity for "already offered": its lines, trailing
+    whitespace ignored, hashed."""
+    normalised = "\n".join(line.rstrip() for line in block.splitlines()).strip()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
 
 
 class ChatDataOfferState(str, Enum):
@@ -51,8 +59,18 @@ class ChatDataOffer(BaseModel):
     )
     blocks: List[str] = Field(
         default_factory=list,
-        max_length=MAX_CHAT_DATA_BLOCKS,
-        description="Each block exactly as it appears in the user's message.",
+        description=(
+            "Each block exactly as it appears in the user's message, while the "
+            "offer is open. Emptied by a save: the uploaded file holds them."
+        ),
+    )
+    block_keys: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Each block's identity (``block_key``), derived from ``blocks`` when "
+            "the offer is made and kept after a save, so a block is never "
+            "offered twice."
+        ),
     )
     request: Optional[str] = Field(
         default=None,
@@ -70,6 +88,8 @@ class ChatDataOffer(BaseModel):
 
     @model_validator(mode="after")
     def _offers_something(self) -> "ChatDataOffer":
-        if not self.blocks and not self.request:
+        if self.blocks and not self.block_keys:
+            self.block_keys = [block_key(block) for block in self.blocks]
+        if not self.block_keys and not self.request:
             raise ValueError("a chat-data offer carries blocks, a request, or both")
         return self

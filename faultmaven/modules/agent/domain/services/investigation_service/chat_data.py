@@ -24,6 +24,7 @@ offer already saved is answered with that.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.core.investigation.chat_data import find_offer
@@ -50,19 +51,40 @@ SUBMIT_LABEL = "Submit the output"
 _NOTE_PREVIEW_CHARS = 80
 
 
-def admit_chat_data_save(case: Case, payload: TurnPayload) -> Optional[ChatDataOffer]:
+@dataclass
+class ChatDataSave:
+    """A save admitted into this turn: the offer, and the paste that carries it."""
+
+    offer: ChatDataOffer
+    attachment: Attachment
+
+
+def _shown_turn(case: Case, offer: ChatDataOffer) -> int:
+    """The turn number the user sees for the offer's message: the
+    investigation ordinal, not the message clock (the two part after an
+    out-of-band aside)."""
+    return case.investigation_turn_at(offer.turn)
+
+
+def admit_chat_data_save(
+    case: Case, payload: TurnPayload, user_id: Optional[str]
+) -> Optional[ChatDataSave]:
     """Turn a "save it as data" click into the turn's attachment.
 
-    Runs before the turn is consumed. A click naming no offer of this case is
-    refused here (422) and costs nothing. A save of an offer still ``OFFERED``
-    that holds output gains ONE pasted attachment holding the blocks, exactly as
-    the user typed them, and the offer is returned for ``record_chat_data_save``
-    to settle once the turn is admitted. A click on an offer already saved, or
-    one holding no output, returns None and is answered by
+    Runs before the turn is consumed, so the driver's click naming no offer of
+    this case is refused here (422) and costs nothing. Anyone else is left to
+    ``_verify_access_and_reserve``, which refuses them first, as it does every
+    other turn: the offer ids of a case are the driver's business. A save of an
+    offer still ``OFFERED`` that holds output gains ONE pasted attachment holding
+    the blocks, exactly as the user typed them, settled by
+    ``record_chat_data_save`` once the turn is admitted. A click on an offer
+    already saved, or one holding no output, returns None and is answered by
     ``_handle_save_chat_data``.
     """
     intent = payload.intent
     if intent is None or intent.type != IntentType.SAVE_CHAT_DATA:
+        return None
+    if user_id and user_id != case.effective_driver_id:
         return None
     offer = find_offer(case, intent.offer_id)
     if offer is None:
@@ -72,34 +94,41 @@ def admit_chat_data_save(case: Case, payload: TurnPayload) -> Optional[ChatDataO
         )
     if offer.state != ChatDataOfferState.OFFERED or not offer.blocks:
         return None
-    payload.attachments.append(
-        Attachment(
-            content="\n\n".join(offer.blocks).encode("utf-8"),
-            filename=f"chat-turn-{offer.turn}.txt",
-            content_type="text/plain",
-            source_metadata={"source_type": "text_paste", "chat_turn": offer.turn},
-        )
+    attachment = Attachment(
+        content="\n\n".join(offer.blocks).encode("utf-8"),
+        filename=f"chat-turn-{_shown_turn(case, offer)}.txt",
+        content_type="text/plain",
+        source_metadata={"source_type": "text_paste", "chat_turn": offer.turn},
     )
-    return offer
+    payload.attachments.append(attachment)
+    return ChatDataSave(offer=offer, attachment=attachment)
 
 
 def record_chat_data_save(
-    offer: ChatDataOffer, *, turn: int, preprocess_results: List[Any]
+    save: ChatDataSave,
+    *,
+    turn: int,
+    attachments: List[Attachment],
+    preprocess_results: List[Any],
 ) -> None:
     """Settle a save once its turn is admitted and its file is recorded.
 
-    The file id is the one the paste produced or, when the case already held the
-    same content, the existing file it was matched to. The paste is the turn's
-    last attachment (``admit_chat_data_save`` appends it after anything the
-    request carried).
+    The file is the one THIS save's paste produced (matched by the attachment
+    itself, one preprocess result per attachment, in order) or, when the case
+    already held the same content, the existing file it was matched to. The
+    blocks are dropped: the file holds them now, and ``block_keys`` still stops
+    them being offered again.
     """
+    offer = save.offer
+    result = next(
+        res
+        for att, res in zip(attachments, preprocess_results)
+        if att is save.attachment
+    )
     offer.state = ChatDataOfferState.SAVED
     offer.decided_at_turn = turn
-    offer.file_ids = [
-        res.duplicate_of or res.uploaded_file.file_id
-        for res in preprocess_results
-        if getattr(res, "uploaded_file", None) is not None
-    ][-1:]
+    offer.file_ids = [result.duplicate_of or result.uploaded_file.file_id]
+    offer.blocks = []
     CHAT_DATA_OFFER_EVENTS_TOTAL.labels(event="saved").inc()
 
 
@@ -120,8 +149,8 @@ async def _handle_save_chat_data(
         )
     if offer.state == ChatDataOfferState.SAVED:
         reply = (
-            f"That output from your message (turn {offer.turn}) is already saved "
-            "as data."
+            f"That output from your message (turn {_shown_turn(case, offer)}) is "
+            "already saved as data."
         )
     elif not offer.blocks:
         reply = (
