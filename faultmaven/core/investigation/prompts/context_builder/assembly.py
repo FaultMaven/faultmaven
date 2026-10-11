@@ -415,6 +415,31 @@ def _allocate_sections(
     return ctx
 
 
+def _exclusions_reminder(case: Case) -> str:
+    """What the record excludes, restated beside the user's message (#1911).
+
+    The full record sits in the causal graph block, and the rule in the
+    investigation base, both far from the question. A live run (login-401,
+    2026-10-11) had both in its prompt and still answered "what rules out the
+    alternatives?" with exclusions nothing on record backed. So the fact is
+    repeated, in one line, in the slot read last; the model judges what to say.
+    Only while INVESTIGATING and once a hypothesis exists to speak of."""
+    if case.state != CaseState.INVESTIGATING:
+        return ""
+    record = exclusion_record(case, list_refuted=False)
+    if not record:
+        return ""
+    return (
+        "<exclusions_on_record>\n"
+        f"{record}\n"
+        'Say "ruled out" only of a cause refuted on record. Any other '
+        "alternative is not excluded: name the check that would settle it, or "
+        "record the exclusion this turn (link the row that excludes it with "
+        "stance REFUTES and set state=REFUTED).\n"
+        "</exclusions_on_record>\n\n"
+    )
+
+
 def _working_hypotheses(case: Case, standing: list[str]) -> str:
     """The condensed ``<working_hypotheses>`` block a later stage shows in
     place of the causal graph: the standing causes it keeps, then what the
@@ -866,8 +891,9 @@ def build_investigation_context(
             kb_str += "\n"
         kb_str += "</knowledge_context>"
 
-    # 8. System Feedback (Validation errors from previous turn)
-    feedback_str = system_feedback_block(case)
+    # 8. System Feedback (Validation errors from previous turn), then the
+    # exclusions on record, in the slot read last before the user's message.
+    feedback_str = system_feedback_block(case) + _exclusions_reminder(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where

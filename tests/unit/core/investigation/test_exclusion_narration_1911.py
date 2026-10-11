@@ -217,3 +217,37 @@ def test_the_treatment_block_scopes_the_no_more_data_line():
     assert "On the turn you propose resolved, do not suggest additional" in text
     assert "A user who declines because they question the cause" in text
     assert "The engine accepts it once the case records the failure" in text
+
+
+# ---------------------------------------------------------------------------
+# The record restated beside the question (live run, 2026-10-11)
+# ---------------------------------------------------------------------------
+
+
+def _assembled(case: Case) -> str:
+    from faultmaven.core.investigation.prompts.templates.assembly import (
+        get_prompt_for_case,
+    )
+
+    return get_prompt_for_case(
+        case, "What rules out the alternatives?", provider_name="openai"
+    )
+
+
+def test_the_record_is_restated_just_before_the_users_message():
+    """A live login-401 run had the rule and the record in its prompt and still
+    answered with exclusions nothing backed. The fact is repeated in the slot
+    read last, between the conversation and the user's message."""
+    prompt = _assembled(_case(InvestigationStage.TREATMENT, key_refuted=False))
+    reminder = prompt.find("<exclusions_on_record>")
+    assert reminder > prompt.find("<conversation_history")
+    assert reminder < prompt.rfind("What rules out the alternatives?")
+    block = prompt[reminder : prompt.find("</exclusions_on_record>")]
+    assert "Ruled out on record: nothing." in block
+    assert 'Say "ruled out" only of a cause refuted on record' in block
+
+
+def test_no_reminder_before_there_is_a_hypothesis():
+    case = _case(key_refuted=False)
+    case.hypotheses.clear()
+    assert "<exclusions_on_record>" not in _assembled(case)
