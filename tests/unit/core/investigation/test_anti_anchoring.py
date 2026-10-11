@@ -54,6 +54,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -296,7 +298,8 @@ def test_count_held_root_hypothesis_is_not_retired():
         summary="config diff shows pool max_size dropped to 5",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),

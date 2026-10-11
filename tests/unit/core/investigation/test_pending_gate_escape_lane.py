@@ -58,6 +58,8 @@ from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
+_FILE_ID = "file_0123456789ab"
+
 # The two messages that were swallowed in the live incident.
 INCIDENT_REFUSAL = (
     "what are you talking about? you suggested me to prematurely resolve "
@@ -115,7 +117,8 @@ def _resolution_ready_case() -> Case:
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             primary_purpose="confirm the cause was eliminated",
             summary="After the cert rotation the member rejoined and the alerts stopped.",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="user",
             collected_at_turn=1,
         )
@@ -125,7 +128,8 @@ def _resolution_ready_case() -> Case:
             category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
             primary_purpose="re-check the reported symptom after the fix",
             summary="The etcd quorum alerts stopped after the rotation.",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="user",
             collected_at_turn=1,
         )

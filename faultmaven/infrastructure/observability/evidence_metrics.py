@@ -193,6 +193,30 @@ if PROMETHEUS_AVAILABLE:
         "extractor dispatch. Spikes indicate producer-side format drift "
         "or misuse of the page_capture intake path.",
     )
+
+    # #1930: evidence is submitted data. A model-written row whose
+    # source_file_id names no file of the case is refused rather than kept
+    # with no source; the label says why the row never reached the case.
+    EVIDENCE_ROW_REFUSED_TOTAL = Counter(
+        "faultmaven_evidence_row_refused_total",
+        "Number of evidence rows the model wrote that the engine refused. "
+        "reason=unresolved_file: the source_file_id names no uploaded file "
+        "of the case.",
+        ["reason"],
+    )
+
+    # #1930: system output the user typed into a chat message, offered back
+    # for the user to declare. event=offered: an offer of output blocks was
+    # made (one per message); state_requested: a message reported the state of
+    # the user's system with no data, and its output was asked for;
+    # block_unmatched: a block the model named was not found in the message and
+    # was dropped; saved / claimed: the user's answer.
+    CHAT_DATA_OFFER_EVENTS_TOTAL = Counter(
+        "faultmaven_chat_data_offer_events_total",
+        "Chat-data offer lifecycle events: offered, state_requested, "
+        "block_unmatched, saved, claimed.",
+        ["event"],
+    )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
@@ -207,6 +231,8 @@ else:
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
     PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
+    EVIDENCE_ROW_REFUSED_TOTAL = _NoOpMetric()
+    CHAT_DATA_OFFER_EVENTS_TOTAL = _NoOpMetric()
 
 
 __all__ = [
@@ -223,6 +249,8 @@ __all__ = [
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
+    "EVIDENCE_ROW_REFUSED_TOTAL",
+    "CHAT_DATA_OFFER_EVENTS_TOTAL",
     "PROMETHEUS_AVAILABLE",
     "record_triage_escalation_if_same_turn",
 ]
@@ -251,7 +279,7 @@ def record_triage_escalation_if_same_turn(evidence, case, tool_name: str) -> boo
             return False
         # Post-redesign: Evidence.data_type was dropped; the equivalent
         # category lives on Evidence.source_type (logs / metrics /
-        # configuration / visual / user_description). Use its enum value
+        # configuration / code / text / image / engine_inference). Use its enum value
         # for the metric label, falling back to "unknown" only when the
         # field is unset (label name preserved for dashboard compatibility).
         source_type = getattr(evidence, "source_type", None)

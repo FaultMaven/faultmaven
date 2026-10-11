@@ -46,6 +46,8 @@ from faultmaven.modules.case.domain.models.hypothesis import (
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -115,7 +117,8 @@ def _graded_case(
             summary="pool metrics show saturation",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="u",
             collected_at_turn=1,
             collected_at=datetime(2026, 8, 17, 11, 0, 0, tzinfo=UTC),

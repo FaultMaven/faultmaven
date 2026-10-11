@@ -99,7 +99,7 @@ def _apply_chain_emission(
         edges,
         node_links,
         case.current_turn,
-        evidence_created_ids=metadata.get("evidence_added", []),
+        evidence_created_ids=metadata.get("evidence_slots", []),
         validation_repairs=metadata.setdefault("validation_repairs", []),
     )
 

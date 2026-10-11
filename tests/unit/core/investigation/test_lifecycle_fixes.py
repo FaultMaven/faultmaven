@@ -21,6 +21,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
     ProblemVerification,
+    UploadedFile,
 )
 
 
@@ -64,7 +65,7 @@ def mock_repo():
 @pytest.fixture
 def base_case():
     # INVESTIGATING case in the unified opportunistic flow (no path fork).
-    return Case(
+    case = Case(
         case_id="case_1234567890ab",
         title="Test Case",
         state=CaseState.INVESTIGATING,
@@ -84,6 +85,15 @@ def base_case():
         ),
     )
 
+    # Files the scripted LLM responses cite as evidence sources.
+    for fid in ("file_aabb12345678", "file_0123456789ab"):
+        case.uploaded_files.append(
+            UploadedFile(
+                file_id=fid, filename=f"{fid}.log", size_bytes=100, uploaded_at_turn=0
+            )
+        )
+    return case
+
 
 @pytest.mark.asyncio
 async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
@@ -101,11 +111,11 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
             summary="s",
             content_ref="r",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(),
             collected_by="u",
             collected_at_turn=0,
-            source_file_id=None,
+            source_file_id="file_0123456789ab",
             primary_purpose="Test validation",
             preprocessed_content="Raw stuff",
             content_size_bytes=100,
@@ -170,11 +180,11 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
             summary="s",
             content_ref="r",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(),
             collected_by="u",
             collected_at_turn=0,
-            source_file_id=None,
+            source_file_id="file_0123456789ab",
             primary_purpose="Test validation",
             preprocessed_content="Raw stuff",
             content_size_bytes=100,

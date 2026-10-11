@@ -68,6 +68,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 _ROOT_ID = "cn_000000001927"
@@ -84,7 +86,13 @@ def _row(label, category, turn, summary, collected_by="llm") -> Evidence:
         summary=summary,
         primary_purpose="diagnosis",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        # An engine-authored row is the one fileless kind (ENGINE_INFERENCE).
+        source_type=(
+            EvidenceSourceType.ENGINE_INFERENCE
+            if collected_by == "engine"
+            else EvidenceSourceType.LOGS
+        ),
+        source_file_id=None if collected_by == "engine" else _FILE_ID,
         collected_by=collected_by,
         collected_at_turn=turn,
         collected_at=datetime.now(timezone.utc),

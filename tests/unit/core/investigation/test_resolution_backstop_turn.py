@@ -32,7 +32,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
     derive_disposition_eligibility,
 )
-from faultmaven.modules.case.contracts import ProblemStatus
+from faultmaven.modules.case.contracts import ProblemStatus, UploadedFile
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -47,6 +47,8 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+
+_FILE_ID = "file_0123456789ab"
 
 LLM_ANALYSIS = (
     "The projected audience now matches the provider's registered client ID, "
@@ -82,6 +84,15 @@ def _silent_response():
     )
 
 
+def _file() -> UploadedFile:
+    return UploadedFile(
+        file_id=_FILE_ID,
+        filename="sts.log",
+        size_bytes=512,
+        uploaded_at_turn=1,
+    )
+
+
 def _absence_row(*, category, collected_by="user", turn=1) -> Evidence:
     return Evidence(
         category=category,
@@ -90,7 +101,13 @@ def _absence_row(*, category, collected_by="user", turn=1) -> Evidence:
             "After the provider client-ID correction the pods obtained "
             "credentials and the AssumeRole failures stopped."
         ),
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        # An engine-authored row is the one fileless kind (ENGINE_INFERENCE).
+        source_type=(
+            EvidenceSourceType.ENGINE_INFERENCE
+            if collected_by == "engine"
+            else EvidenceSourceType.LOGS
+        ),
+        source_file_id=None if collected_by == "engine" else _FILE_ID,
         collected_by=collected_by,
         collected_at_turn=turn,
     )
@@ -102,7 +119,8 @@ def _problem_gone_row(*, turn=1) -> Evidence:
         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
         primary_purpose="re-check the reported symptom after the fix",
         summary="AssumeRoleWithWebIdentity succeeds for the data-processor pods.",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="user",
         collected_at_turn=turn,
     )
@@ -155,6 +173,7 @@ def _case(
             longterm_fix="Set the provider ClientIDList to sts.amazonaws.com.",
         )
     ]
+    case.uploaded_files.append(_file())
     if absence is not None:
         case.evidence.append(_absence_row(category=absence, collected_by=collected_by))
     if problem_gone:
@@ -436,7 +455,8 @@ def _recording(category: str, summary: str, extract: str):
                     "summary": summary,
                     "extract": extract,
                     "category": category,
-                    "source_type": "user_description",
+                    "source_type": "logs",
+                    "source_file_id": _FILE_ID,
                 }
             ]
         },

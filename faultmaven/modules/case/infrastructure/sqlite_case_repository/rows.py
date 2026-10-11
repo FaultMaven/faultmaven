@@ -359,6 +359,15 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
                     if case.kb_context_origin
                     else None
                 ),
+                # Offers of chat-typed system output (#1930). Must round trip:
+                # a save or a "my description" click names its offer by id on a
+                # later request, and an answer recorded here is what keeps the
+                # offer from being answered twice.
+                "chat_data_offers": (
+                    to_json_compatible(case.chat_data_offers)
+                    if case.chat_data_offers
+                    else []
+                ),
             }
         ),
     }
@@ -467,6 +476,7 @@ def _row_to_case(
         # writer for why dropping this made the channel inert.
         "kb_context": metadata.get("kb_context"),
         "kb_context_origin": metadata.get("kb_context_origin"),
+        "chat_data_offers": metadata.get("chat_data_offers") or [],
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

@@ -109,14 +109,16 @@ from faultmaven.core.investigation.terminal_transitions import (  # noqa: E402
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import Evidence, EvidenceSourceType
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _ev(category: EvidenceCategory, idx: int = 1) -> Evidence:
     return Evidence(
         evidence_id=f"ev_{idx:012d}",
         summary=f"evidence {idx}",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
-        source_file_id=None,  # user_description is the legal NULL-source case
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_at=datetime.now(timezone.utc),
         collected_by="u1",
         collected_at_turn=1,

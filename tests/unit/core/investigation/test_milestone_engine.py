@@ -24,7 +24,10 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
     ProblemStatus,
     ProblemVerification,
+    UploadedFile,
 )
+
+_FILE_ID = "file_0123456789ab"
 
 
 class MockLLMProvider(ILLMProvider):
@@ -74,7 +77,7 @@ def mock_repo():
 @pytest.fixture
 def base_case():
     # INVESTIGATING case in the unified opportunistic flow (no path fork).
-    return Case(
+    case = Case(
         case_id="case_1234567890ab",
         title="Test Case",
         state=CaseState.INVESTIGATING,
@@ -93,6 +96,15 @@ def base_case():
             proposed_problem_statement="Test symptom",
         ),
     )
+
+    # Files the scripted LLM responses cite as evidence sources.
+    for fid in ("file_aabb12345678", "file_0123456789ab"):
+        case.uploaded_files.append(
+            UploadedFile(
+                file_id=fid, filename=f"{fid}.log", size_bytes=100, uploaded_at_turn=0
+            )
+        )
+    return case
 
 
 def _make_resolution_ready(case):
@@ -215,7 +227,8 @@ def _confirm_root_counterfactually(
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             primary_purpose="diagnosis",
             summary="pool limit raised; timeouts gone for 30 minutes",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="user_123",
             collected_at_turn=2,
         )
@@ -271,14 +284,14 @@ class TestMilestoneEngine:
                 summary="Test evidence",
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
                 collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                source_file_id=None,
+                source_file_id="file_0123456789ab",
                 collected_at_turn=1,
             )
         )
@@ -309,8 +322,7 @@ class TestMilestoneEngine:
                             "category": "symptom_evidence",
                             "source_type": "logs",
                             "extract": "ERROR 500 at /api/checkout",
-                            # Post-010: source_file_id required unless
-                            # source_type=USER_DESCRIPTION.
+                            # source_file_id is required: evidence is submitted data.
                             "source_file_id": "file_aabb12345678",
                         }
                     ],
@@ -471,14 +483,14 @@ class TestMilestoneEngine:
                 summary="Test evidence",
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
                 collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                source_file_id=None,
+                source_file_id="file_0123456789ab",
                 collected_at_turn=1,
             )
         )
@@ -2652,7 +2664,8 @@ class TestVerificationStatusRecordedOnTurn:
                 summary="an observed fact",
                 primary_purpose="diagnosis",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user_123",
                 collected_at_turn=2,
                 collected_at=datetime.now(UTC),

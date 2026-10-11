@@ -48,8 +48,8 @@ class EvidenceVectorizer:
 
         for ev in getattr(case, "evidence", []):
             # Vectorization size gate. Post-010: file-backed evidence has
-            # its size on uploaded_files.size_bytes; chat-extracted evidence
-            # (USER_DESCRIPTION, source_file_id IS NULL) has no backing file
+            # its size on uploaded_files.size_bytes; an engine inference
+            # (ENGINE_INFERENCE, source_file_id IS NULL) has no backing file
             # and is never large enough to vectorize — treat size=0 so it
             # falls below the min-size threshold.
             file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))

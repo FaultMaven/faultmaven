@@ -196,8 +196,8 @@ def test_fields_whose_consumer_cannot_resolve_a_placeholder_stay_strict():
     """Fields whose consumer only matches a persisted id must NOT coerce.
 
     Membership in ``IdRef`` is decided by the consumer, not the field name.
-    ``_resolve_evidence_source`` demotes an unresolvable ``source_file_id`` to
-    USER_DESCRIPTION, and the solution apply-path keeps ``node_ref`` only when
+    ``_source_file_resolves`` refuses a row whose ``source_file_id`` names no
+    upload of the case, and the solution apply-path keeps ``node_ref`` only when
     it is already in ``case.causal_nodes`` — neither resolves ``new_index_N``,
     so annotating them would advertise a form the engine cannot honour.
 

@@ -58,14 +58,14 @@ def _make_evidence(category: EvidenceCategory, idx: int = 1) -> Evidence:
         summary=f"Test evidence {idx}",
         content_ref=f"test_{idx}.log",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
         collected_at=datetime.now(timezone.utc),
         collected_by="user_test",
         primary_purpose="Testing gate",
         preprocessed_content="content",
         content_size_bytes=100,
         preprocessing_method="manual",
-        source_file_id=None,
+        source_file_id="file_0123456789ab",
         collected_at_turn=1,
     )
 

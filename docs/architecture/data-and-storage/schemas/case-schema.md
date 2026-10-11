@@ -306,6 +306,7 @@ class Case(BaseModel):
     escalation_state: Optional[EscalationState]           # JSONB nullable
     documentation: DocumentationData                      # JSONB NOT NULL
     progress: InvestigationProgress                       # JSONB NOT NULL
+    chat_data_offers: List[ChatDataOffer]                 # persisted in `metadata["chat_data_offers"]` (#1930)
     metadata: dict                                        # JSONB NOT NULL (column name: "metadata")
 
     # ============================================================
@@ -477,6 +478,7 @@ COMMENT ON TABLE cases IS 'Root case entity with embedded low-cardinality data i
 - The Pydantic validator on `Case` enforces the same description-non-empty rule for INVESTIGATING and RESOLVED, plus cross-field invariants (`resolved_at` requires RESOLVED; RESOLVED requires `resolved_at` + `closed_at`; CLOSED requires `closure_reason`, and `closure_reason` must be `None` in every other state, RESOLVED included).
 - `current_turn`, `turns_without_progress`, and `version` are first-class columns. The milestone engine reads/writes them directly without JSONB extraction.
 - `metadata` is the SQL column name (Python attribute is `case_metadata` to avoid clashing with SQLAlchemy's `metadata`).
+- `metadata["chat_data_offers"]` (`Case.chat_data_offers`, #1930) holds the chat-data offers: one per user message that carried system output typed into the message box, or reported the state of the user's system with no data showing it. Each entry is `{offer_id (cdo_<12 hex>), turn, blocks (0-5, as the user wrote them), request (the output asked for, or null), state (offered | saved), decided_at_turn, file_ids}`; it carries blocks, a request, or both. A save is final; `file_ids` names the upload it produced. See [evidence-driven-investigation-framework.md §5.3.1](../../investigation-engine/evidence-driven-investigation-framework.md#531-the-chat-data-offer).
 
 ### 4.3 evidence (Single-Table Design)
 
@@ -496,13 +498,13 @@ Post-010 single creation path: every Evidence row originates as an `EvidenceToAd
 | `summary` | LLM | Always set. Short, scannable. |
 | `extract` | LLM (optional) | Verbatim system-output quote. Omit when summary is self-contained. |
 | `category` | LLM | One of four claim-anchored values (symptom / causal / mitigation / solution). |
-| `source_type` | LLM | One of `EvidenceSourceType`; `USER_DESCRIPTION` for chat-extracted quotes. |
-| `source_file_id` | LLM | FK to `uploaded_files`. Required unless `source_type=USER_DESCRIPTION` — guarded by `evidence_source_invariant` CHECK. |
+| `source_type` | LLM | One of `EvidenceSourceType` (what kind of submitted data); `ENGINE_INFERENCE` is engine-written only (the M6 failed-treatment disconfirmation row). |
+| `source_file_id` | LLM | FK to `uploaded_files`. Required unless `source_type=ENGINE_INFERENCE` — guarded by `evidence_source_invariant` CHECK. |
 | `advances_milestones` | System (LLM override) | Inferred from category + this-turn milestones; LLM may override. |
 
 **File-level preprocessing artifacts live on `uploaded_files`.** Structural index, file summary, file-level `data_type`, and coverage timestamps describe the FILE, not any specific claim; they belong with the file row. The `evidence.extract` field is reserved for claim-relevant verbatim quotes.
 
-**File pointer is separate.** Neither `summary` nor `extract` carries the storage location of the original raw file. That lives on `uploaded_files.storage_ref`, reachable from `evidence.source_file_id`. Chat-extracted evidence (`source_type=USER_DESCRIPTION`) has `source_file_id IS NULL`; its source is the user's chat message at `collected_at_turn`.
+**File pointer is separate.** Neither `summary` nor `extract` carries the storage location of the original raw file. That lives on `uploaded_files.storage_ref`, reachable from `evidence.source_file_id`. The only fileless row (`source_type=ENGINE_INFERENCE`, `collected_by="engine"`) is the engine's own M6 disconfirmation. A chat message is a claim, never evidence (#1930): system output typed into one becomes evidence only once the user saves it as data (a pasted file).
 
 **CHECK constraints (mirrored at the Pydantic layer):**
 
@@ -532,7 +534,7 @@ CREATE TABLE evidence (
     --                              | symptom_absence_evidence | causal_absence_evidence
     category            VARCHAR(50) NOT NULL,
     -- domain EvidenceSourceType enum: logs | metrics | configuration
-    --                                | code | text | image | user_description
+    --                                | code | text | image | engine_inference
     source_type         VARCHAR(50),   -- nullable in live ORM (models.py: nullable=True)
 
     -- Two-field content shape (see "Role of summary vs extract" above):
@@ -585,9 +587,9 @@ CREATE TABLE evidence (
         CHECK (extract IS NULL OR LENGTH(TRIM(extract)) > 0),
     CONSTRAINT evidence_reliability_range
         CHECK (reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1)),
-    -- Every row has a known source: either a file or a chat-quoted system output.
+    -- Every row has a known source: a submitted file, or the engine's own M6 row.
     CONSTRAINT evidence_source_invariant
-        CHECK (source_file_id IS NOT NULL OR source_type = 'user_description')
+        CHECK (source_file_id IS NOT NULL OR source_type = 'engine_inference')
 );
 
 -- Tier 1 indexes (both dialects)
@@ -1923,7 +1925,7 @@ The following tables and columns existed in earlier iterations of this design bu
 - **`cases.degraded_mode`** — Vestigial flag with no live readers/writers.
 - **`uploaded_files.preprocessing_summary`** — Dropped in migration 004 (`f7bbadb43e4c`). Preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`) now live as first-class columns on `uploaded_files` (re-added by migration 010).
 - **`uploaded_files.content_ref`** — Renamed to `storage_ref` to make the role (opaque key for the storage backend) clearer.
-- **`uploaded_files.source_type`** — Renamed to `upload_source` to disambiguate from `evidence.source_type`. The two columns have distinct semantics: `upload_source` is provenance (file_upload | conversion_source | api_push); `evidence.source_type` is the data-shape classification (logs | metrics | configuration | code | text | image | user_description).
+- **`uploaded_files.source_type`** — Renamed to `upload_source` to disambiguate from `evidence.source_type`. The two columns have distinct semantics: `upload_source` is provenance (file_upload | conversion_source | api_push); `evidence.source_type` is the data-shape classification (logs | metrics | configuration | code | text | image | engine_inference).
 - **`hypotheses.evidence_links`** — JSON-blob list replaced by the `hypothesis_evidence` junction table (§4.4-bis), which carries a `relationship_type` qualifier and per-link confidence/audit metadata.
 - **Report types `incident_report` and `post_mortem`** — Removed from `ReportType`. Only `resolution_summary` and `closure_summary` remain. Reusable knowledge derived from cases lives in `knowledge_items`, not `reports`.
 

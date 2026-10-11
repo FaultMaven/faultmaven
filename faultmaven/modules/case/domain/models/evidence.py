@@ -118,9 +118,10 @@ class EvidenceSourceType(str, Enum):
     Fundamental type of data source.
 
     Aligned with the data classifier (Tier 0); each value names what kind
-    of data the Evidence row's source is. ``USER_DESCRIPTION`` is the
-    chat-quote case where the source is a verbatim system-output quote
-    embedded in the user's message, not a file.
+    of data the Evidence row's source is. Every value but
+    ``ENGINE_INFERENCE`` names data the user SUBMITTED (an uploaded file or
+    a paste, stored as an UploadedFile): what the user writes in a chat
+    message is a claim, never evidence (#1930).
     """
 
     LOGS = "logs"
@@ -184,9 +185,9 @@ class EvidenceSourceType(str, Enum):
     Prose content from a file (uploaded documentation, README, runbook
     excerpt, ticket export). Post-010: this is for prose *files*, not
     for the user's own typed narrative or observations — those aren't
-    evidence under the strict model. For verbatim system-output quotes
-    the user typed inline in chat (e.g., "Got: HTTP/1.1 503 Service
-    Unavailable"), use ``USER_DESCRIPTION`` instead.
+    evidence under the strict model. System output the user typed into a
+    chat message is not evidence either until the user saves it as data
+    (#1930).
     """
 
     IMAGE = "image"
@@ -202,23 +203,17 @@ class EvidenceSourceType(str, Enum):
     Characteristics: Requires visual interpretation
     """
 
-    USER_DESCRIPTION = "user_description"
+    ENGINE_INFERENCE = "engine_inference"
     """
-    Verbatim system-output quote the user typed inline in a short chat
-    message (below the 10K-char threshold that triggers paste-to-file
-    intake). The extract is system output (an error message, a log line,
-    a metric reading) that the user quoted in their own message rather
-    than uploading as a file.
+    A fact the ENGINE derived from rows already on record, never an
+    observation: today only M6's failed-treatment disconfirmation
+    (``causal_graph/disconfirmation.py``), written with
+    ``collected_by=ENGINE_EVIDENCE_AUTHOR``.
 
-    This is the ONE case where ``evidence.source_file_id`` legitimately
-    is NULL — the source is the user's chat message at the same turn
-    (recoverable via ``collected_at_turn`` and the case_messages join).
-
-    The user's own descriptions, opinions, or paraphrases are NOT
-    evidence (per the strict "extract must be system output" rule); the
-    agent should request actual output rather than promoting a
-    paraphrase. This category is exclusively for cases where the user
-    pasted/typed a verbatim system slice into chat.
+    The one source type with no ``source_file_id``: nothing was submitted,
+    the engine inferred it. The ``evidence_source_invariant`` CHECK admits a
+    fileless row for this type only, and the model can never write it
+    (``EvidenceToAdd`` refuses it).
     """
 
 
@@ -701,7 +696,7 @@ class Evidence(BaseModel):
     and only when the LLM has not already overridden it (Tier 3).
 
     LLM declares: summary, extract (optional), category, source_type,
-        source_file_id (required unless source_type=USER_DESCRIPTION),
+        source_file_id (always required: evidence is submitted data),
         likelihood, optionally advances_milestones
     LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
     System fills: evidence_id, collected_at_turn, collected_by,
@@ -805,11 +800,10 @@ class Evidence(BaseModel):
         default=None,
         description=(
             "FK to the UploadedFile this extract came from. Required unless "
-            "``source_type=USER_DESCRIPTION`` (the narrow case where the LLM "
-            "extracted a verbatim system-output quote from the user's short "
-            "chat message — no file involved). Enforced by the "
+            "``source_type=ENGINE_INFERENCE`` (a fact the engine derived, "
+            "with nothing submitted behind it). Enforced by the "
             "``evidence_source_invariant`` CHECK constraint at the DB level "
-            "and by the ``_source_requires_file_unless_user_description`` "
+            "and by the ``_source_requires_file_unless_engine_inference`` "
             "validator at the Pydantic level."
         ),
     )
@@ -900,7 +894,7 @@ class Evidence(BaseModel):
             "'evidence.metadata JSON contract'. "
             "Canonical shape in "
             "faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. "
-            "Optional — chat-quoted Evidence rows have no preprocessing trace."
+            "Optional — an engine-inference row has no preprocessing trace."
         ),
     )
 
@@ -941,25 +935,24 @@ class Evidence(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _source_requires_file_unless_user_description(self) -> "Evidence":
-        """Mirror of the DB ``evidence_source_invariant`` CHECK (migration
-        010): every Evidence row has a source.
+    def _source_requires_file_unless_engine_inference(self) -> "Evidence":
+        """Mirror of the DB ``evidence_source_invariant`` CHECK: every
+        Evidence row has a source.
 
-        - source_file_id IS NOT NULL  → the extract came from a file
+        - source_file_id IS NOT NULL  → the extract came from submitted data
         - source_file_id IS NULL      → only legal when source_type is
-          ``USER_DESCRIPTION`` (the LLM extracted a verbatim system-output
-          quote from the user's short chat message; the source is the
-          user message at ``collected_at_turn``)
+          ``ENGINE_INFERENCE`` (the engine derived it; nothing was submitted)
 
-        Cross-layer defense: same rule in Pydantic and the DB, neither
-        bypassable independently."""
+        A chat message is never a source (#1930): what the user writes is a
+        claim. Cross-layer defense: same rule in Pydantic and the DB,
+        neither bypassable independently."""
         if (
             self.source_file_id is None
-            and self.source_type != EvidenceSourceType.USER_DESCRIPTION
+            and self.source_type != EvidenceSourceType.ENGINE_INFERENCE
         ):
             raise ValueError(
                 "evidence.source_file_id is required unless "
-                "source_type=USER_DESCRIPTION (the chat-quote case)"
+                "source_type=ENGINE_INFERENCE (an engine-derived fact)"
             )
         return self
 

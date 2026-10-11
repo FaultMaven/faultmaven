@@ -81,13 +81,13 @@ class TestTheReadBoundary:
 
     def test_every_legacy_source_type_a_writer_produced_reads(self):
         """What pre-#583 rows actually hold: ``_infer_source_type(...).value``.
-        ``user_description`` is an Evidence-only value no file writer emits."""
+        ``engine_inference`` is an Evidence-only value no file writer emits."""
         written = set(_DATA_TYPE_TO_SOURCE_TYPE.values())
         for source_type in written:
             assert unified_data_type_of(source_type.value) is not None, source_type
 
     @pytest.mark.parametrize(
-        "stored", [None, "", "unknown", "user_description", "logs.log"]
+        "stored", [None, "", "unknown", "engine_inference", "logs.log"]
     )
     def test_absent_or_unrecognised_is_none_not_a_guess(self, stored):
         assert unified_data_type_of(stored) is None

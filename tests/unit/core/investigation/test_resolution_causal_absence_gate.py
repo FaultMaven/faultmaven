@@ -180,7 +180,7 @@ class TestProposedTransitionCaseNormalization:
 class TestTheAbsencePairIsSufficient:
     """The two absence rows alone are the resolution bar. Requiring a separate
     SolutionToAdd record on top blocked the out-of-band path: the user reports a
-    verbal fix -> agent records the absence rows (user_description) but no
+    verbal fix -> agent records the absence rows (file-backed) but no
     solution record -> gate said missing=['solution'] -> stuck-loop -> wrongly
     CLOSED (case_e5f5849b9e4d, the rate-limit out-of-band scenario).
     """

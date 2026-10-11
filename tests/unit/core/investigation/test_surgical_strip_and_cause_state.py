@@ -43,6 +43,8 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _response(milestones: MilestoneUpdates, justifications: dict):
     """Minimal duck-typed investigation response (not Inquiry/Terminal)."""
@@ -239,7 +241,8 @@ class TestDeferredImplementationClose:
                     primary_purpose="confirm the cause was eliminated",
                     summary="After the provider client-ID correction the pods "
                     "obtained credentials and the AssumeRole failures stopped.",
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_FILE_ID,
                     collected_by="user",
                     collected_at_turn=9,
                 )
@@ -249,7 +252,8 @@ class TestDeferredImplementationClose:
                     category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                     primary_purpose="re-check the reported symptom after the fix",
                     summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_FILE_ID,
                     collected_by="user",
                     collected_at_turn=9,
                 )
@@ -691,7 +695,8 @@ class TestDeferredImplementationClose:
                 primary_purpose="confirm the cause was eliminated",
                 summary="After the provider client-ID correction the pods "
                 "obtained credentials and the AssumeRole failures stopped.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=9,
             )
@@ -701,7 +706,8 @@ class TestDeferredImplementationClose:
                 category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                 primary_purpose="re-check the reported symptom after the fix",
                 summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=9,
             )

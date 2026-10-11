@@ -48,6 +48,8 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 # How the case records each LLM-settable milestone as reached. Written out
 # here rather than read from the engine, so the test cannot agree with a wrong
 # mapping; ``test_every_settable_milestone_has_a_recorded_state`` keeps it in
@@ -245,7 +247,8 @@ def _investigating_case() -> Case:
         Evidence(
             summary="systemd reports status=203/EXEC for billing-exporter",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user_123",
             primary_purpose="Symptom verification",

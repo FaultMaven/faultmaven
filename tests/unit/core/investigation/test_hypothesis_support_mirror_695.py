@@ -56,6 +56,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -80,7 +82,8 @@ def _evidence(label: str, category: EvidenceCategory) -> Evidence:
         summary=f"fact-{label} metric-{label} reading-{label}",
         primary_purpose="diagnosis",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),

@@ -74,6 +74,8 @@ from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 NOTICE = "EVIDENCE VALIDATION: probe-1688 — root_cause_identified was NOT recorded"
@@ -196,7 +198,8 @@ def _resolution_ready_case() -> Case:
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             primary_purpose="confirm the cause was eliminated",
             summary="After the cert rotation the member rejoined and the alerts stopped.",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="user",
             collected_at_turn=1,
         )
@@ -206,7 +209,8 @@ def _resolution_ready_case() -> Case:
             category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
             primary_purpose="re-check the reported symptom after the fix",
             summary="The etcd quorum alerts stopped after the rotation.",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="user",
             collected_at_turn=1,
         )
@@ -426,7 +430,8 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
             Evidence(
                 summary="etcd member 2 logs x509: certificate has expired",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user_test",
                 primary_purpose="Symptom verification",
                 collected_at_turn=1,

@@ -1047,6 +1047,7 @@ class IntentType(str, Enum):
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
     GREETING = "greeting"  # Server-minted orientation (greeting / help / empty message); a client-sent value is re-derived from the text
     FILE_RECLASSIFICATION = "file_reclassification"  # Resolve classification_failed: re-run preprocessing on an UploadedFile under a user-chosen DataType
+    SAVE_CHAT_DATA = "save_chat_data"  # Save system output the user typed into a chat message as submitted data, from the offer that names it (#1930)
 
 
 class QueryIntent(BaseModel):
@@ -1117,6 +1118,16 @@ class QueryIntent(BaseModel):
             "(e.g. 'logs_and_errors', 'structured_config')."
         ),
     )
+    offer_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For save_chat_data: the offer whose output is saved as submitted "
+            "data (one pasted file; the turn then runs on it), as the card names "
+            "it (format: ``cdo_xxxxxxxxxxxx``). Forward it as received. "
+            "Re-submitting a corrected copy is the client's own action: it opens "
+            "the data box holding the card's ``prefill`` and sends nothing."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_intent_fields(self):
@@ -1140,6 +1151,9 @@ class QueryIntent(BaseModel):
                 raise ValueError(
                     "file_id and data_type required for file_reclassification intent"
                 )
+        elif self.type == IntentType.SAVE_CHAT_DATA:
+            if not self.offer_id:
+                raise ValueError("offer_id required for save_chat_data intent")
         return self
 
 
@@ -1207,6 +1221,10 @@ class SuggestedActionResponse(BaseModel):
     intent: Optional[Dict[str, Any]] = (
         None  # QueryIntent metadata for deterministic routing
     )
+    # #1930: the text a client puts in its data box when this choice is taken.
+    # Set only on the "re-submit" choice of a chat-data offer: the blocks as
+    # the user typed them, for the user to correct and send as data.
+    prefill: Optional[str] = None
     # Phase 6: EVIDENCE-type suggestions derived from an open EvidenceNeed
     # carry the source need ID for frontend visual linkage (highlight /
     # dismiss / group). The engine resolves any same-turn ``new_index_N``
@@ -1763,9 +1781,9 @@ class EvidenceDetailsResponse(BaseModel):
     source_file: Optional[SourceFileReference] = Field(
         None,
         description=(
-            "Source file this evidence was derived from. NULL only when "
-            "the evidence is a verbatim quote extracted from the user's "
-            "chat message (source_type=USER_DESCRIPTION)."
+            "Source file this evidence was derived from. NULL only on an "
+            "inference the engine recorded (source_type=engine_inference); "
+            "every other row is data the user submitted."
         ),
     )
 

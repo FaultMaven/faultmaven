@@ -68,6 +68,8 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
     SQLiteCaseRepository,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 # ============================================================
 # Fixtures
 # ============================================================
@@ -1607,7 +1609,8 @@ class TestCausalGraphRoundTrip:
                 category=EvidenceCategory.CAUSAL_EVIDENCE,
                 primary_purpose="root_cause",
                 summary="psql from the migration pod times out connecting to :5432",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user_alpha",
                 collected_at_turn=2,
             )

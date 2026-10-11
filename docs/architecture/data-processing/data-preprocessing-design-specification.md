@@ -1381,16 +1381,16 @@ This allows the UI to show: "This finding was derived from [original_file.log], 
 
 Evidence rows are claim-anchored — every row attaches a finding to a specific source. Source is expressed by two fields on the row:
 
-- `Evidence.source_type` ∈ `{logs, metrics, configuration, code, text, image, user_description}`. Describes what kind of data the finding draws from.
-- `Evidence.source_file_id` — points to an `uploaded_files` row when the finding came from a file. `NULL` only for `source_type = user_description` (chat-quoted system output embedded in a short user message).
+- `Evidence.source_type` ∈ `{logs, metrics, configuration, code, text, image, engine_inference}`. Describes what kind of submitted data the finding draws from; `engine_inference` is the engine's own M6 row.
+- `Evidence.source_file_id` — points to the `uploaded_files` row (an upload or a paste) the finding came from. `NULL` only for `source_type = engine_inference`; a chat message is a claim, never evidence (#1930).
 
-The `evidence_source_invariant` DB CHECK enforces the invariant: `source_file_id IS NOT NULL OR source_type = 'user_description'`.
+The `evidence_source_invariant` DB CHECK enforces the invariant: `source_file_id IS NOT NULL OR source_type = 'engine_inference'`.
 
 ### 8.1 Creation paths
 
 Only two paths create Evidence rows. Neither runs at file intake.
 
-- **LLM extraction (the common path).** During `INVESTIGATING`, the LLM emits `evidence_to_add[]` entries, each carrying `summary`, `category`, `source_type`, and either `source_file_id` (pointing to an existing `UploadedFile`) or, for the chat-quote case, `source_type=user_description` with `source_file_id` left null.
+- **LLM extraction (the common path).** During `INVESTIGATING`, the LLM emits `evidence_to_add[]` entries, each carrying `summary`, `category`, `source_type`, and a required `source_file_id` (pointing to an existing `UploadedFile` of the case). A row naming no upload of the case is refused in place, never demoted to a fileless row. System output the user typed into a chat message is offered back for the user to save as data first (the chat-data offer, [§5.3.1](../investigation-engine/evidence-driven-investigation-framework.md#531-the-chat-data-offer)).
 - **Tool-result extraction (`search_file` / `deep_analysis`).** Tool calls return excerpts; the LLM reads them and emits a follow-up `evidence_to_add` referencing the searched file via `source_file_id`. The provenance chain is in §7.3.
 
 > File uploads do **not** create Evidence. They write one `UploadedFile` row with preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`). The agent reads those artifacts via the `<uploaded_file>` block in prompt context. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).

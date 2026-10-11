@@ -52,6 +52,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 _CACHE = "checkout-api v2.14.0 retains an unbounded orderSummaryCache"
@@ -75,7 +77,8 @@ def _evidence(label: str) -> Evidence:
         summary=f"fact-{label} metric-{label} reading-{label}",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
@@ -300,7 +303,7 @@ def _confirm_root(case, node_id: str, label: str) -> None:
             summary=f"the cause is absent after the fix ({label})",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             collected_by="engine",
             collected_at_turn=7,
             collected_at=datetime.now(timezone.utc),
@@ -502,7 +505,8 @@ def test_a_conjunction_does_not_refuse_the_resolution_confirm_stamp():
             ),
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="llm",
             collected_at_turn=8,
             collected_at=datetime.now(timezone.utc),

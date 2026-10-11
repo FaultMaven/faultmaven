@@ -39,6 +39,8 @@ from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -48,7 +50,8 @@ def _evidence(evidence_id: str, category: EvidenceCategory) -> Evidence:
         summary="an observed fact",
         primary_purpose="diagnosis",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="u",
         collected_at_turn=1,
         collected_at=datetime(2026, 7, 4, 11, 0, 0, tzinfo=UTC),

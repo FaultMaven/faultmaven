@@ -437,6 +437,15 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
                         if case.kb_context_origin
                         else None
                     ),
+                    # Offers of chat-typed system output (#1930). Must round trip:
+                    # a save or a "my description" click names its offer by id on a
+                    # later request, and an answer recorded here is what keeps the
+                    # offer from being answered twice.
+                    "chat_data_offers": (
+                        to_json_compatible(case.chat_data_offers)
+                        if case.chat_data_offers
+                        else []
+                    ),
                 }.items()
                 if v
             }

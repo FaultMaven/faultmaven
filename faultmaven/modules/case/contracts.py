@@ -499,6 +499,12 @@ from faultmaven.modules.case.domain.models.causal import (
     NodeType,
     ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.chat_data import (
+    MAX_CHAT_DATA_BLOCK_CHARS,
+    MAX_CHAT_DATA_BLOCKS,
+    ChatDataOffer,
+    ChatDataOfferState,
+)
 from faultmaven.modules.case.domain.models.conclusion import (
     CONFIRMED_ESTABLISHED_BY,
     ConfidenceLevel,
@@ -803,6 +809,10 @@ __all__ = [
     "ValidationMethod",
     "PreliminaryUrgency",
     "PendingRevision",
+    "ChatDataOffer",
+    "ChatDataOfferState",
+    "MAX_CHAT_DATA_BLOCKS",
+    "MAX_CHAT_DATA_BLOCK_CHARS",
     "ProblemInvalidation",
     "ProblemStatementRecord",
     "ProblemStatus",

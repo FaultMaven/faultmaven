@@ -697,8 +697,8 @@ class ReportGenerationService:
 
         ``category``, ``summary``, and ``source_type`` are required fields
         on the Pydantic Evidence model, so direct attribute access is
-        safe. ``source_file_id`` is Optional (NULL for chat-extracted
-        evidence) and ``case.find_uploaded_file`` is None-safe by design.
+        safe. ``source_file_id`` is Optional (NULL for an engine inference)
+        and ``case.find_uploaded_file`` is None-safe by design.
 
         The citation names the source by ``display_name``: the report is
         read by the person who filed the case, and a minted

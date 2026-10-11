@@ -237,6 +237,7 @@ class TestApplyLayerStanceFidelity:
         meta = {
             "hypotheses_generated": [h.hypothesis_id],
             "evidence_added": [ev.evidence_id],
+            "evidence_slots": [ev.evidence_id],
         }
 
         _apply_hypothesis_evidence_links(

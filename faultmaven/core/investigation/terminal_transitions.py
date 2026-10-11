@@ -1279,10 +1279,11 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     # symptom_absence row). That alone makes a case RESOLVED: it implies the cause
     # is known and a fix took effect, so it is sufficient on its own. A separate
     # root-cause / solution *record* is for documentation quality (and the higher
-    # runbook bar), NOT a resolution gate. Critically, an out-of-band fix the user
-    # reports verbally ("I fixed X, it works now") yields both rows from the same
-    # words (source_type=user_description) with no SolutionToAdd — and must still
-    # resolve. Requiring a solution record here was
+    # runbook bar), NOT a resolution gate. Critically, an out-of-band fix still
+    # resolves with no SolutionToAdd: the user submits the output of the checks
+    # (the cause gone, the problem gone) and both rows come from that data. Their
+    # words alone ("I fixed X, it works now") are a claim and yield no row (#1930).
+    # Requiring a solution record here was
     # the documented stuck-loop: the gate refused a clear "yes, it's resolved" and
     # kept demanding a "documented solution" the user did not have, then closed.
     # A false alarm is never resolved: the evidence showed there was nothing to
@@ -1334,7 +1335,9 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "document as a resolution.\n\n"
                 "If it's no longer relevant you can **close** it. If it was "
                 "actually fixed, tell me what the problem was, what caused it, "
-                "and how it was fixed, and I'll document the resolution."
+                "and how it was fixed, and submit the output of a check that "
+                "shows it gone as data (pasted or attached, not typed into "
+                "your message); I'll document the resolution."
             ),
             missing=missing,
         )
@@ -1352,8 +1355,9 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "The last fix didn't hold: the cause was shown removed, but the "
                 "problem was seen again afterwards. To mark this **resolved** I "
                 "need a **new fix** — tell me what you changed (or what you plan "
-                "to change), and once it's applied, show the cause gone and the "
-                "original problem gone with it.\n\n"
+                "to change), and once it's applied, submit the output of checks "
+                "showing the cause gone and the original problem gone with it, "
+                "as data (pasted or attached, not typed into your message).\n\n"
                 "If the problem is only quiet for now (a restart, a failover or "
                 "another workaround), or the real fix is **deferred**, you can "
                 "**close** the case instead — that keeps the investigation on "
@@ -1379,21 +1383,24 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             asks.append(
                 "- **The cause re-checked after the fix** — what you reported "
                 "is shown gone; the cause the fix addressed needs to be seen "
-                "removed too (e.g. the setting now reads the new value, or the "
-                "corrected process is the one running)."
+                "removed too: the output of a check showing it (e.g. the setting "
+                "now reads the new value, or the corrected process is the one "
+                "running)."
             )
         elif cause_elimination_rows(case):
             # The cause leg stands; only the problem the user reported is
             # unchecked (#1906). Say so, rather than re-asking for the fix.
             asks.append(
                 "- **Confirmation the original problem is gone** — the cause is "
-                "shown removed; what you first reported (e.g. the failing check "
-                "or the error) needs to be seen gone too."
+                "shown removed; what you first reported needs to be seen gone "
+                "too: the output of the failing check or of the place the error "
+                "appeared, now clean."
             )
         else:
             asks.append(
-                "- **Confirmation it's resolved** — that the original problem is "
-                "now gone (e.g. the error no longer occurs in the latest output)."
+                "- **Confirmation it's resolved** — the output of a check "
+                "showing the original problem is now gone (e.g. the latest "
+                "output, with the error no longer in it)."
             )
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
@@ -1401,8 +1408,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             "To mark this **resolved** and write up the resolution summary, I "
             "just need a few essentials:\n\n"
             + "\n".join(asks)
-            + "\n\nIf the problem was already fixed outside this session, just "
-            "tell me the above and I'll document it.\n\n"
+            + "\n\nSubmit check output as data (pasted or attached, not typed "
+            "into your message): what you write is your account, and the output "
+            "is what shows it. If the problem was already fixed outside this "
+            "session, the same applies, and I'll document it.\n\n"
             "If it was only **stabilized** (a workaround/failover while the root "
             "cause is still pending) or the real fix is **deferred** (a change "
             "window, hardware RMA, another team), you can **close** the case "

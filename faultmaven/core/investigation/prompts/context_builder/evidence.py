@@ -628,9 +628,8 @@ def _evidence_label(ev, case=None, ev_file_meta=None) -> str:
             uf = case.find_uploaded_file(ev.source_file_id)
         if uf is not None:
             return uf.display_name
-    # Source type as readable label — handles USER_DESCRIPTION for
-    # chat-extracted evidence, and file-backed rows whose file is missing
-    # from the aggregate.
+    # Source type as readable label — handles an engine inference (no
+    # file), and file-backed rows whose file is missing from the aggregate.
     if ev.source_type:
         return ev.source_type.value.replace("_", " ")
     return "uploaded data"
@@ -960,8 +959,8 @@ def _render_evidence_block(
             uploaded_files, capped per item. Scored by data type, hypothesis
             linkage, content richness, and recency.
     Tier B: Remaining file-backed evidence → summary only.
-    Tier C: Chat-extracted evidence (``source_file_id IS NULL``,
-            ``source_type=USER_DESCRIPTION``) → summary only, always.
+    Tier C: Engine inferences (``source_file_id IS NULL``,
+            ``source_type=ENGINE_INFERENCE``) → summary only, always.
 
     Token budget: ~4000 tokens dedicated. Worst case: 3 Tier A items x 4000
     chars = 12,000 chars (~3000 tokens).
@@ -1006,10 +1005,10 @@ def _render_evidence_block(
 
     # Separate evidence by source for tiered treatment. Post-010: the
     # ``form`` column was dropped; source_file_id IS NOT NULL is the
-    # marker for file-backed evidence. The strict source-invariant
-    # CHECK ensures chat-extracted rows have source_type=USER_DESCRIPTION.
+    # marker for file-backed evidence. The source-invariant CHECK admits
+    # a fileless row only as source_type=ENGINE_INFERENCE.
     data_evidence = []  # source_file_id IS NOT NULL
-    text_evidence = []  # source_file_id IS NULL (chat-extracted)
+    text_evidence = []  # source_file_id IS NULL (engine inferences)
     for ev in case.evidence:
         if ev.source_file_id is not None:
             data_evidence.append(ev)
@@ -1369,19 +1368,18 @@ def _render_evidence_block(
         result += entry
         total_chars += len(entry)
 
-    # Tier C: chat-extracted evidence (never searchable — has no source
-    # file). source_file_id IS NULL here per the new source-invariant.
-    # Include the verbatim_quote when present: for chat-extracted
-    # evidence it carries the actual system-output slice the user typed
-    # in (the summary alone would lose that detail).
-    # INV-4: the 5-most-recent cap drops OLDER chat evidence — count it so the
+    # Tier C: engine inferences (never searchable — no source file;
+    # source_file_id IS NULL here per the source-invariant). The summary
+    # states what the engine derived and from what; an extract, when one is
+    # present, is rendered as its verbatim_quote.
+    # INV-4: the 5-most-recent cap drops OLDER inferences — count it so the
     # <evidence_omitted> marker reflects the omission (these have no
     # source_file_id, so the marker signals it, since search_file can't reach
     # them).
     #
     # "Most recent" is stated by key, not read off list order: ``case.evidence``
     # arrives newest-first from both repositories, so the ``[-5:]`` slice this
-    # used to take over it kept the five OLDEST chat rows in production — the
+    # used to take over it kept the five OLDEST fileless rows in production — the
     # same inherited-order misreading as #1609's Tier A. Rendered NEWEST first,
     # because the loop below is a skip-not-break fill against the shared
     # budget: whatever comes first gets the room, so under pressure the older
@@ -1395,8 +1393,8 @@ def _render_evidence_block(
         # ``None`` is the exact and only argument, and it cannot raise the way
         # passing ``ev_file_meta`` would (not in scope in this loop). The
         # helper then returns ``collected_at_turn``, which IS the data turn for
-        # chat-extracted evidence: the data is the user's message and the
-        # message arrived on the turn this row was created. Calling it rather
+        # an engine inference: the engine derived it on the turn this row was
+        # created. Calling it rather
         # than restating its answer is the point — two copies of one rule is
         # the divergence #512 exists to close (#512).
         fresh_attr = _fresh_this_turn_attr(

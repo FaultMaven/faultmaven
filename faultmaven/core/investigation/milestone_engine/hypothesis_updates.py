@@ -371,7 +371,7 @@ def _apply_hypothesis_evidence_links(
             "hyp",
         )
         e_id = _resolve_id_ref(
-            link.evidence_id_ref, metadata.get("evidence_added", []), "ev"
+            link.evidence_id_ref, metadata.get("evidence_slots", []), "ev"
         )
 
         # Check existence

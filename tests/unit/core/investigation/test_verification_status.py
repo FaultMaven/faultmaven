@@ -47,6 +47,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -64,7 +66,8 @@ def _ev(label: str) -> Evidence:
         summary="an observed fact",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
@@ -727,7 +730,7 @@ def test_work_gate_counts_distinct_evidence_not_rows():
     )
     dup_a, dup_b = _ev("same"), _ev("same")
     dup_a.evidence_id, dup_b.evidence_id = _eid("a"), _eid("b")
-    dup_a.source_file_id = dup_b.source_file_id = None
+    dup_a.source_file_id = dup_b.source_file_id = "file_0123456789ab"
     dup_a.extract = "OOMKilled  exit code 137"
     # Same datum, differing only in whitespace/case — still one observation.
     dup_b.extract = "oomkilled   Exit Code 137"

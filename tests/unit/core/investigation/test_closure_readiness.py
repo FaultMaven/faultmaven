@@ -40,6 +40,8 @@ from faultmaven.modules.case.domain.models.evidence import Evidence
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _make_investigating_case() -> Case:
     """Minimal INVESTIGATING case with empty progress; tests add what they need."""
@@ -86,7 +88,8 @@ def _attach_evidence(case: Case) -> None:
         Evidence(
             summary="Latency p99 spike to 5.2s confirmed (user description)",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user_test",
             primary_purpose="Symptom verification",

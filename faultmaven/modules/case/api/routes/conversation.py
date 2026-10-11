@@ -9,6 +9,7 @@ handler here uses.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -583,8 +584,6 @@ async def submit_turn(
     likely to do so again, so retry at most once (it carries no `Retry-After`);
     `LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
     """
-    import json
-
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
     # The keyed turn's claim, held from the idempotency step until the turn is
@@ -740,6 +739,16 @@ async def submit_turn(
                         "x-error-code": CASE_TERMINAL,
                     },
                 )
+            # Saving chat-typed output as data is new data (#1930).
+            if intent_type == "save_chat_data":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot submit new data to a closed case.",
+                    headers={
+                        "x-correlation-id": correlation_id,
+                        "x-error-code": CASE_TERMINAL,
+                    },
+                )
 
         # Build attachments list
         # Every attachment carries source_metadata so the classifier knows the
@@ -770,9 +779,9 @@ async def submit_turn(
             observed_at_dt = _parse_observed_at(observed_at, correlation_id)
 
             # Determine source type from the explicit `input_type` form field.
-            # The frontend (UnifiedInputBar.tsx) always sets this since the
-            # text_paste pathway shipped — see faultmaven-copilot:
-            # src/shared/ui/components/UnifiedInputBar.tsx:226-256.
+            # The clients set it (``"paste"`` → ``text_paste``) — the Copilot
+            # composer in faultmaven-copilot
+            # packages/copilot-ui/shared/ui/components/UnifiedInputBar.tsx.
             #
             # The legacy `--- Page Content (URL) ---` body header is no
             # longer recognized as a page-capture signal: it was a write-

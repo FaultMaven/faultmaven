@@ -76,7 +76,7 @@ def _apply_evidence_need_updates(
             for hyp_ref in (update.motivating_hypothesis_ids or [])
         ]
         resolved_fulfillments = [
-            _resolve_id_ref(ev_ref, metadata.get("evidence_added", []), "ev")
+            _resolve_id_ref(ev_ref, metadata.get("evidence_slots", []), "ev")
             for ev_ref in (update.fulfilling_evidence_ids or [])
         ]
         resolved_need_id: str | None = None

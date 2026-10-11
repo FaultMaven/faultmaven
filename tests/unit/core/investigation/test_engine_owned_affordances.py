@@ -45,6 +45,8 @@ from faultmaven.modules.case.domain.models.problem import (
     UrgencyLevel,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -255,7 +257,8 @@ def _insufficient_evidence_case() -> Case:
             summary="an observed fact",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="llm",
             collected_at_turn=2,
             collected_at=datetime.now(timezone.utc),

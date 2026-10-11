@@ -66,6 +66,11 @@ from faultmaven.modules.agent.domain.services.investigation_service.attachments 
     _engine_attachment_metadata,
     _preprocess_turn_uploads,
 )
+from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
+    _handle_save_chat_data,
+    admit_chat_data_save,
+    record_chat_data_save,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
     _minted_intent_swallows_gate_consent,
 )
@@ -179,6 +184,12 @@ _INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
     # DataType) and the handler re-runs preprocessing mechanically — no LLM
     # call, so it can never mistake the choice for an analysis request.
     IntentType.FILE_RECLASSIFICATION: _IntentDispatchKind.SERVICE,
+    # SAVE_CHAT_DATA saves system output typed into a chat message (#1930). A
+    # save that saves never reaches this table: prepare_turn turns it into a
+    # paste turn routed as CONVERSATION. What does reach it — a click on an
+    # offer already saved, or one holding no output — is answered without an
+    # LLM call.
+    IntentType.SAVE_CHAT_DATA: _IntentDispatchKind.SERVICE,
     IntentType.CONVERSATION: _IntentDispatchKind.ENGINE,
     # EVIDENCE_NEED (renamed from EVIDENCE_REQUEST in Phase 2 of the
     # evidence-needs redesign) is in the IntentType enum and has a
@@ -371,6 +382,13 @@ class InvestigationService:
         try:
             # 1. Retrieve case and verify access
             case = await self.repository.get(case_id)
+            # A "save it as data" click becomes the turn's attachment here,
+            # BEFORE the turn is charged and classified (#1930): a click naming
+            # no offer is refused at no cost, and the classification below sees
+            # the attachment the turn really carries.
+            chat_data_save = (
+                admit_chat_data_save(case, payload) if case is not None else None
+            )
             classification, next_turn, processing_mode = (
                 await self._verify_access_and_reserve(
                     case=case, case_id=case_id, payload=payload, user_id=user_id
@@ -402,6 +420,13 @@ class InvestigationService:
                 )
             )
 
+            if chat_data_save is not None:
+                record_chat_data_save(
+                    chat_data_save,
+                    turn=next_turn,
+                    preprocess_results=preprocess_results,
+                )
+
             # 2. Build user message and update case in-memory (NOT persisted).
             #    Nothing of the turn is committed here or anywhere in this
             #    method — not the user message, the turn count, the turn's
@@ -425,6 +450,10 @@ class InvestigationService:
                     user_id=user_id,
                 )
             )
+            if chat_data_save is not None:
+                # The user row keeps ``save_chat_data`` (what the user clicked); the
+                # turn itself is a paste turn, so it is routed as one.
+                intent, intent_type = None, IntentType.CONVERSATION
             # Gates the error-path row. ``case is not None`` is NOT the same
             # question: a failure between the load and this line (an extractor
             # or storage error inside attachment preprocessing, say) leaves a
@@ -477,6 +506,7 @@ class InvestigationService:
             (
                 agent_response_text,
                 clarification,
+                chat_data,
                 raw_follow_ups,
                 turn_meta,
                 turn_telemetry,
@@ -522,6 +552,7 @@ class InvestigationService:
             response = _build_turn_response(
                 agent_response_text=agent_response_text,
                 case_id=case_id,
+                chat_data=chat_data,
                 clarification=clarification,
                 payload=payload,
                 preprocess_results=preprocess_results,
@@ -1036,6 +1067,12 @@ class InvestigationService:
                     case=case,
                     attachments=attachment_metadata or None,
                     kind=orientation_kind or OrientationKind.GREETING,
+                )
+            elif intent_type == IntentType.SAVE_CHAT_DATA:
+                result = await _handle_save_chat_data(
+                    case,
+                    offer_id=intent.offer_id if intent else None,
+                    attachments=attachment_metadata or None,
                 )
             elif intent_type == IntentType.FILE_RECLASSIFICATION:
                 result = await _handle_file_reclassification(

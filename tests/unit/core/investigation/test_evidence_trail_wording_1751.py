@@ -300,7 +300,6 @@ state_updates.evidence_need_updates[].rationale             | title       | rati
 state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
 state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
@@ -330,7 +329,6 @@ state_updates.evidence_need_updates[].rationale             | title       | rati
 state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
 state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_Treatment (32): not sent live; each hit is Diagnosis's text at the same path
@@ -345,7 +343,6 @@ state_updates.evidence_need_updates[].rationale             | title       | rati
 state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
 state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
@@ -378,7 +375,6 @@ state_updates.evidence_need_updates[].rationale             | title       | rati
 state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
 state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
 state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1

@@ -39,7 +39,7 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
 #: 012_case_driver
-HEAD_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
+HEAD_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.

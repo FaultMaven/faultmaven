@@ -12,7 +12,6 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     EvidenceCategory,
-    EvidenceSourceType,
     InvestigationProgress,
 )
 
@@ -161,32 +160,24 @@ def _evidence_coverage(
     return None, None, None
 
 
-def _resolve_evidence_source(
-    case: "Case", source_file_id: str | None, source_type: "EvidenceSourceType"
-) -> "tuple[str | None, EvidenceSourceType]":
-    """Guard a hallucinated / stale ``source_file_id``.
+def _source_file_resolves(case: "Case", source_file_id: str) -> bool:
+    """Does the model's ``source_file_id`` name an uploaded file of this case?
 
-    The LLM declares ``source_file_id`` on each ``EvidenceToAdd``; the schema
-    validator enforces it is PRESENT (unless ``USER_DESCRIPTION``) but NOT that it
-    points at a real uploaded file. An id that resolves to no file passes
-    validation, then fails the ``evidence.source_file_id`` foreign key at save —
-    which aborts the entire turn (silent progress loss, observed in a behavioral
-    run). When the id does not resolve, drop the file anchor and record the slice
-    as ``USER_DESCRIPTION`` (the only fileless-legal source type per the
-    ``evidence_source_invariant`` CHECK): the evidence content is preserved, just
-    not file-attributed. Returns the (possibly adjusted) ``(source_file_id,
-    source_type)``.
+    The schema requires the id but cannot check that it points at a real file.
+    An id that resolves to nothing would fail the ``evidence.source_file_id``
+    foreign key at save and abort the whole turn, so the caller refuses that one
+    row instead. It is never kept with no file: evidence is submitted data, and
+    a row with no file behind it would be the model's words (#1930).
     """
-    if source_file_id is not None and case.find_uploaded_file(source_file_id) is None:
-        logger.warning(
-            "Evidence source_file_id %s does not resolve to an uploaded file for "
-            "case %s; recording the slice as USER_DESCRIPTION (no file anchor) so "
-            "the turn is not lost to a foreign-key failure.",
-            source_file_id,
-            case.case_id,
-        )
-        return None, EvidenceSourceType.USER_DESCRIPTION
-    return source_file_id, source_type
+    if case.find_uploaded_file(source_file_id) is not None:
+        return True
+    logger.warning(
+        "Evidence source_file_id %s does not resolve to an uploaded file for "
+        "case %s; the row is refused (evidence is submitted data, #1930).",
+        source_file_id,
+        case.case_id,
+    )
+    return False
 
 
 def _infer_milestones(

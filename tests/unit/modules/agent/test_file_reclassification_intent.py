@@ -3363,6 +3363,14 @@ class TestATerminalCaseAnswersNothingStored:
             # unchanged. It cannot originate an intent, so it cannot originate
             # one on a terminal case either.
             (turn_response, "_build_turn_response"),
+            # #1930: the three choices for system output typed into the
+            # message. Never on a terminal case (no offer is minted on one),
+            # and never stored for typed matching, so the terminal guard has
+            # nothing of theirs to drop.
+            (
+                "modules/agent/domain/services/investigation_service/chat_data.py",
+                "chat_data_choices",
+            ),
         }, (
             "a new intent-bearing follow-up builder: "
             f"{sorted(builders)}. If it can fire on a terminal case, the "

@@ -134,8 +134,9 @@ CASE_CONFLICTS_WITHOUT_CODE = {
 #: The terminal-case refusals, by ``(path, enclosing function)``, and how many
 #: each raises. Each must be labelled with the ``CASE_TERMINAL`` constant.
 TERMINAL_EMITTERS = {
-    # New data, a status change, a file reclassification.
-    ("faultmaven/modules/case/api/routes/conversation.py", "submit_turn"): 3,
+    # New data, a status change, a file reclassification, saving chat-typed
+    # output as data (#1930).
+    ("faultmaven/modules/case/api/routes/conversation.py", "submit_turn"): 4,
     # `PUT /cases/{case_id}`.
     (
         "faultmaven/modules/case/api/routes/dependencies.py",

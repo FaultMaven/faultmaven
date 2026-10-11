@@ -36,6 +36,7 @@ from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
     offer_intent_fields,
 )
+from .turn_records import REFUSED_EVIDENCE_SLOT
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, PendingRevision
@@ -180,7 +181,14 @@ async def confirm_revision(
             continue
         bundle_metadata: dict[str, Any] = {
             "milestones_completed": [],
-            "evidence_added": list(bundle.evidence_added),
+            # The staged list is positional (``evidence_slots``); the rows that
+            # exist are the ones the live turn created.
+            "evidence_added": [
+                ev_id
+                for ev_id in bundle.evidence_added
+                if ev_id != REFUSED_EVIDENCE_SLOT
+            ],
+            "evidence_slots": list(bundle.evidence_added),
             "hypotheses_generated": [],
             "hypotheses_validated": [],
             "solutions_proposed": [],

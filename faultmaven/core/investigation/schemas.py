@@ -123,8 +123,8 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 # the field's CONSUMER resolves the placeholder — not how the field is named,
 # and not what its description happens to say. ``EvidenceToAdd.source_file_id``
 # and ``SolutionToAdd.node_ref`` stay plain ``str`` because their consumers
-# only ever match an already-persisted id (``_resolve_evidence_source`` demotes
-# an unresolvable file to USER_DESCRIPTION; the solution apply-path keeps
+# only ever match an already-persisted id (``_source_file_resolves`` refuses a
+# row whose file is not one of the case's uploads; the solution apply-path keeps
 # ``node_ref`` only when it is already in ``case.causal_nodes``). Annotating
 # those would advertise a placeholder form the engine cannot honour.
 #
@@ -686,24 +686,35 @@ class ProblemVerificationUpdate(NullTolerantModel):
     rca_infeasible_rationale: Optional[str] = None
 
 
+#: What the model may name as an evidence row's source: every
+#: ``EvidenceSourceType`` but ``ENGINE_INFERENCE``, which only the engine writes.
+#: Built from the domain enum so the two cannot drift.
+SubmittedSourceType = Enum(
+    "SubmittedSourceType",
+    {
+        member.name: member.value
+        for member in EvidenceSourceType
+        if member is not EvidenceSourceType.ENGINE_INFERENCE
+    },
+    type=str,
+)
+
+
 class EvidenceToAdd(NullTolerantModel):
     """A claim-anchored evidence record the LLM is creating this turn.
 
     Post-010 strict evidence model: every evidence row is the LLM's
-    deliberate decision to record a focused, claim-relevant extract.
+    choice to record a focused, claim-relevant extract.
     Files are data (``uploaded_files``); evidence is the verbatim
     slice that supports a specific claim.
 
-    Source rule (mirrors the ``evidence_source_invariant`` DB CHECK):
-    - If the extract was drawn from an uploaded file → set
-      ``source_file_id`` to that file's id (visible in the
-      ``<evidence file_id="...">`` and ``<uploaded_file file_id="...">``
-      attributes in the prompt context).
-    - If the extract was a verbatim system-output quote the user
-      typed in their short chat message → leave ``source_file_id``
-      ``None`` and set ``source_type=USER_DESCRIPTION``.
-    - Every other source_type requires a file_id; the system rejects
-      the row otherwise.
+    Source rule: evidence is submitted data (#1930). Every row names the
+    uploaded file its extract came from (``source_file_id``, visible in the
+    ``<evidence file_id="...">`` and ``<uploaded_file file_id="...">``
+    attributes in the prompt context). What the user wrote in a chat
+    message is a claim and never a source. The engine refuses a row whose
+    file is not one of the case's uploads, at apply time and in place, so
+    the row's position (which ``new_index_N`` refs count) is kept.
 
     Milestone Attribution (Option 2.5 — Three-Tier Logic):
 
@@ -723,26 +734,22 @@ class EvidenceToAdd(NullTolerantModel):
         description=(
             "Optional verbatim quote drawn from the source. For "
             "file-backed evidence: a focused slice (one or a few lines) "
-            "of system output the file contains. For chat-extracted "
-            "evidence (source_type=USER_DESCRIPTION): the verbatim "
-            "system-output snippet the user typed into chat. Leave "
-            "empty when the summary is self-contained. Do NOT put "
-            "the user's own description or paraphrase here — the rule "
-            "is 'extract is system output, not user words'."
+            "of system output the file contains. Leave empty when the "
+            "summary is self-contained. Do NOT put the user's own "
+            "description or paraphrase here — the rule is 'extract is "
+            "system output, not user words'."
         ),
     )
     category: EvidenceCategory
-    source_type: EvidenceSourceType
-    source_file_id: Optional[str] = Field(
-        default=None,
+    source_type: SubmittedSourceType
+    source_file_id: str = Field(
         description=(
-            "FK to the uploaded_files row this extract came from. "
-            "REQUIRED unless source_type=USER_DESCRIPTION (the "
-            "chat-quote case). Copy the file_id verbatim from the "
-            '<evidence file_id="..."> or <uploaded_file file_id="..."> '
-            "attributes in the prompt context. Leaving this blank for "
-            "a non-USER_DESCRIPTION extract causes the row to be "
-            "rejected by the evidence_source_invariant DB CHECK."
+            "The uploaded file this extract came from: copy the file_id "
+            'verbatim from the <evidence file_id="..."> or '
+            '<uploaded_file file_id="..."> attributes in the prompt '
+            "context. REQUIRED: evidence is data the user submitted. "
+            "Something the user wrote in their chat message is never "
+            "evidence, and a row naming no uploaded file is refused."
         ),
     )
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
@@ -786,6 +793,32 @@ class EvidenceToAdd(NullTolerantModel):
             return EvidenceCategory(v)
         return v
 
+    @field_validator("source_type", mode="before")
+    @classmethod
+    def _read_engine_inference_as_text(cls, v: Any) -> Any:
+        """A model that copies ``engine_inference`` from the evidence it was
+        shown gets ``text``: only the engine writes that type.
+
+        Read rather than refused, because a row that fails validation is
+        dropped from the list and shifts every later ``new_index_N`` ref; it
+        then stands or falls on its file at apply, like any other row.
+        """
+        value = getattr(v, "value", v)
+        if value == EvidenceSourceType.ENGINE_INFERENCE.value:
+            return SubmittedSourceType.TEXT
+        return v
+
+    @field_validator("source_file_id", mode="before")
+    @classmethod
+    def _missing_source_file_is_empty(cls, v: Any) -> Any:
+        """A null file id parses as ``""``: refused at apply, in place.
+
+        A strict provider always sends the key; a null still arrives from a
+        best-effort one, and failing the row here would drop it from the list
+        and shift every later ``new_index_N`` ref onto the wrong row.
+        """
+        return "" if v is None else v
+
     # ADD-shaped (fm#1502). This replaced ``validate_likelihood``, an
     # after-mode ``max(0, min(1, v))`` clamp that could never fire — an after
     # validator runs once ``le=1.0`` has already rejected the value — and would
@@ -794,36 +827,6 @@ class EvidenceToAdd(NullTolerantModel):
     @classmethod
     def _repair_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
         return _repair_add_confidence(cls, v, info)
-
-    @model_validator(mode="after")
-    def _source_file_required_unless_user_description(self) -> "EvidenceToAdd":
-        """Mirror of the DB ``evidence_source_invariant`` CHECK: every
-        evidence row has a known source.
-
-        - ``source_file_id`` set → extract came from a file (any
-          source_type is valid)
-        - ``source_file_id`` None → only legal when
-          ``source_type == USER_DESCRIPTION`` (the chat-quote case)
-
-        Cross-layer defense: same rule applies in the ``Evidence``
-        domain model and at the DB level. Catching the violation here
-        gives the LLM a clear validation error instead of an opaque
-        IntegrityError downstream.
-        """
-        if (
-            self.source_file_id is None
-            and self.source_type != EvidenceSourceType.USER_DESCRIPTION
-        ):
-            raise ValueError(
-                "evidence_to_add.source_file_id is required unless "
-                "source_type=USER_DESCRIPTION; the LLM should copy the "
-                'file_id from the <evidence file_id="..."> or '
-                '<uploaded_file file_id="..."> attribute in the prompt '
-                "context. Leave source_file_id blank only when the "
-                "extract is a verbatim quote from the user's short chat "
-                "message (USER_DESCRIPTION)."
-            )
-        return self
 
 
 class HypothesisToAdd(BaseModel):
@@ -1735,6 +1738,57 @@ class SuggestedFollowUp(NullTolerantModel):
     # a top-level dropped key.
 
 
+class ChatDataBlock(NullTolerantModel):
+    """A block of system output inside the user's current message, named by its
+    first and last line (#1930).
+
+    Lines, not a copy of the block: the engine finds both lines in the user's
+    own message and takes everything between them, so what it offers back is
+    what the user wrote, never the model's copy of it.
+    """
+
+    first_line: str = Field(
+        max_length=500,
+        description=(
+            "The block's first line, copied exactly as it appears in the "
+            "user's message."
+        ),
+    )
+    last_line: str = Field(
+        max_length=500,
+        description=(
+            "The block's last line, copied exactly as it appears in the "
+            "user's message (the same as first_line for a one-line block)."
+        ),
+    )
+
+
+class StateReport(NullTolerantModel):
+    """The user's message reports the state of their system and submits no data
+    showing it (#1930): "it's stable", "it's working now", "the error is gone".
+
+    What they say is their claim. FaultMaven asks them for the output that would
+    show it, for verification and for the record; this names that output.
+    """
+
+    request: str = Field(
+        description=(
+            "The output that would show the state the user reports, in one short "
+            "phrase: name the check or command, e.g. 'the output of kubectl get "
+            "pods -n payments after the restart'."
+        ),
+    )
+
+    @field_validator("request", mode="before")
+    @classmethod
+    def _cap_request(cls, v: Any) -> Any:
+        # Shown to the user on a card. Cut rather than refused: a refusal fails
+        # the response it rides on for a cosmetic overrun.
+        if isinstance(v, str) and len(v) > 300:
+            return v[:299] + "…"
+        return v
+
+
 class BaseInteractionResponse(BaseModel):
     """Base class for all agent responses."""
 
@@ -1771,7 +1825,34 @@ class BaseInteractionResponse(BaseModel):
         return v
 
 
-class InquiryResponse(BaseInteractionResponse):
+class OpenCaseResponse(BaseInteractionResponse):
+    """A response on a case that still takes data: every schema but the
+    terminal one. Carries the blocks of system output the user typed into the
+    message (#1930); a resolved or closed case takes no new data, so its
+    schema has no such field."""
+
+    chat_data_blocks: Optional[List[ChatDataBlock]] = Field(
+        default=None,
+        max_length=5,
+        description=(
+            "Output a system produced (command output, log lines, a config "
+            "excerpt, an error a program printed) that the user typed or "
+            "pasted into their CURRENT message, one entry per block. Never the "
+            "user's own sentences. Leave empty when the message has none."
+        ),
+    )
+    system_state_report: Optional[StateReport] = Field(
+        default=None,
+        description=(
+            "Set when the user's CURRENT message tells you the state of their "
+            "system (it's stable, it's working now, the error is gone, the fix "
+            "worked, it's still failing) and they submitted no data showing it. "
+            "Leave empty otherwise."
+        ),
+    )
+
+
+class InquiryResponse(OpenCaseResponse):
     """Response schema for INQUIRY state."""
 
     class InquiryStateUpdate(NullTolerantModel):
@@ -1874,7 +1955,7 @@ class TerminalResponse(BaseInteractionResponse):
 # =============================================================================
 
 
-class InvestigationResponse_Diagnosis(BaseInteractionResponse):
+class InvestigationResponse_Diagnosis(OpenCaseResponse):
     """Schema for DIAGNOSIS stage — covers symptom verification, hypothesis work, and solution proposal."""
 
     class DiagnosisStateUpdate(NullTolerantModel):
@@ -1953,7 +2034,7 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     state_updates: DiagnosisStateUpdate
 
 
-class InvestigationResponse_Mitigation(BaseInteractionResponse):
+class InvestigationResponse_Mitigation(OpenCaseResponse):
     """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
     class MitigationStateUpdate(NullTolerantModel):
@@ -2002,7 +2083,7 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
     state_updates: MitigationStateUpdate
 
 
-class InvestigationResponse_Treatment(BaseInteractionResponse):
+class InvestigationResponse_Treatment(OpenCaseResponse):
     """Schema for TREATMENT stage — verifying fix, extended diagnosis if fix fails."""
 
     class TreatmentStateUpdate(NullTolerantModel):
@@ -2065,7 +2146,7 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
     state_updates: TreatmentStateUpdate
 
 
-class InvestigationResponse_General(BaseInteractionResponse):
+class InvestigationResponse_General(OpenCaseResponse):
     """Fallback 'Full' schema if stage is ambiguous or degraded."""
 
     class GeneralStateUpdate(NullTolerantModel):

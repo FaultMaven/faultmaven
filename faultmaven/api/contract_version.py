@@ -1974,4 +1974,31 @@ asked to accept, and it belongs to a person.
 # before (404 or 403 per route), now including the creator once someone else
 # drives. Clients adopt by judging the composer on `driver_id == me` and by
 # listing the extension's cases with `access=write`.
-API_CONTRACT_VERSION = "13.2.0"
+#
+# 13.3.0 — MINOR. Evidence is submitted data, and the user declares what is
+# data (#1930). Additive:
+#
+# * `IntentType` gains `save_chat_data`, and `QueryIntent` gains `offer_id`
+#   (required for it): save the system output the user typed into a chat
+#   message, from the offer that names it.
+# * `SuggestedActionResponse` gains `prefill`: the text a client puts in its
+#   data box when the choice is taken (`""` opens it empty).
+#
+# Behaviour a client may notice without a schema change: when a message carries
+# system output, the reply leads `suggested_actions` with two choices for it —
+# "Yes, save it as data" (DECIDE, intent `save_chat_data`: the blocks become one
+# pasted file and the turn runs on it) and "Not exactly, let me re-submit"
+# (EVIDENCE with `prefill` = the blocks: the client opens its data box holding
+# them; nothing is sent). When a message reports the state of the user's system
+# with no data showing it ("it's stable"), the reply leads with "Submit the
+# output" (EVIDENCE, `prefill` ""; its body names the output asked for). There
+# is no "no" choice: an offer the user ignores leaves the message a claim. A
+# save on a resolved or closed case answers 409 `CASE_TERMINAL`; a
+# `save_chat_data` intent naming no offer of the case answers 422. Evidence
+# `source_type` (a string on the wire) no longer takes `user_description`; a
+# row with no source file is `engine_inference`. MINOR because every schema
+# change is additive and no first-party client branches on `source_type`: the
+# save choice works in every client that forwards a suggestion's `intent`, and a
+# client that does not yet know `prefill` shows the other choices as
+# informational cards.
+API_CONTRACT_VERSION = "13.3.0"

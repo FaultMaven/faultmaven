@@ -61,7 +61,10 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProblemVerification,
     ProposedAction,
+    UploadedFile,
 )
+
+_FILE_ID = "file_0123456789ab"
 
 pytestmark = pytest.mark.unit
 
@@ -100,7 +103,13 @@ def _evidence(ev_id, category, turn, summary, collected_by="llm") -> Evidence:
         summary=summary,
         primary_purpose="diagnosis",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        # An engine-authored row is the one fileless kind (ENGINE_INFERENCE).
+        source_type=(
+            EvidenceSourceType.ENGINE_INFERENCE
+            if collected_by == "engine"
+            else EvidenceSourceType.LOGS
+        ),
+        source_file_id=None if collected_by == "engine" else _FILE_ID,
         collected_by=collected_by,
         collected_at_turn=turn,
         collected_at=datetime.now(timezone.utc),
@@ -1162,9 +1171,10 @@ def _incident_emission(root_node_id: str, hypothesis_id: str):
                     ),
                     "extract": "AssumeRoleWithWebIdentity 200; S3 processing OK",
                     "category": "causal_absence_evidence",
-                    # Verbal post-fix confirmation, as in the incident (the
-                    # schema requires a file id for file-backed source types).
-                    "source_type": "user_description",
+                    # Post-fix confirmation as the incident recorded it, now
+                    # backed by the user's pasted output (a file on the case).
+                    "source_type": "logs",
+                    "source_file_id": _FILE_ID,
                 },
                 # POSITIVE CONTROL, same emission, ORDINARY category: its link
                 # MUST land. Without it every assertion below is negative, so
@@ -1179,7 +1189,8 @@ def _incident_emission(root_node_id: str, hypothesis_id: str):
                     ),
                     "extract": "recipientAccountId=444455556666",
                     "category": "causal_evidence",
-                    "source_type": "user_description",
+                    "source_type": "logs",
+                    "source_file_id": _FILE_ID,
                 },
             ],
             # The inversion: the model REFUTES-links its own success
@@ -1251,6 +1262,11 @@ async def test_incident_emission_through_process_turn_does_not_start_the_cascade
     fired M6, minted a false persistence row, and cleared the conclusion.
     """
     case = _case()
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID, filename="sts.log", size_bytes=512, uploaded_at_turn=3
+        )
+    )
     seed_problem_node(case)
     created = ingest_emitted_chain(
         case,
@@ -1334,6 +1350,11 @@ async def test_incident_emission_is_metered_on_both_axes_through_the_pipeline():
     counter is how a model that routinely mis-links absence rows stays
     distinguishable from one that follows the contract."""
     case = _case()
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID, filename="sts.log", size_bytes=512, uploaded_at_turn=3
+        )
+    )
     seed_problem_node(case)
     created = ingest_emitted_chain(
         case,

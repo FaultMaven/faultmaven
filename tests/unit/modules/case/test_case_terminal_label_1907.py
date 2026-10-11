@@ -140,6 +140,15 @@ class TestTheTurnRouteLabelsItsTerminalRefusals:
                 None,
                 id="file-reclassification",
             ),
+            pytest.param(
+                {
+                    "query": "Save that output as data.",
+                    "intent_type": "save_chat_data",
+                    "intent_data": json.dumps({"offer_id": "cdo_0123456789ab"}),
+                },
+                None,
+                id="chat-data-save",
+            ),
         ],
     )
     def test_refusal_is_labelled_case_terminal(self, data, files):

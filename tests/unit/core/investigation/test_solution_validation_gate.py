@@ -62,6 +62,8 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _rcc() -> RootCauseConclusion:
     return RootCauseConclusion(
@@ -113,7 +115,8 @@ def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
                 summary="observed failure",
                 content_ref="x.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_at=datetime.now(UTC),
                 collected_by="user",
                 primary_purpose="symptom",
@@ -158,6 +161,7 @@ def _meta() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],

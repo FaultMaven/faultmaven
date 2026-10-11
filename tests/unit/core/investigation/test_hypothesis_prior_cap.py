@@ -15,6 +15,8 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import HypothesisCategory
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -265,7 +267,8 @@ def test_chain_root_grounding_lifts_the_cap():
         summary="config diff shows pool max_size dropped to 5",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),

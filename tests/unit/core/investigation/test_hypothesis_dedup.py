@@ -250,6 +250,7 @@ def _meta() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],

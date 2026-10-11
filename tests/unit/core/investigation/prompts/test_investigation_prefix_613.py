@@ -73,6 +73,8 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -284,7 +286,8 @@ def _dated_symptom(observed: datetime) -> Evidence:
         evidence_id="ev_613000000009",
         summary="checkout 500s observed",
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         primary_purpose="Test",
         collected_by="user_613",
         collected_at_turn=1,

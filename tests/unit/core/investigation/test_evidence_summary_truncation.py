@@ -26,15 +26,16 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _mk_evidence(summary: str) -> EvidenceToAdd:
-    # Post-010: 4 categories survive; USER_DESCRIPTION source_type lets us
-    # construct without needing a source_file_id (the source-invariant
-    # validator's exception case).
+    # Post-010: 4 categories survive.
     return EvidenceToAdd(
         summary=summary,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
     )
 
 

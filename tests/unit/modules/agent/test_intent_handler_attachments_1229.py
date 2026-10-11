@@ -35,6 +35,9 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     service as _service_module,
 )
+from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
+    _handle_save_chat_data,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
     _handle_file_reclassification,
 )
@@ -390,6 +393,8 @@ class TestEverySeriveRoutedHandlerCanReceiveUploads:
             # convention still holds, just not as an attribute of `service`.
             if intent.value == "file_reclassification":
                 handler = _handle_file_reclassification
+            elif intent.value == "save_chat_data":
+                handler = _handle_save_chat_data
             else:
                 handler = getattr(service, f"_handle_{intent.value}", None)
             assert handler is not None, (

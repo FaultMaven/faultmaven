@@ -3,6 +3,7 @@ from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from .blocks import (
     _ACTION_IMPACT_BLOCK,
     _ACTIVE_ADVISOR_ROLE_BLOCK,
+    _CHAT_DATA_BLOCK,
     _DATA_CITATION_RULE,
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
     _OUTCOME_PROMPT_BLOCK,
@@ -124,10 +125,13 @@ an evidence row.
    process runs again, but the alert, check or error the user reported has
    not been looked at since), record causal_absence only and ask for that
    check.
-   When the user confirms a PERMANENT fix worked — the original problem is
-   gone after correcting the actual cause, post-fix logs/status show it no
-   longer occurs — you MUST record BOTH rows in that turn; the same words or
-   output may source both. Do not merely narrate it. If instead service was
+   When the user's SUBMITTED post-fix output shows a PERMANENT fix worked —
+   the original problem is gone after correcting the actual cause, post-fix
+   logs/status show it no longer occurs — you MUST record BOTH rows in that
+   turn; the same output may source both. Do not merely narrate it. The
+   user's words alone ("I fixed it, it works now") are their account and
+   source no row: name the output of the checks in `system_state_report`
+   (FaultMaven asks the user for it). If instead service was
    restored via a mitigation while the real fix is still pending, or the
    cause persists, record ONLY symptom_absence — that case CLOSES with the
    solution documented, it does not resolve.
@@ -159,15 +163,13 @@ captured:
               (the last two are emitted on mitigation or treatment
               re-verification — see step 3 of the decision tree).
   * source_type: What kind of data the slice is: logs, metrics,
-                 configuration, code, text, image, or user_description
-                 (for verbatim system-output quotes from the user's
-                 chat message)
-  * source_file_id: REQUIRED unless source_type=user_description.
-                    Copy this verbatim from the <evidence file_id="...">
-                    or <uploaded_file file_id="..."> attribute on the
-                    file the slice came from. Leave blank ONLY when
-                    the extract is a verbatim system-output quote the
-                    user typed in their chat message.
+                 configuration, code, text, or image
+  * source_file_id: REQUIRED. Copy this verbatim from the
+                    <evidence file_id="..."> or <uploaded_file file_id="...">
+                    attribute on the file the slice came from. Evidence is
+                    data the user submitted: a row naming no uploaded file
+                    is refused. What the user wrote in their message is
+                    never a source (see DATA IN THE USER'S MESSAGE).
 - Optional field:
   * extract: A verbatim system-output snippet (a log line, a metric
              reading, a config slice) that supports the summary. One
@@ -185,13 +187,11 @@ Example — analysis reveals an error pattern in an uploaded log:
       source_file_id: "file_a1b2c3d4e5f6"     # from <evidence file_id="...">
       extract: "[14:02:15] OOM killer fired, pid=4321 service-a"
 
-Example — user pasted a verbatim error in their chat message:
-  evidence_to_add:
-    - summary: "User reported HTTP 503 Service Unavailable on the checkout API"
-      category: "symptom_evidence"
-      source_type: "user_description"          # no file behind it
-      # source_file_id intentionally omitted
-      extract: "HTTP/1.1 503 Service Unavailable - upstream connect error"
+Example — user typed an error into their message (no file):
+  evidence_to_add: []        # their message is a claim, not evidence
+  chat_data_blocks:
+    - first_line: "HTTP/1.1 503 Service Unavailable - upstream connect error"
+      last_line: "HTTP/1.1 503 Service Unavailable - upstream connect error"
 
 Example - No new findings from analysis:
   evidence_to_add: []  # Empty - no new evidence discovered
@@ -299,6 +299,10 @@ KEY PRINCIPLES:
 
 Tailor suggestions to the current investigation stage (symptom verification,
 hypothesis testing, solution validation).
+
+"""
+    + _CHAT_DATA_BLOCK
+    + """
 
 """
     + _FOLLOW_UP_SUGGESTIONS_BLOCK

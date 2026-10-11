@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .causal import CausalEdge, CausalNode
+from .chat_data import ChatDataOffer
 from .conclusion import RootCauseConclusion, WorkingConclusion
 from .documentation import DocumentationData, EscalationState, JournalEntry
 from .evidence import Evidence, UploadedFile
@@ -267,6 +268,15 @@ class Case(BaseModel):
             "DECIDE suggestions with intent metadata from the last agent turn. "
             "Used by the intent resolver to match typed responses against offered choices. "
             "Updated after each turn; only suggestions carrying intent metadata are stored."
+        ),
+    )
+
+    chat_data_offers: List[ChatDataOffer] = Field(
+        default_factory=list,
+        description=(
+            "System output the user typed into chat messages, offered back for "
+            "the user to save as data or call their own description (#1930). "
+            "One offer per message; an answer is final."
         ),
     )
 
@@ -533,8 +543,8 @@ class Case(BaseModel):
         fields — those were copies of upload data; this method walks the
         FK instead.
 
-        None-safe at the source_file_id end: chat-extracted evidence
-        (source_type=USER_DESCRIPTION) has source_file_id IS NULL, so
+        None-safe at the source_file_id end: an engine inference
+        (source_type=ENGINE_INFERENCE) has source_file_id IS NULL, so
         callers can pass it through without a guard:
 
             file_meta = case.find_uploaded_file(ev.source_file_id)
