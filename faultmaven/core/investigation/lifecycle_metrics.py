@@ -438,6 +438,18 @@ m6_record_disconfirmation_total = Counter(
     "that the model had not refuted (#1927). One increment per demotion.",
 )
 
+# A refutation was refused because nothing on record backs it (#1911): no
+# evidence row linked REFUTES (unhedged) to the hypothesis or its chain, and no
+# failed fix of it. ``source`` is ``model`` (an emitted state=REFUTED) or
+# ``user`` (a hypothesis_action refute). A sustained ``model`` rate means the
+# model is ruling causes out by argument instead of by data.
+hypothesis_refutation_refused_total = Counter(
+    "faultmaven_hypothesis_refutation_refused_total",
+    "A hypothesis refutation was refused because no evidence on record refutes "
+    "it and no failed fix of it is recorded (#1911). One increment per refusal.",
+    ["source"],
+)
+
 # #656 bearing check at the resolution confirm-stamp. One increment per
 # candidate row refused because its content bears on a DIFFERENT chain than
 # the root being confirmed (frame-shared tokens below the bar, elsewhere-shared

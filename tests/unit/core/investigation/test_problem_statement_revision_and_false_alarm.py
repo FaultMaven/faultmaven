@@ -28,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
 )
+from faultmaven.core.investigation.milestone_engine.statement_revision import (
+    staged_work_summary,
+)
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
 )
@@ -49,7 +52,9 @@ from faultmaven.core.investigation.schemas import (
     CausalNodeToAdd,
     EvidenceToAdd,
     EvidenceTrail,
+    HypothesisEvidenceLinkToAdd,
     HypothesisToAdd,
+    HypothesisUpdate,
     InvestigationResponse_Diagnosis,
     MilestoneJustifications,
     MilestoneUpdates,
@@ -902,6 +907,114 @@ class TestStagingAcrossTheHandshake:
         record = updated.turn_history[-1]
         assert record.hypotheses_generated == [hyp.hypothesis_id]
         assert record.progress_made is True
+
+    async def test_a_refutation_is_staged_with_the_link_that_backs_it(self):
+        """#1911: a refutation stands only on data linked to it, and on a
+        revision turn the link is staged. So the refutation is held with it,
+        neither applied nor refused, and the "yes" replays both: the competitor
+        is refuted on the confirmation turn, with nothing re-emitted."""
+        engine, case = _engine(), _case()
+        dsu = _revision_turn_with_cause_work()
+        dsu.evidence_to_add.append(_row(EvidenceCategory.CAUSAL_EVIDENCE, "dns"))
+        dsu.hypotheses_to_add.append(
+            HypothesisToAdd(
+                statement="the orders service cannot resolve the database host",
+                category=HypothesisCategory.NETWORK,
+                likelihood=0.2,
+                rationale="timeouts could be a DNS stall",
+            )
+        )
+        dsu.hypothesis_evidence_links = [
+            HypothesisEvidenceLinkToAdd(
+                hypothesis_id_ref="new_index_1",
+                evidence_id_ref="new_index_3",
+                stance=EvidenceStance.REFUTES,
+                reasoning="the host resolves in 3 ms throughout the window",
+            )
+        ]
+        dsu.hypotheses_to_update = [
+            HypothesisUpdate(
+                hypothesis_id="new_index_1",
+                state=HypothesisState.REFUTED,
+                refutation_reason="the host resolves in 3 ms during the timeouts",
+            )
+        ]
+
+        meta = await _apply(engine, case, dsu)
+
+        (bundle,) = case.problem_verification.pending_revision.staged
+        assert [u["hypothesis_id"] for u in bundle.updates["hypotheses_to_update"]] == [
+            "new_index_1"
+        ]
+        assert "NOT refuted" not in meta.get("system_feedback", "")
+        assert "1 refutation(s)" in staged_work_summary(
+            case.problem_verification.pending_revision
+        )
+
+        case.current_turn += 1
+        result = await engine.process_turn(case=case, user_message="yes")
+
+        updated = result["case_updated"]
+        competitor = next(
+            h for h in updated.hypotheses.values() if "resolve" in h.statement
+        )
+        assert competitor.state == HypothesisState.REFUTED
+        assert updated.progress.cause_state == CauseState.IDENTIFIED
+
+    async def test_a_standing_hypothesis_refuted_on_a_revision_turn_waits_for_it(self):
+        """The refuting link onto a STANDING hypothesis is staged with the rest
+        of the turn's cause work, so judging the refutation now would refuse it
+        for want of that link. It is staged instead, and the "yes" replays the
+        link and the refutation together (#1911)."""
+        from faultmaven.core.investigation.hypothesis_manager import (
+            HypothesisManager,
+        )
+
+        engine, case = _engine(), _case(ProblemStatus.VERIFIED)
+        standing = HypothesisManager().create_hypothesis(
+            statement="the orders service cannot resolve the database host",
+            category=HypothesisCategory.NETWORK,
+            initial_likelihood=0.4,
+            current_turn=2,
+        )
+        case.hypotheses[standing.hypothesis_id] = standing
+
+        meta = await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[
+                    _row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"),
+                    _row(EvidenceCategory.CAUSAL_EVIDENCE, "dns"),
+                ],
+                verification_updates=_revision_update("new_index_0"),
+                hypothesis_evidence_links=[
+                    HypothesisEvidenceLinkToAdd(
+                        hypothesis_id_ref=standing.hypothesis_id,
+                        evidence_id_ref="new_index_1",
+                        stance=EvidenceStance.REFUTES,
+                        reasoning="the host resolves in 3 ms throughout",
+                    )
+                ],
+                hypotheses_to_update=[
+                    HypothesisUpdate(
+                        hypothesis_id=standing.hypothesis_id,
+                        state=HypothesisState.REFUTED,
+                        refutation_reason="the host resolves in 3 ms",
+                    )
+                ],
+            ),
+        )
+
+        assert case.problem_verification.pending_revision is not None
+        assert standing.state == HypothesisState.ACTIVE
+        assert "NOT refuted" not in meta.get("system_feedback", "")
+
+        case.current_turn += 1
+        result = await engine.process_turn(case=case, user_message="yes")
+
+        replayed = result["case_updated"].hypotheses[standing.hypothesis_id]
+        assert replayed.state == HypothesisState.REFUTED
 
     async def test_a_yes_to_the_revision_never_executes_an_offer_the_replay_made(self):
         """The replay runs the apply path end to end, engine proposers

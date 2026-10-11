@@ -104,7 +104,7 @@ STAGNATION_DECAY_FLOOR = 0.1
 STAGNATION_HORIZON_ITERATIONS = 3
 
 # Below this likelihood a hypothesis is retired: on a likelihood update
-# (``_check_state_transition``), or, for an ignored prior past the stagnation
+# (``check_state_transition``), or, for an ignored prior past the stagnation
 # horizon, by the age-out (``retire_if_aged_out``).
 LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
 
@@ -286,6 +286,8 @@ class HypothesisManager:
         turn: int,
         reasoning: str = "Linked by agent",
         stance_confidence: float | None = 1.0,
+        *,
+        hold_state: bool = False,
     ) -> bool:
         """Link evidence to hypothesis. Returns whether the link was NEW or
         MATERIALLY CHANGED.
@@ -305,6 +307,11 @@ class HypothesisManager:
                 of the same claim (same evidence, same stance) whose confidence
                 was omitted or set aside as out of range (fm#1502). A number
                 overwrites, as before.
+            hold_state: Recompute the likelihood but leave the soft state
+                transition to the caller (``check_state_transition``). The
+                engine holds it for a hypothesis whose refutation is pending in
+                the same turn (#1911): its own REFUTES link must not retire it
+                as low-confidence before the refutation is judged.
 
         Returns:
             ``True`` when this call added a link or changed what an existing one
@@ -394,13 +401,17 @@ class HypothesisManager:
         # NEUTRAL finding) still counts: it is a test the line did not pass.
         # NEUTRAL links are stored for audit trail but do not affect confidence.
         if stance_changed:
-            self.update_likelihood_from_evidence(hypothesis, turn)
+            self.update_likelihood_from_evidence(
+                hypothesis, turn, hold_state=hold_state
+            )
         return material
 
     def update_likelihood_from_evidence(
         self,
         hypothesis: Hypothesis,
         turn: int,
+        *,
+        hold_state: bool = False,
     ) -> None:
         """Update hypothesis likelihood based on evidence accumulation
 
@@ -413,6 +424,8 @@ class HypothesisManager:
         Args:
             hypothesis: Hypothesis to update
             turn: Current turn number
+            hold_state: Leave the soft state transition to the caller (see
+                ``link_evidence``).
         """
         old_likelihood = hypothesis.likelihood
 
@@ -454,7 +467,8 @@ class HypothesisManager:
         )
 
         # Check if hypothesis should transition state
-        self._check_state_transition(hypothesis, turn)
+        if not hold_state:
+            self.check_state_transition(hypothesis, turn)
 
     def update_hypothesis_likelihood(
         self,
@@ -532,7 +546,7 @@ class HypothesisManager:
             )
 
         # Check state transition
-        self._check_state_transition(hypothesis, current_turn)
+        self.check_state_transition(hypothesis, current_turn)
 
         return hypothesis
 
@@ -629,7 +643,7 @@ class HypothesisManager:
         )
         return not contradicted
 
-    def _check_state_transition(
+    def check_state_transition(
         self,
         hypothesis: Hypothesis,
         turn: int,

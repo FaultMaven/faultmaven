@@ -666,6 +666,7 @@ unaffected by dedup).
 The hypothesis lifecycle:
 
 - **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED** — formed ACTIVE, and only once `problem_status` is VERIFIED (the same turn may verify it)
+- REFUTED stands only on data on record: an evidence row linked REFUTES to the hypothesis or its chain, or a recorded failed fix of it, never a stated reason alone (INV-47)
 - Evidence links with stances: SUPPORTS, REFUTES, NEUTRAL
 - Confidence formula: `initial + (0.15 x supporting) - (0.20 x refuting)`
 - Stagnation decay: `likelihood x 0.85` once per stagnant turn (a turn that touched the hypothesis without progress); a hypothesis whose causal support stands (uncontradicted) is never aged by time alone ([methodology §6](./two-dimensional-hypothesis-methodology.md))

@@ -14,6 +14,7 @@ refute / validate), plus the reconstruction round-trip that was the original
 failure.
 """
 
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -31,8 +32,13 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
@@ -209,11 +215,39 @@ def test_retire_on_active_applies():
     assert metadata["hypothesis_action_applied"] is True
 
 
+def _refuting_row(case: Case, h: Hypothesis) -> str:
+    """A file-backed row on the case, linked REFUTES to ``h``."""
+    ev_id = f"ev_{uuid4().hex[:12]}"
+    case.evidence.append(
+        Evidence(
+            evidence_id=ev_id,
+            summary="the pool shows 12 of 50 connections in use at 14:02",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.METRICS,
+            source_file_id="file_0123456789ab",
+            collected_by="llm",
+            collected_at_turn=case.current_turn,
+        )
+    )
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id=ev_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="the pool is far from exhausted",
+            stance_confidence=1.0,
+        )
+    )
+    return ev_id
+
+
 def test_refute_on_active_applies_via_canonical_path():
     eng = _make_engine()
     case = _make_case()
     h = _hyp(HypothesisState.ACTIVE)
     case.hypotheses = {h.hypothesis_id: h}
+    _refuting_row(case, h)
 
     metadata = _apply(eng, case, h.hypothesis_id, "refute", "logs disprove it")
 
@@ -221,6 +255,28 @@ def test_refute_on_active_applies_via_canonical_path():
     assert h.refutation_reason == "logs disprove it"
     assert h.likelihood == 0.0  # canonical refute zeroes it
     assert metadata["hypothesis_action_applied"] is True
+
+
+def test_refute_with_nothing_on_record_is_refused():
+    """#1911: the user's refute click is their claim. With no row on record
+    refuting the hypothesis it stays open, the action is not marked applied,
+    and the model is told to name the check that would settle it."""
+    eng = _make_engine()
+    case = _make_case()
+    h = _hyp(HypothesisState.ACTIVE)
+    case.hypotheses = {h.hypothesis_id: h}
+
+    with patch(
+        "faultmaven.core.investigation.milestone_engine.hypothesis_updates."
+        "hypothesis_refutation_refused_total"
+    ) as counter:
+        metadata = _apply(eng, case, h.hypothesis_id, "refute", "it isn't that")
+
+    assert h.state == HypothesisState.ACTIVE
+    assert h.refutation_reason is None
+    assert "hypothesis_action_applied" not in metadata
+    assert "nothing on record refutes it" in metadata["system_feedback"]
+    counter.labels.assert_called_once_with(source="user")
 
 
 def test_validate_on_active_records_strong_prior():

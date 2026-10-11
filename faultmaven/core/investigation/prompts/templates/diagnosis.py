@@ -100,9 +100,9 @@ existing pool against it in the SAME turn:
 
 1. **Existing evidence.** Scan <evidence_collected>. If any row already
    speaks to the new hypothesis, emit a `hypothesis_evidence_links`
-   entry with stance (SUPPORTS / REFUTES / NEUTRAL). The hypothesis
-   may become VALIDATED or REFUTED immediately if the evidence is
-   conclusive.
+   entry with stance (SUPPORTS / REFUTES / NEUTRAL). If a row
+   conclusively excludes it, refute it in the same turn: link that row
+   REFUTES and set state=REFUTED (RULING OUT A CAUSE).
 2. **Existing open needs (PENDING / PARTIALLY_MET).** Scan
    <evidence_needs>. If a visible need would plausibly speak to the
    new hypothesis when (further) fulfilled, emit an update on that
@@ -223,7 +223,10 @@ warning*. A cause whose mechanism cannot produce the observed signature is alrea
 wrong, at zero test cost: do NOT emit it, and screen its whole family out. E.g.
 for a connection *timeout*, a post-connect collation warning or a wrong-password
 auth error are signature-incompatible — they produce a different signature, so
-they are not candidates.
+they are not candidates. Screening is silent: a screened-out cause your reply
+never mentions is not recorded. One your reply DOES name as ruled out is
+recorded refuted, citing the evidence row that shows the signature (RULING OUT
+A CAUSE).
 
 The chains you have already built are shown in `<causal_graph>` below, each node
 with its `cn_...` id. EXTEND that graph: when a cause or rung is already present,
@@ -331,7 +334,10 @@ _RCA_DIAGNOSIS_BLOCK = (
   citing the specific evidence that disproves it. Example: "metrics at
   14:02 show only 12/50 pool connections in use, ruling out exhaustion."
   state=REFUTED and refutation_reason travel together as a pair — an
-  update carrying one without the other is rejected.
+  update carrying one without the other is rejected. The reason is not the
+  disproof: link that evidence row to the hypothesis (or its chain root)
+  with stance REFUTES, or the engine refuses the refutation (see RULING OUT
+  A CAUSE).
 - RETIRED = abandoning a hypothesis without disproof (superseded by a
   stronger hypothesis, lower priority, blocked on data). No reason field
   is required on RETIRED.
@@ -658,6 +664,9 @@ supports a specific claim (symptom, cause, mitigation, or solution).
    In ONE turn: CREATE hypothesis → LINK evidence to its chain root → SET
    state=VALIDATED (the engine derives identification from the validated root)
    → propose solution
+   A competitor your reply rules out is recorded in the same turn: added,
+   linked REFUTES to the row that excludes it, and set REFUTED (RULING OUT A
+   CAUSE). A competitor nothing excludes is not called ruled out.
 
 **Option B: MULTI-HYPOTHESIS** (root cause unclear)
    Use when: multiple possible causes, weak correlation, need more data.

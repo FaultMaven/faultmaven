@@ -894,9 +894,12 @@ class HypothesisUpdate(BaseModel):
         default=None,
         max_length=200,
         description=(
-            "Required when setting state=REFUTED. Cite the specific evidence "
-            "or reasoning that disproves the hypothesis. Not used for other "
-            "statuses. state=REFUTED and refutation_reason travel together."
+            "Required when setting state=REFUTED. Cite the evidence that "
+            "disproves the hypothesis: what its chain would produce and the "
+            "observation that contradicts it. The refutation stands only when "
+            "that evidence is linked to the hypothesis or its chain with "
+            "stance REFUTES, this turn or earlier, or a failed fix of it is "
+            "recorded. Not used for other statuses."
         ),
     )
     root_node_ref: Optional[IdRef] = Field(

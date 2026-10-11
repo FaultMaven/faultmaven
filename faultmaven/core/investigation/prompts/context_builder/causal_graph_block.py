@@ -7,7 +7,63 @@ from faultmaven.core.investigation.causal_graph.support import (
     restatement_held_root_ids,
     root_support_block_reasons,
 )
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_SUCCEEDED,
+    latest_decided_fix_window,
+)
 from faultmaven.modules.case.contracts import Case
+
+
+def _one_line(s: str) -> str:
+    s = " ".join((s or "").split())
+    return s if len(s) <= 140 else s[:137] + "..."
+
+
+def exclusion_record(case: Case, *, list_refuted: bool) -> str:
+    """What the record excludes, stated plainly (#1911): the engine renders
+    the fact, and the model judges what to say about the alternatives.
+
+    Every REFUTED hypothesis stands on data (the refutation rule), so "ruled
+    out" is exactly the refuted set. A confirmed fix (the latest decided fix
+    window SUCCEEDED: the cause and the problem both observed gone after it) is
+    the counterfactual, which shows a competitor was not what caused this
+    problem without showing it absent.
+
+    ``list_refuted`` renders each refuted hypothesis with its reason, for the
+    condensed stage blocks that otherwise show only the standing causes; the
+    full graph block already lists them. Empty when the case has no hypothesis
+    to speak of."""
+    shown = [h for h in case.hypotheses.values() if h.state.value != "retired"]
+    if not shown:
+        return ""
+    refuted = [h for h in shown if h.state.value == "refuted"]
+    lines = []
+    if list_refuted:
+        lines.extend(
+            f"- [{h.hypothesis_id}] {_one_line(h.statement)} (REFUTED) — "
+            f"Refuted because: {_one_line(h.refutation_reason)}"
+            for h in refuted
+        )
+    if refuted:
+        ids = ", ".join(h.hypothesis_id for h in refuted)
+        summary = (
+            f"Ruled out on record: {ids} (each refuted by evidence). No other "
+            f"alternative is excluded on record."
+        )
+    else:
+        summary = (
+            "Ruled out on record: nothing. No alternative cause is excluded by "
+            "evidence on record."
+        )
+    window = latest_decided_fix_window(case)
+    if window is not None and window.state == FIX_SUCCEEDED:
+        summary += (
+            " The latest fix is confirmed (the cause and the problem observed "
+            "gone after it): an unexcluded alternative was not what caused this "
+            "problem, but is not shown absent."
+        )
+    lines.append(summary)
+    return "\n".join(lines)
 
 
 def _build_causal_graph_block(case: Case) -> str:
@@ -27,10 +83,6 @@ def _build_causal_graph_block(case: Case) -> str:
     Returns an empty string when the case has no active hypotheses and no
     causal nodes (nothing to render yet).
     """
-
-    def _stmt(s: str) -> str:
-        s = " ".join((s or "").split())
-        return s if len(s) <= 140 else s[:137] + "..."
 
     nodes = case.causal_nodes or {}
     active_h = [h for h in case.hypotheses.values() if h.state.value != "retired"]
@@ -129,7 +181,7 @@ def _build_causal_graph_block(case: Case) -> str:
         note = recovery_notes.get(node_reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
-            f"{_stmt(n.statement)}{note}"
+            f"{_one_line(n.statement)}{note}"
         )
 
     on_path: set[str] = set()
@@ -143,7 +195,7 @@ def _build_causal_graph_block(case: Case) -> str:
     ]
     for h in active_h:
         lines.append(
-            f"- [{h.hypothesis_id}] {_stmt(h.statement)} "
+            f"- [{h.hypothesis_id}] {_one_line(h.statement)} "
             f"(Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})"
         )
         chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
@@ -167,7 +219,10 @@ def _build_causal_graph_block(case: Case) -> str:
             on_path.add(nid)
             lines.append(_node_line("    ", n))
         if h.state.value == "refuted" and h.refutation_reason:
-            lines.append(f"    Refuted because: {_stmt(h.refutation_reason)}")
+            lines.append(f"    Refuted because: {_one_line(h.refutation_reason)}")
+    exclusions = exclusion_record(case, list_refuted=False)
+    if exclusions:
+        lines.append(f"  {exclusions}")
     # Standalone nodes on no hypothesis path — surface their ids so the LLM
     # attaches/extends them instead of re-emitting the same cause.
     orphans = [

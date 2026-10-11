@@ -48,7 +48,10 @@ PRs #487–#507. What is built versus still design-intent:
   counterfactual confirmation on the validated root (empirical *and* deductive
   validation cap at `CONFIDENT`/0.8), `CONFIRMED` is the sole KB-harvest
   authority, and a conclusion that over-claims "verified" below the grade is
-  surfaced (WARNING seam log + report assurance qualifier).
+  surfaced (WARNING seam log + report assurance qualifier). Also
+  **empirical refutation** (§7.1, #1911): a hypothesis is refuted only on an
+  evidence row linked REFUTES to it or its chain, or a recorded failed fix of
+  it, never on a stated reason alone (INV-47).
 - **Design-intent, not yet built** — the LLM satisfies this *behaviorally*; no
   engine gate enforces it: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
@@ -218,6 +221,10 @@ How candidate roots are *born*. This is where free-association is prevented.
   an *authentication-failed* is not a *post-connect warning*; each implies a
   different mechanism family. Candidates whose mechanism cannot produce the
   observed signature are rejected at zero test cost — no user action required.
+  Screening is silent: a screened-out candidate nobody mentions is not
+  recorded, so the map is not flooded. A candidate the reply *names* as ruled
+  out is recorded refuted, linked REFUTES to the evidence row that shows the
+  signature, because a refutation stands only on data on record (§7.1, #1911).
 - **F4 — Family completeness.** Generate candidates against a checklist of
   failure families — *config • network/reachability • resource/capacity •
   dependency-readiness • data/state • code/logic • permission/identity •
@@ -287,6 +294,14 @@ chains per unit cost*.
 > differential the rule targets). Lesson: a *search* rule does not belong in the
 > *emission* instructions, and prompt-first fits *formation* rules (F3), not
 > test-selection.
+>
+> **Not to be confused with an unsound exclusion (#1911).** A competitor
+> marked ruled out on a ground that does not exclude it ("rejections are
+> isolated to app-02", against a key problem local to app-02) is a
+> *soundness* failure, not a search-efficiency one, and it is not governed by
+> this status note. It is closed in the engine: a refutation stands only on
+> data on record (§7.1), and the context states what the record excludes in
+> every stage, so the reply says "ruled out" only of that.
 >
 > **Bar for reintroduction.** Bring invalidation-first back as an engine/prompt
 > mechanism only after a sim or eval *first demonstrates the failure it targets* —
@@ -634,6 +649,34 @@ better KB coverage scaffolds one coherent chain — but per the LLM-agnostic
 invariant the engine never lowers the certification bar for the model, so this
 limit shrinks toward zero as models/coverage improve yet never closes to zero.
 
+**Refutation is empirical too (#1911).** The disproof side has the same
+discipline as validation. A hypothesis is REFUTED only when an evidence row on
+the case is linked REFUTES to it or to a node of its chain (its root, or a
+rung on its path: refuting any rung breaks the chain, S1), at a declared
+confidence at or above `CAUSAL_STANCE_CONFIDENCE_MIN`, in the same turn or
+earlier; or when the case records a failed fix of it (§7.3). Every evidence
+row is submitted data, so the ground is an observation. A `refutation_reason`
+alone is an argument, and an argument can read exactly like a sound
+exclusion while excluding nothing: isolation to one scope (a host, a region,
+a tenant) never excludes a cause local to that scope. The engine refuses
+such a refutation, leaves the hypothesis open, and tells the model what would
+back it; the model asks for the check that would settle it, or RETIRES the
+hypothesis if it is setting it aside. Evidence already on record counts: a
+competitor that a row already on the case excludes needs no fresh request,
+only the link. The refutation is judged after the turn's link passes, so a
+competitor can be added, linked to the row that excludes it and refuted in
+one turn.
+
+What the reply says follows the record. "Ruled out" is said only of a
+refuted hypothesis (rendered back with "Refuted because"). Once the fix is
+confirmed (the cause and the problem both observed gone after it, M2), the
+counterfactual may be cited: a competitor *was not what caused this
+problem*, which does not show it absent. Any other alternative is *not
+excluded*, with the check that would settle it named. When the user
+questions an exclusion again after it was answered, restating does not
+settle it: the agent asks what would, and offers the discriminating check
+even when a ground is already on record.
+
 ### 7.1.1 Deductive validation (proof by exclusion)
 
 Some root causes are *unobservable in principle* — microsecond race conditions,
@@ -848,7 +891,11 @@ cause was *already absent/correct* and `D` still occurred — that is
 **counterfactual disconfirmation**. The engine must:
 
 1. **Demote** the root from "validated" back to "candidate".
-2. Attach the failed fix as **refuting evidence** on that chain.
+2. Attach the failed fix as **refuting evidence** on that chain. A failed
+   fix is the one disproof with no evidence row of its own to link (the
+   treatment prompt records none), so the model's refutation of the cause it
+   fixed stands on the case's failed fix window (`failed_fix_of`, the same
+   attribution M6's record trigger reads) instead of a linked row (#1911).
 3. **Check for state contamination — before resuming.** A state-mutating action
    — a failed fix, a *partially*-applied one, even a mitigation or a
    state-changing diagnostic command — can alter the system (left-over locks, a

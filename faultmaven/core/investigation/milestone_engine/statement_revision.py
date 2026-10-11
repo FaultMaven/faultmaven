@@ -244,6 +244,7 @@ _STAGED_WORK_NOUNS = (
     ("hypotheses_to_add", "hypothesis(es)"),
     ("causal_nodes_to_add", "causal node(s)"),
     ("causal_edges_to_add", "causal link(s)"),
+    ("hypotheses_to_update", "refutation(s)"),
     ("solutions_to_add", "proposed solution(s)"),
     ("root_cause_conclusion", "root-cause conclusion"),
 )

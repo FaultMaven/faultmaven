@@ -277,7 +277,7 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 | ----- | ------- | ----------- |
 | `ACTIVE` | Under active investigation — every hypothesis is formed ACTIVE | Formed only once the symptom is verified (the same turn may verify it) |
 | `VALIDATED` | Derived when the hypothesis's chain ROOT node is VALIDATED (2+ independent causal supports, or counterfactual confirmation) — the sole producer; no flat likelihood threshold | Enables the grounded cause signal (`cause_state = IDENTIFIED`) |
-| `REFUTED` | Evidence directly disproves it | Requires `refutation_reason` citing specific evidence |
+| `REFUTED` | Evidence directly disproves it | Requires `refutation_reason` citing specific evidence, and that evidence row linked REFUTES to the hypothesis or its chain (this turn or earlier), or a recorded failed fix of it. Otherwise the engine refuses it (INV-47) |
 | `INCONCLUSIVE` | likelihood 0.3–0.5, stagnant 3+ turns without new evidence | Set by progress monitor |
 | `RETIRED` | Abandoned without disproof | No reason required |
 
@@ -328,6 +328,8 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 - Classifying `causal_evidence` without a corresponding hypothesis
 - Using `REFUTED` without `refutation_reason`
 - Using `REFUTED` when there is no evidence of disproof (use `RETIRED`)
+- Ruling a competitor out by isolation to one scope ("only app-02 is affected") when the competitor can be local to that scope; or telling the user a cause is ruled out when nothing on record refutes it (say it is not excluded and name the check)
+- Restating the same answer when the user asks again what rules the alternatives out (ask what would settle it, offer the discriminating check)
 - Requesting data not tied to a specific hypothesis
 - Treating a change event (deployment, update) as a root cause — it is a trigger; the root cause is the specific change within it
 - Emitting the grounded cause signal (`cause_state = IDENTIFIED`) with only a trigger observation and no mechanism
@@ -448,7 +450,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 1. Do not record an evidence row for the failed fix. A failed fix has no absence to record — the cause persists — so there is no "the fix worked" signal to capture. The failed attempt is recorded by refuting the hypothesis (duty 4), not by an evidence row.
 2. Determine failure type: implementation error (wrong command, missing step) → correct and re-propose without new evidence. Theory wrong → the original hypothesis was incorrect; new evidence is required before a new proposal.
 3. State what the failure eliminates and what is now unclear. Request NEW data with full specificity before revising a theory.
-4. Refute the disproven hypothesis with `refutation_reason` citing the failed fix. Any new diagnostic data gathered here must be classified as `causal_evidence` (linkable to hypotheses), never `causal_absence_evidence` — the cause was not eliminated.
+4. Refute the disproven hypothesis with `refutation_reason` citing the failed fix. The refutation stands once the case records the failure (the cause seen removed after the fix, then the problem seen persisting, from submitted output); without that output nothing is disproved yet, so ask for the re-check. Any new diagnostic data gathered here must be classified as `causal_evidence` (linkable to hypotheses), never `causal_absence_evidence` — the cause was not eliminated.
 
 #### Agent Duties — Primary path (fix verified successfully)
 

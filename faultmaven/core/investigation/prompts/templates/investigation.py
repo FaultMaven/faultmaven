@@ -5,6 +5,7 @@ from .blocks import (
     _ACTIVE_ADVISOR_ROLE_BLOCK,
     _CHAT_DATA_BLOCK,
     _DATA_CITATION_RULE,
+    _EXCLUSION_GROUNDS_BLOCK,
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
     _OUTCOME_PROMPT_BLOCK,
     _PROMPT_FENCE_RULE,
@@ -302,6 +303,10 @@ hypothesis testing, solution validation).
 
 """
     + _CHAT_DATA_BLOCK
+    + """
+
+"""
+    + _EXCLUSION_GROUNDS_BLOCK
     + """
 
 """

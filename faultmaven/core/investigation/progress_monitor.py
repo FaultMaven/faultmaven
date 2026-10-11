@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # no longer standing — for exhaustion/anchoring work-gates. RETIRED is included
 # alongside REFUTED/INCONCLUSIVE (#695 Defect A): removing the flat-likelihood
 # REFUTED transition means a decaying disproven theory now retires at
-# ``likelihood < 0.3`` (``_check_state_transition``) before it could ever land
+# ``likelihood < 0.3`` (``check_state_transition``) before it could ever land
 # REFUTED, so a spent theory that used to be counted here as REFUTED now lands
 # RETIRED. Counting RETIRED keeps the exhaustion/anchoring tallies whole. Kept
 # module-local (like ``causal_graph._STANDING_HYP_STATES``) and single-sourced so

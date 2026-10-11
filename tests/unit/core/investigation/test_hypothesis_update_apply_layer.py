@@ -7,6 +7,7 @@ emitted it, but the engine never applied it; these tests pin the wiring and the
 end-to-end effect (refutation -> M6 demotion of a grounded cause).
 """
 
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -20,6 +21,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_deferred_likelihood_updates,
     _apply_hypothesis_updates,
+    _apply_pending_refutations,
 )
 from faultmaven.core.investigation.schemas import HypothesisUpdate
 from faultmaven.modules.case.contracts import (
@@ -28,17 +30,25 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     ConfidenceLevel,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    NodeEvidenceLink,
     ProblemVerification,
     RootCauseConclusion,
 )
 from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
+
+_UPDATES = "faultmaven.core.investigation.milestone_engine.hypothesis_updates"
 
 
 def _make_engine() -> MilestoneEngine:
@@ -97,13 +107,36 @@ def _active_hyp(statement="NetworkPolicy blocks the connection") -> Hypothesis:
     )
 
 
-def test_refuted_with_reason_applies():
-    eng = _make_engine()
-    case = _make_case()
-    h = _active_hyp()
-    case.hypotheses = {h.hypothesis_id: h}
-    meta = _empty_metadata()
+def _refuting_row(case: Case, h: Hypothesis, *, confidence=1.0) -> str:
+    """Record a file-backed row on the case and link it REFUTES to ``h``."""
+    ev_id = f"ev_{uuid4().hex[:12]}"
+    case.evidence.append(
+        Evidence(
+            evidence_id=ev_id,
+            summary="policy re-applied correctly; the job still fails",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id="file_0123456789ab",
+            collected_by="llm",
+            collected_at_turn=case.current_turn,
+        )
+    )
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id=ev_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="the policy was correct and the job still failed",
+            stance_confidence=confidence,
+        )
+    )
+    return ev_id
 
+
+def _refute(eng, case, h, meta, reason="re-ran with policy correct; still failed"):
+    """Emit ``state=REFUTED`` and judge it as the apply path does: queued by
+    ``_apply_hypothesis_updates``, applied after the link passes."""
     _apply_hypothesis_updates(
         eng.deps.hypothesis_manager,
         case,
@@ -111,18 +144,96 @@ def test_refuted_with_reason_applies():
             HypothesisUpdate(
                 hypothesis_id=h.hypothesis_id,
                 state=HypothesisState.REFUTED,
-                refutation_reason="re-ran with policy correct; still failed",
+                refutation_reason=reason,
             )
         ],
         meta,
         case.current_turn,
     )
+    _apply_pending_refutations(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
+
+
+def test_refuted_with_refuting_evidence_on_record_applies():
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    ev_id = _refuting_row(case, h)
+    meta = _empty_metadata()
+
+    _refute(eng, case, h, meta)
 
     assert h.state == HypothesisState.REFUTED
     assert h.likelihood == 0.0  # canonical refute zeroes it
     assert h.refutation_reason == "re-ran with policy correct; still failed"
     assert h.last_updated_turn == case.current_turn
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
+    assert [link.evidence_id for link in h.evidence_links] == [ev_id]
+
+
+def test_refuted_on_a_reason_alone_is_refused_with_feedback():
+    """#1911: a stated reason is an argument, not a disproof. With no row on
+    record refuting it, the hypothesis stays open and the model is told why."""
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    with patch(f"{_UPDATES}.hypothesis_refutation_refused_total") as counter:
+        _refute(eng, case, h, meta, reason="all nodes run the same code")
+
+    assert h.state == HypothesisState.ACTIVE
+    assert h.refutation_reason is None
+    assert h.likelihood == 0.7
+    assert meta["hypotheses_updated"] == []
+    feedback = meta["system_feedback"]
+    assert f"Hypothesis {h.hypothesis_id} was NOT refuted" in feedback
+    assert "ask for the check that would settle it" in feedback
+    counter.labels.assert_called_once_with(source="model")
+    counter.labels.return_value.inc.assert_called_once_with()
+
+
+def test_a_self_hedged_refutes_link_does_not_back_a_refutation():
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    _refuting_row(case, h, confidence=0.4)
+    meta = _empty_metadata()
+
+    _refute(eng, case, h, meta)
+
+    assert h.state == HypothesisState.ACTIVE
+    assert "self-hedged" in meta["system_feedback"]
+
+
+def test_a_refutes_link_on_the_chain_root_backs_the_refutation():
+    """The ground may sit on the chain axis: a row linked REFUTES to the
+    hypothesis's root node, which ``refute_hypothesis`` then mirrors flat."""
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    ev_id = _refuting_row(case, h)
+    h.evidence_links.clear()
+    case.causal_nodes[h.root_node_id].evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=ev_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="the policy was correct and the job still failed",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    meta = _empty_metadata()
+
+    _refute(eng, case, h, meta)
+
+    assert h.state == HypothesisState.REFUTED
+    assert [link.evidence_id for link in h.evidence_links] == [ev_id]
 
 
 def test_refuted_without_reason_is_skipped_with_feedback():
@@ -183,20 +294,9 @@ def test_refuted_is_terminal_immutable_no_resurrection_or_corruption():
     case = _make_case()
     h = _active_hyp()
     case.hypotheses = {h.hypothesis_id: h}
+    _refuting_row(case, h)
 
-    _apply_hypothesis_updates(
-        eng.deps.hypothesis_manager,
-        case,
-        [
-            HypothesisUpdate(
-                hypothesis_id=h.hypothesis_id,
-                state=HypothesisState.REFUTED,
-                refutation_reason="disproved",
-            )
-        ],
-        _empty_metadata(),
-        case.current_turn,
-    )
+    _refute(eng, case, h, _empty_metadata(), reason="disproved")
     assert h.state == HypothesisState.REFUTED
 
     meta2 = _empty_metadata()
@@ -340,14 +440,21 @@ def test_new_index_placeholder_resolves_to_this_turn_hypothesis():
 
 
 def test_refuted_update_drives_m6_demotion_end_to_end():
-    """The whole point of slice 1: the LLM's explicit REFUTED signal now flows
-    through to M6 demotion of a grounded cause (the turn-28 path), without
-    needing a REFUTES evidence link."""
+    """The whole point of slice 1: the LLM's explicit REFUTED signal flows
+    through to M6 demotion of a grounded cause (the turn-28 path). One refuting
+    row against two supporting ones does not net-refute the cause by itself,
+    so the demotion here is the refutation's doing; the row is what lets the
+    refutation stand (#1911)."""
     eng = _make_engine()
     case = _make_case()
     h = _active_hyp()
     case.hypotheses = {h.hypothesis_id: h}
     bridge_flat_hypotheses_to_graph(case)
+    for _ in range(2):
+        supporting = _refuting_row(case, h)
+        h.evidence_links[-1].stance = EvidenceStance.SUPPORTS
+        assert h.evidence_links[-1].evidence_id == supporting
+    _refuting_row(case, h)
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="NetworkPolicy denies ingress to postgres",
         mechanism="ingress rule has no from-clause -> default deny",
@@ -359,20 +466,8 @@ def test_refuted_update_drives_m6_demotion_end_to_end():
     case.progress.cause_state = CauseState.IDENTIFIED
     case.progress.root_cause_likelihood = 0.9
 
-    # The LLM disconfirms via hypotheses_to_update (not an evidence link).
-    _apply_hypothesis_updates(
-        eng.deps.hypothesis_manager,
-        case,
-        [
-            HypothesisUpdate(
-                hypothesis_id=h.hypothesis_id,
-                state=HypothesisState.REFUTED,
-                refutation_reason="fix applied; problem persisted",
-            )
-        ],
-        _empty_metadata(),
-        case.current_turn,
-    )
+    # The LLM disconfirms via hypotheses_to_update.
+    _refute(eng, case, h, _empty_metadata(), reason="fix applied; problem persisted")
     assert h.state == HypothesisState.REFUTED
 
     _recompute_assessment_state(case)
