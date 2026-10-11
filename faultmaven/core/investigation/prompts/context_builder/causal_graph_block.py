@@ -11,7 +11,7 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     latest_decided_fix_window,
 )
-from faultmaven.modules.case.contracts import Case
+from faultmaven.modules.case.contracts import Case, CaseState
 
 
 def _one_line(s: str) -> str:
@@ -55,8 +55,7 @@ def exclusion_record(case: Case, *, list_refuted: bool) -> str:
             "Ruled out on record: nothing. No alternative cause is excluded by "
             "evidence on record."
         )
-    window = latest_decided_fix_window(case)
-    if window is not None and window.state == FIX_SUCCEEDED:
+    if _fix_confirmed(case):
         summary += (
             " The latest fix is confirmed (the cause and the problem observed "
             "gone after it): an unexcluded alternative was not what caused this "
@@ -64,6 +63,45 @@ def exclusion_record(case: Case, *, list_refuted: bool) -> str:
         )
     lines.append(summary)
     return "\n".join(lines)
+
+
+def exclusions_reminder(case: Case) -> str:
+    """What the record excludes, restated beside the user's message (#1911).
+
+    The full record sits in the causal graph block, and the rule in the
+    investigation base, both far from the question. A live run (login-401,
+    2026-10-11) had both in its prompt and still answered "what rules out the
+    alternatives?" with exclusions nothing on record backed. So the fact is
+    repeated in the slot read last, with the one rule; the model judges what to
+    say. Only while INVESTIGATING and once a hypothesis exists to speak of.
+
+    After a confirmed fix the rule is the counterfactual's: an unexcluded
+    alternative was not what caused this problem. Asking for checks on it then
+    would pull against the resolve turn, which asks for no more data."""
+    if case.state != CaseState.INVESTIGATING:
+        return ""
+    record = exclusion_record(case, list_refuted=False)
+    if not record:
+        return ""
+    if _fix_confirmed(case):
+        rule = (
+            'Say "ruled out" only of a cause refuted on record. Of any other '
+            "alternative, say it was not what caused this problem, never that "
+            "it is absent."
+        )
+    else:
+        rule = (
+            'Say "ruled out" only of a cause refuted on record. Any other '
+            "alternative is not excluded: name the check that would settle it, "
+            "or record the exclusion this turn (link the row that excludes it "
+            "with stance REFUTES and set state=REFUTED)."
+        )
+    return f"<exclusions_on_record>\n{record}\n{rule}\n</exclusions_on_record>\n\n"
+
+
+def _fix_confirmed(case: Case) -> bool:
+    window = latest_decided_fix_window(case)
+    return window is not None and window.state == FIX_SUCCEEDED
 
 
 def _build_causal_graph_block(case: Case) -> str:

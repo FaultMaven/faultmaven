@@ -6,6 +6,9 @@ from typing import Optional
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
+    exclusions_reminder,
+)
 from faultmaven.core.investigation.prompts.context_builder.evidence import _label_attr
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
@@ -662,7 +665,11 @@ def _fallback_body(
             head_chars=caps.stub_head,
             label_chars=caps.stub_label,
         )
-        feedback_block = system_feedback_block(case, guard=_notice)
+        # The degraded prompt keeps the exclusions on record too (#1911): it
+        # fires on the oversized prompts where the rule is easiest to lose.
+        feedback_block = system_feedback_block(
+            case, guard=_notice
+        ) + exclusions_reminder(case)
         user_block = _user(user_message)
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(

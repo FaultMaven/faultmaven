@@ -33,7 +33,11 @@ from .budget import (
     TokenBudget,
     get_token_budget_for_provider,
 )
-from .causal_graph_block import _build_causal_graph_block, exclusion_record
+from .causal_graph_block import (
+    _build_causal_graph_block,
+    exclusion_record,
+    exclusions_reminder,
+)
 from .entity_highlights import EntityHighlightGroup, _render_entity_highlights
 from .evidence import (
     _build_evidence_context,
@@ -136,6 +140,7 @@ def _allocate_sections(
     pending_action_str: str,
     user_message_block: str,
     feedback_str: str,
+    exclusions_str: str,
     # variable sections (priority order is fixed below)
     evidence_str: str,
     graduated_history: str,
@@ -194,7 +199,11 @@ def _allocate_sections(
     ctx["milestones"] = _reserve(milestones_str)
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
-    ctx["system_feedback"] = _reserve(capped_feedback)
+    # The exclusions reminder follows the feedback, outside its cap: the cap
+    # keeps the head, so a capped tail would lose the reminder first and could
+    # leave its tag open against the user's message (#1911). It is bounded on
+    # its own: ids and two fixed sentences.
+    ctx["system_feedback"] = _reserve(capped_feedback + exclusions_str)
     ctx["user_message"] = _reserve(user_message_block)
 
     reserve_tokens = budget.used_tokens
@@ -413,31 +422,6 @@ def _allocate_sections(
             },
         )
     return ctx
-
-
-def _exclusions_reminder(case: Case) -> str:
-    """What the record excludes, restated beside the user's message (#1911).
-
-    The full record sits in the causal graph block, and the rule in the
-    investigation base, both far from the question. A live run (login-401,
-    2026-10-11) had both in its prompt and still answered "what rules out the
-    alternatives?" with exclusions nothing on record backed. So the fact is
-    repeated, in one line, in the slot read last; the model judges what to say.
-    Only while INVESTIGATING and once a hypothesis exists to speak of."""
-    if case.state != CaseState.INVESTIGATING:
-        return ""
-    record = exclusion_record(case, list_refuted=False)
-    if not record:
-        return ""
-    return (
-        "<exclusions_on_record>\n"
-        f"{record}\n"
-        'Say "ruled out" only of a cause refuted on record. Any other '
-        "alternative is not excluded: name the check that would settle it, or "
-        "record the exclusion this turn (link the row that excludes it with "
-        "stance REFUTES and set state=REFUTED).\n"
-        "</exclusions_on_record>\n\n"
-    )
 
 
 def _working_hypotheses(case: Case, standing: list[str]) -> str:
@@ -893,7 +877,8 @@ def build_investigation_context(
 
     # 8. System Feedback (Validation errors from previous turn), then the
     # exclusions on record, in the slot read last before the user's message.
-    feedback_str = system_feedback_block(case) + _exclusions_reminder(case)
+    feedback_str = system_feedback_block(case)
+    exclusions_str = exclusions_reminder(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where
@@ -1038,6 +1023,7 @@ def build_investigation_context(
         pending_action_str=pending_action_str,
         user_message_block=_fenced["user_message"],
         feedback_str=feedback_str,
+        exclusions_str=exclusions_str,
         evidence_str=evidence_str,
         graduated_history=recent_history,
         compact_history=compact_history,
