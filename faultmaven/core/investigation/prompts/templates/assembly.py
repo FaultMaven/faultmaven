@@ -668,6 +668,7 @@ _RESERVE_KEYS = (
     "inquiry_state",
     "pending_action",
     "system_feedback",
+    "exclusions",
     "user_message",
 )
 

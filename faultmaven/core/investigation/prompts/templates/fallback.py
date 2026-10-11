@@ -6,6 +6,10 @@ from typing import Optional
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
+    exclusions_reminder_parts,
+    named_exclusions,
+)
 from faultmaven.core.investigation.prompts.context_builder.evidence import _label_attr
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
@@ -633,7 +637,12 @@ def _fallback_body(
         # ``hypothesis_id_ref`` needs a ``hyp_...`` id to link a causal row to
         # a standing hypothesis (#1116). Overflow reaches this renderer on
         # exactly the long cases that have standing hypotheses.
-        for h in list(case.hypotheses.values())[:3]:
+        # The standing ones first, then the refuted ones the exclusions line
+        # names (#1911): an id named as ruled out is never shown without its
+        # statement.
+        named, _more = named_exclusions(case)
+        standing = [h for h in case.hypotheses.values() if h.state.value != "refuted"]
+        for h in standing[:3] + named:
             hypotheses.append(
                 f"[{h.hypothesis_id}] {h.statement[: caps.hypothesis]} "
                 f"({h.state.value})"
@@ -662,7 +671,14 @@ def _fallback_body(
             head_chars=caps.stub_head,
             label_chars=caps.stub_label,
         )
+        # The degraded prompt keeps the exclusions on record too (#1911): it
+        # fires on the oversized prompts where the rule is easiest to lose. A
+        # bare heading like the others here, not a tag: this prompt's trust
+        # rule reads an unfenced tag as quoted data.
         feedback_block = system_feedback_block(case, guard=_notice)
+        parts = exclusions_reminder_parts(case)
+        if parts is not None:
+            feedback_block += "EXCLUSIONS ON RECORD: " + " ".join(parts) + "\n\n"
         user_block = _user(user_message)
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(

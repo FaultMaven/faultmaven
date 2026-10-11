@@ -33,7 +33,11 @@ from .budget import (
     TokenBudget,
     get_token_budget_for_provider,
 )
-from .causal_graph_block import _build_causal_graph_block, exclusion_record
+from .causal_graph_block import (
+    _build_causal_graph_block,
+    exclusion_record,
+    exclusions_reminder,
+)
 from .entity_highlights import EntityHighlightGroup, _render_entity_highlights
 from .evidence import (
     _build_evidence_context,
@@ -136,6 +140,7 @@ def _allocate_sections(
     pending_action_str: str,
     user_message_block: str,
     feedback_str: str,
+    exclusions_str: str,
     # variable sections (priority order is fixed below)
     evidence_str: str,
     graduated_history: str,
@@ -195,6 +200,12 @@ def _allocate_sections(
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
     ctx["system_feedback"] = _reserve(capped_feedback)
+    # Its own section, not appended to the feedback (#1911): the feedback cap
+    # keeps the head and would cut the reminder first, and a feedback cut
+    # mid-tag would absorb it; as a section of its own it gets the per-section
+    # tag termination below. Bounded: at most MAX_NAMED_EXCLUSIONS ids and two
+    # fixed sentences.
+    ctx["exclusions"] = _reserve(exclusions_str)
     ctx["user_message"] = _reserve(user_message_block)
 
     reserve_tokens = budget.used_tokens
@@ -866,8 +877,10 @@ def build_investigation_context(
             kb_str += "\n"
         kb_str += "</knowledge_context>"
 
-    # 8. System Feedback (Validation errors from previous turn)
+    # 8. System Feedback (Validation errors from previous turn), then the
+    # exclusions on record, in the slot read last before the user's message.
     feedback_str = system_feedback_block(case)
+    exclusions_str = exclusions_reminder(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where
@@ -1012,6 +1025,7 @@ def build_investigation_context(
         pending_action_str=pending_action_str,
         user_message_block=_fenced["user_message"],
         feedback_str=feedback_str,
+        exclusions_str=exclusions_str,
         evidence_str=evidence_str,
         graduated_history=recent_history,
         compact_history=compact_history,

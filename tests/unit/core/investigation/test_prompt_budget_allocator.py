@@ -386,6 +386,7 @@ def _allocate(budget, **variable):
         pending_action_str="",
         user_message_block="the user asks something",
         feedback_str="",
+        exclusions_str="",
     )
     sections = dict(
         evidence_str="",
