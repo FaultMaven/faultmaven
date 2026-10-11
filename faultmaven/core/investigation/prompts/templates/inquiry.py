@@ -2,6 +2,7 @@ from .blocks import (
     _ACTION_IMPACT_BLOCK,
     _ACTIVE_ADVISOR_ROLE_BLOCK,
     _AMBIGUITY_FIRST_RULE,
+    _CHAT_DATA_BLOCK,
     _DATA_CITATION_RULE,
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
     _OBSERVATION_TIME_BLOCK,
@@ -315,19 +316,21 @@ evidence records:
 - Required fields:
   * summary: Brief description of the finding
   * category: symptom_evidence | causal_evidence | symptom_absence_evidence | causal_absence_evidence
-  * source_type: logs | metrics | configuration | code | text | image | user_description
-  * source_file_id: REQUIRED unless source_type=user_description.
-                    Copy verbatim from the <evidence file_id="..."> or
-                    <uploaded_file file_id="..."> attribute on the
-                    source file. Leave blank ONLY when the extract is
-                    a verbatim system-output quote the user typed in
-                    their chat message.
+  * source_type: logs | metrics | configuration | code | text | image
+  * source_file_id: REQUIRED. Copy verbatim from the <evidence file_id="...">
+                    or <uploaded_file file_id="..."> attribute on the
+                    source file. What the user wrote in their message is
+                    never a source (see DATA IN THE USER'S MESSAGE).
 - Optional field:
   * extract: A verbatim system-output snippet (a log line, a metric
              reading, a config slice) supporting the summary. The system
              surfaces it back to you as <verbatim_quote>...</verbatim_quote>
              on later turns so you can re-ground the claim without
              re-reading the whole file. Omit when summary is self-contained.
+
+"""
+    + _CHAT_DATA_BLOCK
+    + """
 
 """
     + _FOLLOW_UP_SUGGESTIONS_BLOCK

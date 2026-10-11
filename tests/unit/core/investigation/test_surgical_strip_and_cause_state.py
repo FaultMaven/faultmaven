@@ -43,6 +43,8 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _response(milestones: MilestoneUpdates, justifications: dict):
     """Minimal duck-typed investigation response (not Inquiry/Terminal)."""
@@ -239,7 +241,8 @@ class TestDeferredImplementationClose:
                     primary_purpose="confirm the cause was eliminated",
                     summary="After the provider client-ID correction the pods "
                     "obtained credentials and the AssumeRole failures stopped.",
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_FILE_ID,
                     collected_by="user",
                     collected_at_turn=9,
                 )
@@ -249,7 +252,8 @@ class TestDeferredImplementationClose:
                     category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                     primary_purpose="re-check the reported symptom after the fix",
                     summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_FILE_ID,
                     collected_by="user",
                     collected_at_turn=9,
                 )
@@ -691,7 +695,8 @@ class TestDeferredImplementationClose:
                 primary_purpose="confirm the cause was eliminated",
                 summary="After the provider client-ID correction the pods "
                 "obtained credentials and the AssumeRole failures stopped.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=9,
             )
@@ -701,7 +706,8 @@ class TestDeferredImplementationClose:
                 category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                 primary_purpose="re-check the reported symptom after the fix",
                 summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=9,
             )
@@ -828,12 +834,15 @@ class TestStructuredOutputDegradation:
             "agent_response": "Here is my analysis.",
             "state_updates": {
                 "evidence_to_add": [
-                    # invalid: source_type=text without source_file_id (the S4 trigger)
+                    # invalid: an unknown category. (A missing source_file_id,
+                    # the original S4 trigger, no longer fails validation: it
+                    # parses as "" and is refused at apply, in place — #1930.)
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "causal_evidence",
+                        "category": "not_a_category",
                         "source_type": "text",
+                        "source_file_id": "file_123",
                     },
                     # valid: source_file_id present
                     {
@@ -877,8 +886,9 @@ class TestStructuredOutputDegradation:
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "causal_evidence",
+                        "category": "not_a_category",
                         "source_type": "text",
+                        "source_file_id": "file_123",
                     }
                 ]
             },

@@ -3,7 +3,11 @@
 from typing import Any
 
 from faultmaven.core.investigation.case_telemetry import TELEMETRY_HANDOFF_KEY
+from faultmaven.core.investigation.chat_data import TURN_METADATA_CHAT_DATA_OFFER
 from faultmaven.core.investigation.suggestion_liveness import entry_file_id
+from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
+    chat_data_choices,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _build_classification_clarification,
     _carry_forward_unresolved_clarifications,
@@ -159,6 +163,14 @@ def _absorb_engine_result(*, preprocess_results, query, result):
     ]
     if not clarification:
         clarification_note = None
+    # #1930: the three choices for system output typed into this turn's
+    # message, and the note that introduces them. Never stored for typed
+    # matching: they are answered by a click.
+    chat_data, chat_data_note = chat_data_choices(
+        updated_case, turn_meta.get(TURN_METADATA_CHAT_DATA_OFFER)
+    )
+    if chat_data_note:
+        clarification_note = (clarification_note or "") + chat_data_note
     if clarification_note:
         # #1660: the note is the whole reply when the answer was blank,
         # and the turn record — written above as unanswered — has to
@@ -173,6 +185,7 @@ def _absorb_engine_result(*, preprocess_results, query, result):
     return (
         agent_response_text,
         clarification,
+        chat_data,
         raw_follow_ups,
         turn_meta,
         turn_telemetry,

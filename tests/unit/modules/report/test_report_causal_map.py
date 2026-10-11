@@ -40,6 +40,8 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
     ReportGenerationService,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -70,7 +72,8 @@ def _terminal_case(*, resolved: bool, with_graph: bool = True) -> Case:
                 summary="pool metrics show saturation",
                 primary_purpose="diagnosis",
                 category=EvidenceCategory.CAUSAL_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="u",
                 collected_at_turn=1,
                 collected_at=datetime(2026, 8, 17, 11, 0, 0, tzinfo=UTC),

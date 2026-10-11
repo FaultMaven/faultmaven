@@ -401,10 +401,10 @@ def _attach_engine_refutation(
             summary=f"Engine inference (M6), not an observation: {provenance}."[:500],
             primary_purpose="engine inference: failed-treatment disconfirmation",
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            # USER_DESCRIPTION is the only source_type the evidence_source_invariant
-            # CHECK permits with no source_file_id (this engine-authored fact has no
-            # file); collected_by marks the true author.
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            # An engine-derived fact: nothing was submitted, so there is no file.
+            # ENGINE_INFERENCE is the one source type the evidence_source_invariant
+            # CHECK admits without one; collected_by marks the author.
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             collected_by=ENGINE_EVIDENCE_AUTHOR,
             collected_at_turn=case.current_turn,
             collected_at=datetime.now(timezone.utc),

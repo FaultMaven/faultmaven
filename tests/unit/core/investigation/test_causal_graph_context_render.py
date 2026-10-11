@@ -34,6 +34,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -261,7 +263,8 @@ def test_count_held_root_carries_recovery_annotation():
             summary="config diff shows pool max_size dropped to 5",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="llm",
             collected_at_turn=2,
             collected_at=datetime.now(timezone.utc),
@@ -318,7 +321,8 @@ def test_hedged_only_root_gets_confident_link_recovery_note():
             summary="config diff shows pool max_size dropped to 5",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="llm",
             collected_at_turn=2,
             collected_at=datetime.now(timezone.utc),
@@ -422,7 +426,8 @@ def test_restatement_held_root_carries_its_own_recovery_note():
             summary=summary,
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="llm",
             collected_at_turn=2,
             collected_at=datetime.now(timezone.utc),

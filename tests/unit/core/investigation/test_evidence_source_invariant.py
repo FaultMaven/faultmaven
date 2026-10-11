@@ -1,16 +1,16 @@
-"""Source-invariant tests for the post-010 strict evidence model.
+"""Source-invariant tests: evidence is submitted data (#1930).
 
-Migration 010 enforced "every Evidence row has a known source" via:
-1. ``evidence_source_invariant`` DB CHECK constraint on the evidence table
-2. ``_source_requires_file_unless_user_description`` Pydantic validator on
-   the ``Evidence`` domain model
-3. ``_source_file_required_unless_user_description`` Pydantic validator on
-   the ``EvidenceToAdd`` LLM-output schema
+"Every Evidence row has a known source" is enforced by:
+1. the ``evidence_source_invariant`` DB CHECK on the evidence table
+   (``tests/integration/test_evidence_source_invariant_db.py``);
+2. ``_source_requires_file_unless_engine_inference`` on the ``Evidence``
+   domain model;
+3. the model-facing ``EvidenceToAdd``: ``source_file_id`` is required, and
+   ``source_type`` cannot name the engine's own type.
 
-The invariant: ``source_file_id`` is required unless
-``source_type == USER_DESCRIPTION`` (the chat-quote case where the LLM
-extracted a verbatim system-output snippet from the user's short chat
-message rather than a file).
+The invariant: ``source_file_id`` is required unless ``source_type ==
+ENGINE_INFERENCE`` (a fact the engine derived; nothing was submitted). What
+the user writes in a chat message is a claim and is never a source.
 
 These tests guard against drift by exercising every layer.
 """
@@ -47,22 +47,41 @@ class TestEvidencePydanticInvariant:
         assert ev.source_file_id == "file_aabb12345678"
         assert ev.source_type == EvidenceSourceType.LOGS
 
-    def test_chat_extracted_evidence_accepted(self):
-        """A USER_DESCRIPTION evidence with no source_file_id is the legal
-        carve-out (verbatim system-output quote from the user's chat message).
-        """
+    def test_engine_inference_is_the_one_fileless_row(self):
+        """An ENGINE_INFERENCE row with no source_file_id is the one legal
+        carve-out: the engine derived it, nothing was submitted."""
         ev = Evidence(
             evidence_id="ev_aaaabbbbcccc",
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            primary_purpose="symptom_verified",
-            summary="User pasted HTTP 503 error in chat",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            primary_purpose="engine inference: failed-treatment disconfirmation",
+            summary="Engine inference (M6), not an observation: ...",
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             source_file_id=None,
-            collected_by="user_owner",
+            collected_by="engine",
             collected_at_turn=2,
         )
         assert ev.source_file_id is None
-        assert ev.source_type == EvidenceSourceType.USER_DESCRIPTION
+        assert ev.source_type == EvidenceSourceType.ENGINE_INFERENCE
+
+    @pytest.mark.parametrize(
+        "source_type",
+        [t for t in EvidenceSourceType if t is not EvidenceSourceType.ENGINE_INFERENCE],
+    )
+    def test_every_other_type_without_a_file_is_rejected(self, source_type):
+        """No submitted-data type may stand without its file — the chat-quote
+        carve-out is gone (#1930)."""
+        with pytest.raises(ValidationError) as exc:
+            Evidence(
+                evidence_id="ev_aaaabbbbcccc",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                primary_purpose="symptom_verified",
+                summary="User pasted HTTP 503 error in chat",
+                source_type=source_type,
+                source_file_id=None,
+                collected_by="user_owner",
+                collected_at_turn=2,
+            )
+        assert "source_file_id is required" in str(exc.value)
 
     def test_logs_without_source_file_id_rejected(self):
         """LOGS source_type + None source_file_id violates the invariant."""
@@ -112,9 +131,10 @@ class TestEvidencePydanticInvariant:
 
 @pytest.mark.unit
 class TestEvidenceToAddInvariant:
-    """The LLM-output schema enforces the same rule at the validation
-    boundary so the LLM gets a clear error instead of an opaque
-    IntegrityError downstream.
+    """The model-facing schema states the rule (the file id is required) but
+    never FAILS a row for it: a row that fails validation is dropped from the
+    list and shifts every later ``new_index_N`` ref. A missing or unknown file
+    is refused at apply time, in place (``test_evidence_source_guard.py``).
     """
 
     def test_file_backed_evidence_to_add_accepted(self):
@@ -126,25 +146,57 @@ class TestEvidenceToAddInvariant:
         )
         assert ev.source_file_id == "file_aabb12345678"
 
-    def test_chat_extracted_evidence_to_add_accepted(self):
-        ev = EvidenceToAdd(
-            summary="User reported HTTP 503",
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
-        )
-        assert ev.source_file_id is None
+    def test_the_strict_schema_requires_the_file_id(self):
+        """Required in the schema a strict provider fills, so it always sends
+        it."""
+        from faultmaven.utils.schema_converter import to_strict_schema
 
-    def test_logs_without_source_file_id_rejected(self):
-        with pytest.raises(ValidationError) as exc:
+        strict = to_strict_schema(EvidenceToAdd.model_json_schema())
+        assert "source_file_id" in strict["required"]
+        assert "REQUIRED" in strict["properties"]["source_file_id"]["description"]
+
+    def test_an_omitted_file_id_parses_as_empty_for_refusal_at_apply(self):
+        """A best-effort provider can leave the key out; failing the row here
+        would drop it from the list and shift every later new_index_N ref."""
+        ev = EvidenceToAdd.model_validate(
+            {"summary": "s", "category": "symptom_evidence", "source_type": "logs"}
+        )
+        assert ev.source_file_id == ""
+
+    def test_a_null_file_id_parses_as_empty_for_refusal_at_apply(self):
+        ev = EvidenceToAdd.model_validate(
+            {
+                "summary": "User reported HTTP 503",
+                "category": "symptom_evidence",
+                "source_type": "logs",
+                "source_file_id": None,
+            }
+        )
+        assert ev.source_file_id == ""
+
+    def test_the_model_cannot_declare_the_engines_type(self):
+        """The vocabulary the model sees omits ENGINE_INFERENCE, and a row
+        that names it anyway is read as text (then stands or falls on its
+        file)."""
+        schema = EvidenceToAdd.model_json_schema()
+        ref = schema["properties"]["source_type"]["$ref"].rsplit("/", 1)[-1]
+        assert "engine_inference" not in schema["$defs"][ref]["enum"]
+        ev = EvidenceToAdd(
+            summary="s",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type="engine_inference",
+            source_file_id="file_aabb12345678",
+        )
+        assert ev.source_type.value == "text"
+
+    def test_the_retired_chat_quote_type_is_refused(self):
+        with pytest.raises(ValidationError):
             EvidenceToAdd(
-                summary="OOM errors",
+                summary="User reported HTTP 503",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.LOGS,
+                source_type="user_description",
+                source_file_id="file_aabb12345678",
             )
-        msg = str(exc.value)
-        assert "source_file_id is required" in msg
-        # The error guidance points the LLM at the prompt-context attribute
-        assert "file_id" in msg
 
 
 @pytest.mark.unit
@@ -186,10 +238,12 @@ class TestPostDropCategories:
 
         assert not hasattr(evidence, "EvidenceForm")
 
-    def test_user_description_source_type_exists(self):
-        """The chat-quote source-type marker is the post-010 addition."""
-        assert hasattr(EvidenceSourceType, "USER_DESCRIPTION")
-        assert EvidenceSourceType.USER_DESCRIPTION.value == "user_description"
+    def test_the_chat_quote_source_type_is_gone(self):
+        """What the user writes in a chat message is never evidence (#1930)."""
+        assert not hasattr(EvidenceSourceType, "USER_DESCRIPTION")
+        with pytest.raises(ValueError):
+            EvidenceSourceType("user_description")
+        assert EvidenceSourceType.ENGINE_INFERENCE.value == "engine_inference"
 
 
 @pytest.mark.unit

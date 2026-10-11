@@ -169,6 +169,7 @@ def _empty_metadata() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],
@@ -400,6 +401,7 @@ class TestNewIndexResolution:
         engine = _make_engine()
         meta = _empty_metadata()
         meta["evidence_added"] = [ev_new.evidence_id]
+        meta["evidence_slots"] = [ev_new.evidence_id]
 
         _apply_evidence_need_updates(
             case,
@@ -1046,6 +1048,7 @@ def _process_response_metadata() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],

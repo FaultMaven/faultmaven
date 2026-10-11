@@ -335,6 +335,37 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
   each value should plausibly match its type. Omit obvious artifacts.\
 """
 
+# What the user tells FaultMaven in their message (#1930) — used in
+# INQUIRY_TEMPLATE and INVESTIGATION_BASE. The user declares what is data: the
+# model only names the blocks, by their first and last line, and the output a
+# reported state needs; the engine finds the lines in the user's own message
+# and offers the choices. The model is told not to mention them, because the
+# engine drops a block it cannot find and does not repeat a waiting request, so
+# a reply promising buttons could be wrong.
+_CHAT_DATA_BLOCK = """\
+DATA IN THE USER'S MESSAGE (chat_data_blocks):
+What the user writes in their message is their account — a claim, never
+evidence. Evidence is data they SUBMITTED: an uploaded file or pasted data,
+shown to you with a file_id.
+- Never record evidence_to_add from the message text, even when it quotes
+  system output.
+- If the CURRENT user message contains output a system produced, typed or
+  pasted into the message itself (command output, log lines, a config excerpt,
+  an error a program printed), name each such block in `chat_data_blocks` by
+  its first and last line, each copied EXACTLY as it appears in the message.
+  A command line that introduces its output belongs to the block. Never name
+  the user's own sentences, or a command they say they ran with no output
+  shown. Leave the field empty when the message has no such block.
+- Read the user's INTENT as well as the content. If the CURRENT message tells
+  you the state of their system (it's stable, it's working now, the error is
+  gone, the fix worked, it's still failing) and they submitted no data showing
+  it this turn, set `system_state_report.request` to the output that would show
+  it: name the check or command, in one short phrase.
+- Reason from what the user wrote this turn as their account of what they saw.
+  Do not ask them for that output in your reply, and do not mention saving,
+  buttons or re-submitting: FaultMaven asks and offers the choices itself.\
+"""
+
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
 # Extracted to keep the DECIDE/RUN/EVIDENCE/FREE_SPEECH definitions identical
 # across stages (drift here previously caused subtle inconsistencies in suggestion
@@ -720,10 +751,9 @@ Use the [search: ...] hints in <search_map> as starting strings.
 
 When calling search_file or deep_analysis, only pass evidence_ids tagged
 `searchable="true"` in the <evidence> blocks below. Those are file-backed
-records and are the only ones the tools can read. Chat-extracted evidence
-(no ``source_file_id`` — the extract came from a verbatim quote in the
-user's chat message) is NOT searchable: it describes what was said, it
-doesn't point at stored bytes. If a search_file or deep_analysis call
+records and are the only ones the tools can read. An engine inference (no
+``source_file_id`` — a fact the engine derived from other rows) is NOT
+searchable: it records a conclusion, it doesn't point at stored bytes. If a search_file or deep_analysis call
 returns "Evidence X has no backing file; use a file-backed evidence_id"
 with a list of alternatives, retry with one of the listed IDs in the very
 next iteration — do not give up and do not report to the user that the

@@ -22,8 +22,8 @@ The `<evidence_collected>` block is the LLM's window onto the case's data. Per
 turn it renders two kinds of item:
 
 - **Evidence rows** (`case.evidence`) — claim-anchored extracts, each with a
-  `source_file_id` back to an `UploadedFile` (or `source_type=USER_DESCRIPTION`
-  for chat-quoted rows with no file).
+  `source_file_id` back to an `UploadedFile` (the one fileless row is
+  the engine's own `source_type=ENGINE_INFERENCE` M6 disconfirmation).
 - **Uploaded files** (`case.uploaded_files`) — raw data with a preprocessing
   `structural_index`. A file becomes "orphan" when no `Evidence` row references
   it yet — which is always true of a file on the turn it is uploaded, because
@@ -79,8 +79,8 @@ across all four shapes. `_evidence_data_turn` states the same invariant for the
 `fresh_this_turn` attribute (#512).
 
 Scope note: the floor covers current-turn **file** items. Current-turn
-**chat-extracted** evidence (`source_file_id IS NULL`, e.g. a snippet the user
-pasted into chat this turn) is rendered in Tier C under the shared budget, not
+**engine-inferred** evidence (`source_file_id IS NULL`, the engine's own M6
+failed-treatment disconfirmation row) is rendered in Tier C under the shared budget, not
 the reserved floor.
 
 ### 2.2 Historical tiers (graceful fill of remaining budget)
@@ -99,7 +99,7 @@ see [Lifecycle Logic §2](./investigation-lifecycle-logic.md)):
 - **Tier A** — top `recent_count` file-backed evidence by score → full structural
   index.
 - **Tier B** — remaining file-backed evidence → summary only.
-- **Tier C** — chat-extracted evidence (`source_file_id IS NULL`) → summary only,
+- **Tier C** — engine inferences (`source_file_id IS NULL`, `source_type=ENGINE_INFERENCE`) → summary only,
   the five most recent (by `collected_at_turn`, then `collected_at`), rendered
   newest first so budget pressure drops the older of them.
 

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 13.2.0
+**Version:** 13.3.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5626,7 +5626,7 @@ Detailed evidence information with source and hypothesis linkage.
 - `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `primary_purpose` (string, required)
 - `related_hypotheses` (array, optional)
-- `source_file` (object, optional) — Source file this evidence was derived from. NULL only when the evidence is a verbatim quote extracted from the user's chat message (source_type=USER_DESCRIPTION).
+- `source_file` (object, optional) — Source file this evidence was derived from. NULL only on an inference the engine recorded (source_type=engine_inference); every other row is data the user submitted.
 - `summary` (string, required)
 
 ---
@@ -6677,6 +6677,7 @@ A follow-up suggestion returned with agent responses.
 - `intent` (object, optional)
 - `label` (string, required)
 - `payload` (object, optional)
+- `prefill` (object, optional)
 - `type` (string, required)
 
 ---

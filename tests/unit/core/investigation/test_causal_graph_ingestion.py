@@ -27,6 +27,8 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -513,7 +515,8 @@ def test_ingest_refuses_every_llm_link_on_absence_evidence():
         summary="errors gone after restart",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
@@ -566,7 +569,8 @@ def _causal_row(ev_id, summary):
         summary=summary,
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
@@ -645,7 +649,8 @@ def test_ingest_never_overwrites_absence_row_links():
         summary="problem gone after the fix",
         primary_purpose="diagnosis",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="user",
         collected_at_turn=3,
         collected_at=datetime.now(timezone.utc),

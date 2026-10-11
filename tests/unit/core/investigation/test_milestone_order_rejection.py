@@ -46,6 +46,8 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 def _stab_accepted(case) -> bool:
     """Read the redesign-model equivalent of the old
@@ -153,7 +155,8 @@ def _mitigation_case() -> Case:
         Evidence(
             summary="Test symptom evidence",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user_123",
             primary_purpose="Symptom verification",

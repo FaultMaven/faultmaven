@@ -49,6 +49,8 @@ from .conftest import (
     sample_user_id,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 
 class TestEvidenceBearingRerouteToEngine:
     """#708: the reroute must reach the engine.
@@ -981,6 +983,8 @@ class TestInvestigationServiceIntentDispatch:
         elif intent_value == IntentType.FILE_RECLASSIFICATION:
             intent_kwargs["file_id"] = "file_test12345678"
             intent_kwargs["data_type"] = "logs_and_errors"
+        elif intent_value == IntentType.SAVE_CHAT_DATA:
+            intent_kwargs["offer_id"] = "cdo_0123456789ab"
 
         payload = TurnPayload(query="test", intent=QueryIntent(**intent_kwargs))
 
@@ -1215,7 +1219,8 @@ class TestTurnResponseCauseAssurance:
                 summary="an observed fact",
                 primary_purpose="diagnosis",
                 category=cat,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="u",
                 collected_at_turn=1,
                 collected_at=datetime(2026, 7, 4, 11, 0, 0, tzinfo=UTC),

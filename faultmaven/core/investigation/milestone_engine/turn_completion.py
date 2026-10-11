@@ -13,6 +13,9 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
 )
+from faultmaven.core.investigation.chat_data import (
+    TURN_METADATA_CHAT_DATA_OFFER,
+)
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_owned_affordance_served_total,
@@ -683,6 +686,9 @@ async def _compose_turn_reply(
             # this return forwards a fixed key list; the service builds the
             # turn's ``sources`` from it and drops the raw entries.
             TURN_METADATA_KB_PROMPTED: metadata.get(TURN_METADATA_KB_PROMPTED, []),
+            # The offer this turn made of system output typed into the
+            # message (#1930); the service renders its three choices.
+            TURN_METADATA_CHAT_DATA_OFFER: metadata.get(TURN_METADATA_CHAT_DATA_OFFER),
             "timestamp": datetime.now(UTC).isoformat(),
             # The turn's uploads, on the SAME footing as on the
             # deterministic branches (#1229). This return rebuilds

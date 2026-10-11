@@ -76,13 +76,9 @@ def _work() -> TurnOutcome:
     return TurnOutcome.DATA_PROVIDED
 
 
-def _evidence(*, collected_at_turn: int, source_file_id: str | None = None):
-    """Evidence at a given clock turn.
-
-    Without a source file the model requires ``source_type=user_description``
-    — the chat-quote case — which is the honest shape for evidence that came
-    out of the conversation rather than an attachment.
-    """
+def _evidence(*, collected_at_turn: int, source_file_id: str = "file_0123456789ab"):
+    """Evidence at a given clock turn. Evidence is always submitted data, so
+    every row names the file that carries it."""
     from faultmaven.modules.case.domain.models.evidence import Evidence
 
     return Evidence(
@@ -91,7 +87,7 @@ def _evidence(*, collected_at_turn: int, source_file_id: str | None = None):
         primary_purpose="OTHER",
         summary="s",
         extract="x",
-        source_type="logs" if source_file_id else "user_description",
+        source_type="logs",
         source_file_id=source_file_id,
         collected_at_turn=collected_at_turn,
         collected_at=datetime.now(timezone.utc),

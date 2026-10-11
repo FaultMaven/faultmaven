@@ -23,8 +23,8 @@ def _format_searchable_alternatives(
 ) -> str:
     """Build a redirect hint listing file-backed evidence_ids in this case.
 
-    ISS-025: when the LLM picks a non-file-backed evidence_id (e.g. a
-    chat-extracted USER_DESCRIPTION row), the tool error should point
+    ISS-025: when the LLM picks a non-file-backed evidence_id (an
+    ENGINE_INFERENCE row), the tool error should point
     it at the actual searchable upload(s) so the next iteration
     succeeds.
     """
@@ -167,8 +167,8 @@ class DeepAnalysisTool(AgentTool):
 
             if evidence is not None:
                 # Reject non-file-backed evidence BEFORE hitting storage.
-                # Post-010: chat-extracted evidence has source_file_id IS
-                # NULL and cannot be deep-analyzed (no stored bytes to
+                # An engine inference has source_file_id IS NULL and
+                # cannot be deep-analyzed (no stored bytes to
                 # analyze). Without this guard the LLM would pass those
                 # evidence_ids to deep_analysis, get an opaque storage
                 # error, and give up on follow-up questions.
@@ -181,7 +181,7 @@ class DeepAnalysisTool(AgentTool):
                         data=None,
                         error=(
                             f"Evidence {evidence_id} has no stored file behind it "
-                            f"(it's a verbatim quote from the user's chat message) "
+                            f"(it's an inference the engine recorded) "
                             f"and cannot be analyzed. Use a file-backed evidence_id "
                             f'(searchable="true") for deep_analysis.{alts}'
                         ),

@@ -77,6 +77,8 @@ from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 BUILDERS = (
@@ -216,7 +218,8 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
                 category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                 primary_purpose="confirm the cause was eliminated",
                 summary="After the pool fix the 503s stopped and did not return.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=1,
             )
@@ -226,7 +229,8 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
                 category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                 primary_purpose="re-check the reported symptom after the fix",
                 summary="The checkout requests return 200 again; no 503s since the fix.",
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
                 collected_by="user",
                 collected_at_turn=1,
             )

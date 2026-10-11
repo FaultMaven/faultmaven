@@ -135,7 +135,7 @@ class TestAuthAndLookup:
     async def test_evidence_without_content_ref_raises_conflict(
         self, service, repo_with_case
     ):
-        """Chat-extracted evidence (source_file_id=None) has no stored
+        """Evidence whose source file is no longer on the case has no stored
         raw file — re-extraction is impossible. Raises ConflictError
         with ``conflict_reason="no_backing_file"`` so clients can
         branch on the structured field instead of parsing the detail
@@ -144,8 +144,8 @@ class TestAuthAndLookup:
         _, case = repo_with_case
         case.evidence = [
             make_evidence(
-                source_file_id=None,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_file_id="file_deadbeef0000",
+                source_type=EvidenceSourceType.LOGS,
             )
         ]
         case.uploaded_files = []

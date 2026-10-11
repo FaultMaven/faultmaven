@@ -37,6 +37,9 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
+from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
+    _handle_save_chat_data,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
     _handle_file_reclassification,
 )
@@ -487,6 +490,7 @@ class TestPathCoverageIsExhaustive:
             IntentType.HYPOTHESIS_ACTION: InvestigationService._handle_hypothesis_action,
             IntentType.GREETING: InvestigationService._handle_greeting,
             IntentType.FILE_RECLASSIFICATION: _handle_file_reclassification,
+            IntentType.SAVE_CHAT_DATA: _handle_save_chat_data,
         }
         service_routed = {
             intent
@@ -537,6 +541,9 @@ class TestPathCoverageIsExhaustive:
         assert bypasses_engine == {
             IntentType.FILE_RECLASSIFICATION,
             IntentType.GREETING,
+            # #1930: a save click that saves nothing (an offer already saved, or
+            # one holding no output). A save that saves runs through the engine.
+            IntentType.SAVE_CHAT_DATA,
         }, (
             f"the set of engine-bypassing routes changed: {bypasses_engine}. "
             "Either a route was added/removed, or the detection above regressed "

@@ -56,8 +56,8 @@ from faultmaven.modules.case.domain.models.problem import (
 )
 
 # The file the mocked LLM responses cite as ``source_file_id``; the case must
-# carry the matching upload (as in a real flow) or the engine drops the file
-# anchor as unresolvable (the source_file_id FK guard).
+# carry the matching upload (as in a real flow) or the engine refuses the row
+# as naming no file of the case (the source_file_id FK guard, #1930).
 _CITED_UPLOAD_ID = "file_aabb12345678"
 
 
@@ -341,7 +341,8 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                         "connection leak is gone"
                     ),
                     category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_CITED_UPLOAD_ID,
                     extract="no further connection errors since the rollback",
                 ),
                 EvidenceToAdd(
@@ -350,7 +351,8 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                         "p99 is back to 200ms"
                     ),
                     category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_CITED_UPLOAD_ID,
                     extract="p99 is back to 200ms",
                 ),
             ],
@@ -535,8 +537,7 @@ class TestInvestigationLifecycle:
         assert len(updated.evidence) >= 1
         # Post-010: Evidence is the LLM's claim-anchored extract; the
         # ``form`` discriminator is gone. The source is identified by
-        # source_file_id (file-backed) or source_type=USER_DESCRIPTION
-        # (chat-extracted). Here we asserted on the file-backed case.
+        # source_file_id: evidence is always submitted data.
         ev = updated.evidence[0]
         assert ev.source_file_id is not None
         assert len(updated.turn_history) >= 1
@@ -547,7 +548,8 @@ class TestInvestigationLifecycle:
     ):
         """The regression the source_file_id guard prevents: when the LLM cites a
         file that is NOT in uploaded_files, the turn must still COMPLETE (no FK
-        abort) and persist the slice as USER_DESCRIPTION with no file anchor."""
+        abort). The row is refused, never kept with no file: evidence is
+        submitted data (#1930)."""
         # Same cited evidence, but the case carries no matching upload.
         case = _make_investigating_case(current_turn=4, uploaded_files=[])
         await case_repo.save(case)
@@ -560,14 +562,9 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
 
         updated = result["case_updated"]
-        assert (
-            result["metadata"]["progress_made"] is True
-        )  # turn completed, not aborted
-        assert len(updated.evidence) >= 1
-        ev = updated.evidence[0]
-        assert ev.source_file_id is None  # dangling anchor dropped
-        assert ev.source_type == EvidenceSourceType.USER_DESCRIPTION
-        assert ev.summary  # content preserved
+        assert result["agent_response"]  # turn completed, not aborted
+        assert updated.evidence == []  # the row naming no upload was refused
+        await case_repo.save(updated)  # and nothing left behind fails the FK
 
     async def test_full_lifecycle_inquiry_to_resolved(self, engine, case_repo):
         """Complete lifecycle: INQUIRY → INVESTIGATING → RESOLVED."""

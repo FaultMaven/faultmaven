@@ -58,6 +58,8 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -75,6 +77,7 @@ def _meta() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],
@@ -146,7 +149,8 @@ def _case(
             summary="status=203/EXEC",
             content_ref="status.txt",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user",
             primary_purpose="symptom",

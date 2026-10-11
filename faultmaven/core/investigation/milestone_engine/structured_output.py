@@ -142,8 +142,7 @@ def _synthesize_agent_response(parsed: Any, stop_reason: StopReason) -> Any:
 def _validate_with_degradation(content_obj, schema_model):
     """Validate LLM structured output, degrading gracefully instead of 500ing.
 
-    Parse-time cross-field validators (e.g. ``evidence_to_add.source_file_id``
-    is required unless ``USER_DESCRIPTION``; ``evidence_need_updates`` state
+    Parse-time cross-field validators (e.g. ``evidence_need_updates`` state
     ``FULFILLED`` requires ``fulfilling_evidence_ids``) reject the WHOLE
     response object when a single sub-record is malformed — which 500s the
     turn before any milestone logic runs (the surgical strip can't help: that

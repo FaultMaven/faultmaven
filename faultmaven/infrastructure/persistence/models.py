@@ -1668,9 +1668,10 @@ class EvidenceModel(Base):
     - ``extract``: optional verbatim quote (the focused slice supporting
       the claim); may be NULL when the summary is self-contained
     - ``source_file_id``: links to the source file in ``uploaded_files``;
-      NULL only when the extract was a verbatim system-output quote from
-      the user's short chat message (``source_type='user_description'``).
-      The ``evidence_source_invariant`` CHECK enforces this.
+      NULL only on a fact the engine derived (``source_type=
+      'engine_inference'``, M6's disconfirmation row). A chat message is
+      never a source: what the user writes is a claim (#1930). The
+      ``evidence_source_invariant`` CHECK enforces this.
 
     Preprocessing artifacts (file summary, structural index, file-level
     data type, coverage timestamps) live on ``uploaded_files`` — they
@@ -1782,12 +1783,12 @@ class EvidenceModel(Base):
             "extract IS NULL OR LENGTH(TRIM(extract)) > 0",
             name="evidence_extract_not_empty",
         ),
-        # Source-tracking invariant (migration 010): every evidence row
-        # has a source. A NULL source_file_id is permitted only when the
-        # extract was a verbatim system-output quote from the user's
-        # chat message — recognized via source_type='user_description'.
+        # Source-tracking invariant: every evidence row has a source. A
+        # NULL source_file_id is permitted only on a fact the engine
+        # derived (source_type='engine_inference'); a chat message is
+        # never a source (#1930).
         CheckConstraint(
-            "source_file_id IS NOT NULL OR source_type = 'user_description'",
+            "source_file_id IS NOT NULL OR source_type = 'engine_inference'",
             name="evidence_source_invariant",
         ),
         CheckConstraint(

@@ -191,6 +191,8 @@ def _emit_committed_turn(
         turn_path = TurnPath.GREETING
     elif intent_type == IntentType.FILE_RECLASSIFICATION:
         turn_path = TurnPath.RECLASSIFICATION
+    elif intent_type == IntentType.SAVE_CHAT_DATA:
+        turn_path = TurnPath.SAVE_CHAT_DATA
     elif was_terminal:
         turn_path = TurnPath.TERMINAL
     else:

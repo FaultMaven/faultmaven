@@ -53,8 +53,11 @@ from faultmaven.modules.case.contracts import (
     Solution,
     SolutionType,
     TurnOutcome,
+    UploadedFile,
 )
 from faultmaven.modules.case.domain.models.turn import TurnProgress
+
+_FILE_ID = "file_0123456789ab"
 
 pytestmark = pytest.mark.unit
 
@@ -235,7 +238,7 @@ def _standing_evidence(extract, source=None) -> Evidence:
         summary="pods are crashlooping",
         primary_purpose="diagnosis",
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
         collected_by="llm",
         collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
@@ -279,7 +282,8 @@ def test_an_unquoted_row_is_never_deduped_away():
         summary="something happened",
         extract=None,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
     )
     assert _restates_standing_evidence(unquoted, case) is False
 
@@ -295,6 +299,7 @@ def test_a_turn_of_pure_restatement_is_not_progress(engine):
         check_if_progress_made(
             {
                 "evidence_added": ["ev_000000000001"],
+                "evidence_slots": ["ev_000000000001"],
                 "solutions_proposed": ["sol_000000000001"],
                 "files_uploaded": ["file_000000000001"],
                 "outcome": TurnOutcome.DATA_PROVIDED,
@@ -329,6 +334,7 @@ def test_barren_turns_now_reach_the_stall_threshold(engine):
     case = _case(current_turn=8, turns_without_progress=0)
     restatement = {
         "evidence_added": ["ev_000000000001"],
+        "evidence_slots": ["ev_000000000001"],
         "solutions_proposed": ["sol_000000000001"],
         "outcome": TurnOutcome.DATA_PROVIDED,
     }
@@ -442,7 +448,8 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
             summary="pods crashlooping",
             extract=extract,
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
         )
 
     def _drive(case, item):
@@ -460,6 +467,7 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
         metadata = {
             "milestones_completed": [],
             "evidence_added": [],
+            "evidence_slots": [],
             "hypotheses_generated": [],
             "hypotheses_validated": [],
             "solutions_proposed": [],
@@ -479,6 +487,11 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
 
     case = _case(current_turn=5)
     case.evidence = []
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID, filename="pods.log", size_bytes=512, uploaded_at_turn=4
+        )
+    )
 
     first = _drive(case, _emit("OOMKilled exit 137"))
     assert first["evidence_added"], "the row must still be minted"

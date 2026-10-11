@@ -34,6 +34,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
+    REFUSED_EVIDENCE_SLOT,
     _determine_turn_outcome,
     _report_turn_uploads,
     _resolve_id_ref,
@@ -60,11 +61,15 @@ from faultmaven.core.investigation.schemas import (
 from faultmaven.core.investigation.terminal_transitions import (
     cancel_pending_transition,
 )
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_ROW_REFUSED_TOTAL,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
+    EvidenceSourceType,
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
@@ -92,7 +97,7 @@ from .milestone_inference import (
     _evidence_coverage,
     _infer_milestones,
     _post_process_llm_response,
-    _resolve_evidence_source,
+    _source_file_resolves,
     validate_reasoning_first,
 )
 from .response_synthesis import _note_engine_disposition_withdrawn
@@ -120,8 +125,8 @@ def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -
     """A cause cannot have been eliminated before the problem it caused is
     verified: a causal_absence row then means "the problem is not there", which
     is symptom_absence. This turn's rows are reclassified rather than dropped —
-    ``evidence_added`` is positional, and new_index_N refs this turn index into
-    it. Judged against the turn's own verification (after step 2b), never the
+    new_index_N refs this turn index into ``evidence_slots``, and a dropped row
+    would leave its ref naming nothing. Judged against the turn's own verification (after step 2b), never the
     status the turn began with or an optimistic claim 2b reverts. Without this,
     one such row reads resolution-READY on a never-verified case
     (``assess_resolution_readiness``) and pivots a false-alarm close to RESOLVED
@@ -220,6 +225,7 @@ class ResponseApplier:
         metadata = {
             "milestones_completed": [],
             "evidence_added": [],
+            "evidence_slots": [],
             "hypotheses_generated": [],
             "hypotheses_validated": [],
             "solutions_proposed": [],
@@ -648,7 +654,8 @@ class ResponseApplier:
         if pv is None:
             return
 
-        created = metadata.get("evidence_added", [])
+        # Positional, holes kept: a refused row keeps its slot (#1930).
+        created = metadata.get("evidence_slots", [])
 
         def _ids(refs) -> list[str]:
             return [_resolve_id_ref(r, created, "ev_") for r in (refs or [])]
@@ -824,7 +831,7 @@ class ResponseApplier:
         if not subset:
             return
         stage_cause_work(
-            case, updates=subset, evidence_added=metadata.get("evidence_added", [])
+            case, updates=subset, evidence_added=metadata.get("evidence_slots", [])
         )
         metadata["cause_work_staged"] = sorted(subset)
         logger.info(
@@ -1028,15 +1035,11 @@ class ResponseApplier:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Post-010: source_file_id is declared by the LLM directly on
-            # EvidenceToAdd. The Pydantic ``_source_file_required_unless_user_description``
-            # validator on EvidenceToAdd has already enforced the
-            # ``evidence_source_invariant``: by the time we get here,
-            # ``ev_item.source_file_id is None`` implies
-            # ``source_type == USER_DESCRIPTION``. We pass the value
-            # through unchanged — no turn-file fallback, because that
-            # would silently mis-attribute a chat-extracted USER_DESCRIPTION
-            # quote to whatever file happens to be in the same turn.
+            # Evidence is submitted data (#1930): every EvidenceToAdd names
+            # the file its extract came from (the schema requires it), and a
+            # row whose file is not one of this case's uploads is refused
+            # here. There is no turn-file fallback: guessing a file would
+            # attribute the extract to data it may not come from.
             #
             # Redesign R5/§2: the former path-conditional causal_evidence ban
             # is removed. Whether RCA-side work runs is decided by the prompt
@@ -1055,10 +1058,14 @@ class ResponseApplier:
                     )
 
                 # Guard a hallucinated/stale source_file_id (FK to uploaded_files)
-                # before it aborts the turn at save.
-                source_file_id, source_type = _resolve_evidence_source(
-                    case, ev_item.source_file_id, ev_item.source_type
-                )
+                # before it aborts the turn at save: refuse the row, never keep
+                # it with no file.
+                source_file_id = ev_item.source_file_id
+                if not _source_file_resolves(case, source_file_id):
+                    EVIDENCE_ROW_REFUSED_TOTAL.labels(reason="unresolved_file").inc()
+                    metadata["evidence_slots"].append(REFUSED_EVIDENCE_SLOT)
+                    continue
+                source_type = EvidenceSourceType(ev_item.source_type.value)
 
                 coverage_start, coverage_end, coverage_source = _evidence_coverage(
                     case, source_file_id, ev_item.extract
@@ -1085,12 +1092,14 @@ class ResponseApplier:
                 )
                 # #1136: does this row carry a datum the case did not already
                 # hold? Computed BEFORE the append, or the row would match
-                # itself. ``evidence_added`` keeps every minted id (positional
-                # ``new_index_N`` refs, milestone attribution and coverage all
-                # resolve against it); only the progress signal narrows.
+                # itself. ``evidence_added`` keeps every minted id (milestone
+                # attribution and coverage resolve against it, and
+                # ``evidence_slots`` keeps their positions for ``new_index_N``
+                # refs); only the progress signal narrows.
                 restates = _restates_standing_evidence(ev_item, case)
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
+                metadata["evidence_slots"].append(ev.evidence_id)
                 if not restates:
                     metadata.setdefault("novel_evidence_added", []).append(
                         ev.evidence_id

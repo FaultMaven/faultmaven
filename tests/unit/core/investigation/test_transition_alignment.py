@@ -547,14 +547,14 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         Evidence(
             summary="Test evidence",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(timezone.utc),
             collected_by="user_test",
             primary_purpose="Alignment test",
             preprocessed_content="Sample log line",
             content_size_bytes=100,
             preprocessing_method="manual",
-            source_file_id=None,
+            source_file_id="file_0123456789ab",
             collected_at_turn=1,
         )
     )

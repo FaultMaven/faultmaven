@@ -32,6 +32,7 @@ def _build_turn_response(
     *,
     agent_response_text,
     case_id,
+    chat_data,
     clarification,
     payload,
     preprocess_results,
@@ -59,6 +60,10 @@ def _build_turn_response(
     # follow-up suggestions from the engine.
     if clarification:
         suggested_actions = clarification + suggested_actions
+    # #1930: the choices for system output typed into this turn's message go
+    # first of all: they are about what the user just sent.
+    if chat_data:
+        suggested_actions = chat_data + suggested_actions
 
     # Read-time assurance grade for narration-only clients (#572/INV-28):
     # present whenever the case has stated a root cause, recomputed from

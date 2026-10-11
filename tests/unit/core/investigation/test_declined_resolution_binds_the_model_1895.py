@@ -106,6 +106,8 @@ from tests.unit.core.investigation.test_resolution_backstop_turn import (
 )
 from tests.unit.modules.agent.conftest import MockCaseRepository
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 _SR = ClosureReadiness.SUGGEST_RESOLVE
@@ -116,7 +118,8 @@ _ROW = {
     "failures in 12h.",
     "extract": "0 AssumeRole errors since 02:00",
     "category": "causal_absence_evidence",
-    "source_type": "user_description",
+    "source_type": "logs",
+    "source_file_id": _FILE_ID,
 }
 
 #: A long non-question reply to the offer: a deflection, recorded as a decline
@@ -213,7 +216,7 @@ def _engine_disconfirmation(turn: int) -> Evidence:
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         primary_purpose="record the failed fix",
         summary="The restart did not remove the cause; the failures returned.",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.ENGINE_INFERENCE,
         collected_by=ENGINE_EVIDENCE_AUTHOR,
         collected_at_turn=turn,
     )
@@ -224,7 +227,8 @@ def _user_confirmation(turn: int) -> Evidence:
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         primary_purpose="confirm the cause was eliminated",
         summary="The nightly job ran clean after the fix; zero AssumeRole errors.",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="user",
         collected_at_turn=turn,
     )
@@ -236,7 +240,8 @@ def _user_problem_gone(turn: int) -> Evidence:
         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
         primary_purpose="re-check the reported symptom after the fix",
         summary="The nightly job's AssumeRole calls succeed again.",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="user",
         collected_at_turn=turn,
     )

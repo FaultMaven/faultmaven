@@ -94,7 +94,7 @@ def _evidence(case: Case, label: str, source_label: str | None, turn: int) -> No
             summary="s",
             primary_purpose="diagnosis",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
             collected_by="llm",
             collected_at_turn=turn,
             collected_at=datetime.now(timezone.utc),

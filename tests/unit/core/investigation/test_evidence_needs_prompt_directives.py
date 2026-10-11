@@ -458,18 +458,21 @@ class TestResolveProposalRequiresCausalAbsence:
     """
 
     def test_kb_variant_requires_causal_absence(self):
-        # The same-turn KB-resolution checklist must list causal_absence as a
-        # required emission alongside the resolved proposal.
+        # The KB-resolution checklist must list causal_absence as a required
+        # emission alongside the resolved proposal — sourced from the output
+        # the user SUBMITTED, never their "it worked" (#1930).
         variant_start = TREATMENT_INSTRUCTIONS.index("KB-RESOLUTION VARIANT")
-        variant = TREATMENT_INSTRUCTIONS[variant_start : variant_start + 4500]
+        variant_end = TREATMENT_INSTRUCTIONS.index("CRITICAL DIRECT-COPY RULE")
+        variant = TREATMENT_INSTRUCTIONS[variant_start:variant_end]
         assert "causal_absence_evidence" in variant, (
             "KB-RESOLUTION VARIANT proposes resolved but no longer requires "
             "causal_absence_evidence — the engine will bounce the transition."
         )
-        assert "user_description" in variant, (
-            "KB-RESOLUTION VARIANT must accept the user's verbal confirmation "
-            "as the causal_absence source (no file demand)."
+        assert "SUBMITTED" in variant and "Never" in variant, (
+            "KB-RESOLUTION VARIANT must source the absence rows from submitted "
+            "output and never from the user's words."
         )
+        assert "user_description" not in variant
 
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a
@@ -484,14 +487,17 @@ class TestResolveProposalRequiresCausalAbsence:
         # #1906: the cause row alone is half of gone => gone.
         assert "symptom_absence_evidence" in rule
 
-    def test_treatment_evidence_types_allow_verbal_causal_absence_source(self):
-        # The verbal/out-of-band source allowance is stated once, canonically, in
-        # the TREATMENT EVIDENCE TYPES block (not duplicated per proposal site).
-        assert "user_description" in TREATMENT_INSTRUCTIONS, (
-            "TREATMENT must accept the user's verbal confirmation as a valid "
-            "causal_absence source (source_type=user_description, no file) — the "
-            "out-of-band path needs no uploaded file."
-        )
+    def test_treatment_never_sources_an_absence_row_from_the_users_words(self):
+        # #1930: evidence is submitted data. An out-of-band fix is still valid,
+        # but the user's report of it is a claim: the model names the check's
+        # output for FaultMaven to ask for, instead of recording their words.
+        assert "user_description" not in TREATMENT_INSTRUCTIONS
+        types_start = TREATMENT_INSTRUCTIONS.index("**EVIDENCE TYPES FOR THIS STAGE:**")
+        types = TREATMENT_INSTRUCTIONS[types_start : types_start + 1500]
+        assert "the user's report of it is a claim" in types
+        assert (
+            "system_state_report" in types
+        ), "the check's output is named for FaultMaven to ask for"
 
     def test_mitigation_proposes_closed_not_resolved(self):
         # The same rule must route a mitigation to symptom_absence + closed,

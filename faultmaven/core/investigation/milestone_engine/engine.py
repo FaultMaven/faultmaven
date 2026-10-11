@@ -10,6 +10,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+from faultmaven.core.investigation.chat_data import (
+    TURN_METADATA_CHAT_DATA_OFFER,
+    mint_chat_data_offer,
+)
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -586,6 +590,7 @@ class MilestoneEngine:
             metadata = {
                 "milestones_completed": [],
                 "evidence_added": [],
+                "evidence_slots": [],
                 "hypotheses_generated": [],
                 "hypotheses_validated": [],
                 "solutions_proposed": [],
@@ -1274,6 +1279,23 @@ class MilestoneEngine:
                     user_message=user_message,
                 )
             )
+
+            # System output the user typed into this message, offered back for
+            # them to declare (#1930). Here, on the live turn only: the blocks
+            # ride the response, not ``state_updates``, so a staged
+            # statement-revision replay (which re-applies state updates) can
+            # never mint one. The offer never holds the turn's own work back;
+            # it reasons from the block as the user's claim.
+            chat_data_offer = mint_chat_data_offer(
+                case_updated,
+                user_message=user_message,
+                named_blocks=getattr(response_obj, "chat_data_blocks", None),
+                state_report=getattr(response_obj, "system_state_report", None),
+                submitted_data=bool(attachments),
+                reverse=redaction_ctx.reverse if redaction_ctx else (lambda t: t),
+            )
+            if chat_data_offer is not None:
+                metadata[TURN_METADATA_CHAT_DATA_OFFER] = chat_data_offer.offer_id
 
             # Step 7: finish the turn in memory. No save: the case commits
             # once, at the service, with the plan's rows (#1882).

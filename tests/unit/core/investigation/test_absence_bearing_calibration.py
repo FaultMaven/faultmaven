@@ -62,6 +62,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 
@@ -75,7 +77,13 @@ def _absence_row(label, summary, *, turn=6, collected_by="llm") -> Evidence:
         summary=summary,
         primary_purpose="resolution verification",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        # An engine-authored row is the one fileless kind (ENGINE_INFERENCE).
+        source_type=(
+            EvidenceSourceType.ENGINE_INFERENCE
+            if collected_by == "engine"
+            else EvidenceSourceType.LOGS
+        ),
+        source_file_id=None if collected_by == "engine" else _FILE_ID,
         collected_by=collected_by,
         collected_at_turn=turn,
         collected_at=datetime.now(timezone.utc),
@@ -90,7 +98,8 @@ def _problem_gone(label, *, turn) -> Evidence:
         summary="payments pods Running, no CrashLoopBackOff",
         primary_purpose="resolution verification",
         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="llm",
         collected_at_turn=turn,
         collected_at=datetime.now(timezone.utc),

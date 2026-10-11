@@ -66,6 +66,8 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -163,7 +165,8 @@ def _make_runbook_ready(case: Case) -> None:
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             primary_purpose="diagnosis",
             summary="pool limit raised; timeouts gone for 30 minutes",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by="u1",
             collected_at_turn=2,
         ),

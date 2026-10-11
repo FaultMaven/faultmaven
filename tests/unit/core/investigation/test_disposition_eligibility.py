@@ -50,6 +50,8 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 # ---------------------------------------------------------------------------
 # Factories
 # ---------------------------------------------------------------------------
@@ -111,7 +113,8 @@ def _attach_evidence(case: Case) -> None:
         Evidence(
             summary="Test symptom evidence",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user_test",
             primary_purpose="Symptom verification",

@@ -95,6 +95,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProblemVerification,
     StatementRecordKind,
+    UploadedFile,
     ValidationMethod,
     VerificationStatus,
 )
@@ -105,6 +106,8 @@ from faultmaven.modules.case.domain.services.case_ui_adapter import (
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+
+_FILE_ID = "file_0123456789ab"
 
 pytestmark = pytest.mark.unit
 
@@ -138,6 +141,14 @@ def _case(status: ProblemStatus = ProblemStatus.UNVERIFIED) -> Case:
         ),
     )
     case.current_turn = 4
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID,
+            filename="gateway.log",
+            size_bytes=512,
+            uploaded_at_turn=3,
+        )
+    )
     case.progress.problem_status = status
     from faultmaven.core.investigation.problem_status import (
         record_confirmed_statement,
@@ -154,7 +165,8 @@ def _evidence(category: EvidenceCategory, label: str) -> Evidence:
         category=category,
         primary_purpose="p",
         summary=f"fact-{label} reading-{label}",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_by="user",
         collected_at_turn=3,
     )
@@ -170,7 +182,8 @@ def _row(category: EvidenceCategory, label: str) -> EvidenceToAdd:
         summary=f"fact-{label} metric-{label} reading-{label}",
         extract=f"observation {label}: value-{label} at host-{label}",
         category=category,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
     )
 
 
@@ -225,6 +238,7 @@ def _meta() -> dict:
     return {
         "milestones_completed": [],
         "evidence_added": [],
+        "evidence_slots": [],
         "hypotheses_generated": [],
         "hypotheses_validated": [],
         "solutions_proposed": [],

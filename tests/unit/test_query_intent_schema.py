@@ -27,6 +27,7 @@ class TestIntentTypeEnum:
             "confirmation",
             "greeting",
             "file_reclassification",
+            "save_chat_data",
         }
         assert {t.value for t in IntentType} == expected
 

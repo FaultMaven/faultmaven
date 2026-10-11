@@ -493,21 +493,21 @@ class SearchFileTool(AgentTool):
             return f"Evidence {evidence_id} not found in this case.{alts}"
 
         # Reject non-file-backed evidence forms BEFORE hitting storage.
-        # Post-010: chat-extracted evidence (source_file_id IS NULL,
-        # source_type=USER_DESCRIPTION) has no stored file behind it
+        # An engine inference (source_file_id IS NULL,
+        # source_type=ENGINE_INFERENCE) has no stored file behind it
         # and cannot be searched. ISS-025: previously the LLM retried
         # these against search_file and treated the failure as "the
         # file is inaccessible", giving up on follow-up questions.
         if getattr(case_evidence, "source_file_id", None) is None:
             alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
             logger.warning(
-                "search_file: evidence %s has no source file (chat-extracted); "
+                "search_file: evidence %s has no source file (engine inference); "
                 "pointing LLM at file-backed alternatives",
                 evidence_id,
             )
             return (
-                f"Evidence {evidence_id} has no stored file behind it (it's a "
-                f"verbatim quote from the user's chat message). Use a file-backed "
+                f"Evidence {evidence_id} has no stored file behind it (it's an "
+                f"inference the engine recorded). Use a file-backed "
                 f'evidence_id (searchable="true") for this search.{alts}'
             )
 
@@ -563,8 +563,8 @@ class SearchFileTool(AgentTool):
     ) -> str:
         """Build a redirect hint listing file-backed evidence_ids in this case.
 
-        ISS-025: when the LLM picks a non-file-backed evidence_id (e.g.
-        a chat-extracted USER_DESCRIPTION row), the tool error should
+        ISS-025: when the LLM picks a non-file-backed evidence_id (an
+        ENGINE_INFERENCE row), the tool error should
         point it at the actual searchable upload(s) so the next
         iteration succeeds.
         """

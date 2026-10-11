@@ -68,6 +68,8 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.re
 )
 from tests.utils import seed_enterprises, seed_users
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.postgres,
@@ -537,7 +539,16 @@ async def test_causal_graph_roundtrip(pg_repo):
 
     case = _make_case(enterprise_id, user_id)
 
-    # Evidence the node-evidence junction can FK to (USER_DESCRIPTION needs no file).
+    # Evidence the node-evidence junction can FK to: file-backed, like all
+    # submitted evidence, so the file it names is on the case (#1930).
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID,
+            filename="psql.log",
+            size_bytes=64,
+            uploaded_at_turn=2,
+        )
+    )
     ev_id = f"ev_{uuid4().hex[:12]}"
     case.evidence.append(
         Evidence(
@@ -545,7 +556,8 @@ async def test_causal_graph_roundtrip(pg_repo):
             category=EvidenceCategory.CAUSAL_EVIDENCE,
             primary_purpose="root_cause",
             summary="psql from the migration pod times out connecting to :5432",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_by=user_id,
             collected_at_turn=2,
         )

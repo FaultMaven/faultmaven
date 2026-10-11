@@ -140,7 +140,8 @@ def test_a_non_string_justification_survives_the_real_backstop():
                     {
                         "summary": "47 connection errors",
                         "category": "symptom_evidence",
-                        "source_type": "user_description",
+                        "source_type": "logs",
+                        "source_file_id": "file_0123456789ab",
                         "extract": "connection refused x47",
                         "likelihood": 0.9,
                     }

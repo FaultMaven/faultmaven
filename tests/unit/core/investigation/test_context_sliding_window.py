@@ -650,7 +650,7 @@ class TestRelevanceOrder:
             _make_evidence(
                 summary=f"chat row from turn {turn} " + "c" * 150,
                 source_file_id=None,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.ENGINE_INFERENCE,
                 collected_at_turn=turn,
             )
             for turn in range(1, 9)
@@ -726,13 +726,14 @@ class TestTierB:
 
 
 class TestTierC:
-    """Test Tier C — USER_TEXT evidence always shows summary only."""
+    """Test Tier C — fileless rows (engine inferences, #1930) always show
+    summary only."""
 
     def test_user_text_is_always_summary_only(self):
         """USER_TEXT evidence → summary only, never structural_index."""
         ev = _make_evidence(
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             summary="User described intermittent timeouts every 5 minutes",
             extract="This should NOT appear in context",
         )
@@ -740,7 +741,7 @@ class TestTierC:
         result = _build_evidence_context(case)
 
         assert "User described intermittent timeouts" in result
-        # Post-010: chat-extracted evidence has no file_id attribute (skipped)
+        # A fileless row has no file_id attribute.
         # USER_TEXT preprocessed_content should NOT be in the output
         # (it goes to Tier C which is summary-only)
         # Note: the implementation separates text_evidence from data_evidence
@@ -750,7 +751,7 @@ class TestTierC:
         evidence = [
             _make_evidence(
                 source_file_id=None,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.ENGINE_INFERENCE,
                 summary=f"User text item {i}",
                 collected_at_turn=i + 1,
             )
@@ -860,8 +861,8 @@ class TestTierDOrphanUploads:
         assert "<uploaded_file" not in result
 
     def test_orphan_visible_when_evidence_has_source_file_id_none(self):
-        """source_file_id=None on Evidence (e.g., USER_DESCRIPTION rows
-        from chat-extracted analysis) must NOT be treated as covering
+        """source_file_id=None on Evidence (an ENGINE_INFERENCE row) must
+        NOT be treated as covering
         any uploaded file. A pending upload remains orphan-visible even
         when the case has such Evidence rows — None ≠ any real file_id.
 
@@ -870,7 +871,7 @@ class TestTierDOrphanUploads:
         the actual turn-8 file upload stayed orphan and was never seen."""
         text_ev = _make_evidence(
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             summary="User described what they saw",
             extract="User's verbatim description",
         )
@@ -962,7 +963,7 @@ class TestMixedForms:
     """Test correct tier assignment with mixed evidence forms."""
 
     def test_mixed_forms_correct_tier_assignment(self):
-        """File-backed evidence routes to Tier A/B; chat-extracted to Tier C."""
+        """File-backed evidence routes to Tier A/B; fileless rows to Tier C."""
         evidence = [
             # Older data (Tier B)
             _make_evidence(
@@ -974,7 +975,7 @@ class TestMixedForms:
             # User text (Tier C)
             _make_evidence(
                 source_file_id=None,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.ENGINE_INFERENCE,
                 summary="User observation about timeouts",
                 extract="User text content",
                 collected_at_turn=2,
@@ -1012,14 +1013,14 @@ class TestMixedForms:
 
         # Tier C: user text with summary only
         assert "User observation about timeouts" in result
-        # Post-010: chat-extracted evidence has no file_id attribute (skipped)
+        # A fileless row has no file_id attribute.
 
     def test_no_data_evidence_only_user_text(self):
         """Case with only USER_TEXT evidence → no structural indexes, summaries only."""
         evidence = [
             _make_evidence(
                 source_file_id=None,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_type=EvidenceSourceType.ENGINE_INFERENCE,
                 summary=f"User observation {i}",
                 collected_at_turn=i + 1,
             )
@@ -1107,22 +1108,22 @@ class TestFilenameAttribution:
         assert "filename=" not in result
 
     def test_no_filename_when_no_source_file_id(self):
-        """Evidence without source_file_id (chat-extracted) → the label
+        """Evidence without source_file_id (an engine inference) → the label
         falls back to the source type, and there is no filename attribute
-        anywhere. Post-010: source_file_id=None requires
-        source_type=USER_DESCRIPTION to satisfy the source-invariant.
+        anywhere. source_file_id=None requires source_type=ENGINE_INFERENCE
+        to satisfy the source-invariant (#1930).
         """
         ev = _make_evidence(
             summary="User pasted logs",
             extract="Some content",
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
 
         assert "filename=" not in result
-        assert 'label="user description"' in result
+        assert 'label="engine inference"' in result
 
     def test_multiple_files_distinguished_by_filename(self):
         """Two evidence items from different files → distinct labels in XML."""
@@ -1210,17 +1211,16 @@ class TestVerbatimQuoteRendering:
         assert "<file_extract>" in fence_read.unfenced(result)
         assert "<verbatim_quote>" not in fence_read.unfenced(result)
 
-    def test_tier_c_renders_verbatim_quote_for_chat_extracted(self, fence_read):
-        """Chat-extracted evidence (USER_DESCRIPTION, no source file)
-        with an LLM quote → ``<verbatim_quote>`` carries the actual
-        system-output slice the user typed in. Suppressing it would
-        lose the only content this row has."""
+    def test_tier_c_renders_verbatim_quote_for_a_fileless_row(self, fence_read):
+        """A fileless row (ENGINE_INFERENCE) with an extract →
+        ``<verbatim_quote>`` carries it. Suppressing it would lose the only
+        content this row has."""
         ev = _make_evidence(
             summary="User reported HTTP 503 from checkout API",
             extract=None,  # no structural index — chat-extracted has no file
             verbatim_quote="HTTP/1.1 503 Service Unavailable - upstream connect error",
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -1241,7 +1241,7 @@ class TestVerbatimQuoteRendering:
             extract=None,
             verbatim_quote=None,
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -1702,7 +1702,7 @@ class TestFreshThisTurnAttribute:
         and the message arrived on the turn the row was written."""
         ev = _make_evidence(
             summary="user typed this",
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             source_file_id=None,
             collected_at_turn=9,
         )
@@ -2322,7 +2322,7 @@ def test_tier_c_chat_cap_marks_omitted():
         _make_evidence(
             summary=f"chat evidence {i}",
             source_file_id=None,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
             collected_at_turn=1,
         )
         for i in range(8)  # > 5 → 3 omitted

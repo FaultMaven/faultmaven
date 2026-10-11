@@ -40,6 +40,8 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 #: The turn the claim is made on, and the earlier turn the evidence came from.
@@ -73,7 +75,8 @@ def _case() -> Case:
         Evidence(
             summary="checkout-api log: requests at 3.9-4.1s",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=_FILE_ID,
             collected_at=datetime.now(UTC),
             collected_by="user_123",
             primary_purpose="Symptom verification",

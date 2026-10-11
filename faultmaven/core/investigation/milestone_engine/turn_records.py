@@ -434,6 +434,17 @@ def _hypotheses_awaiting_recent_evidence(case: Case, within_turns: int) -> set:
     }
 
 
+#: Holds the position of an ``evidence_to_add`` row the engine refused (#1930:
+#: its ``source_file_id`` named no file of the case) in ``metadata
+#: ["evidence_slots"]``, the turn's evidence rows IN THE ORDER THE MODEL WROTE
+#: THEM. ``new_index_N`` evidence refs resolve against that list, so a refused
+#: row must keep its place: dropping it would shift every later ref onto the
+#: wrong row. A ref that lands here resolves to this value, which names no
+#: evidence row, and every consumer drops a link whose evidence is not on
+#: record. ``metadata["evidence_added"]`` holds only the rows that exist.
+REFUSED_EVIDENCE_SLOT = "ev_refused"
+
+
 def _resolve_id_ref(ref: str, created_ids: list[str], prefix: str) -> str:
     """Resolve ``new_index_N`` to the actual ID from ``created_ids``,
     or return ``ref`` unchanged.

@@ -3094,7 +3094,7 @@
                 "type": "null"
               }
             ],
-            "description": "Source file this evidence was derived from. NULL only when the evidence is a verbatim quote extracted from the user's chat message (source_type=USER_DESCRIPTION)."
+            "description": "Source file this evidence was derived from. NULL only on an inference the engine recorded (source_type=engine_inference); every other row is data the user submitted."
           },
           "summary": {
             "maxLength": 500,
@@ -6207,6 +6207,17 @@
             ],
             "title": "Payload"
           },
+          "prefill": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefill"
+          },
           "type": {
             "title": "Type",
             "type": "string"
@@ -7195,7 +7206,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "13.2.0"
+    "version": "13.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

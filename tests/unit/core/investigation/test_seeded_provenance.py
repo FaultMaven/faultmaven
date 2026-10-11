@@ -52,6 +52,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 
+_FILE_ID = "file_0123456789ab"
+
 pytestmark = pytest.mark.unit
 
 _INTERVENTIONS = [{"quadrant": "remediation", "ref": "root", "text": "fix the root"}]
@@ -107,7 +109,8 @@ def _confirm_root(case: Case, node_id: str) -> None:
     row = Evidence(
         summary="post-fix verification: cause no longer present",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
         collected_at=datetime.now(UTC),
         collected_by="u",
         primary_purpose="confirm root cause eliminated",

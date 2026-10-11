@@ -40,11 +40,11 @@ def _evidence() -> Evidence:
         evidence_id="ev_000000000001",
         summary="s",
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        source_type=EvidenceSourceType.LOGS,
         collected_at=datetime.now(UTC),
         collected_by="u",
         primary_purpose="p",
-        source_file_id=None,
+        source_file_id="file_0123456789ab",
         collected_at_turn=1,
     )
 

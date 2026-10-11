@@ -282,7 +282,7 @@ Extended diagnosis may take multiple turns (e.g., requesting data, analyzing, re
 
 **Evidence types accepted**:
 
-- `causal_absence_evidence` — positive proof the root cause is eliminated after the fix (post-fix metrics, logs, user confirmation); RESOLVED also needs a `symptom_absence_evidence` row at or after it, the reported problem seen gone (#1906)
+- `causal_absence_evidence` — positive proof the root cause is eliminated after the fix (post-fix metrics and logs the user SUBMITTED; "it worked" alone is a claim); RESOLVED also needs a `symptom_absence_evidence` row at or after it, the reported problem seen gone (#1906)
 - `symptom_evidence` — new symptoms discovered after fix attempt
 - `causal_evidence` — new causal insights from failure analysis (requires hypothesis)
 
@@ -480,7 +480,7 @@ two tables play distinct roles and never carry duplicate information.
 | `symptom_evidence` | Data showing the problem exists | DIAGNOSIS, TREATMENT | Error logs, latency spikes, alert notifications |
 | `causal_evidence` | Data bearing on why the problem happened: a change, OR a measured state that is the hypothesised mechanism itself | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes; a filesystem at 100%, an exhausted pool, a reached limit |
 | `symptom_absence_evidence` | Confirmation the symptom is gone after a workaround (cause may persist) | MITIGATION | Post-mitigation metrics, error-rate drop |
-| `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix (RESOLVED also needs the symptom row at or after it) | TREATMENT | Post-fix metrics, clean logs, user confirmation |
+| `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix (RESOLVED also needs the symptom row at or after it) | TREATMENT | Submitted post-fix metrics, clean logs |
 
 Contextual material (architecture diagrams, baseline configs,
 deployment timestamps) is data, not evidence — it lives on
@@ -495,21 +495,23 @@ Every Evidence row has a known source. The invariant is enforced at
 three layers:
 
 1. **DB-level CHECK** (`evidence_source_invariant`):
-   `source_file_id IS NOT NULL OR source_type = 'user_description'`
+   `source_file_id IS NOT NULL OR source_type = 'engine_inference'`
 2. **Pydantic domain validator** on `Evidence`:
-   `_source_requires_file_unless_user_description`
+   `_source_requires_file_unless_engine_inference`
 3. **Pydantic LLM-output validator** on `EvidenceToAdd`:
-   `_source_file_required_unless_user_description` — the LLM gets
-   a clear validation error pointing it at the `file_id` attribute
-   it should have copied from the prompt context.
+   `source_file_id` is required (a null parses as `""`) and the
+   model-facing `source_type` vocabulary excludes `engine_inference`.
+   At apply time a row whose `source_file_id` names no upload of the
+   case is refused in place (`faultmaven_evidence_row_refused_total
+   {reason="unresolved_file"}`); `metadata["evidence_slots"]` keeps
+   the positions so `new_index_N` references still land on the right
+   row. A refused row is never demoted to a fileless row.
 
 The only legal carve-out for `source_file_id IS NULL` is
-`source_type = USER_DESCRIPTION` — the chat-quote case where the
-LLM extracted a verbatim system-output snippet from the user's
-short chat message. The source is then recoverable via
-`collected_at_turn` + the user message at that turn (no separate
-`source_message_id` FK needed; one user message per turn is the
-invariant).
+`source_type = ENGINE_INFERENCE`: the engine's own M6
+failed-treatment disconfirmation row (`collected_by="engine"`). The
+model cannot write it. `USER_DESCRIPTION` is retired (#1930): a
+chat message is a claim, and a claim has no Evidence row.
 
 ### 5.3 Evidence Classification Rules
 
@@ -537,13 +539,62 @@ invariant).
    INVESTIGATING. The Pydantic `InquiryResponse.InquiryStateUpdate`
    schema does not carry an `evidence_to_add` field.
 
-4. **User words are not evidence**: The extract must be system
-   output. The user's own descriptions, opinions, or paraphrases
-   stay in `case_messages` as context — they do not become Evidence
-   rows. When a user types a verbatim system-output quote (e.g.,
-   `Got: HTTP/1.1 503 Service Unavailable`) inline in a short chat
-   message, that quote can become evidence with
-   `source_type=USER_DESCRIPTION` and no source_file_id.
+4. **Only submitted data is evidence**: Evidence is system output
+   the user SUBMITTED — a file upload or a paste, stored as an
+   `UploadedFile`. The user's own descriptions, opinions, paraphrases
+   and chat messages are claims: they stay in `case_messages` as
+   context and never become Evidence rows, of any category.
+   Classification is by source, never by channel. This holds for the
+   absence categories too: "it worked" records no absence row; the
+   post-fix output the user submits does (§5.3.1 for output typed
+   into the message box).
+
+#### 5.3.1 The Chat-Data Offer
+
+Users still type or paste system output into the message box, and tell
+FaultMaven the state of their system in words ("it's stable", "it's
+working now"). The model reads the user's intent as well as the content;
+the engine verifies what the model points at against the user's own
+words; the user declares what is data (#1930).
+
+- The model names each block of system output in the CURRENT message
+  by its `first_line` / `last_line` (`chat_data_blocks`). It never
+  supplies the text that is saved.
+- When the message reports the state of the user's system and the turn
+  submitted no data showing it, the model names the output that would
+  show it (`system_state_report.request`), and FaultMaven asks for it,
+  for verification and for the record. The model does not ask a second
+  time in its reply.
+- The engine finds the named lines in the user's message (after
+  reversing PII placeholders) and takes the full lines between them. An
+  anchor that matches nothing is dropped (`block_unmatched`). A block
+  already offered on the case is never offered again, and a state
+  request is not repeated while an earlier one waits with no data
+  submitted since.
+- ONE `ChatDataOffer` per message is recorded on
+  `Case.chat_data_offers` (persisted in `cases.metadata`). It is minted
+  on the live turn only (not in the statement-revision replay) and
+  never on a terminal case.
+- The reply leads `suggested_actions` with the choices, plus a short
+  note:
+  - Output in the message: "Yes, save it as data" — DECIDE, intent
+    `save_chat_data`: the blocks become ONE pasted file and the turn
+    runs as a paste turn through the engine. Admitted before the turn
+    is consumed; on a terminal case it is a 409 `CASE_TERMINAL`. And
+    "Not exactly, let me re-submit" — EVIDENCE with `prefill` = the
+    blocks: the client opens its data box and nothing is sent.
+  - A reported state only: "Submit the output" — EVIDENCE with
+    `prefill` `""` (the client opens its data box empty) and the
+    requested output in its body. There is no save: the message holds
+    no output, and saving the user's sentence would make a claim
+    evidence.
+- There is no "no" choice: an offer the user ignores leaves the
+  message a claim, as it would have been without the offer.
+- A `save_chat_data` intent naming no offer of the case is a 422
+  before the turn is consumed. A click that saves nothing (the offer is
+  already saved, or holds no output) is answered without a model call.
+- Counter: `faultmaven_chat_data_offer_events_total{event=offered|
+  state_requested|block_unmatched|saved}`.
 
 ### 5.4 Evidence Creation Pipeline (single path)
 

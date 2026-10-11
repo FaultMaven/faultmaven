@@ -26,7 +26,7 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     ProposedTransition,
 )
-from faultmaven.modules.case.contracts import ProblemStatus
+from faultmaven.modules.case.contracts import ProblemStatus, UploadedFile
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -41,6 +41,8 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+
+_FILE_ID = "file_0123456789ab"
 
 
 def _make_repo():
@@ -71,6 +73,11 @@ def _needs_info_case() -> Case:
             urgency_level="high",
         ),
     )
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID, filename="es.log", size_bytes=512, uploaded_at_turn=1
+        )
+    )
     case.inquiry.proposed_problem_statement = "latency"
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
@@ -87,14 +94,14 @@ def _needs_info_case() -> Case:
         Evidence(
             summary="symptom row",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(timezone.utc),
             collected_by="user_test",
             primary_purpose="regression",
             preprocessed_content="x",
             content_size_bytes=10,
             preprocessing_method="manual",
-            source_file_id=None,
+            source_file_id="file_0123456789ab",
             collected_at_turn=1,
         )
     )
@@ -286,13 +293,15 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
                         summary="Full scans gone since the index was created",
                         extract="events-* queries use idx_events_ts after 10:02",
                         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                        source_type=EvidenceSourceType.USER_DESCRIPTION,
+                        source_type=EvidenceSourceType.LOGS,
+                        source_file_id=_FILE_ID,
                     ),
                     EvidenceToAdd(
                         summary="p99 back to 40ms since the index was created",
                         extract="events-* p99: 40ms after CREATE INDEX at 10:02",
                         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                        source_type=EvidenceSourceType.USER_DESCRIPTION,
+                        source_type=EvidenceSourceType.LOGS,
+                        source_file_id=_FILE_ID,
                     ),
                 ],
                 "proposed_transition": ProposedTransition(to_state=model_proposes),

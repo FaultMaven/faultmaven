@@ -1429,7 +1429,7 @@ class DocumentType(str, Enum):
 > - **Preprocessing pipeline:** [data-processing/data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md)
 > - **Pipeline flows + sequence diagrams:** [data-processing/evidence-flow-architecture.md](../data-processing/evidence-flow-architecture.md)
 >
-> Categories: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`. Source is expressed by `Evidence.source_type` + `Evidence.source_file_id`; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
+> Categories: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`. Source is expressed by `Evidence.source_type` + `Evidence.source_file_id`; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'engine_inference'` (the engine's own M6 row; chat messages are claims, never evidence — #1930).
 
 ### 2.1 Evidence Fields Used by Investigation Engine
 
@@ -1446,9 +1446,9 @@ primary_purpose: Optional[str]   # What this evidence is intended to establish
 
 # Source identification
 source_type: EvidenceSourceType  # logs | metrics | configuration | code | text |
-                                 # image | user_description
+                                 # image | engine_inference
 source_file_id: Optional[str]    # FK → UploadedFile (NULL only when
-                                 # source_type='user_description')
+                                 # source_type='engine_inference')
 
 # Hypothesis evaluation lives on HypothesisEvidenceLink, not on Evidence.
 # See the table immediately below for the full move map.

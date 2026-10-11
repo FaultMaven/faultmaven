@@ -144,6 +144,10 @@ class TurnPath(str, Enum):
     TERMINAL = "terminal"
     GREETING = "greeting"
     RECLASSIFICATION = "reclassification"
+    #: #1930 — a "save it as data" click that saves nothing (the offer was
+    #: already saved, or holds no output), answered without a model call. A
+    #: save that saves runs through the engine as a paste turn.
+    SAVE_CHAT_DATA = "save_chat_data"
     #: #1329 — answered from a small prompt outside the engine; charged like
     #: any turn, recorded ``OUT_OF_BAND``. Without its own label a chatty
     #: session reads as an engine that produced nothing.

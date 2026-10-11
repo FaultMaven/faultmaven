@@ -160,8 +160,8 @@ async def _upsert_evidence(
 
     File-level metadata (filename, content_type, content_hash, size,
     storage_ref) lives on ``uploaded_files`` and is reached via
-    ``source_file_id``. Chat-extracted evidence
-    (``source_type=USER_DESCRIPTION``) has ``source_file_id IS NULL``
+    ``source_file_id``. An engine inference
+    (``source_type=ENGINE_INFERENCE``) has ``source_file_id IS NULL``
     and persists no file metadata.
     """
     for evidence in evidence_list:
