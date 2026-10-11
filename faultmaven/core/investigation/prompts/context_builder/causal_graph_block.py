@@ -11,6 +11,10 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     latest_decided_fix_window,
 )
+from faultmaven.core.investigation.problem_status import (
+    cause_work_accepted,
+    cause_work_staged,
+)
 from faultmaven.modules.case.contracts import Case, CaseState
 
 
@@ -19,33 +23,69 @@ def _one_line(s: str) -> str:
     return s if len(s) <= 140 else s[:137] + "..."
 
 
-def exclusion_record(case: Case, *, list_refuted: bool) -> str:
+#: How many refuted hypotheses the one-line record names. The reminder sits in
+#: the never-trimmed reserve, so its length must not grow with the case.
+MAX_NAMED_EXCLUSIONS = 5
+
+
+def named_exclusions(case: Case) -> tuple[list, int]:
+    """The refuted hypotheses the record names (the latest refuted first, at
+    most ``MAX_NAMED_EXCLUSIONS``) and how many more are refuted. The fallback
+    prompt lists the same ones, so no id it names is shown without its
+    statement."""
+    refuted = sorted(
+        (h for h in case.hypotheses.values() if h.state.value == "refuted"),
+        key=lambda h: h.last_updated_turn or 0,
+        reverse=True,
+    )
+    return refuted[:MAX_NAMED_EXCLUSIONS], max(0, len(refuted) - MAX_NAMED_EXCLUSIONS)
+
+
+def fix_confirmed(case: Case) -> bool:
+    """The latest decided fix window SUCCEEDED: the cause and the problem both
+    observed gone after the fix. Reads every evidence row; compute it once per
+    prompt build and pass it in."""
+    window = latest_decided_fix_window(case)
+    return window is not None and window.state == FIX_SUCCEEDED
+
+
+def exclusion_record(
+    case: Case,
+    *,
+    list_refuted: bool,
+    confirmed: bool | None = None,
+    counterfactual: bool = True,
+) -> str:
     """What the record excludes, stated plainly (#1911): the engine renders
     the fact, and the model judges what to say about the alternatives.
 
     Every REFUTED hypothesis stands on data (the refutation rule), so "ruled
-    out" is exactly the refuted set. A confirmed fix (the latest decided fix
-    window SUCCEEDED: the cause and the problem both observed gone after it) is
-    the counterfactual, which shows a competitor was not what caused this
-    problem without showing it absent.
+    out" is exactly the refuted set. A confirmed fix is the counterfactual,
+    which shows a competitor was not what caused this problem without showing
+    it absent; ``counterfactual=False`` leaves that sentence to a caller that
+    states it as its rule.
 
     ``list_refuted`` renders each refuted hypothesis with its reason, for the
     condensed stage blocks that otherwise show only the standing causes; the
-    full graph block already lists them. Empty when the case has no hypothesis
-    to speak of."""
+    full graph block already lists them. ``confirmed`` is ``fix_confirmed``,
+    computed by the caller when it already has it. Empty when the case has no
+    hypothesis to speak of."""
     shown = [h for h in case.hypotheses.values() if h.state.value != "retired"]
     if not shown:
         return ""
-    refuted = [h for h in shown if h.state.value == "refuted"]
     lines = []
     if list_refuted:
         lines.extend(
             f"- [{h.hypothesis_id}] {_one_line(h.statement)} (REFUTED) — "
             f"Refuted because: {_one_line(h.refutation_reason)}"
-            for h in refuted
+            for h in shown
+            if h.state.value == "refuted"
         )
-    if refuted:
-        ids = ", ".join(h.hypothesis_id for h in refuted)
+    named, more = named_exclusions(case)
+    if named:
+        ids = ", ".join(h.hypothesis_id for h in named)
+        if more:
+            ids += f" and {more} more"
         summary = (
             f"Ruled out on record: {ids} (each refuted by evidence). No other "
             f"alternative is excluded on record."
@@ -55,7 +95,7 @@ def exclusion_record(case: Case, *, list_refuted: bool) -> str:
             "Ruled out on record: nothing. No alternative cause is excluded by "
             "evidence on record."
         )
-    if _fix_confirmed(case):
+    if counterfactual and (fix_confirmed(case) if confirmed is None else confirmed):
         summary += (
             " The latest fix is confirmed (the cause and the problem observed "
             "gone after it): an unexcluded alternative was not what caused this "
@@ -65,8 +105,9 @@ def exclusion_record(case: Case, *, list_refuted: bool) -> str:
     return "\n".join(lines)
 
 
-def exclusions_reminder(case: Case) -> str:
-    """What the record excludes, restated beside the user's message (#1911).
+def exclusions_reminder_parts(case: Case) -> tuple[str, str] | None:
+    """The record and the rule to restate beside the user's message (#1911),
+    or None.
 
     The full record sits in the causal graph block, and the rule in the
     investigation base, both far from the question. A live run (login-401,
@@ -75,33 +116,44 @@ def exclusions_reminder(case: Case) -> str:
     repeated in the slot read last, with the one rule; the model judges what to
     say. Only while INVESTIGATING and once a hypothesis exists to speak of.
 
-    After a confirmed fix the rule is the counterfactual's: an unexcluded
-    alternative was not what caused this problem. Asking for checks on it then
-    would pull against the resolve turn, which asks for no more data."""
+    The rule has two halves. "Say ruled out only of what is on record" always
+    applies. The action half depends on the case: after a confirmed fix it is
+    the counterfactual (an unexcluded alternative was not what caused this
+    problem; asking for checks would pull against the resolve turn); while the
+    problem does not take cause work (a false-alarm hold, an unverified
+    problem) it is left out, because a refutation would be refused; otherwise
+    it is: name the check, or record the exclusion."""
     if case.state != CaseState.INVESTIGATING:
-        return ""
-    record = exclusion_record(case, list_refuted=False)
+        return None
+    confirmed = fix_confirmed(case)
+    record = exclusion_record(
+        case, list_refuted=False, confirmed=confirmed, counterfactual=False
+    )
     if not record:
+        return None
+    rule = 'Say "ruled out" only of a cause refuted on record.'
+    if confirmed:
+        rule += (
+            " Of any other alternative, say it was not what caused this "
+            "problem, never that it is absent."
+        )
+    elif cause_work_accepted(case) or cause_work_staged(case):
+        rule += (
+            " Any other alternative is not excluded: name the check that would "
+            "settle it, or record the exclusion this turn (link the row that "
+            "excludes it with stance REFUTES and set state=REFUTED)."
+        )
+    return record, rule
+
+
+def exclusions_reminder(case: Case) -> str:
+    """The reminder as the main prompt renders it: an engine-authored tag in
+    the per-turn tail, its own reserved section (``{exclusions}``)."""
+    parts = exclusions_reminder_parts(case)
+    if parts is None:
         return ""
-    if _fix_confirmed(case):
-        rule = (
-            'Say "ruled out" only of a cause refuted on record. Of any other '
-            "alternative, say it was not what caused this problem, never that "
-            "it is absent."
-        )
-    else:
-        rule = (
-            'Say "ruled out" only of a cause refuted on record. Any other '
-            "alternative is not excluded: name the check that would settle it, "
-            "or record the exclusion this turn (link the row that excludes it "
-            "with stance REFUTES and set state=REFUTED)."
-        )
+    record, rule = parts
     return f"<exclusions_on_record>\n{record}\n{rule}\n</exclusions_on_record>\n\n"
-
-
-def _fix_confirmed(case: Case) -> bool:
-    window = latest_decided_fix_window(case)
-    return window is not None and window.state == FIX_SUCCEEDED
 
 
 def _build_causal_graph_block(case: Case) -> str:

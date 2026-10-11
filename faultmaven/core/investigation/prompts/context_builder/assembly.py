@@ -199,11 +199,13 @@ def _allocate_sections(
     ctx["milestones"] = _reserve(milestones_str)
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
-    # The exclusions reminder follows the feedback, outside its cap: the cap
-    # keeps the head, so a capped tail would lose the reminder first and could
-    # leave its tag open against the user's message (#1911). It is bounded on
-    # its own: ids and two fixed sentences.
-    ctx["system_feedback"] = _reserve(capped_feedback + exclusions_str)
+    ctx["system_feedback"] = _reserve(capped_feedback)
+    # Its own section, not appended to the feedback (#1911): the feedback cap
+    # keeps the head and would cut the reminder first, and a feedback cut
+    # mid-tag would absorb it; as a section of its own it gets the per-section
+    # tag termination below. Bounded: at most MAX_NAMED_EXCLUSIONS ids and two
+    # fixed sentences.
+    ctx["exclusions"] = _reserve(exclusions_str)
     ctx["user_message"] = _reserve(user_message_block)
 
     reserve_tokens = budget.used_tokens

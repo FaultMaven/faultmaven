@@ -401,7 +401,7 @@ CONVERSATION HISTORY:
 {conversation_history}
 
 {system_feedback}
-CURRENT USER MESSAGE:
+{exclusions}CURRENT USER MESSAGE:
 {user_message}
 
 Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and EVIDENCE-FIRST rules above, and DIAGNOSTIC REASONING where this prompt includes it.
