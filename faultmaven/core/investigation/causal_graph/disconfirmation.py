@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
+    NodeType,
     RootCauseConclusion,
 )
 
@@ -222,9 +223,11 @@ def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:
     at a declared confidence that is not a self-hedge
     (``stance_declared_confident``), to the hypothesis itself or to a node of
     its chain (its root, or a rung on its path to the problem: refuting any
-    rung breaks the chain, methodology S1). Every row is submitted data or the
-    engine's own failed-fix row (#1930), so a ground found here is data, never
-    an argument."""
+    rung breaks the chain, methodology S1). Never the PROBLEM node D, which
+    ends every path: a REFUTES link there would back the refutation of every
+    chained hypothesis at once. Every row is submitted data or the engine's
+    own failed-fix row (#1930), so a ground found here is data, never an
+    argument."""
     on_record = {e.evidence_id for e in case.evidence}
     links = list(hyp.evidence_links)
     chain_ids = list(hyp.path or [])
@@ -232,7 +235,7 @@ def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:
         chain_ids.insert(0, hyp.root_node_id)
     for node_id in chain_ids:
         node = case.causal_nodes.get(node_id)
-        if node is not None:
+        if node is not None and node.node_type != NodeType.PROBLEM:
             links.extend(node.evidence_links)
     found: list[str] = []
     for link in links:

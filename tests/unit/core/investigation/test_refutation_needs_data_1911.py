@@ -538,3 +538,95 @@ def test_supports_and_neutral_links_do_not_count():
             )
         ]
         assert refuting_evidence_on_record(case, h) == []
+
+
+# ---------------------------------------------------------------------------
+# Review round: the chain axis, and the node every chain shares
+# ---------------------------------------------------------------------------
+
+
+def _two_chains_dsu(**extra) -> "_DSU":
+    """Two hypotheses, each with its own root producing D, and a row."""
+    return _DSU(
+        evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "isolated")],
+        hypotheses_to_add=[
+            HypothesisToAdd(
+                statement=_CAUSE,
+                category=HypothesisCategory.CONFIG,
+                likelihood=0.5,
+                rationale="iat/nbf skew",
+                root_node_ref="new_index_0",
+            ),
+            HypothesisToAdd(
+                statement=_COMPETITOR,
+                category=HypothesisCategory.SECURITY,
+                likelihood=0.5,
+                rationale="isolated to app-02",
+                root_node_ref="new_index_1",
+            ),
+        ],
+        causal_nodes_to_add=[
+            CausalNodeToAdd(statement=_CAUSE, node_type="root", produces="D"),
+            CausalNodeToAdd(statement=_COMPETITOR, node_type="root", produces="D"),
+        ],
+        **extra,
+    )
+
+
+async def test_a_refutes_link_on_the_problem_node_backs_no_refutation():
+    """D ends every hypothesis's path. A REFUTES link there must not count as
+    refuting any chain, or one link would refute every candidate at once."""
+    eng, case = _engine(), _case()
+    meta = await _apply(eng, case, _two_chains_dsu())
+    (problem_id,) = [
+        nid for nid, n in case.causal_nodes.items() if n.node_type == NodeType.PROBLEM
+    ]
+    cause_id, competitor_id = meta["hypotheses_generated"]
+    assert case.hypotheses[competitor_id].path[-1] == problem_id
+    row_id = meta["evidence_added"][0]
+
+    meta = await _apply(
+        eng,
+        case,
+        _DSU(
+            node_evidence_links=[
+                NodeEvidenceLinkToAdd(
+                    node_ref=problem_id,
+                    evidence_id_ref=row_id,
+                    stance=EvidenceStance.REFUTES,
+                    reasoning="isolated to app-02",
+                )
+            ],
+            hypotheses_to_update=[_refute(cause_id), _refute(competitor_id)],
+        ),
+    )
+
+    assert case.hypotheses[cause_id].state == HypothesisState.ACTIVE
+    assert case.hypotheses[competitor_id].state == HypothesisState.ACTIVE
+    assert refuting_evidence_on_record(case, case.hypotheses[competitor_id]) == []
+
+
+async def test_a_same_turn_link_on_the_chain_root_alone_backs_a_refutation():
+    """The refutation is judged after chain emission too, not only after the
+    flat link pass: a competitor's root linked REFUTES through
+    ``node_evidence_links`` in the same emission is the ground."""
+    eng, case = _engine(), _case()
+    meta = await _apply(
+        eng,
+        case,
+        _two_chains_dsu(
+            node_evidence_links=[
+                NodeEvidenceLinkToAdd(
+                    node_ref="new_index_1",
+                    evidence_id_ref="new_index_0",
+                    stance=EvidenceStance.REFUTES,
+                    reasoning="a time check runs after the signature verified",
+                )
+            ],
+            hypotheses_to_update=[_refute("new_index_1")],
+        ),
+    )
+
+    competitor = case.hypotheses[meta["hypotheses_generated"][1]]
+    assert competitor.state == HypothesisState.REFUTED
+    assert "NOT refuted" not in meta.get("system_feedback", "")

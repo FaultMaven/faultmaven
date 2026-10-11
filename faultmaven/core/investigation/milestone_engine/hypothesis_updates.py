@@ -101,9 +101,11 @@ def _apply_hypothesis_action_intent(
         hypothesis_refutation_refused_total.labels(source="user").inc()
         _add_system_feedback(
             metadata,
-            f"The user asked to rule out hypothesis {hypothesis_id}, but nothing "
-            f"on record refutes it, so it stays open. Tell them which check's "
-            f"output would exclude it, and that they can set it aside instead.",
+            f"The user's request to rule out hypothesis {hypothesis_id} was "
+            f"refused: nothing on record refutes it, so it is still open. If a "
+            f"reply told the user it was ruled out, correct that, name the check "
+            f"whose output would exclude it, and say they can set it aside "
+            f"instead.",
         )
         logger.info(
             "Hypothesis %s refute intent refused for case %s: nothing on "

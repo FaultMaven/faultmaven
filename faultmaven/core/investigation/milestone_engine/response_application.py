@@ -802,6 +802,7 @@ class ResponseApplier:
             item.model_dump(mode="json")
             for item in getattr(updates, "hypotheses_to_update", None) or []
             if item.state == HypothesisState.REFUTED
+            and (item.refutation_reason or "").strip()
         ]
         if refutations:
             subset["hypotheses_to_update"] = refutations

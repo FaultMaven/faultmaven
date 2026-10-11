@@ -961,6 +961,61 @@ class TestStagingAcrossTheHandshake:
         assert competitor.state == HypothesisState.REFUTED
         assert updated.progress.cause_state == CauseState.IDENTIFIED
 
+    async def test_a_standing_hypothesis_refuted_on_a_revision_turn_waits_for_it(self):
+        """The refuting link onto a STANDING hypothesis is staged with the rest
+        of the turn's cause work, so judging the refutation now would refuse it
+        for want of that link. It is staged instead, and the "yes" replays the
+        link and the refutation together (#1911)."""
+        from faultmaven.core.investigation.hypothesis_manager import (
+            HypothesisManager,
+        )
+
+        engine, case = _engine(), _case(ProblemStatus.VERIFIED)
+        standing = HypothesisManager().create_hypothesis(
+            statement="the orders service cannot resolve the database host",
+            category=HypothesisCategory.NETWORK,
+            initial_likelihood=0.4,
+            current_turn=2,
+        )
+        case.hypotheses[standing.hypothesis_id] = standing
+
+        meta = await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[
+                    _row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"),
+                    _row(EvidenceCategory.CAUSAL_EVIDENCE, "dns"),
+                ],
+                verification_updates=_revision_update("new_index_0"),
+                hypothesis_evidence_links=[
+                    HypothesisEvidenceLinkToAdd(
+                        hypothesis_id_ref=standing.hypothesis_id,
+                        evidence_id_ref="new_index_1",
+                        stance=EvidenceStance.REFUTES,
+                        reasoning="the host resolves in 3 ms throughout",
+                    )
+                ],
+                hypotheses_to_update=[
+                    HypothesisUpdate(
+                        hypothesis_id=standing.hypothesis_id,
+                        state=HypothesisState.REFUTED,
+                        refutation_reason="the host resolves in 3 ms",
+                    )
+                ],
+            ),
+        )
+
+        assert case.problem_verification.pending_revision is not None
+        assert standing.state == HypothesisState.ACTIVE
+        assert "NOT refuted" not in meta.get("system_feedback", "")
+
+        case.current_turn += 1
+        result = await engine.process_turn(case=case, user_message="yes")
+
+        replayed = result["case_updated"].hypotheses[standing.hypothesis_id]
+        assert replayed.state == HypothesisState.REFUTED
+
     async def test_a_yes_to_the_revision_never_executes_an_offer_the_replay_made(self):
         """The replay runs the apply path end to end, engine proposers
         included. A deferred fix staged with its cause must not turn the

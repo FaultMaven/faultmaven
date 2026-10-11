@@ -100,9 +100,9 @@ existing pool against it in the SAME turn:
 
 1. **Existing evidence.** Scan <evidence_collected>. If any row already
    speaks to the new hypothesis, emit a `hypothesis_evidence_links`
-   entry with stance (SUPPORTS / REFUTES / NEUTRAL). The hypothesis
-   may become VALIDATED or REFUTED immediately if the evidence is
-   conclusive.
+   entry with stance (SUPPORTS / REFUTES / NEUTRAL). If a row
+   conclusively excludes it, refute it in the same turn: link that row
+   REFUTES and set state=REFUTED (RULING OUT A CAUSE).
 2. **Existing open needs (PENDING / PARTIALLY_MET).** Scan
    <evidence_needs>. If a visible need would plausibly speak to the
    new hypothesis when (further) fulfilled, emit an update on that
