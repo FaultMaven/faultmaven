@@ -360,9 +360,9 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
                     else None
                 ),
                 # Offers of chat-typed system output (#1930). Must round trip:
-                # a save or a "my description" click names its offer by id on a
-                # later request, and an answer recorded here is what keeps the
-                # offer from being answered twice.
+                # a save click names its offer by id on a later request, and
+                # the record here is what keeps a block from being offered or
+                # saved twice.
                 "chat_data_offers": (
                     to_json_compatible(case.chat_data_offers)
                     if case.chat_data_offers

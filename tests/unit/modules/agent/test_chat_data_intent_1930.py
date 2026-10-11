@@ -178,6 +178,11 @@ class TestTheChoices:
         assert resubmit.intent is None and resubmit.payload is None
         assert resubmit.prefill == _OUTPUT
         assert "It isn't evidence yet" in response.agent_response
+        # Both ends named, so a block that took in a line the user wrote shows.
+        assert "starting `NAME          READY   STATUS`" in response.agent_response
+        assert "ending `api-0         0/1     CrashLoopBackOff`" in (
+            response.agent_response
+        )
         # Answered by a click, never by typed matching.
         assert not any(
             (s.get("intent") or {}).get("type") == IntentType.SAVE_CHAT_DATA.value

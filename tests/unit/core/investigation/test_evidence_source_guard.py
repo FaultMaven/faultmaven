@@ -208,3 +208,33 @@ def test_a_ref_past_a_refused_row_lands_on_its_own_row(engine):
 
     third = next(ev.evidence_id for ev in case.evidence if ev.summary == "third")
     assert [link.evidence_id for link in hypothesis.evidence_links] == [third]
+
+
+def test_a_revision_citing_a_row_past_a_refused_one_is_proposed(engine):
+    """``verification_updates`` evidence refs resolve against the same positions:
+    a revised statement citing the second row the model wrote is proposed, not
+    refused for citing nothing because the first row was refused (#1930)."""
+    case = _case([_file()])
+    case.progress.problem_status = ProblemStatus.VERIFIED
+    updates = InvestigationResponse_Diagnosis.DiagnosisStateUpdate.model_validate(
+        {
+            "evidence_to_add": [
+                _row(_MISSING_FILE_ID, "refused"),
+                _row(_FILE_ID, "checkout returns 500 only for EU card payments"),
+            ],
+            "verification_updates": {
+                "revised_problem_statement": (
+                    "Checkout returns HTTP 500 for card payments in the EU region"
+                ),
+                "revision_basis": "the log shows the 500s only on EU card payments",
+                "revision_evidence_ids": ["new_index_1"],
+            },
+        }
+    )
+
+    _apply(engine, case, updates)
+
+    pending = case.problem_verification.pending_revision
+    assert pending is not None, "the revision was refused for citing nothing"
+    (row,) = case.evidence
+    assert row.evidence_id in pending.evidence_ids

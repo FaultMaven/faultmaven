@@ -182,14 +182,23 @@ def chat_data_choices(
             prefill="\n\n".join(offer.blocks),
         ),
     ]
-    first_line = offer.blocks[0].strip().splitlines()[0].strip()
-    if len(first_line) > _NOTE_PREVIEW_CHARS:
-        first_line = first_line[: _NOTE_PREVIEW_CHARS - 1] + "…"
-    lines = sum(len(block.splitlines()) for block in offer.blocks)
+
+    def _preview(line: str) -> str:
+        line = line.strip()
+        if len(line) > _NOTE_PREVIEW_CHARS:
+            return line[: _NOTE_PREVIEW_CHARS - 1] + "…"
+        return line
+
+    block_lines = [line for block in offer.blocks for line in block.splitlines()]
+    span = f"starting `{_preview(block_lines[0])}`"
+    if len(block_lines) > 1:
+        # Both ends, so a block that took in a line the user wrote shows it.
+        span += f", ending `{_preview(block_lines[-1])}`"
+    lines = len(block_lines)
     note = (
         f"\n\n---\nYour message includes output from a system ({lines} "
-        f"line{'s' if lines != 1 else ''}, starting `{first_line}`). It isn't "
-        "evidence yet: it counts as evidence once it is submitted as data."
+        f"line{'s' if lines != 1 else ''}, {span}). It isn't evidence yet: it "
+        "counts as evidence once it is submitted as data."
     )
     if offer.request:
         note += f" To verify what you report, I also need: {offer.request}."

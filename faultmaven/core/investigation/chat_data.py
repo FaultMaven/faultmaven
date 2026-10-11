@@ -54,11 +54,14 @@ def locate_blocks(
     """The blocks the anchors name in ``message``, and how many found nothing.
 
     Each anchor is ``(first_line, last_line)``, matched against WHOLE lines of
-    the message. The first line is the first match at or after the end of the
-    previous block; the last line, the first match at or after the first line.
-    The block is every line from one to the other, as the message has them.
-    Blocks never overlap, and an anchor that matches nothing, or names an empty
-    line, is counted as unmatched.
+    the message. The last line is the first match at or after the first
+    match of the first line (searching from the end of the previous block);
+    the block then starts at the LAST match of the first line before it. So
+    the block is the shortest the anchors name: a first line that also occurs
+    earlier as the user's prose ("error", then the output that starts with
+    "error") does not pull that prose in. The block is every line from one to
+    the other, as the message has them. Blocks never overlap, and an anchor
+    that matches nothing, or names an empty line, is counted as unmatched.
     """
     lines = message.splitlines()
     comparable = [_comparable(line) for line in lines]
@@ -84,6 +87,7 @@ def locate_blocks(
         if start is None or end is None:
             unmatched += 1
             continue
+        start = max(i for i in range(start, end + 1) if comparable[i] == first_key)
         blocks.append("\n".join(lines[start : end + 1]))
         cursor = end + 1
     return blocks, unmatched

@@ -275,8 +275,10 @@ class Case(BaseModel):
         default_factory=list,
         description=(
             "System output the user typed into chat messages, offered back for "
-            "the user to save as data or call their own description (#1930). "
-            "One offer per message; an answer is final."
+            "the user to save as data, and output asked for when a message "
+            "reported the state of their system with no data (#1930). One offer "
+            "per message; a save is final, and blocks already offered are not "
+            "offered again."
         ),
     )
 

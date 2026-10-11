@@ -210,11 +210,11 @@ if PROMETHEUS_AVAILABLE:
     # made (one per message); state_requested: a message reported the state of
     # the user's system with no data, and its output was asked for;
     # block_unmatched: a block the model named was not found in the message and
-    # was dropped; saved / claimed: the user's answer.
+    # was dropped; saved: the user saved the blocks as data.
     CHAT_DATA_OFFER_EVENTS_TOTAL = Counter(
         "faultmaven_chat_data_offer_events_total",
         "Chat-data offer lifecycle events: offered, state_requested, "
-        "block_unmatched, saved, claimed.",
+        "block_unmatched, saved.",
         ["event"],
     )
 else:

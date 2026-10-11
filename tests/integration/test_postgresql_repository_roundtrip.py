@@ -539,7 +539,16 @@ async def test_causal_graph_roundtrip(pg_repo):
 
     case = _make_case(enterprise_id, user_id)
 
-    # Evidence the node-evidence junction can FK to (file-backed, like all submitted evidence).
+    # Evidence the node-evidence junction can FK to: file-backed, like all
+    # submitted evidence, so the file it names is on the case (#1930).
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID,
+            filename="psql.log",
+            size_bytes=64,
+            uploaded_at_turn=2,
+        )
+    )
     ev_id = f"ev_{uuid4().hex[:12]}"
     case.evidence.append(
         Evidence(

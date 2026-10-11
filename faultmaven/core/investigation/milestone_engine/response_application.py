@@ -125,8 +125,8 @@ def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -
     """A cause cannot have been eliminated before the problem it caused is
     verified: a causal_absence row then means "the problem is not there", which
     is symptom_absence. This turn's rows are reclassified rather than dropped —
-    ``evidence_added`` is positional, and new_index_N refs this turn index into
-    it. Judged against the turn's own verification (after step 2b), never the
+    new_index_N refs this turn index into ``evidence_slots``, and a dropped row
+    would leave its ref naming nothing. Judged against the turn's own verification (after step 2b), never the
     status the turn began with or an optimistic claim 2b reverts. Without this,
     one such row reads resolution-READY on a never-verified case
     (``assess_resolution_readiness``) and pivots a false-alarm close to RESOLVED
@@ -654,7 +654,8 @@ class ResponseApplier:
         if pv is None:
             return
 
-        created = metadata.get("evidence_added", [])
+        # Positional, holes kept: a refused row keeps its slot (#1930).
+        created = metadata.get("evidence_slots", [])
 
         def _ids(refs) -> list[str]:
             return [_resolve_id_ref(r, created, "ev_") for r in (refs or [])]

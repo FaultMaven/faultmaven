@@ -151,6 +151,13 @@ class TestTheLocator:
         assert blocks == [_PODS]
         assert unmatched == 1
 
+    def test_a_first_line_that_also_occurs_as_prose_does_not_pull_it_in(self):
+        """The shortest block the anchors name: "error" said as prose before
+        the output that starts with "error" stays out of it."""
+        message = "error\nhere is the output:\nerror\ncode 500\nthanks"
+        blocks, _ = locate_blocks(message, [("error", "code 500")])
+        assert blocks == ["error\ncode 500"]
+
     def test_crlf_messages_match(self):
         blocks, _ = locate_blocks("a\r\nERROR x\r\nb", [("ERROR x", "ERROR x")])
         assert blocks == ["ERROR x"]
