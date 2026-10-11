@@ -178,6 +178,8 @@ class TestTheChoices:
         assert resubmit.intent is None and resubmit.payload is None
         assert resubmit.prefill == _OUTPUT
         assert "It isn't evidence yet" in response.agent_response
+        # Optional, and said so: the choices are for using it as evidence.
+        assert "otherwise ignore this" in response.agent_response
         # Both ends named, so a block that took in a line the user wrote shows.
         assert "starting `NAME          READY   STATUS`" in response.agent_response
         assert "ending `api-0         0/1     CrashLoopBackOff`" in (
@@ -216,6 +218,7 @@ class TestTheChoices:
         assert submit.prefill == "" and submit.intent is None
         assert request in submit.body
         assert request in response.agent_response
+        assert "If you'd rather not, ignore this." in response.agent_response
 
     async def test_a_turn_that_found_nothing_offers_nothing(
         self, repo_and_case, preprocessing, file_storage

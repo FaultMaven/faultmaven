@@ -159,9 +159,9 @@ def chat_data_choices(
             prefill="",
         )
         note = (
-            "\n\n---\nTo verify what you report and to record it, I need to see "
-            f"it: {offer.request}. Submit it as data (pasted or attached), not "
-            "typed into your message."
+            "\n\n---\nTo verify what you report and put it on record, submit "
+            f"{offer.request} as data (pasted or attached). If you'd rather not, "
+            "ignore this."
         )
         return [submit], note
     choices = [
@@ -197,9 +197,9 @@ def chat_data_choices(
     lines = len(block_lines)
     note = (
         f"\n\n---\nYour message includes output from a system ({lines} "
-        f"line{'s' if lines != 1 else ''}, {span}). It isn't evidence yet: it "
-        "counts as evidence once it is submitted as data."
+        f"line{'s' if lines != 1 else ''}, {span}). It isn't evidence yet. To "
+        "have it used as evidence, choose below; otherwise ignore this."
     )
     if offer.request:
-        note += f" To verify what you report, I also need: {offer.request}."
+        note += f" To verify what you report, submit {offer.request} as data too."
     return choices, note
