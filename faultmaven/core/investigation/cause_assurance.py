@@ -417,6 +417,14 @@ def counterfactual_link_decisive(link) -> bool:
     power is what the confidence bar gates. ``None`` reads as unset → full
     confidence (the engine's own M6 links carry no declared confidence and are
     decisive by construction); an EXPLICIT 0.0 stays filtered."""
+    return stance_declared_confident(link)
+
+
+def stance_declared_confident(link) -> bool:
+    """Whether the link's own declared ``stance_confidence`` is at or above
+    ``CAUSAL_STANCE_CONFIDENCE_MIN`` (§7.1, INV-29): below it the stance is a
+    self-hedge. ``None`` reads as unset, so full confidence; an EXPLICIT 0.0
+    stays filtered."""
     confidence = getattr(link, "stance_confidence", None)
     if confidence is None:
         confidence = 1.0

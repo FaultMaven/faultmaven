@@ -39,6 +39,7 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import (
+    HypothesisEvidenceLinkToAdd,
     HypothesisToAdd,
     HypothesisUpdate,
     InvestigationResponse_Diagnosis,
@@ -48,6 +49,10 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    EvidenceStance,
     HypothesisCategory,
     HypothesisState,
     InquiryData,
@@ -233,6 +238,24 @@ def test_find_duplicate_returns_none_for_distinct():
 # --------------------------------------------------------------------------
 
 
+def _dns_trace_row(case: Case) -> str:
+    """A file-backed row on the case: the observation a refutation cites."""
+    ev_id = f"ev_{uuid4().hex[:12]}"
+    case.evidence.append(
+        Evidence(
+            evidence_id=ev_id,
+            summary="dig resolves the upstream host in 3 ms from every node",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id="file_0123456789ab",
+            collected_by="llm",
+            collected_at_turn=case.current_turn,
+        )
+    )
+    return ev_id
+
+
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.deps = EngineDeps()
@@ -362,6 +385,7 @@ async def test_positional_integrity_new_index_resolves_past_skipped_dup():
     existing = _add_hyp(
         case, "connection pool exhausted under load", HypothesisCategory.DATABASE
     )
+    trace_id = _dns_trace_row(case)
     meta = _meta()
     await eng.responses._apply_investigation_updates(
         case,
@@ -372,9 +396,18 @@ async def test_positional_integrity_new_index_resolves_past_skipped_dup():
                     "upstream DNS server unreachable", HypothesisCategory.NETWORK
                 ),  # index 1 → new
             ],
-            # Reference the SECOND emitted hypothesis by position. REFUTED is
-            # applied synchronously (unlike deferred RETIRED/likelihood), so it
-            # is a clean observable for which hypothesis the ref resolved to.
+            # Reference the SECOND emitted hypothesis by position. A REFUTED
+            # update backed by a same-turn REFUTES link is applied within the
+            # turn (#1911), so it is a clean observable for which hypothesis
+            # the ref resolved to.
+            hypothesis_evidence_links=[
+                HypothesisEvidenceLinkToAdd(
+                    hypothesis_id_ref="new_index_1",
+                    evidence_id_ref=trace_id,
+                    stance=EvidenceStance.REFUTES,
+                    reasoning="the DNS trace resolves the upstream host",
+                )
+            ],
             hypotheses_to_update=[
                 HypothesisUpdate(
                     hypothesis_id="new_index_1",

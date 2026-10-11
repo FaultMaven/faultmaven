@@ -101,6 +101,36 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     return False
 
 
+#: Consecutive turns without progress at which the model is told to change
+#: approach rather than restate (#1911). Below the progress monitor's
+#: transparency threshold (5 investigative turns) on purpose: a user re-asking
+#: the same question stalls the case from the first restated answer, and the
+#: charter-1 run restated four more times after the third stalled turn.
+RESTATEMENT_STALL_TURNS = 3
+
+
+def restatement_stall_notice(case: "Case") -> Optional[str]:
+    """The note a stalled case gives the model, or None (#1911).
+
+    The engine renders the fact, the stall count, and the model judges whether
+    a challenge is what stalled it: the engine cannot tell a user re-asking
+    "what rules out the alternatives?" from any other barren exchange, and the
+    model can. Only while the case is INVESTIGATING: a held problem freezes the
+    counter (``problem_on_hold``), so its count is not a stall."""
+    if (
+        case.state != CaseState.INVESTIGATING
+        or case.turns_without_progress < RESTATEMENT_STALL_TURNS
+    ):
+        return None
+    return (
+        f"No progress for {case.turns_without_progress} consecutive turns. If "
+        f"the user keeps asking about a conclusion or an exclusion you have "
+        f"already answered, restating the answer will not settle it: ask what "
+        f"would settle it for them, and offer the check that would "
+        f"discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+    )
+
+
 def confirmed_transition_arms(
     case: "Case", executed: bool, confirmed_via: TerminalConfirmedVia
 ) -> dict[str, Any]:

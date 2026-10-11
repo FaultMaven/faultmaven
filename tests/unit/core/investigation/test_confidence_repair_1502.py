@@ -55,6 +55,7 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_deferred_likelihood_updates,
     _apply_hypothesis_evidence_links,
     _apply_hypothesis_updates,
+    _apply_pending_refutations,
 )
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _validate_with_degradation,
@@ -69,6 +70,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
@@ -1244,15 +1246,29 @@ def test_a_dropped_likelihood_leaves_the_stored_value_and_the_progress_counter(r
 def test_a_refutation_is_not_lost_to_its_own_bad_likelihood(raw):
     """The refuting direction on the UPDATE side: on ``main`` the whole entry
     was pruned, so a model certain a hypothesis is dead lost the refutation
-    to the number beside it."""
+    to the number beside it. The row it cites is linked REFUTES, which is what
+    lets a refutation stand (#1911)."""
     case, h = _hyp_case()
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id=EV_ID,
+            stance=EvidenceStance.REFUTES,
+            reasoning="ev contradicts it",
+            stance_confidence=1.0,
+        )
+    )
     engine = _update_engine()
+    metadata: dict = {}
     _apply_hypothesis_updates(
         engine.deps.hypothesis_manager,
         case,
         [_parsed_update(raw, state="refuted", refutation_reason="ev contradicts it")],
-        {},
+        metadata,
         case.current_turn,
+    )
+    _apply_pending_refutations(
+        engine.deps.hypothesis_manager, case, metadata, case.current_turn
     )
     assert h.state == HypothesisState.REFUTED
 

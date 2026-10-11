@@ -24,13 +24,13 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 from faultmaven.modules.case.contracts import TurnOutcome
 
 from .affordances import engine_owned_affordances
-from .progress import score_progress
+from .progress import restatement_stall_notice, score_progress
 from .response_synthesis import (
     is_agent_response_synthesized,
     restamp_resolve_decline,
     turn_markers,
 )
-from .stage_gates import _refresh_working_conclusion
+from .stage_gates import _add_system_feedback, _refresh_working_conclusion
 from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
@@ -235,6 +235,10 @@ async def _apply_turn_response(
         case_updated.turns_without_progress = 0
     elif not problem_on_hold(case_updated):
         case_updated.turns_without_progress += 1
+        # A stall the next turn should break rather than restate (#1911).
+        stall_notice = restatement_stall_notice(case_updated)
+        if stall_notice:
+            _add_system_feedback(metadata, stall_notice)
 
     # Step 5.9: Progress monitoring (before recording turn)
     # Check if transparent mode should activate and/or repair

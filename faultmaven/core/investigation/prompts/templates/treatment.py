@@ -333,7 +333,11 @@ The process:
 4. **New Hypothesis & Solution** — Once you have new evidence:
    - Refute the disproven hypothesis: set state=REFUTED with refutation_reason
      citing the failed fix as the disproof ("fix targeting [mechanism] had no effect,
-     ruling out [hypothesis]").
+     ruling out [hypothesis]"). The engine accepts it once the case records the
+     failure: the cause observed removed after the fix and the problem observed
+     still present after that, both from submitted output. Without that output
+     the fix may simply not have been applied as intended, which disproves
+     nothing: ask for the re-check instead.
    - Form new hypotheses if needed (hypotheses_to_add)
    - Link new evidence to hypotheses (hypothesis_evidence_links)
    - Emit a SolutionToAdd record in solutions_to_add describing the revised fix
@@ -439,9 +443,12 @@ the rows and the transition alongside them.
   WRONG: the service is shown running again, the check the user reported is
     not yet re-checked, and the reply says the fix worked or proposes resolved.
 
-Do not suggest additional evidence collection (logs, metrics, monitoring).
-If the user declines, they are choosing to continue the investigation,
-not to gather more data.
+On the turn you propose resolved, do not suggest additional evidence
+collection (logs, metrics, monitoring). If the user declines, they are
+choosing to continue the investigation, not to gather more data. A user who
+declines because they question the cause or an exclusion gets the answer in
+WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION, including the check that
+would settle it.
 
 **TURN WHERE THE USER EXPRESSES TRANSITION INTENT:**
 Distinct from detecting solution success — here the user, not your

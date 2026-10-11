@@ -14,6 +14,7 @@ from faultmaven.core.investigation.cause_assurance import (
     counterfactual_link_decisive,
     fix_windows,
     latest_decided_fix_window,
+    stance_declared_confident,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
@@ -114,7 +115,7 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
     - ``"record"`` — the same FAILED-FIX claim, read from the case record
       rather than from a link (#1927): the latest fix window FAILED
       (``cause_assurance.fix_windows``), for a fix of this cause
-      (``_record_disconfirms_cause``). The ingest gate leaves the engine as the
+      (``failed_fix_of``). The ingest gate leaves the engine as the
       only author of a node-side counterfactual refute, so ``"counterfactual"``
       is the LATCH of a disconfirmation M6 already recorded; without this arm
       a fix that removed the cause but not the problem demoted nothing unless
@@ -140,7 +141,7 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
         return None
     if _node_has_counterfactual_refute(root, _evidence_category_map(case)):
         return _M6Trigger(hyp, reason, "counterfactual")
-    window = _record_disconfirms_cause(case, hyp, root)
+    window = failed_fix_of(case, hyp)
     if window is not None:
         return _M6Trigger(hyp, reason, "record", window)
     return None
@@ -179,11 +180,11 @@ def _node_has_engine_counterfactual_refute(node: CausalNode, case: Case) -> bool
     )
 
 
-def _record_disconfirms_cause(
-    case: Case, hyp: Hypothesis, root: CausalNode
-) -> FixWindow | None:
+def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     """The latest fix window when it records a failed fix of this identified
-    cause, else None — the ``"record"`` trigger (#1927).
+    cause, else None — M6's ``"record"`` trigger (#1927), and the one disproof
+    a refutation may stand on without a linked row (#1911): the treatment
+    prompt records no evidence row for a failed fix.
 
     All of: the hypothesis is still standing and its root VALIDATED (the cause
     the case identifies, not the representative proxy's guess); the latest fix
@@ -197,8 +198,11 @@ def _record_disconfirms_cause(
     window's outcome is shared with the readiness gate, so M6 demotes exactly
     when the gate stops reading the fix as a resolution; the attribution is
     M6's own, because a failed fix of another candidate disconfirms that
-    candidate, not this one."""
-    if hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
+    candidate, not this one. The VALIDATED root is what keeps that attribution
+    off a competitor: a terse cause row bears on no chain, so the bearing test
+    alone would hand the identified cause's failed fix to every candidate."""
+    root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
+    if root is None or hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
         return None
     window = latest_decided_fix_window(case)
     if window is None or window.state != FIX_FAILED:
@@ -209,6 +213,37 @@ def _record_disconfirms_cause(
     if all(bearing.about_another_chain(row) for row in window.cause_rows):
         return None
     return window
+
+
+def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:
+    """The evidence rows on record that refute ``hyp``, in link order (#1911).
+
+    A row counts when it exists on the case and is linked with stance REFUTES,
+    at a declared confidence that is not a self-hedge
+    (``stance_declared_confident``), to the hypothesis itself or to a node of
+    its chain (its root, or a rung on its path to the problem: refuting any
+    rung breaks the chain, methodology S1). Every row is submitted data or the
+    engine's own failed-fix row (#1930), so a ground found here is data, never
+    an argument."""
+    on_record = {e.evidence_id for e in case.evidence}
+    links = list(hyp.evidence_links)
+    chain_ids = list(hyp.path or [])
+    if hyp.root_node_id and hyp.root_node_id not in chain_ids:
+        chain_ids.insert(0, hyp.root_node_id)
+    for node_id in chain_ids:
+        node = case.causal_nodes.get(node_id)
+        if node is not None:
+            links.extend(node.evidence_links)
+    found: list[str] = []
+    for link in links:
+        if (
+            link.stance == EvidenceStance.REFUTES
+            and link.evidence_id in on_record
+            and stance_declared_confident(link)
+            and link.evidence_id not in found
+        ):
+            found.append(link.evidence_id)
+    return found
 
 
 def _evidence_disconfirmation_provenance(hyp) -> str:

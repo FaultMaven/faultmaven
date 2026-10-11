@@ -33,7 +33,7 @@ from .budget import (
     TokenBudget,
     get_token_budget_for_provider,
 )
-from .causal_graph_block import _build_causal_graph_block
+from .causal_graph_block import _build_causal_graph_block, exclusion_record
 from .entity_highlights import EntityHighlightGroup, _render_entity_highlights
 from .evidence import (
     _build_evidence_context,
@@ -413,6 +413,21 @@ def _allocate_sections(
             },
         )
     return ctx
+
+
+def _working_hypotheses(case: Case, standing: list[str]) -> str:
+    """The condensed ``<working_hypotheses>`` block a later stage shows in
+    place of the causal graph: the standing causes it keeps, then what the
+    record excludes (#1911). The exclusions stay in every stage, because a
+    user can question an alternative at any point, and the answer must come
+    from the record rather than be re-derived. Empty when there is neither."""
+    lines = list(standing)
+    exclusions = exclusion_record(case, list_refuted=True)
+    if exclusions:
+        lines.append(exclusions)
+    if not lines:
+        return ""
+    return "<working_hypotheses>\n" + "\n".join(lines) + "\n</working_hypotheses>"
 
 
 def system_feedback_block(
@@ -875,10 +890,13 @@ def build_investigation_context(
                     top_3 = sorted(
                         active_validated, key=lambda h: h.likelihood, reverse=True
                     )[:3]
-                    hypothesis_str = "<working_hypotheses>\n"
-                    for h in top_3:
-                        hypothesis_str += f"- [{h.hypothesis_id}] {h.statement} (Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})\n"
-                    hypothesis_str += "</working_hypotheses>"
+                    hypothesis_str = _working_hypotheses(
+                        case,
+                        [
+                            f"- [{h.hypothesis_id}] {h.statement} (Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})"
+                            for h in top_3
+                        ],
+                    )
 
         elif stage == InvestigationStage.MITIGATION:
             logger.debug("Stage-specific loading: MITIGATION - condensing hypotheses")
@@ -887,27 +905,31 @@ def build_investigation_context(
                 for h in case.hypotheses.values()
                 if h.state.value in ("active", "validated")
             ]
-            if active_validated:
-                hypothesis_str = "<working_hypotheses>\n"
-                for h in active_validated:
-                    hypothesis_str += (
-                        f"- [{h.hypothesis_id}] {h.statement} "
-                        f"(Confidence: {h.likelihood * 100:.0f}%)\n"
-                    )
-                hypothesis_str += "</working_hypotheses>"
-            else:
-                hypothesis_str = ""
+            hypothesis_str = _working_hypotheses(
+                case,
+                [
+                    f"- [{h.hypothesis_id}] {h.statement} "
+                    f"(Confidence: {h.likelihood * 100:.0f}%)"
+                    for h in active_validated
+                ],
+            )
 
         elif stage == InvestigationStage.TREATMENT:
             logger.debug("Stage-specific loading: TREATMENT - condensing hypotheses")
             validated = [
                 h for h in case.hypotheses.values() if h.state.value == "validated"
             ]
-            if validated:
-                best = max(validated, key=lambda h: h.likelihood)
-                hypothesis_str = f"<working_hypotheses>\n- [{best.hypothesis_id}] {best.statement} (Confidence: {best.likelihood * 100:.0f}%, VALIDATED)\n</working_hypotheses>"
-            else:
-                hypothesis_str = ""
+            best = max(validated, key=lambda h: h.likelihood) if validated else None
+            hypothesis_str = _working_hypotheses(
+                case,
+                (
+                    [
+                        f"- [{best.hypothesis_id}] {best.statement} (Confidence: {best.likelihood * 100:.0f}%, VALIDATED)"
+                    ]
+                    if best
+                    else []
+                ),
+            )
 
     # 10. INQUIRY State — surfaces an unconfirmed proposed_problem_statement
     # to the LLM with ONE rule, not a fork.

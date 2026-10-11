@@ -2737,3 +2737,53 @@ class TestVerificationStatusRecordedOnTurn:
             case.progress.verification_status
             == VerificationStatus.INSUFFICIENT_EVIDENCE
         )
+
+
+class TestRestatementStallNotice:
+    """#1911 item 7: a user re-asking "what rules out the alternatives?" stalls
+    the case while the model restates the same answer. The engine cannot tell
+    the challenge from any other barren exchange; it renders the stall, and the
+    notice tells the model to change approach (ask what would settle it, offer
+    the discriminating check) instead of restating. The charter-1 run restated
+    four more times after its third stalled turn."""
+
+    _RESTATED = json.dumps(
+        {
+            "agent_response": "As I said, app-02 alone was affected, which rules "
+            "out a shared signing key.",
+            "state_updates": {"outcome": "conversation"},
+        }
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_rising_stall_while_the_user_challenges_tells_the_model_to_change_approach(
+        self, mock_llm, mock_repo, base_case
+    ):
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = self._RESTATED
+        base_case.current_turn = 9
+        base_case.turns_without_progress = 2
+
+        result = await engine.process_turn(
+            base_case, "Again: what rules out the alternatives?"
+        )
+
+        record = result["case_updated"].turn_history[-1]
+        assert result["case_updated"].turns_without_progress == 3
+        assert "No progress for 3 consecutive turns" in record.system_feedback
+        assert "ask what would settle it" in record.system_feedback
+        assert "offer the check that would discriminate" in record.system_feedback
+
+    @pytest.mark.asyncio
+    async def test_no_notice_below_the_threshold(self, mock_llm, mock_repo, base_case):
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = self._RESTATED
+        base_case.current_turn = 9
+        base_case.turns_without_progress = 1
+
+        result = await engine.process_turn(
+            base_case, "What rules out the alternatives?"
+        )
+
+        record = result["case_updated"].turn_history[-1]
+        assert "No progress for" not in (record.system_feedback or "")

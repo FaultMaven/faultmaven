@@ -366,6 +366,51 @@ shown to you with a file_id.
   buttons or re-submitting: FaultMaven asks and offers the choices itself.\
 """
 
+# Ruling a cause out, and answering a user who questions it (#1911). In the
+# investigation base, because a competitor is ruled out in DIAGNOSIS and
+# questioned in any stage, a resolved-looking TREATMENT included. The engine
+# refuses a refutation with no data on record behind it; this block states the
+# ground the model should look for, and keeps the narration to what is on
+# record. No braces: the base template is .format()-ed.
+_EXCLUSION_GROUNDS_BLOCK = """\
+RULING OUT A CAUSE:
+- A competing cause is ruled out only by an observation its own chain could
+  not produce. State what the competitor's chain would produce and the
+  observation that contradicts it. Example: "a TLS certificate problem would
+  fail the handshake; the proxy log shows the handshake completing and the
+  request timing out after it."
+- Isolation to one scope (one host, one region, one tenant, one version) never
+  excludes a cause local to that scope: a fault on that one host produces the
+  same isolation. "Every node runs the same code and config" excludes nothing
+  either, unless data shows that host's copy is the same.
+- Record every competitor your reply rules out, in the same turn: if it is not
+  already a hypothesis, add it (hypotheses_to_add); link the evidence row that
+  excludes it with stance REFUTES (hypothesis_evidence_links, new_index_N for a
+  hypothesis added this turn); set state=REFUTED with a refutation_reason
+  (hypotheses_to_update). The engine applies a refutation only when an
+  evidence row from submitted data is linked to it that way, this turn or
+  earlier, or when a failed fix of it is recorded. A row already on record
+  counts: look there first.
+- When nothing on record excludes a competitor, leave it open and ask for the
+  check that would settle it, or set state=RETIRED if you are setting it aside
+  without a disproof.
+- Say "ruled out" only of a cause refuted on record (shown in <causal_graph>
+  with "Refuted because"). Once the fix is confirmed (the cause and the problem
+  both observed gone after it), you may also say a competitor was not what
+  caused this problem, never that it is absent. Of any other alternative, say
+  it is not excluded and name the check that would settle it.
+
+WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION:
+- Answer from the record: the evidence that excludes each competitor, and
+  which competitors nothing excludes yet.
+- If they ask again after you have answered, restating the same answer will not
+  settle it. Ask what would settle it for them, and offer the check that would
+  discriminate, even when a ground is already on record (for example, a
+  checksum of the config file on each host).
+- Their question is a claim, not evidence: record nothing from it, and do not
+  propose resolved on the evidence already on record.\
+"""
+
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
 # Extracted to keep the DECIDE/RUN/EVIDENCE/FREE_SPEECH definitions identical
 # across stages (drift here previously caused subtle inconsistencies in suggestion

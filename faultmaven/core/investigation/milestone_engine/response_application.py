@@ -28,6 +28,7 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_deferred_likelihood_updates,
     _apply_hypothesis_evidence_links,
     _apply_hypothesis_updates,
+    _apply_pending_refutations,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
@@ -70,6 +71,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    HypothesisState,
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
@@ -793,6 +795,16 @@ class ResponseApplier:
                     if isinstance(value, list)
                     else value.model_dump(mode="json")
                 )
+        # Refutations are cause work too: one stands only on data linked to
+        # it, and the links are staged above, so it is held with them and
+        # judged on the replay (#1911). Likelihood updates still apply live.
+        refutations = [
+            item.model_dump(mode="json")
+            for item in getattr(updates, "hypotheses_to_update", None) or []
+            if item.state == HypothesisState.REFUTED
+        ]
+        if refutations:
+            subset["hypotheses_to_update"] = refutations
         # The same fix re-sent on a later hold turn is staged once.
         if "solutions_to_add" in subset:
             staged_before = {
@@ -1293,8 +1305,10 @@ class ResponseApplier:
         # 3b. Apply the LLM's hypothesis disconfirmation signal (state=REFUTED +
         # reason) and likelihood updates. Emitted by schema+prompt but never
         # applied before; connecting it lets M6 demotion fire on the LLM's own
-        # refutation, not only on REFUTES evidence links. (Other state
-        # transitions are intentionally deferred — see _apply_hypothesis_updates.)
+        # refutation, not only on REFUTES evidence links. A refutation is only
+        # queued here and judged after the link passes, on the data on record
+        # (#1911). (Other state transitions are intentionally deferred — see
+        # _apply_hypothesis_updates.)
         false_alarm = case.progress.problem_status == ProblemStatus.INVALIDATED
         if getattr(updates, "hypotheses_to_update", None) and false_alarm:
             # Nothing to refute or support against: the problem never existed.
@@ -1310,6 +1324,7 @@ class ResponseApplier:
                 updates.hypotheses_to_update,
                 metadata,
                 case.current_turn,
+                staging=staging,
             )
 
         # 4. Link Evidence (Partial Application Check)
@@ -1609,6 +1624,15 @@ class ResponseApplier:
         _nudge_ambiguous_orphan_chains(case, metadata)
         # One note for everything refused this turn (cause_work.py).
         report_refused_cause_work(metadata)
+
+        # Refutations queued at step 3b, judged now that both link passes
+        # (flat step 4 and the chain's node links) have landed: a refutation
+        # stands only on data on record, which this turn may have linked
+        # (#1911). Before the deferred likelihoods, which skip a hypothesis
+        # this refutes, and before the recompute, which reads the states.
+        _apply_pending_refutations(
+            self.deps.hypothesis_manager, case, metadata, case.current_turn
+        )
 
         # Deferred likelihood updates — applied AFTER both link passes (flat
         # step 4 AND chain emission above), so the B1 evidence-free cap judges

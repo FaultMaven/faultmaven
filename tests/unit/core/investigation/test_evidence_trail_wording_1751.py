@@ -285,7 +285,7 @@ state_updates.proposed_transition                           | description | reas
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # TerminalResponse (1): tool_use on claude-opus-5-5 in #1751's bisection
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
-# InvestigationResponse_Diagnosis (35): tool_use on claude-opus-5 and claude-opus-5-5 in #1768's live check, and in #1751's bisection
+# InvestigationResponse_Diagnosis (34): tool_use on claude-opus-5 and claude-opus-5-5 in #1768's live check, and in #1751's bisection
 state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
 state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
 state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
@@ -305,7 +305,6 @@ state_updates.hypotheses_to_add[].rationale                 | key         | rati
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
 state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
 state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
 state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
 state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1
@@ -331,7 +330,7 @@ state_updates.evidence_need_updates[].superseded_reason     | key         | reas
 state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
 state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
-# InvestigationResponse_Treatment (32): not sent live; each hit is Diagnosis's text at the same path
+# InvestigationResponse_Treatment (31): not sent live; each hit is Diagnosis's text at the same path
 state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
 state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
 state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
@@ -348,7 +347,6 @@ state_updates.hypotheses_to_add[].rationale                 | key         | rati
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
 state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
 state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
 state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
 state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1
@@ -363,7 +361,7 @@ state_updates.verification_updates                          | required[]  | rati
 state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | b28c2f0137cc | 1 1
 state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | b28c2f0137cc | 1 1
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
-# InvestigationResponse_General (32): not sent live; each hit is Diagnosis's text at the same path
+# InvestigationResponse_General (31): not sent live; each hit is Diagnosis's text at the same path
 state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
 state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
 state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
@@ -380,7 +378,6 @@ state_updates.hypotheses_to_add[].rationale                 | key         | rati
 state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
 state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
 state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
 state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
 state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
 state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1

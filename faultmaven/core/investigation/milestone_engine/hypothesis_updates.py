@@ -3,14 +3,25 @@
 import logging
 from typing import Any
 
-from faultmaven.core.investigation.cause_assurance import absence_row_link_refused
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    failed_fix_of,
+    refuting_evidence_on_record,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    absence_row_link_refused,
+    stance_declared_confident,
+)
 from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
     settle_set_aside_link,
 )
+from faultmaven.core.investigation.lifecycle_metrics import (
+    hypothesis_refutation_refused_total,
+)
 from faultmaven.core.investigation.milestone_engine.turn_records import _resolve_id_ref
 from faultmaven.modules.case.contracts import (
     Case,
+    EvidenceStance,
     HypothesisState,
 )
 
@@ -49,6 +60,10 @@ def _apply_hypothesis_action_intent(
     in-place write would succeed silently and only surface as a 500 at the
     next Case reconstruction, far from its cause.
 
+    A ``refute`` is applied only when data on record backs it, the same rule
+    as the model's refutation (``_apply_pending_refutations``, #1911): the
+    click is the user's claim, not a disproof.
+
     On refusal the action is NOT marked applied
     (``hypothesis_action_applied`` stays unset).
     """
@@ -75,12 +90,34 @@ def _apply_hypothesis_action_intent(
             f"for case {case.case_id}: state "
             f"{hypothesis.state.value} is terminal"
         )
+    elif (
+        hypothesis
+        and action == "refute"
+        and not any(_refutation_grounds(case, hypothesis))
+    ):
+        # The user's click is a claim, like their words: it refutes nothing
+        # without data on record behind it (#1911). The hypothesis stays open
+        # and the model is told what would settle it.
+        hypothesis_refutation_refused_total.labels(source="user").inc()
+        _add_system_feedback(
+            metadata,
+            f"The user asked to rule out hypothesis {hypothesis_id}, but nothing "
+            f"on record refutes it, so it stays open. Tell them which check's "
+            f"output would exclude it, and that they can set it aside instead.",
+        )
+        logger.info(
+            "Hypothesis %s refute intent refused for case %s: nothing on "
+            "record refutes it",
+            hypothesis_id,
+            case.case_id,
+        )
     elif hypothesis:
         if action == "refute":
+            evidence_ids, _failed_fix = _refutation_grounds(case, hypothesis)
             hypothesis_manager.refute_hypothesis(
                 hypothesis=hypothesis,
                 current_turn=case.current_turn,
-                refuting_evidence_ids=[],
+                refuting_evidence_ids=evidence_ids,
                 reason=user_message or "User refuted",
             )
         elif action == "validate":
@@ -139,6 +176,8 @@ def _apply_hypothesis_updates(
     entries: list,
     metadata: dict[str, Any],
     current_turn: int,
+    *,
+    staging: bool = False,
 ) -> None:
     """Apply the LLM's per-turn hypothesis lifecycle updates
     (``state_updates.hypotheses_to_update``).
@@ -148,6 +187,12 @@ def _apply_hypothesis_updates(
     cause — plus likelihood tracking. The schema and prompt have long emitted
     these, but the engine never applied them (no read of
     ``hypotheses_to_update`` anywhere); wired here.
+
+    A refutation is not applied here. It is queued and judged by
+    ``_apply_pending_refutations`` once the turn's links have landed, so a row
+    linked REFUTES in the same emission can back it (#1911). While cause work
+    is ``staging`` it is held on the pending revision instead
+    (``ResponseApplier._stage_cause_work``), with the links that back it.
 
     Deliberately NOT applied in this slice: ``VALIDATED`` / ``RETIRED`` /
     ``ACTIVE`` / ``INCONCLUSIVE`` transitions. ``cause_state`` grounding is
@@ -167,6 +212,9 @@ def _apply_hypothesis_updates(
       refused (we do not record a disproof on no stated grounds) and surfaced
       as feedback; no likelihood from that same entry is applied (it was a
       refutation entry).
+    - **Data behind it.** A stated reason is not a disproof. The refutation
+      stands only on evidence on record or a failed fix
+      (``_apply_pending_refutations``).
 
     Best-effort otherwise: an unknown id is logged and skipped, never raised;
     ``new_index_N`` placeholders resolve against hypotheses created this turn.
@@ -232,16 +280,16 @@ def _apply_hypothesis_updates(
             continue
 
         # A REFUTED request is a refutation ENTRY: handle it and nothing else
-        # (no likelihood from the same entry — it was a disconfirmation).
+        # (no likelihood from the same entry — it was a disconfirmation). It is
+        # judged after this turn's links land (``_apply_pending_refutations``):
+        # the refuting row may be linked in this same emission (#1911). While
+        # cause work is staged it is held with the links that back it.
         if upd.state == HypothesisState.REFUTED:
             if upd.refutation_reason and upd.refutation_reason.strip():
-                hypothesis_manager.refute_hypothesis(
-                    hypothesis=hypothesis,
-                    current_turn=current_turn,
-                    refuting_evidence_ids=[],
-                    reason=upd.refutation_reason,
-                )
-                metadata["hypotheses_updated"].append(h_id)
+                if not staging:
+                    metadata.setdefault("pending_refutations", []).append(
+                        (h_id, upd.refutation_reason)
+                    )
             else:
                 feedback.append(
                     f"Hypothesis {h_id}: state=REFUTED requires a "
@@ -279,6 +327,98 @@ def _apply_hypothesis_updates(
         metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
 
 
+def _refutation_grounds(case: "Case", hypothesis) -> tuple[list[str], bool]:
+    """What backs a refutation of ``hypothesis`` on record (#1911): the
+    refuting evidence ids (``refuting_evidence_on_record``), and whether a
+    failed fix of it is recorded (``failed_fix_of``). Neither means the
+    refutation would be an argument with no data behind it."""
+    evidence_ids = refuting_evidence_on_record(case, hypothesis)
+    if evidence_ids:
+        return evidence_ids, False
+    return [], failed_fix_of(case, hypothesis) is not None
+
+
+def _has_hedged_refutes(hypothesis) -> bool:
+    """The hypothesis carries a self-hedged REFUTES link: the reason a
+    refutation the model did link evidence for can still be refused."""
+    return any(
+        link.stance == EvidenceStance.REFUTES and not stance_declared_confident(link)
+        for link in hypothesis.evidence_links
+    )
+
+
+def _apply_pending_refutations(
+    hypothesis_manager,
+    case: "Case",
+    metadata: dict[str, Any],
+    current_turn: int,
+) -> None:
+    """Apply the refutations ``_apply_hypothesis_updates`` queued, each only
+    when data on record backs it (#1911, owner ruling 2026-10-10).
+
+    Runs after both link passes (the flat ``hypothesis_evidence_links`` and the
+    chain's ``node_evidence_links``), so a turn can add a competitor, link the
+    row that excludes it and refute it at once, through ``new_index_N`` refs.
+
+    A refutation stands on an evidence row linked REFUTES to the hypothesis or
+    its chain, or on a recorded failed fix of it (the one disproof with no row
+    of its own to link). The backing rows are passed to ``refute_hypothesis``.
+    Otherwise it is refused: the hypothesis stays open, the refusal is counted,
+    and ``system_feedback`` tells the model what would back it. The stated
+    reason alone is an argument, and an argument that does not exclude the
+    competitor reads exactly like one that does.
+    """
+    pending = metadata.pop("pending_refutations", None)
+    if not pending:
+        return
+    for h_id, reason in pending:
+        hypothesis = case.hypotheses.get(h_id)
+        if hypothesis is None or hypothesis.state.is_terminal:
+            continue
+        evidence_ids, failed_fix = _refutation_grounds(case, hypothesis)
+        if evidence_ids or failed_fix:
+            hypothesis_manager.refute_hypothesis(
+                hypothesis=hypothesis,
+                current_turn=current_turn,
+                refuting_evidence_ids=evidence_ids,
+                reason=reason,
+            )
+            metadata.setdefault("hypotheses_updated", []).append(h_id)
+            continue
+        # Refused: the soft transition the link pass held now applies, so the
+        # hypothesis ends where its links alone would have left it.
+        hypothesis_manager.check_state_transition(hypothesis, current_turn)
+        hypothesis_refutation_refused_total.labels(source="model").inc()
+        logger.info(
+            "Case %s: refutation of %s refused, nothing on record refutes it",
+            case.case_id,
+            h_id,
+        )
+        hedged = (
+            " Its REFUTES links are self-hedged (stance_confidence below 0.6), "
+            "which is not a disproof."
+            if _has_hedged_refutes(hypothesis)
+            else ""
+        )
+        where = (
+            "Its links lowered its likelihood enough to set it aside (RETIRED), "
+            "which is not a disproof."
+            if hypothesis.state == HypothesisState.RETIRED
+            else "It stays open."
+        )
+        _add_system_feedback(
+            metadata,
+            f"Hypothesis {h_id} was NOT refuted: nothing on record refutes it."
+            f"{hedged} A refutation stands only on an evidence row from submitted "
+            f"data linked with stance REFUTES to the hypothesis "
+            f"(hypothesis_evidence_links) or to a node of its chain "
+            f"(node_evidence_links), this turn or earlier, or on a recorded "
+            f"failed fix of it. {where} Do not tell the user it is ruled out: "
+            f"ask for the check that would settle it, or set state=RETIRED if "
+            f"you are setting it aside without a disproof.",
+        )
+
+
 def _apply_deferred_likelihood_updates(
     hypothesis_manager,
     case: "Case",
@@ -301,11 +441,11 @@ def _apply_deferred_likelihood_updates(
         if hypothesis is None:
             continue
         # Re-check terminal immutability HERE, not only at stash time:
-        # the links pass between stash and apply can auto-REFUTE this
-        # same hypothesis (two REFUTES links -> likelihood <= 0.20 ->
-        # _check_state_transition), and applying the stale pre-refutation
-        # number would resurrect a terminal hypothesis's likelihood
-        # against its own refutation_reason.
+        # the links pass between stash and apply can retire this same
+        # hypothesis (REFUTES links push likelihood under 0.3 ->
+        # check_state_transition), and the refutation pass can refute it;
+        # applying the stale number would resurrect a terminal hypothesis's
+        # likelihood.
         if hypothesis.state.is_terminal:
             feedback.append(
                 f"Hypothesis {h_id}: likelihood update not applied — the "
@@ -363,6 +503,7 @@ def _apply_hypothesis_evidence_links(
     it reached ``derive_node_states`` from there, so guarding one axis only
     would leave the #987 cascade one stance choice away.
     """
+    pending_ids = {h_id for h_id, _reason in metadata.get("pending_refutations", [])}
     for link in links:
         # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
         h_id = _resolve_id_ref(
@@ -457,6 +598,10 @@ def _apply_hypothesis_evidence_links(
         # the same restatement leak the ``novel_*`` keys close on the other
         # arms. ``link_evidence`` decides, because only it holds both the prior
         # link and the new one.
+        # A hypothesis refuted in this same emission keeps its state until the
+        # refutation is judged: its own REFUTES link would otherwise retire it
+        # as low-confidence first, and the refutation would find it terminal
+        # (#1911). ``_apply_pending_refutations`` settles the held transition.
         if hypothesis_manager.link_evidence(
             case.hypotheses[h_id],
             e_id,
@@ -464,6 +609,7 @@ def _apply_hypothesis_evidence_links(
             case.current_turn,
             reasoning=link.reasoning,
             stance_confidence=stance_confidence,
+            hold_state=h_id in pending_ids,
         ):
             metadata["hypothesis_evidence_links_applied"] = (
                 metadata.get("hypothesis_evidence_links_applied", 0) + 1
