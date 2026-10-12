@@ -501,11 +501,19 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #: 9.5x for Test Cloud (normalised). Before, the box anchor times the runner's
 #: calibration put it at about 6-12x.
 #:
-#: ‼ The two profiles do not agree: the median per-job p50 of Test Standalone
-#: is **3.07x** Test Cloud's (the database work is IO the CPU calibration
-#: cannot see). The anchor pools both, so the p95 is set by Standalone, and
-#: the gate is correspondingly about 3x looser for Test Cloud than for Test
-#: Standalone (9.5x against 3.1x its median, above).
+#: ‼ The two profiles did not agree: the median per-job p50 of Test Standalone
+#: was **3.07x** Test Cloud's. That was logging, not IO (#1944): under the
+#: Standalone env the zero-config preset set ``LOG_LEVEL=DEBUG``, the first
+#: test to build a logger lowered the root to DEBUG for its worker, and every
+#: SQL statement then emitted two aiosqlite DEBUG records. Reproduced serially,
+#: the sanitizer tests then this one: Standalone env 224 ms p50 with 87,546
+#: aiosqlite records, Cloud env (``REDIS_HOST`` set, so no preset: INFO)
+#: 72 ms with none, 3.1x. With the test session pinned to INFO and aiosqlite
+#: pinned in ``NOISY_THIRD_PARTY_LOGGERS``: 70 and 78 ms, no records.
+#: The rows above predate that, so the anchor pools an inflated Standalone:
+#: its p95 was set by Standalone, which makes the gate about 3x looser for
+#: Test Cloud than for Test Standalone (9.5x against 3.1x its median, above),
+#: and looser for both now. Re-anchor from rows recorded after #1944.
 TURN_COMMIT = LatencyBudget(
     "test_the_turn_commit_fits_its_reserve",
     regression=0.11,

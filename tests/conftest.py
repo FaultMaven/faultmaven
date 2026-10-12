@@ -628,7 +628,6 @@ def clean_test_environment():
         "HOST",
         "PORT",
         "WORKERS",
-        "LOG_LEVEL",
         "INSTANCE_ID",
         "CHAT_PROVIDER",
         "ANTHROPIC_API_KEY",
@@ -661,6 +660,9 @@ def clean_test_environment():
     # Clear all .env variables
     for var in ENV_VARS_TO_CLEAR:
         os.environ.pop(var, None)
+    # Pinned, not cleared: unset, the zero-config preset would supply DEBUG
+    # (see ``TEST_LOG_LEVEL``, #1944).
+    os.environ["LOG_LEVEL"] = TEST_LOG_LEVEL
 
     yield
 
@@ -1411,6 +1413,78 @@ def _default_to_the_test_data_root() -> None:
 
 
 _default_to_the_test_data_root()
+
+
+# ---------------------------------------------------------------------------
+# Logging is set deliberately, once per test process (#1944)
+# ---------------------------------------------------------------------------
+#
+# The faultmaven logging singleton sets the ROOT logger's level the first time
+# anything asks for a logger, from ``LOG_LEVEL``. Under pytest nothing sets
+# ``LOG_LEVEL``, so with no Redis or LLM key configured the zero-config
+# ``local`` preset supplied DEBUG — and whichever test first built a logger
+# (``DataSanitizer()`` is one) lowered the root to DEBUG for the rest of its
+# process. Measured: the turn-commit benchmark after the sanitizer tests emitted
+# 87,546 aiosqlite DEBUG records and its p50 went from ~70 ms to 224 ms, under
+# the Standalone env. The Cloud job sets ``REDIS_HOST``, so no preset applied
+# there and it ran at INFO: the same sequence measured 72 ms, which reproduces
+# the 3.07x Standalone/Cloud gap in TURN_COMMIT's p50 (``budgets.py``).
+#
+# So the level is pinned to the settings default, INFO, in both profiles, and
+# the singleton is configured here, at conftest import, before anything else
+# in the process can ask for a logger. ``LOG_LEVEL`` stays pinned for the
+# session (``clean_test_environment`` re-asserts it), so a rebuilt singleton
+# lands on the same level. The settings object built to read it is dropped
+# again, as ``_default_to_the_test_data_root`` does, so no test inherits one
+# built before the session's environment was cleaned.
+#
+# ``pytest_runtest_protocol`` below then gives every test the root logger's
+# level and handlers back as it found them. A test that wants DEBUG records
+# asks for them (``caplog.set_level``) or sets the level itself; either way it
+# does not change the level the next test runs at.
+# ``tests/unit/test_test_logging_is_set_once.py`` pins both, in a child run.
+TEST_LOG_LEVEL = "INFO"
+
+
+def _configure_test_logging() -> None:
+    from faultmaven.config.settings import reset_settings
+    from faultmaven.infrastructure.logging.config import get_logger
+
+    os.environ["LOG_LEVEL"] = TEST_LOG_LEVEL
+    get_logger(__name__)
+    reset_settings()
+
+
+_configure_test_logging()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Give each test the root logger's level and handlers as it found them.
+
+    A hook rather than an autouse fixture: pytest installs a fresh capture
+    handler on the root for each of setup, call and teardown, so a fixture's
+    snapshot (taken in setup) restored in teardown would put setup's handler
+    back and leave it there. Around the whole protocol, the root holds only
+    the session's handlers. A wider-scoped fixture is set up inside its first
+    test's protocol, so a root change it made would last that test only; no
+    fixture makes one today. ``tests/integration/conftest.py`` re-exports
+    this hook for runs rooted there.
+    """
+    import logging
+
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+    try:
+        return (yield)
+    finally:
+        for handler in list(root.handlers):
+            if handler not in handlers:
+                root.removeHandler(handler)
+        for handler in handlers:
+            if handler not in root.handlers:
+                root.addHandler(handler)
+        root.setLevel(level)
 
 
 @pytest.fixture

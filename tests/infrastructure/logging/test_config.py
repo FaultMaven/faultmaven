@@ -257,13 +257,17 @@ class TestFaultMavenLogger:
         finally:
             sys.stderr = real_stderr
 
-    def test_noisy_third_party_loggers_pinned_at_warning(self):
-        """Raising our own verbosity to DEBUG must not drag httpcore/httpx along.
+    def test_noisy_third_party_loggers_pinned_at_their_levels(self):
+        """Raising our own verbosity to DEBUG must not drag the tracers along.
 
         Opik's connection monitor probes its backend from a daemon thread on a
-        timer, and httpcore emits a record per TCP/TLS step, so inheriting
-        DEBUG floods the log with connection chatter.
+        timer, and httpcore emits a record per TCP/TLS step; aiosqlite emits
+        two per SQL statement (#1944). Inheriting DEBUG floods the log.
         """
+        assert NOISY_THIRD_PARTY_LOGGERS == {
+            "httpcore": logging.WARNING,
+            "aiosqlite": logging.INFO,
+        }
         for name in NOISY_THIRD_PARTY_LOGGERS:
             logging.getLogger(name).setLevel(logging.NOTSET)
 
@@ -272,12 +276,65 @@ class TestFaultMavenLogger:
         FaultMavenLogger(config=debug_config)
 
         assert logging.getLogger().level == logging.DEBUG, "root should be at DEBUG"
-        for name in NOISY_THIRD_PARTY_LOGGERS:
-            assert logging.getLogger(name).level == logging.WARNING
-            # The child logger is what actually emits (e.g. httpcore.connection);
-            # assert at that surface, since that is where the noise came from.
+        for name, level in NOISY_THIRD_PARTY_LOGGERS.items():
+            assert logging.getLogger(name).level == level
+            # A child logger is what emits for httpcore (httpcore.connection);
+            # assert at that surface too, since that is where the noise came from.
             child = logging.getLogger(f"{name}.connection")
             assert not child.isEnabledFor(logging.DEBUG)
+
+    async def test_a_sqlite_round_trip_at_debug_emits_no_aiosqlite_record(self):
+        """A zero-config local run is at DEBUG; its SQL must not be traced (#1944).
+
+        aiosqlite logs every statement twice at DEBUG from its worker thread.
+        Before the pin, the turn-commit benchmark emitted 87,546 such records
+        and its p50 tripled. The positive control runs the same round trip with
+        the logger forced to DEBUG, so a probe that records nothing cannot read
+        as a pass. Its one INFO record must stay reachable.
+        """
+        import aiosqlite
+
+        aiosqlite_logger = logging.getLogger("aiosqlite")
+        aiosqlite_logger.setLevel(logging.NOTSET)
+        debug_config = self._json_config()
+        debug_config.LOG_LEVEL = "DEBUG"
+        FaultMavenLogger(config=debug_config)
+        assert logging.getLogger().level == logging.DEBUG, "root should be at DEBUG"
+
+        records: list = []
+
+        class _Recorder(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        async def round_trip():
+            async with aiosqlite.connect(":memory:") as db:
+                await db.execute("CREATE TABLE t (x INTEGER)")
+                await db.execute("INSERT INTO t VALUES (1)")
+                await db.commit()
+                async with db.execute("SELECT x FROM t") as cursor:
+                    assert await cursor.fetchall() == [(1,)]
+
+        recorder = _Recorder()
+        aiosqlite_logger.addHandler(recorder)
+        try:
+            await round_trip()
+            pinned = list(records)
+
+            records.clear()
+            aiosqlite_logger.setLevel(logging.DEBUG)
+            await round_trip()
+            control = list(records)
+        finally:
+            aiosqlite_logger.removeHandler(recorder)
+
+        assert control, "positive control: at DEBUG aiosqlite traces each statement"
+        assert all(r.levelno == logging.DEBUG for r in control)
+        assert pinned == [], [r.getMessage()[:80] for r in pinned]
+
+        aiosqlite_logger.setLevel(logging.NOTSET)
+        FaultMavenLogger(config=debug_config)
+        assert aiosqlite_logger.isEnabledFor(logging.INFO)
 
     def test_httpx_request_line_is_not_suppressed(self):
         """httpx's per-request INFO line must survive configuration.
