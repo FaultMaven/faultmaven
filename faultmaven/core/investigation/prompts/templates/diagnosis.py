@@ -1,4 +1,4 @@
-from .blocks import _FILE_SELECTION_DEFAULT
+from .blocks import file_selection_default
 from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, has, present
 
 _DIAGNOSIS_ZONES_PREAMBLE = """\
@@ -9,6 +9,15 @@ _DIAGNOSIS_ZONES_PREAMBLE = """\
 - Zone 3 — Solution proposal: cause identified, solution_proposed=False.
   Emit a concrete fix and hold for user execution.
 """
+
+
+def _diagnosis_zones_preamble(given: GivenTools) -> str:
+    """The zone reference; Zone 2 says "Search for cause" only when a search
+    tool is given (#1939)."""
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return _DIAGNOSIS_ZONES_PREAMBLE
+    return _DIAGNOSIS_ZONES_PREAMBLE.replace("Search for cause;", "Look for the cause;")
+
 
 _EVIDENCE_REQUEST_FORMAT_BLOCK = """\
 **EVIDENCE REQUESTS:**
@@ -338,8 +347,13 @@ def _search_strategy(given: GivenTools) -> str:
     kb = has(given, "kb_qa")
     searchers = present(given, *EVIDENCE_SEARCH_TOOLS)
     named = [f"`{t}`" for t in searchers]
+    heading = (
+        "**SEARCH STRATEGY (how to use tools for forward-looking investigation):**"
+        if kb or searchers
+        else "**DATA SOURCES (where each investigation variable advances from):**"
+    )
     text = (
-        "**SEARCH STRATEGY (how to use tools for forward-looking investigation):**\n\n"
+        heading + "\n\n"
         "The same rule that governs answering user questions also governs advancing "
         "investigation\n"
         "variables. Variable type determines which data source to search:\n\n"
@@ -462,6 +476,41 @@ def _zone_searches(given: GivenTools) -> str:
     return text + "\n"
 
 
+def _pick_targets(given: GivenTools) -> str:
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return """
+Pick targets from each file's `<file_extract>` and `<search_map>`:
+  - Symptom search → files whose time range overlaps the incident window
+  - Change-event search → deployment / audit / config logs, regardless of recency
+  - Hypothesis testing → the file most likely to contain the mechanism's signature
+"""
+    return """
+Pick sources from each file's `<file_extract>` and `<search_map>`:
+  - Symptoms → files whose time range overlaps the incident window
+  - Change events → deployment / audit / config logs, regardless of recency
+  - Hypothesis testing → the file most likely to contain the mechanism's signature
+"""
+
+
+def _timeline_anchor(given: GivenTools) -> str:
+    if has(given, "search_file"):
+        return (
+            "   **Use timeline as the search anchor.** Before generating hypotheses, "
+            "search for\n"
+            "   change events just before the timeline window using the Zone 2 change "
+            "event search\n"
+            "   strategy above. A change event near the timeline raises confidence in a "
+            "change\n"
+            "   hypothesis and narrows the search space.\n"
+        )
+    return (
+        "   **Use timeline as the anchor.** Before generating hypotheses, look in\n"
+        "   <evidence_collected> for change events just before the timeline window, or "
+        "ask\n"
+        "   the user for them.\n"
+    )
+
+
 def _symptom_signature_step(given: GivenTools) -> str:
     if has(given, "search_file"):
         return "(a) search_file for symptom signatures\n   using the Zone 1 search strategy above "
@@ -486,7 +535,7 @@ def rca_diagnosis_block(given: GivenTools) -> str:
 **FOCUS: DIAGNOSIS** (Understand the problem, find the cause, propose a solution)
 
 """
-        + _DIAGNOSIS_ZONES_PREAMBLE
+        + _diagnosis_zones_preamble(given)
         + """
 """
         + _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
@@ -576,13 +625,9 @@ for the user to execute — their compliance implies acceptance and transitions 
         + _search_strategy(given)
         + """**File-selection rule (all zones):**
 """
-        + _FILE_SELECTION_DEFAULT
+        + file_selection_default(given)
+        + _pick_targets(given)
         + """
-Pick targets from each file's `<file_extract>` and `<search_map>`:
-  - Symptom search → files whose time range overlaps the incident window
-  - Change-event search → deployment / audit / config logs, regardless of recency
-  - Hypothesis testing → the file most likely to contain the mechanism's signature
-
 """
         + _zone_searches(given)
         + """**YOUR PROGRESSION (discovery path — used when no runbook Cause was attributed):**
@@ -654,11 +699,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - Narrow scope (single pod, user, endpoint) → isolated first: pod-specific config,
      user-specific data, targeted code path.
 
-   **Use timeline as the search anchor.** Before generating hypotheses, search for
-   change events just before the timeline window using the Zone 2 change event search
-   strategy above. A change event near the timeline raises confidence in a change
-   hypothesis and narrows the search space.
-
+"""
+        + _timeline_anchor(given)
+        + """
    **Deployment/change evidence — two distinct steps:**
    - Step 1: Find the **change event** (deployment timestamp, config push applied,
      scaling event). Note it in your reasoning / journal but do NOT

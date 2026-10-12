@@ -529,10 +529,7 @@ You are an ADVISOR who helps users troubleshoot. You:
 - """
     + _ADVISOR_ROLE_CONSTRAINT
     + """
-- Tool calls actually available to you this turn (e.g. searching
-  already-submitted evidence) are outside the ban above — they complete within
-  your turn, so reference their results in past tense rather than promising them
-- Reference data ONLY from: <evidence_collected> structural indexes, conversation
+{tool_results_rule}- Reference data ONLY from: <evidence_collected> structural indexes, conversation
   history, knowledge base matches. Do not confabulate access to systems, services,
   or data beyond those sources.
 - Use language like: "I'd suggest...", "You might want to try...", "Could you check..."
@@ -546,6 +543,19 @@ You are an ADVISOR who helps users troubleshoot. You:
 """
 )
 
+
+def tool_results_note(given: GivenTools) -> str:
+    """``{tool_results_rule}`` in the advisor block: tool calls are not the
+    actions the ban covers. Rendered only on a turn that gives tools (#1939)."""
+    if not given:
+        return ""
+    return """\
+- Tool calls actually available to you this turn (e.g. searching
+  already-submitted evidence) are outside the ban above — they complete within
+  your turn, so reference their results in past tense rather than promising them
+"""
+
+
 # File-selection default — used in _EVIDENCE_GROUNDING_BLOCK, INVESTIGATION_BASE's
 # EVIDENCE FROM ATTACHMENTS preamble, and _RCA_DIAGNOSIS_BLOCK's SEARCH STRATEGY
 # file-selection rule. One canonical rule + trigger list across all three sites
@@ -557,6 +567,23 @@ when the current file lacks the time range, data type, or baseline you need,
 when an active hypothesis requires cross-file comparison, or when the user
 references earlier evidence.\
 """
+
+#: The same rule on a turn that gives no search tool (#1939): the files are
+#: read from their extracts, not searched.
+_FILE_SELECTION_DEFAULT_NO_SEARCH = """\
+**Default source: the file uploaded this turn.** Read older files only when the
+current file lacks the time range, data type, or baseline you need, when an
+active hypothesis requires cross-file comparison, or when the user references
+earlier evidence.\
+"""
+
+
+def file_selection_default(given: GivenTools) -> str:
+    """The file-selection rule, worded for whether a search tool is given."""
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return _FILE_SELECTION_DEFAULT
+    return _FILE_SELECTION_DEFAULT_NO_SEARCH
+
 
 # Ambiguity-First Rule — used in INQUIRY_TEMPLATE and TREATMENT_INSTRUCTIONS to
 # gate state-change emissions (user_confirmed_investigation, proposed_transition).
@@ -708,7 +735,9 @@ _GROUNDING_FORBIDDEN = """
 
 ABSOLUTELY FORBIDDEN:
 - NEVER claim to have accessed, "looked at", or "checked" data, systems, or
-  services you did not receive in evidence context or retrieve via a tool call.
+  services you did not receive in evidence context"""
+
+_GROUNDING_FORBIDDEN_REST = """
 - NEVER assert or infer specific system details (values, names, configurations)
   not explicitly present in the sources above. Speculative hedges ("probably",
   "likely", "typically") do not exempt you from this rule.
@@ -730,10 +759,7 @@ CONFIDENCE MARKERS (per-evidence signal quality):
   about this file's data type, so the extractor may have produced a summary
   that doesn't reflect the actual content. Treat its file_extract as
   tentative — do not assert specific findings from it ("the logs show X")
-  without first confirming via a tool call or asking the user.
-- When an answer depends on a low-confidence evidence item, either
-  (a) ask the user to confirm what the file actually is, or
-"""
+  without first confirming """
 
 _RECLASSIFICATION_WITH_TOOL = """\
 RECLASSIFICATION:
@@ -752,8 +778,9 @@ _RECLASSIFICATION_WITHOUT_TOOL = """\
 RECLASSIFICATION:
 - When the user corrects a file's type ("that's actually a log file",
   "treat server.log as config", "it's metrics, not a report"), acknowledge
-  the correction and say that the file cannot be reclassified on this turn,
-  so its <file_extract> still reflects the original classification. Do not
+  the correction and say that your reply does not change the file's
+  classification, so its <file_extract> still reflects the original one;
+  weigh what the user said about the file when you read that extract. Do not
   silently ignore it.
 """
 
@@ -780,6 +807,17 @@ def evidence_grounding_block(given: GivenTools) -> str:
     if has(given, "kb_qa"):
         block += ", and kb_qa results"
     block += _GROUNDING_FORBIDDEN
+    block += " or retrieve via a tool call." if given else "."
+    block += _GROUNDING_FORBIDDEN_REST
+    block += (
+        "via a tool call or asking the user.\n"
+        if readers
+        else "it from the data or asking the user.\n"
+    )
+    block += (
+        "- When an answer depends on a low-confidence evidence item, either\n"
+        "  (a) ask the user to confirm what the file actually is, or\n"
+    )
     block += (
         f"  (b) call {readers} to read the raw content directly,\n"
         if readers
@@ -852,7 +890,7 @@ def evidence_grounding_block(given: GivenTools) -> str:
             "2. If it is in <evidence_collected>, use it.\n"
             "3. Otherwise ask the user for it, with the file, window and command.\n"
         )
-    block += "\n" + _OBSERVATION_TIME_BLOCK + _FILE_SELECTION_DEFAULT + "\n\n"
+    block += "\n" + _OBSERVATION_TIME_BLOCK + file_selection_default(given) + "\n\n"
     if readers:
         block += (
             "Use the [search: ...] hints in <search_map> as starting strings.\n\n"

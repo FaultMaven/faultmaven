@@ -882,7 +882,9 @@ class TestTheCompactRuleStaysCompact:
         assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)
         for i in range(3):
             assert f'file_id="file_0e0e0e0e0e1{i}"' in prompt, "INV-1 survives"
-        assert prompt.count('searchable="true"') == 3
+        assert prompt.count("<uploaded_file file_id=") == 3
+        # The #662 retry sends no tools, so no stub claims to be searchable.
+        assert 'searchable="true"' not in prompt
         # The user's message is shrunk last: here the context absorbs the cut.
         assert _fill(unit, 500) in prompt
         # Shortened, not emptied to the one-character minimum.

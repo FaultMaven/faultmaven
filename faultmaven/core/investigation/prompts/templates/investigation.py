@@ -14,6 +14,13 @@ from .blocks import (
 from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, present
 
 
+def prior_files_note(given: GivenTools) -> str:
+    """``{prior_files}``: what stays available of earlier uploads."""
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return "Prior files remain in <evidence_collected> and stay searchable."
+    return "Prior files remain in <evidence_collected>."
+
+
 def next_data_point_fetch(given: GivenTools) -> str:
     """``{fetch_next_data_point}``: where the next data point comes from."""
     searchers = present(given, *EVIDENCE_SEARCH_TOOLS)
@@ -32,9 +39,9 @@ INVESTIGATION_BASE = (
     # token, no case data. {adaptive_instructions} changes with the stage and
     # the mode, so it is the LAST thing in the prefix. The DIAGNOSIS focus
     # emphasis moves with the milestones and the wall clock, so it opens the
-    # tail as {focus_emphasis}. {tools_this_turn} and {fetch_next_data_point}
-    # vary only with the turn's given tool set, which is constant per
-    # deployment and route and flips at most once a case (#1939). Everything
+    # tail as {focus_emphasis}. {tools_this_turn}, {prior_files} and
+    # {fetch_next_data_point} vary only with the turn's given tool set, which is
+    # constant per deployment and route (#1939). Everything
     # that changes per turn sits below the boundary, in its old relative
     # order, and the immutable
     # <security_constraints> and the anti-padding closer END the prompt, after
@@ -55,7 +62,7 @@ INVESTIGATION_BASE = (
     + """
 
 {evidence_grounding}EVIDENCE FROM ATTACHMENTS (CRITICAL — READ THIS):
-Prior files remain in <evidence_collected> and stay searchable. Data submitted
+{prior_files} Data submitted
 as attachments has ALREADY been preprocessed and appears in your
 <evidence_collected> context as structural indexes (crime scene extractions,
 statistical profiles, parsed configs). This data IS available to you — you CAN

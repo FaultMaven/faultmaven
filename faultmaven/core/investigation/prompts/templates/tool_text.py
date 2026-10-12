@@ -15,9 +15,12 @@ instruction. ``tools_line`` states the set itself at the top of every
 template: a belt to the per-sentence gates, not a substitute for them.
 
 Cache note (#613): the set sits in the cached prefix of ``INVESTIGATION_BASE``.
-It is constant per deployment and route, and flips at most once in a case
-(single-shot while there is nothing to search, the tool loop once there is),
-so the prefix stays byte-stable across the turns that share it.
+It is constant per deployment and route, so the prefix stays byte-stable across
+the turns that share one. Within a case it can change with the route: a
+single-shot turn (nothing to search) is given none, a knowledge_query turn on
+the same case runs the tool loop and is given the loop's set. That costs no
+cache read: a knowledge_query turn already has a prefix of its own (its stage
+instructions differ), and the single-shot path sends no ``cache_prompt``.
 """
 
 from __future__ import annotations

@@ -27,6 +27,7 @@ from .blocks import (
     AGENT_META_INSTRUCTIONS,
     evidence_grounding_block,
     knowledge_query_instructions,
+    tool_results_note,
 )
 from .diagnosis import _CHAIN_EMISSION_BLOCK, rca_diagnosis_block
 from .fallback import get_fallback_prompt_for_case
@@ -36,7 +37,11 @@ from .inquiry import (
     inquiry_knowledge_help,
     inquiry_reading_uploaded_files,
 )
-from .investigation import INVESTIGATION_BASE, next_data_point_fetch
+from .investigation import (
+    INVESTIGATION_BASE,
+    next_data_point_fetch,
+    prior_files_note,
+)
 from .terminal import (
     NO_TERMINAL_AFFORDANCES,
     TERMINAL_TEMPLATE,
@@ -430,6 +435,7 @@ def get_prompt_for_case(
         # What this turn's tools are, stated once at the top of every template
         # (#1939). Sorted, so one set renders one byte string (#613 prefix).
         ctx["tools_this_turn"] = tools_line(given_tools)
+        ctx["tool_results_rule"] = tool_results_note(given_tools)
 
         # #1328: a question about the assistant itself. Rendered as a block
         # in INQUIRY (which has no stage slot) and as the stage instructions
@@ -519,6 +525,7 @@ def get_prompt_for_case(
 
             return INVESTIGATION_BASE.format(
                 fetch_next_data_point=next_data_point_fetch(given_tools),
+                prior_files=prior_files_note(given_tools),
                 adaptive_instructions=adaptive_instr,
                 focus_emphasis=focus_emphasis,
                 evidence_grounding=evidence_grounding,

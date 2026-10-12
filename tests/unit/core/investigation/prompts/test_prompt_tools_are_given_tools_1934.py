@@ -569,6 +569,67 @@ def test_every_prompt_states_the_turns_tools(row: str) -> None:
         assert line.startswith("No investigation tools are available on this turn")
 
 
+#: Phrases that point at a tool without naming it. Text must not instruct a
+#: tool the turn lacks under a synonym either (#1939 review), so a tool-less
+#: turn renders none of them, and a turn missing one tool renders none of that
+#: tool's.
+TOOL_IMPLYING = (
+    "search for",
+    "search strategy",
+    "zone 2 change event search",
+    "tools for",
+    "tool call",
+    'searchable="true"',
+    "stay searchable",
+)
+MISSING_TOOL_IMPLYING = {
+    "no_kb": ("search kb", "search the knowledge base", "knowledge base search"),
+    "no_vector_stores": ("semantic query", "semantic search", "vectoriz"),
+    "no_deep_analysis": ("deep analysis", "llm-interpreted"),
+}
+
+#: ``<evidence_collected>`` is case data with its own attribute vocabulary: a
+#: file-backed row is tagged ``searchable="true"`` whatever the turn's tools,
+#: and its bodies quote file content. The probes read the prompt's own text.
+_EVIDENCE_BLOCK = re.compile(
+    r'<evidence_collected fence="[0-9a-f]+">.*?</evidence_collected fence="[0-9a-f]+">',
+    re.S,
+)
+
+
+def synonym_hits(text: str, phrases) -> list[str]:
+    own = _EVIDENCE_BLOCK.sub("", text).lower()
+    return [p for p in phrases if p in own]
+
+
+def test_a_toolless_turn_implies_no_tool_by_any_name() -> None:
+    hits = {
+        column: synonym_hits(text, TOOL_IMPLYING)
+        for column, text in renders(ROWS["none"]).items()
+        if synonym_hits(text, TOOL_IMPLYING)
+    }
+    assert not hits, hits
+
+
+@pytest.mark.parametrize("row", sorted(MISSING_TOOL_IMPLYING))
+def test_a_missing_tool_is_not_implied_by_a_synonym(row: str) -> None:
+    phrases = MISSING_TOOL_IMPLYING[row]
+    hits = {
+        column: synonym_hits(text, phrases)
+        for column, text in renders(ROWS[row]).items()
+        if synonym_hits(text, phrases)
+    }
+    assert not hits, hits
+
+
+def test_the_synonym_probes_bite() -> None:
+    """Each phrase is found where it is used: in the default six's renders,
+    outside the evidence block, so the tool-less assertion is not vacuous."""
+    six = "\n".join(renders(ROWS["six"]).values())
+    missing = [p for p in TOOL_IMPLYING if not synonym_hits(six, [p])]
+    assert not missing, missing
+
+
 def test_the_degraded_evidence_renders_were_reached() -> None:
     """Non-vacuity for the stub cells: the over-budget column really renders
     the omitted-to-fit stub, the omission marker and a truncation marker."""

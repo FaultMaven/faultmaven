@@ -45,8 +45,9 @@ def _kb_resolution_trigger(given: GivenTools) -> str:
         else "in <knowledge_context>, or by a knowledge-base search on an earlier turn"
     )
     return (
-        f"1. A runbook delivered to this case ({source}) carried at least one\n"
-        "   `### Cause <X>` subsection that you proposed as the fix.\n"
+        f"1. A runbook delivered to this case ({source})\n"
+        "   carried at least one `### Cause <X>` subsection that you proposed as the\n"
+        "   fix.\n"
     )
 
 

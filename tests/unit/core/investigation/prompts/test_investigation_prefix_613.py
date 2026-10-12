@@ -96,12 +96,19 @@ PREFIX_ALLOWLIST = {
     # Constant per processing mode: the reasoning block, or "" when waived.
     "diagnostic_reasoning",
     # The turn's given tool set, stated (#1939). It varies with the deployment
-    # and the route only: constant per case except one flip, single-shot (no
-    # tools) while there is nothing to search, the tool loop once there is.
+    # and the route only. A case can alternate: single-shot turns (nothing to
+    # search, no tools) between knowledge_query turns (tool loop). Neither side
+    # pays for it: a knowledge_query turn already has its own prefix (its
+    # stage instructions), and the single-shot path sends no cache_prompt.
     "tools_this_turn",
-    # Where the next data point comes from: a search tool when one is given,
-    # else the user. Varies with the given set only, as above.
+    # Where the next data point comes from, and whether prior files are
+    # searchable: a search tool when one is given, else the user and the
+    # extracts. Vary with the given set only, as above.
     "fetch_next_data_point",
+    "prior_files",
+    # The advisor block's note that tool calls are not banned actions: present
+    # when the turn gives tools. Varies with the given set only, as above.
+    "tool_results_rule",
     # The stage instructions. Constant within a stage and processing mode, so
     # they change a few times a case at most — which makes them the prefix's
     # LAST part. The DIAGNOSIS focus emphasis, which moves with the milestones
@@ -501,8 +508,8 @@ class TestPrefixIsByteStableAcrossTurns:
     @pytest.mark.parametrize("change", ["stage", "processing_mode", "given_tools"])
     def test_prefix_changes_with_the_stage_the_mode_or_the_given_tools(self, change):
         """Non-vacuity: the three inputs the prefix MAY vary with do move it.
-        The given tool set (#1939) flips at most once a case: no tools on the
-        single-shot route, the tool loop's set once there is material."""
+        The given tool set (#1939) changes with the route: no tools on the
+        single-shot route, the tool loop's set on a tool-loop turn."""
         a = _prompt(False, TURN_A_TIME)
         if change == "stage":
             b = _prompt(True, TURN_B_TIME, solution_accepted=True)

@@ -200,7 +200,8 @@ def _fallback_stub_block(
                     attrs=(
                         f' file_id="{uf.file_id}"'
                         f"{_label_attr(uf, label_chars)}"
-                        ' searchable="true"'
+                        # Searchable only on a turn that can search it (#1939).
+                        + (' searchable="true"' if has(given, "search_file") else "")
                     ),
                     inline=True,
                 )
