@@ -2043,6 +2043,12 @@ asked to accept, and it belongs to a person.
 # `AuthSessionStatus` keep their shapes; only their descriptions stop naming
 # the retired concept.
 #
+# Behaviour a client may notice without a schema change: the four RBAC
+# permissions seeded for the subsystem (`sessions:read`, `sessions:create`,
+# `sessions:execute`, `sessions:manage`) are retired with it, so they no longer
+# appear in `UserDetailResponse.permissions` (`GET /api/v1/admin/users/{user_id}`).
+# Nothing ever checked them, and no first-party client reads that list.
+#
 # The AUTH session surface is untouched: `/api/v1/sessions…` and
 # `POST /api/v1/cases/sessions/{session_id}/resume/{case_id}` serve the session
 # a client signs in with, and neither changes.

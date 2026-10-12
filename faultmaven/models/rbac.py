@@ -49,7 +49,6 @@ class Permission(str, Enum):
 
     Resource Categories:
     - cases: Case management operations
-    - sessions: Investigation session operations
     - evidence: Evidence artifact operations
     - org: Organization management operations
     """
@@ -60,12 +59,6 @@ class Permission(str, Enum):
     CASES_DELETE = "cases:delete"
     CASES_ASSIGN = "cases:assign"
     CASES_CLOSE = "cases:close"
-
-    # Sessions
-    SESSIONS_READ = "sessions:read"
-    SESSIONS_CREATE = "sessions:create"
-    SESSIONS_EXECUTE = "sessions:execute"
-    SESSIONS_MANAGE = "sessions:manage"  # pause, resume, complete
 
     # Evidence
     EVIDENCE_READ = "evidence:read"
@@ -88,10 +81,6 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
             Permission.CASES_DELETE,
             Permission.CASES_ASSIGN,
             Permission.CASES_CLOSE,
-            Permission.SESSIONS_READ,
-            Permission.SESSIONS_CREATE,
-            Permission.SESSIONS_EXECUTE,
-            Permission.SESSIONS_MANAGE,
             Permission.EVIDENCE_READ,
             Permission.EVIDENCE_UPLOAD,
             Permission.EVIDENCE_DELETE,
@@ -105,10 +94,6 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
             Permission.CASES_READ,
             Permission.CASES_WRITE,
             Permission.CASES_ASSIGN,
-            Permission.SESSIONS_READ,
-            Permission.SESSIONS_CREATE,
-            Permission.SESSIONS_EXECUTE,
-            Permission.SESSIONS_MANAGE,
             Permission.EVIDENCE_READ,
             Permission.EVIDENCE_UPLOAD,
         ]
@@ -117,7 +102,6 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
         [
             # Read-only permissions
             Permission.CASES_READ,
-            Permission.SESSIONS_READ,
             Permission.EVIDENCE_READ,
         ]
     ),

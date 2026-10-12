@@ -11,7 +11,8 @@ repository, models and ``ServiceFactory`` went with it.
 
 This pins that no code path in ``faultmaven/`` can bring it back by halves: no
 name, attribute, parameter, import or string that names one of the retired
-symbols (``RETIRED``). The match is on those names, not on the word "session":
+symbols (``RETIRED``), the four ``sessions:*`` RBAC permissions included. The
+match is on those names, not on the word "session":
 the AUTH session — ``/api/v1/sessions``, the resume route
 ``/api/v1/cases/sessions/{session_id}/resume/{case_id}``,
 ``AuthSessionCreateRequest``, ``AuthSessionStatus`` — is a different thing and
@@ -35,14 +36,16 @@ pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "faultmaven"
 
-#: The retired subsystem's names, as they would reappear in code, SQL or a
-#: route path. ``\b`` keeps ``AuthSessionCreateRequest`` (the auth mint's body)
+#: The retired subsystem's names, as they would reappear in code, SQL, a route
+#: path or an RBAC permission. ``\b`` keeps ``AuthSessionCreateRequest`` (the auth mint's body)
 #: out of the request-model arm.
 RETIRED = re.compile(
     r"investigation_?session|session_goal|findings_summary"
     r"|total_agent_executions|total_token_usage|token_budget_limit"
     r"|service_?factory|\bSession(Create|Update)Request\b|SessionListResponse"
-    r"|api\.routes\.sessions|cases/\{case_id\}/sessions",
+    r"|api\.routes\.sessions|cases/\{case_id\}/sessions"
+    # The RBAC permissions seeded for it (``Permission.SESSIONS_*``).
+    r"|\bsessions[:_](read|create|execute|manage)\b",
     re.IGNORECASE,
 )
 
@@ -105,9 +108,11 @@ def test_the_scan_sees_a_planted_symbol():
         "    return 'investigation_sessions'\n"
         "@router.get('/api/v1/cases/{case_id}/sessions/active')\n"
         "def g(body: SessionCreateRequest): ...\n"
+        "SESSIONS_EXECUTE = 'sessions:execute'\n"
+        "grant(Permission.SESSIONS_MANAGE)\n"
     )
     texts = [text for _, text in _retired_hits(tree)]
-    assert len(texts) >= 6, texts
+    assert len(texts) >= 9, texts
 
 
 def test_the_auth_session_surface_is_not_flagged():
@@ -119,5 +124,7 @@ def test_the_auth_session_surface_is_not_flagged():
         "def create(request: AuthSessionCreateRequest, session_service): ...\n"
         "status = AuthSessionStatus.ACTIVE\n"
         "key = f'session:{session_id}:current_case_id'\n"
+        'metric = \'active_sessions:{"service": "faultmaven"}\'\n'
+        "perm = Permission.CASES_READ\n"
     )
     assert _retired_hits(tree) == []

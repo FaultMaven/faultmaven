@@ -16,6 +16,22 @@ client, engine path, report, job or operator surface ever read or wrote a row;
 the only rows were written by tests and probes. The routes that served it
 (``/api/v1/cases/{case_id}/sessions…``) are removed in the same change.
 
+The ``sessions:*`` permissions
+------------------------------
+
+The baseline also seeded four permissions for the subsystem — ``sessions:read``,
+``sessions:create``, ``sessions:execute`` (named for the long-gone
+``/sessions/{sid}/execute``) and ``sessions:manage`` (pause, resume, complete) —
+and granted them to the system roles: all four to ``admin`` and ``member``,
+``sessions:read`` to ``viewer``. Nothing ever checked one; the retired routes
+gated on the case instead. This revision deletes their grants from
+``role_permissions`` (every grant, a non-system role's included), then the four
+``permissions`` rows, matched on ``resource = 'sessions'``. The grants go first
+and explicitly: SQLite runs the ``ON DELETE CASCADE`` on ``role_permissions``
+only when ``PRAGMA foreign_keys`` is on. Neither table is enrolled in row-level
+security (``_TENANT_TABLES`` in the baseline does not list them, and no later
+revision enrols them), so no ``row_security`` setting is needed on PostgreSQL.
+
 Dialects
 --------
 
@@ -34,7 +50,10 @@ it at revision ``b5334d07ae6c``: columns, CHECKs, foreign keys, primary key, the
 six indexes, and on PostgreSQL row-level security with the plain tenant policy.
 Copied from the baseline, not imported, so a later edit there cannot move it. It
 comes back EMPTY: the rows this revision dropped are not recoverable, which is
-the ruling (nothing read them).
+the ruling (nothing read them). It then re-seeds exactly the baseline's four
+``sessions:*`` permission rows and its nine grants of them to the system roles,
+with the baseline's ids, copied rather than imported; a grant to a non-system
+role that the upgrade deleted is not restored.
 
 Revision ID: f95a5b3a58eb
 Revises: b5334d07ae6c
@@ -62,9 +81,33 @@ _ENTERPRISE_MATCHES_SESSION = (
 )
 
 
+#: The baseline's ``sessions:*`` permission rows: value -> permission_id.
+_SESSION_PERMISSIONS = {
+    "sessions:read": "f7c7be05-bf80-5504-832d-210827a0e450",
+    "sessions:create": "cd3ba768-fd85-5c10-83da-830194251e29",
+    "sessions:execute": "7123672b-6cb6-529d-87b1-6c74101c44a3",
+    "sessions:manage": "7a9a6bde-3a6a-5086-b5c1-7703d524ce59",
+}
+#: The baseline's grants of them: system role_id -> permission values.
+_SESSION_GRANTS = {
+    # admin
+    "50551907-a02c-5bf7-9aa4-4a98f3c4eb64": list(_SESSION_PERMISSIONS),
+    # member
+    "5cb4c3f5-227c-5d73-95a5-d9d2e619ca72": list(_SESSION_PERMISSIONS),
+    # viewer
+    "834b74a5-33a7-5248-9fd0-b040c12aef7b": ["sessions:read"],
+}
+
+
 def upgrade() -> None:
-    """Drop the table; its indexes and (on PostgreSQL) its policy go with it."""
+    """Drop the table (its indexes and, on PostgreSQL, its policy go with it),
+    then retire the ``sessions:*`` grants and permissions."""
     op.drop_table(TABLE)
+    op.execute(
+        "DELETE FROM role_permissions WHERE permission_id IN "
+        "(SELECT permission_id FROM permissions WHERE resource = 'sessions')"
+    )
+    op.execute("DELETE FROM permissions WHERE resource = 'sessions'")
 
 
 def downgrade() -> None:
@@ -159,3 +202,36 @@ def downgrade() -> None:
             f'CREATE POLICY "{TABLE}_tenant_isolation" ON "{TABLE}" '
             f"USING ({_ENTERPRISE_MATCHES_SESSION})"
         )
+
+    permissions = sa.table(
+        "permissions",
+        sa.column("permission_id", sa.String),
+        sa.column("resource", sa.String),
+        sa.column("action", sa.String),
+        sa.column("description", sa.Text),
+    )
+    role_permissions = sa.table(
+        "role_permissions",
+        sa.column("role_id", sa.String),
+        sa.column("permission_id", sa.String),
+    )
+    op.bulk_insert(
+        permissions,
+        [
+            {
+                "permission_id": permission_id,
+                "resource": value.split(":", 1)[0],
+                "action": value.split(":", 1)[1],
+                "description": None,
+            }
+            for value, permission_id in _SESSION_PERMISSIONS.items()
+        ],
+    )
+    op.bulk_insert(
+        role_permissions,
+        [
+            {"role_id": role_id, "permission_id": _SESSION_PERMISSIONS[value]}
+            for role_id, values in _SESSION_GRANTS.items()
+            for value in values
+        ],
+    )

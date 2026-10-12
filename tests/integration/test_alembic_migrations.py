@@ -2110,6 +2110,88 @@ class TestDropInvestigationSessionsRevision:
         assert get_current_revision(database_url) == NO_EMAIL_DERIVED_NAMES_REVISION
         assert self._schema() == parent
 
+    @staticmethod
+    def _session_rbac() -> tuple[list, list]:
+        """The ``sessions:*`` permission rows and every grant of one."""
+        permissions = query_rows(
+            TEST_DB,
+            "SELECT permission_id, resource, action, description FROM permissions "
+            "WHERE resource = 'sessions' ORDER BY permission_id",
+        )
+        grants = query_rows(
+            TEST_DB,
+            "SELECT rp.role_id, rp.permission_id FROM role_permissions rp "
+            "JOIN permissions p ON p.permission_id = rp.permission_id "
+            "WHERE p.resource = 'sessions' ORDER BY rp.role_id, rp.permission_id",
+        )
+        return permissions, grants
+
+    def test_the_session_permissions_go_and_come_back_exactly(
+        self, clean_database, database_url
+    ):
+        """The four ``sessions:*`` permissions and their nine grants are deleted
+        by the upgrade, nothing else in the RBAC seed moves, and the downgrade
+        re-seeds exactly the parent's rows."""
+        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        parent_permissions, parent_grants = self._session_rbac()
+        assert {
+            permission_id: (resource, action, description)
+            for permission_id, resource, action, description in parent_permissions
+        } == {
+            "f7c7be05-bf80-5504-832d-210827a0e450": ("sessions", "read", None),
+            "cd3ba768-fd85-5c10-83da-830194251e29": ("sessions", "create", None),
+            "7123672b-6cb6-529d-87b1-6c74101c44a3": ("sessions", "execute", None),
+            "7a9a6bde-3a6a-5086-b5c1-7703d524ce59": ("sessions", "manage", None),
+        }, "positive control: 016 carries the baseline's four rows"
+        assert (
+            len(parent_grants) == 9
+        ), "positive control: 4 admin + 4 member + 1 viewer"
+        others = query_rows(
+            TEST_DB,
+            "SELECT permission_id FROM permissions WHERE resource <> 'sessions' "
+            "ORDER BY permission_id",
+        )
+        other_grants = query_rows(
+            TEST_DB,
+            "SELECT role_id, permission_id FROM role_permissions "
+            "WHERE permission_id NOT IN (SELECT permission_id FROM permissions "
+            "WHERE resource = 'sessions') ORDER BY role_id, permission_id",
+        )
+
+        result = run_alembic(
+            f"upgrade {DROP_INVESTIGATION_SESSIONS_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._session_rbac() == ([], [])
+        # No orphan grant survives on SQLite, where the cascade may be off.
+        assert query_rows(
+            TEST_DB,
+            "SELECT COUNT(*) FROM role_permissions WHERE permission_id NOT IN "
+            "(SELECT permission_id FROM permissions)",
+        ) == [(0,)]
+        assert (
+            query_rows(
+                TEST_DB,
+                "SELECT permission_id FROM permissions ORDER BY permission_id",
+            )
+            == others
+        )
+        assert (
+            query_rows(
+                TEST_DB,
+                "SELECT role_id, permission_id FROM role_permissions "
+                "ORDER BY role_id, permission_id",
+            )
+            == other_grants
+        )
+
+        result = run_alembic(
+            f"downgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._session_rbac() == (parent_permissions, parent_grants)
+
     def test_no_foreign_key_targets_the_dropped_table(
         self, clean_database, database_url
     ):
@@ -2140,6 +2222,12 @@ class TestDropInvestigationSessionsRevision:
         assert up.returncode == 0, up.stderr
         assert "DROP TABLE investigation_sessions;" in up.stdout
         assert "POLICY" not in up.stdout
+        # Grants first, then the permissions; no row_security toggle, because
+        # neither table is enrolled in RLS.
+        grants = up.stdout.index("DELETE FROM role_permissions")
+        perms = up.stdout.index("DELETE FROM permissions WHERE resource = 'sessions'")
+        assert grants < perms
+        assert "row_security" not in up.stdout
 
         down = run_alembic(
             f"downgrade {DROP_INVESTIGATION_SESSIONS_REVISION}:"
@@ -2235,8 +2323,10 @@ class TestRbacSeed:
         # Re-apply — counts return to exactly the seed, no duplication.
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
-        assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 14
-        assert len(query_rows(TEST_DB, "SELECT role_id FROM role_permissions")) == 26
+        # The baseline seeds 14 permissions and 26 grants; 017 retires the four
+        # ``sessions:*`` permissions and their 9 grants (#1935).
+        assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 10
+        assert len(query_rows(TEST_DB, "SELECT role_id FROM role_permissions")) == 17
 
 
 class TestStandaloneTenancySeed:

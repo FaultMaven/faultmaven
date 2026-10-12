@@ -265,7 +265,7 @@ def require_permission(permission: str) -> Callable:
             ...
 
     Args:
-        permission: Permission string (e.g., "cases:write", "sessions:execute")
+        permission: Permission string (e.g., "cases:write", "evidence:upload")
 
     Returns:
         Dependency function that validates permission
