@@ -264,10 +264,10 @@ Three properties worth knowing before you read a result:
 * **The scale never drops below 1.0.** A machine at or above the reference
   speed is held to exactly the number written in the test, so the scale can
   never tighten a budget — on CI or on your laptop. (One unrelated part of
-  #908 is a hair stricter: the nine budgets in
-  `test_investigation_session_service_operations` moved from `p95 <= target`
-  to the shared helper's `observed < budget`, so a p95 landing exactly on
-  the target now fails. Float timings make that unreachable in practice.)
+  #908 was a hair stricter: nine p95 budgets moved from `p95 <= target` to
+  the shared helper's `observed < budget`, so a p95 landing exactly on the
+  target failed. Float timings made that unreachable in practice, and their
+  module was retired in #1935.)
 * **A uniform slowdown cancels; a single-path regression does not.** That
   is the whole point, and it is asserted both ways in
   `tests/unit/ci/test_benchmark_calibration.py`. How big a single-path

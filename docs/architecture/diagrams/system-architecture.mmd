@@ -28,7 +28,7 @@ flowchart TB
         direction TB
         FastAPI["FastAPI Application"]
         MW["<b>Middleware pipeline (11)</b><br/>CORS → TrailingSlash → Idempotency<br/>→ RequestID/RateLimit → Protection<br/>→ GZip → Logging → Performance<br/>→ SystemOpt → OpikTrace → ContractProbe"]
-        Routers["<b>API Routers (14)</b><br/>auth · oauth · session · organizations · teams<br/>case · evidence · agent · knowledge · conversion<br/>report · admin · admin_config · investigation_sessions"]
+        Routers["<b>API Routers (13)</b><br/>auth · oauth · session · organizations · teams<br/>case · evidence · agent · knowledge · conversion<br/>report · admin · admin_config"]
         FastAPI --> MW --> Routers
     end
 

@@ -1677,22 +1677,6 @@ The two unhappy notices say plainly that nothing was saved — "completed" would
 
 The chat-side dispatcher — the single live case-to-runbook trigger — uses the shared `CaseConversionRequest.from_case` factory for case-data extraction, so the case-to-runbook input shape is single-sourced. See `document-to-runbook-conversion.md` for the full conversion pipeline.
 
-#### 1.7.4 Session Cleanup on Terminal Transition
-
-When a case transitions to a terminal state, all active sessions are gracefully completed:
-
-```python
-# In terminal_transitions.py, after case state update:
-active_sessions = await session_repo.get_active_sessions(case.case_id)
-for session in active_sessions:
-    session.complete(
-        findings_summary=f"Case {case.state.value}: {closure_reason}"
-    )
-    await session_repo.update(session)
-```
-
-Uses the existing `InvestigationSession.complete()` method. No new session statuses needed.
-
 ---
 
 ## 2. Mitigation as an Insert
