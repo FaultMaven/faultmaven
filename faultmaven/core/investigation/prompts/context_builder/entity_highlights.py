@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from faultmaven.core.investigation.prompts.fence import PromptFence
+from faultmaven.core.investigation.prompts.templates.tool_text import GivenTools, has
 from faultmaven.modules.case.contracts import EntityType
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,13 @@ async def fetch_entity_highlights(
 #: fence exists to contain.
 _ENTITY_HIGHLIGHTS_PREAMBLE = (
     "Top entities extracted from this case's evidence "
-    "(aggregated mention_count across artifacts). Use find_entity "
+    "(aggregated mention_count across artifacts)."
+)
+
+#: The preamble's pointer to the entity tools, rendered only on a turn that
+#: gives both (#1939).
+_ENTITY_TOOLS_POINTER = (
+    " Use find_entity "
     "to locate a value's origin evidence, or list_top_entities for "
     "types not shown here."
 )
@@ -131,6 +138,7 @@ _ENTITY_HIGHLIGHTS_PREAMBLE = (
 def _render_entity_highlights(
     groups: Optional[Sequence[EntityHighlightGroup]],
     fence: PromptFence,
+    given: GivenTools,
 ) -> str:
     """Render ``<entity_highlights>`` on the prompt's shared fence, or ``""``.
 
@@ -151,8 +159,14 @@ def _render_entity_highlights(
             for row in group.rows
         ]
         sections.append(f"{group.entity_type}:\n" + "\n".join(body_lines))
+    pointer = (
+        _ENTITY_TOOLS_POINTER
+        if has(given, "find_entity") and has(given, "list_top_entities")
+        else ""
+    )
     return (
         _ENTITY_HIGHLIGHTS_PREAMBLE
+        + pointer
         + "\n"
         + fence.element("entity_highlights", "\n\n".join(sections))
     )

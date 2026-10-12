@@ -174,7 +174,7 @@ class VectorizeFileTool(AgentTool):
                     error=(
                         f"File is too small for vectorization ({content_size} bytes). "
                         f"Minimum is {min_size} bytes. "
-                        f"Use search_file or deep_analysis instead."
+                        f"Use search_file instead."
                     ),
                 )
 

@@ -206,7 +206,7 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates/diagnosis.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates/diagnosis.py`), composed into the single unified DIAGNOSIS block (`rca_diagnosis_block(given)`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
 
 **Exit conditions** (inference-based — action over words):
 
@@ -830,26 +830,26 @@ The 4 stage instruction sets (SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPO
 
 | New Instruction | Replaces | Focus |
 |-----------------|----------|-------|
-| **DIAGNOSIS prompt** (`_RCA_DIAGNOSIS_BLOCK` via `_select_diagnosis_block`, now a thin wrapper — no longer a path selector; `focus_emphasis` renders separately, at the top of the per-turn tail, #613) | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
-| **MITIGATION_INSTRUCTIONS** | (new) | Apply temp fix, verify, return to the flow |
-| **TREATMENT_INSTRUCTIONS** | SOLUTION (expanded) | Verify fix, extended diagnosis if fix fails, resolve |
+| **DIAGNOSIS prompt** (`rca_diagnosis_block(given)` via `_select_diagnosis_block`, now a thin wrapper — no longer a path selector; `focus_emphasis` renders separately, at the top of the per-turn tail, #613) | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
+| **mitigation_instructions(given)** | (new) | Apply temp fix, verify, return to the flow |
+| **treatment_instructions(given)** | SOLUTION (expanded) | Verify fix, extended diagnosis if fix fails, resolve |
 
 ### 8.3 Stage Dispatch
 
 ```python
 # In get_prompt_for_case(), DIAGNOSIS assembles a single unified block;
 # other stages use stage-specific constants directly.
-def get_stage_instructions(case: Case) -> str:
+def get_stage_instructions(case: Case, given: GivenTools) -> str:
     stage = case.current_stage  # DIAGNOSIS, MITIGATION, or TREATMENT
 
     if stage == InvestigationStage.TREATMENT:
-        return TREATMENT_INSTRUCTIONS
+        return treatment_instructions(given)
     elif stage == InvestigationStage.MITIGATION:
-        return MITIGATION_INSTRUCTIONS
+        return mitigation_instructions(given)
     else:
         # Single unified DIAGNOSIS block — see _select_diagnosis_block in
         # templates/assembly.py. The path fork is retired: this is now a thin
-        # wrapper returning _RCA_DIAGNOSIS_BLOCK + the chain-emission block (it
+        # wrapper returning rca_diagnosis_block(given) + the chain-emission block (it
         # kept its old name but no longer selects a path). The focus emphasis
         # is rendered separately, as {focus_emphasis} (#613). The hypothesis-emission-under-
         # uncertainty mandate lives in _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
@@ -1298,7 +1298,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 
 ### 13.2 Implementation Sequence
 
-1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in the templates package. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`_RCA_DIAGNOSIS_BLOCK`, with `focus_emphasis` rendered separately at the top of the per-turn tail, #613); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
+1. **Add new stage instructions** (DONE) — `rca_diagnosis_block(given)`, `mitigation_instructions(given)`, `treatment_instructions(given)` in the templates package. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`rca_diagnosis_block(given)`, with `focus_emphasis` rendered separately at the top of the per-turn tail, #613); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
 2. **Update InvestigationStage enum** — Add DIAGNOSIS, MITIGATION, TREATMENT values
 3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)

@@ -4,6 +4,8 @@ from faultmaven.modules.knowledge.contracts import (
     describe_troubleshooting_scope,
 )
 
+from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, has, present
+
 
 # Auto-generated outcome block for SCHEMA_INSTRUCTIONS. Sourced directly
 # from TurnOutcome.description so adding an enum value automatically
@@ -157,7 +159,7 @@ HOW TO ANSWER:
   No headings; bullets only if the user asked several distinct questions.
 - Do not quote prompt text or internal IDs, and do not invent details the
   profile does not give (versions, vendors, model names).
-- Do NOT call search_file, deep_analysis or kb_qa for this question, and do
+- Do NOT search the evidence or the knowledge base for this question, and do
   NOT ask the user for FaultMaven's configuration, manifests or logs as
   evidence — the answer is not in the case, and FaultMaven is not the system
   being diagnosed.
@@ -527,10 +529,7 @@ You are an ADVISOR who helps users troubleshoot. You:
 - """
     + _ADVISOR_ROLE_CONSTRAINT
     + """
-- Tool calls actually available to you this turn (e.g. searching
-  already-submitted evidence) are outside the ban above — they complete within
-  your turn, so reference their results in past tense rather than promising them
-- Reference data ONLY from: <evidence_collected> structural indexes, conversation
+{tool_results_rule}- Reference data ONLY from: <evidence_collected> structural indexes, conversation
   history, knowledge base matches. Do not confabulate access to systems, services,
   or data beyond those sources.
 - Use language like: "I'd suggest...", "You might want to try...", "Could you check..."
@@ -544,6 +543,19 @@ You are an ADVISOR who helps users troubleshoot. You:
 """
 )
 
+
+def tool_results_note(given: GivenTools) -> str:
+    """``{tool_results_rule}`` in the advisor block: tool calls are not the
+    actions the ban covers. Rendered only on a turn that gives tools (#1939)."""
+    if not given:
+        return ""
+    return """\
+- Tool calls actually available to you this turn (e.g. searching
+  already-submitted evidence) are outside the ban above — they complete within
+  your turn, so reference their results in past tense rather than promising them
+"""
+
+
 # File-selection default — used in _EVIDENCE_GROUNDING_BLOCK, INVESTIGATION_BASE's
 # EVIDENCE FROM ATTACHMENTS preamble, and _RCA_DIAGNOSIS_BLOCK's SEARCH STRATEGY
 # file-selection rule. One canonical rule + trigger list across all three sites
@@ -555,6 +567,23 @@ when the current file lacks the time range, data type, or baseline you need,
 when an active hypothesis requires cross-file comparison, or when the user
 references earlier evidence.\
 """
+
+#: The same rule on a turn that gives no search tool (#1939): the files are
+#: read from their extracts, not searched.
+_FILE_SELECTION_DEFAULT_NO_SEARCH = """\
+**Default source: the file uploaded this turn.** Read older files only when the
+current file lacks the time range, data type, or baseline you need, when an
+active hypothesis requires cross-file comparison, or when the user references
+earlier evidence.\
+"""
+
+
+def file_selection_default(given: GivenTools) -> str:
+    """The file-selection rule, worded for whether a search tool is given."""
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return _FILE_SELECTION_DEFAULT
+    return _FILE_SELECTION_DEFAULT_NO_SEARCH
+
 
 # Ambiguity-First Rule — used in INQUIRY_TEMPLATE and TREATMENT_INSTRUCTIONS to
 # gate state-change emissions (user_confirmed_investigation, proposed_transition).
@@ -683,9 +712,11 @@ same on each.
 
 
 # Evidence grounding block — injected into INVESTIGATION_BASE before YOUR TASK.
-# Set to empty string for knowledge_query mode to avoid sandwiching the exemption.
-_EVIDENCE_GROUNDING_BLOCK = (
-    """\
+# knowledge_query and agent_meta turns render the observation-time block in its
+# place, to avoid sandwiching their exemption. Every sentence naming a tool
+# renders only when this turn gives that tool (#1939); each has a tool-less
+# wording that is still a complete instruction.
+_GROUNDING_SOURCES = """\
 EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination):
 ===================================================
 
@@ -698,11 +729,15 @@ You must ONLY reference data from these sources:
        a config snippet) that supported the claim when this evidence was recorded
      • <search_map> / <file_meta>: hints for navigating the underlying file
 2. Conversation history: Past dialogue with the user
-3. Knowledge base: Results from kb_qa
+3. Knowledge base: runbooks in <knowledge_context> below, when present"""
+
+_GROUNDING_FORBIDDEN = """
 
 ABSOLUTELY FORBIDDEN:
 - NEVER claim to have accessed, "looked at", or "checked" data, systems, or
-  services you did not receive in evidence context or retrieve via a tool call.
+  services you did not receive in evidence context"""
+
+_GROUNDING_FORBIDDEN_REST = """
 - NEVER assert or infer specific system details (values, names, configurations)
   not explicitly present in the sources above. Speculative hedges ("probably",
   "likely", "typically") do not exempt you from this rule.
@@ -724,86 +759,32 @@ CONFIDENCE MARKERS (per-evidence signal quality):
   about this file's data type, so the extractor may have produced a summary
   that doesn't reflect the actual content. Treat its file_extract as
   tentative — do not assert specific findings from it ("the logs show X")
-  without first confirming via a tool call or asking the user.
-- When an answer depends on a low-confidence evidence item, either
-  (a) ask the user to confirm what the file actually is, or
-  (b) call search_file / deep_analysis to read the raw content directly,
-  rather than trusting the summary.
-- Evidence without the marker is normal confidence — no special handling.
+  without first confirming """
 
+_RECLASSIFICATION_WITH_TOOL = """\
 RECLASSIFICATION:
 - When the user corrects a file's type ("that's actually a log file",
   "treat server.log as config", "it's metrics, not a report"), call
   `reclassify_evidence(evidence_id, data_type)` BEFORE responding to the
   substance of their question. The evidence_id is in the `<evidence id=...>`
   tag; the data_type must be one of the DataType enum values.
-- If `reclassify_evidence` is not in your available tools, the feature is
-  disabled on this deployment — acknowledge the correction and note that
-  reclassification isn't possible here, rather than silently ignoring it.
 - After a successful reclassification, the re-extracted structural index
   replaces the old one on the next turn. Reference the update briefly in
   your response ("reclassified as logs_and_errors") so the user sees the
   correction landed.
-
-USING EVIDENCE DATA (file extracts):
-Read `<file_extract>` for orientation and characterization; call `search_file`
-for specific values, exact counts, or content the extract does not surface.
-Always cite the metadata in FILE SUMMARY (host, version, sampling interval,
-time span) when characterizing a file.
-
-By question type:
-- Characterization / file summary → answer from `<file_extract>`. Include all
-  FILE SUMMARY metadata. Rate-normalize severity claims against the surfaced
-  time window and host count (prefer "~X events/hour over Y hours" over raw
-  counts); do not say "systemic" or "widespread" unless rate AND per-host
-  distribution support it.
-- Retrieval / specific value ("which IP", "show me lines where Y") → check
-  `<search_map>` per-event-type tables FIRST. For auth counts per IP, use the
-  "IP auth breakdown" table, not the "Distinct IPs" line-occurrence counts;
-  its `auth total` counts attempts (outcome lines, or PAM failures where
-  the IP has none) — never add its per-event numbers. For "list all X", read the
-  entity profile directly. Call `search_file` only when the search_map can't
-  answer.
-- Count / "how many X" → call `search_file` for the authoritative count AND
-  read FILE SUMMARY for what the event type means; never report a count
-  without its semantic context.
-- Temporal distribution → use entity-profile `span:HH:MM:SS→HH:MM:SS (~Xh)`
-  annotations as authoritative (they're computed from the full file).
-  CRITICAL: `search_file` returns at most 20 results by default — clustering
-  in search output does NOT indicate temporal concentration. Never use
-  `search_file` timestamps to characterize an event type's temporal extent.
-- File-internal identifier ("what does state 6 mean?") → read FILE SUMMARY
-  first. If it flags the identifier as internal/undocumented, include that
-  caveat verbatim; never assert a meaning from training data the log itself
-  doesn't record.
-
-On substantive investigation turns (skip for clarifications, corrections,
-pleasantries, general-knowledge questions, and questions about FaultMaven
-itself):
-1. Identify the next data point — one specific piece of data that would verify
-   a pending milestone or test your strongest active hypothesis.
-2. Before asking the user for it, check whether it is reachable via search_file
-   or case_evidence_search on accessible evidence (see file-selection rule below).
-3. If reachable, run the tool call now and ground your reply in the result.
-4. Only ask the user for data no accessible file can supply.
-
 """
-    + _OBSERVATION_TIME_BLOCK
-    + _FILE_SELECTION_DEFAULT
-    + """
 
-Use the [search: ...] hints in <search_map> as starting strings.
+_RECLASSIFICATION_WITHOUT_TOOL = """\
+RECLASSIFICATION:
+- When the user corrects a file's type ("that's actually a log file",
+  "treat server.log as config", "it's metrics, not a report"), acknowledge
+  the correction and say that your reply does not change the file's
+  classification, so its <file_extract> still reflects the original one;
+  weigh what the user said about the file when you read that extract. Do not
+  silently ignore it.
+"""
 
-When calling search_file or deep_analysis, only pass evidence_ids tagged
-`searchable="true"` in the <evidence> blocks below. Those are file-backed
-records and are the only ones the tools can read. An engine inference (no
-``source_file_id`` — a fact the engine derived from other rows) is NOT
-searchable: it records a conclusion, it doesn't point at stored bytes. If a search_file or deep_analysis call
-returns "Evidence X has no backing file; use a file-backed evidence_id"
-with a list of alternatives, retry with one of the listed IDs in the very
-next iteration — do not give up and do not report to the user that the
-file is inaccessible.
-
+_EVIDENCE_EXAMPLES = """\
 EXAMPLES:
 ❌ BAD: "The user-profile service seems to be taking an unusually long time" (confabulated observation)
 ✅ GOOD: "Based on the file extract for your log file, I can see error clusters at..."
@@ -812,7 +793,124 @@ EXAMPLES:
 If evidence is missing: Use missing_critical_data to report the gap.
 
 """
-)
+
+
+def evidence_grounding_block(given: GivenTools) -> str:
+    """The ``{evidence_grounding}`` block for a case-investigating turn."""
+    sf = has(given, "search_file")
+    readers = " / ".join(present(given, "search_file", "deep_analysis"))
+    # "call search_file" where this turn gives it, else the user is the source.
+    read_raw = "call `search_file`" if sf else "ask the user for the raw lines"
+    searchers = present(given, *EVIDENCE_SEARCH_TOOLS)
+
+    block = _GROUNDING_SOURCES
+    if has(given, "kb_qa"):
+        block += ", and kb_qa results"
+    block += _GROUNDING_FORBIDDEN
+    block += " or retrieve via a tool call." if given else "."
+    block += _GROUNDING_FORBIDDEN_REST
+    block += (
+        "via a tool call or asking the user.\n"
+        if readers
+        else "it from the data or asking the user.\n"
+    )
+    block += (
+        "- When an answer depends on a low-confidence evidence item, either\n"
+        "  (a) ask the user to confirm what the file actually is, or\n"
+    )
+    block += (
+        f"  (b) call {readers} to read the raw content directly,\n"
+        if readers
+        else "  (b) ask the user for the raw lines,\n"
+    )
+    block += "  rather than trusting the summary.\n"
+    block += (
+        "- Evidence without the marker is normal confidence — no special handling.\n\n"
+    )
+    block += (
+        _RECLASSIFICATION_WITH_TOOL
+        if has(given, "reclassify_evidence")
+        else _RECLASSIFICATION_WITHOUT_TOOL
+    )
+    block += (
+        "\nUSING EVIDENCE DATA (file extracts):\n"
+        f"Read `<file_extract>` for orientation and characterization; {read_raw}\n"
+        "for specific values, exact counts, or content the extract does not surface.\n"
+        "Always cite the metadata in FILE SUMMARY (host, version, sampling interval,\n"
+        "time span) when characterizing a file.\n"
+        "\n"
+        "By question type:\n"
+        "- Characterization / file summary → answer from `<file_extract>`. Include all\n"
+        "  FILE SUMMARY metadata. Rate-normalize severity claims against the surfaced\n"
+        '  time window and host count (prefer "~X events/hour over Y hours" over raw\n'
+        '  counts); do not say "systemic" or "widespread" unless rate AND per-host\n'
+        "  distribution support it.\n"
+        '- Retrieval / specific value ("which IP", "show me lines where Y") → check\n'
+        "  `<search_map>` per-event-type tables FIRST. For auth counts per IP, use the\n"
+        '  "IP auth breakdown" table, not the "Distinct IPs" line-occurrence counts;\n'
+        "  its `auth total` counts attempts (outcome lines, or PAM failures where\n"
+        '  the IP has none) — never add its per-event numbers. For "list all X", read the\n'
+        f"  entity profile directly. {read_raw[0].upper() + read_raw[1:]} only when the "
+        "search_map can't\n"
+        "  answer.\n"
+        f'- Count / "how many X" → {read_raw} for the authoritative count AND\n'
+        "  read FILE SUMMARY for what the event type means; never report a count\n"
+        "  without its semantic context.\n"
+        "- Temporal distribution → use entity-profile `span:HH:MM:SS→HH:MM:SS (~Xh)`\n"
+        "  annotations as authoritative (they're computed from the full file).\n"
+    )
+    if sf:
+        block += (
+            "  CRITICAL: `search_file` returns at most 20 results by default — clustering\n"
+            "  in search output does NOT indicate temporal concentration. Never use\n"
+            "  `search_file` timestamps to characterize an event type's temporal extent.\n"
+        )
+    block += (
+        '- File-internal identifier ("what does state 6 mean?") → read FILE SUMMARY\n'
+        "  first. If it flags the identifier as internal/undocumented, include that\n"
+        "  caveat verbatim; never assert a meaning from training data the log itself\n"
+        "  doesn't record.\n"
+        "\n"
+        "On substantive investigation turns (skip for clarifications, corrections,\n"
+        "pleasantries, general-knowledge questions, and questions about FaultMaven\n"
+        "itself):\n"
+        "1. Identify the next data point — one specific piece of data that would verify\n"
+        "   a pending milestone or test your strongest active hypothesis.\n"
+    )
+    if searchers:
+        block += (
+            "2. Before asking the user for it, check whether it is reachable via "
+            + "\n   or ".join(searchers)
+            + " on accessible evidence (see file-selection rule below).\n"
+            "3. If reachable, run the tool call now and ground your reply in the result.\n"
+            "4. Only ask the user for data no accessible file can supply.\n"
+        )
+    else:
+        block += (
+            "2. If it is in <evidence_collected>, use it.\n"
+            "3. Otherwise ask the user for it, with the file, window and command.\n"
+        )
+    block += "\n" + _OBSERVATION_TIME_BLOCK + file_selection_default(given) + "\n\n"
+    if readers:
+        block += (
+            "Use the [search: ...] hints in <search_map> as starting strings.\n\n"
+            if sf
+            else ""
+        ) + (
+            f"When calling {' or '.join(present(given, 'search_file', 'deep_analysis'))}, "
+            "only pass evidence_ids tagged\n"
+            '`searchable="true"` in the <evidence> blocks below. Those are file-backed\n'
+            "records and are the only ones the tools can read. An engine inference (no\n"
+            "``source_file_id`` — a fact the engine derived from other rows) is NOT\n"
+            "searchable: it records a conclusion, it doesn't point at stored bytes. "
+            f"If a {' or '.join(present(given, 'search_file', 'deep_analysis'))} call\n"
+            'returns "Evidence X has no backing file; use a file-backed evidence_id"\n'
+            "with a list of alternatives, retry with one of the listed IDs in the very\n"
+            "next iteration — do not give up and do not report to the user that the\n"
+            "file is inaccessible.\n\n"
+        )
+    return block + _EVIDENCE_EXAMPLES
+
 
 # =============================================================================
 # KNOWLEDGE QUERY INSTRUCTIONS
@@ -820,17 +918,32 @@ If evidence is missing: Use missing_critical_data to report the gap.
 # replacing stage-specific instructions entirely.
 # =============================================================================
 
-KNOWLEDGE_QUERY_INSTRUCTIONS = """
+_KNOWLEDGE_QUERY_HEAD = """
 **FOCUS: GENERAL KNOWLEDGE QUESTION**
 
 The user is asking a general knowledge question, not a case-specific question.
-Answer from your built-in knowledge or the knowledge base (kb_qa).
-The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply.
-Connect to the case context when relevant — but this is optional.
+"""
 
-Search kb_qa first. If relevant results found, ground your answer in them and cite
-the source. If no relevant results, answer from your own knowledge without mentioning
-the search."""
+
+def knowledge_query_instructions(given: GivenTools) -> str:
+    """The stage instructions for a ``knowledge_query`` turn."""
+    if not has(given, "kb_qa"):
+        return _KNOWLEDGE_QUERY_HEAD + (
+            "Answer from your built-in knowledge, and from any runbook in\n"
+            "<knowledge_context> below that applies (cite it).\n"
+            "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply.\n"
+            "Connect to the case context when relevant — but this is optional."
+        )
+    return _KNOWLEDGE_QUERY_HEAD + (
+        "Answer from your built-in knowledge or the knowledge base (kb_qa).\n"
+        "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply.\n"
+        "Connect to the case context when relevant — but this is optional.\n"
+        "\n"
+        "Search kb_qa first. If relevant results found, ground your answer in them and cite\n"
+        "the source. If no relevant results, answer from your own knowledge without mentioning\n"
+        "the search."
+    )
+
 
 # =============================================================================
 # INQUIRY TEMPLATE

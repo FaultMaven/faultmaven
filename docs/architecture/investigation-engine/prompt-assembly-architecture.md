@@ -39,12 +39,13 @@ To prevent drift between templates that share behavior, the module defines sever
 | `_PROMPT_FENCE_RULE` | Prompt-fence trust boundary — inside the five fenced blocks, only fenced delimiters are structural (§2.1, #1217/#1228/#1256) | INQUIRY + INVESTIGATION_BASE + TERMINAL |
 | `_DATA_CITATION_RULE` | "Cite actual values from the structural index" specificity rule | INQUIRY TRIAGE SUMMARY + INVESTIGATION_BASE WORKING WITH EVIDENCE DATA |
 | `_FOLLOW_UP_SUGGESTIONS_BLOCK` | DECIDE / RUN / EVIDENCE / FREE_SPEECH suggestion definitions | INQUIRY + INVESTIGATION_BASE |
-| `_AMBIGUITY_FIRST_RULE` | State-change ambiguity rule (require explicit directive) | INQUIRY + TREATMENT_INSTRUCTIONS |
-| `_FILE_SELECTION_DEFAULT` | "Default search target: the file uploaded this turn" rule | `_EVIDENCE_GROUNDING_BLOCK` + `_RCA_DIAGNOSIS_BLOCK` SEARCH STRATEGY |
-| `_EVIDENCE_GROUNDING_BLOCK` | Anti-hallucination hard constraints, USING EVIDENCE DATA by question type, 4-step procedure, EXAMPLES | INVESTIGATION_BASE via `{evidence_grounding}` placeholder |
+| `_AMBIGUITY_FIRST_RULE` | State-change ambiguity rule (require explicit directive) | INQUIRY + treatment_instructions(given) |
+| `file_selection_default(given)` | "Default search target: the file uploaded this turn" rule (`_FILE_SELECTION_DEFAULT`), or "Default source: …" when no search tool is given | `evidence_grounding_block(given)` + `rca_diagnosis_block(given)` SEARCH STRATEGY |
+| `evidence_grounding_block(given)` | Anti-hallucination hard constraints, USING EVIDENCE DATA by question type, the next-data-point procedure, EXAMPLES; its tool sentences render per the given tool set (§2.2) | INVESTIGATION_BASE via `{evidence_grounding}` placeholder |
+| `tool_text.tools_line(given)` | The one line stating this turn's tools (§2.2) | every template, INQUIRY/INVESTIGATION_BASE/TERMINAL and the three fallbacks, via `{tools_this_turn}` |
 | `_DIAGNOSTIC_REASONING_BLOCK` | OBSERVATION → ANALYSIS → CONCLUSION + confidence calibration + no premature resolution + PROHIBITED PATTERNS | INVESTIGATION_BASE via `{diagnostic_reasoning}` placeholder |
 
-The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK`) are gated to `""` in `knowledge_query` and `agent_meta` modes — see §4.
+The two blocks injected via placeholders (`evidence_grounding_block(given)` and `_DIAGNOSTIC_REASONING_BLOCK`) are waived in `knowledge_query` and `agent_meta` modes — see §4.
 
 ### 2.1 XML Element Conventions in the Fenced Blocks
 
@@ -104,6 +105,33 @@ The INQUIRY template includes a SEARCHING UPLOADED FILES block that codifies thi
 
 ---
 
+### 2.2 Tool sentences and the given tool set (#1939, #1955)
+
+**The rule.** Every tool a turn's model-facing text names, and every suggestion it points the user at, is one that turn actually offers. A sentence that tells the model to call a tool it does not have, or to send the user to a chip that is not on screen, is an instruction nothing can satisfy.
+
+**The given set.** `GivenTools = frozenset[str]` (`templates/tool_text.py`) is the set of tool names a turn gives the model. It is computed once per turn and passed to every renderer as a value:
+
+| Turn | Given set |
+| --- | --- |
+| Tool loop | the names of `StructuredOutputGenerator.build_da_tool_schemas()` (the `tools=` the loop sends), via `given_tools()` |
+| Single-shot route (nothing to search, fm#1116) | `NO_TOOLS` |
+| DA provider without tool calling | `NO_TOOLS` (`given_tools()` reads `_da_provider_supports_tools()`, the Layer-1 pre-check's predicate) |
+| `ToolCallingUnsupportedError` fallback | `NO_TOOLS` (the caller's `fallback_prompt_builder`) |
+| #662 minimal retry | `NO_TOOLS` (`get_fallback_prompt_for_case(..., given_tools=NO_TOOLS)`) |
+| Terminal Q&A | its own `given_tools()`, built before the terminal prompt |
+
+The set travels through the signatures (`get_prompt_for_case`, `_budgeted_prompt`, `_assemble_allocated`, `get_fallback_prompt_for_case`, `build_investigation_context`, `_build_evidence_context`), not through the section `ctx`: the allocator counts every `ctx` value as a section, so only rendered strings go there. The first build and the #614 resize receive the same set, so they share one cached prefix. The directed-analysis index+stub elision reads the same set: `da_index_only = directed_analysis and "search_file" in given`.
+
+**Where the sentences live.** Each template module renders its own tool sentences from the set, through small functions that concatenate the fixed text with the gated parts (`evidence_grounding_block`, `knowledge_query_instructions`, `rca_diagnosis_block`, `mitigation_instructions`, `treatment_instructions`, `file_selection_default`, `tool_results_note`, and the INQUIRY, INVESTIGATION_BASE (`{prior_files}`, `{fetch_next_data_point}`, `{tool_results_rule}`) and TERMINAL placeholders). `tool_text.py` owns the predicates (`has`, `present`) and `tools_line`. A sentence that names tool `T` renders only when `T` is given; otherwise a tool-less wording renders, which is still a complete instruction (the user is the source of data the model cannot search for, and `<knowledge_context>` is where runbooks the engine matched appear). The rule covers synonyms too: a tool-less turn does not say "search for", "search strategy", "tool call" or "stay searchable", and its fallback upload stub carries no `searchable="true"`. The attribute stays on `<evidence_collected>` rows, where it marks a file-backed row. Concatenation, not `.format`: blocks such as the DIAGNOSIS block carry `{`-shaped literals (`[45][0-9]{2}`).
+
+**The tools line.** Every template states the set on one line near its top: `Tools available on this turn: …` (sorted, so one set renders one byte string) or `No investigation tools are available on this turn; everything you can use is in this prompt.` It is a belt to the per-sentence gates, not a substitute for them.
+
+**Tool results.** A tool's own description and results name only tools given beside it: `vectorize_file` is registered only together with `case_evidence_search` (both need the case vector store), so its pointers to that tool hold by construction; the empty-search advisory names `deep_analysis` only when the loop offers it.
+
+**Terminal suggestions (#1955).** The terminal Q&A path builds the suggestion list (`_resolved_suggestions` / `_closed_suggestions`) before the prompt, reads `TerminalAffordances` off that list (`terminal_replies.terminal_affordances`), renders `{summary_request_rule}` and `{runbook_request_rule}` from it, and attaches the same list to the reply. The prompt says "use the **Regenerate** suggestion" or "use the **Generate a runbook from this resolved case** suggestion" exactly when that suggestion is below the reply; once a draft exists it points at the draft instead, and when no runbook can be generated it says so.
+
+**Guards.** `tests/unit/core/investigation/prompts/test_prompt_tools_are_given_tools_1934.py` renders a matrix: rows are given sets derived from the real `_create_investigation_tools` (the default six; no `kb_qa`; no `deep_analysis`; no `web_search`; no vector stores; plus the entity tools; plus `reclassify_evidence`; none), columns are the real renders (INQUIRY; INVESTIGATING DIAGNOSIS, DIAGNOSIS directed, MITIGATION, TREATMENT, knowledge_query, agent_meta; the over-budget evidence block; the three fallbacks; the DA system instruction; the empty-search advisory; the given tools' own text). A cell fails when a render names a tool the row does not give, or (for the tool-less row, and per missing tool) carries a phrase that implies one; non-vacuity cells require each given tool, and each probed phrase, to appear where it is used. The terminal cells pair each redirect with the suggestion list. `tests/unit/core/investigation/test_turn_prompts_name_the_given_tools_1939.py` pins that each call site passes the right set.
+
 ## 3. INVESTIGATION_BASE Structure
 
 `INVESTIGATION_BASE` is the most complex template because it must serve four stages plus the knowledge-query bypass. The same outer shell is reused; what differs is the `{adaptive_instructions}` payload and which optional blocks are present.
@@ -117,13 +145,14 @@ The template is laid out **durable first** (#613): the standing instructions, wh
 ```text
 DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
   You are FaultMaven, the Lead Investigator for this case.
+  {tools_this_turn}                               (the turn's given tool set, §2.2)
   PROMPT FENCE                                    (_PROMPT_FENCE_RULE — before the first fenced block, #1256)
 
   INPUT HANDLING
     READING DISCIPLINE                            (_READING_DISCIPLINE_BLOCK)
 
   EVIDENCE INTERPRETATION (rules-before-task)
-    {evidence_grounding}                          (_EVIDENCE_GROUNDING_BLOCK, gated)
+    {evidence_grounding}                          (evidence_grounding_block(given), gated)
     EVIDENCE FROM ATTACHMENTS
     WORKING WITH EVIDENCE DATA                    (uses _DATA_CITATION_RULE)
     EVIDENCE CLASSIFICATION — DECISION TREE
@@ -170,7 +199,7 @@ CLOSING RULES (static, read last)
 **KEY PRINCIPLES bullets** (cross-stage, always present in INVESTIGATION_BASE):
 
 1. Evidence-Driven Progress (no evidence = indicator stays False)
-2. NAME THE NEXT DATA POINT (substantive-turn gated)
+2. NAME THE NEXT DATA POINT (substantive-turn gated; where it comes from is `{fetch_next_data_point}`: a given search tool, else the user)
 3. ONE PRIMARY ASK
 4. Evidence requests should be specific and actionable
 5. Maintain a working conclusion at all times
@@ -187,12 +216,12 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 | Stage / mode | Adaptive instructions |
 | --- | --- |
-| DIAGNOSIS | `_RCA_DIAGNOSIS_BLOCK` + `_CHAIN_EMISSION_BLOCK` (the focus emphasis renders separately, below) |
-| MITIGATION | `MITIGATION_INSTRUCTIONS` |
-| TREATMENT | `TREATMENT_INSTRUCTIONS` |
-| Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` |
+| DIAGNOSIS | `rca_diagnosis_block(given)` + `_CHAIN_EMISSION_BLOCK` (the focus emphasis renders separately, below) |
+| MITIGATION | `mitigation_instructions(given)` |
+| TREATMENT | `treatment_instructions(given)` |
+| Knowledge query | `knowledge_query_instructions(given)` |
 
-`_RCA_DIAGNOSIS_BLOCK` is composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside it and reached on every DIAGNOSIS turn — the former path-conditional blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) and their pre-mitigation emission ban were removed. See `agent-stage-playbook.md` for the current DIAGNOSIS routing.
+`rca_diagnosis_block(given)` is composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside it and reached on every DIAGNOSIS turn — the former path-conditional blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) and their pre-mitigation emission ban were removed. See `agent-stage-playbook.md` for the current DIAGNOSIS routing.
 
 `_get_diagnosis_focus_emphasis(progress, case)` computes a Zone-aware progress signal. It renders as its own placeholder, `{focus_emphasis}`, at the top of the per-turn tail, right after `CACHE_BOUNDARY`, on DIAGNOSIS turns only. The two problem holds come first and render from `_problem_hold_emphasis(case)` on **every** stage (#1889): a false alarm found while a fix was accepted (TREATMENT) or a mitigation was in flight holds the same way, and those stages' instructions would otherwise tell the model to propose a transition on stabilisation. The slot is empty on a knowledge_query or agent_meta turn. It is not part of the stage instructions because it moves with the progress milestones and, in Zone 2, with the wall clock: the stale variant appears once the symptom's last observation is more than `symptom_currency.STALE_AFTER` (30 min) old. Kept in the prefix, it would re-write the cache on every such flip (#613).
 
@@ -212,13 +241,14 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 Provider prompt caches match on a **byte-identical prefix**. Anthropic caches up to an explicit `cache_control` breakpoint; OpenAI, Gemini and Fireworks cache the longest prefix they have seen recently, with no marker. Either way, a turn can read back from the cache only what the previous turn sent byte for byte from the very first byte. `INVESTIGATION_BASE` used to open with `STATE`, `<case_identity>` (which carries `CURRENT_TIME`) and the case data, and put the standing instructions after them, so no turn could reuse the instructions: every turn paid full price for them.
 
-**The rule.** Everything above `CACHE_BOUNDARY` must render the same bytes on every turn of a case at one stage and processing mode. No turn number, no `STATE`/`STAGE`, no timestamp, no fence token, no case content, nothing that moves with the milestones or the clock. What may sit there, and why:
+**The rule.** Everything above `CACHE_BOUNDARY` must render the same bytes on every turn of a case at one stage, processing mode and given tool set. No turn number, no `STATE`/`STAGE`, no timestamp, no fence token, no case content, nothing that moves with the milestones or the clock. What may sit there, and why:
 
 | Part | Varies with | Placement |
 | --- | --- | --- |
 | Role line, `_PROMPT_FENCE_RULE`, the static instruction text and blocks | nothing. The fence rule names no token; the token is declared in `{core_context}` | prefix |
 | `{page_capture_hint}` | `case.source`, stamped at creation | prefix |
 | `{evidence_grounding}`, `{diagnostic_reasoning}` | processing mode (`knowledge_query` and `agent_meta` waive them) | prefix; a mode turn misses the cache, which is correct |
+| `{tools_this_turn}`, `{prior_files}`, `{fetch_next_data_point}`, and the tool sentences inside `{evidence_grounding}` and `{adaptive_instructions}` | the turn's given tool set (§2.2): constant per deployment and route. A case can alternate between single-shot turns (no tools, nothing to search) and knowledge_query turns (the tool loop), at no cache cost: a knowledge_query turn already has its own prefix, and the single-shot path sends no `cache_prompt` | prefix; the first build and the #614 resize get the same set, so they share it |
 | `{adaptive_instructions}` | stage and processing mode, a few times a case | **last** in the prefix |
 | `{focus_emphasis}` | the problem hold (any stage), else the DIAGNOSIS focus zone (milestones) and, in Zone 2, the wall clock | **first** in the tail |
 | `STATE` + `{identity}`, `{core_context}` (holds the fence token) and every section down to `{user_message}` | per turn | tail, in their old relative order |
@@ -231,12 +261,12 @@ Provider prompt caches match on a **byte-identical prefix**. Anthropic caches up
 
 **Guards.** `tests/unit/core/investigation/prompts/test_investigation_prefix_613.py`:
 
-- formats the template with a sentinel per placeholder and fails when any placeholder outside a four-entry allowlist renders above the boundary (the placeholder set is derived from the template, so a new per-turn slot fails by default), pins `{focus_emphasis}` as the tail's first line and `<security_constraints>` as the last block, after `{user_message}`;
-- builds two consecutive prompts through `get_prompt_for_case` with every per-turn input varied — a focus-zone change and the Zone-2 stale flip included — and asserts the text through the boundary line is byte-identical, and that it changes with the stage or the processing mode.
+- formats the template with a sentinel per placeholder and fails when any placeholder outside an eight-entry allowlist renders above the boundary (the placeholder set is derived from the template, so a new per-turn slot fails by default), pins `{focus_emphasis}` as the tail's first line and `<security_constraints>` as the last block, after `{user_message}`;
+- builds two consecutive prompts through `get_prompt_for_case` with every per-turn input varied — a focus-zone change and the Zone-2 stale flip included — and asserts the text through the boundary line is byte-identical, for the default six tools and for none, and that it changes with the stage, the processing mode or the given tool set.
 
 Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_anthropic_messages.py`, the span view in `tests/unit/infrastructure/llm/test_router_opik_span_613.py`.
 
-**Positional words.** The case data now sits below the instructions, so an instruction that points at a case section says "below": the journal (`INVESTIGATION JOURNAL`), the `<evidence>` blocks (`_EVIDENCE_GROUNDING_BLOCK`), `<causal_graph>` (`_CHAIN_EMISSION_BLOCK`) and the symptom's observation time (the stale Zone 2 emphasis). The closing pointer line says "above", because the rules it names are in the prefix.
+**Positional words.** The case data now sits below the instructions, so an instruction that points at a case section says "below": the journal (`INVESTIGATION JOURNAL`), the `<evidence>` blocks (`evidence_grounding_block(given)`), `<causal_graph>` (`_CHAIN_EMISSION_BLOCK`) and the symptom's observation time (the stale Zone 2 emphasis). The closing pointer line says "above", because the rules it names are in the prefix.
 
 **Out of scope.** `INQUIRY_TEMPLATE`, `TERMINAL_TEMPLATE` and the `FALLBACK_*` prompts keep their order and have no boundary. The single-shot structured path sends no `cache_prompt`, so the Anthropic provider places no boundary breakpoint on it.
 
@@ -246,11 +276,11 @@ Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_an
 
 When `processing_mode == "knowledge_query"`, the user is asking a general technical question rather than progressing the investigation; when it is `"agent_meta"` (#1328), the user is asking about FaultMaven itself. The dispatcher (shown for `knowledge_query`; `agent_meta` substitutes `AGENT_META_INSTRUCTIONS`, and in INQUIRY renders the same block through the `{agent_meta_instructions}` slot, empty for every other mode):
 
-1. Sets `adaptive_instructions = KNOWLEDGE_QUERY_INSTRUCTIONS`. This block waives evidence-grounding and diagnostic-reasoning expectations: *"The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply. Connect to the case context when relevant — but this is optional."*
-2. Sets `evidence_grounding = _OBSERVATION_TIME_BLOCK`, so `_EVIDENCE_GROUNDING_BLOCK` is absent from the rendered prompt and only the observation-time definition stays: `<evidence_collected>` still renders `fresh_this_turn` on these turns, and a standing rule reads it (#512).
+1. Sets `adaptive_instructions = knowledge_query_instructions(given)`. This block waives evidence-grounding and diagnostic-reasoning expectations: *"The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply. Connect to the case context when relevant — but this is optional."*
+2. Sets `evidence_grounding = _OBSERVATION_TIME_BLOCK`, so `evidence_grounding_block(given)` is absent from the rendered prompt and only the observation-time definition stays: `<evidence_collected>` still renders `fresh_this_turn` on these turns, and a standing rule reads it (#512).
 3. Sets `diagnostic_reasoning = ""` so `_DIAGNOSTIC_REASONING_BLOCK` is absent from the rendered prompt.
 
-**Why suppress rather than exempt:** earlier versions kept the rule blocks present and stated "the above rules don't apply." The result was ~4KB of waived rule text alongside a waiver — high signal/noise. The current design omits the waived blocks entirely. The waiver line in `KNOWLEDGE_QUERY_INSTRUCTIONS` remains as a hint that the rules exist in other modes, but the bulk doesn't.
+**Why suppress rather than exempt:** earlier versions kept the rule blocks present and stated "the above rules don't apply." The result was ~4KB of waived rule text alongside a waiver — high signal/noise. The current design omits the waived blocks entirely. The waiver line in `knowledge_query_instructions(given)` remains as a hint that the rules exist in other modes, but the bulk doesn't.
 
 **What stays in INV_kq mode:** READING DISCIPLINE, the evidence-handling rules (still useful if the user pivots to a case-specific question), KEY PRINCIPLES (with `NAME THE NEXT DATA POINT` self-gating via "skip for general-knowledge questions"), FOLLOW-UP SUGGESTIONS, ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, CRITICAL: EVIDENCE-FIRST REQUIREMENT (conditional — inert when no milestones advance), and `<security_constraints>`.
 
@@ -262,12 +292,12 @@ The single entry point is `templates.assembly.get_prompt_for_case(case, user_mes
 
 1. Builds the dynamic context via `build_investigation_context(...)` from `prompts/context_builder/assembly.py`.
 2. Selects the template based on `case.state`:
-   - `INQUIRY` → `INQUIRY_TEMPLATE.format(**ctx)`
+   - `INQUIRY` → `INQUIRY_TEMPLATE.format(...)`, with its tool sentences rendered for `given_tools`
    - `INVESTIGATING` → see step 3
-   - `RESOLVED` / `CLOSED` → `TERMINAL_TEMPLATE.format(...)`
+   - `RESOLVED` / `CLOSED` → `TERMINAL_TEMPLATE.format(...)`, with the summary and runbook redirects rendered from `terminal_affordances` (§2.2)
 3. For INVESTIGATING:
-   - Picks `adaptive_instr` per stage (DIAGNOSIS / MITIGATION / TREATMENT) or replaces it entirely with `KNOWLEDGE_QUERY_INSTRUCTIONS` when `processing_mode == "knowledge_query"`, or with `AGENT_META_INSTRUCTIONS` when it is `"agent_meta"`.
-   - Sets `evidence_grounding` and `diagnostic_reasoning` to either their respective `_*_BLOCK` constants or `""` based on the same `waive_grounding` flag (true for both bypass modes).
+   - Picks `adaptive_instr` per stage (DIAGNOSIS / MITIGATION / TREATMENT) or replaces it entirely with `knowledge_query_instructions(given)` when `processing_mode == "knowledge_query"`, or with `AGENT_META_INSTRUCTIONS` when it is `"agent_meta"`.
+   - Sets `evidence_grounding` and `diagnostic_reasoning` to `evidence_grounding_block(given)` and `_DIAGNOSTIC_REASONING_BLOCK`, or to their waived forms, based on the same `waive_grounding` flag (true for both bypass modes).
    - Renders `INVESTIGATION_BASE.format(adaptive_instructions=..., evidence_grounding=..., diagnostic_reasoning=..., **ctx)`.
 
 The dispatcher is the only place where mode-conditional gating happens. The templates themselves are mode-agnostic — they only know how to interpolate their placeholders.
@@ -297,7 +327,8 @@ fixed template text combine into the final string, so it owns the
    template overhead — which the per-section budgeter cannot see — finally gets
    subtracted from what the sections may occupy.
 4. **If still over → fall back** to a minimal safe prompt via
-   `get_fallback_prompt_for_case(case, user_message)`.
+   `get_fallback_prompt_for_case(case, user_message, given_tools=...)`, for the
+   same given set as the prompt it replaces.
 
 Every overflow event is logged at WARNING (`prompt_overflow_trimmed` /
 `prompt_overflow_fallback`) with the token counts and the action taken —
@@ -358,9 +389,9 @@ ceiling, and `window_known` — is surfaced at `/debug/llm-providers`
 
 The current design prioritizes signal density over example coverage in shared blocks. Specific choices worth knowing:
 
-- **`_EVIDENCE_GROUNDING_BLOCK` USING EVIDENCE DATA section** is condensed — 6 question types (characterization / retrieval / count / temporal / file-internal identifier) with one-line rules each, rather than per-type runbooks. Three load-bearing caveats are preserved verbatim: `search_file` returns max 20 results by default; the IP auth breakdown table vs. "Distinct IPs" line-occurrence distinction; and the "internal/undocumented identifier" callout.
+- **`evidence_grounding_block` USING EVIDENCE DATA section** is condensed — 6 question types (characterization / retrieval / count / temporal / file-internal identifier) with one-line rules each, rather than per-type runbooks. Three load-bearing caveats are preserved verbatim: `search_file` returns max 20 results by default (rendered when `search_file` is given); the IP auth breakdown table vs. "Distinct IPs" line-occurrence distinction; and the "internal/undocumented identifier" callout.
 - **CONCISENESS** is a single sentence rather than a bullet list — the bullet list version ironically diluted its own message.
-- **`_RCA_DIAGNOSIS_BLOCK` retains its own `FOLLOW-UP AFTER USER ACTIONS` block** (Zone 1/2-scoped with Zone 3 exclusion). The general `FOLLOW-UP REQUIREMENTS` block that previously appeared in `INVESTIGATION_BASE` was removed because each stage handles result-verification in its own playbook (MITIGATION's *Track Mitigation Progress*, TREATMENT's *Verify Result*). The KEY PRINCIPLES `CHECK BACK ON SUGGESTED ACTIONS` bullet covers the cross-stage gap where the user's reply doesn't reference a prior diagnostic suggestion.
+- **`rca_diagnosis_block(given)` retains its own `FOLLOW-UP AFTER USER ACTIONS` block** (Zone 1/2-scoped with Zone 3 exclusion). The general `FOLLOW-UP REQUIREMENTS` block that previously appeared in `INVESTIGATION_BASE` was removed because each stage handles result-verification in its own playbook (MITIGATION's *Track Mitigation Progress*, TREATMENT's *Verify Result*). The KEY PRINCIPLES `CHECK BACK ON SUGGESTED ACTIONS` bullet covers the cross-stage gap where the user's reply doesn't reference a prior diagnostic suggestion.
 
 ---
 
@@ -372,11 +403,12 @@ For any rendering audit (e.g., regression testing the templates after edits), th
 - `**KB-RESOLUTION VARIANT` only in TREATMENT.
 - `EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination):` only in case-investigating modes (DIAG, MIT, TRE) — absent from INV_kq, INQUIRY, TERMINAL.
 - `DIAGNOSTIC REASONING REQUIREMENTS (Anti-Hallucination):` only in case-investigating modes — absent from INV_kq, INQUIRY, TERMINAL.
-- 4-step procedure (`1. Identify the next data point` ... `4. Only ask the user`) present in DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT.
-- `_FILE_SELECTION_DEFAULT` canonical text count per path: DIAG×2, MIT/TRE×1, INV_kq/INQUIRY/TERMINAL×0.
-- `SEARCHING UPLOADED FILES` block present only in INQUIRY; references `<uploaded_file file_id=…>` and `<evidence id="ev_…" searchable="true">` (no `evidence_id=` attribute name — see §2.1).
+- Next-data-point procedure present in DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT: four steps (`1. Identify the next data point` ... `4. Only ask the user`) when a search tool is given, three (`2. If it is in <evidence_collected>, use it.`, `3. Otherwise ask the user for it`) when none is.
+- `file_selection_default(given)` text count per path: DIAG×2, MIT/TRE×1, INV_kq/INQUIRY/TERMINAL×0.
+- `SEARCHING UPLOADED FILES` block present only in INQUIRY; with `search_file` given it references `<uploaded_file file_id=…>` and `<evidence id="ev_…" searchable="true">` (no `evidence_id=` attribute name — see §2.1).
 - `_PROMPT_FENCE_RULE` present in INQUIRY + all INVESTIGATING paths (INV_kq included — the evidence block renders there too) **and in TERMINAL**, which carries no `{evidence}` but does render the fenced `{core_context}` (#1228).
 - `source_file_id` description in evidence-creation prose references `file_id="…"` on both `<evidence>` and `<uploaded_file>` (the two elements share the attribute convention).
 - All `.format()` calls render without `KeyError` / `IndexError` when given empty-string values for every placeholder.
+- Every tool name a render carries is in the turn's given set, and a terminal prompt names a suggestion only when the reply offers it (§2.2; the render matrix).
 
 Engine tests `tests/unit/core/investigation/test_prompt_budget_allocator.py` (drives `get_prompt_for_case`) and the template-structure suites (`test_inquiry_template_structure.py`, `test_investigation_template_acknowledgment_rules.py`) exercise the dispatcher and indirectly validate template renderability.

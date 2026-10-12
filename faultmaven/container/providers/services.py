@@ -175,6 +175,8 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     - deep_analysis: LLM-interpreted analysis of evidence files
     - web_search: trusted domain web search (Google CSE or Tavily)
     - kb_qa: unified knowledge base Q&A (all accessible scopes)
+    - vectorize_file / case_evidence_search: case evidence indexing and its
+      semantic search, given together or not at all
     - find_entity / list_top_entities: entity registry (FAULTMAVEN_ENTITY_REGISTRY)
     - reclassify_evidence: evidence reclassification (FAULTMAVEN_RECLASSIFY_ENABLED)
 
@@ -210,12 +212,17 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
             "kb_adapter not available — KB runbook search disabled for investigations"
         )
 
+    # ``vectorize_file`` is given only beside ``case_evidence_search`` (#1939):
+    # its results send the model to that tool to read what it indexed, and the
+    # case vector store both need is the one the evidence-QA adapter is built
+    # on. Constructed alone (SKIP_SERVICE_CHECKS, no case vector store) it
+    # would name a tool the model is not given.
+    case_evidence_qa_adapter = getattr(container, "case_evidence_qa_adapter", None)
     vectorize_file_tool = getattr(container, "vectorize_file_tool", None)
-    if vectorize_file_tool:
+    if vectorize_file_tool and case_evidence_qa_adapter:
         registry.register(vectorize_file_tool)
         tool_count += 1
 
-    case_evidence_qa_adapter = getattr(container, "case_evidence_qa_adapter", None)
     if case_evidence_qa_adapter:
         registry.register(case_evidence_qa_adapter)
         tool_count += 1

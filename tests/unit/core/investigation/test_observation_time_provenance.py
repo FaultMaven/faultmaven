@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
@@ -189,14 +190,14 @@ def test_the_prompt_defines_the_pair_it_renders():
     defect wearing a new attribute."""
 
     from faultmaven.core.investigation.prompts.templates.blocks import (
-        _EVIDENCE_GROUNDING_BLOCK,
+        evidence_grounding_block,
     )
     from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
     # BOTH states. INV-07 keeps a forwarded alert un-promoted through INQUIRY,
     # so turn 1 — where the age decides whether there is an incident at all —
     # is rendered by the state whose template used to say nothing about it.
-    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+    for block in (INQUIRY_TEMPLATE, evidence_grounding_block(DEFAULT_GIVEN)):
         # the pair, and which half governs currency
         assert "observed_through" in block and "fresh_this_turn" in block
         assert "not a contradiction" in block
@@ -216,11 +217,11 @@ def test_the_prompt_says_which_turn_fresh_this_turn_names():
     can read either way."""
 
     from faultmaven.core.investigation.prompts.templates.blocks import (
-        _EVIDENCE_GROUNDING_BLOCK,
+        evidence_grounding_block,
     )
     from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
-    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+    for block in (INQUIRY_TEMPLATE, evidence_grounding_block(DEFAULT_GIVEN)):
         assert "the turn it was UPLOADED" in block
         assert "not the turn an evidence row cited it" in block
 
@@ -263,7 +264,7 @@ def test_every_mode_that_states_the_rule_also_states_the_definition(processing_m
         case,
         "what changed?",
         processing_mode=processing_mode,
-        tools_available=True,
+        given_tools=DEFAULT_GIVEN,
     )
 
     # Positive control: the consumer rule really is in every one of these
@@ -297,7 +298,7 @@ def test_prompt_states_the_current_time():
 # Every assertion above is about a row this file may never become.
 def _orphan(uf, turn=3, **kw) -> str:
     return _render_orphan_file_block(
-        uf, {}, turn, fence=PromptFence(mint_token()), **kw
+        uf, {}, turn, fence=PromptFence(mint_token()), given=DEFAULT_GIVEN, **kw
     )
 
 
@@ -437,11 +438,11 @@ def test_a_known_observation_time_is_never_reported_as_missing():
     import re
 
     from faultmaven.core.investigation.prompts.templates.blocks import (
-        _EVIDENCE_GROUNDING_BLOCK,
+        evidence_grounding_block,
     )
     from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
-    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+    for block in (INQUIRY_TEMPLATE, evidence_grounding_block(DEFAULT_GIVEN)):
         text = re.sub(r"\s+", " ", block)
         # the question is answered, not open
         assert "Treat the question as ANSWERED" in text
@@ -467,11 +468,11 @@ def test_a_known_observation_time_is_never_reported_as_missing():
 
 def test_the_prompt_defines_the_inferred_marker():
     from faultmaven.core.investigation.prompts.templates.blocks import (
-        _EVIDENCE_GROUNDING_BLOCK,
+        evidence_grounding_block,
     )
     from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
-    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+    for block in (INQUIRY_TEMPLATE, evidence_grounding_block(DEFAULT_GIVEN)):
         assert "observed_basis" in block
         assert "approximate" in block
 

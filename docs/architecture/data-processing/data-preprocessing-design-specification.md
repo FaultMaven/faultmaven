@@ -78,7 +78,7 @@ a `(first_ts, last_ts)` tuple of `datetime` objects (not strings) from the first
 parseable timestamps in the file. Used by `_build_entity_profile()` for duration calculation
 and per-event span tracking.
 
-**Agent routing rules** (`templates/blocks.py`, `_EVIDENCE_GROUNDING_BLOCK`):
+**Agent routing rules** (`templates/blocks.py`, `evidence_grounding_block(given)`):
 
 Replaced the gray-zone "general characterisation questions" carve-out with a four-category
 routing rule:
@@ -1184,14 +1184,14 @@ appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
 
-**Note:** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
+**Note:** The per-turn routing rule in `evidence_grounding_block(given)` (injected via
 `evidence_grounding=`) provides finer-grained routing guidance that supersedes the
 `DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
 `templates/blocks.py` for the four-category rule (characterization / retrieval / count /
 temporal distribution). The DA mode prompt governs tool selection strategy; the
 evidence grounding block governs what source to answer from.
 
-**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
+**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `knowledge_query_instructions(given)` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
 
 **Agent Meta mode** (#1328): the same two waivers, with `AGENT_META_INSTRUCTIONS` (a high-level self-knowledge profile plus an answer discipline: a few sentences, docs link, say the model is not told which provider serves the deployment, no tool calls, never request FaultMaven's configuration as evidence, case state untouched) as `adaptive_instructions`. Tools are never forced. A turn that delivers evidence is re-routed before the prompt is built: to Directed Analysis in INVESTIGATING, to Triage in INQUIRY.
 

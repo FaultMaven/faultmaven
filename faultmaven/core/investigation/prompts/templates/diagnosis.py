@@ -1,4 +1,5 @@
-from .blocks import _FILE_SELECTION_DEFAULT
+from .blocks import file_selection_default
+from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, has, present
 
 _DIAGNOSIS_ZONES_PREAMBLE = """\
 **DIAGNOSIS ZONES (reference for the Zone-1/Zone-2/Zone-3 terminology used below):**
@@ -8,6 +9,15 @@ _DIAGNOSIS_ZONES_PREAMBLE = """\
 - Zone 3 — Solution proposal: cause identified, solution_proposed=False.
   Emit a concrete fix and hold for user execution.
 """
+
+
+def _diagnosis_zones_preamble(given: GivenTools) -> str:
+    """The zone reference; Zone 2 says "Search for cause" only when a search
+    tool is given (#1939)."""
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return _DIAGNOSIS_ZONES_PREAMBLE
+    return _DIAGNOSIS_ZONES_PREAMBLE.replace("Search for cause;", "Look for the cause;")
+
 
 _EVIDENCE_REQUEST_FORMAT_BLOCK = """\
 **EVIDENCE REQUESTS:**
@@ -307,6 +317,209 @@ Example (unobservable race, two rivals both refuted):
 """
 
 
+# Tool sentences of the DIAGNOSIS block (#1939): each names a tool only when
+# this turn gives it, and otherwise renders a tool-less wording.
+
+
+def _kb_first(given: GivenTools) -> str:
+    if has(given, "kb_qa"):
+        return "□ MUST search KB (`kb_qa`) for the symptom ONCE at the start of\n  Zone 2 (after symptom_verified=True, before forming hypotheses independently).\n  Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.\n"
+    return (
+        "□ Runbooks the engine matched to this case, if any, are in "
+        "<knowledge_context> below —\n"
+        "  treat them as the KB result. The knowledge base cannot be searched on "
+        "this turn;\n"
+        "  do not claim a search.\n"
+    )
+
+
+def _kb_none(given: GivenTools) -> str:
+    if has(given, "kb_qa"):
+        return "□ If `kb_qa` returns no relevant results → proceed silently (do not mention the\n  failed search) and follow YOUR PROGRESSION below.\n\n"
+    return (
+        "□ If no runbook in <knowledge_context> is relevant → proceed silently and "
+        "follow\n"
+        "  YOUR PROGRESSION below.\n\n"
+    )
+
+
+def _search_strategy(given: GivenTools) -> str:
+    kb = has(given, "kb_qa")
+    searchers = present(given, *EVIDENCE_SEARCH_TOOLS)
+    named = [f"`{t}`" for t in searchers]
+    heading = (
+        "**SEARCH STRATEGY (how to use tools for forward-looking investigation):**"
+        if kb or searchers
+        else "**DATA SOURCES (where each investigation variable advances from):**"
+    )
+    text = (
+        heading + "\n\n"
+        "The same rule that governs answering user questions also governs advancing "
+        "investigation\n"
+        "variables. Variable type determines which data source to search:\n\n"
+        "- **Agent-internal variables** (hypothesis state) — reason from KB and your own\n"
+    )
+    text += (
+        "  knowledge. Same as answering a runbook or procedural question: call `kb_qa` to\n"
+        "  find known diagnostic approaches and fix steps.\n"
+        if kb
+        else "  knowledge. Same as answering a runbook or procedural question: use any\n"
+        "  runbook in <knowledge_context> below for known diagnostic approaches and fix\n"
+        "  steps.\n"
+    )
+    text += "- **Data-driven variables** (`symptom_verified`, the causal evidence that grounds\n"
+    text += (
+        "  `cause_state`, `mitigation_verified`) — search the evidence files the user\n"
+        "  submitted. Same as answering a telemetric question: call "
+        + " or\n  ".join(named)
+        + " to find facts in logs, metrics, and configs.\n"
+        if searchers
+        else "  `cause_state`, `mitigation_verified`) advance only on data in\n"
+        "  <evidence_collected> or data the user submits; name the exact file, window and\n"
+        "  command you need.\n"
+    )
+    text += (
+        "- **Confirmation-driven variables** (`user_confirmed_investigation`, "
+        "`solution_accepted`,\n"
+        "  `solution_verified`, etc.) — no search needed; detect the user's signal "
+        "directly.\n\n"
+    )
+    if kb and searchers:
+        text += (
+            "These two data sources serve different purposes and cannot substitute for "
+            "each other:\n"
+            "- `kb_qa` returns procedural knowledge — what to do. It knows nothing about the\n"
+            "  user's specific incident data.\n"
+            f"- {' / '.join(named)} return incident-specific facts — what happened.\n"
+            "  They contain no fix procedures.\n\n"
+        )
+    if kb or searchers:
+        text += "When to call each within DIAGNOSIS:\n"
+    if kb:
+        text += (
+            "- `kb_qa`: once at the start of Zone 2 before forming hypotheses. Do not "
+            "call it to\n"
+            "  find incident-specific facts (deployments, error counts, config values).\n"
+        )
+    if searchers:
+        text += (
+            f"- {' / '.join(named)}: Zones 1 and 2 to advance data-driven variables.\n"
+            "  Do not call them to find fix procedures or diagnostic approaches.\n"
+        )
+    if kb or searchers:
+        text += "\n"
+    if len(searchers) == 2:
+        text += (
+            "Tool selection within evidence search:\n"
+            "- `search_file` — keyword or regex scan of raw file content. Use when a "
+            "specific\n"
+            "  string or pattern is known.\n"
+            "- `case_evidence_search` — semantic query over the case's indexed evidence. "
+            "Use when the concept\n"
+            '  is clear but the exact text is not ("what changed before the failure?").\n'
+            "Use `search_file` first when a concrete term is known; "
+            "`case_evidence_search` otherwise.\n\n"
+        )
+    return text
+
+
+_ZONE_1_SEARCH = """\
+Zone 1 — symptom verification search:
+1. Check `<search_map>` hints first. Each uploaded file's `[search: ...]` hints are
+   generated from actual file content — they are the most reliable starting point.
+   Run those hints through `search_file` before using generic terms.
+2. If search_map hints don't cover the needed symptom, fall back to these default
+   symptom terms (keyword mode): `error`, `exception`, `failed`, `failure`, `timeout`,
+   `refused`, `crash`, `panic`, `killed`, `OOM`, `5xx`. For HTTP status codes, use
+   regex: `[45][0-9]{2}`.
+3. Evaluate results against the conclusive criteria in Zone 1 below.
+
+"""
+
+#: Zone 2's steps by the tool each needs, numbered at render.
+_ZONE_2_KEYWORD_STEPS = (
+    """\
+Change event search — call `search_file` (keyword mode) on deployment logs,
+   change logs, audit logs, or any file covering the incident timeframe. Default
+   search terms: `deploy`, `release`, `rollout`, `restart`, `upgrade`, `update`,
+   `config`, `migration`, `push`, `scale`. Filter by the timeline window established
+   in Zone 1 — narrow the search to events before the first symptom timestamp.
+""",
+    """\
+Causal mechanism search — once a hypothesis names a specific mechanism (e.g.,
+   `max_connections`, a specific config key, a service name), call `search_file`
+   with that exact term to find the change or its effect in the evidence.
+""",
+)
+_ZONE_2_CONCEPT_STEP = """\
+If no specific term is known, use `case_evidence_search` with a concept query:
+   "what configuration changed before [timestamp]?" or "which component was updated
+   in the [service] deployment?"
+"""
+
+
+def _zone_searches(given: GivenTools) -> str:
+    steps = []
+    if has(given, "search_file"):
+        steps += _ZONE_2_KEYWORD_STEPS
+    if has(given, "case_evidence_search"):
+        steps.append(_ZONE_2_CONCEPT_STEP)
+    if not steps:
+        return (
+            "Zones 1 and 2: data-driven variables advance only on data in "
+            "<evidence_collected> or\n"
+            "data the user submits; name the exact file, window and command you need.\n\n"
+        )
+    text = _ZONE_1_SEARCH if has(given, "search_file") else ""
+    text += "Zone 2 — change event and causal evidence search:\n"
+    text += "".join(f"{n}. {step}" for n, step in enumerate(steps, 1))
+    return text + "\n"
+
+
+def _pick_targets(given: GivenTools) -> str:
+    if present(given, *EVIDENCE_SEARCH_TOOLS):
+        return """
+Pick targets from each file's `<file_extract>` and `<search_map>`:
+  - Symptom search → files whose time range overlaps the incident window
+  - Change-event search → deployment / audit / config logs, regardless of recency
+  - Hypothesis testing → the file most likely to contain the mechanism's signature
+"""
+    return """
+Pick sources from each file's `<file_extract>` and `<search_map>`:
+  - Symptoms → files whose time range overlaps the incident window
+  - Change events → deployment / audit / config logs, regardless of recency
+  - Hypothesis testing → the file most likely to contain the mechanism's signature
+"""
+
+
+def _timeline_anchor(given: GivenTools) -> str:
+    if has(given, "search_file"):
+        return (
+            "   **Use timeline as the search anchor.** Before generating hypotheses, "
+            "search for\n"
+            "   change events just before the timeline window using the Zone 2 change "
+            "event search\n"
+            "   strategy above. A change event near the timeline raises confidence in a "
+            "change\n"
+            "   hypothesis and narrows the search space.\n"
+        )
+    return (
+        "   **Use timeline as the anchor.** Before generating hypotheses, look in\n"
+        "   <evidence_collected> for change events just before the timeline window, or "
+        "ask\n"
+        "   the user for them.\n"
+    )
+
+
+def _symptom_signature_step(given: GivenTools) -> str:
+    if has(given, "search_file"):
+        return "(a) search_file for symptom signatures\n   using the Zone 1 search strategy above "
+    return (
+        "(a) look in <evidence_collected> for symptom signatures\n"
+        "   (or ask the user for them) "
+    )
+
+
 # =============================================================================
 # _RCA_DIAGNOSIS_BLOCK — the single DIAGNOSIS-stage block in the unified
 # opportunistic flow. Full hypothesis-driven diagnostic flow, built by
@@ -315,19 +528,21 @@ Example (unobservable race, two rivals both refuted):
 # on cause_state — there is no longer a prospective path fork. It renders in
 # the prompt's per-turn tail as {focus_emphasis}, not in this block (#613).
 # =============================================================================
-_RCA_DIAGNOSIS_BLOCK = (
-    """
+def rca_diagnosis_block(given: GivenTools) -> str:
+    """The DIAGNOSIS stage instructions, naming only the tools ``given``."""
+    return (
+        """
 **FOCUS: DIAGNOSIS** (Understand the problem, find the cause, propose a solution)
 
 """
-    + _DIAGNOSIS_ZONES_PREAMBLE
-    + """
+        + _diagnosis_zones_preamble(given)
+        + """
 """
-    + _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
-    + """
+        + _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
+        + """
 """
-    + _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
-    + """
+        + _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+        + """
 **HYPOTHESIS STATE — REFUTED vs RETIRED:**
 - REFUTED = evidence directly disproves the hypothesis. When setting
   state=REFUTED you MUST also supply `refutation_reason` (max 200 chars)
@@ -352,10 +567,9 @@ formation, and root cause identification. End this stage by proposing a concrete
 for the user to execute — their compliance implies acceptance and transitions to TREATMENT.
 
 **KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
-□ MUST search KB (`kb_qa`) for the symptom ONCE at the start of
-  Zone 2 (after symptom_verified=True, before forming hypotheses independently).
-  Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
-□ Retrieved runbooks are structured around per-Cause subsections (`### Cause A`,
+"""
+        + _kb_first(given)
+        + """□ Retrieved runbooks are structured around per-Cause subsections (`### Cause A`,
   `### Cause B`, ..., plus a mandatory fallback `### Cause Z: Unidentified`). Each
   Cause is a causal chain with exactly one ROOT, carrying: **Statement:** (the
   single root cause), an optional **Chain:** (the causal ladder of intermediate
@@ -405,86 +619,29 @@ for the user to execute — their compliance implies acceptance and transitions 
   refute the Cause-derived hypothesis (state=REFUTED + refutation_reason) and
   re-attribute, or pivot to independent hypothesis formation.
 
-□ If `kb_qa` returns no relevant results → proceed silently (do not mention the
-  failed search) and follow YOUR PROGRESSION below.
-
-**SEARCH STRATEGY (how to use tools for forward-looking investigation):**
-
-The same rule that governs answering user questions also governs advancing investigation
-variables. Variable type determines which data source to search:
-
-- **Agent-internal variables** (hypothesis state) — reason from KB and your own
-  knowledge. Same as answering a runbook or procedural question: call `kb_qa` to
-  find known diagnostic approaches and fix steps.
-- **Data-driven variables** (`symptom_verified`, the causal evidence that grounds
-  `cause_state`, `mitigation_verified`) — search the evidence files the user
-  submitted. Same as answering a telemetric question: call `search_file` or
-  `case_evidence_search` to find facts in logs, metrics, and configs.
-- **Confirmation-driven variables** (`user_confirmed_investigation`, `solution_accepted`,
-  `solution_verified`, etc.) — no search needed; detect the user's signal directly.
-
-These two data sources serve different purposes and cannot substitute for each other:
-- `kb_qa` returns procedural knowledge — what to do. It knows nothing about the
-  user's specific incident data.
-- `search_file` / `case_evidence_search` return incident-specific facts — what happened.
-  They contain no fix procedures.
-
-When to call each within DIAGNOSIS:
-- `kb_qa`: once at the start of Zone 2 before forming hypotheses. Do not call it to
-  find incident-specific facts (deployments, error counts, config values).
-- `search_file` / `case_evidence_search`: Zones 1 and 2 to advance data-driven variables.
-  Do not call them to find fix procedures or diagnostic approaches.
-
-Tool selection within evidence search:
-- `search_file` — keyword or regex scan of raw file content. Use when a specific
-  string or pattern is known.
-- `case_evidence_search` — semantic query over the case's indexed evidence. Use when the concept
-  is clear but the exact text is not ("what changed before the failure?").
-Use `search_file` first when a concrete term is known; `case_evidence_search` otherwise.
-
-**File-selection rule (all zones):**
 """
-    + _FILE_SELECTION_DEFAULT
-    + """
-Pick targets from each file's `<file_extract>` and `<search_map>`:
-  - Symptom search → files whose time range overlaps the incident window
-  - Change-event search → deployment / audit / config logs, regardless of recency
-  - Hypothesis testing → the file most likely to contain the mechanism's signature
-
-Zone 1 — symptom verification search:
-1. Check `<search_map>` hints first. Each uploaded file's `[search: ...]` hints are
-   generated from actual file content — they are the most reliable starting point.
-   Run those hints through `search_file` before using generic terms.
-2. If search_map hints don't cover the needed symptom, fall back to these default
-   symptom terms (keyword mode): `error`, `exception`, `failed`, `failure`, `timeout`,
-   `refused`, `crash`, `panic`, `killed`, `OOM`, `5xx`. For HTTP status codes, use
-   regex: `[45][0-9]{2}`.
-3. Evaluate results against the conclusive criteria in Zone 1 below.
-
-Zone 2 — change event and causal evidence search:
-1. Change event search — call `search_file` (keyword mode) on deployment logs,
-   change logs, audit logs, or any file covering the incident timeframe. Default
-   search terms: `deploy`, `release`, `rollout`, `restart`, `upgrade`, `update`,
-   `config`, `migration`, `push`, `scale`. Filter by the timeline window established
-   in Zone 1 — narrow the search to events before the first symptom timestamp.
-2. Causal mechanism search — once a hypothesis names a specific mechanism (e.g.,
-   `max_connections`, a specific config key, a service name), call `search_file`
-   with that exact term to find the change or its effect in the evidence.
-3. If no specific term is known, use `case_evidence_search` with a concept query:
-   "what configuration changed before [timestamp]?" or "which component was updated
-   in the [service] deployment?"
-
-**YOUR PROGRESSION (discovery path — used when no runbook Cause was attributed):**
+        + _kb_none(given)
+        + """"""
+        + _search_strategy(given)
+        + """**File-selection rule (all zones):**
+"""
+        + file_selection_default(given)
+        + _pick_targets(given)
+        + """
+"""
+        + _zone_searches(given)
+        + """**YOUR PROGRESSION (discovery path — used when no runbook Cause was attributed):**
 
 When KNOWLEDGE & RUNBOOK AUTHORITY above did not produce an attributed Cause
-(either kb_qa returned nothing relevant, or only the `Cause Z: Unidentified`
+(either no retrieved runbook was relevant, or only the `Cause Z: Unidentified`
 fallback applied), follow the activities below to form hypotheses from the
 evidence directly. You may do several in one turn if the evidence supports it.
 
 1. **Verify the Problem** — Confirm what's happening using evidence the user provides.
 
-   Apply the three-step diagnostic pattern: (a) search_file for symptom signatures
-   using the Zone 1 search strategy above → (b) evaluate against conclusive criteria
+   Apply the three-step diagnostic pattern: """
+        + _symptom_signature_step(given)
+        + """→ (b) evaluate against conclusive criteria
    → (c) advance with citation or ask specifically.
 
    **What to look for:**
@@ -542,11 +699,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - Narrow scope (single pod, user, endpoint) → isolated first: pod-specific config,
      user-specific data, targeted code path.
 
-   **Use timeline as the search anchor.** Before generating hypotheses, search for
-   change events just before the timeline window using the Zone 2 change event search
-   strategy above. A change event near the timeline raises confidence in a change
-   hypothesis and narrows the search space.
-
+"""
+        + _timeline_anchor(given)
+        + """
    **Deployment/change evidence — two distinct steps:**
    - Step 1: Find the **change event** (deployment timestamp, config push applied,
      scaling event). Note it in your reasoning / journal but do NOT
@@ -649,12 +804,12 @@ for context-only data. Promote material to evidence only when it
 supports a specific claim (symptom, cause, mitigation, or solution).
 
 """
-    + _URGENCY_RECOGNITION_BLOCK
-    + "\n"
-    + _EVIDENCE_REQUEST_FORMAT_BLOCK
-    + "\n"
-    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
-    + """
+        + _URGENCY_RECOGNITION_BLOCK
+        + "\n"
+        + _EVIDENCE_REQUEST_FORMAT_BLOCK
+        + "\n"
+        + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        + """
 **ROOT CAUSE IDENTIFICATION — Decision Tree:**
 
 **Option A: SINGLE-SHOT** (root cause obvious from evidence)
@@ -748,4 +903,4 @@ progress, do not continue spinning. Instead, produce a structured handoff:
 Do not frame this as failure. A well-documented partial investigation that narrows the
 problem and identifies what's needed next is a valuable outcome.
 """
-)
+    )

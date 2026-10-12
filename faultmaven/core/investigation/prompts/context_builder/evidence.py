@@ -8,6 +8,11 @@ from faultmaven.core.investigation.prompts.fence import (
     delimiter_overhead_chars,
     render_fenced,
 )
+from faultmaven.core.investigation.prompts.templates.tool_text import (
+    NO_TOOLS,
+    GivenTools,
+    has,
+)
 from faultmaven.modules.case.contracts import Case
 
 from .budget import (
@@ -711,12 +716,14 @@ def _render_orphan_file_block(
     elide_extract: bool = False,
     *,
     fence: PromptFence,
+    given: GivenTools,
 ) -> str:
     """Render one orphan ``UploadedFile`` as an ``<uploaded_file>`` block.
 
     Shared by the current-turn floor and the historical Tier-D fill so both
     paths produce byte-identical markup. The structural index is split into
-    ``file_extract`` (per-item capped, with a search_file truncation pointer),
+    ``file_extract`` (per-item capped, with a truncation marker that points at
+    ``search_file`` only when ``given`` has it, #1939),
     ``search_map``, and ``file_meta``.
 
     The item is named by a single ``label`` attribute carrying
@@ -778,8 +785,12 @@ def _render_orphan_file_block(
         entry += (
             fence.element(
                 "file_extract",
-                "[Full content omitted to fit budget; "
-                "use search_file with the file_id above to read it.]",
+                (
+                    "[Full content omitted to fit budget; "
+                    "use search_file with the file_id above to read it.]"
+                    if has(given, "search_file")
+                    else "[Full content omitted to fit budget.]"
+                ),
                 indent="    ",
                 inline=True,
             )
@@ -809,6 +820,8 @@ def _render_orphan_file_block(
             truncation_note = (
                 f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
                 "Use search_file with the file_id above for specific lookups.]"
+                if has(given, "search_file")
+                else f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
             )
         body = ""
         if uf.filename:
@@ -884,7 +897,7 @@ def _build_evidence_context(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
     char_budget_override: Optional[int] = None,
-    tools_available: bool = False,
+    given_tools: GivenTools = NO_TOOLS,
     fence: Optional[PromptFence] = None,
 ) -> str:
     """Render ``<evidence_collected>`` behind a nonce fence (#1217, #1228).
@@ -920,7 +933,7 @@ def _build_evidence_context(
             provider_name=provider_name,
             model_name=model_name,
             char_budget_override=char_budget_override,
-            tools_available=tools_available,
+            given_tools=given_tools,
         )
     return render_fenced(
         lambda f: _render_evidence_block(
@@ -931,7 +944,7 @@ def _build_evidence_context(
             provider_name=provider_name,
             model_name=model_name,
             char_budget_override=char_budget_override,
-            tools_available=tools_available,
+            given_tools=given_tools,
         )
     )
 
@@ -945,7 +958,7 @@ def _render_evidence_block(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
     char_budget_override: Optional[int] = None,
-    tools_available: bool = False,
+    given_tools: GivenTools = NO_TOOLS,
 ) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
@@ -993,7 +1006,11 @@ def _render_evidence_block(
                 result = _open_evidence_collected(fence)
                 for uf in files_with_content:
                     result += _render_orphan_file_block(
-                        uf, hash_first_seen, case.current_turn, fence=fence
+                        uf,
+                        hash_first_seen,
+                        case.current_turn,
+                        fence=fence,
+                        given=given_tools,
                     )
                 result += fence.close("evidence_collected")
                 return result
@@ -1101,7 +1118,8 @@ def _render_evidence_block(
     # regression), so it is the standing behavior rather than a flag. Gated on TWO
     # conditions, both required:
     #   1. this is a directed_analysis turn, AND
-    #   2. tools_available — search_file will ACTUALLY run this turn. Without (2)
+    #   2. search_file is in the turn's given set — it will ACTUALLY run this
+    #      turn (#1939: the set, not a capability bool). Without (2)
     #      a tool-less / tool-incapable turn would be stranded with a stub that
     #      points at a tool it cannot call (NO INCORRECT CONCLUSION). "directed_
     #      analysis" is the classifier's ambiguous default and does NOT by itself
@@ -1110,7 +1128,9 @@ def _render_evidence_block(
     # no Evidence row yet and renders through the orphan floor below, which does
     # not elide (freshness / INV-EC-1). Nothing is carved out of the evidence
     # tiers for it — there is nothing there to carve out (#1603).
-    da_index_only = processing_mode == "directed_analysis" and tools_available
+    da_index_only = processing_mode == "directed_analysis" and has(
+        given_tools, "search_file"
+    )
 
     result = _open_evidence_collected(fence)
     # The fenced envelope is ~55 chars of the block's budget (it was ~280 while
@@ -1154,7 +1174,7 @@ def _render_evidence_block(
         ]
         for uf in current_turn_orphans:
             full_entry = _render_orphan_file_block(
-                uf, hash_first_seen, current_turn, fence=fence
+                uf, hash_first_seen, current_turn, fence=fence, given=given_tools
             )
             # First item renders full unconditionally; later items render full
             # only while within the reserve, else degrade to a summary stub.
@@ -1166,7 +1186,12 @@ def _render_evidence_block(
                 total_chars += len(full_entry)
             else:
                 summary_entry = _render_orphan_file_block(
-                    uf, hash_first_seen, current_turn, summary_only=True, fence=fence
+                    uf,
+                    hash_first_seen,
+                    current_turn,
+                    summary_only=True,
+                    fence=fence,
+                    given=given_tools,
                 )
                 result += summary_entry
                 total_chars += len(summary_entry)
@@ -1298,8 +1323,10 @@ def _render_evidence_block(
             if confidence_advisory:
                 body += f"{confidence_advisory}\n"
             body += file_extract
-            if truncated:
+            if truncated and has(given_tools, "search_file"):
                 body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
+            elif truncated:
+                body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
             result += (
                 fence.element("file_extract", body, attrs=role_attr, indent="    ")
                 + "\n"
@@ -1464,6 +1491,7 @@ def _render_evidence_block(
                 current_turn,
                 elide_extract=da_index_only,
                 fence=fence,
+                given=given_tools,
             )
             # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
             # orphan never drops every smaller orphan behind it. Note this is a
@@ -1477,16 +1505,21 @@ def _render_evidence_block(
             total_chars += len(entry)
 
     # INV-4: never drop evidence silently. If any item was skipped for budget,
-    # say so — the agent can then ask for it or search_file rather than assume
-    # the shown set is exhaustive.
+    # say so — the agent can then search_file (when this turn gives it) or ask
+    # for it rather than assume the shown set is exhaustive.
     if n_omitted:
+        reach = (
+            "use search_file to reach it"
+            if has(given_tools, "search_file")
+            else "ask for what you need"
+        )
         result += (
             "  "
             + fence.empty(
                 "evidence_omitted",
                 f' count="{n_omitted}" '
                 f'reason="prompt_budget" note="More evidence exists but did not fit '
-                f'this turn; use search_file to reach it."',
+                f'this turn; {reach}."',
             )
             + "\n"
         )

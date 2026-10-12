@@ -37,6 +37,7 @@ from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMP
 from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 def _flat(text: str) -> str:
@@ -143,10 +144,10 @@ class TestFollowUpTypeDiscrimination:
         directive must prescribe EVIDENCE (share the fix outcome) +
         FREE_SPEECH (ask about the fix) instead."""
         from faultmaven.core.investigation.prompts.templates.diagnosis import (
-            _RCA_DIAGNOSIS_BLOCK,
+            rca_diagnosis_block,
         )
 
-        block = _RCA_DIAGNOSIS_BLOCK
+        block = rca_diagnosis_block(DEFAULT_GIVEN)
         assert 'EVIDENCE — "Share the result of the fix"' in block
         assert 'FREE_SPEECH — "Ask about the proposed fix"' in block
         assert "Neither is clickable (DECIDE/RUN)" in block

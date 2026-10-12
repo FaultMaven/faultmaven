@@ -72,6 +72,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
     WorkingConclusion,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 _FILE_ID = "file_0123456789ab"
 
@@ -94,6 +95,20 @@ PREFIX_ALLOWLIST = {
     "evidence_grounding",
     # Constant per processing mode: the reasoning block, or "" when waived.
     "diagnostic_reasoning",
+    # The turn's given tool set, stated (#1939). It varies with the deployment
+    # and the route only. A case can alternate: single-shot turns (nothing to
+    # search, no tools) between knowledge_query turns (tool loop). Neither side
+    # pays for it: a knowledge_query turn already has its own prefix (its
+    # stage instructions), and the single-shot path sends no cache_prompt.
+    "tools_this_turn",
+    # Where the next data point comes from, and whether prior files are
+    # searchable: a search tool when one is given, else the user and the
+    # extracts. Vary with the given set only, as above.
+    "fetch_next_data_point",
+    "prior_files",
+    # The advisor block's note that tool calls are not banned actions: present
+    # when the turn gives tools. Varies with the given set only, as above.
+    "tool_results_rule",
     # The stage instructions. Constant within a stage and processing mode, so
     # they change a few times a case at most — which makes them the prefix's
     # LAST part. The DIAGNOSIS focus emphasis, which moves with the milestones
@@ -407,7 +422,7 @@ def _prompt(later: bool, when: str, **overrides) -> str:
         for k in ("symptom_verified", "observed", "solution_accepted")
         if k in overrides
     }
-    kwargs: dict = {}
+    kwargs: dict = {"given_tools": DEFAULT_GIVEN}
     if later:
         kwargs["kb_results"] = [
             {"title": B_ONLY["kb_results"], "summary": "raise the limit"}
@@ -490,16 +505,30 @@ class TestPrefixIsByteStableAcrossTurns:
         assert ZONE_2_STALE in _tail(b)
         assert _prefix(a) == _prefix(b)
 
-    @pytest.mark.parametrize("change", ["stage", "processing_mode"])
-    def test_prefix_changes_with_the_stage_or_the_processing_mode(self, change):
-        """Non-vacuity: the two inputs the prefix MAY vary with do move it."""
+    @pytest.mark.parametrize("change", ["stage", "processing_mode", "given_tools"])
+    def test_prefix_changes_with_the_stage_the_mode_or_the_given_tools(self, change):
+        """Non-vacuity: the three inputs the prefix MAY vary with do move it.
+        The given tool set (#1939) changes with the route: no tools on the
+        single-shot route, the tool loop's set on a tool-loop turn."""
         a = _prompt(False, TURN_A_TIME)
         if change == "stage":
             b = _prompt(True, TURN_B_TIME, solution_accepted=True)
             assert "KB-RESOLUTION VARIANT" in _prefix(b)  # TREATMENT's block
-        else:
+        elif change == "processing_mode":
             b = _prompt(True, TURN_B_TIME, processing_mode="knowledge_query")
+        else:
+            b = _prompt(True, TURN_B_TIME, given_tools=NO_TOOLS)
+            assert "No investigation tools are available" in _prefix(b)
         assert _prefix(a) != _prefix(b)
+
+    @pytest.mark.parametrize("given", [DEFAULT_GIVEN, NO_TOOLS], ids=["six", "none"])
+    def test_prefix_is_identical_across_turns_with_one_given_set(self, given):
+        """#1939: the tool sentences sit in the prefix, so a given set that
+        holds between two turns must leave it byte-identical — for the tool
+        loop's set and for a tool-less turn's alike."""
+        a = _prompt(False, TURN_A_TIME, given_tools=given)
+        b = _prompt(True, TURN_B_TIME, given_tools=given)
+        assert _prefix(a) == _prefix(b)
 
     def test_fence_rule_precedes_the_first_fenced_tag(self):
         """#1256 on the rendered prompt: the rule sits in the prefix, the one

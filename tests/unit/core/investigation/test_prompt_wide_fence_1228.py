@@ -72,6 +72,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
+from tests.unit.core.investigation.given_tools import ENTITY_GIVEN
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -985,7 +986,10 @@ class TestTheDeclarationSitsOutsideTheQuotedRegion:
 
     def test_the_entity_standing_instruction_is_also_outside(self):
         ctx = build_investigation_context(
-            _case(), "what now?", entity_highlight_groups=_groups()
+            _case(),
+            "what now?",
+            entity_highlight_groups=_groups(),
+            given_tools=ENTITY_GIVEN,
         )
         block = ctx["entity_highlights"]
         token = _live_token(ctx)

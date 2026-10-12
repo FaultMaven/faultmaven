@@ -3232,6 +3232,7 @@ class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
             tool_context=ctx,
             da_empty_search_counts={},
             proactive_tasks={"ev_1": task},
+            given_tools=frozenset({"search_file", "case_evidence_search"}),
         )
 
         emitted = engine._VECTORIZED_SYSTEM_MESSAGE in result_text

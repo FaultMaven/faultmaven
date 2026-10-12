@@ -42,7 +42,7 @@ from faultmaven.core.investigation.prompts.templates.blocks import (
 )
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _CHAIN_EMISSION_BLOCK,
-    _RCA_DIAGNOSIS_BLOCK,
+    rca_diagnosis_block,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
@@ -51,7 +51,7 @@ from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
 )
 from faultmaven.core.investigation.prompts.templates.treatment import (
-    TREATMENT_INSTRUCTIONS,
+    treatment_instructions,
 )
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.modules.case.contracts import InvestigationActionType, ProblemStatus
@@ -69,6 +69,7 @@ from faultmaven.modules.case.domain.models.problem import (
     ProblemVerification,
 )
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
     _cause_gone,
@@ -222,7 +223,7 @@ def test_a_repeated_challenge_changes_the_approach():
 
 
 def test_the_diagnosis_block_ties_refuted_to_a_linked_row():
-    text = " ".join(_RCA_DIAGNOSIS_BLOCK.split())
+    text = " ".join(rca_diagnosis_block(DEFAULT_GIVEN).split())
     assert "The reason is not the disproof" in text
     assert "A competitor your reply rules out is recorded in the same turn" in text
 
@@ -236,7 +237,7 @@ def test_signature_screening_records_a_screened_cause_the_reply_names():
 
 
 def test_the_treatment_block_scopes_the_no_more_data_line():
-    text = " ".join(TREATMENT_INSTRUCTIONS.split())
+    text = " ".join(treatment_instructions(DEFAULT_GIVEN).split())
     assert "On the turn you propose resolved, do not suggest additional" in text
     assert "A user who declines because they question the cause" in text
     assert "The engine accepts it once the case records the failure" in text
