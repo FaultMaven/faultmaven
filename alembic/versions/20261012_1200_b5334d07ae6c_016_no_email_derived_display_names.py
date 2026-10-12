@@ -1,4 +1,4 @@
-"""016_no_email_derived_display_names
+r"""016_no_email_derived_display_names
 
 No display name derived from an email address (#1924). A display name is shown
 to people other than its owner: a shared case's creator and driver, the
@@ -22,13 +22,26 @@ applies to every new write:
    (the database store stored a title-cased address, ``Alice Smith@Example
    Com``), an address the IdP sent as the ``name`` (``pat@example.com``,
    ``Quinn <quinn@example.com>``), and an address typed as the name.
-3. **Any account whose display name equals its email's local part**, ignoring
-   case and surrounding whitespace (an IdP ``name`` of ``Erin`` for
-   ``erin@…``). Separators are not normalised: ``Sam Smith`` for
-   ``sam.smith@…`` is a name a person types, and is kept.
+3. **Any account whose display name equals its REAL email's local part**,
+   ignoring case and surrounding spaces: an IdP ``name`` of ``Erin`` for
+   ``erin@…``, or the database store's title-cased username ``Alice`` for
+   username ``alice`` with ``alice@acme.com``. An email the store synthesized
+   for an account registered without one (``<username>@faultmaven.example``,
+   ``infrastructure/auth/synthesized_email.py``) is not real: it was derived
+   from the username, so ``Bob`` with ``bob@faultmaven.example`` is kept. This
+   is the predicate the writers apply (``usable_display_name`` judged against
+   the real email only), frozen here as SQL.
 
-Each becomes ``Member`` and the first four characters of its ``user_id``. Every
-other row is untouched.
+Each becomes ``Member`` and the first four characters of its ``user_id``.
+
+Rows left untouched: an SSO name that differs from the username, holds no
+``@`` and is not the real email's local part (``Jane Doe``); a local name with
+no ``@`` that is not the real email's local part, including the title-cased
+form of a plain username (``Carol X`` for ``carol_x``), any name of an account
+whose email is synthesized (``Bob``), and a name that renders the local part
+with different separators (``Sam Smith`` for ``sam.smith@…``, a name a person
+types: separators are not normalised); and the Redis store's local-part form
+(below).
 
 The Redis user store's old form (title-casing the local part: ``Alice Smith``
 for ``alice.smith@example.com``) is NOT matched: that store never writes these
@@ -53,7 +66,10 @@ One ``UPDATE``, the same text on both dialects: ``||``, ``substr``, ``lower``,
 PostgreSQL. Rule 3 builds a ``LIKE`` pattern from the display name, so ``\``,
 ``%`` and ``_`` in the name are escaped first: a name ``sam_x`` must not match
 ``samAx@…``. SQLite's ``lower`` folds ASCII only; a non-ASCII local part that
-differs from its name only in case is not matched there.
+differs from its name only in case is not matched there. SQL ``trim()`` strips
+spaces only, where the writers' ``strip()`` strips all whitespace, so a legacy
+name stored with a surrounding tab or newline is not matched by rule 3 (new
+writes are stripped before they are stored).
 
 ``users`` is not enrolled in row-level security (the login path reads it before
 any tenant is bound; see the baseline's ``_TENANT_TABLES``), so the migrating
@@ -95,11 +111,15 @@ _LITERAL_NAME = (
     "'\\', '\\\\'), '%', '\\%'), '_', '\\_')"
 )
 
+#: ``infrastructure/auth/synthesized_email.is_synthesized_email``, frozen.
+_REAL_EMAIL = "lower(email) NOT LIKE '%@faultmaven.example'"
+
 #: Rules 1-3 of the module docstring.
 EMAIL_DERIVED = (
     "(sso_provider IS NOT NULL AND display_name = username) "
     "OR display_name LIKE '%@%' "
-    f"OR lower(email) LIKE {_LITERAL_NAME} || '@%' ESCAPE '\\'"
+    f"OR ({_REAL_EMAIL} "
+    f"AND lower(email) LIKE {_LITERAL_NAME} || '@%' ESCAPE '\\')"
 )
 
 RELABEL = (

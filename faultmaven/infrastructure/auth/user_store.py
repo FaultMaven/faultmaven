@@ -34,6 +34,10 @@ from faultmaven.exceptions import (
     UserLookupFailed,
     ValidationException,
 )
+from faultmaven.infrastructure.auth.synthesized_email import (
+    is_synthesized_email,
+    synthesized_email,
+)
 from faultmaven.modules.auth.domain.display_name import (
     neutral_display_name,
     usable_display_name,
@@ -274,18 +278,21 @@ class RedisUserStore:
                 if self._validate_email(username):
                     email = username.lower()
                 else:
-                    email = f"{username.lower()}@faultmaven.example"
+                    email = synthesized_email(username.lower())
 
-            # Never a name derived from an email (#1924): a given name that is
-            # the address or its local part is no name; an address-shaped
-            # username gets the neutral label, a plain one its title-cased form.
-            display_name = usable_display_name(display_name, email=email)
-            if not display_name:
-                display_name = (
-                    neutral_display_name(user_id)
-                    if "@" in username
-                    else self._generate_display_name(username)
+            # Never a name derived from an email (#1924): the name given, else
+            # the username's title-cased form, whichever first passes the rule
+            # (no ``@``, not the email's local part), else the neutral label.
+            # Judged against a REAL email only: a synthesized one was derived
+            # from the username.
+            real_email = None if is_synthesized_email(email) else email
+            display_name = (
+                usable_display_name(display_name, email=real_email)
+                or usable_display_name(
+                    self._generate_display_name(username), email=real_email
                 )
+                or neutral_display_name(user_id)
+            )
 
             user = DevUser(
                 user_id=user_id,
@@ -518,8 +525,8 @@ class RedisUserStore:
         return bool(email and self.email_pattern.match(email))
 
     def _generate_display_name(self, username: str) -> str:
-        """Title-case a plain username (no ``@``: an address-shaped username
-        gets the neutral label instead, #1924)."""
+        """Title-case a username. The caller passes the result through the
+        display-name rule (#1924)."""
         display_name = username.replace(".", " ").replace("_", " ").replace("-", " ")
         return " ".join(word.capitalize() for word in display_name.split())
 

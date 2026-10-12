@@ -1614,6 +1614,26 @@ class TestNoEmailDerivedNamesRevision:
             None,
             "sam_x",
         ),
+        # Local, the database store's title-cased username, which is its real
+        # email's local part: relabelled.
+        (
+            "a1ce0000-0000-4000-8000-00000000000e",
+            "alice",
+            "alice@acme.com",
+            "Alice",
+            None,
+            "Member a1ce",
+        ),
+        # Local, registered with no email: the store synthesized one from the
+        # username, so the name is not judged against it. Kept.
+        (
+            "b0b00000-0000-4000-8000-00000000000f",
+            "bob",
+            "bob@faultmaven.example",
+            "Bob",
+            None,
+            "Bob",
+        ),
         # Local, a plain username's title-cased form: chosen, not derived. Kept.
         (
             "07182930-0000-4000-8000-00000000000c",
@@ -1684,8 +1704,8 @@ class TestNoEmailDerivedNamesRevision:
         result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert self._names() == {row[0]: row[5] for row in self.ROWS}
-        assert self.RELABELLED == 6
-        assert "016: relabelled 6 email-derived display name(s)" in result.stderr
+        assert self.RELABELLED == 7
+        assert "016: relabelled 7 email-derived display name(s)" in result.stderr
         assert "016: left 1 display name(s) that match only the Redis" in (
             result.stderr
         )

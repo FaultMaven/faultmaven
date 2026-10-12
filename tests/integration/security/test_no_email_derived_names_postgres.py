@@ -78,6 +78,8 @@ _SHAPES = (
     ("erin{n}", "erin{n}@example.com", "erin{n}@example.com", None, True),
     ("samsmith{n}", "sam.smith{n}@example.com", "Sam Smith", None, False),
     ("samax{n}", "samAx{n}@example.com", "sam_x{n}", None, False),
+    ("alice{n}", "alice{n}@acme.com", "Alice{n}", None, True),
+    ("bob{n}", "bob{n}@faultmaven.example", "Bob{n}", None, False),
 )
 
 
@@ -150,7 +152,7 @@ async def test_the_owner_relabels_every_enterprises_derived_names():
 
             result = alembic_on(owner_url, f"upgrade {_REVISION}")
             assert result.returncode == 0, result.stderr[-2000:]
-            assert "016: relabelled 12 email-derived display name(s)" in (
+            assert "016: relabelled 14 email-derived display name(s)" in (
                 result.stderr
             ), result.stderr[-2000:]
             assert await _names(su_url, expected) == expected

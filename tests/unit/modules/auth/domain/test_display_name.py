@@ -17,6 +17,10 @@ import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
+from faultmaven.infrastructure.auth.synthesized_email import (
+    is_synthesized_email,
+    synthesized_email,
+)
 from faultmaven.infrastructure.auth.user_store import RedisUserStore
 from faultmaven.modules.auth.domain.display_name import (
     MAX_DISPLAY_NAME_LENGTH,
@@ -103,6 +107,53 @@ def _redis_store() -> RedisUserStore:
     redis.set = AsyncMock()
     redis.sadd = AsyncMock()
     return RedisUserStore(redis_client=redis)
+
+
+#: (username, email, display name stored with no name given). The generated
+#: name passes the rule too, judged against a REAL email only (#1924).
+GENERATED_NAMES = (
+    ("alice", "alice@acme.com", None),  # "Alice" is the local part: neutral
+    ("alice", None, "Alice"),  # synthesized email: the username is chosen
+    ("alice.smith", "alice.smith@acme.com", "Alice Smith"),  # separators differ
+    ("Bob", "bob@acme.com", None),  # the local part in another case: neutral
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("username,email,expected", GENERATED_NAMES)
+async def test_the_database_stores_generated_name_passes_the_rule(
+    username, email, expected
+):
+    store, repo = _database_store()
+
+    await store.create_user(
+        username=username, email=email, enterprise_id=STANDALONE_ENTERPRISE_ID
+    )
+
+    written = repo.save.call_args.args[0]
+    assert written.display_name == (expected or f"Member {written.user_id[:4]}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("username,email,expected", GENERATED_NAMES)
+async def test_the_redis_stores_generated_name_passes_the_rule(
+    username, email, expected
+):
+    user = await _redis_store().create_user(
+        username=username, email=email, enterprise_id=STANDALONE_ENTERPRISE_ID
+    )
+
+    assert user.display_name == (expected or f"Member {user.user_id[:4]}")
+
+
+class TestSynthesizedEmail:
+    def test_the_stores_placeholder_is_recognised(self):
+        assert is_synthesized_email(synthesized_email("bob"))
+        assert is_synthesized_email("Bob@FaultMaven.Example")
+
+    @pytest.mark.parametrize("email", [None, "", "bob@acme.com", "bob@faultmaven.com"])
+    def test_a_real_or_missing_email_is_not(self, email):
+        assert not is_synthesized_email(email)
 
 
 @pytest.mark.asyncio
