@@ -352,7 +352,7 @@ formation, and root cause identification. End this stage by proposing a concrete
 for the user to execute — their compliance implies acceptance and transitions to TREATMENT.
 
 **KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
-□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom ONCE at the start of
+□ MUST search KB (`kb_qa`) for the symptom ONCE at the start of
   Zone 2 (after symptom_verified=True, before forming hypotheses independently).
   Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
 □ Retrieved runbooks are structured around per-Cause subsections (`### Cause A`,
@@ -419,28 +419,28 @@ variables. Variable type determines which data source to search:
 - **Data-driven variables** (`symptom_verified`, the causal evidence that grounds
   `cause_state`, `mitigation_verified`) — search the evidence files the user
   submitted. Same as answering a telemetric question: call `search_file` or
-  `case_evidence_qa` to find facts in logs, metrics, and configs.
+  `case_evidence_search` to find facts in logs, metrics, and configs.
 - **Confirmation-driven variables** (`user_confirmed_investigation`, `solution_accepted`,
   `solution_verified`, etc.) — no search needed; detect the user's signal directly.
 
 These two data sources serve different purposes and cannot substitute for each other:
 - `kb_qa` returns procedural knowledge — what to do. It knows nothing about the
   user's specific incident data.
-- `search_file` / `case_evidence_qa` return incident-specific facts — what happened.
+- `search_file` / `case_evidence_search` return incident-specific facts — what happened.
   They contain no fix procedures.
 
 When to call each within DIAGNOSIS:
 - `kb_qa`: once at the start of Zone 2 before forming hypotheses. Do not call it to
   find incident-specific facts (deployments, error counts, config values).
-- `search_file` / `case_evidence_qa`: Zones 1 and 2 to advance data-driven variables.
+- `search_file` / `case_evidence_search`: Zones 1 and 2 to advance data-driven variables.
   Do not call them to find fix procedures or diagnostic approaches.
 
 Tool selection within evidence search:
 - `search_file` — keyword or regex scan of raw file content. Use when a specific
   string or pattern is known.
-- `case_evidence_qa` — semantic query over all case evidence. Use when the concept
+- `case_evidence_search` — semantic query over the case's indexed evidence. Use when the concept
   is clear but the exact text is not ("what changed before the failure?").
-Use `search_file` first when a concrete term is known; `case_evidence_qa` otherwise.
+Use `search_file` first when a concrete term is known; `case_evidence_search` otherwise.
 
 **File-selection rule (all zones):**
 """
@@ -470,7 +470,7 @@ Zone 2 — change event and causal evidence search:
 2. Causal mechanism search — once a hypothesis names a specific mechanism (e.g.,
    `max_connections`, a specific config key, a service name), call `search_file`
    with that exact term to find the change or its effect in the evidence.
-3. If no specific term is known, use `case_evidence_qa` with a concept query:
+3. If no specific term is known, use `case_evidence_search` with a concept query:
    "what configuration changed before [timestamp]?" or "which component was updated
    in the [service] deployment?"
 

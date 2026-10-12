@@ -655,7 +655,7 @@ class TestTheTurnCommitJudge:
         assert "p99" in str(excinfo.value)
 
     def test_a_pull_request_does_not_judge_the_tail(self, monkeypatch):
-        # Calibration pinned at 1.0, so 4.0 s against the 0.25 s anchor would
+        # Calibration pinned at 1.0, so 4.0 s against the 0.11 s anchor would
         # fail if the tail were judged here: this is what kills a hard-coded 99.
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
         self._judge()(self._STALLED_TAIL)
@@ -1359,19 +1359,53 @@ CLOCK_FUNCTIONS = frozenset(
 HELPER_FUNCTIONS = frozenset({"assert_latency_within", "assert_throughput_at_least"})
 
 
+#: What every clock reading below is recorded as, whatever it was spelled.
+CLOCK_MARKER = "perf_counter"
+
+
+def _clock_spellings(tree: ast.AST) -> Tuple[set, set, set]:
+    """How a module can read a clock: (names bound to the ``time`` module,
+    names bound to the ``timeit`` module, names bound to a clock function).
+
+    ‼ #1940's review planted ``from time import perf_counter as _clock`` around
+    a timed loop and the guards stayed green: only a bare ``perf_counter`` or a
+    literal ``time.time`` was seen. Every import spelling is resolved here.
+    """
+    time_modules, timeit_modules, clocks = {"time"}, {"timeit"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "time":
+                    time_modules.add(alias.asname or "time")
+                elif alias.name == "timeit":
+                    timeit_modules.add(alias.asname or "timeit")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if node.module == "time" and alias.name in TIME_MODULE_CLOCKS:
+                    clocks.add(alias.asname or alias.name)
+                elif node.module == "timeit" and alias.name == "default_timer":
+                    clocks.add(alias.asname or alias.name)
+    return time_modules, timeit_modules, clocks
+
+
 def _call_graph(directories) -> Tuple[dict, list]:
     """Functions in ``directories``, what each calls, and the test ones.
 
     Returns ``({(module, name): {called names}}, [(path, name, module)])``.
-    ``time.time()`` is counted as a clock alongside `perf_counter`, because
-    a threshold written against it is no less a threshold for being badly
-    measured.
+    A clock reading in any spelling — ``time.time()``, ``t.monotonic()``
+    after ``import time as t``, a clock imported under another name,
+    ``timeit.default_timer`` — also records ``CLOCK_MARKER``, because a
+    threshold written against it is no less a threshold for being spelled
+    differently or badly measured. Names are only ever ADDED, so no guard
+    built on this sees fewer clocks than it did.
     """
     definitions: dict = {}
     tests: list = []
     for directory in directories:
-        for path in _modules_in(directory):
+        paths = _modules_in(directory) if directory.is_dir() else [directory]
+        for path in paths:
             tree = ast.parse(path.read_text(), filename=_key(path))
+            time_modules, timeit_modules, clocks = _clock_spellings(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -1382,27 +1416,37 @@ def _call_graph(directories) -> Tuple[dict, list]:
                     func = child.func
                     if isinstance(func, ast.Attribute):
                         calls.add(func.attr)
-                        if (
-                            isinstance(func.value, ast.Name)
-                            and func.value.id == "time"
-                            and func.attr == "time"
+                        if isinstance(func.value, ast.Name) and (
+                            (
+                                func.value.id in time_modules
+                                and func.attr in TIME_MODULE_CLOCKS
+                            )
+                            or (
+                                func.value.id in timeit_modules
+                                and func.attr == "default_timer"
+                            )
                         ):
-                            calls.add("perf_counter")
+                            calls.add(CLOCK_MARKER)
                     elif isinstance(func, ast.Name):
                         calls.add(func.id)
+                        if func.id in clocks:
+                            calls.add(CLOCK_MARKER)
                 definitions[(_key(path), node.name)] = calls
                 if node.name.startswith("test_"):
                     tests.append((path, node.name, _key(path)))
     return definitions, tests
 
 
-def _reaches(definitions, start, targets, on_ambiguous: bool) -> bool:
+def _reaches(definitions, start, targets, on_ambiguous: bool, stop=None) -> bool:
     """Does ``start`` reach any of ``targets`` through the call graph?
 
     ``on_ambiguous`` is the answer when a called name is defined in more
-    than one scanned module and cannot be resolved. Both callers pass the
+    than one scanned module and cannot be resolved. Every caller passes the
     value that produces MORE findings, so an unresolvable name never
     silences the guard.
+
+    ``stop(module, name)``, when given, names resolved functions the search
+    does not descend into: a route THROUGH them does not count.
     """
     by_name: dict = {}
     for module, name in definitions:
@@ -1418,11 +1462,15 @@ def _reaches(definitions, start, targets, on_ambiguous: bool) -> bool:
             if called in targets:
                 return True
             if (current[0], called) in definitions:
-                stack.append((current[0], called))
+                resolved = (current[0], called)
             elif len(by_name.get(called, [])) == 1:
-                stack.append((by_name[called][0], called))
+                resolved = (by_name[called][0], called)
             elif called in by_name:
                 return on_ambiguous
+            else:
+                continue
+            if stop is None or not stop(*resolved):
+                stack.append(resolved)
     return False
 
 
@@ -1487,6 +1535,331 @@ class TestEveryMeasurementIsJudged:
         }
         dead = sorted(key for key in UNJUDGED_TIMED_TESTS if key not in live)
         assert not dead, dead
+
+
+# ------------------------------------------ no statistic is one window (#1916)
+#
+# Both required gates run ``tests/performance/`` under xdist beside the whole
+# suite, and one timed window cannot tell a preempted runner from a
+# regression: #1916 failed a row on ONE ``asyncio.gather`` that stalled for
+# 1.2 s. So every judged statistic there is taken over several windows by
+# ``tests/wallclock/sampling.py``, which hands each window its clock and
+# refuses fewer windows than survive one stall. The rule below makes that
+# checkable from the call graph:
+#
+# * a judged test under ``tests/performance/`` reads no clock except THROUGH
+#   the sampler (its ``Window``), so a timed region outside a window is a
+#   finding wherever it is written;
+# * and it reaches one of the sampler's aggregators, so a statistic is never
+#   one window's figure.
+#
+# * and it never constructs a ``Window`` itself.
+#
+# A clock reading is resolved through every import spelling
+# (``_clock_spellings``): ``time``'s clocks under ``import time as t`` or
+# ``from time import perf_counter as _clock``, and ``timeit.default_timer``.
+# At run time a ``Window`` can only be opened by an aggregator (a token
+# private to ``sampling.py``) and is closed when its window ends, and the
+# aggregator refuses ``windows=1``. #1940's review planted two evasions that
+# the first version of this rule passed, ``set_window(Window())`` and an
+# aliased ``perf_counter``; both are planted below and must fail.
+
+SAMPLING_MODULE = "tests/wallclock/sampling.py"
+WINDOW_AGGREGATORS = frozenset(
+    {"median_of_windows", "median_of_windows_async", "fastest_of_windows"}
+)
+
+#: The one per-commit timer outside the sampler, scanned so the entry below
+#: is checked for being live rather than trusted.
+TURN_COMMIT_SAMPLES = REPO_ROOT / "tests" / "turn_commit_latency.py"
+
+#: Judged tests whose statistic is an order statistic over MANY samples rather
+#: than a statistic over windows, with the reason it survives one stall.
+ORDER_STATISTIC_TESTS = {
+    (
+        f"{_PERF}/test_turn_commit_latency.py",
+        "test_the_turn_commit_fits_its_reserve",
+    ): "the p50 (per pull request) or p99 (nightly) of 180 commits, each "
+    "timed by tests/turn_commit_latency.py: one stalled commit moves the p50 "
+    "by one rank (#1902)",
+}
+
+
+def _in_the_sampler(module: str, name: str) -> bool:
+    """Where a clock reading is a window's, or the calibration's: not a
+    finding. The helpers reach the calibration's own clock."""
+    return module == SAMPLING_MODULE or name in HELPER_FUNCTIONS
+
+
+def _single_window_findings(definitions, tests, scope: str = f"{_PERF}/") -> List[str]:
+    """Every judged test under ``scope`` that judges one window."""
+    findings = []
+    for _path, name, module in tests:
+        key = (module, name)
+        if not module.startswith(scope) or key in UNJUDGED_TIMED_TESTS:
+            continue
+        # An unresolvable name counts as judged here: that checks MORE tests.
+        if not _reaches(definitions, key, HELPER_FUNCTIONS, True):
+            continue  # judges nothing: TestEveryMeasurementIsJudged's question
+        if key in ORDER_STATISTIC_TESTS:
+            continue
+        if _reaches(definitions, key, CLOCK_FUNCTIONS, True, stop=_in_the_sampler):
+            findings.append(f"{module}::{name} reads a clock outside {SAMPLING_MODULE}")
+        if _reaches(definitions, key, {"Window"}, True, stop=_in_the_sampler):
+            findings.append(
+                f"{module}::{name} constructs a Window outside an aggregator"
+            )
+        if not _reaches(definitions, key, WINDOW_AGGREGATORS, False):
+            findings.append(
+                f"{module}::{name} judges a statistic no window aggregator took"
+            )
+    return findings
+
+
+def _performance_graph():
+    return _call_graph((PERFORMANCE_DIR, WALLCLOCK_DIR, TURN_COMMIT_SAMPLES))
+
+
+class TestEveryStatisticIsWindowed:
+    def test_no_judged_statistic_is_one_window(self):
+        definitions, tests = _performance_graph()
+        findings = _single_window_findings(definitions, tests)
+        assert not findings, (
+            "a judged statistic in tests/performance/ must be taken over "
+            "several windows by tests/wallclock/sampling.py (#1916): "
+            + "; ".join(findings)
+        )
+
+    def test_it_checks_the_judged_tests_at_all(self):
+        """A guard whose input came back empty would pass silently."""
+        definitions, tests = _performance_graph()
+        checked = [
+            (module, name)
+            for _path, name, module in tests
+            if module.startswith(f"{_PERF}/")
+            and _reaches(definitions, (module, name), WINDOW_AGGREGATORS, False)
+        ]
+        assert len(checked) >= 25, checked
+
+    def test_every_order_statistic_entry_is_live(self):
+        """Each entry is a judged test that really times outside the sampler;
+        otherwise it is a suppression nobody reads."""
+        definitions, tests = _performance_graph()
+        keys = {(module, name) for _path, name, module in tests}
+        for key in ORDER_STATISTIC_TESTS:
+            assert key in keys, key
+            assert key not in UNJUDGED_TIMED_TESTS, key
+            assert _reaches(
+                definitions, key, CLOCK_FUNCTIONS, True, stop=_in_the_sampler
+            ), key
+
+    _MODULE = f"{_PERF}/test_planted.py"
+
+    def _findings(self, test_calls, extra=None):
+        definitions = {
+            (self._MODULE, "test_x"): set(test_calls),
+            (SAMPLING_MODULE, "seconds"): {"perf_counter"},
+            (SAMPLING_MODULE, "median_of_windows"): {"_run"},
+            (SAMPLING_MODULE, "_run"): {"measure_once"},
+            ("tests/wallclock/assertions.py", "assert_latency_within"): {
+                "calibration_scale"
+            },
+            ("tests/wallclock/calibration.py", "calibration_scale"): {"perf_counter"},
+            **(extra or {}),
+        }
+        tests = [(None, "test_x", self._MODULE)]
+        return _single_window_findings(definitions, tests)
+
+    def test_a_windowed_statistic_is_clean(self):
+        # The calibration's own clock, behind the helper, is not a finding.
+        assert not self._findings(
+            {"median_of_windows", "seconds", "assert_latency_within"}
+        )
+
+    def test_a_clock_read_in_the_test_is_a_finding(self):
+        """#1916's shape: perf_counter around one gather, then the helper."""
+        (finding,) = self._findings({"perf_counter", "assert_latency_within"})[:1]
+        assert "reads a clock outside" in finding
+
+    def test_a_clock_read_in_a_local_helper_is_a_finding(self):
+        findings = self._findings(
+            {"_timed", "median_of_windows", "assert_latency_within"},
+            extra={(self._MODULE, "_timed"): {"perf_counter"}},
+        )
+        assert findings and "reads a clock outside" in findings[0]
+
+    def test_one_window_outside_an_aggregator_is_a_finding(self):
+        """The sampler's clock with no aggregator around it: one window."""
+        findings = self._findings({"seconds", "assert_latency_within"})
+        assert findings == [
+            f"{self._MODULE}::test_x judges a statistic no window aggregator took"
+        ]
+
+    def test_an_unjudged_test_is_not_this_rules_question(self):
+        assert not self._findings({"perf_counter", "print"})
+
+    # --- #1940's review: two evasions the first version passed, as source --
+
+    #: A module judging two rows: CONTEXT_GET windowed, CONTEXT_SET one window.
+    _TWO_ROWS = (
+        "from tests.wallclock import assert_latency_within\n"
+        "from tests.wallclock.sampling import Window, median_of_windows\n"
+        "{imports}\n"
+        "def test_x():\n"
+        "    def get_window(window):\n"
+        "        return window.seconds(lambda: None)\n"
+        "    get = median_of_windows(get_window, windows=5)\n"
+        "{set_row}\n"
+        "    assert_latency_within(get, CONTEXT_GET, 'get')\n"
+        "    assert_latency_within(set_, CONTEXT_SET, 'set')\n"
+    )
+    _EVASIONS = {
+        # E1: Window is a class anyone can construct.
+        "hand_built_window": (
+            "",
+            "    def set_window(window):\n"
+            "        return window.seconds(lambda: None)\n"
+            "    set_ = set_window(Window())",
+            "constructs a Window",
+        ),
+        # E2: the clock under another name.
+        "aliased_perf_counter": (
+            "from time import perf_counter as _clock",
+            "    started = _clock()\n" "    set_ = _clock() - started",
+            "reads a clock outside",
+        ),
+        "aliased_time_module": (
+            "import time as t",
+            "    started = t.monotonic()\n" "    set_ = t.monotonic() - started",
+            "reads a clock outside",
+        ),
+        "time_time_ns": (
+            "import time",
+            "    started = time.time_ns()\n" "    set_ = time.time_ns() - started",
+            "reads a clock outside",
+        ),
+        "timeit_default_timer": (
+            "import timeit",
+            "    started = timeit.default_timer()\n"
+            "    set_ = timeit.default_timer() - started",
+            "reads a clock outside",
+        ),
+        "imported_default_timer": (
+            "from timeit import default_timer as tick",
+            "    started = tick()\n" "    set_ = tick() - started",
+            "reads a clock outside",
+        ),
+    }
+
+    def _source_findings(self, tmp_path, imports, set_row):
+        probe = tmp_path / "probe"
+        probe.mkdir()
+        (probe / "test_probe.py").write_text(
+            self._TWO_ROWS.format(imports=imports, set_row=set_row)
+        )
+        definitions, tests = _call_graph((probe, WALLCLOCK_DIR))
+        return _single_window_findings(definitions, tests, scope=_key(probe))
+
+    @pytest.mark.parametrize("shape", sorted(_EVASIONS))
+    def test_a_single_window_beside_a_windowed_row_is_a_finding(self, tmp_path, shape):
+        imports, set_row, expected = self._EVASIONS[shape]
+        findings = self._source_findings(tmp_path, imports, set_row)
+        assert any(expected in finding for finding in findings), findings
+
+    def test_both_rows_windowed_is_clean_as_source(self, tmp_path):
+        """The negative control for the evasions: the same module, honest."""
+        findings = self._source_findings(
+            tmp_path,
+            "import time",  # imported and unused: not a reading
+            "    set_ = median_of_windows(get_window)",
+        )
+        assert not findings, findings
+
+
+class TestTheSampler:
+    """``tests/wallclock/sampling.py``, run rather than described."""
+
+    def test_the_median_ignores_one_stalled_window(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        readings = iter([0.016, 1.2, 0.017])  # #1916: one gather stalled 1.2 s
+        assert median_of_windows(lambda window: next(readings)) == 0.017
+
+    def test_a_regression_moves_every_window_and_so_the_median(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        readings = iter([0.064, 0.066, 0.065, 0.070, 0.063])
+        assert median_of_windows(lambda window: next(readings), windows=5) == 0.065
+
+    def test_the_async_median_is_the_same_statistic(self):
+        import asyncio
+
+        from tests.wallclock.sampling import median_of_windows_async
+
+        readings = iter([0.016, 1.2, 0.017])
+
+        async def measure_once(window):
+            await asyncio.sleep(0)
+            return next(readings)
+
+        assert asyncio.run(median_of_windows_async(measure_once)) == 0.017
+
+    def test_the_fastest_of_two_already_survives_one_stall(self):
+        from tests.wallclock.sampling import fastest_of_windows
+
+        readings = iter([1.2, 0.016])
+        assert fastest_of_windows(lambda window: next(readings), windows=2) == 0.016
+
+    @pytest.mark.parametrize("windows", [0, 1, 2])
+    def test_a_median_of_fewer_than_three_windows_is_refused(self, windows):
+        from tests.wallclock.sampling import median_of_windows
+
+        with pytest.raises(ValueError, match="#1916"):
+            median_of_windows(lambda window: 0.1, windows=windows)
+
+    @pytest.mark.parametrize("windows", [0, 1])
+    def test_a_minimum_of_one_window_is_refused(self, windows):
+        from tests.wallclock.sampling import fastest_of_windows
+
+        with pytest.raises(ValueError, match="#1916"):
+            fastest_of_windows(lambda window: 0.1, windows=windows)
+
+    def test_a_window_cannot_be_built_by_hand(self):
+        """#1940 review, E1: a hand-built Window would time one window."""
+        from tests.wallclock.sampling import Window
+
+        with pytest.raises(TypeError, match="#1916"):
+            Window()
+        with pytest.raises(TypeError, match="#1916"):
+            Window(object())
+
+    def test_a_window_kept_past_its_window_is_closed(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        kept = []
+
+        def measure_once(window):
+            kept.append(window)
+            return window.seconds(lambda: None)
+
+        median_of_windows(measure_once)
+        assert len({id(window) for window in kept}) == 3  # one per window
+        with pytest.raises(RuntimeError, match="#1916"):
+            kept[0].seconds(lambda: None)
+
+    def test_each_window_is_a_separate_call(self):
+        """A window builds its own state: measure_once runs once per window."""
+        from tests.wallclock.sampling import median_of_windows
+
+        calls = []
+
+        def measure_once(window):
+            calls.append(window.seconds(lambda: None))
+            return 0.0
+
+        median_of_windows(measure_once, windows=5)
+        assert len(calls) == 5
+        assert all(seconds >= 0.0 for seconds in calls)
 
 
 # ------------------------------------ the rest of tests/, in the gates (#1579)

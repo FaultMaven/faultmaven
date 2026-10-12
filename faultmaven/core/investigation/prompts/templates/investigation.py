@@ -251,7 +251,7 @@ KEY PRINCIPLES:
   if this turn introduces a new symptom, a new hypothesis, fresh evidence, or
   a question that needs case-specific data, identify one specific piece of
   data that would verify a pending milestone or test your strongest active
-  hypothesis. Fetch it via search_file / case_evidence_qa if reachable;
+  hypothesis. Fetch it via search_file / case_evidence_search if reachable;
   otherwise ask the user with specifics (which file, time range, command
   output) — never a vague "share more logs."
 - ONE PRIMARY ASK: one data request per turn. When several would help, pick the
@@ -386,8 +386,6 @@ STATE: INVESTIGATING
 {entity_highlights}
 
 {hypotheses}
-
-{candidate_solutions}
 
 {investigation_journal}
 

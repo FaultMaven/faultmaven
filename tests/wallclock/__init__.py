@@ -16,6 +16,11 @@ compares between the base and the head. Unset, it does nothing. Both
 suites write; only ``tests/benchmarks/`` is compared, because that is the
 tree the A/B job runs.
 
+``sampling.py`` is how ``tests/performance/`` takes a statistic: the median
+(or fastest) of several independent timed windows, never one, so a runner
+stalled for a second inside one window cannot fail a row (#1916). Import it
+from ``tests.wallclock.sampling``.
+
 Two instruments for timing questions a budget is the wrong tool for
 (#1579), both used OUTSIDE the two suites, in the required gates:
 

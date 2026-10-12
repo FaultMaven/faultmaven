@@ -16,12 +16,11 @@ calibrated budget in ``budgets.py``.
 ``assert_throughput_at_least`` — never a literal (#1557).
 """
 
-import time
-
 import pytest
 
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from tests.wallclock import assert_throughput_at_least
+from tests.wallclock.sampling import fastest_of_windows
 
 from .budgets import SANITIZE_DOCUMENT_BATCH, SANITIZE_LARGE_DOCUMENT
 
@@ -70,12 +69,7 @@ def _document_batch() -> list:
 
 def _fastest_seconds(work) -> float:
     work()  # warm-up: compiled patterns and first-call costs are nobody's budget
-    best = float("inf")
-    for _ in range(SAMPLES):
-        started = time.perf_counter()
-        work()
-        best = min(best, time.perf_counter() - started)
-    return best
+    return fastest_of_windows(lambda window: window.seconds(work), SAMPLES)
 
 
 @pytest.mark.performance

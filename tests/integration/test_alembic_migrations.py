@@ -69,10 +69,14 @@ REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
 #: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
 #: writes (ADR-020, #1898).
 CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
-#: ``013_evidence_is_submitted_data``, the revision 015 parents onto.
-EVIDENCE_SUBMITTED_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``013_evidence_is_submitted_data``: ``evidence_source_invariant`` admits a
+#: fileless row only for an engine inference (#1930).
+EVIDENCE_SUBMITTED_DATA_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``014_admin_case_metadata_driver``: the operator case-metadata page function
+#: names each case's effective driver (#1926). 015 parents onto it.
+ADMIN_CASE_METADATA_DRIVER_REVISION = "831be28d1434"  # pragma: allowlist secret
 #: ``015_case_creator_restrict``: an account that created cases cannot be
-#: deleted (#1923) — a ``BEFORE DELETE`` trigger on ``users`` on SQLite.
+#: deleted (#1923) — two triggers on SQLite, the key on PostgreSQL.
 CASE_CREATOR_RESTRICT_REVISION = "9904ee0cad86"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
@@ -363,7 +367,8 @@ class TestAlembicMigrationInfrastructure:
 
 
 class TestFunctionOnlyRevisions:
-    """Revisions 003, 004 and 005 change PostgreSQL functions and nothing else.
+    """Revisions 003, 004, 005 and 014 change PostgreSQL functions and nothing
+    else.
 
     SQLite has no row-level security to bypass and no definer functions, so on
     SQLite each is a no-op in both directions: stepped down to its parent and
@@ -371,7 +376,12 @@ class TestFunctionOnlyRevisions:
     ``tests/integration/security/test_admin_case_metadata_postgres.py`` (003);
     ``tests/integration/security/test_definer_functions_postgres.py``, whose
     step test starts from what 004 leaves and asserts it, and steps 005 down to
-    004 and back.
+    004 and back (005); ``test_admin_case_metadata_postgres.py`` again (014).
+
+    015 is stepped here too: it adds no table on either dialect (a key change on
+    PostgreSQL, two triggers on SQLite), so the same table-set check holds. Its
+    triggers are pinned by ``TestCaseCreatorRestrictRevision``, and its key by
+    ``tests/integration/security/test_case_creator_restrict_postgres.py``.
     """
 
     @pytest.mark.parametrize(
@@ -391,6 +401,16 @@ class TestFunctionOnlyRevisions:
                 DEFINER_SEARCH_PATH_REVISION,
                 DEFINER_TRIGGER_HARDENING_REVISION,
                 id="005_definer_search_path_without_public",
+            ),
+            pytest.param(
+                ADMIN_CASE_METADATA_DRIVER_REVISION,
+                EVIDENCE_SUBMITTED_DATA_REVISION,
+                id="014_admin_case_metadata_driver",
+            ),
+            pytest.param(
+                CASE_CREATOR_RESTRICT_REVISION,
+                ADMIN_CASE_METADATA_DRIVER_REVISION,
+                id="015_case_creator_restrict",
             ),
         ],
     )
@@ -1568,7 +1588,9 @@ class TestCaseCreatorRestrictRevision:
     def test_upgrade_adds_the_trigger_and_downgrade_removes_only_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {EVIDENCE_SUBMITTED_REVISION}", database_url)
+        result = run_alembic(
+            f"upgrade {ADMIN_CASE_METADATA_DRIVER_REVISION}", database_url
+        )
         assert result.returncode == 0, result.stderr
         tables, triggers = get_tables(TEST_DB), self._triggers()
         assert self.TRIGGER not in triggers
@@ -1588,10 +1610,13 @@ class TestCaseCreatorRestrictRevision:
             assert self._creator_key() == [("users", "user_id", "user_id", "SET NULL")]
 
             result = run_alembic(
-                f"downgrade {EVIDENCE_SUBMITTED_REVISION}", database_url
+                f"downgrade {ADMIN_CASE_METADATA_DRIVER_REVISION}", database_url
             )
             assert result.returncode == 0, result.stderr
-            assert get_current_revision(database_url) == EVIDENCE_SUBMITTED_REVISION
+            assert (
+                get_current_revision(database_url)
+                == ADMIN_CASE_METADATA_DRIVER_REVISION
+            )
             assert self._triggers() == triggers
             assert get_tables(TEST_DB) == tables
 
@@ -1724,7 +1749,7 @@ class TestCaseCreatorRestrictRevision:
     def test_the_postgresql_statements_swap_the_key_and_add_no_trigger(self):
         pg = "postgresql://offline@localhost/offline"
         up = run_alembic(
-            f"upgrade {EVIDENCE_SUBMITTED_REVISION}:"
+            f"upgrade {ADMIN_CASE_METADATA_DRIVER_REVISION}:"
             f"{CASE_CREATOR_RESTRICT_REVISION} --sql",
             pg,
         )
@@ -1738,7 +1763,7 @@ class TestCaseCreatorRestrictRevision:
 
         down = run_alembic(
             f"downgrade {CASE_CREATOR_RESTRICT_REVISION}:"
-            f"{EVIDENCE_SUBMITTED_REVISION} --sql",
+            f"{ADMIN_CASE_METADATA_DRIVER_REVISION} --sql",
             pg,
         )
         assert down.returncode == 0, down.stderr

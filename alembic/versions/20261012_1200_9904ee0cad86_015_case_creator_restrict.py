@@ -69,7 +69,7 @@ Rows orphaned before this revision stay NULL; nothing here recovers them
 triggers on SQLite, and nothing else.
 
 Revision ID: 9904ee0cad86
-Revises: 9b3e5c71d2a4
+Revises: 831be28d1434
 Create Date: 2026-10-12 12:00:00
 """
 
@@ -79,7 +79,7 @@ from alembic import op
 
 revision: str = "9904ee0cad86"  # pragma: allowlist secret
 down_revision: Union[str, Sequence[str], None] = (
-    "9b3e5c71d2a4"  # pragma: allowlist secret
+    "831be28d1434"  # pragma: allowlist secret
 )
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

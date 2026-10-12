@@ -284,11 +284,12 @@ class MilestoneEngine:
                 the turn (#1882); a render failure does not block the
                 transition.
             team_service: Optional team-membership resolver used by the KB
-                pre-fetch to widen the case OWNER's KB read scope with
-                the owner's team-shared runbooks (ADR-013 §D4). None in
+                pre-fetch to widen the case's effective DRIVER's KB read
+                scope with the driver's team-shared runbooks (ADR-013 §D4;
+                ``retrieval_scope.retrieval_principal``). None in
                 standalone — the team arm then resolves empty.
             share_repository: Optional ``IShareRepository`` backing that team
-                arm. Both degrade gracefully to global ∪ owner-personal.
+                arm. Both degrade gracefully to global ∪ driver-personal.
             runbook_kb: Optional ``RunbookKnowledgeBase`` for terminal-turn
                 runbook deduplication, injected explicitly (fm#1030 — the old
                 ``hasattr(knowledge_service, "runbook_kb")`` probe was

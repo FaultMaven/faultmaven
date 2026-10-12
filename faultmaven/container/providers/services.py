@@ -175,6 +175,7 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     - deep_analysis: LLM-interpreted analysis of evidence files
     - web_search: trusted domain web search (Google CSE or Tavily)
     - kb_qa: unified knowledge base Q&A (all accessible scopes)
+    - find_entity / list_top_entities: entity registry (FAULTMAVEN_ENTITY_REGISTRY)
 
     Returns:
         AgentToolRegistry with investigation tools, or None if no tools available.
@@ -217,6 +218,16 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     if case_evidence_qa_adapter:
         registry.register(case_evidence_qa_adapter)
         tool_count += 1
+
+    # Entity registry tools: ``container/providers/tools.py`` builds these only
+    # when FAULTMAVEN_ENTITY_REGISTRY is on, so by default the attribute is
+    # absent (None) and the registry stays the six above. (reclassify_evidence
+    # is deliberately not registered here: see the PR notes on #1934.)
+    for attr in ("find_entity_tool", "list_top_entities_tool"):
+        flag_gated_tool = getattr(container, attr, None)
+        if flag_gated_tool:
+            registry.register(flag_gated_tool)
+            tool_count += 1
 
     if tool_count == 0:
         logger.warning("Investigation tools: none available, skipping")

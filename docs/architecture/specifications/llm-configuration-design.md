@@ -408,7 +408,7 @@ Structural index extraction has a **2-second timeout** with fallback to truncate
 |----------|------|-------------|-----------|----------|
 | **Keyword/regex search** | `search_file` | Grep on raw file content, return matching lines with context | No | "Show me lines with X", exact matching |
 | **Interpreted search** | `search_file` with `interpret: true` | Grep + dedicated LLM call to reason over results in isolation | Yes (focused) | "What caused X?", pattern reasoning |
-| **Semantic search** | `vectorize_file` → `case_evidence_qa` | Chunk + embed into ChromaDB, similarity search | No (embeddings) | Large files, vague queries |
+| **Semantic search** | `vectorize_file` → `case_evidence_search` | Chunk + embed into ChromaDB, similarity search | No (embeddings) | Large files, vague queries |
 
 ### Scenario Mapping
 

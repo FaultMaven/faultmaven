@@ -49,8 +49,8 @@ pytestmark = [
 
 #: ``015_case_creator_restrict``.
 _REVISION = "9904ee0cad86"
-#: The revision 015 parents onto.
-_PARENT_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: The revision 015 parents onto: ``014_admin_case_metadata_driver``.
+_PARENT_REVISION = "831be28d1434"  # pragma: allowlist secret
 _PW = "fm_case_creator_probe_pw"
 
 

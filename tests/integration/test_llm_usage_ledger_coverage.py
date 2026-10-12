@@ -436,6 +436,8 @@ class TestAnEngineTurn:
                         request,
                         USER,
                         ENTERPRISE,
+                        draft_location="**Knowledge Base > Drafts**",
+                        driver_is_creator=True,
                         committed=_committed_gate(),
                     )
                 )

@@ -87,6 +87,11 @@ class CaseMetadata(BaseModel):
     #: ``None`` once the owning account is deleted (the column is
     #: ``ON DELETE SET NULL``).
     user_id: Optional[str]
+    #: The EFFECTIVE driver (ADR-020 D1), as the read returns it:
+    #: ``COALESCE(driver_id, user_id)``, the rule ``Case.effective_driver_id``
+    #: applies. An id, never a name (ADR-012 D9); ``None`` only when neither
+    #: account exists any more.
+    driver_id: Optional[str]
     state: CaseState
     source: str
     closure_reason: Optional[str]
@@ -112,6 +117,7 @@ class CaseMetadata(BaseModel):
         enterprise_id: str,
         organization_id: Optional[str],
         user_id: Optional[str],
+        driver_id: Optional[str],
         state: str,
         source: str,
         closure_reason: Optional[str],
@@ -192,6 +198,7 @@ class CaseMetadata(BaseModel):
             enterprise_id=enterprise_id,
             organization_id=organization_id,
             user_id=user_id,
+            driver_id=driver_id,
             state=lifecycle_state,
             source=source,
             closure_reason=closure_reason,

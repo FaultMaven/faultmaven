@@ -139,6 +139,42 @@ def _build_da_system_instruction(
             "Base your analysis on the evidence context provided."
         )
 
+    # Knowledge-routing text names kb_qa / web_search only when the model is
+    # given them (#1934): an instruction to call an absent tool is a name the
+    # model cannot satisfy.
+    knowledge_tools = [
+        t for t, on in (("kb_qa", has_kb), ("web_search", has_web)) if on
+    ]
+    if has_kb:
+        type_b_route = (
+            "→ You MUST search kb_qa first for documented solutions, runbooks, "
+            "or best practices. If kb_qa returns relevant results, ground your "
+            "answer in them and cite the source. If no relevant results, answer "
+            "from your own knowledge (do not mention the failed search). "
+        )
+        if has_web:
+            type_b_route += "Optionally use web_search for supplementary detail. "
+    elif has_web:
+        type_b_route = (
+            "→ Use web_search for documented solutions or best practices; "
+            "if it returns nothing relevant, answer from your own knowledge "
+            "(do not mention the failed search). "
+        )
+    else:
+        type_b_route = "→ Answer from your own knowledge. "
+    type_c_baseline = (
+        ", ".join(["your knowledge", *knowledge_tools[:-1]])
+        + f", or {knowledge_tools[-1]}"
+        if len(knowledge_tools) > 1
+        else " or ".join(["your knowledge", *knowledge_tools])
+    )
+    knowledge_sources = "".join(f"{t}, " for t in knowledge_tools) + (
+        "or your own training data" if knowledge_tools else "your own training data"
+    )
+    knowledge_results = "".join(f"{t} results, " for t in knowledge_tools) + (
+        "or your own knowledge" if knowledge_tools else "your own knowledge"
+    )
+
     return (
         "You have investigation tools available to search and analyze "
         "the raw evidence files attached to this case.\n\n"
@@ -158,18 +194,14 @@ def _build_da_system_instruction(
         "procedures that are NOT answerable from case evidence. Examples: "
         "'What is Opik?', 'How to set up Redis clustering?', "
         "'Common causes of OOM kills?'\n"
-        "→ You MUST search kb_qa first for documented solutions, runbooks, "
-        "or best practices. If kb_qa returns relevant results, ground your "
-        "answer in them and cite the source. If no relevant results, answer "
-        "from your own knowledge (do not mention the failed search). "
-        "Optionally use web_search for supplementary detail. Connect your "
+        f"{type_b_route}Connect your "
         f"answer to the case context when relevant, then call {schema_tool_name}.\n\n"
         "TYPE C — HYBRID (needs both evidence AND knowledge):\n"
         "Questions that bridge case data and external knowledge. Examples: "
         "'Is our Redis config following best practices?', "
         "'Are these SSH settings secure?'\n"
         "→ Search evidence first to understand the current state, then use "
-        "your knowledge, web_search, or KB tools for the reference baseline.\n\n"
+        f"{type_c_baseline} for the reference baseline.\n\n"
         "TYPE D — ABOUT FAULTMAVEN (the assistant itself):\n"
         "Questions about YOU — which model or provider generates these "
         "responses, how you retrieve runbooks, who built you, what you can "
@@ -210,10 +242,10 @@ def _build_da_system_instruction(
         "their message is their account, never evidence, and an evidence row "
         "names the uploaded file its extract came from. Only user-submitted "
         "data goes in evidence_to_add.\n"
-        "- KNOWLEDGE is pre-built reference material from kb_qa, web_search, "
-        "or your own training data. Knowledge informs your analysis but is "
+        f"- KNOWLEDGE is pre-built reference material from {knowledge_sources}. "
+        "Knowledge informs your analysis but is "
         "NEVER recorded as evidence. Do NOT create evidence_to_add entries "
-        "from kb_qa results, web_search results, or your own knowledge.\n\n"
+        f"from {knowledge_results}.\n\n"
         "RESPONSE FORMAT — Ground your response in evidence:\n"
         "- Every item in <evidence_collected> carries a label attribute. "
         "That label is its name — use it verbatim and use nothing else. "

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 13.4.0
+**Version:** 13.5.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -4775,6 +4775,7 @@ with "this case has no title".
 - `closure_reason` (object, required)
 - `created_at` (string, required)
 - `current_turn` (integer, required)
+- `driver_id` (object, optional)
 - `enterprise_id` (string, required)
 - `investigation_turn` (object, optional)
 - `is_terminal` (boolean, required)

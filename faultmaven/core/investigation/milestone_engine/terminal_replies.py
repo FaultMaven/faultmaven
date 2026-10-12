@@ -217,21 +217,8 @@ def _runbook_suggestion(case) -> dict | None:
     manual POST /knowledge/runbooks/create path still exists for those cases;
     adding a redirect affordance is a separate suggestion-contract change, out of
     scope.)
-
-    Also suppressed when the confirmed cause was SEEDED from an existing runbook
-    by the removed KB cause seeder (legacy rows only — see
-    ``seeded_provenance``): generating one would only duplicate the runbook the
-    case was resolved by applying. The async similarity dedup at action time
-    (a ≥70% match by title and score for the user to judge) is the tier that
-    applies to every case.
     """
     if not runbook_conversion_ready(case):
-        return None
-    from faultmaven.core.investigation.seeded_provenance import (
-        confirmed_root_seed_origin,
-    )
-
-    if confirmed_root_seed_origin(case):
         return None
     return {
         "label": "Generate runbook from this case",

@@ -44,10 +44,7 @@ from .evidence import (
     _render_problem_context,
     _symptom_currency_note,
 )
-from .evidence_needs import (
-    _build_candidate_solutions_block,
-    _build_evidence_needs_block,
-)
+from .evidence_needs import _build_evidence_needs_block
 from .history import _build_compact_history, _build_graduated_history
 from .text_shaping import sanitize_user_input
 
@@ -151,7 +148,6 @@ def _allocate_sections(
     hypothesis_str: str,
     evidence_needs_str: str,
     entity_highlights_str: str,
-    candidate_solutions_str: str,
 ) -> Dict[str, str]:
     """Priority-greedy allocation of ``budget`` across the prompt sections.
 
@@ -271,13 +267,6 @@ def _allocate_sections(
         ("kb_results", kb_str, budget.count(kb_str), 0, section_budget),
         ("hypotheses", hypothesis_str, budget.count(hypothesis_str), 0, section_budget),
         (
-            "candidate_solutions",
-            candidate_solutions_str,
-            budget.count(candidate_solutions_str),
-            0,
-            section_budget,
-        ),
-        (
             "evidence_needs",
             evidence_needs_str,
             budget.count(evidence_needs_str),
@@ -358,7 +347,7 @@ def _allocate_sections(
             # (``entity_highlights``), is every allotment up to the preamble
             # plus the opening tag, dozens of tokens, not two. The sections
             # that reach these states under a small target include
-            # ``hypotheses``, ``candidate_solutions`` and
+            # ``hypotheses`` and
             # ``working_conclusion``, engine state the model is asked to
             # UPDATE, which absent and unmarked read as "none exist".
             #
@@ -367,7 +356,7 @@ def _allocate_sections(
             # ``remaining``: a section ends up empty only when its allotment
             # could not hold its content, so there is nothing to take the
             # marker's tokens from. 1-2 tokens per section (measured), under
-            # 20 across all nine, against ``overhead_margin_tokens`` (256);
+            # 20 across all eight, against ``overhead_margin_tokens`` (256);
             # ``used_tokens`` below counts them, so the running total stays
             # honest.
             rendered = _SECTION_DROPPED_MARKER
@@ -1001,10 +990,6 @@ def build_investigation_context(
     # activation; design §10.6).
     evidence_needs_str = _build_evidence_needs_block(case)
 
-    # R9 — candidate-solution priors for LEGACY seeded cases (see
-    # ``seeded_provenance``): empty for every case opened after 2026-09-02.
-    candidate_solutions_str = _build_candidate_solutions_block(case)
-
     # =====================================================================
     # Budget allocation
     # =====================================================================
@@ -1035,7 +1020,6 @@ def build_investigation_context(
         hypothesis_str=hypothesis_str,
         evidence_needs_str=evidence_needs_str,
         entity_highlights_str=entity_highlights_str,
-        candidate_solutions_str=candidate_solutions_str,
     )
     if kb_rendered is not None:
         kb_rendered[:] = kb_entries_rendered(

@@ -393,8 +393,8 @@ That is a documented non-goal, not an oversight:
   more gives up that bound: continuity can then be reduced to the marker
   without the fallback firing. Raise `PROMPT_MIN_VIABLE_TOKENS` with it.
 - **What it does not.** It reserves nothing for the sections below the
-  conversation (journal, working conclusion, KB, hypotheses, candidate
-  solutions, evidence needs, entity highlights). Those degrade in strict
+  conversation (journal, working conclusion, KB, hypotheses,
+  evidence needs, entity highlights). Those degrade in strict
   priority order and, when squeezed to nothing, carry INV-4's marker. Measured
   on a 4-log, 12-turn case, those markers appear in the few hundred tokens of
   target just above the fallback threshold.
@@ -578,7 +578,7 @@ These are properties of the allocator's structure, asserted by tests (§14):
   preamble plus the opening tag (69 of the 246 allotments of the block the
   tests sweep), not two. The marker is **charged to the margin**, not taken from another
   section — a section ends up empty only when its allotment could not hold its
-  content — at 1–2 tokens each (under 20 across all nine) against
+  content — at 1–2 tokens each (under 20 across all eight) against
   `PROMPT_OVERHEAD_MARGIN_TOKENS` (256). An *empty* section (no content existed)
   still renders as nothing. What INV-4 does **not** promise is room: sections
   below the conversation carry no floor, and at a small target they may be
