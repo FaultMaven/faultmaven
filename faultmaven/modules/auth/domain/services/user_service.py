@@ -58,7 +58,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PasswordResetMint,
     capture_state_read_at,
 )
-from faultmaven.modules.case.contracts import ICaseDriverRelease
+from faultmaven.modules.case.contracts import ICaseCreatorCount, ICaseDriverRelease
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
@@ -215,6 +215,8 @@ class UserService(BaseService):
         self._settings = get_settings()
         # Bound after composition, once the case service exists (ADR-020 D3).
         self._case_driver_release: Optional[ICaseDriverRelease] = None
+        # Bound the same way (#1923): the account-deletion route asks it first.
+        self._case_creator_count: Optional[ICaseCreatorCount] = None
 
     def bind_case_driver_release(self, release: ICaseDriverRelease) -> None:
         """Wire the case module's release port (ADR-020 D3): a deactivated
@@ -222,6 +224,19 @@ class UserService(BaseService):
         composition root, which builds this service before the case service.
         """
         self._case_driver_release = release
+
+    def bind_case_creator_count(self, counter: ICaseCreatorCount) -> None:
+        """Wire the case module's creator count (#1923): an account that
+        created cases cannot be deleted. Bound by the composition root beside
+        the release port, for the same reason."""
+        self._case_creator_count = counter
+
+    async def count_cases_created_by(self, user_id: str) -> Optional[int]:
+        """How many cases ``user_id`` created, or ``None`` when the case module
+        is not bound — the caller cannot know, and must not delete on that."""
+        if self._case_creator_count is None:
+            return None
+        return await self._case_creator_count.count_cases_created_by(user_id)
 
     async def _audit_role_change(
         self,

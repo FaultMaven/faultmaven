@@ -2017,4 +2017,13 @@ asked to accept, and it belongs to a person.
 # `TENANT_PROVIDER=multi` the value comes from the cross-enterprise metadata
 # function (alembic `014_admin_case_metadata_driver`). Clients adopt by showing
 # a Driver column; the dashboard is the only consumer.
-API_CONTRACT_VERSION = "13.4.0"
+
+# 13.5.0 — MINOR. `DELETE /api/v1/auth/users/{username}` declares a 409 (#1923):
+# an account that created cases cannot be deleted. The answer carries
+# `x-error-code: ACCOUNT_OWNS_CASES` and a message naming how many cases and the
+# `fm-reassign-cases` command that moves them; nothing is revoked or deleted. A
+# case created after that check is refused by the database instead, with the
+# same code and no count; the account's sessions were revoked by then. Additive
+# — one new response on an operator route; no schema changed, and `user_id`
+# stays required on every case schema, because no case can now lose its creator.
+API_CONTRACT_VERSION = "13.5.0"

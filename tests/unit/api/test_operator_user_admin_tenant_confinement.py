@@ -311,6 +311,9 @@ def world():
     user_service.activate_user_admin = AsyncMock(return_value=users[MEMBER_B])
     user_service.assign_role = AsyncMock(return_value=users[MEMBER_B])
     user_service.remove_role = AsyncMock(return_value=users[MEMBER_B])
+    # The delete route asks how many cases the target created first (#1923);
+    # none here, so the delete proceeds to the revoke and the store.
+    user_service.count_cases_created_by = AsyncMock(return_value=0)
 
     user_store = _UserStore(
         {

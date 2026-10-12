@@ -411,6 +411,15 @@ class TestTheDriverWiring:
             case_service
         )
 
+    async def test_account_deletion_reaches_the_creator_count(self, monkeypatch):
+        """#1923: the deletion route asks the user service how many cases an
+        account created; unbound, it answers ``None`` and the route refuses."""
+        container, _ = self._composed(monkeypatch)
+        user_service = container.get_service("user_service")
+
+        assert user_service._case_creator_count is container.get_service("case_service")
+        assert await user_service.count_cases_created_by("nobody") == 0
+
     def test_the_case_service_reads_names_from_the_account_store(self, monkeypatch):
         container, _ = self._composed(monkeypatch)
 
