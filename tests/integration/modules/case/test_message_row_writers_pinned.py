@@ -438,8 +438,6 @@ class TestSystemNoticeRow:
             request,
             USER_ID,
             ENTERPRISE,
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
         live = spy.saved[-1]
@@ -457,8 +455,8 @@ class TestSystemNoticeRow:
         live, reloaded = await self._run(session, conversion)
 
         expected = (
-            "Your runbook draft **Pool Timeout Runbook** is ready. "
-            "View it in the Dashboard under **Knowledge Base > Drafts**."
+            "The runbook draft **Pool Timeout Runbook** is ready in the "
+            "case creator's **Knowledge Base > Drafts** in the Dashboard."
         )
         assert live.message_count == 1
         assert reloaded.message_count == 1
@@ -576,8 +574,6 @@ class TestNewRowsGoLast:
             ),
             USER_ID,
             ENTERPRISE,
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
 

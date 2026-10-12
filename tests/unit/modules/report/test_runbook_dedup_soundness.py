@@ -364,7 +364,13 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
 
     engine.runbooks._run_runbook_conversion.assert_not_called()
     assert "OOMKilled recovery" in result["agent_response"]
-    assert "Creating your runbook draft" not in result["agent_response"]
+    assert "Creating a runbook draft" not in result["agent_response"]
+    # The location clause is true after a hand-off on a terminal case: a later
+    # reader resolves "whoever drove the case at that point", not "the driver".
+    assert (
+        "The existing runbook is in the knowledge searched for whoever drove "
+        "the case at that point; review it there, or generate a new one anyway."
+    ) in result["agent_response"]
     payloads = [s.get("payload") for s in result["suggested_follow_ups"]]
     assert GENERATE_RUNBOOK_ANYWAY_PAYLOAD in payloads, (
         "the stop turn must carry the affordance that makes the question "
@@ -392,7 +398,7 @@ async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monke
             ready_case, metadata={}, dedup_confirmed=True, plan=TurnCommitPlan()
         )
 
-    assert "Creating your runbook draft" in result["agent_response"]
+    assert "Creating a runbook draft" in result["agent_response"]
 
 
 @pytest.mark.asyncio
@@ -465,7 +471,7 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
 
     engine.runbooks._run_runbook_conversion.assert_not_called()
     assert "OOMKilled recovery" in result["agent_response"]
-    assert "Creating your runbook draft" not in result["agent_response"]
+    assert "Creating a runbook draft" not in result["agent_response"]
 
 
 @pytest.mark.asyncio

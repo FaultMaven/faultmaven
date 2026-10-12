@@ -611,8 +611,6 @@ async def _notification_content(mock_llm, outcome: str) -> str:
         request,
         "u1",
         "o1",
-        draft_location="**Knowledge Base > Drafts**",
-        driver_is_creator=True,
         committed=_committed_gate(),
     )
     return case.messages[-1]["content"]
@@ -908,8 +906,6 @@ class TestRunbookCompletionNotification:
             request,
             "u1",
             "o1",
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
 
@@ -963,8 +959,6 @@ class TestRunbookCompletionNotification:
             request,
             "u1",
             "o1",
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
 
@@ -1011,8 +1005,6 @@ class TestRunbookCompletionNotification:
             request,
             "u1",
             "o1",
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
 
@@ -1054,8 +1046,6 @@ class TestRunbookCompletionNotification:
             request,
             "u1",
             "o1",
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=_committed_gate(),
         )
         repo.save.assert_not_called()
@@ -1295,8 +1285,6 @@ class TestTheConversionWaitsForItsTurnsCommit:
             request,
             "u1",
             "o1",
-            draft_location="**Knowledge Base > Drafts**",
-            driver_is_creator=True,
             committed=gate,
         )
 
@@ -1314,8 +1302,6 @@ class TestTheConversionWaitsForItsTurnsCommit:
                 request,
                 "u1",
                 "o1",
-                draft_location="**Knowledge Base > Drafts**",
-                driver_is_creator=True,
                 committed=gate,
             )
         )
@@ -1342,8 +1328,6 @@ class TestTheConversionWaitsForItsTurnsCommit:
                 request,
                 "u1",
                 "o1",
-                draft_location="**Knowledge Base > Drafts**",
-                driver_is_creator=True,
                 committed=gate,
             )
         )
@@ -1429,74 +1413,115 @@ async def _kickoff_and_notice(mock_llm, driver_id, *, existing: bool = False):
     return result["agent_response"], notice
 
 
+def _real_thin_readiness_message() -> str:
+    """The NEEDS_ENRICHMENT text ``assess_runbook_readiness`` really produces."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        assess_runbook_readiness,
+    )
+
+    case = _make_resolved_case()
+    _make_runbook_ready(case)
+    case.solutions[0].verification_method = None
+    result = assess_runbook_readiness(case)
+    assert result.verdict == result.NEEDS_ENRICHMENT, result
+    return result.message
+
+
+_THIN_READINESS_MESSAGE = _real_thin_readiness_message()
+
+
 @pytest.mark.unit
 class TestDraftLocationIsTrueForTheReader:
-    """The draft always lands in the CREATOR's personal KB (ADR-020 D6); the
-    turn's reply and the notice address the effective driver."""
+    """Every persisted draft text is rendered to EVERY reader of the case
+    (creator, driver, read-only teammate), so it is true for all of them: the
+    draft is in the case CREATOR's Drafts (ADR-020 D6) and no text says "your"
+    about it (#1947)."""
+
+    _KICKOFF = (
+        "Creating a runbook draft from this case. "
+        f"It will appear in {_CREATORS_DRAFTS} in the Dashboard once "
+        "generation finishes. You can also create runbooks in your own "
+        "**Knowledge Base**."
+    )
+    _READY = (
+        "The runbook draft **Pool Timeout Runbook** is ready in "
+        f"{_CREATORS_DRAFTS} in the Dashboard."
+    )
+    _EXISTS = (
+        "A runbook for this case already exists in the case creator's "
+        "Knowledge Base (under Drafts until it is verified)."
+    )
 
     @pytest.mark.asyncio
-    async def test_creator_driven_wording_is_unchanged(self, mock_llm):
-        reply, notice = await _kickoff_and_notice(mock_llm, None)
-        assert "Creating your runbook draft from this case." in reply
-        assert "under **Knowledge Base > Drafts** once" in reply
-        assert notice == (
-            "Your runbook draft **Pool Timeout Runbook** is ready. "
-            "View it in the Dashboard under **Knowledge Base > Drafts**."
-        )
+    @pytest.mark.parametrize("driver_id", [None, "driver-2"])
+    async def test_kickoff_and_notice_are_exact_for_either_driver(
+        self, mock_llm, driver_id
+    ):
+        reply, notice = await _kickoff_and_notice(mock_llm, driver_id)
+        assert reply.endswith(self._KICKOFF)  # a dedup caveat may precede it
+        assert notice == self._READY
 
     @pytest.mark.asyncio
-    async def test_a_driver_who_is_not_the_creator_is_told_whose_drafts(self, mock_llm):
-        reply, notice = await _kickoff_and_notice(mock_llm, "driver-2")
-        for text in (reply, notice):
-            assert _CREATORS_DRAFTS in text
-            own_kb = "You can also create runbooks in your own **Knowledge Base**."
-            assert "your" not in text.lower().replace("creator's", "").replace(
-                own_kb.lower(), ""
+    async def test_creator_and_other_driven_cases_produce_the_same_text(self, mock_llm):
+        own = await _kickoff_and_notice(mock_llm, None)
+        other = await _kickoff_and_notice(mock_llm, "driver-2")
+        assert own == other
+        for text in own:
+            # The only "your" is the standing offer about the reader's own KB.
+            assert "your" not in text.lower().replace(
+                "in your own **knowledge base**", ""
             )
-        assert "You can also create runbooks in your own **Knowledge Base**." in reply
-        assert "create and edit runbooks there directly" not in reply
-        assert notice == (
-            "The runbook draft **Pool Timeout Runbook** is ready. "
-            f"View it in the Dashboard under {_CREATORS_DRAFTS}."
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver_id", [None, "driver-2"])
+    async def test_already_exists_reply_is_the_same_for_either_driver(
+        self, mock_llm, driver_id
+    ):
+        reply, _ = await _kickoff_and_notice(mock_llm, driver_id, existing=True)
+        assert reply == self._EXISTS
+        assert "your" not in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_caveat_prefixed_kickoff_reply_states_facts_not_questions(
+        self, mock_llm
+    ):
+        """The caveat is prepended to a turn on which conversion HAS started,
+        so it may neither ask whether to proceed nor tell the reader to act
+        "first" (the draft is already being made)."""
+        from faultmaven.core.investigation import terminal_transitions as tt
+
+        readiness = tt.RunbookReadiness(
+            verdict=tt.RunbookReadiness.NEEDS_ENRICHMENT,
+            message=_THIN_READINESS_MESSAGE,
+            section_coverage={},
         )
+        with patch.object(tt, "assess_runbook_readiness", return_value=readiness):
+            reply, _ = await _kickoff_and_notice(mock_llm, None)
+        # The readiness caveat is the real text, not a stand-in.
+        assert reply.startswith(_THIN_READINESS_MESSAGE)
 
-    @pytest.mark.asyncio
-    async def test_already_exists_reply_follows_the_same_rule(self, mock_llm):
-        own, _ = await _kickoff_and_notice(mock_llm, None, existing=True)
-        other, _ = await _kickoff_and_notice(mock_llm, "driver-2", existing=True)
-        assert "under **Knowledge Base > Drafts**." in own
-        assert _CREATORS_DRAFTS in other
-        assert "your" not in other.lower()
+        lowered = reply.lower()
+        assert "creating a runbook draft" in lowered  # conversion did start
+        assert (
+            "so the draft may duplicate a runbook already in the knowledge base"
+            in reply
+        )
+        assert "?" not in reply
+        for phrase in (
+            "proceed anyway",
+            "provide more detail",
+            "first",
+            "would you like",
+        ):
+            assert phrase not in lowered, (phrase, reply)
 
-    @pytest.mark.asyncio
-    async def test_notice_wording_is_fixed_when_the_run_starts(self, mock_llm):
-        """The driver changing while the conversion runs cannot change what the
-        notice says: the wording was captured at kickoff."""
-        case = _make_resolved_case()
-        case.driver_id = "driver-2"
-        _make_runbook_ready(case)
-        draft = MagicMock()
-        draft.title = "T"
+    def test_terminal_prompt_never_says_yours(self):
+        from faultmaven.core.investigation.prompts.templates import terminal
 
-        async def _handoff_mid_run(**_kw):
-            case.driver_id = None  # driver hands the case back to the creator
-            return MagicMock(drafts=[draft])
-
-        conversion_service = MagicMock()
-        conversion_service.convert_from_case = AsyncMock(side_effect=_handoff_mid_run)
-        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-        repo = MagicMock()
-        repo.get = AsyncMock(return_value=case)
-        repo.save = AsyncMock()
-        engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
-        engine.deps.knowledge_service = MagicMock(spec=[])
-        engine.deps.conversion_service = conversion_service
-
-        plan = TurnCommitPlan()
-        await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
-        plan.release_gates()
-        await asyncio.gather(*list(runbook_creation._CONVERSION_TASKS))
-        assert _CREATORS_DRAFTS in case.messages[-1]["content"]
+        text = " ".join(
+            v for v in vars(terminal).values() if isinstance(v, str)
+        ).lower()
+        assert not re.search(r"\byours\b", text), "the redirect must not say 'yours'"
 
     def test_model_facing_prompt_names_the_creators_drafts(self):
         from faultmaven.core.investigation.prompts.templates import terminal
