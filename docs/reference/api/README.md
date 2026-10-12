@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 13.3.0
+**Version:** 13.4.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1491,6 +1491,12 @@ A user of another organization answers exactly what an unknown username
 answers (#1318), and nothing is revoked or deleted — the refusal must not
 confirm that the account exists.
 
+An account that created cases cannot be deleted (#1923): the answer is 409
+`x-error-code: ACCOUNT_OWNS_CASES`, naming how many and the
+`fm-reassign-cases` command that moves them, and nothing is revoked or
+deleted. Deleting an account that only DRIVES other people's cases hands
+each back to its creator.
+
 **Tags:** `authentication`
 
 **Auth:** `HTTPBearer`
@@ -1502,6 +1508,7 @@ confirm that the account exists.
 **Responses:**
 
 - `200` — Successful Response (`object`)
+- `409` — `x-error-code: ACCOUNT_OWNS_CASES`: the account created cases, so it cannot be deleted until they are moved to another account with `fm-reassign-cases`. Nothing was deleted.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

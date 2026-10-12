@@ -737,6 +737,8 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
 
     request = MagicMock()
     request.app.state.auth_service = auth_service
+    # The account created no case (#1923), so the delete proceeds to revoke.
+    request.app.state.user_service.count_cases_created_by = AsyncMock(return_value=0)
 
     with patch.object(
         auth_routes, "get_user_store", AsyncMock(return_value=user_store)
@@ -764,6 +766,8 @@ async def test_a_failed_revocation_blocks_the_delete():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from fastapi import HTTPException
+
     from faultmaven.api.operator_user_scope import OperatorUserScope
     from faultmaven.exceptions import ServiceError
     from faultmaven.modules.auth.api import auth as auth_routes
@@ -781,11 +785,13 @@ async def test_a_failed_revocation_blocks_the_delete():
     )
     request = MagicMock()
     request.app.state.auth_service = auth_service
+    # The account created no case (#1923), so the delete reaches the revoke.
+    request.app.state.user_service.count_cases_created_by = AsyncMock(return_value=0)
 
     with patch.object(
         auth_routes, "get_user_store", AsyncMock(return_value=user_store)
     ):
-        with pytest.raises(Exception):
+        with pytest.raises(HTTPException) as failed:
             await auth_routes.delete_user(
                 username="doomed",
                 request=request,
@@ -793,4 +799,5 @@ async def test_a_failed_revocation_blocks_the_delete():
                 scope=OperatorUserScope(users=None),
             )
 
+    assert failed.value.status_code == 500
     assert deleted == [], "the account was deleted despite revocation failing"

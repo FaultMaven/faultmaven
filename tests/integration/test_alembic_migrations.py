@@ -38,8 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 012_case_driver
-HEAD_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: 015_case_creator_restrict
+HEAD_REVISION = "9904ee0cad86"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -69,6 +69,11 @@ REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
 #: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
 #: writes (ADR-020, #1898).
 CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
+#: ``013_evidence_is_submitted_data``, the revision 015 parents onto.
+EVIDENCE_SUBMITTED_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``015_case_creator_restrict``: an account that created cases cannot be
+#: deleted (#1923) — a ``BEFORE DELETE`` trigger on ``users`` on SQLite.
+CASE_CREATOR_RESTRICT_REVISION = "9904ee0cad86"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -1498,6 +1503,187 @@ class TestCaseDriverRevision:
         assert down.returncode == 0, down.stderr
         assert "DROP INDEX ix_cases_driver_id;" in down.stdout
         assert "ALTER TABLE cases DROP COLUMN driver_id;" in down.stdout
+
+
+class TestCaseCreatorRestrictRevision:
+    """015 refuses deleting a case's creator (#1923). On SQLite the stored
+    ``cases.user_id`` clause stays ``SET NULL`` (rebuilding ``cases`` under its
+    16 inbound keys is unsafe) and a ``BEFORE DELETE`` trigger on ``users``
+    aborts the delete; the downgrade drops exactly that trigger. The
+    PostgreSQL half (the key itself) is
+    ``tests/integration/security/test_case_creator_restrict_postgres.py``."""
+
+    TRIGGER = "users_delete_refuses_case_creator"
+
+    @staticmethod
+    def _triggers() -> list:
+        return sorted(
+            row[0]
+            for row in query_rows(
+                TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            )
+        )
+
+    @staticmethod
+    def _creator_key() -> list:
+        return [
+            (row[2], row[3], row[4], row[6])
+            for row in query_rows(TEST_DB, 'PRAGMA foreign_key_list("cases")')
+            if row[3] == "user_id"
+        ]
+
+    @staticmethod
+    def _seed(conn) -> str:
+        """In the seeded enterprise: a CREATOR whose case a DRIVER drives, and
+        a BYSTANDER with none. Returns the enterprise id."""
+        enterprise = conn.execute(
+            "SELECT enterprise_id FROM enterprises LIMIT 1"
+        ).fetchone()[0]
+        for uid in ("creator-0000", "driver-00000", "bystander-00"):
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, hashed_password) VALUES (?, ?, ?, ?, ?, 'x')",
+                (uid, enterprise, uid, f"{uid}@example.com", uid),
+            )
+        conn.execute(
+            "INSERT INTO cases (case_id, enterprise_id, user_id, driver_id, "
+            "title) VALUES ('case_000000000001', ?, 'creator-0000', "
+            "'driver-00000', 't')",
+            (enterprise,),
+        )
+        conn.commit()
+        return enterprise
+
+    @staticmethod
+    def _case(conn) -> tuple:
+        return conn.execute(
+            "SELECT user_id, driver_id FROM cases "
+            "WHERE case_id = 'case_000000000001'"
+        ).fetchone()
+
+    def test_upgrade_adds_the_trigger_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {EVIDENCE_SUBMITTED_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        tables, triggers = get_tables(TEST_DB), self._triggers()
+        assert self.TRIGGER not in triggers
+        assert self._creator_key() == [("users", "user_id", "user_id", "SET NULL")]
+
+        for _ in range(2):  # up, down, up
+            result = run_alembic(
+                f"upgrade {CASE_CREATOR_RESTRICT_REVISION}", database_url
+            )
+            assert result.returncode == 0, result.stderr
+            assert self._triggers() == sorted(triggers + [self.TRIGGER])
+            assert get_tables(TEST_DB) == tables
+            # The stored clause is unchanged: the trigger aborts before it.
+            assert self._creator_key() == [("users", "user_id", "user_id", "SET NULL")]
+
+            result = run_alembic(
+                f"downgrade {EVIDENCE_SUBMITTED_REVISION}", database_url
+            )
+            assert result.returncode == 0, result.stderr
+            assert get_current_revision(database_url) == EVIDENCE_SUBMITTED_REVISION
+            assert self._triggers() == triggers
+            assert get_tables(TEST_DB) == tables
+
+    @pytest.mark.parametrize("foreign_keys", ["ON", "OFF"])
+    def test_a_creator_is_refused_and_a_driver_releases(
+        self, clean_database, database_url, foreign_keys
+    ):
+        """The trigger holds whether or not the connection turned foreign keys
+        on; the driver's ``ON DELETE SET NULL`` is the key's, so it needs them."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
+            self._seed(conn)
+
+            with pytest.raises(sqlite3.IntegrityError, match="fm-reassign-cases"):
+                conn.execute("DELETE FROM users WHERE user_id = 'creator-0000'")
+            conn.rollback()
+            assert self._case(conn) == ("creator-0000", "driver-00000")
+
+            conn.execute("DELETE FROM users WHERE user_id = 'bystander-00'")
+            if foreign_keys == "ON":
+                conn.execute("DELETE FROM users WHERE user_id = 'driver-00000'")
+                assert self._case(conn) == ("creator-0000", None)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_a_bulk_delete_that_takes_a_creator_is_refused_whole(
+        self, clean_database, database_url
+    ):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            enterprise = self._seed(conn)
+            before = conn.execute(
+                "SELECT count(*) FROM users WHERE enterprise_id = ?", (enterprise,)
+            ).fetchone()
+
+            with pytest.raises(sqlite3.IntegrityError, match="fm-reassign-cases"):
+                conn.execute("DELETE FROM users WHERE enterprise_id = ?", (enterprise,))
+            conn.rollback()
+
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM users WHERE enterprise_id = ?", (enterprise,)
+                ).fetchone()
+                == before
+            )
+        finally:
+            conn.close()
+
+    def test_deleting_the_enterprise_still_removes_its_cases_and_users(
+        self, clean_database, database_url
+    ):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            enterprise = self._seed(conn)
+
+            conn.execute(
+                "DELETE FROM enterprises WHERE enterprise_id = ?", (enterprise,)
+            )
+            conn.commit()
+
+            assert conn.execute(
+                "SELECT count(*) FROM users WHERE enterprise_id = ?", (enterprise,)
+            ).fetchone() == (0,)
+            assert self._case(conn) is None
+        finally:
+            conn.close()
+
+    def test_the_postgresql_statements_swap_the_key_and_add_no_trigger(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {EVIDENCE_SUBMITTED_REVISION}:"
+            f"{CASE_CREATOR_RESTRICT_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        assert "ALTER TABLE cases DROP CONSTRAINT cases_user_id_fkey;" in up.stdout
+        assert (
+            "ALTER TABLE cases ADD CONSTRAINT cases_user_id_fkey FOREIGN "
+            "KEY(user_id) REFERENCES users (user_id) ON DELETE RESTRICT;"
+        ) in up.stdout
+        assert "TRIGGER" not in up.stdout
+
+        down = run_alembic(
+            f"downgrade {CASE_CREATOR_RESTRICT_REVISION}:"
+            f"{EVIDENCE_SUBMITTED_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        assert (
+            "ALTER TABLE cases ADD CONSTRAINT cases_user_id_fkey FOREIGN "
+            "KEY(user_id) REFERENCES users (user_id) ON DELETE SET NULL;"
+        ) in down.stdout
 
 
 class TestRbacSeed:

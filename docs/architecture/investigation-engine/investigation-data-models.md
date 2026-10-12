@@ -524,7 +524,7 @@ class Case(BaseModel):
     # Core Identity
     # ============================================================
     case_id: str = Field(default_factory=lambda: f"case_{uuid4().hex[:12]}")
-    user_id: Optional[str]          # NULL after the creator is deleted
+    user_id: Optional[str]          # The creator; cannot be deleted while any case names them (#1923)
     enterprise_id: str              # Isolation owner (ADR-017)
     organization_id: Optional[str]  # Billing attribution only (ADR-017)
     title: str

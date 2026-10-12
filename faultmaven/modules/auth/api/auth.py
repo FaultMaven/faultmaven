@@ -82,6 +82,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
+from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -999,7 +1000,29 @@ async def list_users(
         )
 
 
-@router.delete("/users/{username}", status_code=200)
+#: ``x-error-code`` of the 409 for an account that created cases (#1923).
+ACCOUNT_OWNS_CASES = "ACCOUNT_OWNS_CASES"
+
+
+@router.delete(
+    "/users/{username}",
+    status_code=200,
+    responses={
+        409: {
+            "description": (
+                f"`x-error-code: {ACCOUNT_OWNS_CASES}`: the account created "
+                "cases, so it cannot be deleted until they are moved to another "
+                "account with `fm-reassign-cases`. Nothing was deleted."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "description": "Which conflict.",
+                    "schema": {"type": "string", "enum": [ACCOUNT_OWNS_CASES]},
+                }
+            },
+        }
+    },
+)
 @trace("auth_delete_user")
 async def delete_user(
     username: str,
@@ -1012,6 +1035,12 @@ async def delete_user(
     A user of another organization answers exactly what an unknown username
     answers (#1318), and nothing is revoked or deleted — the refusal must not
     confirm that the account exists.
+
+    An account that created cases cannot be deleted (#1923): the answer is 409
+    `x-error-code: ACCOUNT_OWNS_CASES`, naming how many and the
+    `fm-reassign-cases` command that moves them, and nothing is revoked or
+    deleted. Deleting an account that only DRIVES other people's cases hands
+    each back to its creator.
     """
     try:
         user_store = await get_user_store(request)
@@ -1032,6 +1061,46 @@ async def delete_user(
                     "error": "not_found",
                     "message": f"User '{username}' not found",
                 },
+            )
+
+        # Refuse an account that CREATED cases before anything else happens
+        # (#1923, owner ruling 2026-10-12: refuse until reassigned). The
+        # creator holds a case's governance, and a case whose creator is gone
+        # has none: ``cases.user_id`` refuses the delete in the database
+        # (``ON DELETE RESTRICT`` / the SQLite trigger), on every path. This
+        # count is the early answer that says how many and what to run; it
+        # comes before the revocation below so a refused delete leaves the
+        # account's sessions alone. The count cannot be skipped: with the case
+        # module unbound there is nothing to ask, and the route refuses rather
+        # than revoke and then meet the key.
+        user_service = getattr(request.app.state, "user_service", None)
+        created = (
+            await user_service.count_cases_created_by(user.user_id)
+            if user_service is not None
+            else None
+        )
+        if created is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Case service unavailable; refusing to delete a user "
+                "without checking whether they created cases.",
+            )
+        if created > 0:
+            logger.info(
+                "Refused to delete an account that created cases",
+                extra={"target_user_id": user.user_id, "cases_created": created},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"User '{username}' created {created} case(s) and cannot be "
+                    "deleted until they belong to another account. Move them "
+                    "with: fm-reassign-cases --enterprise-id "
+                    f"{user.enterprise_id} --from-user {username} --to-user "
+                    "<account> --case-ids-file <file>. Nothing was revoked or "
+                    "deleted."
+                ),
+                headers={"x-error-code": ACCOUNT_OWNS_CASES},
             )
 
         # Revoke BEFORE deleting, and refuse to delete if revocation fails.
@@ -1058,7 +1127,25 @@ async def delete_user(
         # deliberately, so the delete does not proceed.
         await auth_service.revoke_user_tokens(user.user_id)
 
-        success = await user_store.delete_user(user.user_id)
+        try:
+            success = await user_store.delete_user(user.user_id)
+        except AccountOwnsCasesError:
+            # The residual the count above cannot close: the key refused a case
+            # the count did not see — one this account created between the
+            # count and the delete (or one a row-level-security scope hid from
+            # the count). The account survived and its sessions are revoked: a
+            # forced re-login, with no data effect. The operator moves the case
+            # and retries. Same code as the count's refusal, without a count:
+            # the route read none it could stand behind.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"User '{username}' was not deleted: a case they created "
+                    "appeared after the check. Their sessions were revoked. Move "
+                    "their cases with fm-reassign-cases, then retry."
+                ),
+                headers={"x-error-code": ACCOUNT_OWNS_CASES},
+            )
 
         if success:
             logger.info(f"Deleted user: {username} ({user.user_id})")

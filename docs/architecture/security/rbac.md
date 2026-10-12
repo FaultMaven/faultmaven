@@ -460,7 +460,7 @@ confined to the operator's enterprise.
 | DELETE | `/api/v1/admin/users/{id}/roles/{role}` | Remove an org-scoped role | `platform_admin`; 404 if out of enterprise |
 | GET | `/api/v1/auth/users` | List the operator's enterprise's accounts | `platform_admin`, own enterprise only |
 | POST | `/api/v1/auth/users/{id}/revoke-tokens` | Revoke every token for a user | `platform_admin`; 404 if out of enterprise |
-| DELETE | `/api/v1/auth/users/{username}` | Delete an account | `platform_admin`; 404 if out of enterprise |
+| DELETE | `/api/v1/auth/users/{username}` | Delete an account | `platform_admin`; 404 if out of enterprise; 409 `ACCOUNT_OWNS_CASES` if the account created cases (move them with `fm-reassign-cases` first) |
 
 **Where the predicate reads from.** The request's own enterprise is the
 predicate, not a membership row: under `TENANT_PROVIDER=multi` the target's

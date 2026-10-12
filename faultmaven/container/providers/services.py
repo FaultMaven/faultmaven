@@ -1460,6 +1460,9 @@ def register_services(container: BaseDIContainer) -> None:
         user_service = getattr(container, "user_service", None)
         if user_service is not None:
             user_service.bind_case_driver_release(case_service)
+            # An account that created cases cannot be deleted (#1923): the
+            # deletion route asks the case service how many first.
+            user_service.bind_case_creator_count(case_service)
 
     # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
     # its add_documents refuses a KB chunk with no tenant stamp (#1168). There

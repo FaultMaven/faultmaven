@@ -264,6 +264,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.list_cases_driven_by(user_id)
 
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created, in a new session."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.count_cases_created_by(user_id)
+
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""
         async with get_db_session() as session:

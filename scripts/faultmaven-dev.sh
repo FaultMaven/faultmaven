@@ -613,8 +613,31 @@ delete_user() {
 
     echo ""
 
-    # Call the API endpoint
-    response=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:$port/api/v1/auth/dev-delete-user/$username")
+    # The delete route is operator-only: sign in as the bootstrap admin (it
+    # holds the operator roles) through the local-mode login, which is not
+    # mounted under AUTH_MODE=oauth. FM_OPERATOR_USERNAME names another
+    # operator account.
+    local operator="${FM_OPERATOR_USERNAME:-admin}"
+    local token
+    token=$(curl -s -X POST "http://localhost:$port/api/v1/auth/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\": \"$operator\"}" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('access_token', ''))
+except Exception:
+    print('')
+")
+    if [ -z "$token" ]; then
+        print_error "Could not sign in as operator '$operator' (local auth mode only)"
+        exit 1
+    fi
+
+    # An account that created cases is refused with 409 ACCOUNT_OWNS_CASES:
+    # move its cases with fm-reassign-cases first (#1923).
+    response=$(curl -s -w "\n%{http_code}" -X DELETE \
+        -H "Authorization: Bearer $token" \
+        "http://localhost:$port/api/v1/auth/users/$username")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
 

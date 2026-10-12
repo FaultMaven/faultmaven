@@ -8,11 +8,20 @@ and those cases must be re-owned before that account is retired.
 
 ## Why not just delete the old account
 
-`cases.user_id` is `ON DELETE SET NULL` — one of 19 such FKs on `users.user_id`.
-Deleting an owning account neither cascades nor blocks: it **nulls the owner**,
-dropping the cases out of every owner-scoped view, unrecoverably. Reassign
-first, then retire the account — and retire it by **deactivating** it, not by
-deleting the row (see "After the move").
+You cannot while it created cases (#1923). `DELETE /api/v1/auth/users/{username}`
+answers **409** with `x-error-code: ACCOUNT_OWNS_CASES`, the number of cases the
+account created and the `fm-reassign-cases` command that moves them, and revokes
+nothing. The database refuses the delete on every other path too, raw SQL
+included: on PostgreSQL `cases.user_id` is `ON DELETE RESTRICT`; on SQLite the
+stored clause is still `SET NULL`, and a `BEFORE DELETE` trigger on `users`
+(`users_delete_refuses_case_creator`) refuses the delete before it runs.
+
+Before that rule, deleting a creator **nulled the owner**: the cases dropped out
+of every owner-scoped view, and every read of one failed. Rows orphaned that way
+before the rule stay NULL; nothing recovers them.
+
+Reassign first, then retire the account, preferably by **deactivating** it (see
+"After the move").
 
 ## What it writes
 
@@ -92,10 +101,12 @@ error, destroying the only record of which case belonged to which thread.
 
 ## After the move
 
-Retire the old account by setting `is_active=false`. Do **not** delete the row:
-`case_messages.author_id` has no FK by design and would be left dangling with no
-`display_name` to resolve it, and the surviving `uploaded_files.uploaded_by`
-values would be nulled by their `ON DELETE SET NULL`.
+Retire the old account by setting `is_active=false`. Once it created no case the
+delete would go through (an account that only drives other people's cases hands
+each back to its creator, ADR-020 D3), but deactivating keeps the row, and the
+row is still worth keeping: `case_messages.author_id` has no FK by design and
+would be left dangling with no `display_name` to resolve it, and the surviving
+`uploaded_files.uploaded_by` values would be nulled by their `ON DELETE SET NULL`.
 
 ## Exit codes
 
