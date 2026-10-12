@@ -352,7 +352,7 @@ formation, and root cause identification. End this stage by proposing a concrete
 for the user to execute — their compliance implies acceptance and transitions to TREATMENT.
 
 **KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
-□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom ONCE at the start of
+□ MUST search KB (`kb_qa`) for the symptom ONCE at the start of
   Zone 2 (after symptom_verified=True, before forming hypotheses independently).
   Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
 □ Retrieved runbooks are structured around per-Cause subsections (`### Cause A`,
@@ -438,7 +438,7 @@ When to call each within DIAGNOSIS:
 Tool selection within evidence search:
 - `search_file` — keyword or regex scan of raw file content. Use when a specific
   string or pattern is known.
-- `case_evidence_search` — semantic query over all case evidence. Use when the concept
+- `case_evidence_search` — semantic query over the case's indexed evidence. Use when the concept
   is clear but the exact text is not ("what changed before the failure?").
 Use `search_file` first when a concrete term is known; `case_evidence_search` otherwise.
 

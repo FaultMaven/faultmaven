@@ -334,7 +334,7 @@ class VectorizeFileTool(AgentTool):
                     "message": (
                         "This file has no chunkable content, so there is "
                         "nothing to index and case_evidence_search will not "
-                        "return it. Read it directly with read_file or "
+                        "return it. Read it directly with "
                         "search_file instead."
                     ),
                 },
@@ -353,6 +353,6 @@ class VectorizeFileTool(AgentTool):
                 f"This file was NOT vectorized: {reason}. It is not in the "
                 f"case evidence index, so case_evidence_search cannot find it "
                 f"— an empty result for this file says nothing about its "
-                f"contents. Read it directly with read_file or search_file."
+                f"contents. Read it directly with search_file."
             ),
         )

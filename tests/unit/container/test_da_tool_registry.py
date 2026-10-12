@@ -61,6 +61,8 @@ def _make_mock_container(
     # Ensure remaining tool attributes are explicitly None to avoid MagicMock auto-attributes
     container.vectorize_file_tool = None
     container.case_evidence_qa_adapter = None
+    container.find_entity_tool = None
+    container.list_top_entities_tool = None
 
     return container
 
