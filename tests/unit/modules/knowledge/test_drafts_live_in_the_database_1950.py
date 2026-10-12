@@ -12,6 +12,7 @@ draft is ever written to disk.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,7 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import ConflictError, ValidationException
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -38,6 +39,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
 from tests.runbook_samples import valid_runbook
 
@@ -297,15 +299,64 @@ class TestUploadWritesNoFile:
         assert stored == content
 
 
+@pytest.fixture
+async def file_session_factory(tmp_path):
+    """A shared database on disk: concurrent sessions are separate connections,
+    as two replicas' are (an in-memory engine shares ONE connection)."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/shared.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        session.add(
+            EnterpriseModel(enterprise_id=STANDALONE_ENTERPRISE_ID, name="E", slug="e")
+        )
+        await session.commit()
+    yield factory
+    await engine.dispose()
+
+
+def _knowledge(session_factory) -> KnowledgeService:
+    """The real knowledge service on the shared database; only the vector
+    store is a double."""
+    vector_store = MagicMock()
+    vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
+    service = KnowledgeService(
+        knowledge_ingester=MagicMock(),
+        sanitizer=MagicMock(),
+        tracer=MagicMock(),
+        vector_store=vector_store,
+        db_session_factory=session_factory,
+    )
+    service._index_document_in_vector_store = AsyncMock(return_value=3)
+    return service
+
+
+async def _published_items(session_factory) -> list[str]:
+    from sqlalchemy import select
+
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+    async with session_factory() as session:
+        return list(
+            (await session.execute(select(KnowledgeItemModel.item_id))).scalars()
+        )
+
+
+def _at_length(title: str, length: int) -> str:
+    """A valid runbook padded with a trailing comment to exactly ``length``."""
+    body = valid_runbook(title)
+    return body + "<!-- " + "x" * (length - len(body) - 10) + " -->\n"
+
+
 class TestTheEditBound:
-    """``DRAFT_CONTENT_MAX_CHARS`` bounds what an edit may store, and the scan
-    imports nothing over it, so no draft is born that cannot be edited."""
+    """``DRAFT_CONTENT_MAX_CHARS`` bounds every write of a draft's text, so no
+    draft exists that cannot be saved back (#1950)."""
 
     def test_an_edit_over_the_bound_is_refused(self):
         from pydantic import ValidationError
 
         from faultmaven.modules.knowledge.domain.models.conversion import (
-            DRAFT_CONTENT_MAX_CHARS,
             DraftUpdateRequest,
         )
 
@@ -313,11 +364,16 @@ class TestTheEditBound:
         with pytest.raises(ValidationError):
             DraftUpdateRequest(content="x" * (DRAFT_CONTENT_MAX_CHARS + 1))
 
-    def test_the_largest_shipped_runbook_fits(self):
-        from faultmaven.modules.knowledge.domain.models.conversion import (
-            DRAFT_CONTENT_MAX_CHARS,
-        )
+    def test_the_row_refuses_text_over_the_bound(self):
+        """The one enforcement point every ORM write passes through."""
+        ConversionDraftModel(content="x" * DRAFT_CONTENT_MAX_CHARS)
+        with pytest.raises(ValidationException):
+            ConversionDraftModel(content="x" * (DRAFT_CONTENT_MAX_CHARS + 1))
+        row = ConversionDraftModel(content="short")
+        with pytest.raises(ValidationException):
+            row.content = "x" * (DRAFT_CONTENT_MAX_CHARS + 1)
 
+    def test_the_largest_shipped_runbook_fits(self):
         pack = Path(__file__).resolve().parents[4] / "resources/knowledge/pack"
         sizes = [
             len(p.read_text(encoding="utf-8")) for p in pack.rglob("runbooks/**/*.md")
@@ -328,10 +384,6 @@ class TestTheEditBound:
     async def test_the_scan_refuses_a_file_over_the_bound(
         self, session_factory, tmp_path, monkeypatch
     ):
-        from faultmaven.modules.knowledge.domain.models.conversion import (
-            DRAFT_CONTENT_MAX_CHARS,
-        )
-
         pod = _Replica(tmp_path, session_factory)
         (tmp_path / "global").mkdir()
         body = valid_runbook("An Enormous Runbook")
@@ -351,3 +403,363 @@ class TestTheEditBound:
             f"huge.md: too long ({DRAFT_CONTENT_MAX_CHARS + 1} chars; a draft "
             f"holds at most {DRAFT_CONTENT_MAX_CHARS})"
         ]
+
+    async def test_a_template_over_the_bound_is_a_422_and_writes_nothing(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        from faultmaven.api.exception_handlers import get_exception_handlers
+        from faultmaven.modules.knowledge.api import conversion_routes as cr
+
+        monkeypatch.chdir(tmp_path)
+        # Refused BEFORE the gate spends its CPU on the oversized text.
+        gate = AsyncMock(side_effect=AssertionError("the gate ran"))
+        monkeypatch.setattr(service_module, "avalidate_and_score", gate)
+        pod = _Replica(tmp_path, session_factory)
+        app = FastAPI()
+        app.include_router(cr.router, prefix="/api/v1")
+        for exc_type, handler in get_exception_handlers().items():
+            app.add_exception_handler(exc_type, handler)
+        user = MagicMock(user_id="u1", enterprise_id=None)
+        user.is_platform_admin.return_value = False
+        app.dependency_overrides[cr._require_auth] = lambda: user
+        app.dependency_overrides[cr._get_conversion_service] = lambda: pod.service
+        body = {
+            key: TEMPLATE[key]
+            for key in (
+                "title",
+                "domain",
+                "service_name",
+                "severity",
+                "scope",
+                "symptom_recognition",
+                "applicability",
+                "diagnostic_steps",
+                "causes",
+            )
+        }
+        body["service"] = body.pop("service_name")
+        body["symptom_class"] = ["service_unavailable"]
+        body["prevention"] = "Alert early. " + "y" * DRAFT_CONTENT_MAX_CHARS
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/knowledge/runbooks/create", json=body)
+
+        assert response.status_code == 422, response.text
+        assert f"at most {DRAFT_CONTENT_MAX_CHARS} characters" in (
+            response.json()["detail"]
+        )
+        gate.assert_not_awaited()
+        async with session_factory() as session:
+            assert (await session.get(ConversionDraftModel, "x")) is None
+            from sqlalchemy import func, select
+
+            count = await session.execute(
+                select(func.count()).select_from(ConversionDraftModel)
+            )
+            assert count.scalar_one() == 0
+
+    async def test_one_oversized_conversion_mode_fails_alone(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        """A per-mode refusal: the other mode of the document still yields."""
+        from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            AnalysisResult,
+            FailureModeAnalysis,
+            PreprocessingResult,
+            SourceAssessment,
+        )
+
+        monkeypatch.chdir(tmp_path)
+        huge = _at_length("Redis Memory Exhausted", DRAFT_CONTENT_MAX_CHARS + 50)
+        fine = valid_runbook("Postgres Pool Exhausted")
+
+        async def route(**kwargs):
+            user = next(m for m in kwargs["messages"] if m["role"] == "user")
+            content = huge if "Redis Memory" in user["content"] else fine
+            return LLMResponse(
+                content=content,
+                confidence=0.9,
+                provider="t",
+                model="m",
+                tokens_used=1,
+                response_time_ms=1,
+                stop_reason=StopReason.STOP,
+            )
+
+        pod = _Replica(tmp_path, session_factory)
+        pod.service._llm_router.route = AsyncMock(side_effect=route)
+        pod.service._settings.llm.explicit_role_provider.return_value = None
+        pod.service._preprocessor.preprocess = AsyncMock(
+            return_value=PreprocessingResult(
+                extracted_text="source material", source_metadata={}
+            )
+        )
+        modes = [
+            FailureModeAnalysis(
+                id=f"fm-{i}",
+                title=title,
+                domain="database",
+                service=service,
+                symptom_class=[symptom],
+                severity="high",
+                symptoms_summary="s",
+                resolution_summary="r",
+            )
+            for i, (title, service, symptom) in enumerate(
+                [
+                    ("Redis Memory Exhausted", "redis", "resource_exhaustion"),
+                    ("Postgres Pool Exhausted", "postgresql", "latency"),
+                ]
+            )
+        ]
+        source = tmp_path / "doc.md"
+        source.write_text("source")
+        analysis = AnalysisResult(
+            is_actionable=True,
+            failure_modes=modes,
+            source_assessment=SourceAssessment(
+                content_type="doc",
+                actionability_rating="high",
+                missing_information=[],
+            ),
+        )
+        monkeypatch.setattr(
+            service_module, "_analyze_document", AsyncMock(return_value=analysis)
+        )
+
+        response = await pod.service.convert_document(
+            source, "text/markdown", "doc.md", "personal", "u1", None
+        )
+
+        assert [d.title for d in response.drafts] == ["Postgres Pool Exhausted"]
+        assert response.status.value == "partial"
+        assert any(
+            "fm-0" in w and f"at most {DRAFT_CONTENT_MAX_CHARS}" in w
+            for w in response.warnings
+        ), response.warnings
+
+    async def test_an_upload_over_the_bound_is_refused_before_ingest(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        from faultmaven.modules.knowledge.domain.services import knowledge_service
+
+        monkeypatch.chdir(tmp_path)
+        # Refused BEFORE the quality gate spends its CPU on the oversized text.
+        gate = AsyncMock(side_effect=AssertionError("the gate ran"))
+        monkeypatch.setattr(knowledge_service, "aenforce_runbook_quality", gate)
+        knowledge = _knowledge(session_factory)
+        knowledge.ingest_runbook = AsyncMock(return_value=3)
+
+        with pytest.raises(ValidationException, match="at most 100000 characters"):
+            await knowledge.upload_document(
+                content=_at_length("Redis Notes", DRAFT_CONTENT_MAX_CHARS + 1),
+                title="Redis Notes",
+                document_type="runbook",
+                scope="personal",
+                owner_id="u1",
+            )
+
+        knowledge.ingest_runbook.assert_not_awaited()
+        gate.assert_not_awaited()
+        async with session_factory() as session:
+            from sqlalchemy import func, select
+
+            count = await session.execute(
+                select(func.count()).select_from(ConversionDraftModel)
+            )
+            assert count.scalar_one() == 0
+
+    def test_the_upload_route_answers_the_bound_as_422(self):
+        from types import SimpleNamespace
+
+        from fastapi.testclient import TestClient
+
+        from faultmaven.api.exception_handlers import get_exception_handlers
+        from faultmaven.api.v1.auth_dependencies import require_authentication
+        from faultmaven.modules.knowledge.api.routes import (
+            get_knowledge_service,
+        )
+        from faultmaven.modules.knowledge.api.routes import router as kb_router
+
+        refusing = SimpleNamespace(
+            upload_document=AsyncMock(
+                side_effect=ValidationException(
+                    "A runbook draft holds at most 100000 characters; this one "
+                    "has 100001."
+                )
+            )
+        )
+        app = FastAPI()
+        app.include_router(kb_router, prefix="/api/v1")
+        for exc_type, handler in get_exception_handlers().items():
+            app.add_exception_handler(exc_type, handler)
+        app.state.team_service = None
+
+        async def _service():
+            return refusing
+
+        async def _user():
+            return SimpleNamespace(
+                user_id="u1",
+                organization_id=None,
+                enterprise_id="e1",
+                is_platform_admin=lambda: False,
+            )
+
+        app.dependency_overrides[get_knowledge_service] = _service
+        app.dependency_overrides[require_authentication] = _user
+        response = TestClient(app).post(
+            "/api/v1/knowledge/documents",
+            data={"title": "Big", "document_type": "runbook", "scope": "personal"},
+            files={"file": ("big.md", b"---\nid: x\n---\n# big\n", "text/markdown")},
+        )
+
+        assert response.status_code == 422, response.text
+        assert "at most 100000 characters" in response.json()["detail"]
+
+    async def test_a_draft_at_the_bound_still_verifies(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        """Verify's frontmatter rewrite may lengthen the text past the bound;
+        it is exempt, so the user is never refused a verify of a draft they
+        were allowed to save."""
+        monkeypatch.chdir(tmp_path)
+        pod = _Replica(tmp_path, session_factory, _ingesting())
+        created = await pod.service.create_runbook_from_template(**TEMPLATE)
+        cid, did = created["conversion_id"], created["draft"].draft_id
+        at_bound = _at_length("Pool Exhausted At The Bound", DRAFT_CONTENT_MAX_CHARS)
+        assert len(at_bound) == DRAFT_CONTENT_MAX_CHARS
+        edited = await pod.service.update_draft(cid, did, "u1", at_bound)
+        assert edited.validation.passed, edited.validation.errors
+
+        result = await pod.service.verify_draft(cid, did, "u1")
+
+        assert result.status == "verified"
+        row = await _row(session_factory, did)
+        assert row.status == "verified"
+        assert len(row.content) > DRAFT_CONTENT_MAX_CHARS
+
+
+class TestEditAndVerifyDoNotLoseEachOther:
+    async def test_an_edit_during_ingestion_survives_and_nothing_is_published(
+        self, file_session_factory, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        factory = file_session_factory
+        knowledge = _knowledge(factory)
+        entered, release = asyncio.Event(), asyncio.Event()
+        real_index = knowledge._index_document_in_vector_store
+
+        async def slow_index(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await real_index(*args, **kwargs)
+
+        knowledge._index_document_in_vector_store = slow_index
+        verifier = _Replica(tmp_path / "pod-a", factory, knowledge).service
+        editor = _Replica(tmp_path / "pod-b", factory).service
+        created = await editor.create_runbook_from_template(**TEMPLATE)
+        cid, did = created["conversion_id"], created["draft"].draft_id
+        async with factory() as session:
+            (await session.get(ConversionDraftModel, did)).validation_passed = True
+            await session.commit()
+
+        verifying = asyncio.create_task(verifier.verify_draft(cid, did, "u1"))
+        await entered.wait()
+        edit = valid_runbook("Pool Exhausted Edited During Verify")
+        await editor.update_draft(cid, did, "u1", edit)
+        release.set()
+        with pytest.raises(ConflictError) as changed:
+            await verifying
+
+        assert changed.value.conflict_reason == "changed_during_verification"
+        row = await _row(factory, did)
+        assert (row.status, row.content) == ("draft", edit)
+        assert await _published_items(factory) == []
+        knowledge._vector_store.delete_documents_by_parent_id.assert_awaited_once()
+
+    async def test_a_verified_draft_is_not_edited(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        pod = _Replica(tmp_path, session_factory, _ingesting())
+        created = await pod.service.create_runbook_from_template(**TEMPLATE)
+        cid, did = created["conversion_id"], created["draft"].draft_id
+        async with session_factory() as session:
+            (await session.get(ConversionDraftModel, did)).validation_passed = True
+            await session.commit()
+        await pod.service.verify_draft(cid, did, "u1")
+        verified_text = (await _row(session_factory, did)).content
+        # Refused at once, not after the gate: the first session sees it.
+        gate = AsyncMock(side_effect=AssertionError("the gate ran"))
+        monkeypatch.setattr(service_module, "avalidate_and_score", gate)
+
+        with pytest.raises(ConflictError) as refused:
+            await pod.service.update_draft(
+                cid, did, "u1", valid_runbook("An Edit Too Late")
+            )
+
+        assert refused.value.conflict_reason == "already_verified"
+        assert (await _row(session_factory, did)).content == verified_text
+
+    async def test_a_draft_verified_while_the_edit_is_scored_is_not_overwritten(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        """The edit's second session re-checks: a verify that finished during
+        the gate stands."""
+        monkeypatch.chdir(tmp_path)
+        pod = _Replica(tmp_path, session_factory, _ingesting())
+        created = await pod.service.create_runbook_from_template(**TEMPLATE)
+        cid, did = created["conversion_id"], created["draft"].draft_id
+        async with session_factory() as session:
+            (await session.get(ConversionDraftModel, did)).validation_passed = True
+            await session.commit()
+        real_gate = service_module.avalidate_and_score
+
+        async def _gate_then_verify(content):
+            verdict = await real_gate(content)
+            await pod.service.verify_draft(cid, did, "u1")
+            return verdict
+
+        monkeypatch.setattr(service_module, "avalidate_and_score", _gate_then_verify)
+        with pytest.raises(ConflictError) as refused:
+            await pod.service.update_draft(cid, did, "u1", valid_runbook("Too Late"))
+
+        assert refused.value.conflict_reason == "already_verified"
+        row = await _row(session_factory, did)
+        assert row.status == "verified"
+        assert "Too Late" not in row.content
+
+
+class TestAnUploadsConversionOpens:
+    async def test_get_conversion_scores_a_row_with_no_stored_score(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        """A KB upload stores no quality score; opening its conversion used to
+        500 on ``QualityScore(**{})``."""
+        from sqlalchemy import select
+
+        monkeypatch.chdir(tmp_path)
+        content = valid_runbook("Redis Evictions Under Memory Pressure")
+        await _knowledge(session_factory).upload_document(
+            content=content,
+            title="Redis evictions",
+            document_type="runbook",
+            scope="personal",
+            owner_id="u1",
+        )
+        async with session_factory() as session:
+            row = (await session.execute(select(ConversionDraftModel))).scalar_one()
+        assert row.quality_details is None
+
+        opened = await _Replica(tmp_path, session_factory).service.get_conversion(
+            row.conversion_id, "u1"
+        )
+
+        (draft,) = opened.drafts
+        assert draft.content == content
+        assert draft.quality_score.overall > 0
+        assert draft.quality_score.grade

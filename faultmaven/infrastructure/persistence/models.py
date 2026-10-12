@@ -61,11 +61,14 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship, validates
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON, TypeDecorator
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_MAX_LENGTH
+from faultmaven.modules.knowledge.draft_content import (
+    ensure_draft_content_within_bound,
+)
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     RunbookSeverity,
@@ -3176,6 +3179,15 @@ class ConversionDraftModel(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     conversion_job = relationship("ConversionJobModel", back_populates="drafts")
+
+    @validates("content")
+    def _content_within_bound(self, _key, content):
+        """Every ORM write of a draft's text is held to the edit bound
+        (``DRAFT_CONTENT_MAX_CHARS``, #1950): a draft the user could not save
+        back is a draft they cannot edit. Raises ``ValidationException`` (422).
+        Verify's compare-and-swap ``UPDATE`` is the one write this does not see,
+        deliberately — see ``faultmaven.modules.knowledge.draft_content``."""
+        return ensure_draft_content_within_bound(content)
 
     __table_args__ = (
         CheckConstraint(

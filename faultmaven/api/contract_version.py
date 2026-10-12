@@ -2044,7 +2044,20 @@ asked to accept, and it belongs to a person.
 # imports files and never discards a draft; under `TENANT_PROVIDER=multi` it
 # answers 422 with "This deployment has no runbook directory; upload or convert
 # instead" (it was a 409 when a scan would have discarded every draft; that
-# refusal is gone). MINOR because every client survives: the draft routes
+# refusal is gone).
+#
+# The same 100,000-character bound holds wherever a draft's text is born, as a
+# 422 naming the bound: `POST /knowledge/documents` (a runbook upload becomes a
+# draft row; the cap is new — before it only `MAX_UPLOAD_SIZE_MB` applied) and
+# `POST /knowledge/runbooks/create` (the composed runbook). A `/convert` failure
+# mode whose runbook exceeds it is reported in `warnings`, like any other
+# failed mode. `PUT …/drafts/{draft_id}` on a verified draft answers 409
+# `conflict_reason: "already_verified"` (it used to rewrite the row), and a
+# verify that finds the draft edited during its ingestion answers 409
+# `conflict_reason: "changed_during_verification"` and publishes nothing.
+# `GET /conversions/{id}` of a KB upload no longer answers 500 (its draft had
+# no stored score). MINOR because every client survives: the draft routes
 # declare no response model, so `content` going from nullable to always-present
-# is invisible to a generated type, and a client already shows the 422 detail.
+# is invisible to a generated type, and a client already shows a 409's or a
+# 422's detail.
 API_CONTRACT_VERSION = "13.6.0"

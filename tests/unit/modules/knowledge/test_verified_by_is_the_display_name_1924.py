@@ -113,6 +113,16 @@ def _session_factory(draft):
 
     async def _execute(stmt):
         result = MagicMock()
+        if stmt.is_dml:
+            # Verify's compare-and-swap (#1950): it writes the row only if the
+            # row still holds the text verify read.
+            params = stmt.compile().params
+            swapped = draft.status == "draft" and params["content_1"] == draft.content
+            if swapped:
+                draft.content = params["content"]
+                draft.status = params["status"]
+            result.rowcount = 1 if swapped else 0
+            return result
         table = stmt.get_final_froms()[0].name
         result.scalar_one_or_none.return_value = (
             job if table == "conversion_jobs" else draft

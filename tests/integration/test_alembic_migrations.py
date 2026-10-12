@@ -2357,31 +2357,45 @@ class TestRunbookDraftsInTheDatabaseRevision:
         assert result.returncode == 0, result.stderr
         assert self._drafts()["d_verified"] == ("verified", self.PUBLISHED)
 
-    @pytest.mark.parametrize(
-        "url", ["postgresql://offline@localhost/offline", "sqlite:///offline.db"]
-    )
-    def test_offline_says_the_file_step_cannot_run_and_emits_the_rest(self, url):
+    def test_offline_postgresql_warns_first_and_emits_the_rest(self):
+        """PostgreSQL renders: the warning is the first statement, before the
+        column exists, and the file step is marked where it would run."""
         result = run_alembic(
             f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}:"
             f"{DRAFTS_IN_THE_DATABASE_REVISION} --sql",
-            url,
+            "postgresql://offline@localhost/offline",
         )
         assert result.returncode == 0, result.stderr
         sql = result.stdout
+        revision = sql.index("-- Running upgrade b5334d07ae6c -> c4441b83ba24")
+        warning = sql.index("-- WARNING (017): this script cannot read draft files")
+        add = sql.index("ALTER TABLE conversion_drafts ADD COLUMN content TEXT")
         verified = sql.index("UPDATE conversion_drafts SET content = (SELECT")
         note = sql.index("-- 017 step 2")
         release = sql.index("UPDATE conversion_jobs SET live_case_id = NULL")
         discard = sql.index("UPDATE conversion_drafts SET status = 'discarded'")
         empty = sql.index("UPDATE conversion_drafts SET content = '' WHERE")
-        assert verified < note < release < discard < empty, sql
-        if url.startswith("postgresql"):
-            assert sql.index("SET LOCAL row_security = off") < verified
-            assert empty < sql.index("SET LOCAL row_security TO DEFAULT")
-            assert "ALTER TABLE conversion_drafts DROP COLUMN file_path" in sql
-            assert "ALTER COLUMN content SET NOT NULL" in sql
-        else:
-            assert "row_security" not in sql
-            assert "CREATE TABLE _alembic_tmp_conversion_drafts" in sql
+        assert revision < warning < add < verified < note < release < discard < empty
+        assert "DISCARDS every live runbook draft" in sql
+        assert sql.index("SET LOCAL row_security = off") < verified
+        assert empty < sql.index("SET LOCAL row_security TO DEFAULT")
+        assert "ALTER TABLE conversion_drafts DROP COLUMN file_path" in sql
+        assert "ALTER COLUMN content SET NOT NULL" in sql
+
+    def test_offline_sqlite_refuses_to_render(self):
+        """SQLite is standalone, whose drafts' text is in files a script cannot
+        read: rendering would hand an operator a script that discards them."""
+        result = run_alembic(
+            f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}:"
+            f"{DRAFTS_IN_THE_DATABASE_REVISION} --sql",
+            "sqlite:///offline.db",
+        )
+        assert result.returncode != 0
+        assert (
+            "step (b) reads draft files; standalone migrates online from the app "
+            "root" in result.stderr
+        )
+        assert "ALTER TABLE conversion_drafts" not in result.stdout
 
 
 class TestRbacSeed:
@@ -2529,11 +2543,18 @@ class TestHelperScript:
 
         alembic takes ``--sql`` only after the subcommand; placed before it,
         alembic rejects the whole invocation.
+
+        On SQLite the chain renders up to 016 and then 017 refuses (it reads
+        draft files, which a script cannot; ``TestRunbookDraftsInTheDatabase
+        Revision``), so the run fails AFTER printing the SQL before it — still
+        offline, still touching no database.
         """
         result = run_helper_script("upgrade --sql", database_url)
 
-        assert result.returncode == 0, result.stderr
+        assert result.returncode != 0
+        assert "step (b) reads draft files" in result.stderr, result.stderr[-2000:]
         assert "CREATE TABLE cases" in result.stdout
+        assert "Running upgrade 9904ee0cad86 -> b5334d07ae6c" in result.stdout
         assert not os.path.exists(TEST_DB) or get_tables(TEST_DB) == []
 
     def test_upgrade_applies_the_migrations(self, clean_database, database_url):

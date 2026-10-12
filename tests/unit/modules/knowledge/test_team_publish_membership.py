@@ -237,9 +237,11 @@ def _verify_ready_service(*, team_service, job_team="team_a"):
 
     calls = {"n": 0}
 
-    async def _execute(_stmt):
+    async def _execute(stmt):
         calls["n"] += 1
         result = MagicMock()
+        # The last statement is verify's compare-and-swap (#1950): one row.
+        result.rowcount = 1
         result.scalar_one_or_none.return_value = job if calls["n"] == 1 else dm
         return result
 

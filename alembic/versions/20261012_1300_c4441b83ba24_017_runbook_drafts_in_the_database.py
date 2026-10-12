@@ -24,7 +24,10 @@ In order, each step filling only rows the steps before it left empty:
    runs in and only from inside ``data/knowledge`` there. Standalone runs the
    migration at startup from the application root, where those files are. A
    path outside that tree, a missing file and an unreadable one all leave the
-   row empty.
+   row empty. This includes a VERIFIED draft whose published item was deleted
+   (``knowledge_item_id`` cleared by the foreign key): step 1 cannot fill it,
+   and with no file it is discarded by step 3 — the runbook it was published as
+   is already gone.
 3. **Live drafts still empty are DISCARDED**: their text is gone, and a draft
    with no text cannot be shown, edited or verified. A case conversion whose
    last live draft this discards releases its ``conversion_jobs.live_case_id``
@@ -51,16 +54,26 @@ would find no ``data/knowledge`` and discard every unverified draft. When step
 3 would discard a draft and ``data/knowledge`` does not exist in the working
 directory, the upgrade REFUSES before changing anything, naming the directory
 it looked in. Run it from the application root (the app's own startup run
-does), or discard those drafts first. PostgreSQL has no guard: its migration
-Job never had those files, by construction.
+does), or discard those drafts first. The guard is keyed on the DIALECT, not on
+the deployment: PostgreSQL has none, because Cloud's migration Job never had
+those files, by construction. A self-hosted single-tenant deployment on
+PostgreSQL that runs this migration by hand from the wrong working directory is
+therefore not protected; its normal path, the app's own startup migration, runs
+from the application root and reads the files.
 
 Offline (``--sql``)
 -------------------
 
-Step 2 reads files, which a generated script cannot do; the script carries a
-comment where it would run, and steps 1, 3 and 4 as SQL. Applied to a database
-holding unverified drafts, such a script discards them all. The standalone
-guard needs a connection and does not run either. Standalone runs online.
+Step 2 reads files, which a generated script cannot do.
+
+* **SQLite refuses to render** (``step (b) reads draft files; standalone
+  migrates online from the app root``): SQLite is standalone, whose drafts'
+  text is in those files, and a script would discard every one.
+* **PostgreSQL renders**, because its migration Job never sees those files
+  anyway (the online run finds none either). The script's FIRST statement is a
+  SQL comment warning that it discards every live draft whose text is not
+  already in the database (not published); a comment marks where step 2 would
+  run, and steps 1, 3 and 4 follow as SQL.
 
 Dialects
 --------
@@ -159,6 +172,15 @@ COUNT_LIVE_WITHOUT_PUBLISHED_TEXT = text(
     "AND NOT (status = 'verified' AND EXISTS ("
     "SELECT 1 FROM knowledge_items "
     "WHERE knowledge_items.item_id = conversion_drafts.knowledge_item_id))"
+)
+
+#: The first statement of an offline (PostgreSQL) script.
+OFFLINE_WARNING = (
+    "-- WARNING (017): this script cannot read draft files. It DISCARDS every "
+    "live runbook draft whose text is not already in the database (every "
+    "unverified draft, and every verified one whose published item is gone). "
+    "Run the migration online from the application root to keep drafts whose "
+    "files are in place"
 )
 
 ROW_SECURITY_OFF = "SET LOCAL row_security = off"
@@ -360,6 +382,14 @@ def _settle_content() -> None:
 
 def upgrade() -> None:
     """Give every draft its text in ``content``; drop ``file_path``."""
+    context = op.get_context()
+    if context.as_sql:
+        if context.dialect.name == "sqlite":
+            raise RuntimeError(
+                "017 cannot be rendered with --sql on SQLite: step (b) reads "
+                "draft files; standalone migrates online from the app root"
+            )
+        op.execute(OFFLINE_WARNING)
     _refuse_if_standalone_would_lose_drafts()
     op.add_column("conversion_drafts", sa.Column("content", sa.Text(), nullable=True))
 

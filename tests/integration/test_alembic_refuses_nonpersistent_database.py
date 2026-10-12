@@ -67,7 +67,16 @@ def alembic_copy(tmp_path) -> Path:
     return tmp_path
 
 
-def _upgrade_head(root: Path, database_env: dict[str, str], *extra: str):
+#: The last revision SQLite renders offline: 017 refuses ``--sql`` on SQLite,
+#: because its backfill reads draft files a script cannot (#1950). The offline
+#: cases below stop here; ``test_offline_sql_on_sqlite_stops_at_017`` pins the
+#: refusal itself.
+LAST_SQLITE_OFFLINE_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
+
+
+def _upgrade_head(
+    root: Path, database_env: dict[str, str], *extra: str, target: str = "head"
+):
     # Each variable is set as its ONLY spelling (the xdist worker sets a
     # DATABASE_URL, and the settings bind any case), so ``database_env`` is the
     # whole of it. Every case names the URL in some spelling.
@@ -82,7 +91,7 @@ def _upgrade_head(root: Path, database_env: dict[str, str], *extra: str):
     env["PYTHON_DOTENV_DISABLED"] = "1"
     return subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(root / "alembic.ini")]
-        + ["upgrade", "head", *extra],
+        + ["upgrade", target, *extra],
         cwd=root,
         env=env,
         capture_output=True,
@@ -130,10 +139,26 @@ def test_upgrade_head_refuses_a_non_persistent_database_url(alembic_copy, databa
 def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
     """``upgrade head --sql`` only takes the dialect from the URL: an in-memory
     one is fine there, as on ``main`` (#1778 review, R3)."""
-    result = _upgrade_head(alembic_copy, {"DATABASE_URL": "sqlite://"}, "--sql")
+    result = _upgrade_head(
+        alembic_copy,
+        {"DATABASE_URL": "sqlite://"},
+        "--sql",
+        target=LAST_SQLITE_OFFLINE_REVISION,
+    )
 
     assert result.returncode == 0, result.stderr[-3000:]
     assert REFUSAL not in result.stderr
+    assert "CREATE TABLE" in result.stdout
+
+
+def test_offline_sql_on_sqlite_stops_at_017(alembic_copy):
+    """Past 016 the refusal is 017's own (its backfill reads draft files), never
+    the URL gate's."""
+    result = _upgrade_head(alembic_copy, {"DATABASE_URL": "sqlite://"}, "--sql")
+
+    assert result.returncode != 0
+    assert REFUSAL not in result.stderr
+    assert "step (b) reads draft files" in result.stderr, result.stderr[-3000:]
     assert "CREATE TABLE" in result.stdout
 
 
@@ -159,7 +184,10 @@ def test_a_database_setting_alembic_never_uses_does_not_refuse(
     extra = ("--sql",) if mode == "offline-sql" else ()
 
     result = _upgrade_head(
-        alembic_copy, {"DATABASE_URL": f"sqlite+aiosqlite:///{db}", name: value}, *extra
+        alembic_copy,
+        {"DATABASE_URL": f"sqlite+aiosqlite:///{db}", name: value},
+        *extra,
+        target=LAST_SQLITE_OFFLINE_REVISION if extra else "head",
     )
     detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
 

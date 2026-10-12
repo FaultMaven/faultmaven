@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from faultmaven.exceptions import (
@@ -99,6 +99,11 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     avalidate_and_score,
 )
+from faultmaven.modules.knowledge.draft_content import (
+    DRAFT_CONTENT_MAX_CHARS,
+    draft_content_too_long_message,
+    ensure_draft_content_within_bound,
+)
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
 from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
@@ -118,6 +123,17 @@ logger = logging.getLogger(__name__)
 SCAN_UNAVAILABLE_MULTI_MSG = (
     "This deployment has no runbook directory; upload or convert instead"
 )
+
+
+def _already_verified(draft_id: str) -> ConflictError:
+    """The 409 for a draft that is no longer a draft. One wording for verify
+    and edit; ``verify_batch`` and clients key on ``conflict_reason``."""
+    return ConflictError(
+        "This runbook has already been verified and ingested",
+        resource_type="draft",
+        resource_id=draft_id,
+        conflict_reason="already_verified",
+    )
 
 
 @dataclass(frozen=True)
@@ -943,6 +959,15 @@ class ConversionService:
                 )
 
             # Validate LLM output before it becomes a draft
+            if len(runbook_content) > DRAFT_CONTENT_MAX_CHARS:
+                # Refused here, per mode: one oversized runbook must not fail
+                # the rest of the document (#1950). Not retryable — the same
+                # source yields the same size.
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error=draft_content_too_long_message(len(runbook_content)),
+                    retryable=False,
+                )
             if not runbook_content or len(runbook_content) < 100:
                 return ConversionError(
                     failure_mode_id=failure_mode.id,
@@ -1117,6 +1142,14 @@ class ConversionService:
 
             drafts = []
             for dm in draft_models:
+                # A KB upload's draft row carries no score (the upload runs the
+                # quality GATE, not the scorer), and ``QualityScore(**{})``
+                # failed the whole read with a 500. Score its text instead: the
+                # same verdict an edit of it would record.
+                if dm.quality_details:
+                    quality = QualityScore(**dm.quality_details)
+                else:
+                    _validation, quality = await avalidate_and_score(dm.content)
                 # The text is the row's own column (#1950): the same on every
                 # replica, whatever disk this pod has.
                 drafts.append(
@@ -1133,7 +1166,7 @@ class ConversionService:
                             errors=dm.validation_errors or [],
                             warnings=dm.validation_warnings or [],
                         ),
-                        quality_score=QualityScore(**(dm.quality_details or {})),
+                        quality_score=quality,
                         content_preview=dm.content[:500],
                         content=dm.content,
                     )
@@ -1418,13 +1451,17 @@ class ConversionService:
             dm = draft_result.scalar_one_or_none()
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
+            # Only a DRAFT is edited. A verified runbook is published; editing
+            # its row would leave the row's text and the published text apart.
+            if dm.status != DraftStatus.DRAFT.value:
+                raise _already_verified(draft_id)
 
             # Line endings, before the gate below and before the text is stored
             # (#1403). ``content`` is a JSON body field from
             # ``PUT /knowledge/conversions/{id}/drafts/{draft_id}``; a CRLF edit
             # from any non-browser client would otherwise be stored as sent and
             # scored 15 points lower for its line endings alone.
-            content = normalize_line_endings(content)
+            content = ensure_draft_content_within_bound(normalize_line_endings(content))
 
             # The gate runs OUTSIDE the transaction. Deliberately, and the
             # reason it is worth the restructure below (#1417 review).
@@ -1460,17 +1497,27 @@ class ConversionService:
             # the read-modify-write window to cover the whole gate, so the row is
             # re-fetched and the verdict applied to that fresh copy. Without this
             # a concurrent discard would be overwritten by a stale snapshot.
+            #
+            # ``FOR UPDATE`` (PostgreSQL; SQLite serialises writers anyway): a
+            # verify finishing now either committed first — the row is verified
+            # and this refuses — or waits for this commit, and its
+            # compare-and-swap then sees the new text and publishes nothing.
             draft_result = await session.execute(
-                select(ConversionDraftModel).where(
+                select(ConversionDraftModel)
+                .where(
                     ConversionDraftModel.id == draft_id,
                     ConversionDraftModel.conversion_id == conversion_id,
                 )
+                .with_for_update()
             )
             dm = draft_result.scalar_one_or_none()
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 # Discarded while we were scoring: nothing is written — neither
                 # the text nor a verdict for a draft nobody wants.
                 return None
+            if dm.status != DraftStatus.DRAFT.value:
+                # Verified while we were scoring: the published text stands.
+                raise _already_verified(draft_id)
 
             # The text and its verdict, in ONE commit (#1950).
             dm.content = content
@@ -1718,12 +1765,7 @@ class ConversionService:
                     message="Draft not found",
                 )
             if dm.status == DraftStatus.VERIFIED.value:
-                raise ConflictError(
-                    "This runbook has already been verified and ingested",
-                    resource_type="draft",
-                    resource_id=draft_id,
-                    conflict_reason="already_verified",
-                )
+                raise _already_verified(draft_id)
             if dm.status == DraftStatus.DISCARDED.value:
                 raise ConflictError(
                     "This draft has been discarded",
@@ -1744,139 +1786,182 @@ class ConversionService:
                     "Draft has validation errors that must be fixed before verification"
                 )
 
-            # The verified frontmatter, written into the row's own text
-            # (#1950). Set on ``dm`` now and committed below with the status,
-            # ``verified_by`` and ``knowledge_item_id`` in ONE transaction, after
-            # ingestion succeeds; a failure before that commit leaves the row
-            # exactly as it was. The validation gate above passed, so the
-            # frontmatter parses.
-            import frontmatter
+            # Everything the publication needs, read now: the session closes
+            # before ingestion, so no connection (and, on SQLite, no lock) is
+            # held while the vectors are written, and a concurrent edit can
+            # commit meanwhile — which the compare-and-swap below then sees.
+            read_content = dm.content
+            title = dm.title
+            runbook_id = dm.runbook_id
+            enterprise_id = job.enterprise_id
+            scope = job.scope
 
-            verifier_name = await self._verifier_display_name(
-                user_id, job.enterprise_id
-            )
-            post = frontmatter.loads(dm.content)
-            post.metadata["status"] = "verified"
-            post.metadata["verified_by"] = verifier_name
-            content = frontmatter.dumps(post)
-            dm.content = content
+        # The verified frontmatter, written into the draft's text (#1950). The
+        # validation gate above passed, so the frontmatter parses. This text can
+        # be a few characters longer than the draft (``status: verified``, the
+        # verifier's name); the edit bound does not apply to it, because the
+        # user was allowed to save the text it grows from (see
+        # ``faultmaven.modules.knowledge.draft_content``).
+        import frontmatter
+        import yaml
 
-            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+        from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
-            fm_meta = extract_frontmatter_metadata(content)
-            dm.domain = fm_meta.get("domain")
-            dm.service = fm_meta.get("service")
-            dm.severity = fm_meta.get("severity")
-            dm.document_type = "runbook"
+        verifier_name = await self._verifier_display_name(user_id, enterprise_id)
+        post = frontmatter.loads(read_content)
+        post.metadata["status"] = "verified"
+        post.metadata["verified_by"] = verifier_name
+        content = frontmatter.dumps(post)
 
-            import yaml
-
-            fm_match = match_frontmatter(content)
-            if fm_match:
-                try:
-                    raw_fm = yaml.safe_load(fm_match.group(1)) or {}
-                    raw_tags = raw_fm.get("tags", [])
-                    # ConversionDraftModel.tags is a TagsArray TypeDecorator
-                    # expecting list[str]; pass the list shape directly.
-                    if isinstance(raw_tags, list):
-                        dm.tags = [str(t) for t in raw_tags] or None
-                    elif isinstance(raw_tags, str) and raw_tags:
-                        dm.tags = [raw_tags]
-                except Exception:
-                    pass
-
-            # Ingest into ChromaDB (chunk + embed + store). The verified
-            # status is committed ONLY after ingestion succeeds — verifying
-            # without indexed embeddings is the bug history this guards
-            # against. The previous half-state (status=verified,
-            # knowledge_item_id=NULL) was then "repaired" by a subsequent
-            # KB-page scan that downgraded the row back to draft on every
-            # visit, corrupting user-verified runbooks.
-            # All KB writes land in the single shared collection, regardless
-            # of scope — scope is a per-row metadata field, not a collection
-            # split. Report the real collection name so the verify response
-            # matches the store the chunks actually went to.
-            from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-                KB_COLLECTION,
-            )
-
-            collection = KB_COLLECTION
-
-            if not self._knowledge_service:
-                raise RuntimeError(
-                    "KnowledgeService unavailable — cannot verify draft "
-                    "without ingestion. Aborting with no status mutation."
-                )
-
-            from faultmaven.utils.runbook_id import authored_item_id
-
-            # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
-            # the bootstrap orphan-prune would delete this user runbook on redeploy.
-            knowledge_item_id = authored_item_id()
-
-            # Transfer the job's team publish target (a share row on the
-            # conversion_job) to the promoted knowledge_item — ingest_runbook
-            # creates the item's own share row. Replaces the retired
-            # conversion_jobs.team_id column (ADR-013 §D4).
-            team_id = await self._resolve_job_team_id(conversion_id)
-            # Membership was checked when the target was minted (#854), but
-            # THIS is where it takes effect as a knowledge_item share — and
-            # the verifier may differ from the minter ("system" jobs) or have
-            # left the team since. Re-check fail-closed at the point of effect.
-            if team_id and not await is_team_member(
-                self._team_service, user_id, team_id
-            ):
-                raise AuthorizationError(
-                    "You can only publish a runbook to a team you belong to"
-                )
+        fm_meta = extract_frontmatter_metadata(content)
+        tags: Optional[List[str]] = None
+        fm_match = match_frontmatter(content)
+        if fm_match:
             try:
-                chunks_created = await self._knowledge_service.ingest_runbook(
-                    document_id=knowledge_item_id,
-                    title=dm.title,
-                    content=content,
-                    enterprise_id=job.enterprise_id,
-                    document_type="runbook",
-                    source_url=f"conversion:{conversion_id}",
-                    scope=job.scope,
-                    owner_id=user_id,
-                    team_id=team_id,
-                    verified_by=user_id,
-                )
-            except Exception as e:
-                # `ingest_runbook` cleaned up its own SQL row before raising.
-                # The draft stays in DRAFT state; the caller gets a 500 and
-                # can retry. No half-state in either store.
-                logger.error(f"Ingestion failed for draft {draft_id}: {e}")
-                raise
+                raw_fm = yaml.safe_load(fm_match.group(1)) or {}
+                raw_tags = raw_fm.get("tags", [])
+                # ConversionDraftModel.tags is a TagsArray TypeDecorator
+                # expecting list[str]; pass the list shape directly.
+                if isinstance(raw_tags, list):
+                    tags = [str(t) for t in raw_tags] or None
+                elif isinstance(raw_tags, str) and raw_tags:
+                    tags = [raw_tags]
+            except Exception:
+                pass
 
-            if chunks_created <= 0:
-                # Defence-in-depth: `ingest_runbook` should raise on 0-chunk
-                # results. If it doesn't, treat this as a contract violation
-                # and refuse to mark the draft verified.
-                raise RuntimeError(
-                    f"Vector indexing produced 0 chunks for draft {draft_id}. "
-                    f"Draft remains in DRAFT state."
-                )
+        # Ingest into ChromaDB (chunk + embed + store). The verified status is
+        # committed ONLY after ingestion succeeds — verifying without indexed
+        # embeddings is the bug history this guards against. The previous
+        # half-state (status=verified, knowledge_item_id=NULL) was then
+        # "repaired" by a subsequent KB-page scan that downgraded the row back
+        # to draft on every visit, corrupting user-verified runbooks. All KB
+        # writes land in the single shared collection, regardless of scope —
+        # scope is a per-row metadata field, not a collection split. Report the
+        # real collection name so the verify response matches the store the
+        # chunks actually went to.
+        from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+            KB_COLLECTION,
+        )
 
-            # Ingestion succeeded — NOW commit the verified text and status.
-            now = datetime.now(timezone.utc)
-            dm.status = DraftStatus.VERIFIED.value
-            dm.verified_at = now
-            dm.verified_by = user_id
-            dm.knowledge_item_id = knowledge_item_id
+        collection = KB_COLLECTION
 
-            await session.commit()
-
-            return VerifyResponse(
-                draft_id=dm.id,
-                runbook_id=dm.runbook_id,
-                status="verified",
-                knowledge_item_id=knowledge_item_id,
-                ingested=True,
-                ingested_at=now,
-                collection=collection,
-                chunks_created=chunks_created,
+        if not self._knowledge_service:
+            raise RuntimeError(
+                "KnowledgeService unavailable — cannot verify draft "
+                "without ingestion. Aborting with no status mutation."
             )
+
+        from faultmaven.utils.runbook_id import authored_item_id
+
+        # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
+        # the bootstrap orphan-prune would delete this user runbook on redeploy.
+        knowledge_item_id = authored_item_id()
+
+        # Transfer the job's team publish target (a share row on the
+        # conversion_job) to the promoted knowledge_item — ingest_runbook
+        # creates the item's own share row. Replaces the retired
+        # conversion_jobs.team_id column (ADR-013 §D4).
+        team_id = await self._resolve_job_team_id(conversion_id)
+        # Membership was checked when the target was minted (#854), but THIS is
+        # where it takes effect as a knowledge_item share — and the verifier may
+        # differ from the minter ("system" jobs) or have left the team since.
+        # Re-check fail-closed at the point of effect.
+        if team_id and not await is_team_member(self._team_service, user_id, team_id):
+            raise AuthorizationError(
+                "You can only publish a runbook to a team you belong to"
+            )
+        try:
+            chunks_created = await self._knowledge_service.ingest_runbook(
+                document_id=knowledge_item_id,
+                title=title,
+                content=content,
+                enterprise_id=enterprise_id,
+                document_type="runbook",
+                source_url=f"conversion:{conversion_id}",
+                scope=scope,
+                owner_id=user_id,
+                team_id=team_id,
+                verified_by=user_id,
+            )
+        except Exception as e:
+            # `ingest_runbook` cleaned up its own SQL row before raising. The
+            # draft stays in DRAFT state; the caller gets a 500 and can retry.
+            # No half-state in either store.
+            logger.error(f"Ingestion failed for draft {draft_id}: {e}")
+            raise
+
+        if chunks_created <= 0:
+            # Defence-in-depth: `ingest_runbook` should raise on 0-chunk
+            # results. If it doesn't, treat this as a contract violation and
+            # refuse to mark the draft verified.
+            raise RuntimeError(
+                f"Vector indexing produced 0 chunks for draft {draft_id}. "
+                f"Draft remains in DRAFT state."
+            )
+
+        # Ingestion succeeded — NOW commit the verified text and status, as a
+        # COMPARE-AND-SWAP on the text that was published: only if the row is
+        # still a draft holding exactly ``read_content``. An edit committed
+        # during ingestion changed the text (and its verdict), so publishing
+        # the pre-edit text over it would lose the edit while the row kept the
+        # edit's verdict. Then nothing is verified: the published item is
+        # removed the way a failed ingestion leaves none, and the caller hears
+        # that the draft changed.
+        now = datetime.now(timezone.utc)
+        async with self._db_session_factory() as session:
+            swapped = await session.execute(
+                update(ConversionDraftModel)
+                .where(
+                    ConversionDraftModel.id == draft_id,
+                    ConversionDraftModel.conversion_id == conversion_id,
+                    ConversionDraftModel.status == DraftStatus.DRAFT.value,
+                    ConversionDraftModel.content == read_content,
+                )
+                .values(
+                    content=content,
+                    status=DraftStatus.VERIFIED.value,
+                    verified_at=now,
+                    verified_by=user_id,
+                    knowledge_item_id=knowledge_item_id,
+                    domain=fm_meta.get("domain"),
+                    service=fm_meta.get("service"),
+                    severity=fm_meta.get("severity"),
+                    document_type="runbook",
+                    tags=tags,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if swapped.rowcount == 1:
+                await session.commit()
+            else:
+                await session.rollback()
+
+        if swapped.rowcount != 1:
+            logger.warning(
+                "verify_draft: draft %s changed during verification; "
+                "withdrawing published item %s",
+                draft_id,
+                knowledge_item_id,
+            )
+            await self._knowledge_service.delete_document(knowledge_item_id)
+            raise ConflictError(
+                "This draft changed while it was being verified; nothing was "
+                "published. Review the latest version and verify again.",
+                resource_type="draft",
+                resource_id=draft_id,
+                conflict_reason="changed_during_verification",
+            )
+
+        return VerifyResponse(
+            draft_id=draft_id,
+            runbook_id=runbook_id,
+            status="verified",
+            knowledge_item_id=knowledge_item_id,
+            ingested=True,
+            ingested_at=now,
+            collection=collection,
+            chunks_created=chunks_created,
+        )
 
     # =========================================================================
     # Manual Runbook Creation
@@ -1970,6 +2055,9 @@ status: draft
         # split this whole change exists to remove. One call on ``content``
         # cannot be partial, and is less code than five that can.
         content = normalize_line_endings(content)
+        # The edit bound, before anything is claimed: a template draft over it
+        # could never be saved back (#1950). ``ValidationException`` -> 422.
+        ensure_draft_content_within_bound(content)
 
         # See ``refuse_if_draft_slot_taken``. Unlike the LLM path this does NOT
         # degrade to a per-mode error: a manual create is one runbook, so

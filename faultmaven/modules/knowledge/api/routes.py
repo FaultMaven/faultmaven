@@ -47,7 +47,7 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
-from faultmaven.exceptions import AuthorizationError
+from faultmaven.exceptions import AuthorizationError, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
@@ -454,8 +454,7 @@ async def upload_document(
             scope=scope.value,
             team_id=team_id,
             # REQUIRED for personal scope, and it was never passed while this
-            # route only wrote global. `owner_id` decides two things: the
-            # on-disk path (`user_<id>/`) and, through
+            # route only wrote global. `owner_id` decides, through
             # `build_kb_scope_filter`, whether the author can see their own
             # item at all — the filter admits a non-global row by
             # `{"owner_id": owner_id}`. Omitted, a personal upload would
@@ -484,6 +483,10 @@ async def upload_document(
         raise HTTPException(
             status_code=422, detail=runbook_quality_detail(quality_error)
         ) from quality_error
+    except ValidationException:
+        # The service's other typed refusal — the draft bound (#1950) — goes to
+        # the global handler's 422, not the blanket 500 below.
+        raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
         # No str(e) in the response — the rule for every 500 in this module

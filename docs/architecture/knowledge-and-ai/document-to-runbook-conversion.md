@@ -907,7 +907,7 @@ This endpoint:
 1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` in the draft's text, `conversion_drafts.content` (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source.
 2. (Removed in fm#1295.) Until then this step extracted the v4 `## Causes` graph record from the markdown and stored it as `knowledge_items.metadata["causes"]` for the KB cause seeder; with the seeder gone the record had no reader, and extraction, the record and the chunk cause-letter stamp were retired. The runbook's `## Causes` section still chunks one Cause per chunk, so a verified runbook re-enters investigations as retrievable cause→fix units. See **Flywheel closure** below.
 3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
-4. Only after ingestion succeeds, commits the verified text with `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts` — one transaction (#1950).
+4. Only after ingestion succeeds, writes the verified text with `status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` as one **compare-and-swap** `UPDATE … WHERE status = 'draft' AND content = <the text it read>` (#1950). If an edit changed the draft during ingestion, nothing is swapped: the published item and its vectors are removed (`KnowledgeService.delete_document`), and the caller gets `409 changed_during_verification`. The edit survives.
 
 **Flywheel closure.** A verified case-derived runbook closes the loop the same way a built-in one does: it is ingested, chunked one Cause per chunk, and retrieved into later investigations as prose. The `RunbookValidator` gate (§12.1) is anchored on the same shared parse grammar the toolkit's pack builder uses, so a draft the gate passes is one the toolkit parses identically. (A structural closure existed until fm#1295: on verify, an in-repo extractor turned the `## Causes` section into a `metadata["causes"]` record that the KB cause seeder instantiated as candidate hypotheses, guarded by a golden cross-check against the toolkit's output and a runtime refusal of EXPERIMENTAL-tier records. Seeder, extractor, record and guards were all removed; the design and evidence record is in `docs/archive/2026/09/kb-cause-seeder/`.)
 
@@ -915,7 +915,7 @@ This endpoint:
 
 **Atomicity guarantee (changed 2026-05-26):** The DB status flip to `VERIFIED` is the *last* mutation. Previously the status was committed up-front and ingestion failure left half-state rows (status=verified, knowledge_item_id=NULL) which a subsequent KB-page scan would mis-classify and revert. The new ordering eliminates that drift class. See [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the full atomicity contract.
 
-**Frontmatter mutation implementation note:** The draft's text (`conversion_drafts.content`) is re-serialised before ingestion with `python-frontmatter` — not regex substitution, since YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably; there is no text fallback. The mutated text is committed in the same transaction as the `VERIFIED` status, so a failed ingestion leaves the row exactly as it was, text included (#1950).
+**Frontmatter mutation implementation note:** The draft's text (`conversion_drafts.content`) is re-serialised before ingestion with `python-frontmatter` — not regex substitution, since YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably; there is no text fallback. The mutated text is written by the same compare-and-swap as the `VERIFIED` status, so a failed ingestion leaves the row exactly as it was, text included (#1950). It may be a few characters longer than the draft; the draft bound (§9.1) does not apply to it, so a draft at the bound still verifies. An edit (`PUT …/drafts/{id}`) is refused with `409 already_verified` once a draft is verified, in both of its sessions.
 
 ### 6.6 Access Control
 
@@ -1281,6 +1281,15 @@ file under the writing pod's `data/knowledge/`, which on a multi-replica
 deployment with no shared volume was missing on the other replica and gone
 after a rollout).
 
+**The draft bound.** A draft's text is at most `DRAFT_CONTENT_MAX_CHARS`
+(100,000 characters, `faultmaven/modules/knowledge/draft_content.py`), so every
+draft can be saved back. `ConversionDraftModel`'s `content` validator enforces
+it on every ORM write (`ValidationException`, 422), and each writer checks it
+first: the edit request model, the template create (422), each conversion
+failure mode (a per-mode error in `warnings`), the KB upload (422 before
+anything is ingested) and the scan (an `errors` entry). Verify's rewrite is the
+one exempt write (§6.5).
+
 `data/knowledge/` survives only as the **standalone import directory** the scan
 reads (§9.5):
 
@@ -1362,8 +1371,8 @@ Key rules:
 **import, never a reconciliation** (#1950). It walks `data/knowledge/` and makes
 a draft row, holding the file's text, for each `.md` file that is not already a
 live draft (matched by `runbook_id`) or a published runbook; such a file is
-counted as skipped. A symlink out of the tree is refused, a file over the edit
-bound (`DRAFT_CONTENT_MAX_CHARS`, 100,000 characters) is reported as an error,
+counted as skipped. A symlink out of the tree is refused, a file over the draft
+bound (§9.1) is reported as an error,
 and a global-scope file is imported only for a platform operator. What is on
 disk decides nothing about an existing draft: a draft whose file is gone keeps
 its row and its text.

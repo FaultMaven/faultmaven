@@ -19,6 +19,7 @@ from faultmaven.modules.case.contracts import (
     classify_solution_outcome,
     mechanism_for_display,
 )
+from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.modules.knowledge.taxonomy import RunbookDomain
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 
@@ -272,16 +273,6 @@ class ConversionResponse(BaseModel):
 # =============================================================================
 # Draft Management Request/Response
 # =============================================================================
-
-
-#: The longest draft an edit may store, in characters (#1950). A draft is a
-#: database row now, so a JSON body — which nothing else bounds — must not set
-#: its size. Sized above every draft the system makes or imports: a converted
-#: draft stops at ``RUNBOOK_MAX_TOKENS_CEILING`` (8192 tokens, some 33,000
-#: characters), and the hand-written runbooks the scan imports run longer — the
-#: largest shipped one is 48,354 bytes. Twice that, rounded, leaves room to edit
-#: any of them; the scan refuses a file over it, so no draft is born uneditable.
-DRAFT_CONTENT_MAX_CHARS = 100_000
 
 
 class DraftUpdateRequest(BaseModel):

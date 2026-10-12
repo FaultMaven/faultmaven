@@ -1489,6 +1489,9 @@ class KnowledgeService:
         try:
             import uuid as _uuid
 
+            from faultmaven.modules.knowledge.draft_content import (
+                ensure_draft_content_within_bound,
+            )
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
             from faultmaven.utils.runbook_id import authored_item_id
 
@@ -1500,16 +1503,22 @@ class KnowledgeService:
             # Placed here rather than only at the request boundary because this
             # method owns what gets STORED: ``content`` below becomes the
             # ``knowledge_items.content`` row, the draft row's ``content``,
-            # ``size_bytes`` AND the ChromaDB chunks. Normalising only for matching would leave
-            # the authoring gate measuring an LF document while the chunker
+            # ``size_bytes`` AND the ChromaDB chunks. Normalising only for
+            # matching would leave the authoring gate measuring an LF document
+            # while the chunker
             # chunked a CRLF one — the gate's "measured exactly as the chunker
             # sees it" claim (``_validate_cause_chunk_boundaries``) would become
             # false, silently.
             content = normalize_line_endings(content)
 
-            # The quality gate, FIRST — before the id is minted, before any row
-            # exists. A refusal must leave nothing
-            # behind, which is only free if nothing has happened yet.
+            # The draft bound (#1950), ahead of the gate's CPU: this text becomes
+            # a draft row, and one over the bound could never be saved back.
+            # Refused before anything is minted or ingested; 422.
+            ensure_draft_content_within_bound(content)
+
+            # The quality gate, before the id is minted and before any row
+            # exists. A refusal must leave nothing behind, which is only free
+            # if nothing has happened yet.
             #
             # Off the event loop: the validator is pure CPU (compiled regexes +
             # yaml.safe_load, no shared mutable state, so thread-safe) and
