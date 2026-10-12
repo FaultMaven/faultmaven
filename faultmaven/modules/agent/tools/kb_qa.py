@@ -62,6 +62,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         question: str,
         scope_filter: Dict[str, Any],
         k: int = 5,
+        redaction_ctx: Any = None,
     ) -> str:
         """
         Query knowledge base under the case's scope filter.
@@ -71,6 +72,8 @@ global documentation, your personal runbooks, and your team's shared procedures.
             scope_filter: The case's KB read filter, built by
                 ``case_retrieval_scope`` and carried on ``ToolContext``
             k: Number of chunks to retrieve (default: 5)
+            redaction_ctx: The turn's case redaction context; the synthesis
+                call sends through it (#1956)
 
         Returns:
             Relevant documentation with citations from the case's scope
@@ -80,4 +83,5 @@ global documentation, your personal runbooks, and your team's shared procedures.
             scope_id=None,
             k=k,
             filters=scope_filter,
+            redaction_ctx=redaction_ctx,
         )

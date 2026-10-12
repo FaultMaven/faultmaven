@@ -142,7 +142,9 @@ class _Engine:
         self._repository = repository
         self._fail = fail
         self._before_commit = before_commit
-        self.deps = SimpleNamespace(llm_provider=MagicMock())
+        self.deps = SimpleNamespace(
+            llm_provider=MagicMock(), sanitizer=None, redis_client=None
+        )
         self.files_on_entry: list[list[str]] = []
         self.attachments: list[Optional[list[dict[str, Any]]]] = []
         self.process_turn = AsyncMock(side_effect=self._process_turn)
@@ -156,6 +158,7 @@ class _Engine:
         intent_data=None,
         user_id=None,
         typed=False,
+        redaction_ctx=None,
     ):
         self.files_on_entry.append([f.filename for f in case.uploaded_files])
         self.attachments.append(attachments)

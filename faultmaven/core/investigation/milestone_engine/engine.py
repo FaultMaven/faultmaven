@@ -91,6 +91,7 @@ from faultmaven.infrastructure.llm.usage_ledger import (
     flush_turn,
     warn_attribution_error,
 )
+from faultmaven.infrastructure.security.case_redaction import load_case_redaction
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM_MESSAGE
 from faultmaven.modules.case.contracts import (
@@ -344,6 +345,16 @@ class MilestoneEngine:
             deps=self.deps, kb_prefetcher=self.kb_prefetcher
         )
 
+    async def _turn_redaction(self, case: Case, redaction_ctx: Any | None) -> Any:
+        """The turn's case redaction context: the one the service handed in,
+        or, on a direct engine call, the case's own through the shared loader
+        (#1956)."""
+        if redaction_ctx is not None:
+            return redaction_ctx
+        return await load_case_redaction(
+            case.case_id, self.deps.sanitizer, self.deps.redis_client
+        )
+
     async def process_turn(
         self,
         case: Case,
@@ -353,6 +364,7 @@ class MilestoneEngine:
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
         typed: bool = False,
+        redaction_ctx: Any | None = None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -382,6 +394,13 @@ class MilestoneEngine:
                 keyword of its own, not an ``intent_data`` key: that dict is
                 filled from the client's intent payload, and server facts never
                 ride in it (the same reason ``user_id`` is kept out).
+            redaction_ctx: The turn's case redaction context
+                (``CaseRedactionContext``), which the investigation service
+                loads once per turn and hands to every model call it makes on
+                the turn's behalf (#1956): this turn's prompts, its tools' own
+                model calls and the reply's reversal all use the one registry.
+                ``None`` (a direct engine call) loads the case's context here,
+                through the same loader, where a model call needs it.
 
         Writes nothing the turn owns (#1882). The case is mutated in memory
         and returned; the rows the turn produced (report rows)
@@ -451,6 +470,7 @@ class MilestoneEngine:
                     plan=plan,
                     user_id=user_id,
                     typed=typed,
+                    redaction_ctx=redaction_ctx,
                 )
                 result["commit_plan"] = plan
             except BaseException:
@@ -523,6 +543,7 @@ class MilestoneEngine:
         plan: TurnCommitPlan,
         user_id: str | None = None,
         typed: bool = False,
+        redaction_ctx: Any | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a
@@ -628,7 +649,12 @@ class MilestoneEngine:
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
                 return await self.terminal.process_terminal_turn(
-                    case, user_message, metadata, plan=plan, user_id=user_id
+                    case,
+                    user_message,
+                    metadata,
+                    plan=plan,
+                    user_id=user_id,
+                    redaction_ctx=await self._turn_redaction(case, redaction_ctx),
                 )
 
             # Set when section 0b answered this turn's confirmation click: it
@@ -1250,14 +1276,14 @@ class MilestoneEngine:
             # one before the prompt is built (ADR-020 D9), or cleared if it
             # cannot be.
             await self.kb_prefetcher.refresh_for_driver(case)
-            redaction_ctx, response_obj = await _generate_turn_response(
+            redaction_ctx = await self._turn_redaction(case, redaction_ctx)
+            response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
                 self.deps.llm_provider,
-                self.deps.redis_client,
                 self.deps.repository,
-                self.deps.sanitizer,
                 self.generator,
                 case=case,
+                redaction_ctx=redaction_ctx,
                 intent_data=intent_data,
                 user_id=user_id,
                 user_message=user_message,

@@ -55,6 +55,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.infrastructure.security.case_redaction import case_redacted
 
 from .affordances import (
     _schema_prompt_instruction,
@@ -99,46 +100,6 @@ STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 # body and well under STRUCTURED_OUTPUT_MAX_TOKENS, so the floor never raises
 # the cap and only forbids a starvable partition.
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
-
-
-async def _case_redacted(
-    text: Optional[str], redaction_ctx: Any | None
-) -> Optional[str]:
-    """Case content as the model may see it: through the case-scoped redaction.
-
-    The one place this module turns case content into model-bound text (#1949).
-    Every prompt or message body that carries case content passes here before
-    it is handed to a provider: the prompt a generation starts from (which is
-    also how the #662 minimal-prompt retry is covered — it re-enters
-    ``_generate_structured_output_inner``), every prompt a builder RE-ASSEMBLES
-    after that first pass (the ``ToolCallingUnsupportedError`` full-evidence
-    fallback and the #614 tool-loop base resize), and every tool result relayed
-    back into the loop. A builder returns raw case content.
-
-    What skipping this costs is the case REGISTRY, not the redacted text. The
-    router's own ``DataSanitizer`` pass (under ``SANITIZE_PII``) produces the
-    same text this does: one detection path, and a placeholder that is a keyed
-    function of the value (#971). But only this pass records value ->
-    placeholder in the case registry, so a value first seen in a prompt that
-    skipped it could not be reversed in the reply the user reads:
-    ``CaseRedactionContext.reverse`` would hand the placeholder back unchanged.
-    Without this pass, protection also rests on whichever router is configured
-    (``LLM_ROUTER_CLASS`` can substitute one), and a dedicated DA provider is
-    called without any router at all. One edge case makes the two passes
-    differ: each sanitizer instance decides once, at construction, whether
-    Presidio is available, so instances built on either side of a Presidio
-    outage detect differently for the life of the process.
-
-    ``tests/unit/core/investigation/test_rebuilt_prompts_are_redacted_1949.py``
-    pins each site and that no other call in this module sanitizes or builds a
-    prompt around this function.
-
-    ``None`` (no context: redaction disabled at the caller) and empty text pass
-    through unchanged.
-    """
-    if not redaction_ctx or not text:
-        return text
-    return await redaction_ctx.asanitize(text)
 
 
 class StructuredOutputGenerator:
@@ -435,7 +396,7 @@ class StructuredOutputGenerator:
         resized: Optional[str] = None
         if base_prompt_builder is not None and room > 0:
             try:
-                resized = await _case_redacted(
+                resized = await case_redacted(
                     base_prompt_builder(
                         target_tokens=room,
                         provider_name=sizing_provider,
@@ -1071,7 +1032,7 @@ class StructuredOutputGenerator:
                 # Tool results contain raw file content (search_file,
                 # deep_analysis) which bypasses prompt-level redaction.
                 # Off the event loop via the async boundary (#654).
-                result_text = await _case_redacted(result_text, redaction_ctx)
+                result_text = await case_redacted(result_text, redaction_ctx)
 
                 # Truncate long results.
                 #
@@ -1229,7 +1190,12 @@ class StructuredOutputGenerator:
             )
         return tools
 
-    async def build_tool_context(self, case: Any, user_id: str | None = None) -> Any:
+    async def build_tool_context(
+        self,
+        case: Any,
+        user_id: str | None = None,
+        redaction_ctx: Any | None = None,
+    ) -> Any:
         """Build ToolContext for tool execution during DA turns.
 
         ``user_id`` is the turn's authenticated principal, threaded down from
@@ -1248,6 +1214,12 @@ class StructuredOutputGenerator:
         #1919), the same scope the pre-fetch and the runbook dedup use. The
         driver is the case's effective driver (ADR-020), the only user who may
         submit a turn, so on a turn the two coincide.
+
+        ``redaction_ctx`` is the turn's case redaction context (#1956). A tool
+        that calls a model itself (``kb_qa``, ``case_evidence_search``,
+        ``deep_analysis``) sends through it, so the values it redacts enter the
+        case registry and the placeholders in its answer can be reversed in the
+        reply the user reads.
         """
         from faultmaven.modules.agent.tools.base import ToolContext
 
@@ -1280,6 +1252,7 @@ class StructuredOutputGenerator:
             case_repository=self.deps.repository,
             metadata=metadata,
             in_memory_case=case,
+            redaction_ctx=redaction_ctx,
         )
 
     @classmethod
@@ -1579,7 +1552,7 @@ class StructuredOutputGenerator:
         # Apply case-scoped PII redaction to the prompt before any LLM call.
         # This covers both the tool-augmented (DA) and single-shot paths.
         # Off the event loop via the async boundary (#654).
-        prompt = await _case_redacted(prompt, redaction_ctx)
+        prompt = await case_redacted(prompt, redaction_ctx)
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -1629,7 +1602,7 @@ class StructuredOutputGenerator:
                     # failure here keeps the already-redacted ``prompt``.
                     if fallback_prompt_builder is not None:
                         try:
-                            prompt = await _case_redacted(
+                            prompt = await case_redacted(
                                 fallback_prompt_builder(), redaction_ctx
                             )
                         except Exception as rebuild_exc:  # never break the fallback

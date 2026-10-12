@@ -172,7 +172,9 @@ def _build(
     storage.retrieve_file = AsyncMock(return_value=b"line1\nline2 ERROR\n")
 
     engine = create_autospec(MilestoneEngine, instance=True)
-    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps = SimpleNamespace(
+        llm_provider=MagicMock(), sanitizer=None, redis_client=None
+    )
     service = InvestigationService(
         milestone_engine=engine,
         case_repository=repo,
@@ -437,6 +439,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
             intent_data: Optional[dict[str, Any]] = None,
             user_id: Optional[str] = None,
             typed: bool = False,
+            redaction_ctx=None,
         ) -> dict[str, Any]:
             # The shape ``MilestoneEngine._build_tool_context`` produces: the
             # tool is handed the case object the turn is holding.

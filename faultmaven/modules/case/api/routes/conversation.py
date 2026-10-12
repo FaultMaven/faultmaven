@@ -908,6 +908,8 @@ async def submit_turn(
                 user_id=current_user.user_id,
                 case_service=case_service,
                 llm_provider=getattr(request.app.state, "llm_provider", None),
+                sanitizer=getattr(request.app.state, "sanitizer", None),
+                redis_client=getattr(request.app.state, "redis_client", None),
             )
 
             return await _turn_gated_for_viewer(request, current_user, response)

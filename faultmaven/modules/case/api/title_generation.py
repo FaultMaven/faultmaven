@@ -16,6 +16,11 @@ from fastapi import HTTPException, status
 
 from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.security.case_redaction import (
+    REDACTION_PLACEHOLDER_RE,
+    case_redacted,
+    load_case_redaction,
+)
 from faultmaven.models.interfaces_case import ICaseService
 
 # ``_is_default_case_title``: the alias and why it bounds auto-titling are
@@ -412,6 +417,16 @@ def is_title_valid(title: str, check_banned_words: bool = True) -> bool:
     if len(words) < MIN_TITLE_WORDS or len(title.strip()) < MIN_TITLE_LENGTH:
         return False
 
+    # A redaction placeholder anywhere is not a title (#1956). Titles are
+    # never reversed: a title is shown to every reader of the case, in every
+    # list, so a real value restored into it would be a disclosure. The model
+    # titles from case-redacted text, and a title that kept a placeholder is
+    # refused here, which sends it to the extractive fallback. (One at the END
+    # was already refused by the final-character check below; one mid-title
+    # passed.)
+    if REDACTION_PLACEHOLDER_RE.search(title):
+        return False
+
     # Check for incomplete endings (titles ending mid-sentence)
     # These indicate truncated or low-quality titles
     last_word = words[-1].lower().strip(".,!?;:")
@@ -733,12 +748,19 @@ async def _generate_and_persist_title(
     max_words: int,
     hint: Optional[str],
     correlation_id: str,
+    sanitizer=None,
+    redis_client=None,
 ) -> tuple[str, str, int]:
     """Gate on substance, generate a title, persist it, and verify the write.
 
     Shared by the ``POST /cases/{case_id}/title`` endpoint and the post-turn
     background auto-titling task, so both apply the *same* policy. Splitting the
     policy across a route and a task is how the two drift; there is one copy.
+
+    The prompt goes through the case's redaction context (#1956), loaded here
+    with the shared loader from ``sanitizer`` and ``redis_client``. Both
+    callers run after the turn's own save, so the two never hold the case's
+    registry at once. The title is never reversed (see ``is_title_valid``).
 
     Returns:
         ``(title, source, substance_length)`` — ``source`` is ``llm`` /
@@ -827,6 +849,7 @@ async def _generate_and_persist_title(
         )
 
     # Generate title using LLM with fallback logic
+    redaction_ctx = await load_case_redaction(case_id, sanitizer, redis_client)
     try:
         generated_title, title_source = await _generate_title_with_llm(
             context_text,
@@ -841,11 +864,15 @@ async def _generate_and_persist_title(
             # always take the LLM path. Content/extractive still use the
             # richer substance (user_message_content).
             routing_signal=user_signals,
+            redaction_ctx=redaction_ctx,
         )
     except ValueError:
         raise ValidationException(
             "Cannot generate meaningful title from available context"
         )
+    # What the prompt added to the case registry, kept like a turn's (a save
+    # with nothing new writes nothing).
+    await redaction_ctx.save()
 
     # Persist the generated title to database (Approach 1: Generate AND persist)
     try:
@@ -918,6 +945,8 @@ async def _auto_title_case_if_default(
     user_id: str,
     case_service: ICaseService,
     llm_provider,
+    sanitizer=None,
+    redis_client=None,
 ) -> None:
     """Name a case that is still carrying its ``Case-YYMMDD-N`` placeholder.
 
@@ -980,6 +1009,8 @@ async def _auto_title_case_if_default(
                 max_words=MAX_TITLE_WORDS_DEFAULT,
                 hint=None,
                 correlation_id=f"auto-title:{case_id}",
+                sanitizer=sanitizer,
+                redis_client=redis_client,
             ),
             timeout=AUTO_TITLE_TIMEOUT_SECONDS,
         )
@@ -1076,6 +1107,7 @@ async def _generate_title_with_llm(
     user_signals: Optional[str] = None,
     llm_provider=None,
     routing_signal: Optional[str] = None,
+    redaction_ctx=None,
 ) -> tuple[str, str]:
     """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
 
@@ -1093,6 +1125,8 @@ async def _generate_title_with_llm(
         hint: Optional hint to guide title generation
         user_signals: Pre-extracted user signals from conversation
         llm_provider: LLM provider from app.state (Composition Root)
+        redaction_ctx: The case's redaction context; the LLM prompt is sent
+            through it, and the title is never reversed (#1956)
 
     Returns:
         Tuple of (title, source) where source is "extractive", "llm", or "fallback"
@@ -1172,6 +1206,10 @@ async def _generate_title_with_llm(
             f"- Return ONLY the title, no quotes or explanations{hint_text}\n\n"
             f"Title:"
         )
+        # The case's own redaction, so the values enter its registry and the
+        # pass does not rest on the configured router (#1956). A failure lands
+        # in the except below: nothing is sent, the extractive fallback runs.
+        prompt = await case_redacted(prompt, redaction_ctx)
 
         # Generate title using LLM with optimized settings
         response = await llm_provider.generate(

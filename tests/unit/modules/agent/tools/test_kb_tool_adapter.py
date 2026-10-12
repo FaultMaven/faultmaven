@@ -66,6 +66,7 @@ class TestKBToolAdapter:
             question="How to diagnose memory leaks?",
             scope_filter=CASE_SCOPE,
             k=5,
+            redaction_ctx=context.redaction_ctx,
         )
 
     @pytest.mark.asyncio
@@ -140,6 +141,7 @@ class TestCaseEvidenceQAAdapter:
             case_id="case_123",
             question="Any OOM errors?",
             k=5,
+            redaction_ctx=context.redaction_ctx,
         )
 
     @pytest.mark.asyncio

@@ -18,6 +18,7 @@ Both must be enabled for full PII protection. When `SANITIZE_PII=true`:
 
 - All prompts are redacted before LLM calls
 - Tool results (search_file, deep_analysis) are redacted before returning to the LLM
+- Every other model call made on a turn's behalf (kb_qa and case_evidence_search synthesis, deep_analysis, the intent classifier, the out-of-band triage and answer, the case title) sends through the same case context; the case title is never reversed
 - User-facing responses have placeholders reversed back to original values
 - The same PII value gets the same placeholder across all files in a case
 
@@ -52,8 +53,11 @@ User uploads data
     → stored raw (never redacted at rest)
     → preprocessing extracts structural index
     ↓
-MilestoneEngine._process_turn_impl()
-    ├─ Load CaseRedactionContext from Redis
+InvestigationService.prepare_turn()
+    ├─ Load the turn's one CaseRedactionContext from Redis
+    └─ intent classifier, out-of-band triage/answer: sent through it
+    ↓
+MilestoneEngine._process_turn_impl()      (same context)
     ├─ Context builder assembles prompt (raw content)
     ├─ Redact prompt with case-scoped registry
     ├─ Send redacted prompt to LLM

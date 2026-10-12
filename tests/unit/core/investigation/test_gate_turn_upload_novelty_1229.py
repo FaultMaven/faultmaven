@@ -350,6 +350,7 @@ class TestTheTerminalShortCircuit:
             *,
             plan: TurnCommitPlan,
             user_id: Optional[str] = None,
+            redaction_ctx: Any = None,
         ) -> dict[str, Any]:
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
@@ -377,7 +378,9 @@ class TestTheTerminalShortCircuit:
         case = self._terminal_case()
         seen: dict = {}
 
-        async def spy(case, user_message, metadata, *, plan, user_id=None):
+        async def spy(
+            case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None
+        ):
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
@@ -394,7 +397,9 @@ class TestTheTerminalShortCircuit:
         engine = _engine()
         case = self._terminal_case()
 
-        async def spy(case, user_message, metadata, *, plan, user_id=None):
+        async def spy(
+            case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None
+        ):
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
         engine.terminal.process_terminal_turn = spy

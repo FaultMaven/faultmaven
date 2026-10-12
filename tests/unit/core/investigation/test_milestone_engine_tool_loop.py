@@ -2606,7 +2606,11 @@ class TestBothCallSitesWireTheBaseBuilder:
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
         await engine.terminal._process_terminal_qa(
-            case, "what fixed it?", metadata={}, plan=TurnCommitPlan()
+            case,
+            "what fixed it?",
+            metadata={},
+            plan=TurnCommitPlan(),
+            redaction_ctx=MagicMock(save=AsyncMock()),
         )
 
         kwargs = engine.generator.generate_structured_output.call_args.kwargs

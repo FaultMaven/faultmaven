@@ -5,8 +5,8 @@ The one implementation behind the agent's ``deep_analysis`` tool, built by the
 container when ``DEEP_ANALYSIS_BACKEND=local``. Reads the raw file from file
 storage, finds relevant sections via single-pass keyword search (ANY-match, no
 Pass-2 fallback), then sends them to the LLM router for interpretation — so
-the call is routed, metered and sanitized (``SANITIZE_PII``) like every other
-LLM call.
+the call is routed and metered like every other LLM call, and its prompt passes
+the turn's case redaction first (#1956).
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md §4
@@ -25,6 +25,9 @@ from faultmaven.core.preprocessing.models import (
 from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
+)
+from faultmaven.infrastructure.security.case_redaction import (
+    case_redacted_messages,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,15 @@ class LocalTier2Service:
         query: str,
         context: AnalysisContext,
         data_type: UnifiedDataType,
+        redaction_ctx: Any = None,
     ) -> DeepAnalysisResult:
+        """Interpret the file's sections relevant to ``query``.
+
+        ``redaction_ctx`` is the turn's case redaction context (#1956): the
+        sections are raw file content, and the prompt goes through it before
+        it is sent, so the values it redacts enter the case registry. A
+        redaction failure propagates (the tool reports it); nothing is sent.
+        """
         start_time = time.time()
 
         # Read raw file from local filesystem (no staging needed).
@@ -72,12 +83,16 @@ class LocalTier2Service:
             query, relevant_sections, context, data_type
         )
 
+        messages = await case_redacted_messages(
+            [{"role": "user", "content": prompt}], redaction_ctx
+        )
+
         tokens_used = 0
         try:
 
             async def _analyze(cap: int):
                 return await self.llm_client.generate(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
                     max_tokens=cap,
                 )
 

@@ -1420,6 +1420,7 @@ class TestINV12_FreeTextRoutesToQA:
             "Regenerate the resolution summary report for this case",
             {},
             plan=TurnCommitPlan(),
+            redaction_ctx=None,
         )
 
         engine.terminal._handle_report_regeneration.assert_called_once()
@@ -1462,7 +1463,7 @@ class TestINV12_FreeTextRoutesToQA:
             engine.terminal._handle_report_regeneration.reset_mock()
             engine.terminal._process_terminal_qa.reset_mock()
             await engine.terminal.process_terminal_turn(
-                case, msg, {}, plan=TurnCommitPlan()
+                case, msg, {}, plan=TurnCommitPlan(), redaction_ctx=None
             )
             engine.terminal._handle_report_regeneration.assert_not_called()
             engine.terminal._process_terminal_qa.assert_called_once()
@@ -1499,7 +1500,7 @@ class TestINV12_FreeTextRoutesToQA:
             engine.runbooks.handle_runbook_creation.reset_mock()
             engine.terminal._process_terminal_qa.reset_mock()
             await engine.terminal.process_terminal_turn(
-                case, msg, {}, plan=TurnCommitPlan()
+                case, msg, {}, plan=TurnCommitPlan(), redaction_ctx=None
             )
             engine.runbooks.handle_runbook_creation.assert_not_called()
             engine.terminal._process_terminal_qa.assert_called_once()
@@ -1983,7 +1984,11 @@ class TestINV18_RunbookEligibilityResolvedOnly:
 
         # Submit the exact DECIDE runbook payload on a CLOSED case
         await engine.terminal.process_terminal_turn(
-            case, GENERATE_RUNBOOK_PAYLOAD, {}, plan=TurnCommitPlan()
+            case,
+            GENERATE_RUNBOOK_PAYLOAD,
+            {},
+            plan=TurnCommitPlan(),
+            redaction_ctx=None,
         )
 
         # Runbook handler NOT called — eligibility gate refused the dispatch
@@ -2019,7 +2024,11 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         engine.terminal._process_terminal_qa = AsyncMock()
 
         await engine.terminal.process_terminal_turn(
-            case, GENERATE_RUNBOOK_PAYLOAD, {}, plan=TurnCommitPlan()
+            case,
+            GENERATE_RUNBOOK_PAYLOAD,
+            {},
+            plan=TurnCommitPlan(),
+            redaction_ctx=None,
         )
 
         engine.runbooks.handle_runbook_creation.assert_called_once()

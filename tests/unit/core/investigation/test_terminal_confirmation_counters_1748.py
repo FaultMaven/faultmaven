@@ -1125,7 +1125,7 @@ class TestTheFollowUpCounter:
         _, followup = counters
         store, svc = await self._resolved_on_ok(counters)
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None: {
                 "agent_response": "It is resolved.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1209,7 +1209,7 @@ class TestTheFollowUpCounter:
         await _turn(svc, "yes")
         assert store.row().state == CaseState.CLOSED
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None: {
                 "agent_response": "Runbooks need a resolved case.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1224,7 +1224,7 @@ class TestTheFollowUpCounter:
 
     async def _answered_on_terminal(self, svc, message):
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None: {
                 "agent_response": "It is resolved.",
                 "case_updated": case,
                 "metadata": metadata,

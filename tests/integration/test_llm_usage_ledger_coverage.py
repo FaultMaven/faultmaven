@@ -582,7 +582,9 @@ class TestOutsideATurn:
         )
 
         set_current_actor_user_id(USER)  # as require_authentication binds it
-        engine = SimpleNamespace(deps=SimpleNamespace(llm_provider=router))
+        engine = SimpleNamespace(
+            deps=SimpleNamespace(llm_provider=router, sanitizer=None, redis_client=None)
+        )
         service = InvestigationService(
             milestone_engine=engine, case_repository=InMemoryCaseRepository()
         )

@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
+from faultmaven.infrastructure.security.case_redaction import (
+    case_redacted_messages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +64,15 @@ class IntentResolver:
         self,
         user_message: str,
         last_suggestions: List[Dict[str, Any]],
+        redaction_ctx: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """Match user message against last turn's suggestions.
 
         Args:
             user_message: What the user typed
             last_suggestions: Suggestions from the previous agent turn
+            redaction_ctx: The turn's case redaction context; the classifier
+                prompt (the raw user message) is sent through it (#1956)
 
         Returns:
             The matched suggestion's intent dict, or None if no match.
@@ -93,7 +99,7 @@ class IntentResolver:
             return matched
 
         # Tier 2: LLM classifier for semantic matching
-        matched = await self._classify(msg, choices)
+        matched = await self._classify(msg, choices, redaction_ctx)
         if matched is not None:
             logger.info(
                 f"Intent resolved via classifier: {matched.get('type', 'unknown')}"
@@ -156,15 +162,22 @@ class IntentResolver:
         self,
         user_message: str,
         choices: List[Dict[str, Any]],
+        redaction_ctx: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """LLM-based bounded choice classification.
 
         Asks the classifier: "Is this message a response to one of these
         N specific choices, or something else?" Output is a single token.
+        The prompt passes the turn's case redaction first; a redaction failure
+        lands in the same safe fallback as a classifier failure, with nothing
+        sent.
         """
         prompt = self._build_prompt(user_message, choices)
 
         try:
+            messages = await case_redacted_messages(
+                [{"role": "user", "content": prompt}], redaction_ctx
+            )
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
@@ -192,7 +205,7 @@ class IntentResolver:
                 route_kwargs["provider_override"] = override
 
             response = await self.llm_router.route(
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 model=classifier_model,
                 # See CLASSIFIER_MAX_TOKENS / CLASSIFIER_MIN_OUTPUT_TOKENS:
                 # EXTRACTION asks each provider for its verified MINIMUM

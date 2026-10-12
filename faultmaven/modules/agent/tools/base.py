@@ -76,6 +76,12 @@ class ToolContext:
             writing a separately-loaded copy was silently overwritten by that
             save. So: do not cache it across turns, and do not copy it and
             expect a write to the copy to survive.
+        redaction_ctx: The turn's case redaction context
+            (``CaseRedactionContext``, typed ``Any`` like ``case_repository``,
+            #1956). A tool that sends case content to a model itself sends it
+            through this context, so the values enter the case registry and
+            the placeholders in its answer can be reversed in the reply the
+            user reads. ``None`` outside a turn.
 
     No KB context metadata (#1880). The reranker's metadata signal reads a
     runbook's ``service``, which is the technology; the case records no
@@ -98,6 +104,7 @@ class ToolContext:
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
+    redaction_ctx: Any = None
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -111,6 +118,7 @@ class ToolContext:
             execution_id=execution_id,
             metadata=self.metadata,
             in_memory_case=self.in_memory_case,
+            redaction_ctx=self.redaction_ctx,
         )
 
 

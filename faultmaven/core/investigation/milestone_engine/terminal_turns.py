@@ -215,6 +215,7 @@ class TerminalTurnHandler:
         metadata: dict[str, Any],
         *,
         plan: TurnCommitPlan,
+        redaction_ctx: Any,
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
@@ -256,7 +257,12 @@ class TerminalTurnHandler:
 
         # Scenario 3: Q&A
         return await self._process_terminal_qa(
-            case, user_message, metadata, plan=plan, user_id=user_id
+            case,
+            user_message,
+            metadata,
+            plan=plan,
+            user_id=user_id,
+            redaction_ctx=redaction_ctx,
         )
 
     async def _handle_report_regeneration(
@@ -376,6 +382,7 @@ class TerminalTurnHandler:
         metadata: dict[str, Any],
         *,
         plan: TurnCommitPlan,
+        redaction_ctx: Any,
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Process a Q&A turn on a terminal case via the LLM.
@@ -386,22 +393,10 @@ class TerminalTurnHandler:
         read allowlist the ``kb_qa`` tool builds (owner + team arms). A terminal
         case still answers questions, so its Q&A turn must read the same KB the
         user's non-terminal turns do.
-        """
-        from faultmaven.config.settings import get_settings
-        from faultmaven.infrastructure.security.case_redaction import (
-            CaseRedactionContext,
-            should_redact,
-        )
 
-        redaction_settings = get_settings()
-        redaction_ctx = CaseRedactionContext(
-            case_id=case.case_id,
-            sanitizer=self.deps.sanitizer,
-            redis_client=self.deps.redis_client,
-            enabled=should_redact(self.deps.sanitizer),
-            ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
-        )
-        await redaction_ctx.load()
+        ``redaction_ctx`` is the turn's case redaction context (#1956), loaded
+        once by the investigation service (or by the engine on a direct call).
+        """
 
         # Pass provider/model so the whole-prompt accountant (GAP-1/2/3) can
         # size the budget and engage the overflow backstop on the terminal-QA
@@ -442,7 +437,7 @@ class TerminalTurnHandler:
         if self.deps.investigation_tools:
             tools_kwargs["investigation_tools"] = self.generator.build_da_tool_schemas()
             tools_kwargs["tool_context"] = await self.generator.build_tool_context(
-                case, user_id=user_id
+                case, user_id=user_id, redaction_ctx=redaction_ctx
             )
             tools_kwargs["force_tool_use"] = False
             tools_kwargs["base_prompt_builder"] = _build_tool_loop_base

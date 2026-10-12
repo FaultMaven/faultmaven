@@ -509,6 +509,9 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
         app.state.query_classification_engine = None
     app.state.tracer = container.get_tracer()
     app.state.llm_provider = container.get_llm_provider()
+    # The DI sanitizer the engine redacts with, for the case title's redaction
+    # (#1956); ``None`` when redaction is disabled at DI level.
+    app.state.sanitizer = container.get_service("sanitizer", required=False)
     logger.info("✅ Services attached to app.state (Composition Root)")
 
     # Check LLM provider configuration and warn if none configured

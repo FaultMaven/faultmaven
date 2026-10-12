@@ -23,6 +23,9 @@ from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
 )
+from faultmaven.infrastructure.security.case_redaction import (
+    case_redacted_messages,
+)
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -160,6 +163,7 @@ class DocumentQATool:
         scope_id: Optional[str] = None,
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
+        redaction_ctx: Any = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -169,13 +173,17 @@ class DocumentQATool:
             scope_id: Scoping identifier (case_id, user_id, etc.) or None
             k: Number of chunks to retrieve
             filters: Optional ChromaDB metadata filters
+            redaction_ctx: The turn's case redaction context, which the
+                synthesis call sends through (#1956)
 
         Returns:
             Formatted answer with citations
         """
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
-        result = await self.answer_question(question, scope_id, k, filters)
+        result = await self.answer_question(
+            question, scope_id, k, filters, redaction_ctx=redaction_ctx
+        )
 
         # Delegate response formatting to KB config
         return self._kb_config.format_response(
@@ -191,6 +199,7 @@ class DocumentQATool:
         scope_id: Optional[str],
         k: int,
         filters: Optional[Dict[str, Any]] = None,
+        redaction_ctx: Any = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -201,6 +210,13 @@ class DocumentQATool:
         synthesis failures propagate rather than being rendered as an answer
         string, so "could not search" stays distinguishable from "searched and
         found nothing" (#943).
+
+        The synthesis messages go through ``redaction_ctx``, the turn's case
+        redaction context, before they are sent (#1956). For
+        ``case_evidence_search`` the chunks are raw case evidence (files are
+        stored raw by design); a value the router's own pass redacts never
+        enters the case registry, so its placeholder in this answer could not
+        be reversed in the reply the user reads.
 
         Raises:
             KnowledgeBaseError: Retrieval could not be performed.
@@ -345,13 +361,18 @@ Answer:"""
         if synthesis_override:
             route_kwargs["provider_override"] = synthesis_override
 
+        messages = await case_redacted_messages(
+            [
+                {"role": "system", "content": self._kb_config.system_prompt},
+                {"role": "user", "content": synthesis_prompt},
+            ],
+            redaction_ctx,
+        )
+
         async def _synthesize(cap: int):
             return await self._llm_router.route(
                 model=synthesis_model,
-                messages=[
-                    {"role": "system", "content": self._kb_config.system_prompt},
-                    {"role": "user", "content": synthesis_prompt},
-                ],
+                messages=messages,
                 max_tokens=cap,
                 temperature=0.3,  # Low temperature for factual accuracy
                 # This is grounded transformation of retrieved chunks, not

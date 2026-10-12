@@ -269,7 +269,9 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     )
 
     assert result.success, result.error
-    wrapped._arun.assert_awaited_once_with(question="q", scope_filter=DRIVER_SCOPE, k=5)
+    wrapped._arun.assert_awaited_once_with(
+        question="q", scope_filter=DRIVER_SCOPE, k=5, redaction_ctx=None
+    )
 
 
 def _runbook_creator(teams: _Teams, shares: _Shares):

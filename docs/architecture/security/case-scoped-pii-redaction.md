@@ -41,27 +41,34 @@ User uploads file
     → stored raw (never redacted at rest)
                                             ↓
 InvestigationService.prepare_turn()
-  └─ Preprocessing (classify_and_extract) builds the file's summary and
-     structural index from the raw content; both are persisted raw
+  ├─ Preprocessing (classify_and_extract) builds the file's summary and
+  │  structural index from the raw content; both are persisted raw
+  ├─ load_case_redaction(): the turn's ONE CaseRedactionContext, its registry
+  │  loaded from Redis (#1956)
+  └─ intent classifier / out-of-band triage and answer: sent through it
                                             ↓
-MilestoneEngine._process_turn_impl()
-  ├─ Create CaseRedactionContext, load its registry from Redis   (_generate_turn_response)
+MilestoneEngine._process_turn_impl()      (handed the same context)
   ├─ Context builder assembles the prompt from evidence, uploads, user message, history (raw)
   ├─ Redact the prompt with the case-scoped registry              (StructuredOutputGenerator)
   ├─ Send to LLM
   ├─ LLM calls tool → execute → redact result with SAME registry → return to LLM
+  │  (a tool that calls a model itself — kb_qa, case_evidence_search,
+  │  deep_analysis — sends through the SAME context, via ToolContext)
   ├─ LLM responds with placeholders
   └─ Save registry to Redis                                       (_finalize_turn)
                                             ↓
 InvestigationService.prepare_turn()
+  ├─ Save the registry again if anything after the engine grew it (a save with
+  │  nothing new writes nothing)
   ├─ turn_results._absorb_engine_result: reverse-substitute placeholders → original values
+  │  (every route's reply: engine, terminal Q&A, out-of-band)
   └─ turn_response._build_turn_response: build the TurnResponse (real IPs, names, etc.)
                                             ↓
 InvestigationService.commit_turn()
   └─ the turn's one commit (#1882), then the TurnResponse is returned
 ```
 
-Redaction happens at one boundary: where content leaves for an LLM. Everything upstream (the upload, the summary and structural index preprocessing builds from it, the evidence) is stored and assembled raw. The engine redacts the assembled prompt and every tool result with the case-scoped registry, so one consistent namespace covers all the PII that reaches the model, whichever file or turn it came from.
+Redaction happens at one boundary: where content leaves for an LLM. Everything upstream (the upload, the summary and structural index preprocessing builds from it, the evidence) is stored and assembled raw. The engine redacts the assembled prompt and every tool result with the case-scoped registry, and every other model call made on the turn's behalf sends through the same context, so one consistent namespace covers all the PII that reaches the model, whichever file, turn or call it came from.
 
 ### Why MilestoneEngine, Not Router?
 
@@ -85,7 +92,7 @@ class CaseRedactionContext:
     _reverse: Dict[str, str]             # placeholder → original value
 
     async def load()       # Load registry from Redis
-    async def save()       # Persist to Redis (only if dirty)
+    async def save()       # Persist to Redis (only if the registry grew)
     def sanitize(text)     # Redact PII using case-scoped registry
     def reverse(text)      # Replace placeholders with originals
     async def cleanup()    # Delete Redis key (case closed)
@@ -98,6 +105,9 @@ class CaseRedactionContext:
 - Redis key: `redaction:{case_id}`, value: JSON `{"forward": {...}, "reverse": {...}}`, TTL: configurable (default 7 days)
 - If Redis is unavailable: works in-memory (consistent within turn, not across turns)
 - If `enabled=False`: both methods return input unchanged (zero overhead)
+- `save()` writes only when a sanitize pass GREW the registry (#1956). It used to write after any pass, so two contexts loaded on one case key clobbered each other: the later save replaced the other's new entries with its own stale snapshot.
+
+Built through one loader, `load_case_redaction(case_id, sanitizer, redis_client)` (enabled by `should_redact()`, TTL from `redaction_registry_ttl_hours`); the send sites use two helpers, `case_redacted(text, ctx)` and `case_redacted_messages(messages, ctx)`, which pass through when there is no context.
 
 ### DataSanitizer.sanitize_text_with_registry()
 
@@ -120,31 +130,53 @@ The sanitizer has two detection stages, both configurable through `ProtectionSet
 
 Both values are read from `ProtectionSettings` in the constructor. The constructor always resolves settings via `get_settings()` if none are injected.
 
+### One Context Per Turn
+
+**File:** `modules/agent/domain/services/investigation_service/service.py`
+
+`InvestigationService.prepare_turn()` loads the turn's context once, through `load_case_redaction()`, and hands the SAME instance to every model call it makes on the turn's behalf (#1956): the intent classifier (`IntentResolver.resolve`), the out-of-band triage and answer, and `MilestoneEngine.process_turn(redaction_ctx=...)`, which passes it to the turn's generation, the terminal Q&A path and the `ToolContext` its tools run with. One load, one registry, one reverse. Two contexts on one case key would each hold a snapshot, and whichever saved last would drop the other's new entries. A direct engine call (no context handed in) loads the case's own through the same loader.
+
+### Model Calls on a Turn's Behalf
+
+Every send site redacts what it sends through the turn's context, at the send: `messages = await case_redacted_messages(..., redaction_ctx)`, then `route(messages=messages)`. A repo-wide AST guard (`tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py`) classifies every `.route(`/`.generate(` call as redacted at the site or allowlisted with a reason, and fails on anything else.
+
+| Call | Carries | Reversed |
+| --- | --- | --- |
+| `case_evidence_search` / `kb_qa` synthesis (`DocumentQATool.answer_question`) | case evidence chunks (stored raw) / KB chunks | in the engine's final reply, from the registry the call filled |
+| `deep_analysis` (`LocalTier2Service.analyze`) | raw file sections | same |
+| Intent classifier (`IntentResolver._classify`) | the user's typed message | nothing to reverse (a digit) |
+| Out-of-band triage and answer (`out_of_band.py`) | the user's message and the last answer | the answer, by the service with the turn's context |
+| Case title (`title_generation._generate_title_with_llm`) | the case's user text | **never** (below) |
+
+These all reach the model through the router (`llm_provider`); none goes to the dedicated `DA_PROVIDER`. What skipping the case pass costs is the registry, not the text: the router's own pass under `SANITIZE_PII` produces the same text, but a value it alone redacts never enters the case registry, so its placeholder in an answer cannot be reversed for the user — and protection would rest on whichever router `LLM_ROUTER_CLASS` configures.
+
+**Titles are never reversed.** A title is shown to every reader of the case, in every list, so a real value restored into it would be a disclosure. The title builds its own context through the loader, after the turn's save (it runs once the turn has committed), and sends its prompt through it; `is_title_valid` refuses a title carrying a placeholder anywhere, which sends it to the extractive fallback. `_sanitize_title_content` remains as the readability scrub on the extracted text.
+
 ### MilestoneEngine Integration
 
 **Files:** `core/investigation/milestone_engine/turn_generation.py` (the main turn path) and
 `core/investigation/milestone_engine/terminal_turns.py` (`TerminalTurnHandler`,
-the terminal Q&A path) — both build a `CaseRedactionContext` the same way,
-enabled by `should_redact()` from `infrastructure/security/case_redaction.py`.
-The `StructuredOutputGenerator` collaborator (`generation.py`) redacts the
-prompt and tool results within the shape it owns.
+the terminal Q&A path) — both are handed the turn's context and build none of
+their own. The `StructuredOutputGenerator` collaborator (`generation.py`)
+redacts the prompt and tool results within the shape it owns, through
+`case_redacted`.
 
 The engine manages the redaction lifecycle across `_process_turn_impl()` and its
 phases:
 
-1. **Create context** — after case loading, before prompt generation, in `_generate_turn_response` (`turn_generation.py`)
+1. **Receive context** — from the service (or, on a direct engine call, loaded through `load_case_redaction()`), passed to `_generate_turn_response` (`turn_generation.py`) and the terminal Q&A path
 2. **Redact prompt** — at the entry to `StructuredOutputGenerator.generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths
 3. **Redact tool results** — in `StructuredOutputGenerator._tool_augmented_generate()` after `_format_tool_result()` and before truncation/append
 4. **Save registry** — after LLM call completes, before returning result, in `_finalize_turn` (`turn_completion.py`). It is not part of the turn's commit and need not be: a pseudonym is a keyed function of the value, so mappings left by a turn that then fails are a harmless superset (#1882)
-5. **Return context** — threaded from `_generate_turn_response` through `_finalize_turn` as a phase input/output, then included in the result dict so `InvestigationService` can reverse-substitute
+5. **Return context** — threaded through `_finalize_turn` as a phase input/output, then included in the result dict
 
-`should_redact()` is the one copy of the decision: a sanitizer is configured (the DI container hands one out) AND `SANITIZE_PII` is on. When it is `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops. Every path that sends case or document text to a model reads it — `test_every_redaction_context_is_enabled_by_should_redact` fails on a context built any other way.
+`should_redact()` is the one copy of the decision: a sanitizer is configured (the DI container hands one out) AND `SANITIZE_PII` is on. When it is `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops. Every path that sends case or document text to a model reads it — `test_every_redaction_context_is_enabled_by_should_redact` fails on a context built any other way; the only constructions are `load_case_redaction()` and `model_boundary_redaction()`.
 
 ### InvestigationService Integration
 
 **File:** `modules/agent/domain/services/investigation_service/turn_results.py`
 
-The service has one integration point, **response reverse-substitution**: after the engine returns, in `prepare_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
+The service sets the turn's context on every route's result, so the one reverse below covers the engine's reply, the terminal Q&A answer and the out-of-band answer alike. **Response reverse-substitution** happens in `prepare_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`), before the assistant row is appended:
 
 ```python
 redaction_ctx = result.get("redaction_ctx")
@@ -189,11 +221,11 @@ Registry works in-memory for the current turn. Consistent within the turn, not a
 
 ### Concurrent Turns on Same Case
 
-`MilestoneEngine` has per-case asyncio locks (`_case_locks`). Registry load/save happens under the lock. No race conditions.
+The turn's context is loaded by the service, before the engine's per-case lock (`_case_locks`), so two concurrent turns on one case (two tabs) each hold a snapshot. With `save()` writing only on growth, a turn that redacted nothing new writes nothing; two that both grew the registry can drop one's new entries. That costs nothing a user sees: each turn reverses its own reply from its own in-memory registry, and a placeholder is a keyed function of the value (#971), so the next turn that redacts the value re-registers the same placeholder.
 
 ### Single Registry Path
 
-When `SANITIZE_PII=true`, all redaction flows through one `CaseRedactionContext` per case, applied at the LLM boundary only: the prompt and each tool result. There is no "double redaction". Preprocessing does not redact, and the Router's sanitizer sees only placeholders. When `SANITIZE_PII=false`, no redaction occurs at any layer.
+When `SANITIZE_PII=true`, all redaction flows through one `CaseRedactionContext` per turn of a case, applied at the LLM boundary only: the prompt, each tool result, and every other model call made on the turn's behalf. There is no "double redaction". Preprocessing does not redact, and the Router's sanitizer sees only placeholders. When `SANITIZE_PII=false`, no redaction occurs at any layer.
 
 ### Not Implemented: Redaction During Preprocessing
 
@@ -209,11 +241,14 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | --- | --- |
 | `infrastructure/security/case_redaction.py` | `CaseRedactionContext`: the case-scoped registry, persisted in Redis |
 | `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()`, the Presidio settings wiring, and the `\b` word boundary on the password regex |
-| `infrastructure/security/case_redaction.py` | `should_redact()`, the one redaction decision; `model_boundary_redaction()`, the knowledge-authoring paths' context |
-| `core/investigation/milestone_engine/turn_generation.py` | Creates the context and loads its registry (`_generate_turn_response`) |
-| `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`) |
+| `infrastructure/security/case_redaction.py` | `should_redact()`, the one redaction decision; `load_case_redaction()`, the case loader; `case_redacted()` / `case_redacted_messages()`, the send-site helpers; `model_boundary_redaction()`, the knowledge-authoring paths' context |
+| `modules/agent/domain/services/investigation_service/service.py` | Loads the turn's one context and hands it to every call on the turn's behalf; saves it after the route |
+| `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`); puts the context on `ToolContext` |
 | `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_finalize_turn`) |
-| `core/investigation/milestone_engine/terminal_turns.py` | The same lifecycle on the terminal Q&A path |
+| `core/investigation/milestone_engine/terminal_turns.py` | The terminal Q&A path, on the turn's context |
+| `modules/agent/tools/document_qa_tool.py`, `core/preprocessing/tier2/local_service.py` | `kb_qa` / `case_evidence_search` synthesis and `deep_analysis`, sent through the turn's context |
+| `core/investigation/intent_resolver.py`, `modules/agent/domain/services/out_of_band.py` | The intent classifier and the out-of-band triage and answer, sent through the turn's context |
+| `modules/case/api/title_generation.py` | The case title: its own context through the loader; never reversed |
 | `modules/agent/domain/services/investigation_service/turn_results.py` | Reverse-substitution (`_absorb_engine_result`) |
 | `modules/knowledge/domain/services/conversion_service/`, `document_preprocessor.py` | Redact conversion's triage, analysis and generation calls |
 | `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine, and the sanitizer to the conversion service |
@@ -224,7 +259,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 - **Preprocessing**: builds summaries and structural indexes from raw content (see *Not Implemented* above)
 - **Context builder**: assembles raw content; the engine redacts downstream
 - **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls the engine layer does not redact
-- **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results
+- **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results; a tool that calls a model itself redacts what it sends through the turn's context
 - **Storage**: uploads, evidence and preprocessing artifacts are stored raw, never redacted at rest
 
 ## Testing
