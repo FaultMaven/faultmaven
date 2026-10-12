@@ -30,11 +30,31 @@ SQLite
 Changing a key's ``ON DELETE`` clause on SQLite means rebuilding ``cases``
 (create, copy, drop, rename), and 16 tables reference ``cases``: dropping the
 old table under ``PRAGMA foreign_keys=ON`` would cascade into their rows. So
-the stored clause stays ``SET NULL`` and a ``BEFORE DELETE`` trigger on
-``users`` (``users_delete_refuses_case_creator``) aborts the delete of any
-account a case names as its creator. ``SET NULL`` never fires: the trigger
-aborts first. Unlike a key, the trigger holds whether or not the connection
-turned foreign keys on.
+the stored clause stays ``SET NULL`` and two triggers stand in for
+``RESTRICT``:
+
+- ``users_delete_refuses_case_creator``, ``BEFORE DELETE ON users``, aborts the
+  delete of any account a case names as its creator, so ``SET NULL`` never
+  fires on a ``DELETE``. It holds whether or not the connection turned foreign
+  keys on.
+- ``cases_creator_never_nulled``, ``BEFORE UPDATE OF user_id ON cases``, aborts
+  any write that turns a set creator into NULL. ``INSERT OR REPLACE`` /
+  ``REPLACE INTO users`` removes the conflicting row by an implicit delete that
+  fires delete triggers only under ``PRAGMA recursive_triggers`` (off by
+  default, as on a raw sqlite3 or alembic connection), but its ``SET NULL``
+  action still runs as an UPDATE of ``cases``, which this trigger refuses.
+  Moving a case to another account (``fm-reassign-cases``: non-NULL to
+  non-NULL) passes.
+
+With foreign keys OFF, a ``REPLACE`` (or any rewrite of ``users.user_id``) runs
+no key action at all: the row goes and ``cases.user_id`` keeps an id that names
+no account. Every reference in the schema dangles the same way under foreign
+keys off; the app's connections turn them on.
+
+PostgreSQL has no REPLACE. Its nearest equivalent, ``INSERT … ON CONFLICT DO
+UPDATE``, updates the row in place and deletes nothing; one that changes
+``users.user_id`` is refused by the same key (its ``ON UPDATE`` is ``NO
+ACTION``), and ``MERGE … WHEN MATCHED THEN DELETE`` by ``RESTRICT``.
 
 The ORM states ``RESTRICT``, which is the PostgreSQL truth. Alembic compares
 ``ondelete`` when it autogenerates, so autogenerate against a SQLite database
@@ -45,8 +65,8 @@ spurious key change by hand.
 Rows orphaned before this revision stay NULL; nothing here recovers them
 (``SELECT count(*) FROM cases WHERE user_id IS NULL;`` counts them).
 
-``downgrade()`` restores ``ON DELETE SET NULL`` on PostgreSQL and drops the
-trigger on SQLite, and nothing else.
+``downgrade()`` restores ``ON DELETE SET NULL`` on PostgreSQL and drops both
+triggers on SQLite, and nothing else.
 
 Revision ID: 9904ee0cad86
 Revises: 9b3e5c71d2a4
@@ -69,11 +89,17 @@ COLUMN = "user_id"
 #: PostgreSQL's own name for the baseline's unnamed single-column key.
 FOREIGN_KEY = "cases_user_id_fkey"
 TRIGGER = "users_delete_refuses_case_creator"
+NULLING_TRIGGER = "cases_creator_never_nulled"
 #: The SQLite refusal's text. Callers tell the refusal apart by its type
 #: (``IntegrityError``), never by this text.
 REFUSAL = (
     "an account that created cases cannot be deleted; move them to another "
     "account with fm-reassign-cases first"
+)
+#: The SQLite refusal of a write that nulls a set creator.
+NULLING_REFUSAL = (
+    "a case cannot lose its creator; move it to another account with "
+    "fm-reassign-cases"
 )
 
 
@@ -85,8 +111,8 @@ def _key(ondelete: str) -> None:
 
 
 def upgrade() -> None:
-    """Refuse deleting a case's creator: the key on PostgreSQL, a trigger on
-    SQLite."""
+    """Refuse deleting a case's creator: the key on PostgreSQL, two triggers
+    on SQLite."""
     if op.get_context().dialect.name == "sqlite":
         op.execute(f"""
             CREATE TRIGGER {TRIGGER}
@@ -96,14 +122,21 @@ def upgrade() -> None:
             )
             BEGIN SELECT RAISE(ABORT, '{REFUSAL}'); END
             """)
+        op.execute(f"""
+            CREATE TRIGGER {NULLING_TRIGGER}
+            BEFORE UPDATE OF {COLUMN} ON {TABLE}
+            FOR EACH ROW WHEN OLD.{COLUMN} IS NOT NULL AND NEW.{COLUMN} IS NULL
+            BEGIN SELECT RAISE(ABORT, '{NULLING_REFUSAL}'); END
+            """)
     else:
         _key("RESTRICT")
 
 
 def downgrade() -> None:
-    """Restore ``ON DELETE SET NULL`` (PostgreSQL) or drop the trigger
+    """Restore ``ON DELETE SET NULL`` (PostgreSQL) or drop both triggers
     (SQLite)."""
     if op.get_context().dialect.name == "sqlite":
+        op.execute(f"DROP TRIGGER IF EXISTS {NULLING_TRIGGER}")
         op.execute(f"DROP TRIGGER IF EXISTS {TRIGGER}")
     else:
         _key("SET NULL")

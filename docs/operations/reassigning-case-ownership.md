@@ -13,8 +13,11 @@ answers **409** with `x-error-code: ACCOUNT_OWNS_CASES`, the number of cases the
 account created and the `fm-reassign-cases` command that moves them, and revokes
 nothing. The database refuses the delete on every other path too, raw SQL
 included: on PostgreSQL `cases.user_id` is `ON DELETE RESTRICT`; on SQLite the
-stored clause is still `SET NULL`, and a `BEFORE DELETE` trigger on `users`
-(`users_delete_refuses_case_creator`) refuses the delete before it runs.
+stored clause is still `SET NULL`, a `BEFORE DELETE` trigger on `users`
+(`users_delete_refuses_case_creator`) refuses the delete before it runs, and a
+`BEFORE UPDATE` trigger on `cases` (`cases_creator_never_nulled`) refuses a
+`REPLACE INTO users` that would null the creator. If the new owner belongs to no
+Team, the command needs `--allow-no-team`.
 
 Before that rule, deleting a creator **nulled the owner**: the cases dropped out
 of every owner-scoped view, and every read of one failed. Rows orphaned that way

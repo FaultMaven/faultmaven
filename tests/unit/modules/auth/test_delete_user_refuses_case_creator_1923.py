@@ -91,6 +91,7 @@ async def test_a_creator_is_refused_before_anything_is_revoked():
     assert (
         "fm-reassign-cases --enterprise-id ent-1 --from-user doomed --to-user"
     ) in detail
+    assert "--allow-no-team" in detail
     # Revoke NOT called, delete NOT called: the sessions stay live and the
     # account stays, because only the count ran.
     assert world.calls == ["count"]
@@ -106,6 +107,7 @@ async def test_the_refusal_that_beats_the_count_is_the_same_409_after_a_revoke()
 
     assert refused.value.status_code == 409
     assert refused.value.headers == {"x-error-code": "ACCOUNT_OWNS_CASES"}
+    assert "found at delete time" in refused.value.detail
     assert "sessions were revoked" in refused.value.detail
     assert "case(s)" not in refused.value.detail, "no count it could stand behind"
     assert world.calls == ["count", "revoke", "delete"]

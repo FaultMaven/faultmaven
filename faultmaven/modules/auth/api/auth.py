@@ -1097,8 +1097,8 @@ async def delete_user(
                     "deleted until they belong to another account. Move them "
                     "with: fm-reassign-cases --enterprise-id "
                     f"{user.enterprise_id} --from-user {username} --to-user "
-                    "<account> --case-ids-file <file>. Nothing was revoked or "
-                    "deleted."
+                    "<account> --case-ids-file <file> (add --allow-no-team if "
+                    "<account> is in no Team). Nothing was revoked or deleted."
                 ),
                 headers={"x-error-code": ACCOUNT_OWNS_CASES},
             )
@@ -1132,17 +1132,18 @@ async def delete_user(
         except AccountOwnsCasesError:
             # The residual the count above cannot close: the key refused a case
             # the count did not see — one this account created between the
-            # count and the delete (or one a row-level-security scope hid from
-            # the count). The account survived and its sessions are revoked: a
-            # forced re-login, with no data effect. The operator moves the case
-            # and retries. Same code as the count's refusal, without a count:
-            # the route read none it could stand behind.
+            # count and the delete, or one a row-level-security scope hid from
+            # the count. The message names neither, because the route cannot
+            # tell them apart. The account survived and its sessions are
+            # revoked: a forced re-login, with no data effect. The operator
+            # moves the cases and retries. Same code as the count's refusal,
+            # without a count: the route read none it could stand behind.
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"User '{username}' was not deleted: a case they created "
-                    "appeared after the check. Their sessions were revoked. Move "
-                    "their cases with fm-reassign-cases, then retry."
+                    f"User '{username}' was not deleted: a case created by this "
+                    "account was found at delete time. Their sessions were "
+                    "revoked. Move their cases with fm-reassign-cases, then retry."
                 ),
                 headers={"x-error-code": ACCOUNT_OWNS_CASES},
             )

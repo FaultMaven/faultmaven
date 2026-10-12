@@ -331,7 +331,9 @@ class Case(BaseModel):
 > creators), and `cases.user_id` (the creator) → `users`, which refuses the delete (#1923): an
 > account that created cases cannot be deleted until `fm-reassign-cases` moves them. On
 > PostgreSQL that is the key's `ON DELETE RESTRICT`; on SQLite the stored clause is still
-> `SET NULL` and the `users_delete_refuses_case_creator` trigger refuses the delete first.
+> `SET NULL`, the `users_delete_refuses_case_creator` trigger refuses the delete first, and
+> `cases_creator_never_nulled` refuses any write that turns a set creator NULL (the
+> `SET NULL` action of a `REPLACE INTO users`, which fires no delete trigger).
 
 ### 4.1 Table Design (case-domain tables)
 

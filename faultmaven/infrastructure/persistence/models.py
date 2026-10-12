@@ -1450,9 +1450,11 @@ class CaseModel(Base):
     # ``ON DELETE RESTRICT`` (#1923): an account that created cases cannot be
     # deleted until they are reassigned, so no path leaves a case with no
     # creator. That is the PostgreSQL key (015). SQLite keeps the stored
-    # ``SET NULL`` clause and a ``BEFORE DELETE`` trigger on ``users``
-    # enforces the rule there, because rebuilding ``cases`` to change the
-    # clause is unsafe under its 16 inbound keys. Nullable still: rows
+    # ``SET NULL`` clause and two triggers enforce the rule there (a
+    # ``BEFORE DELETE`` on ``users``, and a ``BEFORE UPDATE`` on ``cases``
+    # refusing a creator turned NULL, which catches ``REPLACE``), because
+    # rebuilding ``cases`` to change the clause is unsafe under its 16
+    # inbound keys. Nullable still: rows
     # orphaned before 015 stay NULL, and nothing recovers them.
     user_id = Column(
         String(36),

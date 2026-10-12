@@ -1508,12 +1508,16 @@ class TestCaseDriverRevision:
 class TestCaseCreatorRestrictRevision:
     """015 refuses deleting a case's creator (#1923). On SQLite the stored
     ``cases.user_id`` clause stays ``SET NULL`` (rebuilding ``cases`` under its
-    16 inbound keys is unsafe) and a ``BEFORE DELETE`` trigger on ``users``
-    aborts the delete; the downgrade drops exactly that trigger. The
-    PostgreSQL half (the key itself) is
+    16 inbound keys is unsafe). A ``BEFORE DELETE`` trigger on ``users``
+    aborts the delete, and a ``BEFORE UPDATE`` trigger on ``cases`` aborts a
+    creator turned NULL — the ``SET NULL`` action of a ``REPLACE INTO users``,
+    whose implicit delete fires no delete trigger with ``recursive_triggers``
+    off. The downgrade drops exactly those two triggers. The PostgreSQL half
+    (the key itself) is
     ``tests/integration/security/test_case_creator_restrict_postgres.py``."""
 
     TRIGGER = "users_delete_refuses_case_creator"
+    NULLING_TRIGGER = "cases_creator_never_nulled"
 
     @staticmethod
     def _triggers() -> list:
@@ -1568,6 +1572,7 @@ class TestCaseCreatorRestrictRevision:
         assert result.returncode == 0, result.stderr
         tables, triggers = get_tables(TEST_DB), self._triggers()
         assert self.TRIGGER not in triggers
+        assert self.NULLING_TRIGGER not in triggers
         assert self._creator_key() == [("users", "user_id", "user_id", "SET NULL")]
 
         for _ in range(2):  # up, down, up
@@ -1575,7 +1580,9 @@ class TestCaseCreatorRestrictRevision:
                 f"upgrade {CASE_CREATOR_RESTRICT_REVISION}", database_url
             )
             assert result.returncode == 0, result.stderr
-            assert self._triggers() == sorted(triggers + [self.TRIGGER])
+            assert self._triggers() == sorted(
+                triggers + [self.TRIGGER, self.NULLING_TRIGGER]
+            )
             assert get_tables(TEST_DB) == tables
             # The stored clause is unchanged: the trigger aborts before it.
             assert self._creator_key() == [("users", "user_id", "user_id", "SET NULL")]
@@ -1609,6 +1616,61 @@ class TestCaseCreatorRestrictRevision:
             if foreign_keys == "ON":
                 conn.execute("DELETE FROM users WHERE user_id = 'driver-00000'")
                 assert self._case(conn) == ("creator-0000", None)
+            conn.commit()
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("verb", ["INSERT OR REPLACE INTO", "REPLACE INTO"])
+    def test_a_replace_that_would_take_a_creator_is_refused(
+        self, clean_database, database_url, verb
+    ):
+        """``REPLACE`` removes the row whose username it collides with by an
+        implicit delete that fires no delete trigger with ``recursive_triggers``
+        off (the sqlite3 default). The key's ``SET NULL`` still runs, as an
+        UPDATE of ``cases``, and that is what is refused."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+            enterprise = self._seed(conn)
+
+            with pytest.raises(sqlite3.IntegrityError, match="cannot lose its creator"):
+                conn.execute(
+                    f"{verb} users (user_id, enterprise_id, username, email, "
+                    "display_name, hashed_password) VALUES ('usurper-000', ?, "
+                    "'creator-0000', 'usurper@example.com', 'U', 'x')",
+                    (enterprise,),
+                )
+            conn.rollback()
+
+            assert self._case(conn) == ("creator-0000", "driver-00000")
+            assert conn.execute(
+                "SELECT user_id FROM users WHERE username = 'creator-0000'"
+            ).fetchone() == ("creator-0000",)
+        finally:
+            conn.close()
+
+    def test_moving_a_case_to_another_account_still_works(
+        self, clean_database, database_url
+    ):
+        """``fm-reassign-cases`` writes one set creator over another: the
+        nulling guard lets it through."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._seed(conn)
+
+            conn.execute(
+                "UPDATE cases SET user_id = 'bystander-00', driver_id = NULL, "
+                "version = version + 1 WHERE case_id = 'case_000000000001'"
+            )
+            conn.commit()
+
+            assert self._case(conn) == ("bystander-00", None)
+            # And the old creator, now owning nothing, can go.
+            conn.execute("DELETE FROM users WHERE user_id = 'creator-0000'")
             conn.commit()
         finally:
             conn.close()
