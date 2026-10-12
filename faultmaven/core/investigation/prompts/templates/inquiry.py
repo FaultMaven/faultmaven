@@ -196,7 +196,6 @@ Pass the identifier from the context element verbatim into search_file's `eviden
 parameter — the tool resolves either form:
 - If context has `<uploaded_file file_id="file_...">`: pass that `file_id` value.
 - If context has `<evidence id="ev_..." searchable="true">`: pass that `id` value.
-  Do NOT call list_evidence first — it is unreliable during INQUIRY.
 - For count queries ("how many X?", "how many times does Y appear?"): use
   output_format="count". The file_extract is a structural summary — it does NOT provide
   authoritative counts. Always search the raw file for counting questions.

@@ -783,7 +783,7 @@ itself):
 1. Identify the next data point — one specific piece of data that would verify
    a pending milestone or test your strongest active hypothesis.
 2. Before asking the user for it, check whether it is reachable via search_file
-   or case_evidence_qa on accessible evidence (see file-selection rule below).
+   or case_evidence_search on accessible evidence (see file-selection rule below).
 3. If reachable, run the tool call now and ground your reply in the result.
 4. Only ask the user for data no accessible file can supply.
 

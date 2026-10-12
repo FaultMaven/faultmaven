@@ -1486,7 +1486,7 @@ def _render_evidence_block(
                 "evidence_omitted",
                 f' count="{n_omitted}" '
                 f'reason="prompt_budget" note="More evidence exists but did not fit '
-                f'this turn; use search_file / list_evidence to reach it."',
+                f'this turn; use search_file to reach it."',
             )
             + "\n"
         )
