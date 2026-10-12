@@ -5,15 +5,14 @@ Why a file and not stdout
 
 The A/B job (``.github/workflows/benchmarks.yml``) needs, for each timed
 site, the *one number that site's assertion compares*, on two checkouts,
-in a form a program can join. That number is already printed — but in five
-different shapes across the two suites (``Measurement.report()``'s
-``min 7.6ms (median ...)``, ``report_p95``'s indented ``P95: 7.60ms``,
-``report_benchmark``'s ``P95: 7.60ms (regression budget: ...)`` and two
-more in ``tests/performance/``), and a passing test's stdout only survives
-at all because ``--json-report`` keeps it. A comparison built on scraping
-five formats out of a report artifact is a detector whose input is its
-weakest part, so the number is written down where it is *computed*
-instead.
+in a form a program can join. That number is already printed — but in
+several different shapes across the two suites (``Measurement.report()``'s
+``min 7.6ms (median ...)`` and two more in ``tests/performance/``; two p95
+shapes went with their benchmark module in #1935), and a passing test's
+stdout only survives at all because ``--json-report`` keeps it. A
+comparison built on scraping several formats out of a report artifact is a
+detector whose input is its weakest part, so the number is written down
+where it is *computed* instead.
 
 Where it is computed is the single pair of comparison helpers in
 ``assertions.py`` — the choke point #908 and #1557 spent two issues

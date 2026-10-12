@@ -25,9 +25,9 @@ green ``main`` runs** of ``.github/workflows/benchmarks.yml``, spanning
 
 ``reference`` on each row is the **p95 across those 20 runs** of the
 statistic that row's test compares — the minimum for a
-``measure_min_latency`` site, the p95 for a ``report_p95`` /
-``report_benchmark`` one, the rate for a throughput one. ``regression`` is
-a round number in the 2-3x band above it.
+``measure_min_latency`` site, the rate for a throughput one. (The p95
+sites the reference was also taken over went with their benchmark module
+in #1935.) ``regression`` is a round number in the 2-3x band above it.
 
 The anchor is **observed CI cost, not** ``CALIBRATION_REFERENCE_SECONDS``.
 That constant is derived (development box x an artifact ratio, rounded up)

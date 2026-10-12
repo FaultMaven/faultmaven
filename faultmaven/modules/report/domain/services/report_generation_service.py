@@ -7,7 +7,7 @@ Auto-generates structured summaries when cases reach terminal state:
 
 Runbook generation is handled separately by ConversionService.
 
-Architecture Reference: docs/architecture/investigation-engine/investigation-lifecycle-logic.md §1.7.4
+Architecture Reference: docs/architecture/investigation-engine/investigation-lifecycle-logic.md §1.7.3
 """
 
 import logging

@@ -770,8 +770,8 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     An exclusion is a silent disabling of idempotency, so it must be shown
     against the real route table rather than against hand-written paths. The
     tempting ``/sessions`` substring marker catches every POST route whose path
-    merely contains the word — nine of them at the time of writing, only one of
-    which is the session mint.
+    merely contains the word — several of them, only one of which is the session
+    mint.
 
     Enumerated through ``route_policy._post_route_paths`` rather than by walking
     ``real_app.routes`` directly: FastAPI >= 0.139 records an ``_IncludedRouter``
@@ -810,9 +810,12 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     # ten (`POST /sessions/cleanup` and `POST /sessions/{id}/restore`) and
     # 6.0.0 to nine (`POST /cases/sessions/{id}/case`), and a threshold of
     # `> 10` made the first of those look like a broken route table. 14.0.0
-    # took it to five: the four case-nested session writes were retired
-    # (#1935). Four non-mint routes still demonstrate the trap.
-    assert len(session_shaped) > 4, "expected many session-shaped POST routes"
+    # took it to five (the four case-nested session writes were retired,
+    # #1935), and a `> 4` there would have been a pin in all but name. So the
+    # floor is the least that still demonstrates the trap: the mint plus one
+    # route that merely contains the word. The set equality and the resume
+    # assertion below are what carry the teeth.
+    assert len(session_shaped) >= 2, "expected the mint and a non-mint route"
     assert session_shaped - excluded == session_shaped - {"/api/v1/sessions"}
     assert "/api/v1/cases/sessions/{session_id}/resume/{case_id}" not in excluded
 
