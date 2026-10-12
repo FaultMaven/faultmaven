@@ -322,6 +322,13 @@ discard every standalone draft. Its PostgreSQL script opens with a SQL-comment
 warning that it discards every live draft whose text is not already in the
 database.
 
+The revision after it rewrites verified runbooks' frontmatter `verified_by`
+(#1948), which means parsing each runbook, so a script cannot do it: it renders
+a SQL-comment warning in place of the rewrite on both dialects. Its
+`downgrade()` is a no-op and its upgrade idempotent, so stepping down to its
+parent and up again online applies the rewrite later; the comment names both
+revisions.
+
 Offline mode cannot render a batch operation on SQLite: batch mode reflects the
 live table, so `--sql` stops with `This operation cannot proceed in --sql mode`
 unless the migration passes a complete `Table` as `copy_from=`.

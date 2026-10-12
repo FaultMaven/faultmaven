@@ -23,6 +23,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -40,8 +41,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 018_runbook_drafts_in_the_database
-HEAD_REVISION = "c4441b83ba24"  # pragma: allowlist secret
+#: 019_verified_by_is_the_display_name
+HEAD_REVISION = "82bc95a1c02f"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -90,6 +91,9 @@ DROP_INVESTIGATION_SESSIONS_REVISION = "f95a5b3a58eb"  # pragma: allowlist secre
 #: ``018_runbook_drafts_in_the_database``: a draft's text is
 #: ``conversion_drafts.content``; ``file_path`` is dropped (#1950).
 DRAFTS_IN_THE_DATABASE_REVISION = "c4441b83ba24"  # pragma: allowlist secret
+#: ``019_verified_by_is_the_display_name``: a verified runbook's frontmatter
+#: ``verified_by`` names its verifier by their display name (#1948).
+VERIFIED_BY_DISPLAY_NAME_REVISION = "82bc95a1c02f"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -399,6 +403,10 @@ class TestFunctionOnlyRevisions:
     table-set check holds. Its rows are pinned by
     ``TestNoEmailDerivedNamesRevision``, and on PostgreSQL by
     ``tests/integration/security/test_no_email_derived_names_postgres.py``.
+
+    019 is data-only too (it rewrites runbook text). Its rows are pinned by
+    ``TestVerifiedByIsTheDisplayNameRevision``, and on PostgreSQL by
+    ``tests/integration/security/test_verified_by_display_name_postgres.py``.
     """
 
     @pytest.mark.parametrize(
@@ -433,6 +441,11 @@ class TestFunctionOnlyRevisions:
                 NO_EMAIL_DERIVED_NAMES_REVISION,
                 CASE_CREATOR_RESTRICT_REVISION,
                 id="016_no_email_derived_display_names",
+            ),
+            pytest.param(
+                VERIFIED_BY_DISPLAY_NAME_REVISION,
+                DRAFTS_IN_THE_DATABASE_REVISION,
+                id="019_verified_by_is_the_display_name",
             ),
         ],
     )
@@ -2593,6 +2606,304 @@ class TestRunbookDraftsInTheDatabaseRevision:
             "root" in result.stderr
         )
         assert "ALTER TABLE conversion_drafts" not in result.stdout
+
+
+class TestVerifiedByIsTheDisplayNameRevision:
+    """019 rewrites a verified runbook's frontmatter ``verified_by`` to its
+    verifier's current display name (#1948): the published item and its
+    verified draft alike, byte-equal; rows chosen by the verifier foreign key,
+    never by matching text. Uploads and the pack keep their own text."""
+
+    OTHER_ENTERPRISE = "0e0e0e0e-0000-4000-8000-0000000000ee"
+    ALICE = "a11ce000-0000-4000-8000-000000000001"
+    KIM = "c1a00000-0000-4000-8000-000000000002"
+    DANA = "da0a0000-0000-4000-8000-000000000003"
+    ELSEWHERE = "e15e0000-0000-4000-8000-000000000004"
+
+    #: (user_id, username, email, display_name, in the other enterprise)
+    USERS = (
+        (ALICE, "alice.smith", "alice.smith@example.com", "Alice Smith", False),
+        # Renamed since the verification: the runbook still holds "kim".
+        (KIM, "kim-renamed", "kim@example.com", "Kim Lee", False),
+        (DANA, "dana", "dana@example.com", "Dana", False),
+        # Anchored in another enterprise than the runbook's: verify finds no
+        # account there, and writes "".
+        (ELSEWHERE, "eve", "eve@example.com", "Eve Example", True),
+    )
+
+    @staticmethod
+    def _runbook(rb_id: str, verified_by_line: Optional[str]) -> str:
+        """A runbook as verify's serialiser writes it: keys sorted, one blank
+        line, the body stripped."""
+        line = f"{verified_by_line}\n" if verified_by_line is not None else ""
+        return (
+            f"---\nid: {rb_id}\nstatus: verified\ntitle: Disk full\n{line}"
+            "version: 1.0.0\n---\n\n# Disk full\n\nRun df -h on node@host."
+        )
+
+    #: (item id, verifier FK, verification_level, source_url, verified_by line,
+    #:  the line expected after 019 — None: the text is unchanged)
+    ITEMS = (
+        # Verify's frontmatter path wrote the username, unquoted.
+        (
+            "ki_unquoted",
+            ALICE,
+            1,
+            "conversion:job_1",
+            "verified_by: alice.smith",
+            "verified_by: Alice Smith",
+        ),
+        # The same value quoted.
+        (
+            "ki_quoted",
+            ALICE,
+            1,
+            "conversion:job_1",
+            'verified_by: "alice.smith"',
+            "verified_by: Alice Smith",
+        ),
+        # An address.
+        (
+            "ki_address",
+            ALICE,
+            1,
+            "conversion:job_1",
+            "verified_by: alice.smith@example.com",
+            "verified_by: Alice Smith",
+        ),
+        # A username renamed since: no text rule would catch it; the key does.
+        (
+            "ki_renamed",
+            KIM,
+            1,
+            "conversion:job_1",
+            "verified_by: kim",
+            "verified_by: Kim Lee",
+        ),
+        # Already the display name: untouched, byte for byte.
+        ("ki_current", DANA, 1, "conversion:job_1", "verified_by: Dana", None),
+        # The verifier's account is gone (FK cleared): emptied.
+        (
+            "ki_gone",
+            None,
+            1,
+            "conversion:job_1",
+            "verified_by: gone@example.com",
+            "verified_by: ''",
+        ),
+        # The verifier is anchored in another enterprise: emptied.
+        (
+            "ki_elsewhere",
+            ELSEWHERE,
+            1,
+            "conversion:job_1",
+            "verified_by: eve",
+            "verified_by: ''",
+        ),
+        # No verified_by key: nothing to rewrite.
+        ("ki_nokey", ALICE, 1, "conversion:job_1", None, None),
+        # Uploaded (no verifier, EXPERIMENTAL): the uploader's own text.
+        (
+            "ki_upload",
+            None,
+            0,
+            "conversion:forged",
+            "verified_by: up@example.com",
+            None,
+        ),
+        # The pack (COMMUNITY, no verifier, no conversion source).
+        (
+            "kb_0123456789ab",
+            None,
+            1,
+            "https://example.com/runbook",
+            "verified_by: sre@example.com",
+            None,
+        ),
+    )
+    #: Verify's old fallback for a frontmatter that did not parse: the literal
+    #: ``verified_by: ""`` replaced with the quoted username.
+    UNPARSEABLE = (
+        '---\nid: rb-broken\ntitle: [unclosed\nverified_by: "alice.smith"\n'
+        "---\n\n# Broken"
+    )
+
+    def _expected(self, item_id: str, line: Optional[str], after: Optional[str]):
+        before = self._runbook(item_id, line)
+        if after is None:
+            return before
+        return before.replace(f"{line}\n", f"{after}\n")
+
+    def _seed(self) -> str:
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            enterprise = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO enterprises (enterprise_id, name, slug) "
+                "VALUES (?, 'Other', 'other')",
+                (self.OTHER_ENTERPRISE,),
+            )
+            for user_id, username, email, name, elsewhere in self.USERS:
+                conn.execute(
+                    "INSERT INTO users (user_id, enterprise_id, username, email, "
+                    "display_name, hashed_password) VALUES (?, ?, ?, ?, ?, 'x')",
+                    (
+                        user_id,
+                        self.OTHER_ENTERPRISE if elsewhere else enterprise,
+                        username,
+                        email,
+                        name,
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO uploaded_files (file_id, enterprise_id, filename, "
+                "size_bytes) VALUES ('file_1', ?, 'src', 1)",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                "scope, source_type) VALUES ('job_1', ?, 'file_1', 'personal', "
+                "'document')",
+                (enterprise,),
+            )
+            rows = [
+                (item_id, verifier, level, source, self._runbook(item_id, line))
+                for item_id, verifier, level, source, line, _ in self.ITEMS
+            ]
+            rows.append(
+                ("ki_broken", self.ALICE, 1, "conversion:job_1", self.UNPARSEABLE)
+            )
+            for item_id, verifier, level, source, content in rows:
+                conn.execute(
+                    "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                    "content, item_type, verified_by, verification_level, "
+                    "source_url) VALUES (?, ?, 'Disk full', ?, 'runbook', ?, ?, ?)",
+                    (item_id, enterprise, content, verifier, level, source),
+                )
+                if item_id.startswith("kb_"):
+                    continue
+                # Every item but the pack's has its verified draft; an upload's
+                # names its owner as the verifier.
+                conn.execute(
+                    "INSERT INTO conversion_drafts (id, enterprise_id, "
+                    "conversion_id, runbook_id, title, content, status, "
+                    "knowledge_item_id, verified_by) "
+                    "VALUES (?, ?, 'job_1', ?, 't', ?, 'verified', ?, ?)",
+                    (
+                        f"d_{item_id}",
+                        enterprise,
+                        f"rb_{item_id}",
+                        content,
+                        item_id,
+                        self.ALICE if item_id == "ki_upload" else verifier,
+                    ),
+                )
+            # A discarded draft: nothing serves its text.
+            conn.execute(
+                "INSERT INTO conversion_drafts (id, enterprise_id, conversion_id, "
+                "runbook_id, title, content, status) VALUES ('d_discarded', ?, "
+                "'job_1', 'rb_discarded', 't', ?, 'discarded')",
+                (enterprise, self._runbook("x", "verified_by: alice.smith")),
+            )
+            conn.commit()
+            return enterprise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _items() -> dict:
+        return dict(query_rows(TEST_DB, "SELECT item_id, content FROM knowledge_items"))
+
+    @staticmethod
+    def _drafts() -> dict:
+        return dict(query_rows(TEST_DB, "SELECT id, content FROM conversion_drafts"))
+
+    def _migrate_seeded(self, database_url):
+        result = run_alembic(f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        return run_alembic(f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url)
+
+    def test_upgrade_rewrites_by_the_verifier_key(self, clean_database, database_url):
+        result = self._migrate_seeded(database_url)
+
+        assert result.returncode == 0, result.stderr
+        items = self._items()
+        for item_id, _, _, _, line, after in self.ITEMS:
+            assert items[item_id] == self._expected(item_id, line, after), item_id
+        assert items["ki_broken"] == self.UNPARSEABLE.replace(
+            '"alice.smith"', '"Alice Smith"'
+        )
+        assert (
+            "019: rewrote verified_by in 7 published runbook(s) and 7 verified "
+            "draft(s); 2 of those runbooks have no verifier account and now hold ''"
+        ) in result.stderr
+        assert (
+            "019: left 2 runbook(s) not verified through FaultMaven (uploads, the "
+            "pack) whose own verified_by holds an '@': kb_0123456789ab, ki_upload"
+        ) in result.stderr
+
+    def test_each_verified_draft_holds_its_items_text(
+        self, clean_database, database_url
+    ):
+        """#1950's invariant survives: a verified draft's text is byte-equal to
+        the runbook it was published as, the upload's included (both untouched),
+        and the discarded draft keeps its text."""
+        result = self._migrate_seeded(database_url)
+
+        assert result.returncode == 0, result.stderr
+        items = self._items()
+        drafts = self._drafts()
+        for item_id, content in items.items():
+            if item_id.startswith("kb_"):
+                continue
+            assert drafts[f"d_{item_id}"] == content, item_id
+        assert drafts["d_discarded"] == self._runbook("x", "verified_by: alice.smith")
+
+    def test_downgrade_restores_nothing_and_a_rerun_changes_nothing(
+        self, clean_database, database_url
+    ):
+        assert self._migrate_seeded(database_url).returncode == 0
+        items, drafts = self._items(), self._drafts()
+
+        result = run_alembic(
+            f"downgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == DRAFTS_IN_THE_DATABASE_REVISION
+        assert (self._items(), self._drafts()) == (items, drafts)
+
+        result = run_alembic(
+            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert (
+            "019: rewrote verified_by in 0 published runbook(s) and 0 verified "
+            "draft(s)"
+        ) in result.stderr
+        assert (self._items(), self._drafts()) == (items, drafts)
+
+    @pytest.mark.parametrize(
+        "url", ["postgresql://offline@localhost/offline", "sqlite:///offline.db"]
+    )
+    def test_offline_renders_the_warning_and_no_rewrite(self, url):
+        """A script cannot parse frontmatter: it says so, and changes nothing."""
+        result = run_alembic(
+            f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}:"
+            f"{VERIFIED_BY_DISPLAY_NAME_REVISION} --sql",
+            url,
+        )
+        assert result.returncode == 0, result.stderr
+        sql = result.stdout
+        revision = sql.index("-- Running upgrade c4441b83ba24 -> 82bc95a1c02f")
+        assert revision < sql.index("-- WARNING (019): this script does NOT rewrite")
+        assert "alembic downgrade c4441b83ba24" in sql
+        assert "UPDATE knowledge_items" not in sql
+        assert "UPDATE conversion_drafts" not in sql
+        assert "row_security" not in sql[revision:]
 
 
 class TestRbacSeed:
