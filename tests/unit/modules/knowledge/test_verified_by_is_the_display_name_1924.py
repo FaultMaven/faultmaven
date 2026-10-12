@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import frontmatter
 import pytest
-import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -31,13 +30,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 
-pytestmark = [
-    pytest.mark.unit,
-    pytest.mark.api,
-    # The runbook path is the shipped cwd-relative ``data/knowledge`` layout
-    # (#1945): a test process's own data root is not that tree.
-    pytest.mark.usefixtures("shipped_data_defaults"),
-]
+pytestmark = [pytest.mark.unit, pytest.mark.api]
 
 USER_ID = "3f9a1c2e-0000-4000-8000-000000000001"
 ENTERPRISE_ID = "ent-1924"
@@ -48,7 +41,6 @@ _NOW = datetime(2026, 10, 12, tzinfo=timezone.utc)
 #: The name on the account row. Quotes and a backslash, so the YAML written
 #: must escape them to read back as this one value.
 ROW_NAME = 'Alice "Ace" O\'Neil \\ Ops'
-DRAFT_PATH = "data/knowledge/team/rb.md"
 
 DRAFT = """---
 id: rb-1924
@@ -100,20 +92,24 @@ class _AccountReader:
         return [row] if enterprise_id == ENTERPRISE_ID and USER_ID in user_ids else []
 
 
-def _session_factory():
-    job = MagicMock()
-    job.id = "conv_x"
-    job.user_id = USER_ID
-    job.scope = "team"
-    job.enterprise_id = ENTERPRISE_ID
-
+def _draft_row() -> MagicMock:
+    """The draft row: its text is its ``content`` column (#1950)."""
     draft = MagicMock()
     draft.id = "draft_1924"
     draft.runbook_id = "rb-1924"
     draft.title = "Disk full"
     draft.status = "draft"
-    draft.file_path = DRAFT_PATH
+    draft.content = DRAFT
     draft.validation_passed = True
+    return draft
+
+
+def _session_factory(draft):
+    job = MagicMock()
+    job.id = "conv_x"
+    job.user_id = USER_ID
+    job.scope = "team"
+    job.enterprise_id = ENTERPRISE_ID
 
     async def _execute(stmt):
         result = MagicMock()
@@ -139,13 +135,13 @@ def _session_factory():
     return _Factory()
 
 
-def _service(account_reader) -> ConversionService:
+def _service(account_reader, draft) -> ConversionService:
     knowledge = AsyncMock()
     knowledge.ingest_runbook.return_value = 3
     return ConversionService(
         llm_router=MagicMock(),
         settings=MagicMock(),
-        db_session_factory=_session_factory(),
+        db_session_factory=_session_factory(draft),
         knowledge_service=knowledge,
         account_reader=account_reader,
     )
@@ -163,16 +159,17 @@ def _client(service: ConversionService) -> TestClient:
 
 
 @pytest.fixture
-def draft_file(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    path = tmp_path / DRAFT_PATH
-    path.parent.mkdir(parents=True)
-    path.write_text(DRAFT, encoding="utf-8")
-    return path
+def draft():
+    return _draft_row()
 
 
-def _verified_by(path) -> object:
-    return frontmatter.load(str(path)).metadata["verified_by"]
+def _verified_by(text: str) -> object:
+    return frontmatter.loads(text).metadata["verified_by"]
+
+
+def _published(service: ConversionService) -> str:
+    """The text verify handed to ingestion: what search will serve."""
+    return service._knowledge_service.ingest_runbook.call_args.kwargs["content"]
 
 
 async def test_the_jwt_principal_carries_the_username_as_its_display_name():
@@ -186,69 +183,52 @@ async def test_the_jwt_principal_carries_the_username_as_its_display_name():
 
 
 class TestTheRouteWritesTheRowsName:
-    def test_verify(self, draft_file):
+    def test_verify(self, draft):
         reader = _AccountReader()
+        service = _service(reader, draft)
 
-        response = _client(_service(reader)).post(
+        response = _client(service).post(
             "/knowledge/conversions/conv_x/drafts/draft_1924/verify"
         )
 
         assert response.status_code == 200, response.text
-        assert _verified_by(draft_file) == ROW_NAME
+        # The row's text and the published text: one and the same, and the
+        # name round-trips through YAML as this one value, quotes and all.
+        assert draft.content == _published(service)
+        assert _verified_by(draft.content) == ROW_NAME
+        assert frontmatter.loads(draft.content).metadata["status"] == "verified"
         assert reader.calls == [(ENTERPRISE_ID, [USER_ID])]
-        assert USERNAME not in draft_file.read_text(encoding="utf-8")
+        assert USERNAME not in draft.content
 
-    def test_verify_batch(self, draft_file):
-        response = _client(_service(_AccountReader())).post(
+    def test_verify_batch(self, draft):
+        response = _client(_service(_AccountReader(), draft)).post(
             "/knowledge/drafts/verify-batch",
             json={"draft_ids": [{"conversion_id": "conv_x", "draft_id": "draft_1924"}]},
         )
 
         assert response.status_code == 200, response.text
         assert response.json()["results"][0]["status"] == "verified"
-        assert _verified_by(draft_file) == ROW_NAME
+        assert _verified_by(draft.content) == ROW_NAME
 
 
-def test_the_fallback_writer_escapes_the_name(draft_file, monkeypatch):
-    """When the frontmatter library fails, the text fallback writes the name
-    into a double-quoted YAML scalar. Unescaped, a ``"`` in the name ended the
-    scalar early and the frontmatter no longer parsed as written (#1924)."""
-
-    def _broken_load(*_args, **_kwargs):
-        raise RuntimeError("frontmatter unavailable")
-
-    monkeypatch.setattr(frontmatter, "load", _broken_load)
-
-    response = _client(_service(_AccountReader())).post(
+def test_no_account_read_leaves_the_field_empty_not_the_username(draft):
+    response = _client(_service(None, draft)).post(
         "/knowledge/conversions/conv_x/drafts/draft_1924/verify"
     )
 
     assert response.status_code == 200, response.text
-    text = draft_file.read_text(encoding="utf-8")
-    block = text.split("---\n")[1]
-    meta = yaml.safe_load(block)
-    assert meta["verified_by"] == ROW_NAME
-    assert meta["status"] == "verified"
+    assert _verified_by(draft.content) == ""
+    assert USERNAME not in draft.content
 
 
-def test_no_account_read_leaves_the_field_empty_not_the_username(draft_file):
-    response = _client(_service(None)).post(
-        "/knowledge/conversions/conv_x/drafts/draft_1924/verify"
-    )
-
-    assert response.status_code == 200, response.text
-    assert _verified_by(draft_file) == ""
-    assert USERNAME not in draft_file.read_text(encoding="utf-8")
-
-
-def test_an_account_outside_the_jobs_enterprise_is_not_named(draft_file):
+def test_an_account_outside_the_jobs_enterprise_is_not_named(draft):
     class _Elsewhere(_AccountReader):
         async def get_many_in_enterprise(self, enterprise_id, user_ids):
             return []
 
-    response = _client(_service(_Elsewhere())).post(
+    response = _client(_service(_Elsewhere(), draft)).post(
         "/knowledge/conversions/conv_x/drafts/draft_1924/verify"
     )
 
     assert response.status_code == 200, response.text
-    assert _verified_by(draft_file) == ""
+    assert _verified_by(draft.content) == ""

@@ -219,8 +219,6 @@ def _service(session_factory) -> ConversionService:
 
 async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None:
     """Run the real ``_persist_job`` with the case-conversion argument shape."""
-    draft_path = tmp_path / f"{conversion_id}.md"
-    draft_path.write_text("# runbook", encoding="utf-8")
     await _persist_job(
         service._db_session_factory,
         service._share_repo,
@@ -260,8 +258,8 @@ async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None
                     actionability=80.0,
                     comprehensiveness=80.0,
                 ),
-                file_path=str(draft_path),
                 content_preview="preview",
+                content="---\nid: rb-pool-timeout\n---\n\n# runbook\n",
             )
         ],
         created_at=datetime.now(timezone.utc),

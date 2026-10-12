@@ -189,7 +189,9 @@ async def _persist_job_rows(
                 conversion_id=conversion_id,
                 runbook_id=draft.runbook_id,
                 title=draft.title,
-                file_path=draft.file_path,
+                # The draft's text, in the same transaction as its row (#1950):
+                # there is no draft whose text a replica cannot read.
+                content=draft.content,
                 status=draft.status.value,
                 source_type=source_type,
                 validation_passed=draft.validation.passed,

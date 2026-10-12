@@ -226,17 +226,12 @@ class ConversionDraft(BaseModel):
     case_id: Optional[str] = None
     validation: ValidationResult
     quality_score: QualityScore
-    #: The draft's file on the server, which ``conversion_drafts.file_path``
-    #: persists. Read on the server and never serialised: every dump and every
-    #: response leaves it out, because a server filesystem path is not the
-    #: client's to see (#836).
-    file_path: str = Field(exclude=True)
     content_preview: str = Field(
         max_length=500, description="First 500 chars of generated markdown"
     )
-    content: Optional[str] = Field(
-        default=None, description="Full markdown content, included on detail requests"
-    )
+    #: ``conversion_drafts.content``, the draft's one home (#1950): every
+    #: replica serves the same text. Required: there is no draft without it.
+    content: str = Field(description="Full markdown content, frontmatter included")
     quality_warning: Optional[str] = Field(
         default=None, description="Warning if quality score < 50"
     )
@@ -279,9 +274,20 @@ class ConversionResponse(BaseModel):
 # =============================================================================
 
 
+#: The longest draft an edit may store, in characters (#1950). A draft is a
+#: database row now, so a JSON body — which nothing else bounds — must not set
+#: its size. Sized above every draft the system makes or imports: a converted
+#: draft stops at ``RUNBOOK_MAX_TOKENS_CEILING`` (8192 tokens, some 33,000
+#: characters), and the hand-written runbooks the scan imports run longer — the
+#: largest shipped one is 48,354 bytes. Twice that, rounded, leaves room to edit
+#: any of them; the scan refuses a file over it, so no draft is born uneditable.
+DRAFT_CONTENT_MAX_CHARS = 100_000
+
+
 class DraftUpdateRequest(BaseModel):
     content: str = Field(
         min_length=100,
+        max_length=DRAFT_CONTENT_MAX_CHARS,
         description="Full runbook markdown content including frontmatter",
     )
 

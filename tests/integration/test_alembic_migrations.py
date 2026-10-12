@@ -40,8 +40,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 016_no_email_derived_display_names
-HEAD_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
+#: 017_runbook_drafts_in_the_database
+HEAD_REVISION = "c4441b83ba24"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -84,6 +84,9 @@ CASE_CREATOR_RESTRICT_REVISION = "9904ee0cad86"  # pragma: allowlist secret
 #: ``016_no_email_derived_display_names``: email-derived display names become
 #: ``Member <4 chars of user_id>`` (#1924).
 NO_EMAIL_DERIVED_NAMES_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
+#: ``017_runbook_drafts_in_the_database``: a draft's text is
+#: ``conversion_drafts.content``; ``file_path`` is dropped (#1950).
+DRAFTS_IN_THE_DATABASE_REVISION = "c4441b83ba24"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -2049,6 +2052,336 @@ class TestNoEmailDerivedNamesRevision:
         assert f"{module.RELABEL};" in up.stdout
         assert "%%" not in up.stdout
         assert "ROW LEVEL SECURITY" not in up.stdout
+
+
+class TestRunbookDraftsInTheDatabaseRevision:
+    """017 gives every draft its text in ``conversion_drafts.content`` and drops
+    ``file_path`` (#1950). The backfill reads files relative to the working
+    directory the migration runs in, so these runs use a working directory of
+    their own, holding (or not) a ``data/knowledge`` tree."""
+
+    ENTERPRISE = "00000000-0000-0000-0000-000000000002"
+    PUBLISHED = "---\nid: rb-verified\nstatus: verified\n---\n\n# Published\n"
+    ON_DISK = "---\nid: rb-file\nstatus: draft\n---\n\n# From the file\n"
+
+    #: (draft id, job id, runbook id, status, knowledge_item_id, file_path)
+    DRAFTS = (
+        # Verified: its text is the published runbook's; no file needed.
+        ("d_verified", "job_doc", "rb-verified", "verified", "ki_1", "gone.md"),
+        # Live, its file is in place: its text is the file's.
+        (
+            "d_file",
+            "job_doc",
+            "rb-file",
+            "draft",
+            None,
+            "data/knowledge/global/rb-file.md",
+        ),
+        # Live, file gone, the only draft of a live case job: discarded, and
+        # the case's live key released.
+        (
+            "d_gone",
+            "job_case_1",
+            "rb-gone",
+            "draft",
+            None,
+            "data/knowledge/user_u1/rb-gone.md",
+        ),
+        # Live, file gone, but its job keeps a live draft with text: the key
+        # stays.
+        (
+            "d_gone_2",
+            "job_case_2",
+            "rb-gone-2",
+            "draft",
+            None,
+            "data/knowledge/user_u1/rb-gone-2.md",
+        ),
+        (
+            "d_kept",
+            "job_case_2",
+            "rb-kept",
+            "draft",
+            None,
+            "data/knowledge/user_u1/rb-kept.md",
+        ),
+        # Live, its path climbs out of the tree to a file that exists: never
+        # read, so discarded.
+        ("d_escape", "job_doc", "rb-escape", "draft", None, "outside.md"),
+        # Already discarded: text ''.
+        ("d_old", "job_doc", "rb-old", "discarded", None, "data/knowledge/old.md"),
+    )
+    JOBS = (("job_doc", None), ("job_case_1", "case-1"), ("job_case_2", "case-2"))
+
+    def _seed(self, *, drafts=DRAFTS) -> None:
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                "content, item_type) VALUES ('ki_1', ?, 'Published', ?, 'runbook')",
+                (self.ENTERPRISE, self.PUBLISHED),
+            )
+            for job_id, case_id in self.JOBS:
+                conn.execute(
+                    "INSERT INTO uploaded_files (file_id, enterprise_id, filename, "
+                    "size_bytes) VALUES (?, ?, 'src', 1)",
+                    (f"file_{job_id}", self.ENTERPRISE),
+                )
+                conn.execute(
+                    "INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                    "scope, source_type, case_id, live_case_id) VALUES "
+                    "(?, ?, ?, 'personal', ?, ?, ?)",
+                    (
+                        job_id,
+                        self.ENTERPRISE,
+                        f"file_{job_id}",
+                        "case" if case_id else "document",
+                        case_id,
+                        case_id,
+                    ),
+                )
+            for draft_id, job_id, runbook_id, status, item, path in drafts:
+                conn.execute(
+                    "INSERT INTO conversion_drafts (id, enterprise_id, conversion_id, "
+                    "runbook_id, title, file_path, status, knowledge_item_id) "
+                    "VALUES (?, ?, ?, ?, 't', ?, ?, ?)",
+                    (draft_id, self.ENTERPRISE, job_id, runbook_id, path, status, item),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _workdir(tmp_path, *, with_tree: bool) -> Path:
+        """A working directory like the application root: optionally holding
+        ``data/knowledge`` with the two files the seed's paths name, plus a
+        file OUTSIDE the tree that an escaping path names."""
+        work = tmp_path / "app"
+        work.mkdir()
+        (work / "outside.md").write_text("SECRET, NOT A RUNBOOK", encoding="utf-8")
+        if with_tree:
+            kb = work / "data" / "knowledge"
+            (kb / "global").mkdir(parents=True)
+            (kb / "user_u1").mkdir()
+            (kb / "global" / "rb-file.md").write_text(
+                TestRunbookDraftsInTheDatabaseRevision.ON_DISK, encoding="utf-8"
+            )
+            (kb / "user_u1" / "rb-kept.md").write_text(
+                "---\nid: rb-kept\n---\n\n# Kept\n", encoding="utf-8"
+            )
+        return work
+
+    @staticmethod
+    def _run_in(workdir: Path, command: str, database_url: str):
+        """``run_alembic`` from another working directory: a copy of
+        ``alembic.ini`` whose script location is absolute."""
+        ini = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
+        ini = ini.replace(
+            "script_location = alembic",
+            f"script_location = {PROJECT_ROOT / 'alembic'}",
+        )
+        config = workdir / "alembic.ini"
+        config.write_text(ini, encoding="utf-8")
+        env = os.environ.copy()
+        set_env_var(env, "DATABASE_URL", database_url)
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(PROJECT_ROOT), env.get("PYTHONPATH")) if part
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(config), *shlex.split(command)],
+            cwd=workdir,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    @staticmethod
+    def _drafts() -> dict:
+        return {
+            row[0]: row[1:]
+            for row in query_rows(
+                TEST_DB, "SELECT id, status, content FROM conversion_drafts"
+            )
+        }
+
+    @staticmethod
+    def _live_keys() -> dict:
+        return dict(query_rows(TEST_DB, "SELECT id, live_case_id FROM conversion_jobs"))
+
+    @staticmethod
+    def _columns() -> dict:
+        return {
+            row[1]: row[3]
+            for row in query_rows(TEST_DB, "PRAGMA table_info(conversion_drafts)")
+        }
+
+    def test_upgrade_fills_discards_and_releases(
+        self, clean_database, database_url, tmp_path
+    ):
+        assert (
+            run_alembic(
+                f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        self._seed()
+        work = self._workdir(tmp_path, with_tree=True)
+
+        result = self._run_in(
+            work, f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+        )
+
+        assert result.returncode == 0, result.stderr
+        drafts = self._drafts()
+        assert drafts["d_verified"] == ("verified", self.PUBLISHED)
+        assert drafts["d_file"] == ("draft", self.ON_DISK)
+        assert drafts["d_kept"] == ("draft", "---\nid: rb-kept\n---\n\n# Kept\n")
+        for gone in ("d_gone", "d_gone_2", "d_escape", "d_old"):
+            assert drafts[gone] == ("discarded", ""), gone
+        assert self._live_keys() == {
+            "job_doc": None,
+            "job_case_1": None,
+            "job_case_2": "case-2",
+        }
+        assert "017: filled 2 draft(s) from their files" in result.stderr
+        assert (
+            "017: discarding 3 live draft(s) whose text is gone: "
+            "d_escape, d_gone, d_gone_2" in result.stderr
+        )
+        columns = self._columns()
+        assert "file_path" not in columns
+        assert columns["content"] == 1, "content is NOT NULL"
+        # The rebuild kept the partial unique index.
+        assert any(
+            "status <> 'discarded'" in (sql or "")
+            for (sql,) in query_rows(
+                TEST_DB,
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'uq_conversion_drafts_enterprise_runbook_id'",
+            )
+        )
+
+    def test_without_the_tree_the_upgrade_refuses_and_changes_nothing(
+        self, clean_database, database_url, tmp_path
+    ):
+        assert (
+            run_alembic(
+                f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        self._seed()
+        work = self._workdir(tmp_path, with_tree=False)
+
+        result = self._run_in(
+            work, f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+        )
+
+        assert result.returncode != 0
+        assert "017 refused: 5 live runbook draft(s)" in result.stderr
+        assert str(work) in result.stderr
+        assert get_current_revision(database_url) == NO_EMAIL_DERIVED_NAMES_REVISION
+        assert "content" not in self._columns()
+        assert (
+            dict(query_rows(TEST_DB, "SELECT id, status FROM conversion_drafts"))[
+                "d_gone"
+            ]
+            == "draft"
+        )
+
+    def test_without_the_tree_published_drafts_alone_still_migrate(
+        self, clean_database, database_url, tmp_path
+    ):
+        """The guard fires only when a draft would be LOST: a database whose
+        live drafts are all published migrates from anywhere."""
+        assert (
+            run_alembic(
+                f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        self._seed(drafts=self.DRAFTS[:1] + self.DRAFTS[-1:])
+        work = self._workdir(tmp_path, with_tree=False)
+
+        result = self._run_in(
+            work, f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert self._drafts() == {
+            "d_verified": ("verified", self.PUBLISHED),
+            "d_old": ("discarded", ""),
+        }
+
+    def test_downgrade_restores_a_nullable_file_path_and_drops_the_text(
+        self, clean_database, database_url, tmp_path
+    ):
+        assert (
+            run_alembic(
+                f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        self._seed()
+        work = self._workdir(tmp_path, with_tree=True)
+        assert (
+            self._run_in(
+                work, f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        statuses = {k: v[0] for k, v in self._drafts().items()}
+
+        result = run_alembic(
+            f"downgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+        )
+
+        assert result.returncode == 0, result.stderr
+        columns = self._columns()
+        assert "content" not in columns
+        assert columns["file_path"] == 0, "file_path comes back nullable"
+        assert (
+            dict(query_rows(TEST_DB, "SELECT id, status FROM conversion_drafts"))
+            == statuses
+        )
+        assert query_rows(
+            TEST_DB,
+            "SELECT COUNT(*) FROM conversion_drafts WHERE file_path IS NOT NULL",
+        ) == [(0,)]
+
+        # And up again: every live draft now has no file to read, the
+        # published one keeps its text.
+        result = self._run_in(
+            work, f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._drafts()["d_verified"] == ("verified", self.PUBLISHED)
+
+    @pytest.mark.parametrize(
+        "url", ["postgresql://offline@localhost/offline", "sqlite:///offline.db"]
+    )
+    def test_offline_says_the_file_step_cannot_run_and_emits_the_rest(self, url):
+        result = run_alembic(
+            f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}:"
+            f"{DRAFTS_IN_THE_DATABASE_REVISION} --sql",
+            url,
+        )
+        assert result.returncode == 0, result.stderr
+        sql = result.stdout
+        verified = sql.index("UPDATE conversion_drafts SET content = (SELECT")
+        note = sql.index("-- 017 step 2")
+        release = sql.index("UPDATE conversion_jobs SET live_case_id = NULL")
+        discard = sql.index("UPDATE conversion_drafts SET status = 'discarded'")
+        empty = sql.index("UPDATE conversion_drafts SET content = '' WHERE")
+        assert verified < note < release < discard < empty, sql
+        if url.startswith("postgresql"):
+            assert sql.index("SET LOCAL row_security = off") < verified
+            assert empty < sql.index("SET LOCAL row_security TO DEFAULT")
+            assert "ALTER TABLE conversion_drafts DROP COLUMN file_path" in sql
+            assert "ALTER COLUMN content SET NOT NULL" in sql
+        else:
+            assert "row_security" not in sql
+            assert "CREATE TABLE _alembic_tmp_conversion_drafts" in sql
 
 
 class TestRbacSeed:

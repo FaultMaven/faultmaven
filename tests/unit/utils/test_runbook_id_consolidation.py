@@ -5,8 +5,8 @@
 ``ConversionService.create_runbook_from_template`` — mint a value that is
 written to ``conversion_drafts.runbook_id`` and into runbook frontmatter, so a
 behaviour change there does not just alter future ids, it orphans rows that
-already exist: the disk scan reconciles a file against a row by that id, and a
-re-minted id makes an existing draft look like a new one.
+already exist: re-converting a source must arrive at the id its live draft
+holds, and a re-minted id makes an existing draft look like a new one.
 
 Consolidation was therefore conditional on proving it changed nothing, and this
 file proved it: both originals frozen verbatim, compared against
@@ -32,9 +32,8 @@ tests require each class to be non-empty and require class 2 to cover EXACTLY
 the three ``None``-bearing corpus inputs — an exemption that can quietly widen
 is not an exemption, it is a hole.
 
-The third place — ``runbook_filename`` / ``safe_path_component`` — is NOT
-consolidated onto the same policy, and the last class here pins why by
-executing the divergence.
+(The third place, the on-disk filename helpers, is gone: no draft is written to
+a file since #1950.)
 """
 
 from __future__ import annotations
@@ -50,11 +49,8 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_runbook_id,
 )
 from faultmaven.utils.runbook_id import (
-    _MAX_SLUG_CHARS,
     is_hash_only_runbook_id,
-    runbook_filename,
     runbook_id_from_parts,
-    safe_path_component,
 )
 
 pytestmark = pytest.mark.unit
@@ -319,78 +315,3 @@ class TestTheSharedMintOnlyChangedWhereItHadTo:
         assert any(
             new != old for _, _, new, old in pairs
         ), "no input diverged at all — the mint fix is not in this tree"
-
-
-class TestTheFilenamePolicyIsDeliberatelyDifferent:
-    """Why the third site was NOT folded in.
-
-    ``safe_path_component`` and ``runbook_id_from_parts`` share the character
-    rule (``_slug``) and nothing else. Merging the two *policies* is what would
-    change persisted ids, so the divergence is pinned here rather than left as
-    a comment that a future edit can quietly contradict.
-    """
-
-    def test_over_length_diverges(self):
-        long_title = "x" * 200
-        assert len(runbook_id_from_parts("svc", long_title)) == 60
-        # The id keeps a disambiguator so two long titles sharing a prefix stay
-        # distinct; the path component simply truncates, because collisions
-        # there are resolved by the id suffix ``runbook_filename`` appends.
-        a = runbook_id_from_parts("svc", "same prefix " * 6 + "aaa")
-        b = runbook_id_from_parts("svc", "same prefix " * 6 + "bbb")
-        assert a != b
-        assert safe_path_component("same-prefix-" * 20)[:60] == safe_path_component(
-            "same-prefix-" * 30
-        )
-
-    def test_empty_result_diverges(self):
-        # Neither is empty any more (#1230), but the substitutes differ in the
-        # property that matters. An ID must be DISTINCT per input, because two
-        # drafts sharing one are indistinguishable to verify/approve — so its
-        # substitute is derived from the input.
-        a = runbook_id_from_parts("...", "???")
-        b = runbook_id_from_parts("!!!", "___")
-        assert a and b and a != b, (a, b)
-        # A PATH component only has to be A safe segment; a collision there is
-        # resolved by the id suffix ``runbook_filename`` appends, so a fixed
-        # SHARED literal is correct and more readable.
-        assert safe_path_component("...") == safe_path_component("???") == "unknown"
-        assert runbook_filename("...", "...").endswith(".md")
-        assert runbook_filename("...", "...") != ".md"
-
-
-class TestSafePathComponentFiltersBothOfItsInputs:
-    """Both regressions the #1394 review measured, pinned at the implementation.
-
-    The broad hostile corpus lives in ``tests/unit/ci/test_codeql_config.py``,
-    because that is where the CodeQL ``path-injection`` barrier row asserting
-    this function's guarantee is paid for. These two are here, next to the
-    policy they belong to, so a change to ``safe_path_component`` fails in the
-    file its author is editing rather than only in a CI-config test.
-    """
-
-    def test_the_fallback_is_filtered_like_the_value(self):
-        # `fallback` is a parameter, so it is as much an input as `value`.
-        # Unfiltered, it was returned verbatim — and the barrier row silenced
-        # the flow that carried it to the filesystem.
-        assert safe_path_component("???", fallback="../../../../escaped") == "escaped"
-        assert safe_path_component(None, fallback="/etc/passwd") == "etc-passwd"
-        # ...and a fallback that itself filters to nothing still yields a
-        # segment, rather than making "non-empty" the caller's problem.
-        assert safe_path_component("???", fallback="???") == "unknown"
-
-    def test_truncation_cannot_leave_a_trailing_hyphen(self):
-        # `_slug` strips the hyphens it produces; slicing to the bound can put
-        # one back. `runbook_filename` has always stripped after slicing.
-        for value in ("a" * 59 + " " + "b" * 10, "-".join(["ab"] * 30), "word " * 40):
-            component = safe_path_component(value)
-            assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", component), (
-                value,
-                component,
-            )
-
-    def test_the_bound_survives_both_paths(self):
-        # Stripping after the slice must not become an excuse to drop it, and
-        # the fallback is bounded too — it was not.
-        assert len(safe_path_component("x" * 500)) == _MAX_SLUG_CHARS
-        assert len(safe_path_component("???", fallback="y" * 500)) == _MAX_SLUG_CHARS

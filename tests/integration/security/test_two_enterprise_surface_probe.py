@@ -1479,8 +1479,8 @@ _CONVERSION_JOB_INSERT = text("""
 _CONVERSION_DRAFT_INSERT = text("""
     INSERT INTO conversion_drafts
         (id, enterprise_id, organization_id, conversion_id, runbook_id, title,
-         file_path, status)
-    VALUES (:id, :enterprise, :org, :conversion_id, :runbook_id, :title, :path,
+         content, status)
+    VALUES (:id, :enterprise, :org, :conversion_id, :runbook_id, :title, :content,
             'draft')
     """)
 
@@ -1585,7 +1585,7 @@ async def _seed_conversion(session_factory, party) -> None:
                     "conversion_id": conversion_id,
                     "runbook_id": f"rb-{uuid.uuid4().hex[:8]}",
                     "title": f"{party.secret}-conversion-draft",
-                    "path": f"/tmp/{draft_id}.md",
+                    "content": f"---\nid: {draft_id}\n---\n",
                 },
             )
             await session.commit()

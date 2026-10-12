@@ -3151,7 +3151,11 @@ class ConversionDraftModel(Base):
 
     runbook_id = Column(String(100), nullable=False)
     title = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False)
+    #: The draft's full markdown, frontmatter included: its one home (#1950).
+    #: Every replica reads the same text, and nothing about a draft lives on a
+    #: pod's disk. ``''`` only on a row migration 017 discarded because its
+    #: text was already gone.
+    content = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, server_default="draft")
     source_type = Column(String(20), nullable=False, server_default="document")
     document_type = Column(String(50), nullable=True, server_default="runbook")

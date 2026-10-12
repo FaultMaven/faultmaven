@@ -1,5 +1,11 @@
-"""The data/knowledge/ disk scan that discovers untracked runbooks and
-reconciles draft rows against what is actually on disk."""
+"""The standalone import of the runbook files under data/knowledge/: each one
+not already a live draft or a published runbook becomes a draft row holding
+its text.
+
+An import, never a reconciliation (#1950). A draft's text is its row's
+``content`` column, so what is or is not on this process's disk decides
+nothing about any draft; the service refuses the scan outright under
+``TENANT_PROVIDER=multi``, where replicas share no disk."""
 
 import logging
 from datetime import datetime, timezone
@@ -20,6 +26,7 @@ from faultmaven.modules.knowledge.domain.global_authoring import (
     is_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
+    DRAFT_CONTENT_MAX_CHARS,
     AnalysisResult,
     ConversionDraft,
     ConversionStatus,
@@ -28,9 +35,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
     generate_conversion_id,
     generate_draft_id,
-)
-from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
-    ScanAbortedError,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
@@ -72,8 +76,10 @@ async def _scan_for_runbooks_impl(
 
     from faultmaven.utils.runbook_id import item_id_from_runbook_id
 
-    # Reconcile DB state before scanning disk
-    tracked_paths: set[str] = set()
+    # The runbook ids live drafts already hold. A walked file whose id is here
+    # is SKIPPED: it is already a draft, and its row — not the file — is that
+    # draft's text from then on.
+    live_runbook_ids: set[str] = set()
     # item_ids already published into knowledge_items — e.g. by the
     # startup KB bootstrap, which ingests shipped runbooks DIRECTLY
     # (bypassing conversion_drafts entirely, per kb_init's design). Such
@@ -89,73 +95,12 @@ async def _scan_for_runbooks_impl(
             all_drafts_result = await session.execute(select(ConversionDraftModel))
             all_draft_models = all_drafts_result.scalars().all()
 
-            non_discarded_count = sum(
-                1 for d in all_draft_models if d.status != DraftStatus.DISCARDED.value
-            )
-            pending_discard_ids: list[str] = []
-            # Discards for drafts whose runbook is ALREADY published in
-            # knowledge_items. Kept separate from pending_discard_ids so
-            # they do NOT feed the "would discard ALL active drafts ⇒
-            # storage failure" abort guard below — clearing redundant
-            # phantom drafts is legitimate cleanup even if it empties the
-            # Drafts tab, not a wiped-data-dir signal.
-            redundant_discard_ids: list[str] = []
+            # Database-only clean-up: drafts the database itself shows are
+            # redundant. Nothing here looks at the disk.
+            discarded_ids: list[str] = []
 
             for draft_model in all_draft_models:
-                # Cheap status check FIRST: an already-discarded row is not
-                # reconciled at all, so probing its path was two wasted
-                # resolve() walks per scan and made a discarded escaping row
-                # log a refusal on every scan, forever.
                 if draft_model.status == DraftStatus.DISCARDED.value:
-                    continue
-
-                # A row whose path is not inside the tree is SKIPPED — not
-                # discarded, not counted, not touched (#1213 follow-up).
-                #
-                # It was treated as "absent" in the first version of this
-                # change, and that was wrong in two measurable ways. A
-                # deployment whose only active drafts have escaping paths
-                # discards all of them, trips the "would discard ALL active
-                # drafts" abort guard, and gets a deterministic "Restore
-                # from backup" RuntimeError on EVERY scan — so the repair
-                # this was supposed to perform never runs. And a knowledge
-                # tree assembled with symlinks (``team_x -> /mnt/share``)
-                # worked before containment existed; treating it as absent
-                # soft-discards every draft under it on the first scan after
-                # the upgrade.
-                #
-                # Refusing to TOUCH such a path is the security posture and
-                # it stands. Refusing to touch it while deleting the row
-                # that points at it is just data loss. Skip and warn: an
-                # operator loses access to those drafts, not the drafts.
-                try:
-                    file_exists = resolve_runbook_path(
-                        draft_model.file_path,
-                        source=(
-                            "conversion_drafts.file_path "
-                            f"(draft_id={draft_model.id})"
-                        ),
-                        root=data_dir,
-                    ).exists()
-                except RunbookPathEscape as exc:
-                    # NOT counted in ``skipped``: that number is returned to
-                    # the client and means "files skipped during the disk
-                    # walk". An escaping DB row is a bad ROW, not a walked
-                    # file, so folding it in (as round 2 did) made "N files
-                    # skipped" stop meaning walk skips. The bad row is
-                    # surfaced by this WARNING, which names it for the
-                    # operator repair it needs (#1213 follow-up).
-                    logger.warning(
-                        "skipping draft %s during scan reconciliation "
-                        "(not discarded): %s",
-                        draft_model.id,
-                        exc,
-                    )
-                    continue
-
-                if not file_exists:
-                    draft_model.status = DraftStatus.DISCARDED.value
-                    pending_discard_ids.append(draft_model.id)
                     continue
 
                 # If this draft has already been activated (has a
@@ -168,7 +113,7 @@ async def _scan_for_runbooks_impl(
                     draft_model, "knowledge_item_id", None
                 ):
                     draft_model.status = DraftStatus.DISCARDED.value
-                    pending_discard_ids.append(draft_model.id)
+                    discarded_ids.append(draft_model.id)
                     logger.info(
                         f"Removed duplicate draft {draft_model.id} "
                         f"(already has knowledge_item_id)"
@@ -187,7 +132,7 @@ async def _scan_for_runbooks_impl(
                     in ingested_item_ids
                 ):
                     draft_model.status = DraftStatus.DISCARDED.value
-                    redundant_discard_ids.append(draft_model.id)
+                    discarded_ids.append(draft_model.id)
                     logger.info(
                         f"Discarded phantom draft {draft_model.id} "
                         f"(runbook '{draft_model.runbook_id}' already "
@@ -195,45 +140,22 @@ async def _scan_for_runbooks_impl(
                     )
                     continue
 
-                if draft_model.status == "verified":
-                    # Trust SQLite: if knowledge_item_id is set, the
-                    # document was activated.
-                    # If status=verified but knowledge_item_id is missing,
-                    # this is a legacy half-state row from the pre-atomic
-                    # verify_draft path. The current verify_draft only
-                    # commits VERIFIED after successful ingestion, so new
-                    # rows should never reach this branch. Warn loudly
-                    # rather than silently downgrading — a silent revert
-                    # is what corrupted live data in the incident this
-                    # path was rewritten to prevent.
-                    if not getattr(draft_model, "knowledge_item_id", None):
-                        logger.warning(
-                            f"Draft {draft_model.id} has status=verified "
-                            f"but no knowledge_item_id (legacy half-state). "
-                            f"Leaving as-is; investigate and clean up via "
-                            f"explicit admin action if needed."
-                        )
+                if draft_model.status == "verified" and not getattr(
+                    draft_model, "knowledge_item_id", None
+                ):
+                    # A legacy half-state row from the pre-atomic verify_draft
+                    # path: the current verify_draft commits VERIFIED only after
+                    # successful ingestion. Warn loudly rather than silently
+                    # downgrading — a silent revert is what corrupted live data
+                    # in the incident this path was rewritten to prevent.
+                    logger.warning(
+                        f"Draft {draft_model.id} has status=verified "
+                        f"but no knowledge_item_id (legacy half-state). "
+                        f"Leaving as-is; investigate and clean up via "
+                        f"explicit admin action if needed."
+                    )
 
-                tracked_paths.add(draft_model.file_path)
-
-            # Guard: abort if the scan would discard every active draft.
-            # This signals a storage-layer failure (data directory missing/
-            # wiped), not legitimate cleanup. Raising here skips the commit
-            # so DB state is fully preserved for manual recovery.
-            if (
-                non_discarded_count > 0
-                and len(pending_discard_ids) >= non_discarded_count
-            ):
-                preview = pending_discard_ids[:20]
-                suffix = "..." if len(pending_discard_ids) > 20 else ""
-                raise ScanAbortedError(
-                    f"Scan aborted: would discard all {non_discarded_count} active runbook "
-                    f"draft(s). Runbook files appear to be missing from the knowledge "
-                    f"data directory. DB state is unchanged. "
-                    f"Affected draft IDs: {preview}{suffix}. "
-                    "Restore the knowledge data directory from backup, then retry "
-                    "the scan."
-                )
+                live_runbook_ids.add(draft_model.runbook_id)
 
             # Release the live-conversion claim of any case job whose last
             # live draft this sweep discarded — same transaction, same rule
@@ -242,7 +164,6 @@ async def _scan_for_runbooks_impl(
             # would block that case's regeneration forever. Flush first so
             # the drained-count sees every status flipped above, even when
             # one job lost several drafts in this sweep.
-            discarded_ids = pending_discard_ids + redundant_discard_ids
             if discarded_ids:
                 await session.flush()
                 drafts_by_id = {d.id: d for d in all_draft_models}
@@ -294,15 +215,6 @@ async def _scan_for_runbooks_impl(
             skipped += 1
             continue
 
-        file_path_str = str(md_file)
-
-        # Skip if already tracked in drafts DB (in-memory set from
-        # reconciliation) or discovered earlier in this scan run.
-        # Concurrent scans are serialized by _scan_lock.
-        if file_path_str in tracked_paths:
-            skipped += 1
-            continue
-
         # Read and validate
         try:
             content = md_file.read_text(encoding="utf-8")
@@ -316,6 +228,13 @@ async def _scan_for_runbooks_impl(
 
         if len(content.strip()) < 100:
             errors.append(f"{md_file.name}: too short ({len(content)} chars)")
+            continue
+        # The edit bound, so no draft is born that cannot be edited (#1950).
+        if len(content) > DRAFT_CONTENT_MAX_CHARS:
+            errors.append(
+                f"{md_file.name}: too long ({len(content)} chars; a draft holds "
+                f"at most {DRAFT_CONTENT_MAX_CHARS})"
+            )
             continue
 
         # Extract metadata from frontmatter
@@ -335,6 +254,13 @@ async def _scan_for_runbooks_impl(
         # draft). Without this the scan manufactures a phantom draft for
         # every already-published runbook.
         if item_id_from_runbook_id(runbook_id) in ingested_item_ids:
+            skipped += 1
+            continue
+
+        # Already a live draft — imported by an earlier scan, or made any other
+        # way — or met earlier in this walk. Concurrent scans are serialized by
+        # ``_scan_lock``.
+        if runbook_id in live_runbook_ids:
             skipped += 1
             continue
 
@@ -382,7 +308,6 @@ async def _scan_for_runbooks_impl(
             status=DraftStatus.DRAFT,
             validation=validation,
             quality_score=quality,
-            file_path=file_path_str,
             content_preview=content[:500],
             content=content,
             quality_warning=quality_warning,
@@ -406,12 +331,12 @@ async def _scan_for_runbooks_impl(
 
         # Persist as a synthetic conversion job.
         #
-        # A ``ConflictError`` here means another live draft in this tenant
-        # already holds this file's ``runbook_id`` (migration 046) — two
-        # on-disk runbooks carrying the same frontmatter ``id``. The scan
-        # SKIPS what it cannot take, the way it does for a path it cannot
-        # contain: one unmintable file must not abort the walk over the
-        # rest, and the operator needs the filename to fix it.
+        # A ``ConflictError`` here means a live draft in this tenant took this
+        # file's ``runbook_id`` after the walk read ``live_runbook_ids`` — a
+        # draft another request committed meanwhile. The scan SKIPS what it
+        # cannot take, the way it does for a path it cannot contain: one
+        # unmintable file must not abort the walk over the rest, and the
+        # operator needs the filename to fix it.
         conversion_id = generate_conversion_id()
         try:
             await _persist_job(
@@ -475,7 +400,7 @@ async def _scan_for_runbooks_impl(
                     dm.document_type = "runbook"
                     await session.commit()
 
-        tracked_paths.add(file_path_str)
+        live_runbook_ids.add(runbook_id)
         discovered.append(
             {
                 "conversion_id": conversion_id,

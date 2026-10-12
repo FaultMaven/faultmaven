@@ -43,8 +43,8 @@ def configure(monkeypatch, tmp_path):
     repr, and the assertions would be measuring the mock.
 
     ``chdir`` because ``knowledge_root()`` is relative on purpose — the scan
-    matches persisted ``data/knowledge/...`` strings against a walk of that
-    same relative root — so an uncontrolled cwd would write into the checkout.
+    walks it from the application root — so an uncontrolled cwd would write
+    into the checkout.
     """
     from faultmaven.config import settings as settings_module
 
@@ -229,11 +229,9 @@ def test_a_directory_that_cannot_be_created_does_not_kill_startup(
     assert (tmp_path / "data" / "evidence").is_dir(), "the rest is still created"
 
 
-def test_the_knowledge_tree_is_the_one_the_scan_and_upload_paths_walk(
-    tmp_path, configure
-):
-    """``knowledge_root()`` is the single anchor every runbook path resolves
-    against, and it is relative by design. Creating a project-root-absolute
+def test_the_knowledge_tree_is_the_one_the_scan_walks(tmp_path, configure):
+    """``knowledge_root()`` is the directory the standalone scan imports from,
+    and it is relative by design. Creating a project-root-absolute
     copy of it is the same defect in a quieter place: under a ``PROJECT_ROOT``
     that is not the working directory, the bootstrap made one tree and the scan
     walked another."""

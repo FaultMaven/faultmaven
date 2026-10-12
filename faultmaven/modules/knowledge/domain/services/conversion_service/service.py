@@ -5,11 +5,11 @@ Pipeline:
 2. Analyze document for failure modes (LLM)
 3. Convert each failure mode to a runbook (LLM, parallel or sequential)
 4. Validate and score each draft
-5. Persist drafts to disk and database
+5. Persist drafts to the database — a draft's text is a column of its row
+   (``conversion_drafts.content``, #1950), never a file on a pod's disk
 """
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,7 +81,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
 from faultmaven.modules.knowledge.domain.services.conversion_service.pipeline import (
     _analyze_document,
     _knowledge_route_kwargs,
-    _scope_dir,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     CONVERSION_SYSTEM_PROMPT,
@@ -101,18 +100,24 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
+from faultmaven.providers.tenancy.factory import (
+    BUILTIN_MULTI,
+    requested_tenant_provider,
+)
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
-    RunbookPathEscape,
-    draft_filename,
     knowledge_root,
-    resolve_runbook_path,
     runbook_id_from_parts,
-    write_runbook_file,
 )
 
 logger = logging.getLogger(__name__)
+
+#: The scan's refusal under ``TENANT_PROVIDER=multi`` (#1950): the replicas
+#: share no disk, so there is no runbook directory to import from.
+SCAN_UNAVAILABLE_MULTI_MSG = (
+    "This deployment has no runbook directory; upload or convert instead"
+)
 
 
 @dataclass(frozen=True)
@@ -191,46 +196,9 @@ class ConversionService:
 
     @property
     def _data_dir(self) -> Path:
-        # Delegates so this service and ``KnowledgeService`` cannot drift apart
-        # on where the knowledge tree is; that agreement is what every
-        # containment check below is anchored on.
+        # The directory the standalone scan imports from, and nothing else: no
+        # draft is read from or written to disk (#1950).
         return knowledge_root()
-
-    #: ``conflict_reason`` for a draft row whose ``file_path`` is not inside the
-    #: knowledge tree. Structured so ``verify_batch`` and any client can key on
-    #: the field rather than parse a message (the same rule #784 established for
-    #: ``already_verified``).
-    PATH_ESCAPE_CONFLICT_REASON = "path_outside_knowledge_tree"
-
-    def _refuse_escaping_draft(
-        self, draft_id: str, exc: RunbookPathEscape
-    ) -> ConflictError:
-        """Translate a containment refusal into the module's typed exception.
-
-        Two jobs, and the split between them is the point:
-
-        * the **log** gets ``exc`` in full — the resolved absolute paths are
-          what an operator needs to repair the row; and
-        * the **client** gets a message naming the draft id and the refusal
-          class and nothing else. ``str()`` of this exception reaches a response
-          body two ways — the 409 handler's ``detail``, and ``verify_batch``'s
-          per-item ``error`` — and echoing a server filesystem path into either
-          is the disclosure #866 closed for this module.
-
-        ``ConflictError`` rather than a bare ``ValueError``: the row is in a
-        state the operation cannot proceed from, which is what 409 means, and
-        ``verify_draft`` already documents that every failure shape here is a
-        typed exception (a raw ``ValueError`` would surface as an unmapped 500).
-        """
-        logger.error("refusing a filesystem operation on draft %s: %s", draft_id, exc)
-        return ConflictError(
-            f"Draft {draft_id} references a runbook file outside the knowledge "
-            "tree and cannot be read or modified. The stored path must be "
-            "repaired by an operator; see the server log for details.",
-            resource_type="draft",
-            resource_id=draft_id,
-            conflict_reason=self.PATH_ESCAPE_CONFLICT_REASON,
-        )
 
     async def _ensure_team_publish_allowed(
         self, scope: str, team_id: Optional[str], user_id: str
@@ -735,11 +703,10 @@ class ConversionService:
         #
         # This does NOT replace ``refuse_if_draft_slot_taken`` inside
         # ``_convert_single_failure_mode``. That one is the authoritative
-        # pre-write guard and still keys on the resolved file path as well as
-        # the id; it also closes the window between this query and the write,
-        # which is exactly the cross-replica race migration 046 backstops. This
-        # is a cost pre-filter in front of it, and the two agree because both
-        # ask ``_find_live_draft_owning``.
+        # pre-persist guard; it narrows the window between this query and the
+        # commit, which is exactly the cross-replica race the unique index
+        # backstops. This is a cost pre-filter in front of it, and the two agree
+        # because both ask ``_find_live_draft_owning``.
         unique_modes, taken_errors = await _refuse_modes_whose_id_is_taken(
             self._db_session_factory, unique_modes, enterprise_id
         )
@@ -748,9 +715,8 @@ class ConversionService:
         # Every survivor's request is built and REDACTED before any is sent
         # (#1901). A redaction that is required and cannot run is a refusal to
         # send: raised here, before the first generation, it fails the whole
-        # conversion with nothing sent to the model and nothing written to disk
-        # — not after the earlier modes went out in their redacted form and
-        # left draft files behind with no job row to own them. Sequential, as
+        # conversion with nothing sent to the model and nothing persisted — not
+        # after the earlier modes went out in their redacted form. Sequential, as
         # the work is the sanitizer's, not the provider's. Failures AFTER this
         # point (the router, the write) keep their per-mode ``ConversionError``
         # and the PARTIAL status.
@@ -789,18 +755,6 @@ class ConversionService:
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
-                if isinstance(result, RunbookPathEscape):
-                    # Re-raised, never laundered into a ``ConversionError``.
-                    # ``return_exceptions=True`` turns the deliberate
-                    # ``except RunbookPathEscape: raise`` in
-                    # ``_convert_single_failure_mode`` into a returned value,
-                    # and appending ``str(result)`` here would put the resolved
-                    # SERVER PATHS the message carries into ``response.warnings``
-                    # — a 200/201 body (#866), which is precisely what that
-                    # bare re-raise exists to prevent. The sequential branch
-                    # below propagates it, so without this the same event
-                    # behaved differently purely on failure-mode count.
-                    raise result
                 if isinstance(result, Exception):
                     errors.append(
                         ConversionError(
@@ -960,7 +914,10 @@ class ConversionService:
                 label=f"runbook conversion ({failure_mode.id})",
             )
 
-            runbook_content = response.content.strip()
+            # LF, decided here: this text is what the row stores and what the
+            # gate below judges, so the two cannot disagree on line endings
+            # (#1403).
+            runbook_content = normalize_line_endings(response.content.strip())
 
             # A runbook cut mid-procedure is complete-or-nothing.
             #
@@ -985,7 +942,7 @@ class ConversionService:
                     retryable=True,
                 )
 
-            # Validate LLM output before writing to disk
+            # Validate LLM output before it becomes a draft
             if not runbook_content or len(runbook_content) < 100:
                 return ConversionError(
                     failure_mode_id=failure_mode.id,
@@ -1012,59 +969,33 @@ class ConversionService:
                     retryable=True,
                 )
 
-            scope_dir = _scope_dir(self._data_dir, scope, team_id, user_id)
-
             if case_id is not None:
                 # The case path's id, minted now from the frontmatter the model
                 # wrote (``case_authoring.mint_case_runbook_id``, #1880) — and
-                # claimed here, BEFORE the write, for the reason on
-                # ``refuse_if_draft_slot_taken`` below: a slot another case
-                # holds gets this case's stem appended. Everything below keys
-                # on the id this returns: the frontmatter, the file, the row.
+                # claimed here: a slot another case holds gets this case's stem
+                # appended. Everything below keys on the id this returns: the
+                # frontmatter and the row.
                 runbook_id = await claim_case_draft_slot(
                     self._db_session_factory,
                     enterprise_id,
                     mint_case_runbook_id(runbook_content, case_id),
                     case_id,
-                    lambda rid: scope_dir / draft_filename(rid),
+                )
+            else:
+                # The document path's id was fixed before the model call; a
+                # live draft holding it refuses this mode now, before the row
+                # is built. See ``refuse_if_draft_slot_taken``.
+                await refuse_if_draft_slot_taken(
+                    self._db_session_factory, enterprise_id, runbook_id
                 )
 
             # Belt-and-suspenders: prompt instructions don't fully constrain
             # the LLM, so rewrite the frontmatter `id` to the kebab-case
-            # value we computed. The filename + DB row + frontmatter all
-            # share this single source of truth.
+            # value we computed. The row and the frontmatter share this single
+            # source of truth.
             runbook_content = _force_frontmatter_id(runbook_content, runbook_id)
 
-            # On the document path `runbook_id` was computed before the LLM
-            # call so it could be passed in the prompt; re-using it here keeps
-            # the on-disk filename, the prompt-injected `id`, and the row's
-            # runbook_id in sync.
             draft_id = generate_draft_id()
-
-            # Write draft to disk. Through the shared helper: it validates
-            # containment against the ROOT of the knowledge tree and does so
-            # BEFORE creating the scope directory. ``runbook_id`` is minted
-            # from an allowlist so an escape is unconstructible today — the
-            # guard is what keeps that true if the mint rule is loosened or a
-            # new caller assembles its own name (#1213 follow-up).
-            draft_path = scope_dir / draft_filename(runbook_id)
-
-            if case_id is None:
-                # BEFORE the write. The path is derived from ``runbook_id``, so
-                # a duplicate lands on the EXISTING draft's file and would
-                # replace its content on the way to an INSERT migration 046
-                # rejects. See ``refuse_if_draft_slot_taken``. The case path
-                # made the same check above, in ``claim_case_draft_slot``.
-                await refuse_if_draft_slot_taken(
-                    self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
-                )
-
-            write_runbook_file(
-                draft_path,
-                runbook_content,
-                source=f"converted draft (runbook_id={runbook_id})",
-                root=self._data_dir,
-            )
 
             # Off the event loop, and validating ONCE (#1417). This runs
             # inside the conversion request, so the several seconds this costs
@@ -1095,19 +1026,11 @@ class ConversionService:
                 status=DraftStatus.DRAFT,
                 validation=validation,
                 quality_score=quality,
-                file_path=str(draft_path),
                 content_preview=runbook_content[:500],
                 content=runbook_content,
                 quality_warning=quality_warning,
             )
 
-        except RunbookPathEscape:
-            # Never laundered into a generic ConversionError: that would put the
-            # resolved server paths into ``error`` (a 200 response body, see
-            # #866) and would report a containment refusal as a retryable
-            # conversion failure. Today the mint makes this unreachable — which
-            # is exactly why it must not be swallowed if that ever changes.
-            raise
         except ConflictError as exc:
             # Deliberately the OPPOSITE call to the one above, and spelled out
             # rather than left to fall through: a taken runbook id is a fact
@@ -1126,10 +1049,10 @@ class ConversionService:
         except Exception as e:
             # The exception's CLASS, never its text (#836). Every hand-written
             # failure in this method returns its ``ConversionError`` above, so
-            # what lands here is foreign: a provider error, or an ``OSError``
-            # from the write whose text names the server path. ``error`` is
-            # returned in ``/convert``'s warnings and persisted with the job,
-            # so the detail goes to the log line instead.
+            # what lands here is foreign: a provider error, whose text is the
+            # provider's. ``error`` is returned in ``/convert``'s warnings and
+            # persisted with the job, so the detail goes to the log line
+            # instead.
             logger.error(f"Conversion failed for {failure_mode.id}: {e}")
             return ConversionError(
                 failure_mode_id=failure_mode.id,
@@ -1194,29 +1117,8 @@ class ConversionService:
 
             drafts = []
             for dm in draft_models:
-                # Read content from disk. Guarded like the write paths — an
-                # escaped row here would put an arbitrary file's contents into
-                # the API response. This is the one caller that degrades rather
-                # than refuses: one bad row must not deny the whole listing, so
-                # the escape is logged and that draft's content is omitted
-                # (which is already what an unreadable file does here).
-                content = None
-                try:
-                    resolved = resolve_runbook_path(
-                        dm.file_path,
-                        source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                        root=self._data_dir,
-                    )
-                    content = resolved.read_text(encoding="utf-8")
-                except RunbookPathEscape as exc:
-                    logger.error(
-                        "refusing to read draft %s; omitting its content: %s",
-                        dm.id,
-                        exc,
-                    )
-                except Exception:
-                    pass
-
+                # The text is the row's own column (#1950): the same on every
+                # replica, whatever disk this pod has.
                 drafts.append(
                     ConversionDraft(
                         draft_id=dm.id,
@@ -1232,9 +1134,8 @@ class ConversionService:
                             warnings=dm.validation_warnings or [],
                         ),
                         quality_score=QualityScore(**(dm.quality_details or {})),
-                        file_path=dm.file_path,
-                        content_preview=(content or "")[:500],
-                        content=content,
+                        content_preview=dm.content[:500],
+                        content=dm.content,
                     )
                 )
 
@@ -1518,40 +1419,12 @@ class ConversionService:
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
 
-            # Line endings, before the write AND before the re-validate below
+            # Line endings, before the gate below and before the text is stored
             # (#1403). ``content`` is a JSON body field from
-            # ``PUT /knowledge/conversions/{id}/drafts/{draft_id}``, so nothing
-            # upstream has decoded it through ``Path.read_text``; a CRLF edit
-            # from any non-browser client used to be written to disk and then
-            # scored 15 points lower for its line endings alone. Before the
-            # write specifically, because this method persists first and
-            # validates second — normalising after the write would leave the
-            # file and the verdict disagreeing.
+            # ``PUT /knowledge/conversions/{id}/drafts/{draft_id}``; a CRLF edit
+            # from any non-browser client would otherwise be stored as sent and
+            # scored 15 points lower for its line endings alone.
             content = normalize_line_endings(content)
-
-            # Write updated content to disk.
-            #
-            # ``dm.file_path`` comes straight back out of the database. Every
-            # mint point that produces it is sanitised now, but a row persisted
-            # BEFORE #1215 was written by a mint that could escape, and this
-            # edit path would re-open and rewrite it without ever re-checking.
-            # Re-validate on use: containment is a property of the path at the
-            # moment it is used, not of the code that happened to create it.
-            # Refuses as a typed 409 naming the row; the resolved paths go to
-            # the log, never to the client (#1213 follow-up, see #866).
-            # Containment is CHECKED here and the file WRITTEN in session two,
-            # below. Checking early keeps an escaping row from costing a full
-            # gate run before it is refused; writing late is what keeps the file
-            # and the row in step (see the ordering note before the gate).
-            try:
-                resolve_runbook_path(
-                    dm.file_path,
-                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                    root=self._data_dir,
-                )
-            except RunbookPathEscape as exc:
-                raise self._refuse_escaping_draft(dm.id, exc) from exc
-            draft_file_path = dm.file_path
 
             # The gate runs OUTSIDE the transaction. Deliberately, and the
             # reason it is worth the restructure below (#1417 review).
@@ -1574,17 +1447,12 @@ class ConversionService:
 
         # --- outside the session: no connection is held while the gate runs ---
         #
-        # And BEFORE the write, which is the other half of the ordering. This
-        # ``await`` is a cancellation point that did not exist on main: there the
-        # write, the gate and the commit sat in one synchronous stretch, so the
-        # loop could not interleave and the window was zero. Put the write ahead
-        # of the gate and a client disconnect, a timeout or a shutdown during
-        # those 0.7-8.3 s leaves the file rewritten while the row keeps the
-        # PREVIOUS verdict — permanently, and a reviewer then reads a green
-        # verdict about text the gate never saw. Gating first makes a
-        # cancellation here change nothing at all, and puts the write back
-        # beside the commit with no await between them, which is the property
-        # main had.
+        # And BEFORE the text is stored, which is the other half of the
+        # ordering. This ``await`` is a cancellation point: a client disconnect,
+        # a timeout or a shutdown during those 0.7-8.3 s changes nothing at all,
+        # because the new text and its verdict are committed together below, in
+        # one transaction, or not at all. A reviewer can never read a verdict
+        # about text the gate never saw.
         validation, quality = await avalidate_and_score(content)
 
         async with self._db_session_factory() as session:
@@ -1600,22 +1468,12 @@ class ConversionService:
             )
             dm = draft_result.scalar_one_or_none()
             if not dm or dm.status == DraftStatus.DISCARDED.value:
-                # Discarded while we were scoring. The file on disk has already
-                # been rewritten — that was true before this split too, since
-                # the write preceded the gate and a failed commit never unwrote
-                # it — but no verdict is recorded for a draft nobody wants.
+                # Discarded while we were scoring: nothing is written — neither
+                # the text nor a verdict for a draft nobody wants.
                 return None
 
-            try:
-                write_runbook_file(
-                    draft_file_path,
-                    content,
-                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                    root=self._data_dir,
-                )
-            except RunbookPathEscape as exc:
-                raise self._refuse_escaping_draft(dm.id, exc) from exc
-
+            # The text and its verdict, in ONE commit (#1950).
+            dm.content = content
             dm.validation_passed = validation.passed
             dm.validation_errors = validation.errors
             dm.validation_warnings = validation.warnings
@@ -1638,7 +1496,6 @@ class ConversionService:
                 status=DraftStatus(dm.status),
                 validation=validation,
                 quality_score=quality,
-                file_path=dm.file_path,
                 content_preview=content[:500],
                 content=content,
                 quality_warning=quality_warning,
@@ -1887,49 +1744,23 @@ class ConversionService:
                     "Draft has validation errors that must be fixed before verification"
                 )
 
-            # Update frontmatter on disk using python-frontmatter.
-            #
-            # Resolved through the shared guard FIRST, before any read or write:
-            # this path is a database value, and on this method it is read back
-            # into the response as well as rewritten, so an escaping row would
-            # both leak an arbitrary file and be overwritten. Refuses as a typed
-            # 409 naming the row — the same exception contract every other
-            # failure shape on this method already follows (#1213 follow-up).
-            try:
-                file_path = resolve_runbook_path(
-                    dm.file_path,
-                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                    root=self._data_dir,
-                )
-            except RunbookPathEscape as exc:
-                raise self._refuse_escaping_draft(dm.id, exc) from exc
+            # The verified frontmatter, written into the row's own text
+            # (#1950). Set on ``dm`` now and committed below with the status,
+            # ``verified_by`` and ``knowledge_item_id`` in ONE transaction, after
+            # ingestion succeeds; a failure before that commit leaves the row
+            # exactly as it was. The validation gate above passed, so the
+            # frontmatter parses.
+            import frontmatter
+
             verifier_name = await self._verifier_display_name(
                 user_id, job.enterprise_id
             )
-            try:
-                import frontmatter
+            post = frontmatter.loads(dm.content)
+            post.metadata["status"] = "verified"
+            post.metadata["verified_by"] = verifier_name
+            content = frontmatter.dumps(post)
+            dm.content = content
 
-                post = frontmatter.load(str(file_path))
-                post.metadata["status"] = "verified"
-                post.metadata["verified_by"] = verifier_name
-                frontmatter.dump(post, str(file_path))
-            except Exception as e:
-                logger.error(f"Failed to update frontmatter: {e}")
-                # Fallback: just update the file content with regex
-                content = file_path.read_text(encoding="utf-8")
-                content = content.replace("status: draft", "status: verified", 1)
-                # A JSON string is a YAML double-quoted scalar: a name holding
-                # a quote or a backslash stays one value (#1924).
-                content = content.replace(
-                    'verified_by: ""',
-                    f"verified_by: {json.dumps(verifier_name)}",
-                    1,
-                )
-                file_path.write_text(content, encoding="utf-8")
-
-            # Populate metadata from frontmatter (safe to set pre-ingest; the
-            # frontmatter on disk was already updated above).
-            content = file_path.read_text(encoding="utf-8")
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
             fm_meta = extract_frontmatter_metadata(content)
@@ -2027,7 +1858,7 @@ class ConversionService:
                     f"Draft remains in DRAFT state."
                 )
 
-            # Ingestion succeeded — NOW commit the verified status.
+            # Ingestion succeeded — NOW commit the verified text and status.
             now = datetime.now(timezone.utc)
             dm.status = DraftStatus.VERIFIED.value
             dm.verified_at = now
@@ -2140,25 +1971,11 @@ status: draft
         # cannot be partial, and is less code than five that can.
         content = normalize_line_endings(content)
 
-        # Write to disk through the shared containment-checked helper — same
-        # anchor, same before-mkdir ordering as every other runbook write.
-        draft_path = _scope_dir(
-            self._data_dir, scope, team_id, user_id
-        ) / draft_filename(runbook_id)
-
-        # BEFORE the write, for the reason on ``refuse_if_draft_slot_taken``.
-        # Unlike the LLM path this does NOT degrade to a per-mode error: a
-        # manual create is one runbook, so refusing it IS the answer, and the
-        # caller gets the 409.
+        # See ``refuse_if_draft_slot_taken``. Unlike the LLM path this does NOT
+        # degrade to a per-mode error: a manual create is one runbook, so
+        # refusing it IS the answer, and the caller gets the 409.
         await refuse_if_draft_slot_taken(
-            self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
-        )
-
-        write_runbook_file(
-            draft_path,
-            content,
-            source=f"manually created runbook (runbook_id={runbook_id})",
-            root=self._data_dir,
+            self._db_session_factory, enterprise_id, runbook_id
         )
 
         # Off the event loop, and validating ONCE (#1417).
@@ -2181,7 +1998,6 @@ status: draft
             status=DraftStatus.DRAFT,
             validation=validation_result,
             quality_score=quality,
-            file_path=str(draft_path),
             content_preview=content[:500],
             content=content,
             quality_warning=quality_warning,
@@ -2228,10 +2044,16 @@ status: draft
         enterprise_id: Optional[str] = None,
         is_platform_admin: bool = False,
     ) -> dict:
-        """Scan data/knowledge/ for .md files not tracked in the database.
+        """Import the runbook files placed under ``data/knowledge/`` as drafts.
 
-        Discovers runbooks created by the KB Toolkit or dropped on disk manually.
-        Creates draft records so they appear in the Dashboard Drafts tab.
+        STANDALONE ONLY, and an import, never a reconciliation (#1950): each
+        ``.md`` file not already a live draft or a published runbook becomes a
+        draft row holding the file's text, so it appears in the Dashboard Drafts
+        tab. Nothing about an existing draft is decided by what is on disk.
+
+        Under ``TENANT_PROVIDER=multi`` the service refuses: the API runs as
+        replicas with no shared disk, so there is no runbook directory to read,
+        and a scan answered from one pod's empty filesystem means nothing.
 
         Uses an async lock to prevent concurrent scans from creating duplicate
         drafts (e.g., React StrictMode fires the mount effect twice).
@@ -2253,7 +2075,13 @@ status: draft
 
         Returns:
             {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
+
+        Raises:
+            ValidationException: the deployment is multi-tenant (422 at the
+                API boundary), the same shape as the team-publishing refusal.
         """
+        if requested_tenant_provider() == BUILTIN_MULTI:
+            raise ValidationException(SCAN_UNAVAILABLE_MULTI_MSG)
         async with self._scan_lock:
             return await _scan_for_runbooks_impl(
                 self._data_dir,
@@ -2307,12 +2135,12 @@ status: draft
         user_id: str,
         is_platform_admin: bool = False,
     ) -> bool:
-        """Soft-delete a draft and remove the file from disk.
+        """Soft-delete a draft: its row becomes DISCARDED.
 
-        ``is_platform_admin`` gates deletion at ``global`` scope: destroying a
-        global draft (file unlinked from disk) is platform-corpus authoring,
-        the same policy as :meth:`update_draft` / :meth:`verify_draft` on the
-        adjacent verbs. Defaults ``False`` (fail-closed).
+        ``is_platform_admin`` gates deletion at ``global`` scope: discarding a
+        global draft is platform-corpus authoring, the same policy as
+        :meth:`update_draft` / :meth:`verify_draft` on the adjacent verbs.
+        Defaults ``False`` (fail-closed).
         """
         if not self._db_session_factory:
             return False
@@ -2344,46 +2172,6 @@ status: draft
             dm = draft_result.scalar_one_or_none()
             if not dm:
                 return False
-
-            # Remove file from disk. Same guard as the write paths, for the
-            # same reason and with more at stake: this is an ``unlink`` driven
-            # by a database value, so an escaping row would delete an arbitrary
-            # file.
-            #
-            # Unlike the write paths this does NOT abort the operation. The
-            # dangerous half is the unlink, and it must never keep the ROW from
-            # being discarded — the "permanently undeletable row" this design
-            # exists to prevent. So BOTH the containment refusal AND a failure
-            # of the unlink itself degrade: the soft-delete below always runs.
-            #
-            # ``unlink`` can raise ``OSError`` independently of containment — a
-            # read-only or full filesystem, a permission denial, or a TOCTOU
-            # race where the file vanishes between ``exists()`` and ``unlink()``
-            # (``FileNotFoundError`` is an ``OSError``). Catching only
-            # ``RunbookPathEscape`` here left every one of those propagating
-            # before the status flip. Same degrade-and-continue shape as
-            # ``get_conversion``'s read (#1213 follow-up).
-            try:
-                file_path = resolve_runbook_path(
-                    dm.file_path,
-                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                    root=self._data_dir,
-                )
-                if file_path.exists():
-                    file_path.unlink()
-            except RunbookPathEscape as exc:
-                logger.error(
-                    "refusing to unlink for draft %s; discarding the row anyway: %s",
-                    dm.id,
-                    exc,
-                )
-            except OSError as exc:
-                logger.error(
-                    "failed to unlink the file for draft %s; discarding the "
-                    "row anyway: %s",
-                    dm.id,
-                    exc,
-                )
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value

@@ -188,17 +188,21 @@ _DRAFT_CHECK = "conversion_drafts_status_check"
 #: assumed, so a LATER migration that rewrites the constraint fails this file
 #: instead of leaving it comparing the ORM against a superseded definition.
 #: 008 (#1886) rebuilds ``conversion_drafts`` on SQLite to widen the SEVERITY
-#: check, and its frozen table re-states this one; it must re-state it
-#: verbatim, which ``test_the_severity_rebuild_restates_the_draft_check``
-#: pins, so the baseline stays the owning definition.
+#: check, and 017 (#1950) rebuilds it to make ``content`` NOT NULL; each frozen
+#: table re-states this one and must re-state it verbatim, which
+#: ``test_each_rebuild_restates_the_draft_check`` pins, so the baseline stays
+#: the owning definition.
+_DRAFT_REBUILDS = (
+    "*_008_runbook_severity_admits_info.py",
+    "*_017_runbook_drafts_in_the_database.py",
+)
 _DRAFT_CHECK_MIGRATIONS = sorted(
     [
         _baseline_path().name,
         *(
             p.name
-            for p in (_REPO_ROOT / "alembic" / "versions").glob(
-                "*_008_runbook_severity_admits_info.py"
-            )
+            for pattern in _DRAFT_REBUILDS
+            for p in (_REPO_ROOT / "alembic" / "versions").glob(pattern)
         ),
     ]
 )
@@ -229,12 +233,11 @@ def test_the_pin_names_every_migration_that_touches_the_draft_check():
     assert mentions == _DRAFT_CHECK_MIGRATIONS
 
 
-def test_the_severity_rebuild_restates_the_draft_check():
-    """008's SQLite rebuild re-creates this CHECK from its frozen table; a
+@pytest.mark.parametrize("pattern", _DRAFT_REBUILDS)
+def test_each_rebuild_restates_the_draft_check(pattern):
+    """Each SQLite rebuild re-creates this CHECK from its frozen table; a
     different expression there would change the vocabulary on SQLite only."""
-    (rebuild,) = (_REPO_ROOT / "alembic" / "versions").glob(
-        "*_008_runbook_severity_admits_info.py"
-    )
+    (rebuild,) = (_REPO_ROOT / "alembic" / "versions").glob(pattern)
     assert f'"{_check_in_baseline(_DRAFT_CHECK)}"' in rebuild.read_text()
 
 
@@ -297,7 +300,7 @@ def test_the_draft_check_rejects_a_retired_status_and_accepts_discarded():
             conversion_id="conv-1",
             runbook_id="rb-1",
             title="A draft",
-            file_path="/tmp/rb-1.md",
+            content="---\nid: rb-1\n---\n",
             status="discarded",
             source_type="document",
             validation_passed=True,

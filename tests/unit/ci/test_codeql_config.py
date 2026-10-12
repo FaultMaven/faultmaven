@@ -70,7 +70,6 @@ KNOWN_PACKS: frozenset[str] = frozenset({"faultmaven-path-sanitizers"})
 MODELLED: frozenset[tuple[str, str]] = frozenset(
     {
         ("faultmaven.utils.path_containment", "resolve_within_root"),
-        ("faultmaven.utils.runbook_id", "safe_path_component"),
     }
 )
 
@@ -325,71 +324,6 @@ def test_resolve_within_root_refuses_every_escape(tmp_path: Path) -> None:
         root / "inner" / "ok.md", root=root, source="t", subject="path", tree="test"
     )
     assert allowed.is_relative_to(root.resolve()) and allowed != root.resolve()
-
-
-@pytest.mark.unit
-@pytest.mark.security
-@pytest.mark.parametrize(
-    ("value", "kwargs"),
-    [
-        # Separators, traversal, NUL, drive letters, look-alikes, emptiness.
-        ("../../../../escaped", {}),
-        ("..", {}),
-        (".", {}),
-        ("a/b", {}),
-        ("a\\b", {}),
-        ("a\x00b", {}),
-        ("C:\\Windows", {}),
-        ("  ", {}),
-        ("", {}),
-        (None, {}),
-        ("\u2044slash-lookalike", {}),
-        # The SECOND argument is an input too (#1394 review). Before the fix
-        # these three were returned verbatim, and the barrier row silenced the
-        # flow that carried them to the filesystem.
-        ("???", {"fallback": "../../../../escaped"}),
-        (None, {"fallback": "/etc/passwd"}),
-        ("???", {"fallback": "???"}),
-        # Past the 60-character bound, where `[:60]` can land on a hyphen and
-        # put back the character `_slug` had just stripped. Every case in the
-        # first block is under 12 characters, so none of them reached this.
-        ("a" * 59 + " " + "b" * 10, {}),
-        ("-".join(["ab"] * 30), {}),
-        ("x" * 200, {}),
-        ("word " * 40, {}),
-        ("???", {"fallback": "-".join(["cd"] * 30)}),
-    ],
-)
-def test_safe_path_component_yields_one_harmless_segment(
-    value: str | None, kwargs: dict[str, str]
-) -> None:
-    """The claim: the return value is a single segment that cannot traverse."""
-    from faultmaven.utils.runbook_id import safe_path_component
-
-    component = safe_path_component(value, **kwargs)
-
-    assert component, "an empty component would silently drop the discriminator"
-    # One `fullmatch` covers non-emptiness, the absence of every separator and
-    # of `.`/`..`, and the hyphen boundary; the two assertions below are the
-    # property at the CALL SITE, which the regex does not state.
-    assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", component), component
-    assert Path(f"scope_{component}").name == f"scope_{component}"
-    assert (Path("/tree") / f"scope_{component}").resolve().is_relative_to("/tree")
-
-
-@pytest.mark.unit
-@pytest.mark.security
-def test_safe_path_component_bound_is_still_enforced() -> None:
-    """Stripping after the slice must not be an excuse to stop bounding it.
-
-    The bound is what keeps the component inside NAME_MAX and inside
-    `uploaded_files.filename`; a fix for the trailing hyphen that dropped the
-    slice would pass every case above.
-    """
-    from faultmaven.utils.runbook_id import _MAX_SLUG_CHARS, safe_path_component
-
-    assert len(safe_path_component("x" * 500)) == _MAX_SLUG_CHARS
-    assert len(safe_path_component("???", fallback="y" * 500)) == _MAX_SLUG_CHARS
 
 
 # ---------------------------------------------------------------------------

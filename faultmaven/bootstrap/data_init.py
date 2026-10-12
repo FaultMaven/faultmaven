@@ -215,9 +215,10 @@ def ensure_data_directories() -> None:
         - ``CHROMADB_KB_PERSIST_DIR``        (ChromaDB KB vectors — permanent)
         - ``CHROMADB_EVIDENCE_PERSIST_DIR``  (ChromaDB case evidence — ephemeral)
         - ``EVIDENCE_STORAGE_ROOT``          (uploaded evidence files)
-        - ``data/knowledge/`` + ``global/``  (runbook source files, from
-          :func:`~faultmaven.utils.runbook_id.knowledge_root` — the anchor the
-          scan and upload paths resolve against, which is relative on purpose).
+        - ``data/knowledge/`` + ``global/``  (the runbook directory the
+          standalone scan imports from, from
+          :func:`~faultmaven.utils.runbook_id.knowledge_root`, which is
+          relative on purpose).
           Its parent is the shared cwd-relative ``data/`` that the SQLite DSN
           default ``sqlite+aiosqlite:///./data/faultmaven.db`` also needs, so
           that directory exists whenever the knowledge tree does

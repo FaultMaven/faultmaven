@@ -14,14 +14,13 @@ it, against a real SQLite schema:
   ``/convert``, whose real path needs an LLM, so its service is a double that
   returns the real response models. Every key and every string in each body
   is checked, not only the two field names.
-* **The draft's file is still found.** ``conversion_drafts.file_path`` is
-  load-bearing (``resolve_runbook_path``, deletion), so it stays on the row and
-  on the model. It is only never serialised. After the round trip through the
-  routes the row still names the file, and the edit landed in it.
+* **A draft's text is its row's.** No path to a draft exists any more: the
+  text is ``conversion_drafts.content`` (#1950), and after the round trip
+  through the routes the edit landed in the row, not in any file.
 * **No client-facing string names a server path or carries raw exception
   text.** Each leak review found, driven through its route on a real failure:
   the duplicate-draft 409 and the same refusal in ``/convert``'s warnings, a
-  write failure in ``/convert``'s warnings, a missing file in
+  provider failure in ``/convert``'s warnings, an ingestion failure in
   ``/drafts/verify-batch``, an unreadable file in ``/scan``, and a corrupt
   ``.docx`` in ``/convert``'s 422. A foreign exception's CLASS is what the
   caller gets; its text goes to the log.
@@ -220,10 +219,11 @@ class TestBothWritersStoreNoPath:
         (upload,) = await _upload_rows(session_factory)
         assert (upload.upload_source, upload.case_id) == ("conversion_source", None)
         assert upload.storage_ref is None
-        # What locates the runbook is the draft row, and the file is there.
+        # The text is the draft row's, and no file was written for it.
         async with session_factory() as session:
             (draft,) = (await session.execute(select(ConversionDraftModel))).scalars()
-        assert Path(draft.file_path).is_file(), draft.file_path
+        assert draft.content == valid_runbook("Redis Evictions Under Memory Pressure")
+        assert [p.name for p in kb_root.rglob("*.md")] == ["pool-exhausted.md"]
 
     async def test_the_disk_scan_stores_no_path(
         self, conversion_service, session_factory
@@ -282,11 +282,13 @@ class TestNoConversionResponseCarriesAPath:
             assert edited.status_code == 200, edited.text
             assert _leaks(edited.json(), kb_root) == []
 
-        # The round trip changed what the client sees, not what the row holds:
-        # it still names the file, and the edit landed in it.
+        # The edit landed in the row; the scanned file is not the draft and
+        # is untouched (#1950).
         row = await _draft_row(session_factory, draft_id)
-        assert row.file_path == str(on_disk)
-        assert on_disk.read_text(encoding="utf-8") == edited_content
+        assert row.content == edited_content
+        assert on_disk.read_text(encoding="utf-8") == valid_runbook(
+            "Connection Pool Exhausted On The API"
+        )
 
     async def test_runbook_create(self, conversion_service, session_factory, kb_root):
         async with _client(conversion_service) as client:
@@ -311,13 +313,12 @@ class TestNoConversionResponseCarriesAPath:
         assert _leaks(body, kb_root) == []
 
         row = await _draft_row(session_factory, body["draft"]["draft_id"])
-        assert Path(row.file_path).is_file(), row.file_path
+        assert row.content == body["draft"]["content"]
+        assert [p.name for p in kb_root.rglob("*.md")] == ["pool-exhausted.md"]
 
     async def test_convert(self, tmp_path):
         """The real ``/convert`` path needs an LLM, so its service is a double
-        returning the real response models, carrying a real server path in the
-        draft as the service does. The route's own dump must drop it."""
-        server_path = tmp_path / "data" / "knowledge" / "user_u" / "nginx-502.md"
+        returning the real response models."""
         draft = ConversionDraft(
             draft_id="draft_836",
             runbook_id="nginx-502",
@@ -333,10 +334,9 @@ class TestNoConversionResponseCarriesAPath:
                 actionability=80.0,
                 comprehensiveness=80.0,
             ),
-            file_path=str(server_path),
             content_preview="---\nid: nginx-502\n---",
+            content="---\nid: nginx-502\n---\n\n# Nginx 502 Bad Gateway\n",
         )
-        assert draft.file_path == str(server_path), "the server still reads it"
         service = MagicMock()
         service.convert_document = AsyncMock(
             return_value=ConversionResponse(
@@ -500,17 +500,17 @@ class TestNoClientStringNamesAPathOrRawText:
         assert _leaks(body, kb_root) == []
         assert _leaks(again.json(), kb_root) == []
 
-    async def test_a_write_failure_in_convert_warnings(
+    async def test_a_foreign_failure_in_convert_warnings(
         self, conversion_service, kb_root
     ):
-        """A real ``OSError`` from the runbook write: the personal scope
-        directory's name is taken by a file, so ``mkdir`` refuses, naming the
-        server path."""
-        (kb_root / "user_user-op").write_text("not a directory", encoding="utf-8")
-        _script_convert(
-            conversion_service,
-            _analysis(),
-            valid_runbook("Disk Full On The Ingest Nodes"),
+        """A foreign exception from the generation — here an ``OSError`` whose
+        text names a server path — reaches the caller as its class only."""
+        _script_convert(conversion_service, _analysis())
+        conversion_service._llm_router.route = AsyncMock(
+            side_effect=[
+                _llm(_analysis()),
+                OSError(f"spool full at {kb_root}/user_user-op"),
+            ]
         )
         async with _client(conversion_service) as client:
             converted = await _convert(client)
@@ -519,15 +519,22 @@ class TestNoClientStringNamesAPathOrRawText:
             again = await client.get(f"{API}/conversions/{body['conversion_id']}")
         assert body["status"] == "failed", body
         assert body["warnings"] == [
-            "Failed to convert 'fm-disk-full': "
-            "Runbook generation failed (FileExistsError)"
+            "Failed to convert 'fm-disk-full': Runbook generation failed (OSError)"
         ]
         assert _leaks(body, kb_root) == []
         assert _leaks(again.json(), kb_root) == []
 
-    async def test_a_missing_file_in_verify_batch(
+    async def test_a_foreign_failure_in_verify_batch(
         self, conversion_service, session_factory, kb_root
     ):
+        """The scanned file is gone, which no longer matters: verify reads the
+        row (#1950). What fails here is ingestion, with a foreign exception
+        whose text names a server path; the caller gets its class."""
+        conversion_service._knowledge_service = MagicMock(
+            ingest_runbook=AsyncMock(
+                side_effect=OSError(f"vector store gone at {kb_root}/chroma")
+            )
+        )
         async with _client(conversion_service) as client:
             scanned = (await client.post(f"{API}/scan")).json()
             (draft,) = scanned["drafts"]
@@ -552,7 +559,7 @@ class TestNoClientStringNamesAPathOrRawText:
         body = verified.json()
         (item,) = body["results"]
         assert item["status"] == "failed"
-        assert item["error"] == "Verification failed (FileNotFoundError)"
+        assert item["error"] == "Verification failed (OSError)"
         assert _leaks(body, kb_root) == []
 
     async def test_an_unreadable_file_in_scan(self, conversion_service, kb_root):
@@ -589,16 +596,18 @@ class TestNoClientStringNamesAPathOrRawText:
         assert _leaks(body, kb_root) == []
         assert tempfile.gettempdir() not in converted.text
 
-    async def test_only_the_scans_own_refusal_is_a_409(self, kb_root):
-        """The route renders the scan's typed refusal and nothing else: a
-        library's ``RuntimeError`` is a bare 500, never its text."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (  # noqa: E501
-            ScanAbortedError,
+    async def test_only_the_scans_own_refusal_is_rendered(self, kb_root):
+        """The route renders the scan's typed refusal — under multi, a 422 with
+        its sentence (#1950) — and nothing else: a library's ``RuntimeError``
+        is a bare 500, never its text."""
+        from faultmaven.exceptions import ValidationException
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (  # noqa: E501
+            SCAN_UNAVAILABLE_MULTI_MSG,
         )
 
         refusing = MagicMock()
         refusing.scan_for_runbooks = AsyncMock(
-            side_effect=ScanAbortedError("Scan aborted: would discard all 2 drafts")
+            side_effect=ValidationException(SCAN_UNAVAILABLE_MULTI_MSG)
         )
         foreign = MagicMock()
         foreign.scan_for_runbooks = AsyncMock(
@@ -608,8 +617,8 @@ class TestNoClientStringNamesAPathOrRawText:
             refused = await client.post(f"{API}/scan")
         async with _client(foreign, raise_app_exceptions=False) as client:
             failed = await client.post(f"{API}/scan")
-        assert refused.status_code == 409, refused.text
-        assert refused.json()["detail"] == "Scan aborted: would discard all 2 drafts"
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"] == SCAN_UNAVAILABLE_MULTI_MSG
         assert failed.status_code == 500, failed.text
         assert str(kb_root) not in failed.text
 
@@ -658,54 +667,3 @@ class TestNoClientStringNamesAPathOrRawText:
             "Draft has validation errors that must be fixed before verification"
         )
         assert _leaks(body, kb_root) == []
-
-
-# ---------------------------------------------------------------------------
-# The KB upload's runbook write runs off the event loop
-# ---------------------------------------------------------------------------
-
-
-class TestTheUploadWriteLeavesTheEventLoop:
-    async def test_upload_documents_runbook_write_runs_on_another_thread(
-        self, session_factory, kb_root, monkeypatch
-    ):
-        """``upload_document`` hands ``write_runbook_file`` to a worker thread
-        (#836). Recorded where it runs rather than inferred from the source:
-        the test's coroutine runs on the event loop's thread, so the write must
-        record a different one."""
-        import threading
-
-        from faultmaven.utils import runbook_id
-
-        real_write = runbook_id.write_runbook_file
-        write_threads: list[int] = []
-
-        def recording_write(*args, **kwargs):
-            write_threads.append(threading.get_ident())
-            return real_write(*args, **kwargs)
-
-        # ``upload_document`` imports the helper at call time, so the patched
-        # module attribute is the one it calls.
-        monkeypatch.setattr(runbook_id, "write_runbook_file", recording_write)
-        service = KnowledgeService(
-            knowledge_ingester=MagicMock(),
-            sanitizer=MagicMock(),
-            tracer=MagicMock(),
-            vector_store=MagicMock(),
-            db_session_factory=session_factory,
-        )
-        service._index_document_in_vector_store = AsyncMock(return_value=3)
-
-        result = await service.upload_document(
-            content=valid_runbook("Redis Evictions Under Memory Pressure"),
-            title="Redis Evictions",
-            document_type="runbook",
-            scope="global",
-            owner_id="user-op",
-        )
-
-        assert result["status"] == "completed", result
-        assert len(write_threads) == 1, "the runbook write was not reached once"
-        assert (
-            write_threads[0] != threading.get_ident()
-        ), "the runbook write ran on the event loop's thread"
