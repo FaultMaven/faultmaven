@@ -1176,7 +1176,8 @@ class InvestigationService:
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1282,7 +1283,8 @@ class InvestigationService:
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1330,7 +1332,8 @@ class InvestigationService:
         action: Optional[str],
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1423,7 +1426,8 @@ class InvestigationService:
         case: "Case",
         user_message: str,
         kind: OutOfBandKind,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Answer an aside without touching the investigation (#1329).
 

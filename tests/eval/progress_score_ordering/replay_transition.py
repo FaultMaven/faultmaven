@@ -199,11 +199,13 @@ async def replay(rec: dict) -> tuple[str, bool | None, int | None]:
         inquiry=InquiryData(thread_id="thread_replay"),
     )
     llm.payload = turn1_payload(rec)
-    first = await engine.process_turn(case, rec["msg_first"][:4000])
+    first = await engine.process_turn(case, rec["msg_first"][:4000], redaction_ctx=None)
     if first["case_updated"].state != CaseState.INQUIRY:
         return ("skip_turn1_state", None, None)
     llm.payload = TURN2
-    second = await engine.process_turn(first["case_updated"], rec["msg_confirm"][:4000])
+    second = await engine.process_turn(
+        first["case_updated"], rec["msg_confirm"][:4000], redaction_ctx=None
+    )
     updated = second["case_updated"]
     # Positive control: a replay that did not transition proves nothing about
     # how a transition is scored, so it is reported as skipped, not as a pass.

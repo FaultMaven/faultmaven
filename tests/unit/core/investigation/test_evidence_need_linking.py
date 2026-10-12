@@ -1239,7 +1239,9 @@ class TestTheLinkedNeedCommitsWithItsTurn:
         )
 
         case.current_turn = 5  # the service advances the clock
-        result = await engine.process_turn(case, "what should I check next?")
+        result = await engine.process_turn(
+            case, "what should I check next?", redaction_ctx=None
+        )
 
         returned = result["case_updated"]
         linked = [n for n in returned.evidence_needs if ask in n.request_text]

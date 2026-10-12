@@ -64,7 +64,8 @@ class IntentResolver:
         self,
         user_message: str,
         last_suggestions: List[Dict[str, Any]],
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Optional[Dict[str, Any]]:
         """Match user message against last turn's suggestions.
 
@@ -99,7 +100,7 @@ class IntentResolver:
             return matched
 
         # Tier 2: LLM classifier for semantic matching
-        matched = await self._classify(msg, choices, redaction_ctx)
+        matched = await self._classify(msg, choices, redaction_ctx=redaction_ctx)
         if matched is not None:
             logger.info(
                 f"Intent resolved via classifier: {matched.get('type', 'unknown')}"
@@ -162,7 +163,8 @@ class IntentResolver:
         self,
         user_message: str,
         choices: List[Dict[str, Any]],
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Optional[Dict[str, Any]]:
         """LLM-based bounded choice classification.
 

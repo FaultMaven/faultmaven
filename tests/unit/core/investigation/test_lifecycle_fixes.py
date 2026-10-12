@@ -150,7 +150,7 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     )
     mock_llm.generate.return_value = mock_response
 
-    result = await engine.process_turn(base_case, "Check logs")
+    result = await engine.process_turn(base_case, "Check logs", redaction_ctx=None)
     case = result["case_updated"]
 
     # Evidence count: 1 initial + 1 from LLM response = 2
@@ -209,7 +209,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
             },  # outcome overridden
         }
     )
-    result = await engine.process_turn(base_case, "msg")
+    result = await engine.process_turn(base_case, "msg", redaction_ctx=None)
     assert result["metadata"]["outcome"] == "milestone_completed"
 
     # 2. Hypothesis Validated
@@ -235,5 +235,5 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
             },
         }
     )
-    result = await engine.process_turn(base_case, "msg")
+    result = await engine.process_turn(base_case, "msg", redaction_ctx=None)
     assert result["metadata"]["outcome"] == "data_provided"

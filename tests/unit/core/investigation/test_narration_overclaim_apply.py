@@ -104,7 +104,9 @@ async def test_overclaim_notice_is_appended_to_reply_and_turn_summary():
     assert case.pending_transition is None  # precondition: plain variant fires
 
     result = await engine.process_turn(
-        case=case, user_message="Thanks, everything looks good on my side now."
+        case=case,
+        user_message="Thanks, everything looks good on my side now.",
+        redaction_ctx=None,
     )
 
     # Reply surface: the FULL notice is APPENDED below the preserved prose —
@@ -144,7 +146,9 @@ async def test_overclaim_with_pending_transition_uses_pending_variant():
     case = _make_investigating_case()
 
     result = await engine.process_turn(
-        case=case, user_message="Thanks, everything looks good on my side now."
+        case=case,
+        user_message="Thanks, everything looks good on my side now.",
+        redaction_ctx=None,
     )
 
     reply = result["agent_response"]
@@ -177,7 +181,7 @@ async def test_clean_narration_leaves_turn_summary_as_raw_text():
         patch.object(turn_completion, "summarize_for_turn_record", spy),
     ):
         result = await engine.process_turn(
-            case=case, user_message="What should we look at next?"
+            case=case, user_message="What should we look at next?", redaction_ctx=None
         )
 
     reply = result["agent_response"]

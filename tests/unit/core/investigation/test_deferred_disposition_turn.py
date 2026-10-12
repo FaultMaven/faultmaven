@@ -155,7 +155,7 @@ async def test_close_turn_renders_the_reason_with_the_llm_analysis():
     engine = _engine(_deferred_response())
 
     result = await engine.process_turn(
-        case=case, user_message="the platform team ships it"
+        case=case, user_message="the platform team ships it", redaction_ctx=None
     )
     text = result["agent_response"]
 
@@ -175,7 +175,7 @@ async def test_confirmed_case_is_offered_resolve_not_close():
     engine = _engine(_deferred_response())
 
     result = await engine.process_turn(
-        case=case, user_message="the platform team ships it"
+        case=case, user_message="the platform team ships it", redaction_ctx=None
     )
     text = result["agent_response"]
     labels = [s["label"] for s in result["suggested_follow_ups"]]
@@ -211,7 +211,7 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
     engine = _engine(_deferred_response_with(model_proposes))
 
     result = await engine.process_turn(
-        case=case, user_message="the platform team ships it"
+        case=case, user_message="the platform team ships it", redaction_ctx=None
     )
     pending = case.pending_transition
     assert pending["to_state"] == "closed"
@@ -225,7 +225,7 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
             agent_response="ok", state_updates={}
         )
     )
-    await engine.process_turn(case=case, user_message="no")
+    await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
     assert case.progress.deferred_disposition_declined_signatures == [
         pending["justifying_signature"]
     ]
@@ -235,6 +235,8 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
         return_value=_deferred_response()
     )
     await engine.process_turn(
-        case=case, user_message="what should the platform team change first?"
+        case=case,
+        user_message="what should the platform team change first?",
+        redaction_ctx=None,
     )
     assert case.pending_transition is None, "the declined offer came back"

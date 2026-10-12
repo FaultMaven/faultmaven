@@ -175,6 +175,7 @@ async def test_ui_dropdown_inquiry_to_closed_emits_canonical_close_pair():
             "to_state": "closed",
             "user_confirmed": True,
         },
+        redaction_ctx=None,
     )
     assert result["case_updated"].pending_transition["to_state"] == "closed"
     _assert_canonical_confirm_pair(
@@ -200,6 +201,7 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
             "to_state": "closed",
             "user_confirmed": True,
         },
+        redaction_ctx=None,
     )
     assert result["case_updated"].pending_transition["to_state"] == "closed"
     _assert_canonical_confirm_pair(
@@ -244,6 +246,7 @@ async def test_ui_dropdown_resolve_is_refused():
                     "to_state": "resolved",
                     "user_confirmed": True,
                 },
+                redaction_ctx=None,
             )
         assert (
             case.pending_transition is None
@@ -279,6 +282,7 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
             "to_state": "closed",
             "user_confirmed": True,
         },
+        redaction_ctx=None,
     )
     pending = result["case_updated"].pending_transition
     assert pending is not None

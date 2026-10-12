@@ -137,7 +137,9 @@ class TestMilestoneEngineFunctionCalling:
 
         # This will fail validation but we just want to check the parameters passed
         try:
-            result = await engine.process_turn(base_case, "Analyze the issue")
+            result = await engine.process_turn(
+                base_case, "Analyze the issue", redaction_ctx=None
+            )
         except Exception:
             pass  # Expected - mock returns wrong schema
 
@@ -170,7 +172,9 @@ class TestMilestoneEngineFunctionCalling:
 
         # This will fail validation but we just want to check the prompt
         try:
-            await engine.process_turn(base_case, "Analyze the issue")
+            await engine.process_turn(
+                base_case, "Analyze the issue", redaction_ctx=None
+            )
         except Exception:
             pass  # Expected - mock returns wrong schema
 

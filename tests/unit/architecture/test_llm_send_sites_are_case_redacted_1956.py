@@ -1,13 +1,23 @@
 """#1956: every LLM send site in the package is classified, by AST.
 
-A send site is any ``<x>.route(...)`` or ``<x>.generate(...)`` call. Each one
-must be ONE of:
+A send site is any ``<x>.route(...)`` / ``<x>.generate(...)`` call, and also
+any way of reaching those methods without calling them at the site: an
+uncalled reference (``send = router.route``, ``functools.partial(router.route,
+...)``) or ``getattr(x, "route")``. Each one must be ONE of:
 
-(R) redacted at the site: its ``messages=`` (or ``prompt=``) argument is a name
-    whose last binding before the call, in the calling function or an
-    enclosing one, is ``await case_redacted(...)``,
-    ``await case_redacted_messages(...)`` or ``await <x>.asanitize_messages(...)``.
-    So the sites read ``messages = await case_redacted_messages(...)`` and then
+(R) redacted at the site. The call passes its content in exactly one of
+    ``messages=`` / ``prompt=``, as a NAME. Every binding of that name that can
+    reach the call — in the calling function or, for a closure, the enclosing
+    one; both arms of a branch; a rebinding later in a loop around the call or
+    after the closure is defined — is ``await case_redacted(..., ctx)``,
+    ``await case_redacted_messages(..., ctx)`` or
+    ``await <ctx>.asanitize_messages(...)``, with a context that is not a
+    literal ``None``. Nothing mutates the name in between (``.append``,
+    ``.extend``, ``.insert``, item or attribute assignment, ``+=``). Every
+    other keyword is a routing parameter (``model``, ``max_tokens``, ...): no
+    second channel (``system=``, ``prompt=`` beside ``messages=``) and no
+    ``**`` splat except routing overrides. So the sites read
+    ``messages = await case_redacted_messages(..., ctx)`` and then
     ``route(messages=messages)``: what is sent is what the redaction returned.
 (A) allowlisted below, with the reason it needs no case pass of its own.
 
@@ -70,6 +80,21 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "the engine's single-shot splat; its prompt is case_redacted at the top "
         "of _generate_structured_output_inner (pinned by #1952's guard)"
     ),
+    ("faultmaven/api/route_enumeration.py", "iter_served_routes"): (
+        "a Starlette routing context's `route` attribute, not an LLM"
+    ),
+    ("faultmaven/api/route_enumeration.py", "iter_documented_routes"): (
+        "a Starlette routing context's `route` attribute, not an LLM"
+    ),
+    ("faultmaven/api/route_enumeration.py", "iter_served_endpoints"): (
+        "a Starlette routing context's `route` attribute, not an LLM"
+    ),
+    ("faultmaven/api/route_enumeration.py", "iter_unresolved_routes"): (
+        "a Starlette routing context's `route` attribute, not an LLM"
+    ),
+    ("faultmaven/api/middleware/route_policy.py", "_flattened_post_paths"): (
+        "a Starlette routing context's `route` attribute, not an LLM"
+    ),
 }
 
 #: The sites that redact at the send, which the scan must find (positive
@@ -122,28 +147,167 @@ def _own_nodes(func):
                 stack.append(child)
 
 
-def _binds(node, name: str) -> bool:
-    targets: list = []
-    if isinstance(node, ast.Assign):
-        targets = node.targets
-    elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
-        targets = [node.target]
-    elif isinstance(node, (ast.For, ast.AsyncFor)):
-        targets = [node.target]
-    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-        targets = [node.optional_vars]
-    return any(
-        isinstance(n, ast.Name) and n.id == name for t in targets for n in ast.walk(t)
-    )
+#: Keywords that carry routing parameters, never content.
+_ROUTING_KWARGS = {
+    "model",
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "min_output_tokens",
+    "reasoning_intent",
+    "response_format",
+    "provider_override",
+}
+_CONTENT_KWARGS = ("messages", "prompt")
+_MUTATORS = {"append", "extend", "insert", "update", "setdefault", "__setitem__"}
 
 
-def _is_redacting(value) -> bool:
+def _stmt(node, parents):
+    while not isinstance(node, ast.stmt):
+        node = parents[node]
+    return node
+
+
+def _binding_nodes(func, name: str) -> list:
+    out = []
+    for node in _own_nodes(func):
+        targets: list = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = [node.target]
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            targets = [node.target]
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            targets = [node.optional_vars]
+        if any(
+            isinstance(n, ast.Name) and n.id == name
+            for t in targets
+            for n in ast.walk(t)
+        ):
+            out.append(node)
+    return out
+
+
+def _ancestors(node, parents):
+    while node in parents:
+        node = parents[node]
+        yield node
+
+
+def _kills(later, earlier, parents) -> bool:
+    """Whether ``later`` always runs after ``earlier``: it sits in a statement
+    list that holds, at an earlier position, a statement containing
+    ``earlier``. Two arms of a branch never kill each other."""
+    s_later, s_earlier = _stmt(later, parents), _stmt(earlier, parents)
+    block_owner = parents[s_later]
+    for field in ("body", "orelse", "finalbody", "handlers"):
+        block = getattr(block_owner, field, None)
+        if isinstance(block, list) and s_later in block:
+            index = block.index(s_later)
+            chain = {s_earlier, *_ancestors(s_earlier, parents)}
+            return any(stmt in chain for stmt in block[:index])
+    return False
+
+
+def _definitely_bound(stmts, name: str, before_line: int) -> bool:
+    """Whether running ``stmts`` (those before ``before_line``) binds ``name``
+    on every path: a plain binding, an ``if`` whose arms both do, or a
+    ``with`` / ``try`` body that does. A loop body may run zero times."""
+    for stmt in stmts:
+        if stmt.lineno >= before_line:
+            return False
+        targets: list = []
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+            targets = [stmt.target]
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            return True
+        if isinstance(stmt, ast.If) and (
+            _definitely_bound(stmt.body, name, before_line)
+            and _definitely_bound(stmt.orelse, name, before_line)
+        ):
+            return True
+        if isinstance(stmt, (ast.With, ast.AsyncWith, ast.Try)) and (
+            _definitely_bound(stmt.body, name, before_line)
+        ):
+            return True
+    return False
+
+
+def _loops_around(node, func, parents) -> list:
+    out = []
+    for anc in _ancestors(node, parents):
+        if anc is func:
+            break
+        if isinstance(anc, (ast.For, ast.AsyncFor, ast.While)):
+            out.append(anc)
+    return out
+
+
+def _redaction_problem(binding) -> str | None:
+    """``None`` when the binding is an awaited redaction with a real context."""
+    if not isinstance(binding, (ast.Assign, ast.AnnAssign)):
+        return f"bound at line {binding.lineno} by something else"
+    value = binding.value
     if not isinstance(value, ast.Await) or not isinstance(value.value, ast.Call):
-        return False
-    func = value.value.func
-    if isinstance(func, ast.Name):
-        return func.id in _REDACTING_HELPERS
-    return isinstance(func, ast.Attribute) and func.attr in _REDACTING_METHODS
+        return f"bound at line {binding.lineno} by something else"
+    call = value.value
+    if isinstance(call.func, ast.Name) and call.func.id in _REDACTING_HELPERS:
+        ctx = call.args[1] if len(call.args) > 1 else None
+        ctx = next((k.value for k in call.keywords if k.arg == "ctx"), ctx)
+    elif isinstance(call.func, ast.Attribute) and call.func.attr in _REDACTING_METHODS:
+        ctx = call.func.value
+    else:
+        return f"bound at line {binding.lineno} by something else"
+    if ctx is None or (isinstance(ctx, ast.Constant) and ctx.value is None):
+        return f"redacted at line {binding.lineno} with no context (None)"
+    return None
+
+
+def _mutations(func, name: str) -> list:
+    out = []
+    for node in _own_nodes(func):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _MUTATORS
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == name
+        ):
+            out.append(node)
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        for t in targets:
+            if isinstance(t, (ast.Subscript, ast.Attribute)) and any(
+                isinstance(n, ast.Name) and n.id == name for n in ast.walk(t)
+            ):
+                out.append(node)
+    return out
+
+
+def _routing_splat(value) -> bool:
+    """A ``**`` splat that can only carry routing overrides: a name or call
+    following the ``*route_kwargs`` convention, or dict literals keyed only by
+    routing parameters."""
+    if isinstance(value, ast.Name):
+        return "route_kwargs" in value.id
+    if isinstance(value, ast.Call):
+        func = value.func
+        ident = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        return "route_kwargs" in ident
+    if isinstance(value, ast.IfExp):
+        return _routing_splat(value.body) and _routing_splat(value.orelse)
+    if isinstance(value, ast.Dict):
+        return all(
+            isinstance(k, ast.Constant) and k.value in _ROUTING_KWARGS
+            for k in value.keys
+        )
+    return False
 
 
 def _parameters(func) -> set[str]:
@@ -153,37 +317,97 @@ def _parameters(func) -> set[str]:
     return set(names)
 
 
-def classify(call: ast.Call, parents) -> str | None:
-    """``None`` when the call is redacted at the site (R), else why not."""
-    sent = {k.arg: k.value for k in call.keywords if k.arg in ("messages", "prompt")}
+def classify(node, parents) -> str | None:
+    """``None`` when the site is redacted at the send (R), else why not."""
+    if isinstance(node, ast.Attribute):
+        return (
+            f"an uncalled reference to .{node.attr} ({ast.unparse(parents[node])[:60]})"
+        )
+    if isinstance(node.func, ast.Name):  # getattr(x, "route")
+        return f"reaches .{node.args[1].value} through getattr"
+    call = node
+    if call.args:
+        return "passes a positional argument"
+    sent = {k.arg: k.value for k in call.keywords if k.arg in _CONTENT_KWARGS}
     if not sent:
         return "no messages=/prompt= argument the guard can follow"
-    value = sent.get("messages", sent.get("prompt"))
+    if len(sent) > 1:
+        return "sends content in both messages= and prompt="
+    for k in call.keywords:
+        if k.arg is None and not _routing_splat(k.value):
+            return f"splats **{ast.unparse(k.value)[:40]}, which can carry content"
+        if k.arg is not None and k.arg not in _CONTENT_KWARGS + tuple(_ROUTING_KWARGS):
+            return f"passes {k.arg}=, a channel the guard does not follow"
+    [value] = sent.values()
     if not isinstance(value, ast.Name):
         return f"sends an expression ({ast.unparse(value)[:60]}), not a redacted name"
     name = value.id
-    for func in _scopes(call, parents):
-        bindings = [
-            n for n in _own_nodes(func) if _binds(n, name) and n.lineno <= call.lineno
+
+    # The reference point: the call itself, or — when the name is bound in an
+    # enclosing function — the nested def the call sits in (a closure can run
+    # whenever, so a rebinding after its definition reaches it too).
+    point, scopes = call, _scopes(call, parents)
+    for func in scopes:
+        bindings = _binding_nodes(func, name)
+        mutated = _mutations(func, name)
+        if mutated:
+            return f"{name!r} is mutated at line {mutated[0].lineno}"
+        if not bindings:
+            if name in _parameters(func):
+                return f"{name!r} is a parameter of {func.name}; redact it at the site"
+            point = func
+            continue
+        loops = _loops_around(point, func, parents)
+        before = [b for b in bindings if b.lineno < point.lineno]
+        reaching = [
+            b
+            for b in before
+            if not any(_kills(b2, b, parents) for b2 in before if b2 is not b)
         ]
-        if bindings:
-            last = max(bindings, key=lambda n: (n.lineno, n.col_offset))
-            if isinstance(last, (ast.Assign, ast.AnnAssign)) and _is_redacting(
-                last.value
-            ):
-                return None
-            return f"{name!r} is last bound at line {last.lineno} by something else"
-        if name in _parameters(func):
-            return f"{name!r} is a parameter of {func.name}; redact it at the site"
+        after = [b for b in bindings if b.lineno > point.lineno]
+        if point is not call:
+            reaching += after  # rebinding after the closure is defined
+        else:
+            reaching += [
+                b for b in after if set(_loops_around(b, func, parents)) & set(loops)
+            ]
+        if not reaching:
+            return f"{name!r} is not bound before the send"
+        if not _definitely_bound(func.body, name, point.lineno):
+            return f"{name!r} may reach the send unbound or unredacted on some path"
+        for binding in reaching:
+            problem = _redaction_problem(binding)
+            if problem:
+                return f"{name!r} {problem}"
+        return None
     return f"{name!r} is not bound in an enclosing function"
 
 
 def _send_sites(tree):
+    parents = _parents(tree)
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in _SEND_METHODS
+        ):
+            yield node
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in _SEND_METHODS
+            and isinstance(node.ctx, ast.Load)
+            and not (
+                isinstance(parents.get(node), ast.Call) and parents[node].func is node
+            )
+        ):
+            yield node
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) > 1
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _SEND_METHODS
         ):
             yield node
 
@@ -269,6 +493,23 @@ def _verdicts(source: str) -> list:
             prompt = await case_redacted(prompt, ctx)
             return await provider.generate(prompt=prompt)
         """,
+        # both arms of a branch redact
+        """
+        async def f(router, prompt, ctx, cond):
+            if cond:
+                messages = await case_redacted_messages([{"content": prompt}], ctx)
+            else:
+                messages = await ctx.asanitize_messages([{"content": "x"}])
+            return await router.route(messages=messages)
+        """,
+        # routing overrides splatted by the *route_kwargs convention
+        """
+        async def f(router, prompt, ctx, settings):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await router.route(
+                messages=messages, model="m", **_role_route_kwargs(settings)
+            )
+        """,
     ],
 )
 def test_the_classifier_accepts_a_redacted_send(source):
@@ -316,6 +557,117 @@ def test_the_classifier_accepts_a_redacted_send(source):
         async def f(router, prompt, ctx):
             messages = case_redacted_messages([{"content": prompt}], ctx)
             return await router.route(messages=messages)
+        """,
+        # an alias: the send happens through a name the scan cannot follow
+        """
+        async def f(router, prompt):
+            send = router.route
+            return await send(messages=[{"content": prompt}])
+        """,
+        # functools.partial over the method
+        """
+        async def f(router, prompt):
+            send = functools.partial(router.route, messages=[{"content": prompt}])
+            return await send()
+        """,
+        # getattr
+        """
+        async def f(router, prompt):
+            return await getattr(router, "route")(messages=[{"content": prompt}])
+        """,
+        # the helper, with a literal None context, redacts nothing
+        """
+        async def f(router, prompt):
+            messages = await case_redacted_messages([{"content": prompt}], None)
+            return await router.route(messages=messages)
+        """,
+        """
+        async def f(provider, prompt):
+            prompt = await case_redacted(prompt, None)
+            return await provider.generate(prompt=prompt)
+        """,
+        # mutated after the redaction
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            messages.append({"role": "user", "content": raw})
+            return await router.route(messages=messages)
+        """,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            messages.extend([{"role": "user", "content": raw}])
+            return await router.route(messages=messages)
+        """,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            messages.insert(0, {"role": "system", "content": raw})
+            return await router.route(messages=messages)
+        """,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            messages += [{"role": "user", "content": raw}]
+            return await router.route(messages=messages)
+        """,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            messages[0]["content"] = raw
+            return await router.route(messages=messages)
+        """,
+        # raw content through a second channel
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await router.route(messages=messages, system=raw)
+        """,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await router.route(messages=messages, prompt=raw)
+        """,
+        # a splat that is not a routing override
+        """
+        async def f(router, prompt, ctx, extra):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await router.route(messages=messages, **extra)
+        """,
+        # one arm of a branch redacts, the other does not
+        """
+        async def f(router, prompt, ctx, cond):
+            if cond:
+                messages = [{"content": prompt}]
+            else:
+                messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await router.route(messages=messages)
+        """,
+        # redacted only on one arm, the caller's value on the other
+        """
+        async def f(router, messages, ctx, cond):
+            if cond:
+                messages = await case_redacted_messages(messages, ctx)
+            return await router.route(messages=messages)
+        """,
+        # rebound later in the loop the send sits in
+        """
+        async def f(router, prompts, ctx):
+            messages = await case_redacted_messages([{"content": "x"}], ctx)
+            for p in prompts:
+                await router.route(messages=messages)
+                messages = [{"content": p}]
+        """,
+        # rebound after the closure that sends it is defined
+        """
+        async def f(router, prompt, ctx):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+
+            async def _send():
+                return await router.route(messages=messages)
+
+            messages = [{"content": prompt}]
+            return await _send()
         """,
     ],
 )

@@ -893,7 +893,9 @@ class TestStagingAcrossTheHandshake:
         await _apply(engine, case, _revision_turn_with_cause_work())
         case.current_turn += 1
 
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
 
         updated = result["case_updated"]
         assert updated.progress.problem_status == ProblemStatus.VERIFIED
@@ -952,7 +954,9 @@ class TestStagingAcrossTheHandshake:
         )
 
         case.current_turn += 1
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
 
         updated = result["case_updated"]
         competitor = next(
@@ -1011,7 +1015,9 @@ class TestStagingAcrossTheHandshake:
         assert "NOT refuted" not in meta.get("system_feedback", "")
 
         case.current_turn += 1
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
 
         replayed = result["case_updated"].hypotheses[standing.hypothesis_id]
         assert replayed.state == HypothesisState.REFUTED
@@ -1038,7 +1044,9 @@ class TestStagingAcrossTheHandshake:
         await _apply(engine, case, dsu)
         case.current_turn += 1
 
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
 
         updated = result["case_updated"]
         assert updated.state == CaseState.INVESTIGATING
@@ -1165,7 +1173,9 @@ class TestStagingAcrossTheHandshake:
         )
         case.current_turn += 1
 
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
 
         updated = result["case_updated"]
         assert updated.state == CaseState.INVESTIGATING
@@ -1197,7 +1207,7 @@ class TestStagingAcrossTheHandshake:
             )
         )
 
-        await engine.process_turn(case=case, user_message="no")
+        await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
 
         feedback = case.turn_history[-1].system_feedback or ""
         assert "declined the revised problem statement" in feedback
@@ -1208,7 +1218,9 @@ class TestStagingAcrossTheHandshake:
         await _apply(engine, case, _revision_turn_with_cause_work())
         case.current_turn += 1
 
-        result = await engine.process_turn(case=case, user_message="no")
+        result = await engine.process_turn(
+            case=case, user_message="no", redaction_ctx=None
+        )
 
         updated = result["case_updated"]
         assert updated.progress.problem_status == ProblemStatus.UNVERIFIED
@@ -1229,7 +1241,7 @@ class TestHandshakeDoors:
         engine, case = _engine("Here is what the log shows."), _case()
         _propose(case)
         result = await engine.process_turn(
-            case=case, user_message="what made you think that?"
+            case=case, user_message="what made you think that?", redaction_ctx=None
         )
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
         assert REVISED in result["agent_response"]
@@ -1248,6 +1260,7 @@ class TestHandshakeDoors:
             user_message="Yes, the revised problem statement is right.",
             intent_type="confirmation",
             intent_data={"value": True, "proposal_id": revision_offer_key("other")},
+            redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
         assert case.description == STATEMENT
@@ -1260,6 +1273,7 @@ class TestHandshakeDoors:
             user_message="Yes, the revised problem statement is right.",
             intent_type="confirmation",
             intent_data={"value": True, "proposal_id": revision_offer_key(REVISED)},
+            redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.description == REVISED
@@ -1296,6 +1310,7 @@ class TestHandshakeDoors:
             intent_type="confirmation",
             intent_data={"value": False},
             typed=True,
+            redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.problem_verification.pending_revision is None
@@ -1329,6 +1344,7 @@ class TestHandshakeDoors:
             user_message="",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.pending_transition["to_state"] == "closed"
@@ -1360,7 +1376,9 @@ class TestHolds:
         invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
         case.turns_without_progress = 6
 
-        await engine.process_turn(case=case, user_message="ok, noted")
+        await engine.process_turn(
+            case=case, user_message="ok, noted", redaction_ctx=None
+        )
 
         hyp = case.hypotheses["hyp_0000000000bb"]
         assert case.turns_without_progress == 6
@@ -1627,7 +1645,9 @@ class TestFalseAlarmCloseFollowsItsFinding:
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
         assert confirm_pending_transition(case, "u") is False
         assert case.state == CaseState.INVESTIGATING
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
         assert result["case_updated"].state == CaseState.INVESTIGATING
 
     async def test_an_edit_takes_back_the_models_close(self):
@@ -1687,6 +1707,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
             user_message="",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         pending = case.pending_transition
         assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
@@ -1700,7 +1721,9 @@ class TestFalseAlarmCloseFollowsItsFinding:
         engine, case = _engine(), _false_alarm_case(model_close=True)
         await _apply(engine, case, _withdraw_update())
         case.current_turn += 1
-        result = await engine.process_turn(case=case, user_message="yes")
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
         updated = result["case_updated"]
         assert updated.state != CaseState.CLOSED
         reason = (updated.pending_transition or {}).get("closure_reason")
@@ -1744,7 +1767,9 @@ async def _finding_turn(*, model_proposes: str | None) -> tuple:
     engine, case = _engine(), _case()
     _respond(engine, _finding(model_proposes=model_proposes))
     result = await engine.process_turn(
-        case=case, user_message="the gateway log shows no errors at 14:00"
+        case=case,
+        user_message="the gateway log shows no errors at 14:00",
+        redaction_ctx=None,
     )
     case = result["case_updated"]
     assert case.progress.problem_status == ProblemStatus.INVALIDATED
@@ -1778,7 +1803,9 @@ class TestTheEnginesFalseAlarmOfferStands:
         _respond(engine, _finding(model_proposes="resolved"))
         with patch.object(turn_completion.logger, "info") as info:
             result = await engine.process_turn(
-                case=case, user_message="the gateway log shows no errors at 14:00"
+                case=case,
+                user_message="the gateway log shows no errors at 14:00",
+                redaction_ctx=None,
             )
         (extra,) = [
             c.kwargs["extra"]
@@ -1799,7 +1826,7 @@ class TestTheEnginesFalseAlarmOfferStands:
         engine, case, _ = await _finding_turn(model_proposes="closed")
         case.current_turn += 1
         _respond(engine, _DSU())
-        await engine.process_turn(case=case, user_message="no")
+        await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
         assert case.pending_transition is None
         assert case.problem_verification.invalidation.close_declined_at_turn == 5
         assert case.progress.deferred_disposition_declined_signatures == []
@@ -1846,6 +1873,7 @@ class TestTheEnginesFalseAlarmOfferStands:
         await engine.process_turn(
             case=case,
             user_message="The /orders API times out after 30s; the database is fine",
+            redaction_ctx=None,
         )
         assert case.pending_transition is None
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
@@ -1861,7 +1889,9 @@ class TestTheEnginesFalseAlarmOfferStands:
         _respond(
             engine, _DSU(proposed_transition=ProposedTransition(to_state="closed"))
         )
-        result = await engine.process_turn(case=case, user_message="let's stop here")
+        result = await engine.process_turn(
+            case=case, user_message="let's stop here", redaction_ctx=None
+        )
         pending = result["case_updated"].pending_transition
         assert pending["to_state"] == "closed"
         assert _SIGNED not in pending

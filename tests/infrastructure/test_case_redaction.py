@@ -4,6 +4,7 @@ import json
 import re
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis.aioredis
 import pytest
 
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
@@ -135,57 +136,63 @@ class TestCaseRedactionContext:
         assert "10.0.0.1" in result
 
 
+KEY = "redaction:registry:case-1"
+
+
+@pytest.fixture(params=[True, False], ids=["decoded", "bytes"])
+def fake_redis(request):
+    """A real Redis API in process, both reply shapes the app can be given."""
+    return fakeredis.aioredis.FakeRedis(decode_responses=request.param)
+
+
 class TestCaseRedactionRedis:
-    """Redis persistence for case-scoped redaction registry."""
+    """Redis persistence for case-scoped redaction registry: one hash per
+    case, field ``json.dumps([entity_type, value])``, value the placeholder."""
 
     @pytest.mark.asyncio
-    async def test_load_from_redis(self, sanitizer, mock_redis):
+    async def test_load_from_redis(self, sanitizer, fake_redis):
         """Registry should load existing mappings from Redis."""
-        stored_data = json.dumps(
-            {
-                "forward": {"IP_ADDRESS": {"10.0.0.1": "<IP_ADDRESS_1>"}},
-                "reverse": {"<IP_ADDRESS_1>": "10.0.0.1"},
-            }
+        await fake_redis.hset(
+            KEY, json.dumps(["IP_ADDRESS", "10.0.0.1"]), "<IP_ADDRESS_1>"
         )
-        mock_redis.get = AsyncMock(return_value=stored_data)
 
-        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
+        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=fake_redis)
         await ctx.load()
 
         assert ctx._forward == {"IP_ADDRESS": {"10.0.0.1": "<IP_ADDRESS_1>"}}
         assert ctx._reverse == {"<IP_ADDRESS_1>": "10.0.0.1"}
-        mock_redis.get.assert_called_once_with("redaction:case-1")
 
     @pytest.mark.asyncio
-    async def test_save_to_redis(self, sanitizer, mock_redis):
-        """Registry should persist to Redis after modification."""
-        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
+    async def test_save_to_redis(self, sanitizer, fake_redis):
+        """Registry should persist to Redis after modification, with the TTL."""
+        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=fake_redis)
         await ctx.load()
 
-        ctx.sanitize("Connection from 10.0.0.1 accepted")
+        redacted = ctx.sanitize("Connection from 10.0.0.1 accepted")
         await ctx.save()
 
-        mock_redis.set.assert_called_once()
-        call_args = mock_redis.set.call_args
-        key = call_args[0][0]
-        assert key == "redaction:case-1"
-
-        # Verify TTL was set
-        assert call_args[1]["ex"] == 168 * 3600  # 7 days in seconds
+        stored = await fake_redis.hgetall(KEY)
+        assert len(stored) == 1
+        [placeholder] = [
+            p.decode() if isinstance(p, bytes) else p for p in stored.values()
+        ]
+        assert placeholder in redacted
+        assert 0 < await fake_redis.ttl(KEY) <= 168 * 3600  # 7 days in seconds
 
     @pytest.mark.asyncio
-    async def test_save_skipped_when_not_dirty(self, sanitizer, mock_redis):
-        """save() should skip Redis write when no changes were made."""
-        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
+    async def test_save_skipped_when_nothing_is_new(self, sanitizer, fake_redis):
+        """save() should skip the Redis write when no entry was added."""
+        ctx = CaseRedactionContext("case-1", sanitizer, redis_client=fake_redis)
         await ctx.load()
+        ctx.sanitize("nothing sensitive here")
         await ctx.save()
 
-        mock_redis.set.assert_not_called()
+        assert await fake_redis.exists(KEY) == 0
 
     @pytest.mark.asyncio
     async def test_load_survives_redis_failure(self, sanitizer, mock_redis):
         """Registry should work in-memory when Redis is unavailable."""
-        mock_redis.get = AsyncMock(side_effect=ConnectionError("Redis down"))
+        mock_redis.hgetall = AsyncMock(side_effect=ConnectionError("Redis down"))
 
         ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
         await ctx.load()
@@ -197,7 +204,8 @@ class TestCaseRedactionRedis:
     @pytest.mark.asyncio
     async def test_save_survives_redis_failure(self, sanitizer, mock_redis):
         """save() should log warning but not crash when Redis fails."""
-        mock_redis.set = AsyncMock(side_effect=ConnectionError("Redis down"))
+        mock_redis.hgetall = AsyncMock(return_value={})
+        mock_redis.pipeline = MagicMock(side_effect=ConnectionError("Redis down"))
 
         ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
         await ctx.load()
@@ -207,23 +215,16 @@ class TestCaseRedactionRedis:
         await ctx.save()
 
     @pytest.mark.asyncio
-    async def test_roundtrip_preserves_registry(self, sanitizer, mock_redis):
+    async def test_roundtrip_preserves_registry(self, sanitizer, fake_redis):
         """Save then load should preserve the full registry state."""
-        # Phase 1: Sanitize and save
-        ctx1 = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
+        ctx1 = CaseRedactionContext("case-1", sanitizer, redis_client=fake_redis)
         await ctx1.load()
         redacted = ctx1.sanitize("Connection from 10.0.0.1 accepted")
         await ctx1.save()
 
-        # Capture what was saved to Redis
-        saved_data = mock_redis.set.call_args[0][1]
-
-        # Phase 2: Load into a new context
-        mock_redis.get = AsyncMock(return_value=saved_data)
-        ctx2 = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
+        ctx2 = CaseRedactionContext("case-1", sanitizer, redis_client=fake_redis)
         await ctx2.load()
 
-        # The new context should reverse the same text correctly
         restored = ctx2.reverse(redacted)
         assert "10.0.0.1" in restored
 
@@ -245,20 +246,19 @@ class TestCaseRedactionRedis:
         ctx = CaseRedactionContext("case-1", sanitizer, redis_client=mock_redis)
         await ctx.cleanup()
 
-        mock_redis.delete.assert_called_once_with("redaction:case-1")
+        mock_redis.delete.assert_called_once_with(KEY)
 
     @pytest.mark.asyncio
-    async def test_custom_ttl(self, sanitizer, mock_redis):
+    async def test_custom_ttl(self, sanitizer, fake_redis):
         """Custom TTL should be used when saving to Redis."""
         ctx = CaseRedactionContext(
-            "case-1", sanitizer, redis_client=mock_redis, ttl_hours=24
+            "case-1", sanitizer, redis_client=fake_redis, ttl_hours=24
         )
         await ctx.load()
         ctx.sanitize("Connection from 10.0.0.1 accepted")
         await ctx.save()
 
-        call_args = mock_redis.set.call_args
-        assert call_args[1]["ex"] == 24 * 3600
+        assert 23 * 3600 < await fake_redis.ttl(KEY) <= 24 * 3600
 
 
 class TestSanitizeTextWithRegistry:
@@ -317,29 +317,14 @@ class TestSanitizeTextWithRegistry:
 class TestRegistrySurvivesTheRedisRoundTrip:
     """Save a REAL registry and load it back through a second context.
 
-    The other Redis tests mock `get` and `set` independently, so nothing feeds
-    a saved payload back through `load` — a serialization change could break
-    reversal with every one of them still green. This drives the actual
+    A unit test of `save` alone and of `load` alone could each agree with a
+    serialization the other does not read — a format change could break
+    reversal with both still green. This drives the actual
     sanitize → save → load → reverse path.
     """
 
-    class _FakeRedis:
-        """Enough Redis to round-trip one key, storing bytes like the real one."""
-
-        def __init__(self):
-            self.store = {}
-
-        async def get(self, key):
-            return self.store.get(key)
-
-        async def set(self, key, value, ex=None):
-            self.store[key] = value.encode() if isinstance(value, str) else value
-
-        async def delete(self, key):
-            self.store.pop(key, None)
-
     async def test_a_saved_registry_reverses_in_a_fresh_context(self, sanitizer):
-        redis = self._FakeRedis()
+        redis = fakeredis.aioredis.FakeRedis()
         text = "host 10.9.8.7 talked to 10.9.8.6"
 
         first = CaseRedactionContext("case-rt", sanitizer, redis)
@@ -348,7 +333,7 @@ class TestRegistrySurvivesTheRedisRoundTrip:
         await first.save()
 
         assert "10.9.8.7" not in redacted
-        assert redis.store, "nothing was persisted"
+        assert await redis.exists("redaction:registry:case-rt"), "nothing was persisted"
 
         second = CaseRedactionContext("case-rt", sanitizer, redis)
         await second.load()
@@ -359,7 +344,7 @@ class TestRegistrySurvivesTheRedisRoundTrip:
     async def test_a_reloaded_registry_keeps_assigning_the_same_placeholders(
         self, sanitizer
     ):
-        redis = self._FakeRedis()
+        redis = fakeredis.aioredis.FakeRedis()
         first = CaseRedactionContext("case-rt2", sanitizer, redis)
         await first.load()
         one = await first.asanitize("host 10.9.8.7")

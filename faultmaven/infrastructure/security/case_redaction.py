@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 #: registry persisted before #971 holds narrower ones, and a loaded registry
 #: keeps handing them out.
 REDACTION_PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_[0-9a-f]+>")
+
+
+def _as_text(raw: Any) -> str:
+    """A Redis reply as text, whether the client decodes responses or not."""
+    return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
 
 def should_redact(sanitizer) -> bool:
@@ -90,7 +95,10 @@ class CaseRedactionContext:
     all evidence files, tool results, and conversation turns within a case.
     """
 
-    REDIS_KEY_PREFIX = "redaction"
+    #: One Redis HASH per case: field ``json.dumps([entity_type, value])``,
+    #: value the placeholder. The ``redaction:`` namespace is the one the
+    #: deployment wipe clears.
+    REDIS_KEY_PREFIX = "redaction:registry"
     DEFAULT_TTL_HOURS = 168  # 7 days
 
     def __init__(
@@ -121,8 +129,28 @@ class CaseRedactionContext:
         # Bidirectional mapping state
         self._forward: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
         self._reverse: Dict[str, str] = {}  # placeholder → original value
-        self._dirty = False  # Track whether save is needed
+        # The (type, value) entries known to be in the stored registry: read
+        # by load()/save() or written by save(). save() writes the rest.
+        self._persisted: Set[Tuple[str, str]] = set()
         self._loaded = False
+
+    async def _read_stored(self) -> Dict[Tuple[str, str], str]:
+        """The stored registry, as ``{(entity_type, value): placeholder}``."""
+        raw = await self.redis_client.hgetall(self._redis_key)
+        stored: Dict[Tuple[str, str], str] = {}
+        for field, placeholder in (raw or {}).items():
+            entity_type, value = json.loads(_as_text(field))
+            stored[(entity_type, value)] = _as_text(placeholder)
+        return stored
+
+    def _absorb(self, stored: Dict[Tuple[str, str], str]) -> None:
+        """Union the stored registry into this one. An entry this context
+        already holds is kept: a placeholder is a keyed function of the value
+        (#971), so the two agree."""
+        for (entity_type, value), placeholder in stored.items():
+            self._forward.setdefault(entity_type, {}).setdefault(value, placeholder)
+        self._persisted.update(stored)
+        self._rebuild_reverse()
 
     async def load(self) -> None:
         """Load existing registry from Redis.
@@ -135,15 +163,11 @@ class CaseRedactionContext:
             return
 
         try:
-            raw = await self.redis_client.get(self._redis_key)
-            if raw:
-                data = json.loads(raw)
-                self._forward = data.get("forward", {})
-                self._reverse = data.get("reverse", {})
-                logger.debug(
-                    f"Loaded redaction registry for case {self.case_id}: "
-                    f"{sum(len(v) for v in self._forward.values())} entities"
-                )
+            self._absorb(await self._read_stored())
+            logger.debug(
+                f"Loaded redaction registry for case {self.case_id}: "
+                f"{self.entity_count} entities"
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to load redaction registry from Redis for case "
@@ -153,20 +177,44 @@ class CaseRedactionContext:
         self._loaded = True
 
     async def save(self) -> None:
-        """Persist current registry to Redis with TTL.
+        """Add this context's new entries to the stored registry, with TTL.
 
-        Only writes if the registry was modified since last load/save.
+        A MERGE, never an overwrite (#1956). Each entry not yet stored is
+        written with ``HSETNX`` into the case's hash, so the stored registry
+        only grows and an entry already there is never replaced. Two contexts
+        on one case — two concurrent turns, a turn and the case title, or a
+        context whose ``load()`` failed — therefore cannot drop each other's
+        entries, whatever order they save in, with no lock and no retry: each
+        field is written atomically by Redis. The stored registry is then read
+        back into this context, so it can reverse what the others added.
+
+        Writes nothing when every entry is already stored. The key's TTL is
+        refreshed on every write, as before.
         """
-        if not self.enabled or not self._dirty:
+        if not self.enabled:
+            return
+        unsaved = [
+            (entity_type, value, placeholder)
+            for entity_type, type_map in self._forward.items()
+            for value, placeholder in type_map.items()
+            if (entity_type, value) not in self._persisted
+        ]
+        if not unsaved:
             return
 
         try:
-            data = json.dumps({"forward": self._forward, "reverse": self._reverse})
-            await self.redis_client.set(self._redis_key, data, ex=self.ttl_seconds)
-            self._dirty = False
+            pipe = self.redis_client.pipeline(transaction=False)
+            for entity_type, value, placeholder in unsaved:
+                pipe.hsetnx(
+                    self._redis_key, json.dumps([entity_type, value]), placeholder
+                )
+            pipe.expire(self._redis_key, self.ttl_seconds)
+            await pipe.execute()
+            self._persisted.update((t, v) for t, v, _ in unsaved)
+            self._absorb(await self._read_stored())
             logger.debug(
                 f"Saved redaction registry for case {self.case_id}: "
-                f"{sum(len(v) for v in self._forward.values())} entities"
+                f"{len(unsaved)} new of {self.entity_count} entities"
             )
         except Exception as e:
             logger.warning(
@@ -190,9 +238,8 @@ class CaseRedactionContext:
         if not self.enabled or not text or not isinstance(text, str):
             return text
 
-        before = self.entity_count
         result = self.sanitizer.sanitize_text_with_registry(text, self._forward)
-        self._registry_settled(before)
+        self._rebuild_reverse()
         return result
 
     async def asanitize(self, text: str) -> str:
@@ -208,11 +255,10 @@ class CaseRedactionContext:
         if not self.enabled or not text or not isinstance(text, str):
             return text
 
-        before = self.entity_count
         result = await asyncio.to_thread(
             self.sanitizer.sanitize_text_with_registry, text, self._forward
         )
-        self._registry_settled(before)
+        self._rebuild_reverse()
         return result
 
     async def asanitize_messages(
@@ -275,20 +321,6 @@ class CaseRedactionContext:
             result = result.replace(placeholder, original)
 
         return result
-
-    def _registry_settled(self, entities_before: int) -> None:
-        """Bookkeeping after a sanitize pass mutated ``_forward`` in place.
-
-        ``_dirty`` is set only when the registry GREW (#1956). It used to be
-        set on every pass, so a context that had redacted nothing new still
-        wrote its whole registry back on ``save()`` — and two contexts loaded
-        on one case key then clobbered each other: the later save replaced the
-        other's new entries with its own stale snapshot. A pass that only
-        reused known placeholders leaves nothing to persist.
-        """
-        self._rebuild_reverse()
-        if self.entity_count != entities_before:
-            self._dirty = True
 
     def _rebuild_reverse(self) -> None:
         """Rebuild reverse mapping from forward registry.

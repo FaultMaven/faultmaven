@@ -422,7 +422,7 @@ class TestInvestigationLifecycle:
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(
-                case, "Our API is experiencing high latency"
+                case, "Our API is experiencing high latency", redaction_ctx=None
             )
 
         updated = result["case_updated"]
@@ -456,6 +456,7 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(
                 case,
                 "Here are the logs: 2026-02-15 ERROR [pool] Connection pool exhausted",
+                redaction_ctx=None,
             )
 
         updated = result["case_updated"]
@@ -492,6 +493,7 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(
                 case,
                 "yes",
+                redaction_ctx=None,
             )
 
         after_gate1 = result["case_updated"]
@@ -506,7 +508,7 @@ class TestInvestigationLifecycle:
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(
-                after_gate1, "Here are the metrics: p99=5200ms"
+                after_gate1, "Here are the metrics: p99=5200ms", redaction_ctx=None
             )
 
         updated = result["case_updated"]
@@ -529,7 +531,9 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
+            result = await engine.process_turn(
+                case, "Here are the metrics: p99=5200ms", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         assert updated.state == CaseState.INVESTIGATING
@@ -559,7 +563,9 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
+            result = await engine.process_turn(
+                case, "Here are the metrics: p99=5200ms", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         assert result["agent_response"]  # turn completed, not aborted
@@ -578,7 +584,7 @@ class TestInvestigationLifecycle:
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(
-                case, "Our API is experiencing high latency"
+                case, "Our API is experiencing high latency", redaction_ctx=None
             )
         case = result["case_updated"]
         assert case.state == CaseState.INQUIRY
@@ -597,6 +603,7 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(
                 case,
                 "yes",
+                redaction_ctx=None,
             )
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING
@@ -609,7 +616,9 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
+            result = await engine.process_turn(
+                case, "Here are the metrics: p99=5200ms", redaction_ctx=None
+            )
         case = result["case_updated"]
         assert case.progress.symptom_verified is True
 
@@ -621,7 +630,9 @@ class TestInvestigationLifecycle:
             return_value=_investigation_propose_resolved_response(),
         ):
             result = await engine.process_turn(
-                case, "I rolled back the config and p99 is back to 200ms"
+                case,
+                "I rolled back the config and p99 is back to 200ms",
+                redaction_ctx=None,
             )
         case = result["case_updated"]
         assert case.pending_transition is not None
@@ -634,6 +645,7 @@ class TestInvestigationLifecycle:
             "yes",
             intent_type="confirmation",
             intent_data=_click_the_yes_card(result),
+            redaction_ctx=None,
         )
         case = result["case_updated"]
         assert case.state == CaseState.RESOLVED
@@ -660,7 +672,9 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_inquiry_response_high_urgency(),
         ):
-            result1 = await engine.process_turn(case, "Our API is down in production!")
+            result1 = await engine.process_turn(
+                case, "Our API is down in production!", redaction_ctx=None
+            )
 
         updated1 = result1["case_updated"]
         assert updated1.state == CaseState.INQUIRY
@@ -674,7 +688,9 @@ class TestInvestigationLifecycle:
             return_value=_inquiry_response_user_confirms(),
         ):
             # A bare consent token: the flag commits Gate 1 only on one (#1794).
-            result2 = await engine.process_turn(updated1, "that's correct")
+            result2 = await engine.process_turn(
+                updated1, "that's correct", redaction_ctx=None
+            )
 
         updated2 = result2["case_updated"]
         assert updated2.state == CaseState.INVESTIGATING
@@ -688,7 +704,7 @@ class TestInvestigationLifecycle:
             return_value=_investigation_verification_response(),
         ):
             result3 = await engine.process_turn(
-                updated2, "Here are the metrics: p99=5200ms"
+                updated2, "Here are the metrics: p99=5200ms", redaction_ctx=None
             )
 
         updated3 = result3["case_updated"]
@@ -705,6 +721,7 @@ class TestInvestigationLifecycle:
             "Close this case",
             intent_type="status_transition",
             intent_data={"to_state": "closed", "from_state": "inquiry"},
+            redaction_ctx=None,
         )
 
         updated = result["case_updated"]
@@ -723,6 +740,7 @@ class TestInvestigationLifecycle:
             "Close without resolution",
             intent_type="status_transition",
             intent_data={"to_state": "closed", "from_state": "investigating"},
+            redaction_ctx=None,
         )
 
         updated = result["case_updated"]
@@ -764,6 +782,7 @@ class TestTransitionsAreRecorded:
             result = await engine.process_turn(
                 case,
                 "go ahead",
+                redaction_ctx=None,
             )
 
         assert result["case_updated"].state == CaseState.INVESTIGATING
@@ -824,7 +843,9 @@ class TestTransitionsAreRecorded:
             return_value=_investigation_propose_resolved_response(),
         ):
             result = await engine.process_turn(
-                case, "I applied the config change and latency is back to normal"
+                case,
+                "I applied the config change and latency is back to normal",
+                redaction_ctx=None,
             )
 
         await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
@@ -840,6 +861,7 @@ class TestTransitionsAreRecorded:
             "yes",
             intent_type="confirmation",
             intent_data=_click_the_yes_card(result),
+            redaction_ctx=None,
         )
 
         assert result["case_updated"].state == CaseState.RESOLVED
@@ -888,8 +910,12 @@ class TestConcurrentTurnLocking:
             "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
-            task1 = asyncio.create_task(engine.process_turn(case, "Message A - first"))
-            task2 = asyncio.create_task(engine.process_turn(case, "Message B - second"))
+            task1 = asyncio.create_task(
+                engine.process_turn(case, "Message A - first", redaction_ctx=None)
+            )
+            task2 = asyncio.create_task(
+                engine.process_turn(case, "Message B - second", redaction_ctx=None)
+            )
             await asyncio.gather(task1, task2, return_exceptions=True)
 
         # Serialized: start_A, end_A, start_B, end_B (or B first)
@@ -931,8 +957,12 @@ class TestConcurrentTurnLocking:
             "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
-            task1 = asyncio.create_task(engine.process_turn(case_a, "Turn for case A"))
-            task2 = asyncio.create_task(engine.process_turn(case_b, "Turn for case B"))
+            task1 = asyncio.create_task(
+                engine.process_turn(case_a, "Turn for case A", redaction_ctx=None)
+            )
+            task2 = asyncio.create_task(
+                engine.process_turn(case_b, "Turn for case B", redaction_ctx=None)
+            )
             await asyncio.gather(task1, task2, return_exceptions=True)
 
         assert len(execution_order) == 4, execution_order
@@ -962,7 +992,9 @@ class TestEvidenceAccumulation:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics")
+            result = await engine.process_turn(
+                case, "Here are the metrics", redaction_ctx=None
+            )
         case = result["case_updated"]
         count_after_turn3 = len(case.evidence)
         assert count_after_turn3 >= 1
@@ -1008,7 +1040,9 @@ class TestEvidenceAccumulation:
         with patch.object(
             engine.generator, "generate_structured_output", return_value=response_turn4
         ):
-            result = await engine.process_turn(case, "Deployment was at 14:00")
+            result = await engine.process_turn(
+                case, "Deployment was at 14:00", redaction_ctx=None
+            )
         case = result["case_updated"]
 
         assert len(case.evidence) > count_after_turn3
@@ -1031,7 +1065,9 @@ class TestEvidenceAccumulation:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics")
+            result = await engine.process_turn(
+                case, "Here are the metrics", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         new_evidence = [e for e in updated.evidence if e.collected_at_turn == 3]
@@ -1064,7 +1100,9 @@ class TestTurnHistoryAndProgress:
             "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
-            result = await engine.process_turn(case, "Our API is experiencing latency")
+            result = await engine.process_turn(
+                case, "Our API is experiencing latency", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         assert len(updated.turn_history) >= 1
@@ -1084,7 +1122,9 @@ class TestTurnHistoryAndProgress:
             "generate_structured_output",
             return_value=_investigation_no_progress_response(),
         ):
-            result = await engine.process_turn(case, "Can you help?")
+            result = await engine.process_turn(
+                case, "Can you help?", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         assert result["metadata"]["progress_made"] is False
@@ -1106,7 +1146,9 @@ class TestTurnHistoryAndProgress:
             "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
-            result = await engine.process_turn(case, "Our API is having issues")
+            result = await engine.process_turn(
+                case, "Our API is having issues", redaction_ctx=None
+            )
 
         assert case.version == version, "the engine committed mid-turn"
         await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
@@ -1154,7 +1196,9 @@ class TestWorkingConclusion:
             "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
-            result = await engine.process_turn(case, "Here are the metrics")
+            result = await engine.process_turn(
+                case, "Here are the metrics", redaction_ctx=None
+            )
 
         updated = result["case_updated"]
         assert updated.working_conclusion is not None

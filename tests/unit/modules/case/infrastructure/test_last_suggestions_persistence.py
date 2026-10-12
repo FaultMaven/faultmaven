@@ -187,6 +187,7 @@ class TestSQLiteLastSuggestionsRoundTrip:
         matched = await resolver.resolve(
             user_message="Application logs",
             last_suggestions=reloaded.last_suggestions,
+            redaction_ctx=None,
         )
 
         assert matched == {

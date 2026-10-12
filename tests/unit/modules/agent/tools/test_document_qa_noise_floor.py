@@ -85,6 +85,7 @@ class TestNoiseFloorRefuse:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         llm_router.route.assert_not_called()
@@ -111,6 +112,7 @@ class TestNoiseFloorRefuse:
                 scope_id=None,
                 k=3,
                 filters={"$or": [{"scope": "global"}]},
+                redaction_ctx=None,
             )
         )["answer"].lower()
 
@@ -140,6 +142,7 @@ class TestNoiseFloorRefuse:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         llm_router.route.assert_called_once()
@@ -172,6 +175,7 @@ class TestNoiseFloorRefuse:
             question="when did the first error occur?",
             scope_id="case_abc",
             k=3,
+            redaction_ctx=None,
         )
 
         llm_router.route.assert_called_once()
@@ -204,6 +208,7 @@ class TestProvenanceIsAUseSet:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         llm_router.route.assert_called_once()  # synthesis DID run
@@ -225,6 +230,7 @@ class TestProvenanceIsAUseSet:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         eligible = {

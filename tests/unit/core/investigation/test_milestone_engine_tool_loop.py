@@ -894,7 +894,7 @@ class TestBuildToolContext:
         mock_case.enterprise_id = "ent_123"
 
         result = await engine.generator.build_tool_context(
-            mock_case, user_id="user_abc"
+            mock_case, user_id="user_abc", redaction_ctx=None
         )
 
         assert result.session_id == "case_001"
@@ -911,7 +911,9 @@ class TestBuildToolContext:
         mock_case.case_id = "case_002"
         mock_case.enterprise_id = "ent_456"
 
-        result = await engine.generator.build_tool_context(mock_case, user_id=None)
+        result = await engine.generator.build_tool_context(
+            mock_case, user_id=None, redaction_ctx=None
+        )
 
         assert result.user_id == "system"
 
@@ -2567,6 +2569,7 @@ class TestBothCallSitesWireTheBaseBuilder:
             case=_dense_case(),
             user_message="search the logs for err=0x",
             intent_data={"query_mode": "directed_analysis"},
+            redaction_ctx=None,
         )
 
         kwargs = engine.generator.generate_structured_output.call_args.kwargs

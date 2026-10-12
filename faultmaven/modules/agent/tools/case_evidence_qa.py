@@ -65,7 +65,7 @@ Use this tool for detailed forensic questions that require precise citations."""
         )
 
     async def _arun(
-        self, case_id: str, question: str, k: int = 5, redaction_ctx: Any = None
+        self, case_id: str, question: str, k: int = 5, *, redaction_ctx: Any
     ) -> str:
         """
         Query case evidence.

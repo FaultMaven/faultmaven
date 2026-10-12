@@ -313,6 +313,7 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
         result = await engine.process_turn(
             case=case,
             user_message="We created the index and p99 is back to 40ms",
+            redaction_ctx=None,
         )
 
     pending = result["case_updated"].pending_transition

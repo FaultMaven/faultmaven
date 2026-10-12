@@ -1,18 +1,18 @@
 """#1956: the case redaction registry's shared loader, helpers and save rule.
 
-A ``CaseRedactionContext`` set ``_dirty`` on EVERY sanitize pass, so a context
-that had redacted nothing new still wrote its whole registry back on
-``save()``. Two contexts loaded on one case key then clobbered each other: the
-later save replaced the other's new entries with its own stale snapshot, and a
-placeholder the user was about to read could no longer be reversed. ``_dirty``
-is now set only when the registry grew; and the turn loads ONE context
-(``load_case_redaction``) instead of one per caller.
+``save()`` used to write the context's whole registry over the stored one.
+Two contexts loaded on one case key — two concurrent turns, a turn and the
+case title, or a context whose ``load()`` failed — then clobbered each other:
+the later save replaced the other's new entries with its own snapshot, and a
+placeholder the user was about to read could no longer be reversed. The
+registry is now one Redis hash per case and ``save()`` MERGES: each new entry
+is written with ``HSETNX``, so the stored registry only grows, and the stored
+registry is read back into the context.
 """
 
 from __future__ import annotations
 
-import json
-
+import fakeredis.aioredis
 import pytest
 
 from faultmaven.config.settings import get_settings
@@ -27,34 +27,53 @@ from faultmaven.infrastructure.security.case_redaction import (
 
 pytestmark = pytest.mark.unit
 
+EMAIL, EMAIL_PH = "alice@example.com", "<EMAIL_ADDRESS_aaaaaaaaaaaaaaaa>"
+IP, IP_PH = "10.0.0.7", "<IP_ADDRESS_bbbbbbbbbbbbbbbb>"
+HOST, HOST_PH = "db-01.corp", "<HOSTNAME_cccccccccccccccc>"
+KEY = "redaction:registry:case_1956"
+
 
 class _Sanitizer:
-    """Registry-backed detection of two literal values."""
+    """Registry-backed detection of three literal values."""
 
     VALUES = {
-        "alice@example.com": ("EMAIL_ADDRESS", "<EMAIL_ADDRESS_aaaaaaaaaaaaaaaa>"),
-        "10.0.0.7": ("IP_ADDRESS", "<IP_ADDRESS_bbbbbbbbbbbbbbbb>"),
+        EMAIL: ("EMAIL_ADDRESS", EMAIL_PH),
+        IP: ("IP_ADDRESS", IP_PH),
+        HOST: ("HOSTNAME", HOST_PH),
     }
 
     def sanitize_text_with_registry(self, text, registry):
         for value, (kind, placeholder) in self.VALUES.items():
             if value in text:
-                registry.setdefault(kind, {})[value] = placeholder
+                registry.setdefault(kind, {}).setdefault(value, placeholder)
                 text = text.replace(value, placeholder)
         return text
 
 
-class _Redis:
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-        self.sets = 0
+class _CountingRedis(fakeredis.aioredis.FakeRedis):
+    """FakeRedis that counts pipelines executed (the save's one write)."""
 
-    async def get(self, key):
-        return self.store.get(key)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.writes = 0
 
-    async def set(self, key, value, ex=None):
-        self.sets += 1
-        self.store[key] = value
+    def pipeline(self, *args, **kwargs):
+        self.writes += 1
+        return super().pipeline(*args, **kwargs)
+
+
+class _FailingLoadRedis(fakeredis.aioredis.FakeRedis):
+    """Its first read fails, as a Redis blip would."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reads_to_fail = 1
+
+    async def hgetall(self, name):
+        if self.reads_to_fail:
+            self.reads_to_fail -= 1
+            raise ConnectionError("blip")
+        return await super().hgetall(name)
 
 
 def _ctx(redis) -> CaseRedactionContext:
@@ -63,65 +82,107 @@ def _ctx(redis) -> CaseRedactionContext:
     )
 
 
-def _stored(redis) -> dict:
-    return json.loads(redis.store["redaction:case_1956"])["reverse"]
+async def _stored_placeholders(redis) -> set[str]:
+    return {
+        p.decode() if isinstance(p, bytes) else p
+        for p in (await redis.hgetall(KEY)).values()
+    }
 
 
-class TestTheSaveWritesOnlyWhatGrew:
-    async def test_two_contexts_on_one_case_do_not_clobber(self):
-        """The regression: B loaded before A saved, redacted only a value it
-        already knew, and its save wrote back a snapshot without A's entry."""
-        redis = _Redis()
+class TestTheSaveMerges:
+    async def test_two_contexts_that_both_grow_keep_both(self):
+        """Two turns loaded before either saved; each redacts a new value."""
+        redis = fakeredis.aioredis.FakeRedis()
+        a, b = _ctx(redis), _ctx(redis)
+        await a.load()
+        await b.load()
+        await a.asanitize(f"user {EMAIL}")
+        await b.asanitize(f"from {IP}")
+        await a.save()
+        await b.save()
+
+        assert await _stored_placeholders(redis) == {EMAIL_PH, IP_PH}
+        # The later saver read the other's entry back, so it can reverse it.
+        assert b.reverse(EMAIL_PH) == EMAIL
+
+    async def test_a_context_that_grew_nothing_new_does_not_drop_a_peers_entry(self):
+        redis = fakeredis.aioredis.FakeRedis()
         seed = _ctx(redis)
         await seed.load()
-        await seed.asanitize("from 10.0.0.7")
+        await seed.asanitize(f"from {IP}")
         await seed.save()
 
         a, b = _ctx(redis), _ctx(redis)
         await a.load()
         await b.load()
-        await a.asanitize("user alice@example.com")
+        await a.asanitize(f"user {EMAIL}")
         await a.save()
-        await b.asanitize("again from 10.0.0.7")  # nothing new
+        await b.asanitize(f"again from {IP}")  # nothing new
         await b.save()
 
-        assert "<EMAIL_ADDRESS_aaaaaaaaaaaaaaaa>" in _stored(redis)
-        assert "<IP_ADDRESS_bbbbbbbbbbbbbbbb>" in _stored(redis)
+        assert await _stored_placeholders(redis) == {EMAIL_PH, IP_PH}
 
-    async def test_a_pass_that_grew_nothing_does_not_write(self):
-        redis = _Redis()
+    async def test_a_context_whose_load_failed_does_not_overwrite_the_registry(self):
+        redis = _FailingLoadRedis()
+        redis.reads_to_fail = 0
+        seed = _ctx(redis)
+        await seed.load()
+        await seed.asanitize(f"user {EMAIL} from {IP}")
+        await seed.save()
+
+        redis.reads_to_fail = 1
+        blind = _ctx(redis)
+        await blind.load()  # fails: starts empty
+        assert blind.entity_count == 0
+        await blind.asanitize(f"host {HOST}")
+        await blind.save()
+
+        assert await _stored_placeholders(redis) == {EMAIL_PH, IP_PH, HOST_PH}
+
+    async def test_a_save_with_nothing_new_writes_nothing(self):
+        redis = _CountingRedis()
         ctx = _ctx(redis)
         await ctx.load()
         await ctx.asanitize("no sensitive value here")
         ctx.sanitize("still none")
         await ctx.save()
-        assert redis.sets == 0
+        assert redis.writes == 0
 
-    async def test_a_pass_that_grew_the_registry_writes_once(self):
-        redis = _Redis()
+    async def test_a_save_writes_each_new_entry_once(self):
+        redis = _CountingRedis()
         ctx = _ctx(redis)
         await ctx.load()
-        await ctx.asanitize("user alice@example.com")
+        await ctx.asanitize(f"user {EMAIL}")
         await ctx.save()
         await ctx.save()
-        assert redis.sets == 1
-        assert ctx.reverse("<EMAIL_ADDRESS_aaaaaaaaaaaaaaaa>") == "alice@example.com"
+        assert redis.writes == 1
+        assert ctx.reverse(EMAIL_PH) == EMAIL
 
-    async def test_the_sync_pass_follows_the_same_rule(self):
-        redis = _Redis()
+    async def test_the_sync_pass_is_saved_too(self):
+        redis = fakeredis.aioredis.FakeRedis()
         ctx = _ctx(redis)
         await ctx.load()
-        ctx.sanitize("user alice@example.com")
+        ctx.sanitize(f"user {EMAIL}")
         await ctx.save()
-        assert redis.sets == 1
+        assert await _stored_placeholders(redis) == {EMAIL_PH}
+
+    async def test_the_ttl_is_kept(self):
+        redis = fakeredis.aioredis.FakeRedis()
+        ctx = CaseRedactionContext(
+            "case_1956", _Sanitizer(), redis, enabled=True, ttl_hours=2
+        )
+        await ctx.load()
+        await ctx.asanitize(f"user {EMAIL}")
+        await ctx.save()
+        assert 3600 < await redis.ttl(KEY) <= 7200
 
 
 class TestTheLoader:
     async def test_it_builds_enabled_by_should_redact_and_loads(self):
-        redis = _Redis()
+        redis = fakeredis.aioredis.FakeRedis()
         seed = _ctx(redis)
         await seed.load()
-        await seed.asanitize("user alice@example.com")
+        await seed.asanitize(f"user {EMAIL}")
         await seed.save()
         sanitizer = _Sanitizer()
 
@@ -137,7 +198,9 @@ class TestTheLoader:
             assert ctx.entity_count == 1
 
     async def test_no_sanitizer_is_disabled(self):
-        ctx = await load_case_redaction("case_1956", None, _Redis())
+        ctx = await load_case_redaction(
+            "case_1956", None, fakeredis.aioredis.FakeRedis()
+        )
         assert ctx.enabled is False
 
 
@@ -149,14 +212,12 @@ class TestTheHelpers:
         assert out == messages and out[0] is not messages[0]
 
     async def test_a_context_redacts_and_records(self):
-        ctx = _ctx(_Redis())
-        assert await case_redacted("user alice@example.com", ctx) == (
-            "user <EMAIL_ADDRESS_aaaaaaaaaaaaaaaa>"
-        )
+        ctx = _ctx(fakeredis.aioredis.FakeRedis())
+        assert await case_redacted(f"user {EMAIL}", ctx) == f"user {EMAIL_PH}"
         [message] = await case_redacted_messages(
-            [{"role": "user", "content": "from 10.0.0.7"}], ctx
+            [{"role": "user", "content": f"from {IP}"}], ctx
         )
-        assert message["content"] == "from <IP_ADDRESS_bbbbbbbbbbbbbbbb>"
+        assert message["content"] == f"from {IP_PH}"
         assert ctx.entity_count == 2
 
     @pytest.mark.parametrize(

@@ -1194,7 +1194,8 @@ class StructuredOutputGenerator:
         self,
         case: Any,
         user_id: str | None = None,
-        redaction_ctx: Any | None = None,
+        *,
+        redaction_ctx: Any,
     ) -> Any:
         """Build ToolContext for tool execution during DA turns.
 

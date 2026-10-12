@@ -197,7 +197,7 @@ async def test_confirmed_case_is_offered_resolve_when_the_model_stays_silent():
     assert derive_disposition_eligibility(case)["resolved"] == "ready"
 
     result = await _engine(_silent_response()).process_turn(
-        case=case, user_message="yep, the errors are gone now"
+        case=case, user_message="yep, the errors are gone now", redaction_ctx=None
     )
     text = result["agent_response"]
     labels = [s["label"] for s in result["suggested_follow_ups"]]
@@ -230,7 +230,9 @@ async def test_offer_contradicts_an_over_claiming_narration():
         )
     )
 
-    result = await engine.process_turn(case=case, user_message="all clear now")
+    result = await engine.process_turn(
+        case=case, user_message="all clear now", redaction_ctx=None
+    )
     text = result["agent_response"]
 
     assert case.state == CaseState.INVESTIGATING
@@ -248,7 +250,7 @@ async def test_the_offer_does_not_transition_the_case():
     case = _confirmed_case()
 
     await _engine(_silent_response()).process_turn(
-        case=case, user_message="yep, the errors are gone now"
+        case=case, user_message="yep, the errors are gone now", redaction_ctx=None
     )
 
     assert case.state == CaseState.INVESTIGATING
@@ -267,7 +269,7 @@ async def test_stabilized_case_is_not_offered_resolve():
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
 
     result = await _engine(_silent_response()).process_turn(
-        case=case, user_message="failover is holding for now"
+        case=case, user_message="failover is holding for now", redaction_ctx=None
     )
 
     assert getattr(case, "pending_transition", None) is None
@@ -286,7 +288,7 @@ async def test_engine_authored_failed_fix_row_does_not_open_the_handshake():
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
 
     await _engine(_silent_response()).process_turn(
-        case=case, user_message="that didn't help"
+        case=case, user_message="that didn't help", redaction_ctx=None
     )
 
     assert getattr(case, "pending_transition", None) is None
@@ -300,16 +302,20 @@ async def test_declined_offer_is_not_re_proposed_from_unchanged_state():
     case = _confirmed_case()
     engine = _engine(_silent_response())
 
-    await engine.process_turn(case=case, user_message="yep, the errors are gone now")
+    await engine.process_turn(
+        case=case, user_message="yep, the errors are gone now", redaction_ctx=None
+    )
     assert case.pending_transition["to_state"] == "resolved"
 
     # The user declines on the next turn, then says something ordinary on the
     # one after. Nothing about the case has changed, so the offer must stay down.
-    await engine.process_turn(case=case, user_message="no")
+    await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
     assert getattr(case, "pending_transition", None) is None
     assert case.progress.deferred_disposition_declined_signatures
 
-    result = await engine.process_turn(case=case, user_message="one more question")
+    result = await engine.process_turn(
+        case=case, user_message="one more question", redaction_ctx=None
+    )
 
     assert getattr(case, "pending_transition", None) is None, "re-nagged"
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
@@ -339,18 +345,22 @@ async def test_decline_of_an_llm_opened_offer_also_silences_the_backstop():
         ]
     )
 
-    await engine.process_turn(case=case, user_message="the errors stopped")
+    await engine.process_turn(
+        case=case, user_message="the errors stopped", redaction_ctx=None
+    )
     assert case.pending_transition["to_state"] == "resolved"
     assert (
         case.pending_transition.get("justifying_signature") is None
     ), "premise: an LLM-opened offer carries no engine signature"
 
-    await engine.process_turn(case=case, user_message="no")
+    await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
     assert (
         case.progress.deferred_disposition_declined_signatures
     ), "the refusal left no record, so nothing can be suppressed by it"
 
-    result = await engine.process_turn(case=case, user_message="one more question")
+    result = await engine.process_turn(
+        case=case, user_message="one more question", redaction_ctx=None
+    )
 
     assert getattr(case, "pending_transition", None) is None, "re-nagged"
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
@@ -386,6 +396,7 @@ async def test_contradicted_needs_info_offer_records_no_signature():
         user_message="close it instead",
         intent_type="status_transition",
         intent_data={"to_state": "closed"},
+        redaction_ctx=None,
     )
 
     assert (
@@ -414,7 +425,9 @@ async def test_no_offer_on_a_turn_that_began_inside_a_handshake():
     }
 
     result = await _engine(_silent_response()).process_turn(
-        case=case, user_message="what happens to the runbook if I close this?"
+        case=case,
+        user_message="what happens to the runbook if I close this?",
+        redaction_ctx=None,
     )
 
     assert getattr(case, "pending_transition", None) is None
@@ -435,11 +448,15 @@ async def test_offer_returns_on_the_next_turn():
     engine = _engine(_silent_response())
 
     await engine.process_turn(
-        case=case, user_message="what happens to the runbook if I close this?"
+        case=case,
+        user_message="what happens to the runbook if I close this?",
+        redaction_ctx=None,
     )
     assert not case.progress.deferred_disposition_declined_signatures
 
-    result = await engine.process_turn(case=case, user_message="ok, thanks")
+    result = await engine.process_turn(
+        case=case, user_message="ok, thanks", redaction_ctx=None
+    )
 
     assert case.pending_transition["to_state"] == "resolved"
     assert RESOLVE_LABEL in [s["label"] for s in result["suggested_follow_ups"]]
@@ -480,7 +497,9 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
         )
     )
     case.current_turn = 5
-    result = await engine.process_turn(case=case, user_message="status after restart")
+    result = await engine.process_turn(
+        case=case, user_message="status after restart", redaction_ctx=None
+    )
 
     labels = [s["label"] for s in result["suggested_follow_ups"]]
     assert any(
@@ -500,7 +519,9 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
         )
     )
     case.current_turn = 6
-    result = await engine.process_turn(case=case, user_message="the target is UP")
+    result = await engine.process_turn(
+        case=case, user_message="the target is UP", redaction_ctx=None
+    )
 
     labels = [s["label"] for s in result["suggested_follow_ups"]]
     assert case.pending_transition["to_state"] == "resolved"

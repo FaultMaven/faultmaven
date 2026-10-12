@@ -299,7 +299,8 @@ class OutOfBandTriage:
         case: Any,
         message: str,
         classification: QueryClassification,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Optional[OutOfBandKind]:
         """``redaction_ctx`` is the turn's case redaction context: the
         classifier prompt (the user's message and the last answer) is sent
@@ -318,10 +319,10 @@ class OutOfBandTriage:
         # error?" was never examined, because it contains "error".
         if reads_as_continuation(message) and has_investigation_history(case):
             return None
-        return await self._classify(case, message, redaction_ctx)
+        return await self._classify(case, message, redaction_ctx=redaction_ctx)
 
     async def _classify(
-        self, case: Any, message: str, redaction_ctx: Any = None
+        self, case: Any, message: str, *, redaction_ctx: Any
     ) -> Optional[OutOfBandKind]:
         prompt = self._build_prompt(case, message)
         try:
@@ -624,7 +625,8 @@ async def _one_answer_attempt(
     prompt: str,
     model: Optional[str],
     route_kwargs: dict[str, Any],
-    redaction_ctx: Any = None,
+    *,
+    redaction_ctx: Any,
 ) -> Optional[str]:
     """One generation; ``None`` when the body is unusable (empty or cut).
 
@@ -663,7 +665,8 @@ async def answer_out_of_band(
     case: Any,
     message: str,
     kind: OutOfBandKind,
-    redaction_ctx: Any = None,
+    *,
+    redaction_ctx: Any,
 ) -> str:
     """Generate the reply: synthesis role first, chat chain second, canned last.
 
@@ -694,7 +697,11 @@ async def answer_out_of_band(
         for model, route_kwargs in attempts:
             try:
                 text = await _one_answer_attempt(
-                    llm_router, prompt, model, route_kwargs, redaction_ctx
+                    llm_router,
+                    prompt,
+                    model,
+                    route_kwargs,
+                    redaction_ctx=redaction_ctx,
                 )
             except Exception:
                 logger.warning(

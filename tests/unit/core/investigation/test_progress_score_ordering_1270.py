@@ -135,10 +135,12 @@ _TURN2_CONFIRM = json.dumps(
 async def _two_turn_transition(engine, llm):
     """Turn 1 proposes, turn 2 confirms -> the automatic transition fires."""
     llm.payload = _TURN1
-    first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
+    first = await engine.process_turn(
+        _inquiry_case(), "Our checkout API is 503ing", redaction_ctx=None
+    )
     assert first["case_updated"].state == CaseState.INQUIRY
     llm.payload = _TURN2_CONFIRM
-    second = await engine.process_turn(first["case_updated"], "yes")
+    second = await engine.process_turn(first["case_updated"], "yes", redaction_ctx=None)
     assert second["case_updated"].state == CaseState.INVESTIGATING, (
         "positive control: the turn under test must actually transition, or "
         "this file asserts nothing"
@@ -290,7 +292,9 @@ async def test_a_transition_turn_carrying_an_upload_is_not_a_late_write(
     monkeypatch.setattr(turn_application_module, "score_progress", recording_score)
 
     llm.payload = _TURN1
-    first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
+    first = await engine.process_turn(
+        _inquiry_case(), "Our checkout API is 503ing", redaction_ctx=None
+    )
     assert first["case_updated"].state == CaseState.INQUIRY
 
     llm.payload = _TURN2_CONFIRM
@@ -310,6 +314,7 @@ async def test_a_transition_turn_carrying_an_upload_is_not_a_late_write(
                 "is_novel": True,
             }
         ],
+        redaction_ctx=None,
     )
 
     metadata = second["metadata"]
@@ -382,6 +387,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
             user_message="yes, resolved",
             intent_type="confirmation",
             intent_data=_yes_click(case),
+            redaction_ctx=None,
         )
 
     assert result["case_updated"].state == CaseState.RESOLVED
@@ -412,7 +418,9 @@ async def test_an_ordinary_turn_is_scored_on_the_same_ordering(engine_and_llm):
     """
     engine, llm = engine_and_llm
     llm.payload = _TURN1
-    result = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
+    result = await engine.process_turn(
+        _inquiry_case(), "Our checkout API is 503ing", redaction_ctx=None
+    )
 
     metadata = result["metadata"]
     assert result["case_updated"].state == CaseState.INQUIRY
@@ -523,6 +531,7 @@ async def test_the_confirm_branch_reports_the_state_change_once():
         user_message="yes, resolved",
         intent_type="confirmation",
         intent_data=_yes_click(case),
+        redaction_ctx=None,
     )
 
     assert result["case_updated"].state == CaseState.RESOLVED
@@ -557,6 +566,7 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
         user_message="Yes, close this case without resolution.",
         intent_type="confirmation",
         intent_data=_yes_click(case),
+        redaction_ctx=None,
     )
 
     case = result["case_updated"]
@@ -649,10 +659,12 @@ async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
     )
 
     llm.payload = _TURN1
-    first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
+    first = await engine.process_turn(
+        _inquiry_case(), "Our checkout API is 503ing", redaction_ctx=None
+    )
     stall_before_turn_2 = first["case_updated"].turns_without_progress
     llm.payload = _TURN2_CONFIRM
-    second = await engine.process_turn(first["case_updated"], "yes")
+    second = await engine.process_turn(first["case_updated"], "yes", redaction_ctx=None)
     assert second["case_updated"].state == CaseState.INVESTIGATING
 
     assert seen, "housekeeping never ran on the turn path"

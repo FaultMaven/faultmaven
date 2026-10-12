@@ -176,7 +176,9 @@ class TestTheEngineCapturesBeforeGeneration:
         engine = _generating_engine()
         case = _investigating_case([_entry("rb_in_the_prompt")])
 
-        result = await engine.process_turn(case=case, user_message="still full")
+        result = await engine.process_turn(
+            case=case, user_message="still full", redaction_ctx=None
+        )
 
         assert engine.generator.generate_structured_output.called
         captured = result["metadata"][TURN_METADATA_KB_PROMPTED]
@@ -186,7 +188,9 @@ class TestTheEngineCapturesBeforeGeneration:
     async def test_a_turn_with_no_context_captures_none(self):
         engine = _generating_engine()
         result = await engine.process_turn(
-            case=_investigating_case(None), user_message="still full"
+            case=_investigating_case(None),
+            user_message="still full",
+            redaction_ctx=None,
         )
         assert result["metadata"][TURN_METADATA_KB_PROMPTED] == []
 

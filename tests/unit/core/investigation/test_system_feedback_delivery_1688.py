@@ -226,7 +226,9 @@ async def _turn(engine: MilestoneEngine, case: Case, message: str, **intent) -> 
     case.current_turn += 1
     seam_calls = engine.generator.generate_structured_output.call_count
     try:
-        await engine.process_turn(case=case, user_message=message, **intent)
+        await engine.process_turn(
+            case=case, user_message=message, **intent, redaction_ctx=None
+        )
     except MilestoneEngineError:
         # The engine wraps a turn error; the seam's own count says whether
         # this was the sentinel rather than an earlier failure.
@@ -444,13 +446,17 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         llm.generate.return_value = _llm_reply(
             milestones={"symptom_verified": True}, outcome="milestone_completed"
         )
-        case = (await engine.process_turn(case, "it still fails"))["case_updated"]
+        case = (await engine.process_turn(case, "it still fails", redaction_ctx=None))[
+            "case_updated"
+        ]
         assert _STRIPPED in (case.turn_history[-1].system_feedback or "")
 
         # Turn 2: the user opens a close from the dropdown. No prompt is built.
         llm.generate.reset_mock()
         case.current_turn = 2
-        case = (await engine.process_turn(case, "", **DROPDOWN_CLOSE))["case_updated"]
+        case = (
+            await engine.process_turn(case, "", **DROPDOWN_CLOSE, redaction_ctx=None)
+        )["case_updated"]
         assert llm.generate.call_count == 0
         assert case.pending_transition
 
@@ -458,9 +464,11 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         # normal turn. Its prompt carries the notice from turn 1.
         case.current_turn = 3
         llm.generate.return_value = _llm_reply()
-        case = (await engine.process_turn(case, "no — what should I check next?"))[
-            "case_updated"
-        ]
+        case = (
+            await engine.process_turn(
+                case, "no — what should I check next?", redaction_ctx=None
+            )
+        )["case_updated"]
         prompts = [c.kwargs["prompt"] for c in llm.generate.call_args_list]
         assert prompts and any(_STRIPPED in p for p in prompts)
         assert any(

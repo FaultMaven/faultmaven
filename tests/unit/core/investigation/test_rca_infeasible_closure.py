@@ -258,7 +258,7 @@ async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_prop
     reply shows."""
     case = _turn_case()
     result = await _turn_engine(model_proposes).process_turn(
-        case=case, user_message="the failover held, error rate is 0"
+        case=case, user_message="the failover held, error rate is 0", redaction_ctx=None
     )
 
     assert case.progress.mitigation.verified is True
@@ -306,7 +306,7 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
     )
     engine = _turn_engine(model_proposes)
     result = await engine.process_turn(
-        case=case, user_message="the failover held, error rate is 0"
+        case=case, user_message="the failover held, error rate is 0", redaction_ctx=None
     )
 
     assert case.progress.mitigation.verified is True
@@ -317,5 +317,7 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
     assert "Yes, close this case" not in labels
 
     case.current_turn += 1
-    result = await engine.process_turn(case=case, user_message="yes")
+    result = await engine.process_turn(
+        case=case, user_message="yes", redaction_ctx=None
+    )
     assert result["case_updated"].state == CaseState.RESOLVED

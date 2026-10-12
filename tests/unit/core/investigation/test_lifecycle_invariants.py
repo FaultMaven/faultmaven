@@ -890,6 +890,7 @@ class TestINV14_DropdownUsesStandardHandshake:
                 "to_state": "closed",
                 "user_confirmed": True,
             },
+            redaction_ctx=None,
         )
 
         updated = result["case_updated"]
@@ -919,6 +920,7 @@ class TestINV14_DropdownUsesStandardHandshake:
                 "to_state": "closed",
                 "user_confirmed": True,
             },
+            redaction_ctx=None,
         )
 
         updated = result["case_updated"]
@@ -955,6 +957,7 @@ class TestINV14_DropdownUsesStandardHandshake:
                     "to_state": "resolved",
                     "user_confirmed": True,
                 },
+                redaction_ctx=None,
             )
 
         assert case.pending_transition is None

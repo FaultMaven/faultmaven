@@ -56,7 +56,8 @@ class LocalTier2Service:
         query: str,
         context: AnalysisContext,
         data_type: UnifiedDataType,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> DeepAnalysisResult:
         """Interpret the file's sections relevant to ``query``.
 

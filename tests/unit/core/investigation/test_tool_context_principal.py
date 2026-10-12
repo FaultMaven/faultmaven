@@ -151,7 +151,9 @@ async def test_the_principal_is_not_taken_from_the_client_intent_payload():
     engine = _engine()
 
     # The shape a client could forge if the principal came from the payload.
-    context = await engine.generator.build_tool_context(_case(), user_id=None)
+    context = await engine.generator.build_tool_context(
+        _case(), user_id=None, redaction_ctx=None
+    )
 
     assert context.user_id == "system"
     assert (

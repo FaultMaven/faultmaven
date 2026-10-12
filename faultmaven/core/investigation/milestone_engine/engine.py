@@ -364,7 +364,8 @@ class MilestoneEngine:
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
         typed: bool = False,
-        redaction_ctx: Any | None = None,
+        *,
+        redaction_ctx: Any | None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -399,8 +400,9 @@ class MilestoneEngine:
                 loads once per turn and hands to every model call it makes on
                 the turn's behalf (#1956): this turn's prompts, its tools' own
                 model calls and the reply's reversal all use the one registry.
-                ``None`` (a direct engine call) loads the case's context here,
-                through the same loader, where a model call needs it.
+                Required: ``None`` (said explicitly, by a direct engine call)
+                loads the case's context here, through the same loader, where a
+                model call needs it.
 
         Writes nothing the turn owns (#1882). The case is mutated in memory
         and returned; the rows the turn produced (report rows)
@@ -543,7 +545,7 @@ class MilestoneEngine:
         plan: TurnCommitPlan,
         user_id: str | None = None,
         typed: bool = False,
-        redaction_ctx: Any | None = None,
+        redaction_ctx: Any | None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a

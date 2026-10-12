@@ -748,8 +748,8 @@ async def _generate_and_persist_title(
     max_words: int,
     hint: Optional[str],
     correlation_id: str,
-    sanitizer=None,
-    redis_client=None,
+    sanitizer,
+    redis_client,
 ) -> tuple[str, str, int]:
     """Gate on substance, generate a title, persist it, and verify the write.
 
@@ -945,8 +945,9 @@ async def _auto_title_case_if_default(
     user_id: str,
     case_service: ICaseService,
     llm_provider,
-    sanitizer=None,
-    redis_client=None,
+    *,
+    sanitizer,
+    redis_client,
 ) -> None:
     """Name a case that is still carrying its ``Case-YYMMDD-N`` placeholder.
 
@@ -1107,7 +1108,8 @@ async def _generate_title_with_llm(
     user_signals: Optional[str] = None,
     llm_provider=None,
     routing_signal: Optional[str] = None,
-    redaction_ctx=None,
+    *,
+    redaction_ctx,
 ) -> tuple[str, str]:
     """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
 

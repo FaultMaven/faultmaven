@@ -49,6 +49,7 @@ class TestRelaySynthesisPrompt:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         # The user-role synthesis prompt is the last message sent to the LLM.

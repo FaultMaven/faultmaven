@@ -66,7 +66,11 @@ class TestTruncatedTitle:
         )
 
         title, source = await _generate_title_with_llm(
-            CONTEXT, MagicMock(), llm_provider=provider, user_signals=CONTEXT
+            CONTEXT,
+            MagicMock(),
+            llm_provider=provider,
+            user_signals=CONTEXT,
+            redaction_ctx=None,
         )
 
         assert source == "fallback"
@@ -79,7 +83,11 @@ class TestTruncatedTitle:
         )
 
         title, source = await _generate_title_with_llm(
-            CONTEXT, MagicMock(), llm_provider=provider, user_signals=CONTEXT
+            CONTEXT,
+            MagicMock(),
+            llm_provider=provider,
+            user_signals=CONTEXT,
+            redaction_ctx=None,
         )
 
         assert source == "llm"
@@ -96,7 +104,11 @@ class TestTruncatedTitle:
         provider = _provider(_response("", StopReason.CONTENT_FILTER))
 
         title, source = await _generate_title_with_llm(
-            CONTEXT, MagicMock(), llm_provider=provider, user_signals=CONTEXT
+            CONTEXT,
+            MagicMock(),
+            llm_provider=provider,
+            user_signals=CONTEXT,
+            redaction_ctx=None,
         )
 
         assert source == "fallback"

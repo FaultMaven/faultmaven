@@ -62,7 +62,8 @@ global documentation, your personal runbooks, and your team's shared procedures.
         question: str,
         scope_filter: Dict[str, Any],
         k: int = 5,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> str:
         """
         Query knowledge base under the case's scope filter.

@@ -67,7 +67,7 @@ def test_the_derivation_is_gone():
 
 async def test_build_tool_context_carries_no_kb_context_metadata():
     context = await _generator().build_tool_context(
-        _a_case_that_names_its_service(), user_id="u_1"
+        _a_case_that_names_its_service(), user_id="u_1", redaction_ctx=None
     )
 
     assert isinstance(context, ToolContext)
@@ -91,6 +91,7 @@ async def test_the_kb_tool_sends_no_context_metadata_to_hybrid_search():
         scope_id=None,
         k=5,
         filters={"$or": [{"scope": "global"}]},
+        redaction_ctx=None,
     )
 
     kwargs = vector_store.hybrid_search.await_args.kwargs

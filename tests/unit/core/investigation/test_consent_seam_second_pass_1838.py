@@ -485,7 +485,7 @@ class TestTheShapeRowsThroughTheEngine:
         past, so the withdrawal is not recorded as a refusal."""
         case = _pending_close()
         engine = _processing_engine()
-        await engine.process_turn(case=case, user_message=message)
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
         assert case.pending_transition is None, "the gate took the turn"
         assert case.progress.deferred_disposition_declined_signatures == []
         engine.generator.generate_structured_output.assert_awaited()
@@ -508,7 +508,7 @@ class TestTheShapeRowsThroughTheEngine:
         markup around a consent word."""
         case = _pending_close()
         engine = _processing_engine()
-        await engine.process_turn(case=case, user_message=message)
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
         assert case.pending_transition is None
         assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
         engine.generator.generate_structured_output.assert_awaited()
@@ -521,6 +521,7 @@ class TestTheShapeRowsThroughTheEngine:
         result = await engine.process_turn(
             case=case,
             user_message="Yes, go ahead and close it, the fix held overnight",
+            redaction_ctx=None,
         )
         _assert_card_reshown(result, case, before)
         engine.generator.generate_structured_output.assert_not_awaited()
@@ -544,7 +545,7 @@ class TestTheShapeRowsThroughTheEngine:
     ):
         case = _pending_close()
         engine = _processing_engine()
-        await engine.process_turn(case=case, user_message=message)
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
         assert case.pending_transition is None, "the question did not withdraw"
         assert case.progress.deferred_disposition_declined_signatures == []
         engine.generator.generate_structured_output.assert_awaited()
@@ -738,7 +739,9 @@ class TestTheCardRule:
                 suggested_follow_ups=[_card("Check the pool config", "Proceed")],
             )
         )
-        result = await engine.process_turn(case=case, user_message="what next")
+        result = await engine.process_turn(
+            case=case, user_message="what next", redaction_ctx=None
+        )
         cards = [
             f
             for f in result["suggested_follow_ups"]
@@ -766,6 +769,7 @@ class TestADropdownRePickReshowsTheCard:
             user_message=DROPDOWN_CLOSE,
             intent_type="status_transition",
             intent_data={"from_state": "investigating", "to_state": "closed"},
+            redaction_ctx=None,
         )
         assert case.state == CaseState.INVESTIGATING
         assert case.pending_transition["to_state"] == "closed"
@@ -780,6 +784,7 @@ class TestADropdownRePickReshowsTheCard:
             user_message=DROPDOWN_CLOSE,
             intent_type="status_transition",
             intent_data={"from_state": "investigating", "to_state": "closed"},
+            redaction_ctx=None,
         )
         _assert_card_reshown(second, case, before)
         engine.generator.generate_structured_output.assert_not_awaited()
@@ -789,6 +794,7 @@ class TestADropdownRePickReshowsTheCard:
             user_message="Yes, close this case without resolution.",
             intent_type="confirmation",
             intent_data={"value": True, "proposal_id": key},
+            redaction_ctx=None,
         )
         assert case.state == CaseState.CLOSED
         assert case.turn_history[-1].terminal_confirmed_via == "intent"
@@ -803,6 +809,7 @@ class TestADropdownRePickReshowsTheCard:
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
             typed=True,
+            redaction_ctx=None,
         )
         assert case.state == CaseState.CLOSED
         assert case.turn_history[-1].terminal_confirmed_via == "explicit_token"
@@ -833,7 +840,7 @@ class TestGate1ReadsABareTypedConsent:
         case = _gate1_case()
         engine = _engine(_inquiry_reply(confirmed=False))
         await engine.process_turn(
-            case=case, user_message=message, intent_type=intent_type
+            case=case, user_message=message, intent_type=intent_type, redaction_ctx=None
         )
         assert case.inquiry.problem_statement_confirmed is True
         assert case.state == CaseState.INVESTIGATING
@@ -845,7 +852,7 @@ class TestGate1ReadsABareTypedConsent:
     async def test_what_is_not_a_bare_gate1_consent_commits_nothing(self, message):
         case = _gate1_case()
         engine = _engine(_inquiry_reply(confirmed=False))
-        await engine.process_turn(case=case, user_message=message)
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
         assert case.inquiry.problem_statement_confirmed is False
         assert case.state == CaseState.INQUIRY
 
@@ -871,6 +878,8 @@ class TestGate1ReadsABareTypedConsent:
         with patch.object(
             engine_module, "_commit_gate1", wraps=engine_module._commit_gate1
         ) as commit:
-            await _engine(_inquiry_reply()).process_turn(case=case, **kwargs)
+            await _engine(_inquiry_reply()).process_turn(
+                case=case, **kwargs, redaction_ctx=None
+            )
         commit.assert_called_once()
         assert case.inquiry.problem_statement_confirmed is True

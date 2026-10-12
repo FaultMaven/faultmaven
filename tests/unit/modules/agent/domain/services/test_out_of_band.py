@@ -122,7 +122,10 @@ class TestTriage:
     async def test_agent_meta_short_circuits(self):
         triage, router = self._triage("1")
         kind = await triage.triage(
-            _case(), "what model are you?", classify_query("what model are you?")
+            _case(),
+            "what model are you?",
+            classify_query("what model are you?"),
+            redaction_ctx=None,
         )
         assert kind == OutOfBandKind.AGENT_META
         router.route.assert_not_called()
@@ -130,13 +133,15 @@ class TestTriage:
     async def test_closed_verdict_skips_the_llm(self):
         triage, router = self._triage("2")
         c = classify_query("why are we getting 503s from nginx?")
-        assert await triage.triage(_case(), "x", c) is None
+        assert await triage.triage(_case(), "x", c, redaction_ctx=None) is None
         router.route.assert_not_called()
 
     async def test_two_means_off_topic(self):
         triage, router = self._triage("2")
         assert (
-            await triage.triage(_case(), HAIKU, classify_query(HAIKU))
+            await triage.triage(
+                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+            )
             == OutOfBandKind.OFF_TOPIC
         )
         kwargs = router.route.call_args.kwargs
@@ -146,13 +151,20 @@ class TestTriage:
     @pytest.mark.parametrize("content", ["1", "3", "", "maybe 2?", "2 or 1", None])
     async def test_anything_but_a_lone_two_is_incident(self, content):
         triage, _ = self._triage(content)
-        assert await triage.triage(_case(), HAIKU, classify_query(HAIKU)) is None
+        assert (
+            await triage.triage(
+                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+            )
+            is None
+        )
 
     async def test_classifier_failure_is_incident(self):
         router = MagicMock()
         router.route = AsyncMock(side_effect=RuntimeError("provider down"))
         assert (
-            await OutOfBandTriage(router).triage(_case(), HAIKU, classify_query(HAIKU))
+            await OutOfBandTriage(router).triage(
+                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+            )
             is None
         )
 
@@ -257,7 +269,10 @@ class TestTriage:
         )
         msg = "yes, that is right"  # four words, no continuation vocabulary
         await triage.triage(
-            case, msg, QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
+            case,
+            msg,
+            QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5),
+            redaction_ctx=None,
         )
         prompt = router.route.call_args.kwargs["messages"][0]["content"]
         assert "Did you restart postgres" in prompt
@@ -388,7 +403,12 @@ class TestContinuationGates:
         router = MagicMock()
         router.route = AsyncMock(return_value=SimpleNamespace(content="2"))
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
-        assert await OutOfBandTriage(router).triage(_case(), "lol ok", c) is None
+        assert (
+            await OutOfBandTriage(router).triage(
+                _case(), "lol ok", c, redaction_ctx=None
+            )
+            is None
+        )
         router.route.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -414,7 +434,9 @@ class TestContinuationGates:
         # scores these differently, needs_llm_triage closes the door before the
         # gate is reached and this guard would pass while the bug returned.
         c = classify_query(message)
-        await OutOfBandTriage(router).triage(_fresh_case(), message, c)
+        await OutOfBandTriage(router).triage(
+            _fresh_case(), message, c, redaction_ctx=None
+        )
         router.route.assert_called_once()
 
     @pytest.mark.parametrize("message", ["lol ok", "I tried the rollback"])
@@ -424,7 +446,12 @@ class TestContinuationGates:
         router = MagicMock()
         router.route = AsyncMock(return_value=SimpleNamespace(content="2"))
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
-        assert await OutOfBandTriage(router).triage(_case(), message, c) is None
+        assert (
+            await OutOfBandTriage(router).triage(
+                _case(), message, c, redaction_ctx=None
+            )
+            is None
+        )
         router.route.assert_not_called()
 
     async def test_asides_do_not_end_the_exemption(self):
@@ -439,7 +466,9 @@ class TestContinuationGates:
         router = MagicMock()
         router.route = AsyncMock(return_value=SimpleNamespace(content="1"))
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
-        await OutOfBandTriage(router).triage(_fresh_case(), "should I check?", c)
+        await OutOfBandTriage(router).triage(
+            _fresh_case(), "should I check?", c, redaction_ctx=None
+        )
         router.route.assert_called_once()
 
     def test_the_rubric_is_written_for_whichever_case_it_judges(self):
@@ -471,7 +500,9 @@ class TestContinuationGates:
         router = MagicMock()
         router.route = AsyncMock(side_effect=hang)
         assert (
-            await OutOfBandTriage(router).triage(_case(), HAIKU, classify_query(HAIKU))
+            await OutOfBandTriage(router).triage(
+                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+            )
             is None
         )
 
@@ -652,7 +683,9 @@ class TestAnswer:
         router.route = AsyncMock(
             return_value=SimpleNamespace(content="  Canberra. Back to postgres?  ")
         )
-        text = await answer_out_of_band(router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC)
+        text = await answer_out_of_band(
+            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+        )
         assert text == "Canberra. Back to postgres?"
         assert router.route.call_args.kwargs["max_tokens"] == ANSWER_MAX_TOKENS
 
@@ -660,11 +693,11 @@ class TestAnswer:
         router = MagicMock()
         router.route = AsyncMock(return_value=SimpleNamespace(content=""))
         assert await answer_out_of_band(
-            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC
+            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
         ) == fallback_answer(_case(), OutOfBandKind.OFF_TOPIC)
         router.route = AsyncMock(side_effect=RuntimeError("boom"))
         text = await answer_out_of_band(
-            router, _case(), "who are you", OutOfBandKind.AGENT_META
+            router, _case(), "who are you", OutOfBandKind.AGENT_META, redaction_ctx=None
         )
         assert "not told which model" in text
         assert "Nightly OOM kills" in text

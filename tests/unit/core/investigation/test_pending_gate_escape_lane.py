@@ -171,7 +171,7 @@ async def _run_expecting_fall_through(engine, case, message):
     pending proposal withdrawn before it. The engine wraps turn errors in
     MilestoneEngineError; the sentinel inside proves the seam was hit."""
     with pytest.raises(MilestoneEngineError):
-        await engine.process_turn(case=case, user_message=message)
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
     assert case.pending_transition is None, (
         "the non-answer must withdraw the pending proposal before normal " "processing"
     )
@@ -197,7 +197,9 @@ async def test_short_ambiguous_reply_re_presents_without_an_llm_call():
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
-    result = await engine.process_turn(case=case, user_message="hmm maybe")
+    result = await engine.process_turn(
+        case=case, user_message="hmm maybe", redaction_ctx=None
+    )
 
     assert "Please select one of the options above" in result["agent_response"]
     assert case.pending_transition is not None
@@ -233,7 +235,7 @@ async def test_confirm_word_prefix_does_not_confirm():
     case = _investigating_case_with_pending_close()
 
     result = await engine.process_turn(
-        case=case, user_message="yesterday the pod restarted"
+        case=case, user_message="yesterday the pod restarted", redaction_ctx=None
     )
 
     assert case.state.value != "closed"
@@ -250,7 +252,7 @@ async def test_decline_word_prefix_is_not_swallowed_as_bare_decline():
     case = _investigating_case_with_pending_close()
 
     result = await engine.process_turn(
-        case=case, user_message="note db latency spiked to 5s"
+        case=case, user_message="note db latency spiked to 5s", redaction_ctx=None
     )
 
     assert "remains open" not in result["agent_response"]
@@ -265,7 +267,9 @@ async def test_whitespace_only_message_never_reaches_llm():
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
-    result = await engine.process_turn(case=case, user_message="   ")
+    result = await engine.process_turn(
+        case=case, user_message="   ", redaction_ctx=None
+    )
 
     assert not engine.generator.generate_structured_output.called
     assert case.pending_transition is not None
@@ -347,7 +351,9 @@ class TestWithdrawalRecordsTheEngineOffer:
         case = self._engine_proposed_case()
 
         for _ in range(2):
-            result = await engine.process_turn(case=case, user_message="hmm maybe")
+            result = await engine.process_turn(
+                case=case, user_message="hmm maybe", redaction_ctx=None
+            )
             assert "Please select one of the options above" in result["agent_response"]
             assert case.pending_transition is not None
 
@@ -397,6 +403,7 @@ class TestWithdrawalRecordsTheEngineOffer:
             user_message="",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
 
         assert case.progress.deferred_disposition_declined_signatures == [], (
@@ -471,7 +478,7 @@ class TestAnUploadTurnIsNeverConsumed:
 
         with pytest.raises(MilestoneEngineError):
             await engine.process_turn(
-                case=case, user_message=message, attachments=_UPLOAD
+                case=case, user_message=message, attachments=_UPLOAD, redaction_ctx=None
             )
 
         assert case.pending_transition is None
@@ -484,7 +491,9 @@ class TestAnUploadTurnIsNeverConsumed:
         engine = _engine()
         case = _signed_pending_close()
 
-        result = await engine.process_turn(case=case, user_message=message)
+        result = await engine.process_turn(
+            case=case, user_message=message, redaction_ctx=None
+        )
 
         assert "Please select one of the options above" in result["agent_response"]
         assert case.pending_transition is not None
@@ -498,7 +507,9 @@ class TestAnUploadTurnIsNeverConsumed:
         engine = _engine()
         case = _signed_pending_close()
 
-        result = await engine.process_turn(case=case, user_message="no")
+        result = await engine.process_turn(
+            case=case, user_message="no", redaction_ctx=None
+        )
 
         assert "remains open" in result["agent_response"]
         assert case.pending_transition is None
@@ -593,7 +604,9 @@ async def test_a_short_non_answer_is_re_asked_every_time():
     case = _investigating_case_with_pending_close()
 
     for _ in range(3):
-        result = await engine.process_turn(case=case, user_message="hm")
+        result = await engine.process_turn(
+            case=case, user_message="hm", redaction_ctx=None
+        )
         assert "Please select one of the options above" in result["agent_response"]
         assert case.pending_transition is not None
 
@@ -605,7 +618,7 @@ async def test_bare_decline_keeps_cheap_canned_acknowledgment():
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
-    result = await engine.process_turn(case=case, user_message="no")
+    result = await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
 
     assert case.pending_transition is None
     assert "remains open" in result["agent_response"]

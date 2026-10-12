@@ -1563,6 +1563,7 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
                 from_state=case.state.value,
                 to_state=to_state,
                 user_confirmed=True,
+                redaction_ctx=None,
             )
 
         assert "not a user-selectable case action" in str(excinfo.value)
@@ -1604,6 +1605,7 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
             from_state=case.state.value,
             to_state="closed",
             user_confirmed=True,
+            redaction_ctx=None,
         )
 
         service.engine.process_turn.assert_awaited_once()

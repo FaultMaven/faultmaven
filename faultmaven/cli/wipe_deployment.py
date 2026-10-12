@@ -229,7 +229,7 @@ _FIXED_REDIS_PREFIXES = (
     "oauth:code:",  # OAuthCodeRepository
     "password_reset:",  # UserService reset tokens
     "case_seq:",  # CaseService per-user daily sequence
-    "redaction:",  # pseudonym-key fingerprint agreement
+    "redaction:",  # case redaction registries + pseudonym-key fingerprint agreement
 )
 
 

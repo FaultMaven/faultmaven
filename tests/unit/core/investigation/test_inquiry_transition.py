@@ -142,6 +142,7 @@ class TestInquiryTransitionLogic:
         result = await engine.process_turn(
             inquiry_case,
             "Production API is completely down. All requests returning 500 errors. Users can't log in.",
+            redaction_ctx=None,
         )
 
         # Verify stays in INQUIRY — agent should ask for confirmation in response
@@ -173,7 +174,9 @@ class TestInquiryTransitionLogic:
         mock_llm.generate.return_value = mock_response
 
         result = await engine.process_turn(
-            inquiry_case, "Hey, I have a question about our API performance."
+            inquiry_case,
+            "Hey, I have a question about our API performance.",
+            redaction_ctx=None,
         )
 
         # Verify stays in INQUIRY
@@ -203,7 +206,7 @@ class TestInquiryTransitionLogic:
         mock_llm.generate.return_value = mock_response
 
         result = await engine.process_turn(
-            inquiry_case, "How do I upload evidence to a case?"
+            inquiry_case, "How do I upload evidence to a case?", redaction_ctx=None
         )
 
         # Verify stays in INQUIRY
@@ -245,6 +248,7 @@ class TestInquiryTransitionLogic:
         result = await engine.process_turn(
             inquiry_case,
             "We had an outage last Tuesday. Want to understand what happened.",
+            redaction_ctx=None,
         )
 
         # Verify stays in INQUIRY (not auto-confirmed because not ongoing)
@@ -289,7 +293,7 @@ class TestInquiryTransitionLogic:
         mock_llm.generate.return_value = mock_response
 
         result = await engine.process_turn(
-            inquiry_case, "Our checkout is slow sometimes."
+            inquiry_case, "Our checkout is slow sometimes.", redaction_ctx=None
         )
 
         # Verify stays in INQUIRY (MEDIUM urgency doesn't trigger auto-confirm)
@@ -327,7 +331,9 @@ class TestInquiryTransitionLogic:
         )
         mock_llm.generate.return_value = mock_response_turn1
 
-        result1 = await engine.process_turn(inquiry_case, "Our API is acting weird.")
+        result1 = await engine.process_turn(
+            inquiry_case, "Our API is acting weird.", redaction_ctx=None
+        )
 
         # Verify Turn 1: stays in INQUIRY
         case_after_turn1 = result1["case_updated"]
@@ -362,6 +368,7 @@ class TestInquiryTransitionLogic:
         result2 = await engine.process_turn(
             case_after_turn1,
             "Actually, all users are getting 403 errors right now. This is production!",
+            redaction_ctx=None,
         )
 
         # Verify Turn 2: STILL in INQUIRY — user hasn't confirmed yet
@@ -403,6 +410,7 @@ class TestInquiryTransitionLogic:
         result = await engine.process_turn(
             inquiry_case,
             "I started seeing errors. I was debugging locally. I suspect the issue is in agent workflow.",
+            redaction_ctx=None,
         )
 
         # Verify NO premature transition (this is the original bug fix)
@@ -454,6 +462,7 @@ class TestInquiryTransitionLogic:
         result = await engine.process_turn(
             inquiry_case,
             "Our payment processing is failing. Customers can't complete purchases.",
+            redaction_ctx=None,
         )
 
         # Verify stays in INQUIRY (user hasn't confirmed yet)
@@ -500,6 +509,7 @@ class TestInquiryTransitionLogic:
         result = await engine.process_turn(
             inquiry_case,
             "API latency spiked from 200ms to 8 seconds. Customers complaining.",
+            redaction_ctx=None,
         )
 
         # Verify uses proposed_problem_statement (fallback works) but stays in INQUIRY
@@ -560,6 +570,7 @@ class TestInquiryTransitionLogic:
         result1 = await engine.process_turn(
             inquiry_case,
             "Production database is timing out. All services are failing.",
+            redaction_ctx=None,
         )
 
         # Turn 1: stays in INQUIRY
@@ -587,6 +598,7 @@ class TestInquiryTransitionLogic:
             result2 = await engine.process_turn(
                 case_after_turn1,
                 "Yes, that's correct. Please investigate.",
+                redaction_ctx=None,
             )
 
         # Turn 2: the flag is set, the text is not bare — nothing commits.
@@ -601,7 +613,7 @@ class TestInquiryTransitionLogic:
 
         # Turn 3: a bare "yes" → Gate 1 closed → transition to INVESTIGATING.
         # Post-redesign there is no path fork to commit.
-        result3 = await engine.process_turn(case_after_turn2, "yes")
+        result3 = await engine.process_turn(case_after_turn2, "yes", redaction_ctx=None)
         case_after_turn3 = result3["case_updated"]
         assert case_after_turn3.state == CaseState.INVESTIGATING
         assert case_after_turn3.inquiry.problem_statement_confirmed is True
@@ -646,7 +658,7 @@ class TestInquiryTransitionLogic:
         mock_llm.generate.return_value = mock_response_turn1
 
         result1 = await engine.process_turn(
-            inquiry_case, "Our API is returning 503 errors."
+            inquiry_case, "Our API is returning 503 errors.", redaction_ctx=None
         )
         case_after_turn1 = result1["case_updated"]
         assert case_after_turn1.state == CaseState.INQUIRY
@@ -672,6 +684,7 @@ class TestInquiryTransitionLogic:
         result2 = await engine.process_turn(
             case_after_turn1,
             "No, it's actually 504 timeout errors, not 503.",
+            redaction_ctx=None,
         )
 
         # Turn 2: stays in INQUIRY (user corrected, didn't confirm)
@@ -736,6 +749,7 @@ class TestInquiryTransitionLogic:
         result1 = await engine.process_turn(
             inquiry_case,
             "My API is returning 503s, please investigate.",
+            redaction_ctx=None,
         )
 
         # The guard must refuse the same-turn confirmation. The statement
@@ -795,7 +809,9 @@ class TestInquiryTransitionLogic:
             }
         )
         mock_llm.generate.return_value = mock_response_turn1
-        result1 = await engine.process_turn(inquiry_case, "API is returning 503s")
+        result1 = await engine.process_turn(
+            inquiry_case, "API is returning 503s", redaction_ctx=None
+        )
         case_after_turn1 = result1["case_updated"]
         assert case_after_turn1.state == CaseState.INQUIRY
 
@@ -813,7 +829,7 @@ class TestInquiryTransitionLogic:
             }
         )
         mock_llm.generate.return_value = mock_response_turn2
-        result2 = await engine.process_turn(case_after_turn1, "yes")
+        result2 = await engine.process_turn(case_after_turn1, "yes", redaction_ctx=None)
 
         case_after_turn2 = result2["case_updated"]
         # INV-01 (Gate 1) passes → transition fires. Post-redesign there is
@@ -957,7 +973,9 @@ class TestGate1PresentsItsStatement:
             }
         )
 
-        result = await engine.process_turn(inquiry_case, "What does a 403 mean?")
+        result = await engine.process_turn(
+            inquiry_case, "What does a 403 mean?", redaction_ctx=None
+        )
 
         assert statement in result["agent_response"], (
             "Gate 1 served its confirm/refine pair without the statement the "
@@ -1041,6 +1059,7 @@ class TestGate1PresentsItsStatement:
             intent_type="confirmation",
             # The card names the offer it presents: the statement shown (#1812).
             intent_data={"value": True, "proposal_id": gate1_offer_key(seen)},
+            redaction_ctx=None,
         )
         updated = result["case_updated"]
 
@@ -1079,7 +1098,9 @@ class TestGate1PresentsItsStatement:
         )
 
         # A bare consent token: the only typed text the flag commits on (#1794).
-        result = await engine.process_turn(inquiry_case, "that's right")
+        result = await engine.process_turn(
+            inquiry_case, "that's right", redaction_ctx=None
+        )
         updated = result["case_updated"]
 
         assert updated.inquiry.problem_statement_confirmed is True
@@ -1120,7 +1141,7 @@ class TestGate1PresentsItsStatement:
             response_application, "inquiry_handshake_deferred_total"
         ) as deferred:
             result = await engine.process_turn(
-                inquiry_case, "yes but it's the primary too"
+                inquiry_case, "yes but it's the primary too", redaction_ctx=None
             )
         updated = result["case_updated"]
 
@@ -1155,7 +1176,9 @@ class TestGate1PresentsItsStatement:
             }
         )
 
-        result = await engine.process_turn(inquiry_case, "please investigate")
+        result = await engine.process_turn(
+            inquiry_case, "please investigate", redaction_ctx=None
+        )
         updated = result["case_updated"]
 
         assert updated.state == CaseState.INQUIRY
@@ -1237,6 +1260,7 @@ class TestEngineOwnedGate1OnFirstDetect:
         result = await engine.process_turn(
             inquiry_case,
             "Production API is returning 500s",
+            redaction_ctx=None,
         )
 
         follow_ups = result["suggested_follow_ups"]
@@ -1376,7 +1400,9 @@ class TestProblemStatementSingleWriter:
             }
         )
 
-        result = await engine.process_turn(inquiry_case, "Something is erroring.")
+        result = await engine.process_turn(
+            inquiry_case, "Something is erroring.", redaction_ctx=None
+        )
         updated_case = result["case_updated"]
 
         assert updated_case.inquiry.proposed_problem_statement is None

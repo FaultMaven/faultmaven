@@ -163,7 +163,8 @@ class DocumentQATool:
         scope_id: Optional[str] = None,
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -199,7 +200,8 @@ class DocumentQATool:
         scope_id: Optional[str],
         k: int,
         filters: Optional[Dict[str, Any]] = None,
-        redaction_ctx: Any = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).

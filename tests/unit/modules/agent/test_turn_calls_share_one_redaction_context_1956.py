@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import fakeredis.aioredis
 import pytest
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
@@ -413,30 +414,24 @@ class TestTheTitle:
 
 
 class _FakeSanitizer:
-    """``sanitize_text_with_registry`` over the one entity."""
+    """``sanitize_text_with_registry`` over a few literal values, each with a
+    fixed placeholder (as the keyed pseudonym is a function of the value)."""
+
+    VALUES = {RAW: ("EMAIL_ADDRESS", PSEUDONYM)}
 
     def sanitize_text_with_registry(self, text, registry):
-        if RAW in text:
-            registry.setdefault("EMAIL_ADDRESS", {})[RAW] = PSEUDONYM
-        return text.replace(RAW, PSEUDONYM)
-
-
-class _DictRedis:
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ex=None):
-        self.store[key] = value
+        for value, (kind, placeholder) in self.VALUES.items():
+            if value in text:
+                registry.setdefault(kind, {}).setdefault(value, placeholder)
+                text = text.replace(value, placeholder)
+        return text
 
 
 def _context() -> CaseRedactionContext:
     return CaseRedactionContext(
         case_id="case_1956",
         sanitizer=_FakeSanitizer(),
-        redis_client=_DictRedis(),
+        redis_client=fakeredis.aioredis.FakeRedis(),
         enabled=True,
     )
 
@@ -573,7 +568,9 @@ class TestOneContextPerTurn:
         assert RAW in resp.agent_response and PSEUDONYM not in resp.agent_response
         [row] = _assistant_rows(saved, 2)
         assert row["content"] == f"A haiku for the cat of {RAW}. Canberra."
-        assert ctx.redis_client.store, "the registry the turn grew was not saved"
+        assert await ctx.redis_client.hgetall(
+            "redaction:registry:case_1956"
+        ), "the registry the turn grew was not saved"
 
     async def test_the_engine_receives_the_same_context_the_triage_used(
         self, recording_case_repository, case
@@ -615,3 +612,222 @@ class TestOneContextPerTurn:
         assert resp.agent_response == f"It was {RAW}."
         [row] = _assistant_rows(saved, 2)
         assert row["content"] == f"It was {RAW}."
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: contexts on one case key never drop each other's entries.
+# ---------------------------------------------------------------------------
+
+IP_A, PH_A = "10.20.30.40", "<IP_ADDRESS_a0a0a0a0a0a0a0a0>"
+IP_B, PH_B = "10.99.88.77", "<IP_ADDRESS_b0b0b0b0b0b0b0b0>"
+IP_D, PH_D = "10.55.55.55", "<IP_ADDRESS_d0d0d0d0d0d0d0d0>"
+# A host name: the title's own regex scrub leaves it, so the title's case pass
+# is what registers it.
+HOST, PH_HOST = "db-primary-01.corp", "<HOSTNAME_e0e0e0e0e0e0e0e0>"
+
+
+class _IpSanitizer(_FakeSanitizer):
+    VALUES = {
+        IP_A: ("IP_ADDRESS", PH_A),
+        IP_B: ("IP_ADDRESS", PH_B),
+        IP_D: ("IP_ADDRESS", PH_D),
+        HOST: ("HOSTNAME", PH_HOST),
+        RAW: ("EMAIL_ADDRESS", PSEUDONYM),
+    }
+
+
+@pytest.fixture
+def redaction_on(monkeypatch):
+    """``load_case_redaction`` is enabled by ``should_redact``: a sanitizer and
+    ``SANITIZE_PII``. Pinned on, so the test runs the same under both CI
+    profiles."""
+    from tests.utils import reset_settings_singleton
+
+    monkeypatch.setenv("SANITIZE_PII", "true")
+    reset_settings_singleton()
+    yield
+    reset_settings_singleton()
+
+
+class _CopyRepo:
+    """Each turn reads its own copy of the case, as a database read would."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+
+    async def get(self, case_id):
+        stored = self.store.get(case_id)
+        return stored.model_copy(deep=True) if stored is not None else None
+
+    async def save(self, case, *, reports=(), receipt=None):
+        self.store[case.case_id] = case.model_copy(deep=True)
+        return case
+
+
+def _locking_engine(sanitizer, redis, script):
+    """The REAL ``MilestoneEngine.process_turn`` (its per-case lock, its spend
+    tracker), with ``_process_turn_impl`` standing in for prompt build and the
+    model: it sends the script's prompt through the turn's context, holds,
+    saves the context as ``turn_completion`` does, and answers."""
+    import asyncio
+    from collections import defaultdict
+
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine._case_locks = defaultdict(asyncio.Lock)
+    engine.deps = SimpleNamespace(
+        llm_provider=None, sanitizer=sanitizer, redis_client=redis
+    )
+    engine.sent = []
+
+    async def impl(
+        case,
+        user_message,
+        attachments=None,
+        intent_type=None,
+        intent_data=None,
+        *,
+        plan,
+        user_id=None,
+        typed=False,
+        redaction_ctx,
+    ):
+        prompt, reply, hold = script[user_message]
+        engine.sent.append(await redaction_ctx.asanitize(prompt))
+        await asyncio.sleep(hold)
+        await redaction_ctx.save()
+        case.updated_at = datetime.now(timezone.utc)
+        return {
+            "case_updated": case,
+            "agent_response": reply,
+            "metadata": {"milestones_completed": [], "progress_made": False},
+            "redaction_ctx": redaction_ctx,
+        }
+
+    engine._process_turn_impl = impl
+    return engine
+
+
+class TestConcurrentTurnsKeepTheRegistry:
+    async def test_two_concurrent_turns_then_a_third_reverses_both(
+        self, redaction_on, case
+    ):
+        """The review's probe: turns A and B load the registry before either
+        saves (the service loads it ahead of the engine's per-case lock), and
+        each registers a new value. Turn C's prompt carries both only as
+        placeholders (LLM-authored state) and its reply echoes them; before
+        the merge, the later save erased the other's entry and C's reply was
+        persisted with a placeholder in it."""
+        import asyncio
+
+        redis = fakeredis.aioredis.FakeRedis()
+        script = {
+            "msg A": (f"db at {IP_A} refuses", f"Check {PH_A}.", 0.05),
+            "msg B": (f"also {IP_B} times out", f"And {PH_B}.", 0.0),
+            "msg C": (
+                f"hypotheses: {PH_A} refuses; {PH_B} slow",
+                f"Compare {PH_A} with {PH_B}.",
+                0.0,
+            ),
+        }
+        engine = _locking_engine(_IpSanitizer(), redis, script)
+        repo = _CopyRepo()
+        await repo.save(case)
+        service = _service(engine, repo)
+
+        def turn(query):
+            return service.process_turn(
+                case_id=case.case_id,
+                user_id=case.user_id,
+                payload=TurnPayload(query=query),
+            )
+
+        reply_a, reply_b = await asyncio.gather(turn("msg A"), turn("msg B"))
+        reply_c = await turn("msg C")
+
+        assert reply_a.agent_response == f"Check {IP_A}."
+        assert reply_b.agent_response == f"And {IP_B}."
+        assert reply_c.agent_response == f"Compare {IP_A} with {IP_B}."
+        # The stored row of turn C (the two concurrent turns shared a number;
+        # the later commit won, which is the OCC's business, not this test's).
+        row = repo.store[case.case_id].messages[-1]
+        assert row["role"] == "assistant"
+        assert row["content"] == f"Compare {IP_A} with {IP_B}."
+        assert IP_A not in "".join(engine.sent) and IP_B not in "".join(engine.sent)
+
+    async def test_the_title_and_a_following_turn_keep_both_entries(self, redaction_on):
+        """The title loads the registry; a turn loads it too, registers a new
+        value and saves while the title's model call is in flight; the title's
+        prompt registered a value the registry lacked, and saves after."""
+        import asyncio
+
+        sanitizer = _IpSanitizer()
+        redis = fakeredis.aioredis.FakeRedis()
+        case_id = "case_title_race"
+        title_started, turn_saved = asyncio.Event(), asyncio.Event()
+
+        class _Router:
+            calls: list = []
+
+            async def generate(self, **kwargs):
+                self.calls.append(kwargs)
+                title_started.set()
+                await turn_saved.wait()
+                return _response("Database Connection Refusals On Primary")
+
+        router = _Router()
+        title_case = SimpleNamespace(
+            case_id=case_id,
+            title="Case-261012-1",
+            description="",
+            inquiry=SimpleNamespace(
+                proposed_problem_statement="db refuses connections",
+                problem_statement_confirmed=True,
+            ),
+            evidence=[],
+            uploaded_files=[],
+        )
+        case_service = SimpleNamespace(
+            get_case_conversation_context=AsyncMock(
+                return_value=(
+                    "User: the database refuses connections from the app tier "
+                    f"on {HOST} and the replica lags badly. "
+                )
+                * 20
+            ),
+            update_case=AsyncMock(return_value=True),
+            get_case=AsyncMock(
+                return_value=SimpleNamespace(
+                    title="Database Connection Refusals On Primary"
+                )
+            ),
+        )
+
+        async def title():
+            await title_generation._generate_and_persist_title(
+                case=title_case,
+                case_id=case_id,
+                user_id="u",
+                case_service=case_service,
+                llm_provider=router,
+                max_words=8,
+                hint=None,
+                correlation_id="c",
+                sanitizer=sanitizer,
+                redis_client=redis,
+            )
+
+        async def following_turn():
+            await title_started.wait()  # loaded before the title saves
+            ctx = await service_module.load_case_redaction(case_id, sanitizer, redis)
+            await ctx.asanitize(f"new host {IP_D}")
+            await ctx.save()
+            turn_saved.set()
+
+        await asyncio.gather(title(), following_turn())
+
+        assert router.calls, "the title never reached its model call"
+        stored = {
+            p.decode()
+            for p in (await redis.hgetall(f"redaction:registry:{case_id}")).values()
+        }
+        assert stored == {PH_HOST, PH_D}

@@ -40,7 +40,7 @@ Where the key comes from:
 
 Deliberately kept out of the stores that hold redacted data or the mapping back
 from it. ``CaseRedactionContext`` persists the placeholder→plaintext registry in
-**Redis** (``redaction:{case_id}``), and the redacted artifacts themselves sit
+**Redis** (``redaction:registry:{case_id}``), and the redacted artifacts themselves sit
 in the application database; putting the key in either would hand a single
 compromise both halves.
 
