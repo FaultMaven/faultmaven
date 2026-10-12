@@ -64,15 +64,24 @@ Only the value's own characters change. The frontmatter block is found with the
 application's grammar (``utils/frontmatter.FRONTMATTER_RE``, frozen here: an
 optional BOM, ``---`` delimiter lines with LF or CRLF endings, anchored at the
 start), parsed with ``yaml.compose`` to find where the ``verified_by`` value
-starts and ends, and the new value is spliced into that span as a YAML
-double-quoted scalar escaped by ``json.dumps`` (the form #1924's fallback writer
-uses). Re-serialising the frontmatter instead would rewrite every other line of a
+starts and ends, and the new value is spliced into that span as a one-line YAML
+double-quoted scalar from YAML's own emitter (so control characters, NEL and
+U+2028 are escaped and the value re-reads exactly). Re-serialising the frontmatter instead would rewrite every other line of a
 runbook its owner edited (``PUT /knowledge/documents/{id}`` stores the text
 verbatim): comments dropped, keys re-sorted, quoting and timestamps
 re-spelled, CRLF and the trailing newline lost. A block scalar's trailing line
 breaks stay. A runbook whose frontmatter has no ``verified_by`` key is left
 alone (there is nothing derived to remove), as is one that already holds the
 target name (so a re-run changes nothing).
+
+Every splice is re-read before it is written: the block must keep its
+boundaries, ``verified_by`` must read back as the new name, and every other key
+must read back unchanged; otherwise the row is left and its id logged. A value
+held through a YAML anchor or alias is shared with another key, so it is left
+(counted with the values not derived from the account). Any failure to parse a
+frontmatter (a YAML error, an impossible date such as ``2024-02-30``, nesting
+too deep) leaves the row and logs its id: owner text is stored unvalidated, and
+none of it may stop the migration (a failed migration stops a standalone boot).
 
 Verify's old fallback, for a frontmatter that did not parse, replaced the
 literal ``verified_by: ""`` with ``verified_by: "<username>"``. Such a text still
@@ -135,7 +144,6 @@ Revises: c4441b83ba24
 Create Date: 2026-10-12 15:00:00
 """
 
-import json
 import logging
 import re
 from typing import Optional, Sequence, Union
@@ -220,6 +228,11 @@ class _NotDerived(Exception):
     """The value is not derived from the verifier's account: it stays."""
 
 
+class _Unsafe(Exception):
+    """The spliced frontmatter would not read back as the same mapping with
+    only ``verified_by`` changed: the row is left as it was."""
+
+
 def is_account_derived(
     value: object, username: Optional[str], email: Optional[str]
 ) -> bool:
@@ -245,24 +258,62 @@ def _frontmatter_block(content: str) -> Optional[re.Match]:
     return _FRONTMATTER_RE.match(content)
 
 
-def _verified_by_node(block: str) -> Optional[yaml.Node]:
-    """The ``verified_by`` value node of a parsed frontmatter block (the last
-    one, as a load keeps the last of a repeated key), or ``None``. Raises
-    ``yaml.YAMLError`` for a block that does not parse."""
+def _verified_by_pair(block: str) -> Optional[tuple]:
+    """The ``(key, value)`` nodes of ``verified_by`` in a frontmatter block (the
+    last pair, as a load keeps the last of a repeated key), or ``None``. Raises
+    whatever the parser raises for a block that does not compose."""
     root = yaml.compose(block, Loader=yaml.SafeLoader)
     if not isinstance(root, yaml.MappingNode):
         return None
     found = None
     for key, value in root.value:
         if isinstance(key, yaml.ScalarNode) and key.value == "verified_by":
-            found = value
+            found = (key, value)
     return found
 
 
 def _quoted(name: str) -> str:
-    """``name`` as a YAML double-quoted scalar: JSON's escaping, which YAML's
-    double-quoted style reads back unchanged (#1924's fallback writer's form)."""
-    return json.dumps(name, ensure_ascii=False)
+    """``name`` as a YAML double-quoted scalar on one line, from YAML's own
+    emitter: it escapes what YAML itself would not read back (``\\x7f``,
+    ``\\x85``, U+2028, line breaks), so the value re-reads as exactly ``name``."""
+    emitted = yaml.dump(
+        name,
+        Dumper=yaml.SafeDumper,
+        default_style='"',
+        allow_unicode=True,
+        width=float("inf"),
+    )
+    if emitted.endswith("\n...\n"):
+        emitted = emitted[: -len("...\n")]
+    return emitted.rstrip("\n")
+
+
+def _without_verified_by(metadata: dict) -> dict:
+    return {key: value for key, value in metadata.items() if key != "verified_by"}
+
+
+def _checked(content: str, offset: int, block: str, new_block: str, name: str) -> str:
+    """The text with ``new_block`` in place of ``block``, once it is shown to
+    read back as intended: the same frontmatter boundaries, ``verified_by``
+    equal to ``name``, every other key's value unchanged. Raises ``_Unsafe``
+    otherwise, so no splice can write a frontmatter that no longer parses."""
+    new = content[:offset] + new_block + content[offset + len(block) :]
+    try:
+        match = _frontmatter_block(new)
+        old_metadata = yaml.safe_load(block)
+        new_metadata = yaml.safe_load(new_block)
+    except Exception as exc:
+        raise _Unsafe() from exc
+    if (
+        match is None
+        or match.group(1) != new_block
+        or not isinstance(new_metadata, dict)
+        or not isinstance(old_metadata, dict)
+        or new_metadata.get("verified_by") != name
+        or _without_verified_by(new_metadata) != _without_verified_by(old_metadata)
+    ):
+        raise _Unsafe()
+    return new
 
 
 def rewrite_verified_by(
@@ -274,20 +325,28 @@ def rewrite_verified_by(
     Only the value's own characters change: the frontmatter is parsed to find
     where the value starts and ends, and ``name`` is spliced in, double-quoted.
     Line endings, comments, key order, the other values' quoting and the body
-    stay byte for byte (an owner-edited runbook is stored verbatim).
+    stay byte for byte (an owner-edited runbook is stored verbatim). The result
+    is re-read before it is returned (``_checked``).
 
-    Raises ``_NotDerived`` for a value not derived from the verifier's account,
-    and ``_Unparseable`` for a frontmatter that does not parse and does not
-    hold the line verify's old fallback wrote for ``username``.
+    Raises ``_NotDerived`` for a value not derived from the verifier's account
+    (or held through a YAML anchor or alias, which a splice would break),
+    ``_Unparseable`` for a frontmatter that does not parse and does not hold the
+    line verify's old fallback wrote for ``username``, and ``_Unsafe`` for a
+    splice that would not read back as intended.
     """
     match = _frontmatter_block(content)
     if match is None:
         return None
     block, offset = match.group(1), match.start(1)
     try:
-        node = _verified_by_node(block)
-        current = yaml.safe_load(block).get("verified_by") if node else None
-    except yaml.YAMLError:
+        pair = _verified_by_pair(block)
+        current = yaml.safe_load(block).get("verified_by") if pair else None
+    except Exception:
+        # Anything the parser raises means the frontmatter does not parse: a
+        # YAMLError, a ValueError for an impossible date (2024-02-30), a
+        # RecursionError for deep nesting. Owner text is stored unvalidated,
+        # so none of it may stop the migration.
+        #
         # Verify's old fallback wrote this exact line into a frontmatter that
         # did not parse. Replaced inside the frontmatter only, never the body.
         written = f'verified_by: "{username}"' if username is not None else None
@@ -297,20 +356,30 @@ def rewrite_verified_by(
         if fixed == block:
             return None
         return content[:offset] + fixed + content[offset + len(block) :]
-    if node is None:
+    if pair is None:
         return None
+    key, node = pair
     if current == name or (current is None and name == ""):
         return None
     if not isinstance(node, yaml.ScalarNode) or not is_account_derived(
         current, username, email
     ):
         raise _NotDerived()
-    start = offset + node.start_mark.index
-    end = offset + node.end_mark.index
-    span = content[start:end]
+    span = block[node.start_mark.index : node.end_mark.index]
+    if node.start_mark.index < key.end_mark.index or span.startswith("&"):
+        # An alias (the node is the anchored one, earlier in the text) or an
+        # anchored value another key refers to: the value is shared, and a
+        # splice would rewrite the wrong span or drop the anchor.
+        raise _NotDerived()
     # A block scalar's span runs through its trailing line breaks: keep them.
     kept_tail = span[len(span.rstrip()) :]
-    return content[:start] + _quoted(name) + kept_tail + content[end:]
+    new_block = (
+        block[: node.start_mark.index]
+        + _quoted(name)
+        + kept_tail
+        + block[node.end_mark.index :]
+    )
+    return _checked(content, offset, block, new_block, name)
 
 
 def _holds_an_address(content: str) -> bool:
@@ -319,7 +388,8 @@ def _holds_an_address(content: str) -> bool:
         return False
     try:
         metadata = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
+    except Exception:
+        # Owner text: an impossible date or deep nesting is not a crash.
         return False
     if not isinstance(metadata, dict):
         return False
@@ -332,6 +402,7 @@ def _rewrite() -> None:
     targets: dict = {}
     unparseable: list = []
     kept: list = []
+    unsafe: list = []
     items_rewritten = 0
     emptied = 0
     for item_id, content, display_name, username, email in bind.execute(
@@ -346,6 +417,9 @@ def _rewrite() -> None:
             continue
         except _Unparseable:
             unparseable.append(item_id)
+            continue
+        except _Unsafe:
+            unsafe.append(item_id)
             continue
         if new is None:
             continue
@@ -364,6 +438,9 @@ def _rewrite() -> None:
             continue
         except _Unparseable:
             unparseable.append(draft_id)
+            continue
+        except _Unsafe:
+            unsafe.append(draft_id)
             continue
         if new is None:
             continue
@@ -390,6 +467,13 @@ def _rewrite() -> None:
             "holds no verified_by line verify wrote: %s",
             len(unparseable),
             ", ".join(unparseable),
+        )
+    if unsafe:
+        _log.warning(
+            "019: left %d runbook text(s) whose rewrite would not read back as "
+            "intended: %s",
+            len(unsafe),
+            ", ".join(unsafe),
         )
     addresses = [
         item_id

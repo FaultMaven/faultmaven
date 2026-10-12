@@ -59,6 +59,17 @@ def _runbook(verified_by: str) -> str:
     )
 
 
+#: Owner text the YAML loader cannot read (``ValueError``, ``RecursionError``):
+#: the migration completes and leaves it as it is.
+_CANNOT_PARSE = {
+    "bad": "---\nid: rb\nlast_updated: 2024-02-30\nverified_by: user.x\n---\n\n# B",
+    "deep": "---\nid: rb\nverified_by: user.x\nnest: "
+    + "[" * 3000
+    + "]" * 3000
+    + "\n---\n\n# B",
+}
+
+
 async def _execute(url: str, *statements: str) -> list:
     """Run ``statements`` in one transaction; return the last one's rows."""
     engine = create_async_engine(url)
@@ -114,6 +125,8 @@ async def _seed(url: str) -> list[str]:
                 for item, verifier, content in (
                     (f"ki_{e}", f"u_{e}", _runbook(f"user.{e}")),
                     (f"ki_gone_{e}", None, _runbook(f"gone.{e}@example.com")),
+                    (f"ki_bad_{e}", f"u_{e}", _CANNOT_PARSE["bad"]),
+                    (f"ki_deep_{e}", f"u_{e}", _CANNOT_PARSE["deep"]),
                 ):
                     await run(
                         "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
@@ -176,6 +189,9 @@ async def test_the_owner_rewrites_every_enterprises_runbooks():
                 assert items[f"ki_gone_{e}"] == _runbook('""')
                 for item in (f"ki_{e}", f"ki_gone_{e}"):
                     assert drafts[f"d_{item}"] == items[item], item
+                for kind, content in _CANNOT_PARSE.items():
+                    assert items[f"ki_{kind}_{e}"] == content
+                    assert drafts[f"d_ki_{kind}_{e}"] == content
 
             # The downgrade restores nothing; the upgrade again changes nothing.
             result = alembic_on(owner_url, f"downgrade {_PARENT_REVISION}")

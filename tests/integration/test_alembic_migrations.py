@@ -2772,6 +2772,46 @@ class TestVerifiedByIsTheDisplayNameRevision:
         "---\nid: rb-broken-2\ntitle: [unclosed\nstatus: verified\n---\n\n"
         '# Broken\n\nexample verified_by: "alice.smith"\n'
     )
+    #: Owner text the parser cannot read, stored unvalidated: an impossible date
+    #: (``ValueError``) and nesting too deep (``RecursionError``). The migration
+    #: completes and leaves each row as it is: (item id, verification_level,
+    #: content). The upload's goes through the operator scan for '@' values.
+    CANNOT_PARSE = (
+        (
+            "ki_baddate",
+            1,
+            "---\nid: rb-date\nlast_updated: 2024-02-30\nverified_by: alice.smith\n"
+            "---\n\n# Body\n",
+        ),
+        (
+            "ki_deep",
+            1,
+            "---\nid: rb-deep\nverified_by: alice.smith\nnest: "
+            + "[" * 3000
+            + "]" * 3000
+            + "\n---\n\n# Body\n",
+        ),
+        (
+            "ki_upload_baddate",
+            0,
+            "---\nid: rb-up\nlast_updated: 2024-02-30\nverified_by: up@example.com\n"
+            "---\n\n# Body\n",
+        ),
+    )
+    #: A value held through a YAML anchor or alias is shared with another key: a
+    #: splice would rewrite the wrong span or drop the anchor. Left as it is.
+    SHARED = (
+        (
+            "ki_alias",
+            "---\nowner: &who alice.smith\nverified_by: *who\nstatus: verified\n"
+            "---\n\n# Body\n",
+        ),
+        (
+            "ki_anchor",
+            "---\nverified_by: &who alice.smith\nowner: *who\nstatus: verified\n"
+            "---\n\n# Body\n",
+        ),
+    )
     #: Texts stored verbatim, as ``PUT /knowledge/documents/{id}`` stores an
     #: owner's edit: (item id, before, after). Only the value changes.
     VERBATIM = (
@@ -2867,6 +2907,20 @@ class TestVerifiedByIsTheDisplayNameRevision:
                 (item_id, self.ALICE, 1, "conversion:job_1", before)
                 for item_id, before, _ in self.VERBATIM
             )
+            rows.extend(
+                (
+                    item_id,
+                    self.ALICE if level else None,
+                    level,
+                    "conversion:job_1",
+                    content,
+                )
+                for item_id, level, content in self.CANNOT_PARSE
+            )
+            rows.extend(
+                (item_id, self.ALICE, 1, "conversion:job_1", content)
+                for item_id, content in self.SHARED
+            )
             for item_id, verifier, level, source, content in rows:
                 conn.execute(
                     "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
@@ -2889,7 +2943,11 @@ class TestVerifiedByIsTheDisplayNameRevision:
                         f"rb_{item_id}",
                         content,
                         item_id,
-                        self.ALICE if item_id == "ki_upload" else verifier,
+                        (
+                            self.ALICE
+                            if item_id in ("ki_upload", "ki_upload_baddate")
+                            else verifier
+                        ),
                     ),
                 )
             # A discarded draft: nothing serves its text.
@@ -2942,17 +3000,18 @@ class TestVerifiedByIsTheDisplayNameRevision:
             "draft(s); 2 of those runbooks have no verifier account and now hold ''"
         ) in result.stderr
         assert (
-            "019: left 2 runbook text(s) whose frontmatter does not parse and "
-            "holds no verified_by line verify wrote: ki_broken_body, d_ki_broken_body"
+            "019: left 6 runbook text(s) whose frontmatter does not parse and "
+            "holds no verified_by line verify wrote: ki_baddate, ki_broken_body, "
+            "ki_deep, d_ki_baddate, d_ki_broken_body, d_ki_deep"
         ) in result.stderr
         assert (
             "019: left 2 runbook(s) not verified through FaultMaven (uploads, the "
             "pack) whose own verified_by holds an '@': kb_0123456789ab, ki_upload"
         ) in result.stderr
         assert (
-            "019: left 4 verified runbook(s) whose verified_by is not derived from "
-            "the verifier's account (a name the owner chose): ki_gone_name, "
-            "ki_renamed, ki_synth, ki_team"
+            "019: left 6 verified runbook(s) whose verified_by is not derived from "
+            "the verifier's account (a name the owner chose): ki_alias, ki_anchor, "
+            "ki_gone_name, ki_renamed, ki_synth, ki_team"
         ) in result.stderr
 
     def test_a_name_the_owner_chose_stays(self, clean_database, database_url):
@@ -2998,6 +3057,87 @@ class TestVerifiedByIsTheDisplayNameRevision:
             ]
             assert len(changed) == 1, (item_id, changed)
             assert changed[0][0].startswith("verified_by:"), (item_id, changed)
+
+    def test_owner_text_the_parser_cannot_read_does_not_stop_the_migration(
+        self, clean_database, database_url
+    ):
+        """An impossible date and nesting too deep raise ``ValueError`` and
+        ``RecursionError`` from the YAML loader, not ``YAMLError``. The
+        migration completes (a failed one stops a standalone boot) and leaves
+        those rows, the upload's included, exactly as they were."""
+        result = self._migrate_seeded(database_url)
+
+        assert result.returncode == 0, result.stderr[-3000:]
+        items, drafts = self._items(), self._drafts()
+        for item_id, _, content in self.CANNOT_PARSE:
+            assert items[item_id] == content, item_id
+            assert drafts[f"d_{item_id}"] == content, item_id
+
+    def test_a_value_held_through_an_anchor_or_alias_stays(
+        self, clean_database, database_url
+    ):
+        """Left by the anchor guard itself (counted with the values not derived
+        from the account), not only by the re-read net behind it."""
+        assert self._migrate_seeded(database_url).returncode == 0
+        items = self._items()
+        module = self._migration_module()
+        for item_id, content in self.SHARED:
+            assert items[item_id] == content, item_id
+            with pytest.raises(module._NotDerived):
+                module.rewrite_verified_by(
+                    content, "Alice Smith", "alice.smith", "alice.smith@example.com"
+                )
+
+    @staticmethod
+    def _migration_module():
+        import importlib.util
+
+        path = next(
+            (PROJECT_ROOT / "alembic" / "versions").glob(
+                f"*_{VERIFIED_BY_DISPLAY_NAME_REVISION}_*.py"
+            )
+        )
+        spec = importlib.util.spec_from_file_location("rev019", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.mark.parametrize(
+        "name",
+        ["x\x7fy", "x\x85y", "a\u2028b", 'say "hi"', "back\\slash", "two\nlines"],
+    )
+    def test_a_display_name_reads_back_exactly(self, name):
+        """The new value is YAML's own double-quoted form on one line: a
+        character YAML would refuse (``\\x7f``) or read differently (NEL,
+        U+2028) is escaped, and the block re-reads as exactly ``name``."""
+        import yaml
+
+        module = self._migration_module()
+        text = "---\nid: x\nverified_by: alice.smith\nstatus: verified\n---\n\nB\n"
+
+        new = module.rewrite_verified_by(
+            text, name, "alice.smith", "alice.smith@example.com"
+        )
+
+        block = module._FRONTMATTER_RE.match(new).group(1)
+        assert yaml.safe_load(block) == {
+            "id": "x",
+            "verified_by": name,
+            "status": "verified",
+        }
+        assert len(block.splitlines()) == 3, block
+
+    def test_a_splice_that_would_not_read_back_is_refused(self, monkeypatch):
+        """The safety net: whatever the splice writes is re-read first, and a
+        frontmatter that would no longer parse is never returned."""
+        module = self._migration_module()
+        monkeypatch.setattr(module, "_quoted", lambda name: '"unterminated')
+        text = "---\nid: x\nverified_by: alice.smith\nstatus: verified\n---\n\nB\n"
+
+        with pytest.raises(module._Unsafe):
+            module.rewrite_verified_by(
+                text, "Alice Smith", "alice.smith", "alice.smith@example.com"
+            )
 
     def test_a_renamed_username_is_the_documented_false_negative(
         self, clean_database, database_url
