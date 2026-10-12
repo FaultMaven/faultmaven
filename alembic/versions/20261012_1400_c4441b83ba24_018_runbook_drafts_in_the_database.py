@@ -1,4 +1,4 @@
-"""017_runbook_drafts_in_the_database
+"""018_runbook_drafts_in_the_database
 
 A runbook draft's text lives in its row: ``conversion_drafts.content``
 (``TEXT NOT NULL``) replaces ``conversion_drafts.file_path`` (#1950).
@@ -101,8 +101,8 @@ revision would look for, so every row's ``file_path`` is NULL, and the drafts
 this revision discarded stay discarded.
 
 Revision ID: c4441b83ba24
-Revises: b5334d07ae6c
-Create Date: 2026-10-12 13:00:00
+Revises: f95a5b3a58eb
+Create Date: 2026-10-12 14:00:00
 """
 
 import logging
@@ -116,7 +116,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "c4441b83ba24"  # pragma: allowlist secret
-down_revision: Union[str, Sequence[str], None] = "b5334d07ae6c"
+down_revision: Union[str, Sequence[str], None] = "f95a5b3a58eb"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -176,7 +176,7 @@ COUNT_LIVE_WITHOUT_PUBLISHED_TEXT = text(
 
 #: The first statement of an offline (PostgreSQL) script.
 OFFLINE_WARNING = (
-    "-- WARNING (017): this script cannot read draft files. It DISCARDS every "
+    "-- WARNING (018): this script cannot read draft files. It DISCARDS every "
     "live runbook draft whose text is not already in the database (every "
     "unverified draft, and every verified one whose published item is gone). "
     "Run the migration online from the application root to keep drafts whose "
@@ -319,7 +319,7 @@ def _refuse_if_standalone_would_lose_drafts() -> None:
     at_risk = op.get_bind().execute(COUNT_LIVE_WITHOUT_PUBLISHED_TEXT).scalar()
     if at_risk:
         raise RuntimeError(
-            f"017 refused: {at_risk} live runbook draft(s) keep their text only "
+            f"018 refused: {at_risk} live runbook draft(s) keep their text only "
             f"in files under {KNOWLEDGE_DIR}/, which does not exist in the "
             f"working directory ({Path.cwd()}). The migration reads those files "
             "relative to where it runs: run it from the application root (the "
@@ -332,7 +332,7 @@ def _fill_from_files() -> None:
     """Step 2: live, still-empty rows take their file's text."""
     if op.get_context().as_sql:
         op.execute(
-            "-- 017 step 2 (each live draft's text from its file under "
+            "-- 018 step 2 (each live draft's text from its file under "
             "data/knowledge) reads files and cannot run offline; drafts it would "
             "fill are discarded by step 3 below"
         )
@@ -345,7 +345,7 @@ def _fill_from_files() -> None:
             continue
         bind.execute(FILL_ONE, {"content": content, "id": draft_id})
         filled += 1
-    _log.info("017: filled %d draft(s) from their files", filled)
+    _log.info("018: filled %d draft(s) from their files", filled)
 
 
 def _execute_counted(statement, label: str) -> None:
@@ -354,7 +354,7 @@ def _execute_counted(statement, label: str) -> None:
         op.execute(statement)
         return
     count = op.get_bind().execute(statement).rowcount
-    _log.info("017: %s: %d row(s)", label, count)
+    _log.info("018: %s: %d row(s)", label, count)
 
 
 def _discard_drafts_without_text() -> None:
@@ -362,7 +362,7 @@ def _discard_drafts_without_text() -> None:
     if not op.get_context().as_sql:
         ids = [row[0] for row in op.get_bind().execute(SELECT_TO_DISCARD)]
         _log.info(
-            "017: discarding %d live draft(s) whose text is gone: %s",
+            "018: discarding %d live draft(s) whose text is gone: %s",
             len(ids),
             ", ".join(ids) or "none",
         )
@@ -386,7 +386,7 @@ def upgrade() -> None:
     if context.as_sql:
         if context.dialect.name == "sqlite":
             raise RuntimeError(
-                "017 cannot be rendered with --sql on SQLite: step (b) reads "
+                "018 cannot be rendered with --sql on SQLite: step (b) reads "
                 "draft files; standalone migrates online from the app root"
             )
         op.execute(OFFLINE_WARNING)

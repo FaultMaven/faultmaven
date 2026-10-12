@@ -107,6 +107,17 @@ class StorageBackend(str, Enum):
     S3 = "s3"
 
 
+class DeepAnalysisBackend(str, Enum):
+    """Deep analysis ("interpreted search") selector.
+
+    ``local`` runs it through the LLM router; ``disabled`` withholds the
+    ``deep_analysis`` tool. There is no other backend (#1957).
+    """
+
+    LOCAL = "local"
+    DISABLED = "disabled"
+
+
 class MetricsExporter(str, Enum):
     """Metrics exporter provider selector (PR #5).
 
@@ -133,6 +144,13 @@ class ServerSettings(BaseSettings):
     port: int = Field(default=8090)
     reload: bool = Field(default=False)
     workers: int = Field(default=1)
+    timeout_keep_alive: int = Field(
+        default=75,
+        ge=1,
+        description="Seconds uvicorn holds an idle keep-alive connection. Must "
+        "exceed ingress-nginx's upstream-keepalive-timeout (60 s) so the "
+        "proxy never reuses a connection the API has just closed.",
+    )
 
     # Environment and behavior
     environment: Environment = Field(default=Environment.DEVELOPMENT)
@@ -2972,35 +2990,16 @@ class DeepAnalysisSettings(BaseSettings):
     search), a dedicated LLM call interprets the relevant sections in
     isolation with the investigation context.
 
-    The 'local' backend uses the already-configured CHAT_PROVIDER — no
-    additional API keys or infrastructure needed. The 'external' backend
-    calls a separate microservice (enterprise only).
+    The call goes through the LLM router on the already-configured
+    CHAT_PROVIDER — no additional API keys or infrastructure needed.
+    ``DEEP_ANALYSIS_BACKEND`` admits ``local`` or ``disabled`` and nothing
+    else; any other value fails settings load.
     """
 
-    backend: str = Field(
-        default="local",
+    backend: DeepAnalysisBackend = Field(
+        default=DeepAnalysisBackend.LOCAL,
         validation_alias="DEEP_ANALYSIS_BACKEND",
-        description="Interpreted search backend: external | local | disabled",
-    )
-
-    url: str = Field(
-        default="",
-        validation_alias="DEEP_ANALYSIS_URL",
-        description="URL for external deep analysis backend",
-    )
-
-    api_key: str = Field(
-        default="",
-        validation_alias="DEEP_ANALYSIS_API_KEY",
-        description="API key for external deep analysis backend",
-    )
-
-    timeout_seconds: int = Field(
-        default=30,
-        validation_alias="DEEP_ANALYSIS_TIMEOUT_SECONDS",
-        ge=5,
-        le=120,
-        description="Timeout for deep analysis calls",
+        description="Interpreted search: 'local' (LLM router) or 'disabled'",
     )
 
     max_tokens: int = Field(
@@ -3008,11 +3007,7 @@ class DeepAnalysisSettings(BaseSettings):
         validation_alias="DEEP_ANALYSIS_MAX_TOKENS",
         ge=256,
         le=16000,
-        description=(
-            "Maximum response tokens for deep-analysis LLM calls. Applied "
-            "by the 'local' backend (LocalTier2Service); the 'external' "
-            "backend governs its own response size on the server side."
-        ),
+        description="Maximum response tokens for the deep-analysis LLM call.",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -3236,7 +3231,6 @@ class EvidenceStorageSettings(BaseSettings):
     Controls the behavior of evidence artifact storage including:
     - Storage location (local filesystem)
     - File size limits
-    - Allowed MIME types for security
     - Future: Cloud storage configuration (S3, Azure, GCS)
 
     Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
@@ -3256,19 +3250,9 @@ class EvidenceStorageSettings(BaseSettings):
         description="Maximum evidence file size in bytes (default 100MB)",
     )
 
-    # Allowed MIME types (empty list = allow all)
-    allowed_evidence_mime_types: List[str] = Field(
-        default=[],
-        description="Allowed MIME types for evidence files (empty = allow all)",
-    )
-
-    # Common evidence MIME types (for reference/documentation)
-    # Images: image/png, image/jpeg, image/gif, image/webp, image/svg+xml
-    # Logs: text/plain, application/json, application/xml, text/csv
-    # Archives: application/zip, application/gzip, application/x-tar
-    # Network: application/octet-stream (for HAR, pcap files)
-    # Videos: video/mp4, video/webm, video/quicktime
-    # Documents: application/pdf, text/html
+    # ``ALLOWED_EVIDENCE_MIME_TYPES`` lived here and was read only by the
+    # request-scoped service factory removed in #1935, which no route reached:
+    # the knob never constrained an upload. Removed rather than wired.
 
     # Cloud storage configuration (S3)
     # These settings are used when STORAGE_BACKEND=s3
@@ -3429,7 +3413,7 @@ class FaultMavenSettings(BaseSettings):
     # Agent orchestration configuration (TASK-015)
     agent: AgentSettings = Field(default_factory=AgentSettings)
 
-    # Convenience properties for evidence storage (used by ServiceFactory)
+    # Convenience properties for evidence storage
     @property
     def evidence_storage_root(self) -> str:
         """Get evidence storage root directory."""
@@ -3439,11 +3423,6 @@ class FaultMavenSettings(BaseSettings):
     def max_evidence_file_size(self) -> int:
         """Get maximum evidence file size in bytes."""
         return self.evidence_storage.max_evidence_file_size
-
-    @property
-    def allowed_evidence_mime_types(self) -> List[str]:
-        """Get allowed evidence MIME types."""
-        return self.evidence_storage.allowed_evidence_mime_types
 
     @property
     def is_cloud(self) -> bool:

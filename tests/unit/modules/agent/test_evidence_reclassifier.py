@@ -1,8 +1,9 @@
-"""Phase 1.5 — InvestigationService.reclassify_evidence
+"""Phase 1.5 — EvidenceReclassifier.reclassify_evidence
 
-Covers the service-layer flow end-to-end: auth check, evidence lookup,
+The reclassifier the PATCH route and the ``reclassify_evidence`` tool share
+(#1941). Covers the flow end-to-end: auth check, evidence lookup,
 content-ref check, storage fetch, preprocessing re-run, and persistence.
-The service uses real objects (Case, Evidence) wired through
+The reclassifier uses real objects (Case, Evidence) wired through
 MockCaseRepository so we exercise model_copy semantics.
 """
 
@@ -16,14 +17,13 @@ from faultmaven.exceptions import (
     NotFoundError,
 )
 from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service.service import (
-    InvestigationService,
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (  # noqa: E501
+    EvidenceReclassifier,
 )
 from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
 
 from .conftest import (
     MockCaseRepository,
-    MockMilestoneEngine,
     create_sample_case,
     make_evidence,
     make_preprocessing_result,
@@ -85,21 +85,20 @@ def file_storage():
 
 
 @pytest.fixture
-def service(repo_with_case, preprocessing_service, file_storage):
+def reclassifier(repo_with_case, preprocessing_service, file_storage):
     repo, _ = repo_with_case
-    return InvestigationService(
-        milestone_engine=MockMilestoneEngine(),
+    return EvidenceReclassifier(
         case_repository=repo,
-        preprocessing_service=preprocessing_service,
         file_storage_service=file_storage,
+        preprocessing_service=preprocessing_service,
     )
 
 
 class TestAuthAndLookup:
     @pytest.mark.asyncio
-    async def test_case_not_found_raises(self, service):
+    async def test_case_not_found_raises(self, reclassifier):
         with pytest.raises(NotFoundError):
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id="nonexistent",
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_owner",
@@ -108,12 +107,12 @@ class TestAuthAndLookup:
 
     @pytest.mark.asyncio
     async def test_user_not_owner_raises_authorization_error(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         """Non-owner caller raises AuthorizationError → HTTP 403."""
         _, case = repo_with_case
         with pytest.raises(AuthorizationError):
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_not_owner",
@@ -121,10 +120,10 @@ class TestAuthAndLookup:
             )
 
     @pytest.mark.asyncio
-    async def test_evidence_not_in_case_raises(self, service, repo_with_case):
+    async def test_evidence_not_in_case_raises(self, reclassifier, repo_with_case):
         _, case = repo_with_case
         with pytest.raises(NotFoundError):
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_does_not_exist_zz",
                 user_id="user_owner",
@@ -133,7 +132,7 @@ class TestAuthAndLookup:
 
     @pytest.mark.asyncio
     async def test_evidence_without_content_ref_raises_conflict(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         """Evidence whose source file is no longer on the case has no stored
         raw file — re-extraction is impossible. Raises ConflictError
@@ -150,7 +149,7 @@ class TestAuthAndLookup:
         ]
         case.uploaded_files = []
         with pytest.raises(ConflictError) as exc:
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_owner",
@@ -170,12 +169,12 @@ class TestTheDriverGate:
 
     @pytest.mark.asyncio
     async def test_the_creator_is_refused_while_another_drives(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         _, case = repo_with_case
         case.driver_id = "user_driver"
         with pytest.raises(AuthorizationError):
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_owner",
@@ -185,11 +184,11 @@ class TestTheDriverGate:
 
     @pytest.mark.asyncio
     async def test_the_assigned_driver_who_reads_the_case_reclassifies(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         _, case = repo_with_case
         case.driver_id = "user_driver"
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_driver",
@@ -200,7 +199,7 @@ class TestTheDriverGate:
 
     @pytest.mark.asyncio
     async def test_an_assigned_driver_who_no_longer_reads_is_refused(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         """The PATCH route has no read check ahead of this 403; without the
         read fact a driver whose every share was withdrawn — before any release
@@ -209,7 +208,7 @@ class TestTheDriverGate:
         _, case = repo_with_case
         case.driver_id = "user_driver"
         with pytest.raises(AuthorizationError):
-            await service.reclassify_evidence(
+            await reclassifier.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_driver",
@@ -218,13 +217,13 @@ class TestTheDriverGate:
 
     @pytest.mark.asyncio
     async def test_inside_a_turn_the_driver_needs_no_separate_read_fact(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         """The turn route resolved the case through the read allowlist, so an
         in-flight case is the read fact."""
         _, case = repo_with_case
         case.driver_id = "user_driver"
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_driver",
@@ -238,7 +237,7 @@ class TestTheDriverGate:
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_reclassification_updates_file_and_evidence_source_type(
-        self, service, repo_with_case, preprocessing_service
+        self, reclassifier, repo_with_case, preprocessing_service
     ):
         """Post-010: structural_index / summary / data_type land on the
         backing UploadedFile (file-level metadata). Evidence.source_type
@@ -250,7 +249,7 @@ class TestHappyPath:
         previous_summary = case.evidence[0].summary
         previous_extract = case.evidence[0].extract
 
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -265,7 +264,7 @@ class TestHappyPath:
         assert updated.extract == previous_extract
 
         # File-level preprocessing artifacts landed on UploadedFile
-        saved = await service.repository.get(case.case_id)
+        saved = await reclassifier.repository.get(case.case_id)
         uf = next(f for f in saved.uploaded_files if f.file_id == "file_aaaaaaaaaaaa")
         assert uf.structural_index == "new index content"
         assert uf.summary == "new summary"
@@ -280,13 +279,13 @@ class TestHappyPath:
 
     @pytest.mark.asyncio
     async def test_metadata_contract_suppresses_low_confidence_marker(
-        self, service, repo_with_case
+        self, reclassifier, repo_with_case
     ):
         """After user_override, the new metadata has source='user_override'
         and confidence=1.0 — Phase 1's low-confidence marker must not
         fire on the updated row."""
         _, case = repo_with_case
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -298,11 +297,13 @@ class TestHappyPath:
         assert cls["confidence"] == 1.0
 
     @pytest.mark.asyncio
-    async def test_attempts_history_preserved_on_row(self, service, repo_with_case):
+    async def test_attempts_history_preserved_on_row(
+        self, reclassifier, repo_with_case
+    ):
         """The merged attempts list makes it onto the persisted row so
         observability can see the classification trail."""
         _, case = repo_with_case
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -314,7 +315,7 @@ class TestHappyPath:
         assert attempts[-1]["triggered_by"] == "user_override"
 
     @pytest.mark.asyncio
-    async def test_other_evidence_untouched(self, service, repo_with_case):
+    async def test_other_evidence_untouched(self, reclassifier, repo_with_case):
         """Reclassifying one evidence must not touch the others in the case.
         Pin per-evidence idempotency so batch-style bugs can't corrupt
         adjacent rows."""
@@ -333,7 +334,7 @@ class TestHappyPath:
             )
         )
 
-        await service.reclassify_evidence(
+        await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -341,7 +342,7 @@ class TestHappyPath:
         )
 
         # Re-read via repo to see persisted state.
-        saved = await service.repository.get(case.case_id)
+        saved = await reclassifier.repository.get(case.case_id)
         untouched = next(
             e for e in saved.evidence if e.evidence_id == "ev_bbbbbbbbbbbb"
         )

@@ -72,8 +72,7 @@ If the user asks to create, generate, write, or "give me" a runbook in any
 phrasing, do NOT produce runbook content in your reply. Instead redirect:
 "To save a runbook for this case, use the **Generate a runbook from this
 resolved case** suggestion below — that creates a draft in the case
-creator's personal **Knowledge Base > Drafts** in the Dashboard (yours, when you
-are the creator)."
+creator's personal **Knowledge Base > Drafts** in the Dashboard."
 
 Specific questions about what a runbook would contain ("what steps should be in
 a runbook for this?", "which diagnostic commands would I include?") are normal

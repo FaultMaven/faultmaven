@@ -435,8 +435,8 @@ Interpreted search is a core investigation capability, not a feature toggle. It 
 
 ### Implementation Notes
 
-- **Current state**: `deep_analysis` is a separate tool with `DEEP_ANALYSIS_BACKEND` config (default: `disabled`). The `basic` backend duplicates `search_file` functionality.
-- **Target state**: Merge into `search_file` as `interpret: true` option. Remove `basic` backend. Default to enabled (uses configured LLM). `external` backend preserved for enterprise use as a separate configuration.
+- **Current state**: `deep_analysis` is a separate tool with `DEEP_ANALYSIS_BACKEND` config (`local` | `disabled`, default `local`, validated at settings load). It runs on the configured LLM through the router. The `basic` backend (a duplicate of `search_file`) and the `external` backend (an unredacted HTTP egress of raw evidence, outside the LLM-spend census) were removed in #1957.
+- **Target state**: Merge into `search_file` as `interpret: true` option.
 - **Terminology**: Replace "Tier 0/1/2/3" with "Preprocessing" and "Query strategies" throughout codebase and docs.
 
 ## Dashboard Feature Visibility

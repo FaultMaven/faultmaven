@@ -695,7 +695,7 @@ In Directed Analysis turns, `search_file` is available inside the bounded DA Too
 
 #### A. Keyword Search (Two-Pass Strategy — v4.2)
 
-The two-pass strategy described here is implemented in the **`search_file` agent tool** (`faultmaven/modules/agent/tools/search_file_tool.py`), not in `BasicTier2Service._keyword_search` — which is the in-process Tier 3 backend and implements a simpler single-pass partial-match scorer (see §3.5 and §4). Callers that go through `search_file` get the two-pass behaviour; `BasicTier2Service` invoked directly does not.
+The two-pass strategy described here is implemented in the **`search_file` agent tool** (`faultmaven/modules/agent/tools/search_file_tool.py`). The Tier 3 `deep_analysis` service (`LocalTier2Service`, §4) narrows the file with its own simpler single-pass ANY-match search before its LLM call; it does not use the two-pass strategy.
 
 Tokenizes the query into keywords (>2 chars), then uses a two-pass strategy for high-precision results with partial-match recovery:
 
@@ -786,7 +786,7 @@ async def _rerun_extractor(
 
 ### 3.4 Zero-Result Recovery: Vocabulary Extraction
 
-Implemented in the **`search_file` agent tool**, not in `BasicTier2Service`. When any search mode exposed by `search_file` returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string. `BasicTier2Service` directly returns a plain `"No matching sections found for the query."` message without vocabulary — callers wanting vocabulary recovery must go through `search_file`.
+Implemented in the **`search_file` agent tool**. When any search mode exposed by `search_file` returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string.
 
 **Three-pass heuristic (on first 100KB of content):**
 
@@ -817,14 +817,13 @@ Implemented in the **`search_file` agent tool**, not in `BasicTier2Service`. Whe
 
 ### 3.5 Relationship to Existing Services
 
-The `search_file` agent tool is a standalone implementation that coexists with other components; it does **not** replace or wrap `BasicTier2Service`:
+The `search_file` agent tool is a standalone implementation that coexists with other components:
 
 | Existing Component | Role | Relationship to `search_file` |
 | --- | --- | --- |
-| `BasicTier2Service._keyword_search()` | Single-pass partial-match scorer, returned to the agent via the Tier 3 `deep_analysis` tool when backend is `basic` | Independent; neither two-pass nor vocabulary-recovery. `search_file` reimplements the richer two-pass + vocab-recovery flow directly on raw file content. |
 | `ReadFileTool` (`read_file`) | Read file content by evidence ID | Remains for reading; `search_file` adds search |
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
-| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `ITier2SearchService` — basic / local / external / disabled) | Tier 3 interpreted search; orthogonal to `search_file` |
+| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `LocalTier2Service` through the LLM router; absent when `DEEP_ANALYSIS_BACKEND=disabled`) | Tier 3 interpreted search; orthogonal to `search_file` |
 
 ### 3.6 When to Use `search_file` vs `deep_analysis`
 
@@ -840,7 +839,7 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 
 ## 4. Tier 3: Deep LLM Analysis
 
-The agent tool is `deep_analysis`. It calls `ITier2SearchService.analyze()` with one of the pluggable backends (external, local LLM, or basic search).
+The agent tool is `deep_analysis`. It calls `LocalTier2Service.analyze()`, which narrows the file by keyword and sends the matched sections to the LLM router — routed, metered and sanitized like every other LLM call.
 
 **Key distinction from Tier 2**: Tier 3 uses an LLM to *interpret* the data and generate an answer. Tier 2 returns raw excerpts for the agent to interpret itself.
 
@@ -852,23 +851,16 @@ The agent tool is `deep_analysis`. It calls `ITier2SearchService.analyze()` with
 4. User explicitly asks for deeper analysis
 5. Image requires vision analysis (multimodal LLM)
 
-**Pluggable backends:**
-
-- `ExternalTier2Client`: HTTP call to cloud microservice (Gemini, OpenAI, custom)
-- `LocalTier2Service`: In-process with local LLM (Ollama/vLLM)
-- `BasicTier2Service`: In-process keyword search, no LLM (fallback)
+**Implementation:** one, `LocalTier2Service` (`core/preprocessing/tier2/local_service.py`), on the configured LLM router. The `external` backend (a remote HTTP service receiving the raw file) and the `basic` keyword backend (a duplicate of `search_file`) were retired in #1957.
 
 **Configuration**:
 
 ```bash
-DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
-DEEP_ANALYSIS_URL=                # URL for external backend
-DEEP_ANALYSIS_API_KEY=            # API key for external backend
-DEEP_ANALYSIS_TIMEOUT_SECONDS=30  # 5–120
-DEEP_ANALYSIS_MAX_TOKENS=2000     # 256–16000; local-backend response cap only
+DEEP_ANALYSIS_BACKEND=local       # local | disabled; any other value fails settings load
+DEEP_ANALYSIS_MAX_TOKENS=2000     # 256–16000; response cap of the deep-analysis LLM call
 ```
 
-`DEEP_ANALYSIS_MAX_TOKENS` applies to the `local` backend (`LocalTier2Service`) — it caps the response size of the dedicated LLM call. The `external` backend governs its own response size server-side; `basic` does not call an LLM. The `Tier2` token in `ITier2SearchService` refers to the agent-tools tier system (Tier 2 = search, Tier 3 = interpreted analysis), not the preprocessing-tier system.
+`DEEP_ANALYSIS_MAX_TOKENS` caps the response size of the dedicated LLM call. The `Tier2` token in `LocalTier2Service` and the `tier2/` package refers to the agent-tools tier system (Tier 2 = search, Tier 3 = interpreted analysis), not the preprocessing-tier system.
 
 ---
 
@@ -1497,11 +1489,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 # ============================================================
 # TIER 3: DEEP LLM ANALYSIS
 # ============================================================
-DEEP_ANALYSIS_BACKEND=disabled       # external | local | basic | disabled
-DEEP_ANALYSIS_URL=                   # URL for external backend
-DEEP_ANALYSIS_API_KEY=               # API key for external backend
-DEEP_ANALYSIS_TIMEOUT_SECONDS=30     # 5–120
-DEEP_ANALYSIS_MAX_TOKENS=2000        # 256–16000; local backend's LLM response cap
+DEEP_ANALYSIS_BACKEND=local          # local | disabled
+DEEP_ANALYSIS_MAX_TOKENS=2000        # 256–16000; deep-analysis LLM response cap
 
 # ============================================================
 # VECTORIZATION (proactive primary, reactive fallback)

@@ -868,8 +868,8 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "preprocessing_result",
     ): ("other", 1),
     (
-        _SVC,
-        "InvestigationService.reclassify_evidence",
+        _RECLASSIFICATION,
+        "EvidenceReclassifier.reclassify_evidence",
         "attr",
         "preprocessing_result",
     ): ("other", 1),

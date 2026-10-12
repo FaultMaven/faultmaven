@@ -288,7 +288,7 @@ def knowledge_root() -> Path:
     Relative to the process's working directory, which in every standalone run
     mode is the application root (the image's ``WORKDIR``, or the checkout).
     Nothing writes here: a deployment's own files are hand-placed, and the scan
-    copies each one's text into a draft row (#1950). Migration 017 read its
+    copies each one's text into a draft row (#1950). Migration 018 read its
     backfill from this same relative path, under the same rule.
     """
     return KNOWLEDGE_ROOT

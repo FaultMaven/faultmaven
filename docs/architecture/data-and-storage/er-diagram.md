@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-12 12:30 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-12 17:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**43 tables** in the schema.
+**42 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -27,7 +27,6 @@
 | `evidence_needs` | 17 | `need_id` | cases, enterprises, organizations |
 | `hypotheses` | 26 | `hypothesis_id` | cases, causal_nodes, enterprises, organizations, users |
 | `hypothesis_evidence` | 9 | `hypothesis_id, evidence_id` | enterprises, evidence, hypotheses, organizations, users |
-| `investigation_sessions` | 18 | `session_id` | cases, enterprises, organizations, users |
 | `knowledge_items` | 28 | `item_id` | enterprises, organizations, users |
 | `llm_turn_spend` | 17 | `enterprise_id, case_id, turn_number` | cases, enterprises |
 | `llm_usage_daily` | 15 | `enterprise_id, usage_date, billing_subject_kind, billing_subject_id, actor_user_id, provider, model, outcome` | enterprises |
@@ -335,26 +334,6 @@ erDiagram
         INTEGER linked_at_turn
         VARCHAR linked_by FK
         DATETIME created_at
-    }
-    investigation_sessions {
-        VARCHAR session_id PK
-        VARCHAR enterprise_id FK
-        VARCHAR organization_id FK
-        VARCHAR case_id FK
-        VARCHAR user_id FK
-        VARCHAR state
-        DATETIME started_at
-        DATETIME ended_at
-        DATETIME last_activity_at
-        INTEGER total_duration_ms
-        TEXT session_goal
-        TEXT findings_summary
-        INTEGER total_token_usage
-        INTEGER total_agent_executions
-        INTEGER token_budget_limit
-        TEXT metadata
-        DATETIME created_at
-        DATETIME updated_at
     }
     knowledge_items {
         VARCHAR item_id PK
@@ -711,7 +690,6 @@ erDiagram
     cases ||--o{ evidence : ""
     cases ||--o{ evidence_needs : ""
     cases ||--o{ hypotheses : ""
-    cases ||--o{ investigation_sessions : ""
     cases ||--o{ llm_turn_spend : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
@@ -737,7 +715,6 @@ erDiagram
     enterprises ||--o{ evidence_needs : ""
     enterprises ||--o{ hypotheses : ""
     enterprises ||--o{ hypothesis_evidence : ""
-    enterprises ||--o{ investigation_sessions : ""
     enterprises ||--o{ knowledge_items : ""
     enterprises ||--o{ llm_turn_spend : ""
     enterprises ||--o{ llm_usage_daily : ""
@@ -779,7 +756,6 @@ erDiagram
     organizations ||--o{ evidence_needs : ""
     organizations ||--o{ hypotheses : ""
     organizations ||--o{ hypothesis_evidence : ""
-    organizations ||--o{ investigation_sessions : ""
     organizations ||--o{ knowledge_items : ""
     organizations ||--o{ organization_members : ""
     organizations ||--o{ reports : ""
@@ -800,7 +776,6 @@ erDiagram
     users ||--o{ conversion_jobs : ""
     users ||--o{ hypotheses : ""
     users ||--o{ hypothesis_evidence : ""
-    users ||--o{ investigation_sessions : ""
     users ||--o{ knowledge_items : ""
     users ||--o{ oauth_authorization_codes : ""
     users ||--o{ organization_members : ""

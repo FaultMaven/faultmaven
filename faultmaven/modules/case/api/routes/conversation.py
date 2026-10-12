@@ -33,7 +33,10 @@ from pydantic import ValidationError
 
 from faultmaven.api.exception_handlers import llm_service_error_http_exception
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.dependencies import get_investigation_service
+from faultmaven.api.v1.dependencies import (
+    get_evidence_reclassifier,
+    get_investigation_service,
+)
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_MAX_LENGTH,
     IDEMPOTENCY_KEY_MIN_LENGTH,
@@ -241,10 +244,9 @@ async def resume_case_in_session(
 
     try:
         # TWO gates, because this route names two resources (#1390, #1393).
-        # `faultmaven/api/routes/sessions.py` states the rule its own surface
-        # follows — the case gate "covers the case named in the path and
-        # nothing else … Both halves are needed; neither is sufficient" — and
-        # this route had neither.
+        # The case gate covers the case named in the path and nothing else, the
+        # session gate the session; both halves are needed, neither is
+        # sufficient — and this route had neither.
         #
         # ── 1. The case ──────────────────────────────────────────────────
         # Enforced in BOTH places, deliberately (#1398).
@@ -305,10 +307,8 @@ async def resume_case_in_session(
         # answer — `ServiceException("Session store not configured")` is the
         # shipped case. Treating it as a nullable return let that escape to the
         # handler's bare `except` and answer 500 on a request the server simply
-        # could not evaluate. An unevaluable gate is a 503, which is the rule
-        # `faultmaven/api/routes/sessions.py` already states for its own:
-        # "503 if the case service is unavailable (the gate cannot be
-        # evaluated, so nothing is served)".
+        # could not evaluate. An unevaluable gate is a 503: the gate cannot be
+        # evaluated, so nothing is served.
         try:
             session = await session_service.get_session(session_id, validate=True)
         except (ServiceException, SessionException) as exc:
@@ -1082,7 +1082,7 @@ async def reclassify_evidence(
             "(e.g. 'logs_and_errors', 'structured_config')."
         ),
     ),
-    investigation_service=Depends(get_investigation_service),
+    evidence_reclassifier=Depends(get_evidence_reclassifier),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
@@ -1137,7 +1137,7 @@ async def reclassify_evidence(
         case_service is not None
         and await case_service.get_case(case_id, current_user.user_id) is not None
     )
-    updated_evidence = await investigation_service.reclassify_evidence(
+    updated_evidence = await evidence_reclassifier.reclassify_evidence(
         case_id=case_id,
         evidence_id=evidence_id,
         user_id=current_user.user_id,

@@ -31,8 +31,6 @@ Wherever a DDL element in this document is Tier 2, it is marked inline with **"T
 
 **Session storage (v2.1)**: The SQL `sessions` table is **DELETED**. Auth sessions are Redis-only — see §5.3 below. There is no SQL session table in either deployment.
 
-**`investigation_sessions` table**: This is a **case-owned** table (lives in `case-schema.md`), not an auth-owned table. It tracks the per-investigation agent context (`Case → InvestigationSession → AgentExecution → AgentToolCall`) and is a completely different concept from auth sessions. See [deployment-schema-strategy.md §11.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
-
 For the full policy on dialect tiering, the per-table deployment matrix, and enum governance, see [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 ---

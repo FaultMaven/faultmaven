@@ -127,8 +127,8 @@ async def test_an_unevaluable_session_gate_is_a_503(build_app, call_api):
     `ServiceException("Session store not configured")` is the shipped case.
     Treating it as a nullable return let it reach this handler's own
     `except ServiceException` arm and answer 500 "Failed to create case" on a
-    request the server could not evaluate. An unevaluable gate is a 503 —
-    `faultmaven/api/routes/sessions.py` states the rule for its own surface.
+    request the server could not evaluate. An unevaluable gate is a 503: the
+    gate cannot be evaluated, so nothing is served.
     """
     service = _case_service()
     app = build_app(

@@ -64,7 +64,6 @@ from .api.routes.admin import router as admin_users_router
 from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
-from .api.routes.sessions import router as investigation_sessions_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
 
 # The application lifespan (startup fail-fast gates, background tasks,
@@ -200,11 +199,6 @@ if len(_TURN_ROUTE_PATHS) != 1:
         f"{_TURN_ROUTE_PATHS}"
     )
 declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
-
-app.include_router(
-    investigation_sessions_router
-)  # No prefix - router already has /api/v1/cases/{case_id}/sessions
-logger.info("✅ Investigation session endpoints added")
 
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")
@@ -1600,58 +1594,46 @@ async def trigger_system_cleanup():
         }
 
 
-if __name__ == "__main__":
+def run_server() -> None:
+    """Start uvicorn with the configured host, port, workers and keep-alive."""
     import uvicorn
 
     # Configuration from unified settings
     from faultmaven.config.settings import get_settings
 
-    settings = get_settings()
-    host = settings.server.host
-    port = settings.server.port
-    reload = settings.server.reload
-    workers = settings.server.workers
-
-    # Start server
-    # Note: workers parameter is only used if > 1 (uvicorn defaults to 1 worker if not specified)
+    server = get_settings().server
+    # Note: workers is passed only if > 1 (uvicorn defaults to 1 worker).
     # Validation happens in lifespan startup, which will catch invalid configurations
+    options: dict[str, int] = {"workers": server.workers} if server.workers > 1 else {}
     # access_log=False: uvicorn's plaintext access lines duplicate the
     # structured (JSON) request start/completion logs emitted by
-    # LoggingMiddleware — one access log, structured, with correlation IDs.
-    if workers > 1:
-        uvicorn.run(
-            "faultmaven.main:app",
-            host=host,
-            port=port,
-            reload=reload,
-            workers=workers,
-            log_level="info",
-            access_log=False,
-            # log_config=None so uvicorn installs no handlers of its own.
-            # Its default config gives the `uvicorn` logger a handler and
-            # propagate=False, so `uvicorn.error` records -- including the
-            # "Exception in ASGI application" traceback, which embeds an HTTP
-            # client's exception message and therefore its request URL -- stop
-            # at uvicorn's handler and never reach the root logger where the
-            # redacting renderer lives. With no config of its own, uvicorn's
-            # loggers propagate to root and are rendered like everything else.
-            log_config=None,
-        )
-    else:
-        uvicorn.run(
-            "faultmaven.main:app",
-            host=host,
-            port=port,
-            reload=reload,
-            log_level="info",
-            access_log=False,
-            # log_config=None so uvicorn installs no handlers of its own.
-            # Its default config gives the `uvicorn` logger a handler and
-            # propagate=False, so `uvicorn.error` records -- including the
-            # "Exception in ASGI application" traceback, which embeds an HTTP
-            # client's exception message and therefore its request URL -- stop
-            # at uvicorn's handler and never reach the root logger where the
-            # redacting renderer lives. With no config of its own, uvicorn's
-            # loggers propagate to root and are rendered like everything else.
-            log_config=None,
-        )
+    # LoggingMiddleware -- one access log, structured, with correlation IDs.
+    uvicorn.run(
+        "faultmaven.main:app",
+        host=server.host,
+        port=server.port,
+        reload=server.reload,
+        log_level="info",
+        access_log=False,
+        # Idle keep-alive must outlast every client that reuses a connection:
+        # ingress-nginx holds upstream connections 60 s (upstream-keepalive-timeout)
+        # and slack-agent's httpx 5 s (keepalive_expiry). uvicorn's own default
+        # of 5 s would close a connection nginx is about to reuse, and a POST
+        # on it is not retried (502). uvicorn.run() does not read
+        # UVICORN_TIMEOUT_KEEP_ALIVE, so the value is passed explicitly.
+        timeout_keep_alive=server.timeout_keep_alive,
+        # log_config=None so uvicorn installs no handlers of its own.
+        # Its default config gives the `uvicorn` logger a handler and
+        # propagate=False, so `uvicorn.error` records -- including the
+        # "Exception in ASGI application" traceback, which embeds an HTTP
+        # client's exception message and therefore its request URL -- stop
+        # at uvicorn's handler and never reach the root logger where the
+        # redacting renderer lives. With no config of its own, uvicorn's
+        # loggers propagate to root and are rendered like everything else.
+        log_config=None,
+        **options,
+    )
+
+
+if __name__ == "__main__":
+    run_server()

@@ -283,7 +283,7 @@ def sample_turn_payload():
 
 # ============================================================
 # Shared domain-object builders for the reclassification suites
-# (test_investigation_service_reclassify.py and
+# (test_evidence_reclassifier.py and
 # test_file_reclassification_intent.py) — one definition so the two
 # suites exercise the shared handlers against identical fixtures.
 # ============================================================

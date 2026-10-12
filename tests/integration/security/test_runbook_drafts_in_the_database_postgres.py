@@ -1,6 +1,6 @@
-"""Revision 017 on a real PostgreSQL (#1950).
+"""Revision 018 on a real PostgreSQL (#1950).
 
-``017_runbook_drafts_in_the_database`` gives every runbook draft its text in
+``018_runbook_drafts_in_the_database`` gives every runbook draft its text in
 ``conversion_drafts.content``. On Cloud the migration Job sees no pod's disk, so
 every live draft that is not published loses its text and is discarded, and a
 case job whose last live draft goes releases its ``live_case_id``. Both tables
@@ -39,10 +39,10 @@ pytestmark = [
     ),
 ]
 
-#: ``017_runbook_drafts_in_the_database``.
+#: ``018_runbook_drafts_in_the_database``.
 _REVISION = "c4441b83ba24"  # pragma: allowlist secret
-#: ``016_no_email_derived_display_names``, the revision 017 parents onto.
-_PARENT_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
+#: ``017_drop_investigation_sessions``, the revision 018 parents onto.
+_PARENT_REVISION = "f95a5b3a58eb"  # pragma: allowlist secret
 _PW = "fm_drafts_probe_pw"  # pragma: allowlist secret
 
 
@@ -138,7 +138,7 @@ async def test_the_owner_settles_every_enterprises_drafts():
 
             result = alembic_on(owner_url, f"upgrade {_REVISION}")
             assert result.returncode == 0, result.stderr[-2000:]
-            assert "017: discarding 2 live draft(s) whose text is gone" in (
+            assert "018: discarding 2 live draft(s) whose text is gone" in (
                 result.stderr
             ), result.stderr[-2000:]
 

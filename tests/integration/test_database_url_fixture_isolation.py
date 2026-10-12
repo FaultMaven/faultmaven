@@ -61,10 +61,6 @@ SUBJECTS = {
         "tests/integration/test_case_repository_integration.py"
         "::test_full_case_lifecycle"
     ),
-    "investigation_session": (
-        "tests/integration/test_investigation_session_integration.py"
-        "::test_full_session_lifecycle"
-    ),
     "knowledge_item": (
         "tests/integration/test_knowledge_item_integration.py::test_full_item_lifecycle"
     ),
@@ -112,10 +108,10 @@ def test_the_engine_fixtures_leave_the_process_as_they_found_it(tmp_path, subjec
     """Run one real test from the module, then read the process it left behind.
 
     ``DATABASE_URL`` goes in as a sentinel so the assertion is "still exactly
-    what we set", which nothing satisfies by accident. Parametrised over all
-    three modules rather than probing one and assuming the others: they were
-    three copies of one fixture, which is exactly the shape in which a fix lands
-    in two of them.
+    what we set", which nothing satisfies by accident. Parametrised over every
+    such module rather than probing one and assuming the others: they were
+    copies of one fixture, which is exactly the shape in which a fix lands in
+    some of them and not the rest.
     """
     probe = tmp_path / "probe_run.py"
     probe.write_text(PROBE.format(subject=SUBJECTS[subject]), encoding="utf-8")

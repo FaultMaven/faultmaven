@@ -67,11 +67,11 @@ def alembic_copy(tmp_path) -> Path:
     return tmp_path
 
 
-#: The last revision SQLite renders offline: 017 refuses ``--sql`` on SQLite,
+#: The last revision SQLite renders offline: 018 refuses ``--sql`` on SQLite,
 #: because its backfill reads draft files a script cannot (#1950). The offline
-#: cases below stop here; ``test_offline_sql_on_sqlite_stops_at_017`` pins the
+#: cases below stop here; ``test_offline_sql_on_sqlite_stops_at_018`` pins the
 #: refusal itself.
-LAST_SQLITE_OFFLINE_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
+LAST_SQLITE_OFFLINE_REVISION = "f95a5b3a58eb"  # pragma: allowlist secret
 
 
 def _upgrade_head(
@@ -151,8 +151,8 @@ def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
     assert "CREATE TABLE" in result.stdout
 
 
-def test_offline_sql_on_sqlite_stops_at_017(alembic_copy):
-    """Past 016 the refusal is 017's own (its backfill reads draft files), never
+def test_offline_sql_on_sqlite_stops_at_018(alembic_copy):
+    """Past 017 the refusal is 018's own (its backfill reads draft files), never
     the URL gate's."""
     result = _upgrade_head(alembic_copy, {"DATABASE_URL": "sqlite://"}, "--sql")
 

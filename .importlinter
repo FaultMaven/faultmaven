@@ -5,10 +5,7 @@ root_package = faultmaven
 # CONTRACT 1: Service Layer Independence
 # ============================================================================
 # Services should not directly import from each other
-# This will be enforced more strictly once DI container is implemented (Phase 3, Week 14-15)
-#
-# Current state: Services can import via service_factory pattern
-# Target state: All service dependencies injected via DI container
+# Service dependencies are injected via the DI container.
 [importlinter:contract:1]
 name = Service layer independence
 type = independence
@@ -16,7 +13,6 @@ modules =
     # Legacy services migrated to modules:
     #   auth_service, user_service → modules/auth/domain/services/
     #   case_service → modules/case/domain/services/case_service.py
-    #   investigation_session_service → modules/case/domain/services/
     #   evidence_artifact_service, file_storage_service → modules/evidence/domain/services/
     # Preprocessing moved to modules/preprocessing (Domain Service pattern)
     faultmaven.modules.preprocessing
@@ -109,10 +105,6 @@ ignore_imports =
     # The cross-enterprise metadata reader builds CaseMetadata, whose derived
     # fields come from the domain rules a loaded case applies (ADR-012 D9).
     faultmaven.modules.case.infrastructure.case_metadata_reader -> faultmaven.modules.case.domain.models.*
-    # investigation_session_repository ignore removed with the module: the case
-    # module carried a second, IMPORT-FREE copy of the session repository that
-    # nothing in faultmaven/ or tests/ ever imported. The live one is
-    # infrastructure/persistence/investigation_session_repository.py.
     faultmaven.modules.case.infrastructure.sqlite_case_repository.* -> faultmaven.modules.case.contracts
     # sqlite_case_repository -> owned_models.* ignore removed in storage redesign
     # 2026-04 phase 2: the standalone evidence path was deleted and those imports
@@ -329,11 +321,9 @@ forbidden_modules =
     faultmaven.modules.case.infrastructure
 allow_indirect_imports = false
 ignore_imports =
-    # Composition roots, wiring implementations. `service_factory` is the
-    # legacy one the DI container is replacing (see the Contract 1 note); both
-    # are allowed to name infrastructure because selecting implementations is
-    # the job. Same rationale as the container entries on contracts 11 and 12.
-    faultmaven.services.service_factory -> faultmaven.modules.case.infrastructure.**
+    # A composition root, wiring implementations: allowed to name the container
+    # because selecting implementations is the job. Same rationale as the
+    # container entries on contracts 11 and 12.
     faultmaven.api.v1.auth_dependencies -> faultmaven.container
 
 # ============================================================================

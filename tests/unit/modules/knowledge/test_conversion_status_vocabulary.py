@@ -194,7 +194,7 @@ _DRAFT_CHECK = "conversion_drafts_status_check"
 #: the owning definition.
 _DRAFT_REBUILDS = (
     "*_008_runbook_severity_admits_info.py",
-    "*_017_runbook_drafts_in_the_database.py",
+    "*_018_runbook_drafts_in_the_database.py",
 )
 _DRAFT_CHECK_MIGRATIONS = sorted(
     [

@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from faultmaven.api import route_enumeration
 from faultmaven.api.v1.dependencies import (
     get_case_repository,
+    get_evidence_reclassifier,
     get_investigation_service,
 )
 from faultmaven.modules.case.api.routes.dependencies import (
@@ -55,6 +56,7 @@ _SERVICE_PROVIDERS = (
     _di_get_session_service_dependency,
     _di_get_runbook_kb_dependency,
     get_investigation_service,
+    get_evidence_reclassifier,
     get_case_repository,
 )
 

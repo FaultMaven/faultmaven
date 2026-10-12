@@ -3,7 +3,7 @@
 This package contains vertical slice modules that own complete feature stacks:
 - agent: AI agent orchestration, investigation workflows, and tools
 - auth: Authentication, authorization, users, sessions, teams, organizations, RBAC
-- case: Case management, investigation sessions, case data ingestion
+- case: Case management, case data ingestion
 - evidence: Evidence upload, storage, linking, and retrieval
 - knowledge: Knowledge base, RAG, vector search, and semantic search
 - report: Report generation and recommendations
