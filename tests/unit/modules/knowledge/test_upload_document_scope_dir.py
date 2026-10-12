@@ -36,6 +36,9 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from tests.runbook_samples import valid_runbook
 
+# ``knowledge_root()`` is cwd-relative as shipped; the tests write under it.
+pytestmark = pytest.mark.usefixtures("shipped_data_defaults")
+
 DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
 

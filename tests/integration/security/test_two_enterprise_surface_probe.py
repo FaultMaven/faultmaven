@@ -1141,6 +1141,8 @@ def _wire_services(app, chroma) -> None:
     # them: a leave or a deactivation hands the driver's cases back first.
     team_service.bind_case_driver_release(app.state.case_service)
     app.state.user_service.bind_case_driver_release(app.state.case_service)
+    # And the creator count the account-deletion route asks first (#1923).
+    app.state.user_service.bind_case_creator_count(app.state.case_service)
     app.state.team_service = team_service
     # A session service that can actually HOLD a session, which this app did
     # not have. ``AuthSessionService(settings=settings)`` takes

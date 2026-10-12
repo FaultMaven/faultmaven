@@ -980,6 +980,12 @@ class CaseRepository(ABC):
         """Every case ``user_id`` drives by assignment (ADR-020 D3)."""
         pass
 
+    @abstractmethod
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created (#1923). See
+        ``ICaseRepository.count_cases_created_by``."""
+        pass
+
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -1175,6 +1181,10 @@ class InMemoryCaseRepository(CaseRepository):
             for case in sorted(self._cases.values(), key=lambda c: c.case_id)
             if case.driver_id and case.driver_id == user_id
         ]
+
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created."""
+        return sum(1 for case in self._cases.values() if case.user_id == user_id)
 
     async def get(self, case_id: str) -> Optional[Case]:
         """Get case from memory.

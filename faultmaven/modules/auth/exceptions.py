@@ -146,6 +146,25 @@ class UserStoreError(AuthException):
         super().__init__(message, details={"operation": operation, "user_id": user_id})
 
 
+class AccountOwnsCasesError(AuthException):
+    """The database refused to delete an account that created cases (#1923).
+
+    ``cases.user_id`` refuses the delete — ``ON DELETE RESTRICT`` on PostgreSQL,
+    the ``users_delete_refuses_case_creator`` trigger on SQLite — and it is the
+    one reference to ``users`` that refuses: every other key on
+    ``users.user_id`` cascades or sets NULL. So the store raises this from the
+    ``IntegrityError`` by its type, never by parsing the driver's text, and the
+    account still exists when it is raised.
+    """
+
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        super().__init__(
+            f"Account {user_id} created cases and was not deleted",
+            details={"user_id": user_id},
+        )
+
+
 class OrganizationError(AuthException):
     """Raised when organization operations fail."""
 

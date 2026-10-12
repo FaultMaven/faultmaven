@@ -264,7 +264,7 @@ class Case(BaseModel):
     # Identity
     # ============================================================
     case_id: str                    # Primary key
-    user_id: Optional[str]          # FK to users (SET NULL on user delete) — the CREATOR (ADR-020)
+    user_id: Optional[str]          # FK to users (RESTRICT, #1923) — the CREATOR (ADR-020)
     driver_id: Optional[str]        # FK to users (SET NULL) — the DRIVER; NULL = the creator drives (ADR-020)
     enterprise_id: str              # FK to enterprises (CASCADE) — the isolation key (ADR-017)
     organization_id: Optional[str]  # FK to organizations (SET NULL) — billing attribution only
@@ -326,8 +326,14 @@ class Case(BaseModel):
 > **One database**: the case tables live in the same database as the users, organizations and
 > enterprises tables (the one `DATABASE_URL` names), so the references between them are real
 > foreign keys: `cases.enterprise_id` → `enterprises` (`ON DELETE CASCADE`),
-> `cases.organization_id` → `organizations` (`ON DELETE SET NULL`), and `cases.user_id` (the
-> creator) and `cases.driver_id` (the driver, ADR-020) → `users` (`ON DELETE SET NULL`).
+> `cases.organization_id` → `organizations` (`ON DELETE SET NULL`), `cases.driver_id` (the
+> driver, ADR-020) → `users` (`ON DELETE SET NULL`: a deleted driver's cases go back to their
+> creators), and `cases.user_id` (the creator) → `users`, which refuses the delete (#1923): an
+> account that created cases cannot be deleted until `fm-reassign-cases` moves them. On
+> PostgreSQL that is the key's `ON DELETE RESTRICT`; on SQLite the stored clause is still
+> `SET NULL`, the `users_delete_refuses_case_creator` trigger refuses the delete first, and
+> `cases_creator_never_nulled` refuses any write that turns a set creator NULL (the
+> `SET NULL` action of a `REPLACE INTO users`, which fires no delete trigger).
 
 ### 4.1 Table Design (case-domain tables)
 

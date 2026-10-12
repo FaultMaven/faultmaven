@@ -41,8 +41,8 @@ pytestmark = [
 
 #: ``016_no_email_derived_display_names``.
 _REVISION = "b5334d07ae6c"  # pragma: allowlist secret
-#: ``013_evidence_is_submitted_data``, the revision 016 parents onto.
-_PARENT_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``015_case_creator_restrict``, the revision 016 parents onto.
+_PARENT_REVISION = "9904ee0cad86"  # pragma: allowlist secret
 _PW = "fm_display_name_probe_pw"  # pragma: allowlist secret
 
 

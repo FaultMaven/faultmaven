@@ -31,7 +31,13 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 
-pytestmark = [pytest.mark.unit, pytest.mark.api]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.api,
+    # The runbook path is the shipped cwd-relative ``data/knowledge`` layout
+    # (#1945): a test process's own data root is not that tree.
+    pytest.mark.usefixtures("shipped_data_defaults"),
+]
 
 USER_ID = "3f9a1c2e-0000-4000-8000-000000000001"
 ENTERPRISE_ID = "ent-1924"

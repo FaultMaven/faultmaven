@@ -442,6 +442,12 @@ class ICaseRepository(Protocol):
         """
         ...
 
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` CREATED (``cases.user_id = user_id``),
+        in any state. An account that created any cannot be deleted (#1923).
+        """
+        ...
+
     # Standalone evidence operations (create/get/list/delete/link/update,
     # set/get primary) were removed in storage redesign 2026-04 phase 2.
     # Standalone evidence path is deleted; evidence is case-tied only and
@@ -689,6 +695,22 @@ class ICaseDriverRelease(Protocol):
         ...
 
 
+class ICaseCreatorCount(Protocol):
+    """How many cases an account created (#1923).
+
+    Implemented by the case service, called by the auth module before it
+    deletes an account. An account that created a case cannot be deleted:
+    ``cases.user_id`` refuses the delete (``ON DELETE RESTRICT`` on PostgreSQL,
+    a ``BEFORE DELETE`` trigger on SQLite), so the operator is told how many to
+    move with ``fm-reassign-cases`` BEFORE anything is revoked. The count is
+    the early, explanatory answer; the key is the guarantee.
+    """
+
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created, in any state."""
+        ...
+
+
 class CaseAccount(Protocol):
     """The account fields the case module reads: names for the case rows
     (ADR-020 D5) and the facts that make an account a driver candidate (D4).
@@ -728,6 +750,7 @@ __all__ = [
     "ICaseRepository",
     "ICaseMetadataReader",
     "ICaseDriverRelease",
+    "ICaseCreatorCount",
     "ICaseAccountReader",
     "CaseAccount",
     "CaseMetadataUnavailableError",

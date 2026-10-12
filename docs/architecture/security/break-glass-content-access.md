@@ -230,9 +230,12 @@ the API bounds neither to 32 bits.
 
 Two things bound the bypass, and it needs both.
 
-**The result type.** The page function returns system ids, timestamps,
-integers, booleans, arrays of those, and three short strings — nothing sourced
-from `title`, `description` or any other user text, and no JSON blob. There is no
+**The result type.** The page function returns system ids (the case's, its
+enterprise's, its organization's, its creator's and its effective driver's —
+`COALESCE(driver_id, user_id)`, added by revision
+`014_admin_case_metadata_driver`), timestamps, integers, booleans, arrays of
+those, and three short strings — nothing sourced from `title`, `description` or
+any other user text, no display name, and no JSON blob. There is no
 argument or caller that makes it return content, because it has no column to
 return it in. Of the three strings, `state` is a closed vocabulary the database
 enforces (`cases_state_check`). `source` and `closure_reason` are closed

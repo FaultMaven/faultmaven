@@ -6,6 +6,10 @@ must not drift: a change of driver bumps ``cases.version`` (so an in-flight
 turn's save fails with a version conflict) and writes its
 ``case_driver_changed`` audit row in the SAME transaction.
 
+It also holds the read an account deletion asks first: how many cases the
+account CREATED, since ``cases.user_id`` refuses the delete while any exist
+(#1923).
+
 The functions take primitives, not domain objects, so this infrastructure
 module needs nothing from the domain layer.
 """
@@ -32,6 +36,8 @@ _DRIVEN_BY = text(
     "SELECT case_id, enterprise_id, user_id, driver_id FROM cases "
     "WHERE driver_id = :user_id ORDER BY case_id"
 )
+
+_CREATED_BY = text("SELECT count(*) FROM cases WHERE user_id = :user_id")
 
 # ``created_at`` takes the column's server default. ``event_category`` is
 # AUTHORIZATION: a driver change moves who may write the case.
@@ -134,3 +140,8 @@ async def list_cases_driven_by(
     ``user_id`` drives by assignment."""
     rows = (await db.execute(_DRIVEN_BY, {"user_id": user_id})).fetchall()
     return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+async def count_cases_created_by(db: Any, user_id: str) -> int:
+    """How many cases ``user_id`` created (``cases.user_id``), in any state."""
+    return int((await db.execute(_CREATED_BY, {"user_id": user_id})).scalar() or 0)

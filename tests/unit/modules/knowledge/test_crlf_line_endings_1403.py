@@ -62,7 +62,11 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.utils.line_endings import decode_text, normalize_line_endings
 from tests.runbook_samples import valid_runbook
 
-pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.knowledge_base,
+    pytest.mark.usefixtures("shipped_data_defaults"),
+]
 
 CR = chr(13)
 

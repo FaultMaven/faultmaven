@@ -37,7 +37,7 @@ import pytest
 
 from faultmaven.cli import reset_kb
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")]
 
 #: The external ChromaDB these tests configure. ``.invalid`` is the reserved
 #: never-resolvable TLD, and the host carries a distinctive token so an

@@ -156,6 +156,7 @@ def _case_metadata(case_id: str, enterprise_id: str) -> CaseMetadata:
         enterprise_id=enterprise_id,
         organization_id=None,
         user_id=f"user-of-{enterprise_id}",
+        driver_id=f"user-of-{enterprise_id}",
         state=CaseState.INVESTIGATING,
         source="copilot",
         closure_reason=None,

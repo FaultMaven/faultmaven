@@ -52,7 +52,7 @@ except Exception as e:
 - LLM Providers: DEBUG (request/response sizes), WARN (rate limit, timeout), ERROR (API error)
 - Agent tools: DEBUG (tool start/finish, inputs), WARN (partial results, coverage gap), ERROR (tool failure)
 - Repositories: DEBUG (query), WARN (slow query), ERROR (persistence failure)
-- Knowledge retrieval (kb_qa, case_evidence_qa): DEBUG (search latency, chunk count), WARN (empty results on 2nd attempt), ERROR (vector store failure)
+- Knowledge retrieval (kb_qa, case_evidence_search): DEBUG (search latency, chunk count), WARN (empty results on 2nd attempt), ERROR (vector store failure)
 - Auth / JWT: DEBUG (token issued), WARN (refresh/revoke), ERROR (verification failure)
 - Container/DI: INFO (wiring), WARN (degraded init), ERROR (init failure)
 

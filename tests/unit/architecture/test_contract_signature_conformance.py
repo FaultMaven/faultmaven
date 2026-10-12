@@ -496,6 +496,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
     from faultmaven.modules.case.contracts import (
         ICaseAccountReader,
+        ICaseCreatorCount,
         ICaseDriverRelease,
         ICaseMetadataReader,
         ICaseRepository,
@@ -580,6 +581,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
             ),
         ),
         RegistryEntry(interface=ICaseDriverRelease, reals=(CaseService,)),
+        RegistryEntry(interface=ICaseCreatorCount, reals=(CaseService,)),
         RegistryEntry(interface=IKnowledgeService, reals=(KnowledgeService,)),
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),
         RegistryEntry(

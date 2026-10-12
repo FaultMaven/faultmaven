@@ -12,7 +12,7 @@ Covered behaviors:
   transcript on success and on failure (best-effort, never raises)
 - Reachability: any affordance label a turn names must be present in that
   turn's own ``suggested_follow_ups`` (prose and the suggestion list are built
-  a few lines apart and drift silently), over all eight user-visible outcomes
+  a few lines apart and drift silently), over all seven user-visible outcomes
   of ``_handle_runbook_creation``; and the three completion notifications —
   which carry no suggestion list at all and are read in the Dashboard, where
   no chip UI exists — must name no affordance
@@ -466,9 +466,6 @@ class TestRunbookCreationFollowUps:
 
 
 _EMBED_QUERY = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
-_SEED_ORIGIN = (
-    "faultmaven.core.investigation.seeded_provenance.confirmed_root_seed_origin"
-)
 _FROM_CASE = (
     "faultmaven.modules.knowledge.domain.models.conversion."
     "CaseConversionRequest.from_case"
@@ -516,9 +513,7 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
     # not check" caveat. Scenarios that need a real verdict install a KB.
     embed_patch = nullcontext()
 
-    if scenario == "seed-origin":
-        monkeypatch.setattr(_SEED_ORIGIN, lambda case: "rb_seed00000001")
-    elif scenario == "already-exists":
+    if scenario == "already-exists":
         existing = MagicMock()
         existing.has_live_draft.return_value = True
         conversion_service.get_conversion_by_case = AsyncMock(return_value=existing)
@@ -554,16 +549,15 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
 
 
 # Every user-visible outcome of `_handle_runbook_creation`. The function has
-# six `return` statements; the last one carries three distinct texts (plain
+# five `return` statements; the last one carries three distinct texts (plain
 # SUGGEST, the SUGGEST_WITH_CAVEATS prefix, and the "failed to start" except
-# arm), so eight outcomes reach a reader. All eight are driven here — none had
+# arm), so seven outcomes reach a reader. All seven are driven here — none had
 # to be left out, which is what lets the reachability property below claim the
 # whole surface rather than a sample of it.
 _CREATION_TURN_SCENARIOS = [
     pytest.param("not-ready", id="not-ready"),
     pytest.param("similar-found", id="similar-found"),
     pytest.param("service-unavailable", id="service-unavailable"),
-    pytest.param("seed-origin", id="seed-origin"),
     pytest.param("already-exists", id="already-exists"),
     pytest.param("kickoff-clean-dedup", id="kickoff-clean-dedup"),
     pytest.param("kickoff", id="kickoff-with-caveats"),
@@ -613,7 +607,13 @@ async def _notification_content(mock_llm, outcome: str) -> str:
     engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
     await engine.runbooks._run_runbook_conversion(
-        conversion_service, request, "u1", "o1", committed=_committed_gate()
+        conversion_service,
+        request,
+        "u1",
+        "o1",
+        draft_location="**Knowledge Base > Drafts**",
+        driver_is_creator=True,
+        committed=_committed_gate(),
     )
     return case.messages[-1]["content"]
 
@@ -904,7 +904,13 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1", committed=_committed_gate()
+            conversion_service,
+            request,
+            "u1",
+            "o1",
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
+            committed=_committed_gate(),
         )
 
         assert len(case.messages) == initial_message_count + 1
@@ -953,7 +959,13 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1", committed=_committed_gate()
+            conversion_service,
+            request,
+            "u1",
+            "o1",
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
+            committed=_committed_gate(),
         )
 
         notification = case.messages[-1]
@@ -995,7 +1007,13 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1", committed=_committed_gate()
+            conversion_service,
+            request,
+            "u1",
+            "o1",
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
+            committed=_committed_gate(),
         )
 
         notification = case.messages[-1]
@@ -1032,7 +1050,13 @@ class TestRunbookCompletionNotification:
 
         # Must not raise
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1", committed=_committed_gate()
+            conversion_service,
+            request,
+            "u1",
+            "o1",
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
+            committed=_committed_gate(),
         )
         repo.save.assert_not_called()
 
@@ -1267,7 +1291,13 @@ class TestTheConversionWaitsForItsTurnsCommit:
         gate.cancel()
 
         await engine.runbooks._run_runbook_conversion(
-            service, request, "u1", "o1", committed=gate
+            service,
+            request,
+            "u1",
+            "o1",
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
+            committed=gate,
         )
 
         service.convert_from_case.assert_not_awaited()
@@ -1280,7 +1310,13 @@ class TestTheConversionWaitsForItsTurnsCommit:
         gate = asyncio.get_running_loop().create_future()
         task = asyncio.ensure_future(
             engine.runbooks._run_runbook_conversion(
-                service, request, "u1", "o1", committed=gate
+                service,
+                request,
+                "u1",
+                "o1",
+                draft_location="**Knowledge Base > Drafts**",
+                driver_is_creator=True,
+                committed=gate,
             )
         )
         for _ in range(5):
@@ -1302,7 +1338,13 @@ class TestTheConversionWaitsForItsTurnsCommit:
         gate = asyncio.get_running_loop().create_future()
         task = asyncio.ensure_future(
             engine.runbooks._run_runbook_conversion(
-                service, request, "u1", "o1", committed=gate
+                service,
+                request,
+                "u1",
+                "o1",
+                draft_location="**Knowledge Base > Drafts**",
+                driver_is_creator=True,
+                committed=gate,
             )
         )
         await asyncio.sleep(0)
@@ -1338,3 +1380,127 @@ class TestTheConversionWaitsForItsTurnsCommit:
             await asyncio.sleep(0)
         conversion_service.convert_from_case.assert_not_awaited()
         mock_repo.save.assert_not_called()
+
+
+# =============================================================================
+# Draft-location text is true for the person it addresses (#1925)
+# =============================================================================
+
+
+_CREATORS_DRAFTS = "the case creator's **Knowledge Base > Drafts**"
+
+
+async def _kickoff_and_notice(mock_llm, driver_id, *, existing: bool = False):
+    """One real kickoff turn, then its background notice, end to end.
+
+    Returns ``(reply, notice)``; ``notice`` is None when no conversion ran.
+    """
+    case = _make_resolved_case()
+    case.driver_id = driver_id
+    _make_runbook_ready(case)
+
+    draft = MagicMock()
+    draft.title = "Pool Timeout Runbook"
+    conversion_service = MagicMock()
+    conversion_service.convert_from_case = AsyncMock(
+        return_value=MagicMock(drafts=[draft])
+    )
+    prior = MagicMock()
+    prior.has_live_draft.return_value = True
+    conversion_service.get_conversion_by_case = AsyncMock(
+        return_value=prior if existing else None
+    )
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=case)
+    repo.save = AsyncMock()
+    engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+    engine.deps.knowledge_service = MagicMock(spec=[])
+    engine.deps.conversion_service = conversion_service
+
+    plan = TurnCommitPlan()
+    messages_before = len(case.messages)
+    result = await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
+    plan.release_gates()
+    await asyncio.gather(*list(runbook_creation._CONVERSION_TASKS))
+    notice = (
+        case.messages[-1]["content"] if len(case.messages) > messages_before else None
+    )
+    return result["agent_response"], notice
+
+
+@pytest.mark.unit
+class TestDraftLocationIsTrueForTheReader:
+    """The draft always lands in the CREATOR's personal KB (ADR-020 D6); the
+    turn's reply and the notice address the effective driver."""
+
+    @pytest.mark.asyncio
+    async def test_creator_driven_wording_is_unchanged(self, mock_llm):
+        reply, notice = await _kickoff_and_notice(mock_llm, None)
+        assert "Creating your runbook draft from this case." in reply
+        assert "under **Knowledge Base > Drafts** once" in reply
+        assert notice == (
+            "Your runbook draft **Pool Timeout Runbook** is ready. "
+            "View it in the Dashboard under **Knowledge Base > Drafts**."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_driver_who_is_not_the_creator_is_told_whose_drafts(self, mock_llm):
+        reply, notice = await _kickoff_and_notice(mock_llm, "driver-2")
+        for text in (reply, notice):
+            assert _CREATORS_DRAFTS in text
+            own_kb = "You can also create runbooks in your own **Knowledge Base**."
+            assert "your" not in text.lower().replace("creator's", "").replace(
+                own_kb.lower(), ""
+            )
+        assert "You can also create runbooks in your own **Knowledge Base**." in reply
+        assert "create and edit runbooks there directly" not in reply
+        assert notice == (
+            "The runbook draft **Pool Timeout Runbook** is ready. "
+            f"View it in the Dashboard under {_CREATORS_DRAFTS}."
+        )
+
+    @pytest.mark.asyncio
+    async def test_already_exists_reply_follows_the_same_rule(self, mock_llm):
+        own, _ = await _kickoff_and_notice(mock_llm, None, existing=True)
+        other, _ = await _kickoff_and_notice(mock_llm, "driver-2", existing=True)
+        assert "under **Knowledge Base > Drafts**." in own
+        assert _CREATORS_DRAFTS in other
+        assert "your" not in other.lower()
+
+    @pytest.mark.asyncio
+    async def test_notice_wording_is_fixed_when_the_run_starts(self, mock_llm):
+        """The driver changing while the conversion runs cannot change what the
+        notice says: the wording was captured at kickoff."""
+        case = _make_resolved_case()
+        case.driver_id = "driver-2"
+        _make_runbook_ready(case)
+        draft = MagicMock()
+        draft.title = "T"
+
+        async def _handoff_mid_run(**_kw):
+            case.driver_id = None  # driver hands the case back to the creator
+            return MagicMock(drafts=[draft])
+
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(side_effect=_handoff_mid_run)
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=case)
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+        engine.deps.knowledge_service = MagicMock(spec=[])
+        engine.deps.conversion_service = conversion_service
+
+        plan = TurnCommitPlan()
+        await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
+        plan.release_gates()
+        await asyncio.gather(*list(runbook_creation._CONVERSION_TASKS))
+        assert _CREATORS_DRAFTS in case.messages[-1]["content"]
+
+    def test_model_facing_prompt_names_the_creators_drafts(self):
+        from faultmaven.core.investigation.prompts.templates import terminal
+
+        text = " ".join(v for v in vars(terminal).values() if isinstance(v, str))
+        assert "Knowledge → Drafts" not in text
+        assert "case\ncreator's personal **Knowledge Base > Drafts**" in text

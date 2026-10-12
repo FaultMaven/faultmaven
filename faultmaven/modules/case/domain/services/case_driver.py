@@ -347,3 +347,14 @@ class CaseDriverMixin:
             ):
                 released += 1
         return released
+
+    # -- the creator ------------------------------------------------------- #
+
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created (``ICaseCreatorCount``, #1923).
+
+        Asked before an account is deleted: the creator holds governance, and
+        ``cases.user_id`` refuses the delete while any such case exists. A
+        driver's cases are not counted; deleting a driver hands them back to
+        their creators (ADR-020 D3)."""
+        return await self.repository.count_cases_created_by(user_id)

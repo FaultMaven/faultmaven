@@ -33,7 +33,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-pytestmark = [pytest.mark.unit, pytest.mark.security, pytest.mark.api]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.security,
+    pytest.mark.api,
+    pytest.mark.usefixtures("shipped_data_defaults"),
+]
 
 ESCAPING = "data/knowledge/../escaped/pwned.md"
 GOOD = "data/knowledge/global/ok.md"

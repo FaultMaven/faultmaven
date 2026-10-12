@@ -11,6 +11,10 @@ collected by BOTH required CI gates — unlike ``tests/benchmarks/``, which
 required check on a diff that changed nothing (#1557). ``budgets.py``
 carries the anchors, where they were measured, and which four comparisons
 were deleted rather than re-anchored.
+
+‼ Every judged statistic is the median of several independent windows
+(``tests/wallclock/sampling.py``, #1916), and each window builds the state it
+measures: one stalled window on a busy runner cannot fail a row on its own.
 """
 
 import asyncio
@@ -18,7 +22,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
-from typing import List
+from typing import List, Tuple
 
 import pytest
 
@@ -28,6 +32,11 @@ from faultmaven.infrastructure.logging.coordinator import (
     request_context,
 )
 from tests.wallclock import assert_latency_within
+from tests.wallclock.sampling import (
+    Window,
+    median_of_windows,
+    median_of_windows_async,
+)
 
 from .budgets import (
     CONCURRENT_CONTEXT_OP,
@@ -57,37 +66,40 @@ class TestContextVariablePerformance:
     @pytest.mark.performance
     def test_context_variable_access_speed(self):
         """Test speed of context variable access operations."""
-        # Set up context
-        coordinator = LoggingCoordinator()
-        ctx = coordinator.start_request()
-
         iterations = 10000
 
-        # Measure context variable get operations
-        start_time = time.perf_counter()
+        def get_window(window: Window) -> float:
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
 
-        for _ in range(iterations):
-            current_ctx = request_context.get()
-            assert current_ctx is not None
+            def get_loop():
+                for _ in range(iterations):
+                    current_ctx = request_context.get()
+                    assert current_ctx is not None
 
-        end_time = time.perf_counter()
-        get_time = end_time - start_time
+            try:
+                return window.seconds(get_loop) / iterations
+            finally:
+                coordinator.end_request()
 
-        # Measure context variable set operations
-        start_time = time.perf_counter()
+        def set_window(window: Window) -> float:
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
 
-        for i in range(iterations):
-            # Create new context for each set
-            new_ctx = RequestContext(correlation_id=f"test-{i}")
-            request_context.set(new_ctx)
+            def set_loop():
+                for i in range(iterations):
+                    # Create new context for each set
+                    new_ctx = RequestContext(correlation_id=f"test-{i}")
+                    request_context.set(new_ctx)
 
-        end_time = time.perf_counter()
-        set_time = end_time - start_time
+            try:
+                return window.seconds(set_loop) / iterations
+            finally:
+                coordinator.end_request()
 
-        coordinator.end_request()
-
-        get_time_per_op = get_time / iterations
-        set_time_per_op = set_time / iterations
+        # A get window is ~0.5 ms on a reference-speed machine: five windows.
+        get_time_per_op = median_of_windows(get_window, windows=5)
+        set_time_per_op = median_of_windows(set_window)
 
         print(
             f"\nContext get: {get_time_per_op * 1e6:.3f}μs, "
@@ -163,42 +175,45 @@ class TestContextVariablePerformance:
             ctx.mark_logged(f"operation_{i}")
 
         iterations = 1000
-
-        # Measure context copying
-        start_time = time.perf_counter()
-
-        copied_contexts = []
-        for _ in range(iterations):
-            ctx_copy = copy_context()
-            copied_contexts.append(ctx_copy)
-
-        end_time = time.perf_counter()
-        copy_time = end_time - start_time
-
-        # Measure context execution in copied contexts
-        start_time = time.perf_counter()
+        executions = 100  # a subset of the copies
 
         def check_context():
             current_ctx = request_context.get()
             return current_ctx.correlation_id if current_ctx else None
 
-        results = []
-        for ctx_copy in copied_contexts[:100]:  # Test subset to avoid timeout
-            result = ctx_copy.run(check_context)
-            results.append(result)
+        def copy_window(window: Window) -> float:
+            # A fresh list per window: each window appends 1000 copies to an
+            # empty one, as the single window did.
+            copied_contexts: list = []
 
-        end_time = time.perf_counter()
-        execution_time = end_time - start_time
+            def copy_loop():
+                for _ in range(iterations):
+                    copied_contexts.append(copy_context())
+
+            seconds = window.seconds(copy_loop)
+            assert len(copied_contexts) == iterations
+            return seconds / iterations
+
+        copies = [copy_context() for _ in range(executions)]
+
+        def exec_window(window: Window) -> float:
+            results: list = []
+
+            def exec_loop():
+                for ctx_copy in copies:
+                    results.append(ctx_copy.run(check_context))
+
+            seconds = window.seconds(exec_loop)
+            # Verify context copying worked
+            assert len(results) == executions
+            assert all(r == ctx.correlation_id for r in results)
+            return seconds / executions
+
+        # Both windows are well under 1 ms on a reference-speed machine.
+        copy_time_per_op = median_of_windows(copy_window, windows=5)
+        exec_time_per_op = median_of_windows(exec_window, windows=5)
 
         coordinator.end_request()
-
-        # Verify context copying worked
-        assert len(copied_contexts) == iterations
-        assert len(results) == 100
-        assert all(r == ctx.correlation_id for r in results)
-
-        copy_time_per_op = copy_time / iterations
-        exec_time_per_op = execution_time / 100
 
         print(
             f"\nContext copying: {copy_time_per_op * 1000:.4f}ms, "
@@ -246,35 +261,38 @@ class TestContextVariablePerformance:
             finally:
                 coordinator.end_request()
 
-        # Measure concurrent context operations
-        start_time = time.perf_counter()
-
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(thread_worker, i) for i in range(num_threads)]
-            thread_results = [future.result() for future in futures]
-
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-
-        # Verify results
-        assert len(thread_results) == num_threads
-
-        # Each thread should have consistent context
-        for thread_result in thread_results:
-            assert len(thread_result) == operations_per_thread
-            assert len(set(thread_result)) == 1  # All same correlation ID within thread
-
-        # Different threads should have different contexts
-        correlation_ids = [results[0] for results in thread_results]
-        assert len(set(correlation_ids)) == num_threads  # All different
-
         total_operations = num_threads * operations_per_thread
-        time_per_operation = total_time / total_operations
 
-        print(
-            f"\nConcurrent access: {time_per_operation * 1000:.4f}ms per operation, "
-            f"{total_time:.3f}s total"
-        )
+        def pool_window(window: Window) -> float:
+            thread_results: list = []
+
+            def run_pool():
+                with ThreadPoolExecutor(max_workers=num_threads) as executor:
+                    futures = [
+                        executor.submit(thread_worker, i) for i in range(num_threads)
+                    ]
+                    thread_results.extend(future.result() for future in futures)
+
+            seconds = window.seconds(run_pool)
+
+            # Verify results
+            assert len(thread_results) == num_threads
+
+            # Each thread should have consistent context
+            for thread_result in thread_results:
+                assert len(thread_result) == operations_per_thread
+                # All same correlation ID within thread
+                assert len(set(thread_result)) == 1
+
+            # Different threads should have different contexts
+            correlation_ids = [results[0] for results in thread_results]
+            assert len(set(correlation_ids)) == num_threads  # All different
+            return seconds / total_operations
+
+        # A window is ~0.4 ms on a reference-speed machine: five windows.
+        time_per_operation = median_of_windows(pool_window, windows=5)
+
+        print(f"\nConcurrent access: {time_per_operation * 1000:.4f}ms per operation")
         assert_latency_within(
             time_per_operation,
             CONCURRENT_CONTEXT_OP,
@@ -290,27 +308,25 @@ class TestContextVariablePerformance:
         num_tasks = 10  # Reduced for CI stability
         operations_per_task = 20  # Reduced for CI stability
 
-        async def isolated_task(task_id: int) -> dict:
+        async def isolated_task(window: Window, task_id: int) -> dict:
             """Async task with isolated context."""
             coordinator = LoggingCoordinator()
             ctx = coordinator.start_request(task_id=f"task_{task_id}")
 
             operation_times = []
 
+            def context_operation(i: int) -> None:
+                # Context operations
+                ctx.mark_logged(f"task_{task_id}_op_{i}")
+                current_ctx = request_context.get()
+
+                # Verify isolation
+                assert current_ctx is not None
+                assert current_ctx.attributes.get("task_id") == f"task_{task_id}"
+
             try:
                 for i in range(operations_per_task):
-                    start = time.perf_counter()
-
-                    # Context operations
-                    ctx.mark_logged(f"task_{task_id}_op_{i}")
-                    current_ctx = request_context.get()
-
-                    # Verify isolation
-                    assert current_ctx is not None
-                    assert current_ctx.attributes.get("task_id") == f"task_{task_id}"
-
-                    end = time.perf_counter()
-                    operation_times.append(end - start)
+                    operation_times.append(window.seconds(lambda: context_operation(i)))
 
                     # Small delay to allow context switching
                     await asyncio.sleep(0.001)
@@ -329,28 +345,52 @@ class TestContextVariablePerformance:
                 coordinator.end_request()
                 raise
 
-        # Measure isolated async tasks
-        start_time = time.perf_counter()
+        async def isolation_window(window: Window) -> Tuple[float, float, float]:
+            """One gather of the tasks: (per-task time, fastest and slowest
+            task's mean operation time)."""
+            results: list = []
 
-        results = await asyncio.gather(*[isolated_task(i) for i in range(num_tasks)])
+            async def run_tasks():
+                results.extend(
+                    await asyncio.gather(
+                        *[isolated_task(window, i) for i in range(num_tasks)]
+                    )
+                )
 
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
+            total_time = await window.seconds_async(run_tasks)
 
-        # Verify isolation and performance
-        assert len(results) == num_tasks
+            # Verify isolation and performance
+            assert len(results) == num_tasks
 
-        # Each task should have unique correlation ID
-        correlation_ids = [r["correlation_id"] for r in results]
-        assert len(set(correlation_ids)) == num_tasks
+            # Each task should have unique correlation ID
+            correlation_ids = [r["correlation_id"] for r in results]
+            assert len(set(correlation_ids)) == num_tasks
 
-        # Each task should have completed all operations
-        for result in results:
-            assert result["operations_logged"] == operations_per_task
+            # Each task should have completed all operations
+            for result in results:
+                assert result["operations_logged"] == operations_per_task
 
-        avg_task_time = total_time / num_tasks
-        total_operations = num_tasks * operations_per_task
-        avg_operation_time = total_time / total_operations
+            # Individual operation times should be consistent
+            individual_avg_times = [r["avg_operation_time"] for r in results]
+            return (
+                total_time / num_tasks,
+                min(individual_avg_times),
+                max(individual_avg_times),
+            )
+
+        async def task_time_window(window: Window) -> float:
+            avg_task_time, _fastest, _slowest = await isolation_window(window)
+            return avg_task_time
+
+        async def spread_window(window: Window) -> float:
+            _avg, fastest, slowest = await isolation_window(window)
+            return slowest - fastest
+
+        # Each statistic over its own windows: a gather is ~25 ms, so the
+        # second set costs ~75 ms and keeps each median one number's.
+        avg_task_time = await median_of_windows_async(task_time_window)
+        time_variance = await median_of_windows_async(spread_window)
+        avg_operation_time = avg_task_time / operations_per_task
 
         print(
             f"\nIsolation: {avg_task_time * 1000:.1f}ms per task, "
@@ -364,17 +404,10 @@ class TestContextVariablePerformance:
         # The number is still printed, because a reader wants it.
         assert_latency_within(avg_task_time, ISOLATED_TASK, "Isolated task")
 
-        # Individual operation times should be consistent
-        individual_avg_times = [r["avg_operation_time"] for r in results]
-        max_individual_avg = max(individual_avg_times)
-        min_individual_avg = min(individual_avg_times)
-        time_variance = max_individual_avg - min_individual_avg
-
         assert_latency_within(
             time_variance,
             ISOLATION_TIME_SPREAD,
             "Spread between the fastest and slowest task",
-            f"{min_individual_avg * 1000:.4f}ms to {max_individual_avg * 1000:.4f}ms",
         )
 
 
@@ -558,47 +591,46 @@ class TestContextVariableEdgeCases:
         """Test performance with rapid context switching."""
         num_contexts = 100
         switches_per_context = 50
+        total_switches = num_contexts * switches_per_context
 
-        contexts = []
+        def switch_window(window: Window) -> float:
+            # Fresh contexts per window, so every window marks into empty
+            # sets as the single window did.
+            contexts = []
 
-        # Create multiple contexts
-        for i in range(num_contexts):
-            coordinator = LoggingCoordinator()
-            ctx = coordinator.start_request(context_id=i)
-            contexts.append((coordinator, ctx))
+            # Create multiple contexts
+            for i in range(num_contexts):
+                coordinator = LoggingCoordinator()
+                ctx = coordinator.start_request(context_id=i)
+                contexts.append((coordinator, ctx))
 
-        try:
-            # Measure rapid context switching
-            start_time = time.perf_counter()
+            def switch_loop():
+                for switch in range(switches_per_context):
+                    for i, (_coordinator, ctx) in enumerate(contexts):
+                        request_context.set(ctx)
 
-            for switch in range(switches_per_context):
-                for i, (coordinator, ctx) in enumerate(contexts):
-                    request_context.set(ctx)
+                        # Perform some context operations
+                        current_ctx = request_context.get()
+                        assert current_ctx.attributes.get("context_id") == i
 
-                    # Perform some context operations
-                    current_ctx = request_context.get()
-                    assert current_ctx.attributes.get("context_id") == i
+                        ctx.mark_logged(f"switch_{switch}_context_{i}")
 
-                    ctx.mark_logged(f"switch_{switch}_context_{i}")
+            try:
+                return window.seconds(switch_loop) / total_switches
+            finally:
+                # Clean up all contexts
+                for coordinator, _ctx in contexts:
+                    coordinator.end_request()
 
-            end_time = time.perf_counter()
-            total_time = end_time - start_time
+        time_per_switch = median_of_windows(switch_window)
 
-            total_switches = num_contexts * switches_per_context
-            time_per_switch = total_time / total_switches
-
-            print(f"\nContext switch: {time_per_switch * 1e6:.3f}μs per switch")
-            assert_latency_within(
-                time_per_switch,
-                CONTEXT_SWITCH,
-                "Context switch",
-                f"{total_switches} switches",
-            )
-
-        finally:
-            # Clean up all contexts
-            for coordinator, ctx in contexts:
-                coordinator.end_request()
+        print(f"\nContext switch: {time_per_switch * 1e6:.3f}μs per switch")
+        assert_latency_within(
+            time_per_switch,
+            CONTEXT_SWITCH,
+            "Context switch",
+            f"{total_switches} switches",
+        )
 
     @pytest.mark.asyncio
     async def test_context_under_high_concurrency(self):
@@ -629,23 +661,25 @@ class TestContextVariableEdgeCases:
             finally:
                 coordinator.end_request()
 
-        # Run high concurrency test
-        start_time = time.perf_counter()
+        async def gather_window(window: Window) -> float:
+            results: list = []
 
-        results = await asyncio.gather(
-            *[high_concurrency_task(i) for i in range(concurrent_tasks)]
-        )
+            async def run_tasks():
+                results.extend(
+                    await asyncio.gather(
+                        *[high_concurrency_task(i) for i in range(concurrent_tasks)]
+                    )
+                )
 
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
+            total_time = await window.seconds_async(run_tasks)
 
-        # Verify all tasks completed correctly
-        assert len(results) == concurrent_tasks
-        assert sorted(results) == list(range(concurrent_tasks))
+            # Verify all tasks completed correctly
+            assert len(results) == concurrent_tasks
+            assert sorted(results) == list(range(concurrent_tasks))
+            return total_time / concurrent_tasks
 
-        avg_task_time = total_time / concurrent_tasks
-        total_operations = concurrent_tasks * operations_per_task
-        avg_operation_time = total_time / total_operations
+        avg_task_time = await median_of_windows_async(gather_window)
+        avg_operation_time = avg_task_time / operations_per_task
 
         print(
             f"\nHigh concurrency: {avg_task_time * 1000:.3f}ms per task, "
@@ -661,45 +695,51 @@ class TestContextVariableEdgeCases:
 
     def test_context_with_large_data(self):
         """Test context performance with large data payloads."""
-        coordinator = LoggingCoordinator()
-        ctx = coordinator.start_request()
-
         # Add large amounts of data to context
         large_operations_count = 5000
         large_attributes_count = 1000
+        checks = 100
 
-        start_time = time.perf_counter()
+        def large_data_window(window: Window) -> float:
+            # A fresh context per window. The timed region includes building
+            # the large context, as the single window did, so every window
+            # pays the build (LARGE_DATA_CHECK's row comment).
+            coordinator = LoggingCoordinator()
+            ctx = coordinator.start_request()
 
-        # Add many operations
-        for i in range(large_operations_count):
-            ctx.mark_logged(f"large_operation_{i}")
+            def build_and_check():
+                # Add many operations
+                for i in range(large_operations_count):
+                    ctx.mark_logged(f"large_operation_{i}")
 
-        # Add many attributes
-        for i in range(large_attributes_count):
-            ctx.attributes[f"large_attr_{i}"] = (
-                f"large_value_{i}" * 10
-            )  # Make values larger
+                # Add many attributes
+                for i in range(large_attributes_count):
+                    ctx.attributes[f"large_attr_{i}"] = (
+                        f"large_value_{i}" * 10
+                    )  # Make values larger
 
-        # Test context access performance with large data
-        for i in range(100):
-            current_ctx = request_context.get()
-            assert current_ctx is not None
+                # Test context access performance with large data
+                for i in range(checks):
+                    current_ctx = request_context.get()
+                    assert current_ctx is not None
 
-            # Test operation checking
-            assert current_ctx.has_logged(f"large_operation_{i}")
+                    # Test operation checking
+                    assert current_ctx.has_logged(f"large_operation_{i}")
 
-            # Test attribute access
-            assert (
-                current_ctx.attributes.get(f"large_attr_{i % large_attributes_count}")
-                is not None
-            )
+                    # Test attribute access
+                    assert (
+                        current_ctx.attributes.get(
+                            f"large_attr_{i % large_attributes_count}"
+                        )
+                        is not None
+                    )
 
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
+            try:
+                return window.seconds(build_and_check) / checks
+            finally:
+                coordinator.end_request()
 
-        coordinator.end_request()
-
-        time_per_check = total_time / 100
+        time_per_check = median_of_windows(large_data_window)
 
         print(f"\nLarge-data context check: {time_per_check * 1000:.4f}ms per check")
         assert_latency_within(

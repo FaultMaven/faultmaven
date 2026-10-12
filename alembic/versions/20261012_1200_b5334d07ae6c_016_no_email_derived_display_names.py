@@ -86,7 +86,7 @@ A no-op. The derived names are not stored anywhere to restore from, and
 restoring them would re-publish the address-derived text this revision removes.
 
 Revision ID: b5334d07ae6c
-Revises: 9b3e5c71d2a4
+Revises: 9904ee0cad86
 Create Date: 2026-10-12 12:00:00
 """
 
@@ -99,7 +99,9 @@ from sqlalchemy import text
 from alembic import op
 
 revision: str = "b5334d07ae6c"  # pragma: allowlist secret
-down_revision: Union[str, Sequence[str], None] = "9b3e5c71d2a4"
+down_revision: Union[str, Sequence[str], None] = (
+    "9904ee0cad86"  # pragma: allowlist secret
+)
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -11,10 +11,13 @@ required check on a diff that changed nothing (#1557). ``budgets.py``
 carries the anchors, where they were measured, and which comparisons were
 deleted rather than re-anchored because they measured ``asyncio.sleep``
 granularity rather than this codebase.
+
+‼ Every judged statistic is the median of several independent windows
+(``tests/wallclock/sampling.py``, #1916), and each window builds the state it
+measures: one stalled window on a busy runner cannot fail a row on its own.
 """
 
 import asyncio
-import statistics
 import time
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Dict, List
@@ -32,6 +35,11 @@ from faultmaven.infrastructure.logging.coordinator import (
 from faultmaven.infrastructure.logging.unified import UnifiedLogger
 from faultmaven.services.base import BaseService
 from tests.wallclock import assert_latency_within
+from tests.wallclock.sampling import (
+    Window,
+    median_of_windows,
+    median_of_windows_async,
+)
 
 from .budgets import (
     API_REQUEST_LOGGING_OVERHEAD,
@@ -65,22 +73,16 @@ class TestLoggingPerformanceOverhead:
         request_context.set(None)
 
     def measure_operation_robust(self, operation, iterations=1000, warmup=100):
-        """Robust measurement with multiple runs for stability"""
-        # Warmup
+        """Seconds per call of ``operation``: the median of three windows of
+        ``iterations`` calls each, after ``warmup`` untimed calls."""
         for _ in range(warmup):
             operation()
 
-        # Multiple measurement runs
-        times = []
-        for run in range(3):  # 3 runs for stability
-            start_time = time.perf_counter()
+        def loop():
             for _ in range(iterations):
                 operation()
-            end_time = time.perf_counter()
-            times.append(end_time - start_time)
 
-        # Return median time for stability
-        return statistics.median(times)
+        return median_of_windows(lambda window: window.seconds(loop)) / iterations
 
     @contextmanager
     def measure_time(self):
@@ -103,9 +105,9 @@ class TestLoggingPerformanceOverhead:
             ctx.mark_logged("test_operation")
             assert ctx.has_logged("test_operation")
 
-        measured_time = self.measure_operation_robust(context_operation, iterations)
-
-        per_operation_time = measured_time / iterations
+        per_operation_time = self.measure_operation_robust(
+            context_operation, iterations
+        )
 
         print(f"\nContext creation: {per_operation_time * 1000:.4f}ms per operation")
         assert_latency_within(
@@ -129,9 +131,9 @@ class TestLoggingPerformanceOverhead:
             assert summary["operations_logged"] == 2
             counter += 1
 
-        measured_time = self.measure_operation_robust(coordinator_operation, iterations)
-
-        per_cycle_time = measured_time / iterations
+        per_cycle_time = self.measure_operation_robust(
+            coordinator_operation, iterations
+        )
 
         print(f"\nCoordinator cycle: {per_cycle_time * 1000:.4f}ms per cycle")
         assert_latency_within(
@@ -154,9 +156,7 @@ class TestLoggingPerformanceOverhead:
             assert threshold == 0.3
             counter += 1
 
-        measured_time = self.measure_operation_robust(tracking_operation, iterations)
-
-        per_record_time = measured_time / iterations
+        per_record_time = self.measure_operation_robust(tracking_operation, iterations)
 
         print(f"\nPerformance tracking: {per_record_time * 1000:.4f}ms per record")
         assert_latency_within(
@@ -171,22 +171,25 @@ class TestLoggingPerformanceOverhead:
         mock_logger = Mock()
         mock_get_logger.return_value = mock_logger
 
-        coordinator = LoggingCoordinator()
-        coordinator.start_request()
-
-        unified_logger = UnifiedLogger("test.module", "service")
         iterations = 100
 
-        # Measure unified logger operations
-        with self.measure_time():
-            for i in range(iterations):
-                unified_logger.log_boundary(f"operation_{i % 10}", "inbound")
-                unified_logger.log_metric(f"metric_{i % 5}", i, "count")
-                unified_logger.log_event("business", f"event_{i % 3}", "info")
+        def logger_window(window: Window) -> float:
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
+            unified_logger = UnifiedLogger("test.module", "service")
 
-        coordinator.end_request()
+            def log_loop():
+                for i in range(iterations):
+                    unified_logger.log_boundary(f"operation_{i % 10}", "inbound")
+                    unified_logger.log_metric(f"metric_{i % 5}", i, "count")
+                    unified_logger.log_event("business", f"event_{i % 3}", "info")
 
-        per_set_time = self.measured_time / iterations
+            try:
+                return window.seconds(log_loop) / iterations
+            finally:
+                coordinator.end_request()
+
+        per_set_time = median_of_windows(logger_window)
 
         print(f"\nUnified logger: {per_set_time * 1000:.4f}ms per set of 3 calls")
         assert_latency_within(
@@ -266,46 +269,41 @@ class TestServiceLoggingPerformance:
                 await asyncio.sleep(0.01)  # Simulate work
                 return {"processed": data, "count": len(str(data))}
 
-        coordinator = LoggingCoordinator()
-        coordinator.start_request()
-
-        service = TestService()
         test_data = {"test": "data"}
         iterations = 50
 
-        # Measure service operation with logging
-        start_time = time.perf_counter()
+        async def overhead_window(window: Window) -> float:
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
+            service = TestService()
 
-        for i in range(iterations):
-            result = await service.execute_operation(
-                f"perf_test_op_{i % 10}", service.simple_operation, test_data
-            )
-            assert result["processed"] == test_data
+            async def logged():
+                for i in range(iterations):
+                    result = await service.execute_operation(
+                        f"perf_test_op_{i % 10}", service.simple_operation, test_data
+                    )
+                    assert result["processed"] == test_data
 
-        end_time = time.perf_counter()
-        total_time_with_logging = end_time - start_time
+            async def unlogged():
+                for i in range(iterations):
+                    result = await service.simple_operation(test_data)
+                    assert result["processed"] == test_data
 
-        coordinator.end_request()
+            try:
+                total_time_with_logging = await window.seconds_async(logged)
+            finally:
+                coordinator.end_request()
+            total_time_without_logging = await window.seconds_async(unlogged)
+            # A MEASURED baseline, not a nominal one: the same loop without
+            # `execute_operation`. Both terms carry the same `asyncio.sleep`
+            # granularity, so it cancels and the difference is the wrapper.
+            return total_time_with_logging - total_time_without_logging
 
-        # Measure same operations without logging (direct calls)
-        start_time = time.perf_counter()
-
-        for i in range(iterations):
-            result = await service.simple_operation(test_data)
-            assert result["processed"] == test_data
-
-        end_time = time.perf_counter()
-        total_time_without_logging = end_time - start_time
-
-        # A MEASURED baseline, not a nominal one: the same loop without
-        # `execute_operation`. Both terms carry the same `asyncio.sleep`
-        # granularity, so it cancels and the difference is the wrapper.
-        logging_overhead = total_time_with_logging - total_time_without_logging
+        logging_overhead = await median_of_windows_async(overhead_window)
 
         print(
             f"\nService logging overhead: {logging_overhead * 1000:.1f}ms over "
-            f"{iterations} operations ({total_time_without_logging * 1000:.1f}ms "
-            "un-logged)"
+            f"{iterations} operations"
         )
         assert_latency_within(
             max(logging_overhead, 0.0),
@@ -342,44 +340,39 @@ class TestInfrastructureLoggingPerformance:
                 await asyncio.sleep(0.005)  # Simulate network call
                 return {"response": data}
 
-        coordinator = LoggingCoordinator()
-        coordinator.start_request()
-
-        client = TestExternalClient()
         test_data = {"test": "data"}
         iterations = 30
 
-        # Measure external calls with logging
-        start_time = time.perf_counter()
+        async def overhead_window(window: Window) -> float:
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
+            client = TestExternalClient()
 
-        for i in range(iterations):
-            result = await client.call_external(
-                f"perf_test_call_{i % 5}", client.simple_call, test_data
-            )
-            assert result["response"] == test_data
+            async def logged():
+                for i in range(iterations):
+                    result = await client.call_external(
+                        f"perf_test_call_{i % 5}", client.simple_call, test_data
+                    )
+                    assert result["response"] == test_data
 
-        end_time = time.perf_counter()
-        total_time_with_logging = end_time - start_time
+            async def unlogged():
+                for i in range(iterations):
+                    result = await client.simple_call(test_data)
+                    assert result["response"] == test_data
 
-        coordinator.end_request()
+            try:
+                total_time_with_logging = await window.seconds_async(logged)
+            finally:
+                coordinator.end_request()
+            total_time_without_logging = await window.seconds_async(unlogged)
+            # A MEASURED baseline, as in the service test above.
+            return total_time_with_logging - total_time_without_logging
 
-        # Measure same calls without logging (direct calls)
-        start_time = time.perf_counter()
-
-        for i in range(iterations):
-            result = await client.simple_call(test_data)
-            assert result["response"] == test_data
-
-        end_time = time.perf_counter()
-        total_time_without_logging = end_time - start_time
-
-        # A MEASURED baseline, as in the service test above.
-        logging_overhead = total_time_with_logging - total_time_without_logging
+        logging_overhead = await median_of_windows_async(overhead_window)
 
         print(
             f"\nExternal client logging overhead: {logging_overhead * 1000:.1f}ms "
-            f"over {iterations} calls "
-            f"({total_time_without_logging * 1000:.1f}ms un-logged)"
+            f"over {iterations} calls"
         )
         assert_latency_within(
             max(logging_overhead, 0.0),
@@ -431,25 +424,31 @@ class TestConcurrentLoggingPerformance:
 
         concurrent_requests = 20
 
-        # Measure concurrent logging performance
-        start_time = time.perf_counter()
+        async def gather_window(window: Window) -> float:
+            results: list = []
 
-        results = await asyncio.gather(
-            *[concurrent_request(i) for i in range(concurrent_requests)]
-        )
+            async def run_requests():
+                results.extend(
+                    await asyncio.gather(
+                        *[concurrent_request(i) for i in range(concurrent_requests)]
+                    )
+                )
 
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
+            total_time = await window.seconds_async(run_requests)
 
-        # Verify all requests completed
-        assert len(results) == concurrent_requests
+            # Verify all requests completed
+            assert len(results) == concurrent_requests
 
-        # Each request should have logged operations
-        for i, result in enumerate(results):
-            assert result["operations_logged"] > 0
-            assert f"req_{i}" in str(result)
+            # Each request should have logged operations
+            for i, result in enumerate(results):
+                assert result["operations_logged"] > 0
+                assert f"req_{i}" in str(result)
+            return total_time / concurrent_requests
 
-        avg_time_per_request = total_time / concurrent_requests
+        # #1916: ONE gather stalled for 1.2 s on a busy runner and failed this
+        # row at 7x its limit. The median of five gathers survives two stalls;
+        # a gather is ~16 ms on CI, so the four extra cost ~65 ms.
+        avg_time_per_request = await median_of_windows_async(gather_window, windows=5)
 
         print(
             f"\nConcurrent logging: {avg_time_per_request * 1000:.3f}ms per request "
@@ -467,28 +466,26 @@ class TestConcurrentLoggingPerformance:
         """Test context variable performance under load."""
         iterations = 1000
 
-        # Measure context variable operations
-        start_time = time.perf_counter()
+        def cycle_loop():
+            for i in range(iterations):
+                coordinator = LoggingCoordinator()
+                ctx = coordinator.start_request(iteration=i)
 
-        for i in range(iterations):
-            coordinator = LoggingCoordinator()
-            ctx = coordinator.start_request(iteration=i)
+                # Multiple context variable accesses
+                current_ctx = LoggingCoordinator.get_context()
+                assert current_ctx is not None
+                assert current_ctx.correlation_id == ctx.correlation_id
 
-            # Multiple context variable accesses
-            current_ctx = LoggingCoordinator.get_context()
-            assert current_ctx is not None
-            assert current_ctx.correlation_id == ctx.correlation_id
+                # Modify context
+                ctx.mark_logged(f"operation_{i % 100}")
+                assert ctx.has_logged(f"operation_{i % 100}")
 
-            # Modify context
-            ctx.mark_logged(f"operation_{i % 100}")
-            assert ctx.has_logged(f"operation_{i % 100}")
+                coordinator.end_request()
 
-            coordinator.end_request()
-
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-
-        per_iteration_time = total_time / iterations
+        # Each window builds its own coordinators, so the windows are alike.
+        per_iteration_time = median_of_windows(
+            lambda window: window.seconds(cycle_loop) / iterations
+        )
 
         print(
             f"\nContext variable cycle: {per_iteration_time * 1000:.4f}ms "
@@ -514,31 +511,36 @@ class TestDeduplicationPerformance:
 
     def test_deduplication_scaling(self):
         """Test deduplication performance with large number of operations."""
-        coordinator = LoggingCoordinator()
-        ctx = coordinator.start_request()
-
         # Test with increasing numbers of operations
         for operation_count in [100, 500, 1000, 2000]:
 
-            start_time = time.perf_counter()
+            def dedup_window(window: Window) -> float:
+                # A fresh context per window: every window marks 50 new keys
+                # and then duplicates, the same path at every size.
+                coordinator = LoggingCoordinator()
+                ctx = coordinator.start_request()
 
-            # Log many operations
-            for i in range(operation_count):
-                operation_key = f"operation_{i % 50}"  # Create some duplicates
-                ctx.mark_logged(operation_key)
+                def mark_and_check():
+                    # Log many operations
+                    for i in range(operation_count):
+                        operation_key = f"operation_{i % 50}"  # Create duplicates
+                        ctx.mark_logged(operation_key)
 
-            # Check all operations
-            for i in range(operation_count):
-                operation_key = f"operation_{i % 50}"
-                assert ctx.has_logged(operation_key)
+                    # Check all operations
+                    for i in range(operation_count):
+                        operation_key = f"operation_{i % 50}"
+                        assert ctx.has_logged(operation_key)
 
-            end_time = time.perf_counter()
-            total_time = end_time - start_time
+                try:
+                    return window.seconds(mark_and_check) / operation_count
+                finally:
+                    coordinator.end_request()
 
             # Time should scale reasonably (not exponentially). The budget
             # is one row applied at every size, so a superlinear cost shows
-            # up as the largest size failing while the smallest passes.
-            time_per_operation = total_time / operation_count
+            # up as the largest size failing while the smallest passes. The
+            # smallest size's window is ~0.05 ms at reference speed: five.
+            time_per_operation = median_of_windows(dedup_window, windows=5)
             print(
                 f"\nDeduplication at {operation_count} ops: "
                 f"{time_per_operation * 1000:.4f}ms per op"
@@ -550,34 +552,40 @@ class TestDeduplicationPerformance:
                 f"{operation_count} operations",
             )
 
-        coordinator.end_request()
-
     @patch("faultmaven.infrastructure.logging.unified.get_logger")
     def test_log_once_performance(self, mock_get_logger):
         """Test LoggingCoordinator.log_once performance."""
         mock_logger = Mock()
         mock_get_logger.return_value = mock_logger
 
-        coordinator = LoggingCoordinator()
-        coordinator.start_request()
-
         iterations = 1000
 
-        # Measure log_once performance with duplicates
-        start_time = time.perf_counter()
+        def log_once_window(window: Window) -> float:
+            # ‼ A fresh request per window. log_once's dedup set lives on the
+            # request's context: a shared one would make every window after
+            # the first measure only the duplicate path.
+            mock_logger.reset_mock()
+            coordinator = LoggingCoordinator()
+            coordinator.start_request()
 
-        for i in range(iterations):
-            # Use same operation keys to test deduplication performance
-            operation_key = f"duplicate_operation_{i % 10}"
+            def log_loop():
+                for i in range(iterations):
+                    # Use same operation keys to test deduplication performance
+                    operation_key = f"duplicate_operation_{i % 10}"
 
-            LoggingCoordinator.log_once(
-                operation_key, mock_logger, "info", f"Message {i}"
-            )
+                    LoggingCoordinator.log_once(
+                        operation_key, mock_logger, "info", f"Message {i}"
+                    )
 
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
+            try:
+                seconds = window.seconds(log_loop)
+            finally:
+                coordinator.end_request()
+            # Should have only logged unique operations (10 unique keys)
+            assert mock_logger.info.call_count == 10
+            return seconds / iterations
 
-        time_per_call = total_time / iterations
+        time_per_call = median_of_windows(log_once_window, windows=5)
         print(f"\nlog_once: {time_per_call * 1000:.4f}ms per call")
         assert_latency_within(
             time_per_call,
@@ -585,11 +593,6 @@ class TestDeduplicationPerformance:
             "LoggingCoordinator.log_once",
             f"{iterations} calls, 10 unique keys",
         )
-
-        # Should have only logged unique operations (10 unique keys)
-        assert mock_logger.info.call_count == 10
-
-        coordinator.end_request()
 
 
 class TestMemoryUsagePerformance:
@@ -713,16 +716,18 @@ class TestRealWorldPerformanceScenarios:
             summary = coordinator.end_request()
             return summary
 
-        # Measure total time with logging
-        start_time = time.perf_counter()
-        summary = await simulate_api_processing()
-        end_time = time.perf_counter()
+        async def request_window(window: Window) -> float:
+            summaries: list = []
 
-        total_time = end_time - start_time
-        logging_overhead = total_time - typical_processing_time
+            async def one_request():
+                summaries.append(await simulate_api_processing())
 
-        # Verify request was processed
-        assert summary["operations_logged"] > 0
+            total_time = await window.seconds_async(one_request)
+            # Verify request was processed
+            assert summaries[0]["operations_logged"] > 0
+            return total_time - typical_processing_time
+
+        logging_overhead = await median_of_windows_async(request_window)
 
         # The percentage this test also asserted (`< 50` of the total) is
         # gone (#1557): 50% OF THE WORK is exactly the 50ms below, so it

@@ -318,13 +318,16 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
                         ),
                         {"u": admin, "o": org_a, "e": ent_a, "r": _ADMIN},
                     )
+                # Opened by ``member``, who drives it (``driver_id`` NULL), so
+                # the page's effective driver (revision 014) has a value to name.
                 await session.execute(
                     text(
                         "INSERT INTO public.cases "
-                        "(case_id, enterprise_id, title, metadata) "
-                        "VALUES (:c, :e, 'planted-operator probe', CAST(:m AS jsonb))"
+                        "(case_id, enterprise_id, user_id, title, metadata) "
+                        "VALUES (:c, :e, :u, 'planted-operator probe', "
+                        "CAST(:m AS jsonb))"
                     ),
-                    {"c": case_id, "e": ent_a, "m": json.dumps(history)},
+                    {"c": case_id, "e": ent_a, "u": member, "m": json.dumps(history)},
                 )
                 await session.execute(
                     text(
@@ -360,7 +363,7 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
             calls = {
                 "count": "SELECT public.admin_case_metadata_count('inquiry', 'copilot')",
                 "page": (
-                    "SELECT case_id, turn_numbers, turn_is_out_of_band, "
+                    "SELECT case_id, driver_id, turn_numbers, turn_is_out_of_band, "
                     "shared_team_ids FROM public.admin_case_metadata_page"
                     "('inquiry', 'copilot', 10, 0)"
                 ),
@@ -422,7 +425,7 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
     # And each function still did its job.
     assert [tuple(row) for row in outcomes["count"]] == [(1,)]
     assert [tuple(row) for row in outcomes["page"]] == [
-        (case_id, [1], [False], [team_a])
+        (case_id, member, [1], [False], [team_a])
     ]
     assert outcomes["admit member"] == []
     assert isinstance(outcomes["refuse stranger"], DBAPIError)

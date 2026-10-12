@@ -40,7 +40,6 @@ import pytest
 # back, and the next import builds a second copy of the application's
 # SQLAlchemy registry ("Type <class 'object'> is already registered").
 import faultmaven.main
-from tests.conftest import WORKER_DATABASE_URL_ENV
 
 pytest_plugins = ["pytester"]
 
@@ -170,12 +169,12 @@ def _isolate_child(pytester, monkeypatch):
             )
         ),
     )
-    # The child is a serial run of its own, whatever worker runs this test, and
-    # keeps every store under its own directory: pytester runs it there, and
-    # the database would otherwise follow the worker's inherited DATABASE_URL.
-    # A boot in the child must not share the parent's database or ./data
-    # (fm#1772).
-    for name in ("PYTEST_XDIST_WORKER", "DATABASE_URL", WORKER_DATABASE_URL_ENV):
+    # The child is a serial run of its own, whatever worker runs this test.
+    # Importing ``tests.conftest`` gives it a data root of its own and replaces
+    # the paths it inherited under this process's root (fm#1772); a
+    # DATABASE_URL a caller set explicitly (the postgres lane) would survive
+    # that, so it goes too: a boot in the child shares no store with its parent.
+    for name in ("PYTEST_XDIST_WORKER", "DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
 
 

@@ -267,10 +267,14 @@ PostgreSQL 16 service before running the tests marked `postgres`.
   ```
 - **A SQLite rebuild does not carry triggers.** The baseline gives SQLite
   triggers to `operator_access_audit`, `operator_access_grants` and
-  `team_members`. Rebuilding one of those tables drops its triggers *silently* —
-  the append-only and immutability guards vanish and the migration still
-  succeeds. Rebuilding `users` or `teams` fails outright at the rename, because
-  the `team_members` triggers read them. A batch migration on any of these
+  `team_members`, and `015_case_creator_restrict` gives `users` the
+  `users_delete_refuses_case_creator` trigger and `cases` the
+  `cases_creator_never_nulled` trigger (an account that created cases cannot be
+  deleted, #1923). Rebuilding one of those tables drops its triggers
+  *silently* — the append-only, immutability and creator guards vanish and the
+  migration still succeeds. Rebuilding `users` or `teams` fails outright at the
+  rename, because the `team_members` triggers read them, and so does rebuilding
+  `cases`, which the `users` trigger reads. A batch migration on any of these
   tables drops the affected SQLite triggers first and re-creates them
   afterwards.
 - **A new tenant-scoped table follows the baseline's pattern**: an

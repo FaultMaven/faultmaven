@@ -147,6 +147,17 @@
             "title": "Current Turn",
             "type": "integer"
           },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
+          },
           "enterprise_id": {
             "title": "Enterprise Id",
             "type": "string"
@@ -7206,7 +7217,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "13.3.0"
+    "version": "13.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9603,7 +9614,7 @@
     },
     "/api/v1/auth/users/{username}": {
       "delete": {
-        "description": "Delete a user of the operator's own organization. Operator only.\n\nA user of another organization answers exactly what an unknown username\nanswers (#1318), and nothing is revoked or deleted \u2014 the refusal must not\nconfirm that the account exists.",
+        "description": "Delete a user of the operator's own organization. Operator only.\n\nA user of another organization answers exactly what an unknown username\nanswers (#1318), and nothing is revoked or deleted \u2014 the refusal must not\nconfirm that the account exists.\n\nAn account that created cases cannot be deleted (#1923): the answer is 409\n`x-error-code: ACCOUNT_OWNS_CASES`, naming how many and the\n`fm-reassign-cases` command that moves them, and nothing is revoked or\ndeleted. Deleting an account that only DRIVES other people's cases hands\neach back to its creator.",
         "operationId": "delete_user_api_v1_auth_users__username__delete",
         "parameters": [
           {
@@ -9628,6 +9639,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "description": "`x-error-code: ACCOUNT_OWNS_CASES`: the account created cases, so it cannot be deleted until they are moved to another account with `fm-reassign-cases`. Nothing was deleted.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which conflict.",
+                "schema": {
+                  "enum": [
+                    "ACCOUNT_OWNS_CASES"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {

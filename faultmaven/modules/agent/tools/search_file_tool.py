@@ -69,7 +69,7 @@ class SearchFileTool(AgentTool):
         return (
             "Search a previously uploaded evidence file for specific information. "
             "Use the evidence_id from an <evidence> or <uploaded_file> element "
-            "shown in the context — no need to call list_evidence first. "
+            "shown in the context. "
             "Two output formats: 'excerpts' (default) returns context windows for "
             "detailed investigation; 'count' returns compact matched lines for "
             "counting and aggregation queries (e.g. 'how many unique IPs?'). "

@@ -134,9 +134,11 @@ class Case(BaseModel):
     user_id: Optional[str] = Field(
         default=None,
         description=(
-            "User who created the case. NULL after the originating user is "
-            "deleted (FK SET NULL). Required to be non-empty at creation time; "
-            "creation logic enforces this separately from Pydantic validation."
+            "User who created the case. An account that created cases cannot "
+            "be deleted (#1923), so this stays set; it is Optional only for "
+            "rows whose creator was deleted before that rule. Required to be "
+            "non-empty at creation time; creation logic enforces this "
+            "separately from Pydantic validation."
         ),
         max_length=36,
     )

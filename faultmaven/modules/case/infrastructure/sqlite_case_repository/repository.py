@@ -407,6 +407,10 @@ class SQLiteCaseRepository(CaseRepository):
             )
         ]
 
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created (#1923)."""
+        return await case_driver_sql.count_cases_created_by(self.db, user_id)
+
     async def get(self, case_id: str) -> Case | None:
         """Retrieve case by ID using separate queries for normalized tables."""
         try:

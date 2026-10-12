@@ -28,8 +28,6 @@ as such next to the correctness test.
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
 """
 
-import time
-
 import pytest
 
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
@@ -43,6 +41,7 @@ from tests.unit.modules.preprocessing.extractors.test_sshd_auth_anchoring import
     SRC,
 )
 from tests.wallclock import assert_latency_within
+from tests.wallclock.sampling import fastest_of_windows
 
 from .budgets import (
     ADVERSARIAL_LINE_EXTRACTION,
@@ -52,12 +51,7 @@ from .budgets import (
 
 
 def _fastest_seconds(work, samples: int) -> float:
-    best = float("inf")
-    for _ in range(samples):
-        started = time.perf_counter()
-        work()
-        best = min(best, time.perf_counter() - started)
-    return best
+    return fastest_of_windows(lambda window: window.seconds(work), samples)
 
 
 def _megabyte_of_logs() -> str:

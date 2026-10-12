@@ -1329,6 +1329,12 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+#: Where :func:`resolve_local_jwt_secret` keeps the local secret when
+#: ``JWT_SECRET_FILE`` is unset. Read at call time, so the test session can
+#: point it under its own data root (#1772).
+DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
+
+
 def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     """Give local auth its HS256 secret, on the BUILT settings (#1703).
 
@@ -1378,7 +1384,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
 
     logger = logging.getLogger(__name__)
     persist = persistent_database_configured(settings.database.database_url)
-    secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
+    secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
     try:
         value = (
             secret_path.read_text(encoding="utf-8").strip()

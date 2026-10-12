@@ -12,6 +12,8 @@ import re
 from datetime import datetime, timezone
 from typing import Collection, List, Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from faultmaven.exceptions import (
     ConflictError,
     NotFoundError,
@@ -28,6 +30,7 @@ from faultmaven.modules.auth.domain.display_name import (
     usable_display_name,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
 
 logger = logging.getLogger(__name__)
 
@@ -392,10 +395,20 @@ class DatabaseUserStore:
             user_id: User identifier
 
         Returns:
-            True if deleted, False if not found
+            True if deleted, False if not found or the delete failed
+
+        Raises:
+            AccountOwnsCasesError: the database refused the delete because the
+                account created cases (#1923). The one reference to ``users``
+                that refuses is ``cases.user_id``, so the refusal is told apart
+                by its type alone; it propagates rather than reading as
+                ``False``, so the caller can say what to do about it.
         """
         try:
             return await self.user_repository.delete(user_id)
+        except IntegrityError as e:
+            logger.warning(f"Refused to delete user {user_id}: it created cases")
+            raise AccountOwnsCasesError(user_id) from e
         except Exception as e:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False

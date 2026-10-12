@@ -120,7 +120,6 @@ EXPECTED_KEYS: dict[str, set[str]] = {
     },
     "INVESTIGATION_BASE": {
         "adaptive_instructions",
-        "candidate_solutions",
         "conversation_history",
         "core_context",
         "diagnostic_reasoning",

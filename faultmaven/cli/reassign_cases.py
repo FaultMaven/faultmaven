@@ -4,9 +4,10 @@ Built for the Slack per-workspace cutover (faultmaven-slack-agent#61 step 4,
 ADR-012 D10): the global ``slack-agent`` account owns every Slack case opened
 before workspaces were bound to their own service accounts, and those cases must
 be re-owned by the workspace's account *before* the global one is retired.
-``cases.user_id`` is ``ON DELETE SET NULL``, so deleting the old account instead
-neither cascades nor blocks — it nulls the owner and drops the cases out of every
-owner-scoped view, unrecoverably.
+It is also the one way to delete an account that created cases (#1923): the
+deletion is refused while any case names the account as its creator
+(``cases.user_id`` is ``ON DELETE RESTRICT`` on PostgreSQL, and a trigger refuses
+it on SQLite), so the cases move here first.
 
 Usage (``fm-reassign-cases``, installed with the package)::
 

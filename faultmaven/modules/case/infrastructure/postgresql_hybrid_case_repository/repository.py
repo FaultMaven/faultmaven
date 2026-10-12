@@ -473,6 +473,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
         ]
 
+    async def count_cases_created_by(self, user_id: str) -> int:
+        """How many cases ``user_id`` created (#1923)."""
+        return await case_driver_sql.count_cases_created_by(self.db, user_id)
+
     async def get(self, case_id: str) -> Optional[Case]:
         """
         Retrieve case by ID using JOINs for normalized tables.
