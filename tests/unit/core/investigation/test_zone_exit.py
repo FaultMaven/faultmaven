@@ -38,7 +38,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
-    _RCA_DIAGNOSIS_BLOCK,
+    rca_diagnosis_block,
 )
 from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
@@ -47,6 +47,7 @@ from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 # Reuse the INV-32 liveness fixtures (same call site, same established-cause
 # license construction).
@@ -110,9 +111,10 @@ class TestZonePendingEmphasis:
         # The no-parallel-suggestions clamp that forbade diagnostic asks while
         # awaiting compliance is gone; the reopen instruction is present.
         assert (
-            "offer exactly two suggestions — and no others" not in _RCA_DIAGNOSIS_BLOCK
+            "offer exactly two suggestions — and no others"
+            not in rca_diagnosis_block(DEFAULT_GIVEN)
         )
-        assert "This hold is not absolute" in _RCA_DIAGNOSIS_BLOCK
+        assert "This hold is not absolute" in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_compliance_detection_carveouts_present(self):
         # Load-bearing (INV-33): without these two carve-outs the softened blocks
@@ -120,10 +122,10 @@ class TestZonePendingEmphasis:
         # failed-then-new-cause reply can latch TREATMENT (the #656 mode). Pin the
         # prose so a future prompt edit that drops it fails here, not in prod.
         # (a) an executed-but-failed fix is still compliance → TREATMENT.
-        assert "still compliance" in _RCA_DIAGNOSIS_BLOCK
+        assert "still compliance" in rca_diagnosis_block(DEFAULT_GIVEN)
         # (b) new diagnostic evidence gathered WITHOUT executing reopens diagnosis.
-        assert "WITHOUT executing the fix" in _RCA_DIAGNOSIS_BLOCK
-        assert "REOPENS diagnosis" in _RCA_DIAGNOSIS_BLOCK
+        assert "WITHOUT executing the fix" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "REOPENS diagnosis" in rca_diagnosis_block(DEFAULT_GIVEN)
 
 
 class TestTreatmentDoesNotRenderPendingEmphasis:

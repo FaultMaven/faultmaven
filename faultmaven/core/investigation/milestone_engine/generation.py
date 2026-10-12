@@ -32,6 +32,10 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
     _build_schema_tool,
 )
+from faultmaven.core.investigation.prompts.templates.tool_text import (
+    NO_TOOLS,
+    GivenTools,
+)
 from faultmaven.core.investigation.reliability_metrics import (
     tool_call_attempts_total,
 )
@@ -1016,9 +1020,10 @@ class StructuredOutputGenerator:
                         func_name == "deep_analysis"
                         and deep_analysis_count >= self.MAX_DEEP_ANALYSIS
                     ):
-                        result_text = (
-                            "deep_analysis is limited to 1 call per turn. "
-                            "Use search_file for additional searches."
+                        result_text = "deep_analysis is limited to 1 call per turn." + (
+                            " Use search_file for additional searches."
+                            if "search_file" in offered_tool_names
+                            else ""
                         )
                     else:
                         tool_result = await self.deps.investigation_tools.execute_tool(
@@ -1056,6 +1061,7 @@ class StructuredOutputGenerator:
                                 tool_context=tool_context,
                                 da_empty_search_counts=da_empty_search_counts,
                                 proactive_tasks=proactive_tasks,
+                                given_tools=offered_tool_names,
                             )
 
                 except Exception:
@@ -1183,7 +1189,7 @@ class StructuredOutputGenerator:
         """Whether the resolved DA/chat provider+model can do tool calling.
 
         Single source of truth for the tool-calling capability check, shared by
-        ``_tools_effectively_available`` (the directed-analysis elision gate) and
+        ``given_tools`` (the set every prompt names tools from) and
         the Layer-1 pre-check in ``_generate_structured_output_inner`` so the two
         cannot drift. Absent capability info → assume capable (the runtime path
         then catches an actual failure and falls back).
@@ -1198,19 +1204,25 @@ class StructuredOutputGenerator:
         except Exception:
             return False
 
-    def tools_effectively_available(self) -> bool:
-        """True when investigation tools are registered AND the resolved
-        provider/model can actually do tool calling.
+    def given_tools(self) -> GivenTools:
+        """The tool names a tool-loop turn gives the model (#1939).
 
-        This is the real precondition behind the directed-analysis evidence
-        index+stub elision: the inline extract may only be dropped (telling the
-        agent to ``search_file`` for specifics) when ``search_file`` will actually
-        run this turn. A tool-less / tool-incapable turn that dropped the extract
-        would be stranded with neither the data nor a working tool — the
-        premature-conclusion failure FaultMaven guards against.
+        The names of ``build_da_tool_schemas()`` (the ``tools=`` the loop
+        sends) when the resolved provider/model can call tools, else
+        ``NO_TOOLS``: the Layer-1 pre-check would take the non-tool path, so
+        nothing would run. Every tool a prompt names comes from this set, and
+        so does the directed-analysis evidence index+stub elision: an extract
+        is dropped (telling the agent to ``search_file`` for specifics) only
+        when ``search_file`` will actually run, or the turn would be stranded
+        with neither the data nor a working tool — the premature-conclusion
+        failure FaultMaven guards against. A single-shot turn passes
+        ``NO_TOOLS`` instead of calling this; so do the fallbacks that drop
+        the tools.
         """
-        return (
-            bool(self.deps.investigation_tools) and self._da_provider_supports_tools()
+        if not self._da_provider_supports_tools():
+            return NO_TOOLS
+        return frozenset(
+            schema["function"]["name"] for schema in self.build_da_tool_schemas()
         )
 
     def build_da_tool_schemas(self) -> list[dict]:
@@ -1515,10 +1527,13 @@ class StructuredOutputGenerator:
                 # routinely over the window — a prompt-sizing problem, not a
                 # recovery problem.
                 prompt_context_recovery_total.labels(reason=reason).inc()
-                # The notice is required, not cosmetic: the fallback body lists
-                # addressable files, but this retry drops the tools to reach them,
-                # so without it the agent is told to search what it cannot.
-                fb_prompt = get_fallback_prompt_for_case(case, user_message)
+                # This retry drops the tools, so the body is rendered for none
+                # (#1939) and the notice says why the files it lists cannot be
+                # searched, so the user can tell a context-starved answer from
+                # a normal one.
+                fb_prompt = get_fallback_prompt_for_case(
+                    case, user_message, given_tools=NO_TOOLS
+                )
                 fb_prompt += DEGRADED_NO_TOOLS_NOTICE
                 # Minimal retry: drop tools to shrink the request further.
                 return await self._generate_structured_output_inner(
@@ -1619,11 +1634,13 @@ class StructuredOutputGenerator:
                         "Falling back to non-tool structured output path.",
                         e,
                     )
-                    # The prompt may have elided historical evidence on the
-                    # assumption search_file would run (directed-analysis
-                    # index+stub). On the non-tool path there is no search_file,
-                    # so rebuild with full evidence — otherwise the agent would
-                    # be stranded (elided evidence + no tool to recover it).
+                    # The prompt names the tools the turn gave and may have
+                    # elided historical evidence on the assumption search_file
+                    # would run (directed-analysis index+stub). On the non-tool
+                    # path no tool runs, so the caller's builder rebuilds it for
+                    # no tools (#1939) — otherwise the agent would be told to
+                    # call tools it lacks, and stranded with elided evidence
+                    # and no tool to recover it.
                     # The rebuild is raw case content assembled AFTER the
                     # redaction above, so it is redacted again (#1949). A
                     # failure here keeps the already-redacted ``prompt``.

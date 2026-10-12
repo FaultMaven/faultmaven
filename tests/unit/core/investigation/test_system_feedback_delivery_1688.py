@@ -73,6 +73,7 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.unit.core.investigation.given_tools import NO_TOOLS
 
 _FILE_ID = "file_0123456789ab"
 
@@ -590,6 +591,7 @@ class TestTheFallbackRendersTheNotice:
             SUBSTANTIVE,
             None,
             None,
+            NO_TOOLS,
         )
         assert prompt.startswith("You are FaultMaven investigating an issue.")
         assert NOTICE in prompt

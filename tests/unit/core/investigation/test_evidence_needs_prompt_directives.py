@@ -30,15 +30,16 @@ from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
     _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK,
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
-    _RCA_DIAGNOSIS_BLOCK,
+    rca_diagnosis_block,
 )
 from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
 )
 from faultmaven.core.investigation.prompts.templates.treatment import (
-    MITIGATION_INSTRUCTIONS,
-    TREATMENT_INSTRUCTIONS,
+    mitigation_instructions,
+    treatment_instructions,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 # A short, distinctive substring from each block — used as the
 # "is this block composed in?" probe. Chosen to be unique enough that
@@ -64,9 +65,9 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
-            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+            (rca_diagnosis_block(DEFAULT_GIVEN), "rca_diagnosis_block"),
+            (mitigation_instructions(DEFAULT_GIVEN), "mitigation_instructions"),
+            (treatment_instructions(DEFAULT_GIVEN), "treatment_instructions"),
         ],
     )
     def test_lifecycle_block_present(self, block, block_name):
@@ -80,9 +81,9 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
         """A double-composition would burn tokens and risk conflicting
         signals if one copy drifted. Single emission per block."""
         for block, name in [
-            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
-            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+            (rca_diagnosis_block(DEFAULT_GIVEN), "rca_diagnosis_block"),
+            (mitigation_instructions(DEFAULT_GIVEN), "mitigation_instructions"),
+            (treatment_instructions(DEFAULT_GIVEN), "treatment_instructions"),
         ]:
             assert block.count(_LIFECYCLE_PROBE) == 1, (
                 f"{name} composes the lifecycle block "
@@ -169,7 +170,7 @@ class TestLifecycleBlockContent:
 
 
 # ============================================================
-# RCA pool-evaluation block — only in _RCA_DIAGNOSIS_BLOCK
+# RCA pool-evaluation block — only in rca_diagnosis_block(DEFAULT_GIVEN)
 # ============================================================
 
 
@@ -177,16 +178,16 @@ class TestLifecycleBlockContent:
 class TestPoolEvalBlockLocation:
     """The 3-step pool evaluation at hypothesis creation (design §5.2)
     only applies where hypotheses can be created. That's
-    _RCA_DIAGNOSIS_BLOCK on this dispatch."""
+    rca_diagnosis_block(DEFAULT_GIVEN) on this dispatch."""
 
     def test_pool_eval_present_in_rca_block(self):
-        assert _POOL_EVAL_PROBE in _RCA_DIAGNOSIS_BLOCK
+        assert _POOL_EVAL_PROBE in rca_diagnosis_block(DEFAULT_GIVEN)
 
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
-            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+            (mitigation_instructions(DEFAULT_GIVEN), "mitigation_instructions"),
+            (treatment_instructions(DEFAULT_GIVEN), "treatment_instructions"),
         ],
     )
     def test_pool_eval_absent_from_non_rca_blocks(self, block, block_name):
@@ -237,8 +238,8 @@ class TestReVerificationAddendumLocation:
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
-            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+            (mitigation_instructions(DEFAULT_GIVEN), "mitigation_instructions"),
+            (treatment_instructions(DEFAULT_GIVEN), "treatment_instructions"),
         ],
     )
     def test_reverification_present_in_post_diagnosis_stages(self, block, block_name):
@@ -248,7 +249,7 @@ class TestReVerificationAddendumLocation:
         """The DIAGNOSIS dispatch block doesn't render FULFILLED needs —
         the re-verification framing would describe a checklist that
         isn't there."""
-        assert _REVERIFICATION_PROBE not in _RCA_DIAGNOSIS_BLOCK
+        assert _REVERIFICATION_PROBE not in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_addendum_does_not_claim_causal_gating(self):
         """Causal-need gating is stage-specific (gated in MITIGATION,
@@ -367,18 +368,21 @@ class TestMitigationCausalNeedsGatingExtension:
     needs presuppose a hypothesis to anchor."""
 
     def test_causal_evidence_need_updates_explicitly_gated(self):
-        assert (
-            "causal-purpose\n  evidence_need_updates" in MITIGATION_INSTRUCTIONS
-            or "causal-purpose evidence_need_updates" in MITIGATION_INSTRUCTIONS
+        assert "causal-purpose\n  evidence_need_updates" in mitigation_instructions(
+            DEFAULT_GIVEN
+        ) or "causal-purpose evidence_need_updates" in mitigation_instructions(
+            DEFAULT_GIVEN
         )
 
     def test_fresh_symptom_needs_still_allowed_clarified(self):
         """The gating note also clarifies symptom needs remain
         allowed if new symptoms emerge during mitigation work — the
         LLM shouldn't over-restrict itself."""
-        assert "symptom-purpose needs are still allowed" in MITIGATION_INSTRUCTIONS or (
-            "symptom" in MITIGATION_INSTRUCTIONS.lower()
-            and "still allowed" in MITIGATION_INSTRUCTIONS
+        assert "symptom-purpose needs are still allowed" in mitigation_instructions(
+            DEFAULT_GIVEN
+        ) or (
+            "symptom" in mitigation_instructions(DEFAULT_GIVEN).lower()
+            and "still allowed" in mitigation_instructions(DEFAULT_GIVEN)
         )
 
 
@@ -395,16 +399,16 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
     ``TestEvidenceClassificationDecisionTreeExtension`` (Phase 5)."""
 
     def test_mitigation_lists_symptom_absence_evidence(self):
-        assert "symptom_absence_evidence" in MITIGATION_INSTRUCTIONS
+        assert "symptom_absence_evidence" in mitigation_instructions(DEFAULT_GIVEN)
 
     def test_mitigation_lists_causal_absence_evidence(self):
-        assert "causal_absence_evidence" in MITIGATION_INSTRUCTIONS
+        assert "causal_absence_evidence" in mitigation_instructions(DEFAULT_GIVEN)
 
     def test_treatment_lists_symptom_absence_evidence(self):
-        assert "symptom_absence_evidence" in TREATMENT_INSTRUCTIONS
+        assert "symptom_absence_evidence" in treatment_instructions(DEFAULT_GIVEN)
 
     def test_treatment_lists_causal_absence_evidence(self):
-        assert "causal_absence_evidence" in TREATMENT_INSTRUCTIONS
+        assert "causal_absence_evidence" in treatment_instructions(DEFAULT_GIVEN)
 
     def test_absence_variants_appear_under_evidence_types_heading(self):
         """Both absence variants must appear within the ``EVIDENCE TYPES FOR
@@ -417,7 +421,10 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
         listing is longer than a fixed-width window would capture.
         """
         heading = "**EVIDENCE TYPES FOR THIS STAGE:**"
-        for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
+        for block in (
+            mitigation_instructions(DEFAULT_GIVEN),
+            treatment_instructions(DEFAULT_GIVEN),
+        ):
             heading_idx = block.find(heading)
             assert heading_idx != -1
             body_start = heading_idx + len(heading)
@@ -437,7 +444,7 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
 # ============================================================
 
 
-#: The COMPLETION rule's heading in TREATMENT_INSTRUCTIONS.
+#: The COMPLETION rule's heading in treatment_instructions(DEFAULT_GIVEN).
 _RESOLVED_RULE_HEADING = "RESOLVED IS BACKED BY BOTH ABSENCE ROWS"
 
 
@@ -452,7 +459,7 @@ class TestResolveProposalRequiresCausalAbsence:
     loop (suggest-then-bounce). The user's verbal confirmation is an allowed
     source (``user_description``) so the out-of-band path needs no file.
 
-    These pin the two proposal sites in TREATMENT_INSTRUCTIONS:
+    These pin the two proposal sites in treatment_instructions(DEFAULT_GIVEN):
       - the KB-RESOLUTION same-turn variant, and
       - the generic COMPLETION handshake.
     """
@@ -461,9 +468,13 @@ class TestResolveProposalRequiresCausalAbsence:
         # The KB-resolution checklist must list causal_absence as a required
         # emission alongside the resolved proposal — sourced from the output
         # the user SUBMITTED, never their "it worked" (#1930).
-        variant_start = TREATMENT_INSTRUCTIONS.index("KB-RESOLUTION VARIANT")
-        variant_end = TREATMENT_INSTRUCTIONS.index("CRITICAL DIRECT-COPY RULE")
-        variant = TREATMENT_INSTRUCTIONS[variant_start:variant_end]
+        variant_start = treatment_instructions(DEFAULT_GIVEN).index(
+            "KB-RESOLUTION VARIANT"
+        )
+        variant_end = treatment_instructions(DEFAULT_GIVEN).index(
+            "CRITICAL DIRECT-COPY RULE"
+        )
+        variant = treatment_instructions(DEFAULT_GIVEN)[variant_start:variant_end]
         assert "causal_absence_evidence" in variant, (
             "KB-RESOLUTION VARIANT proposes resolved but no longer requires "
             "causal_absence_evidence — the engine will bounce the transition."
@@ -477,12 +488,12 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a
         # causal_absence emission.
-        assert _RESOLVED_RULE_HEADING in TREATMENT_INSTRUCTIONS, (
+        assert _RESOLVED_RULE_HEADING in treatment_instructions(DEFAULT_GIVEN), (
             "COMPLETION lost the governing rule that every resolved proposal "
             "must emit causal_absence_evidence and symptom_absence_evidence."
         )
-        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
+        rule_start = treatment_instructions(DEFAULT_GIVEN).index(_RESOLVED_RULE_HEADING)
+        rule = treatment_instructions(DEFAULT_GIVEN)[rule_start : rule_start + 1200]
         assert "causal_absence_evidence" in rule
         # #1906: the cause row alone is half of gone => gone.
         assert "symptom_absence_evidence" in rule
@@ -491,9 +502,11 @@ class TestResolveProposalRequiresCausalAbsence:
         # #1930: evidence is submitted data. An out-of-band fix is still valid,
         # but the user's report of it is a claim: the model names the check's
         # output for FaultMaven to ask for, instead of recording their words.
-        assert "user_description" not in TREATMENT_INSTRUCTIONS
-        types_start = TREATMENT_INSTRUCTIONS.index("**EVIDENCE TYPES FOR THIS STAGE:**")
-        types = TREATMENT_INSTRUCTIONS[types_start : types_start + 1500]
+        assert "user_description" not in treatment_instructions(DEFAULT_GIVEN)
+        types_start = treatment_instructions(DEFAULT_GIVEN).index(
+            "**EVIDENCE TYPES FOR THIS STAGE:**"
+        )
+        types = treatment_instructions(DEFAULT_GIVEN)[types_start : types_start + 1500]
         assert "the user's report of it is a claim" in types
         assert (
             "system_state_report" in types
@@ -502,8 +515,8 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_mitigation_proposes_closed_not_resolved(self):
         # The same rule must route a mitigation to symptom_absence + closed,
         # so the agent only proposes the transition the case can complete.
-        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
+        rule_start = treatment_instructions(DEFAULT_GIVEN).index(_RESOLVED_RULE_HEADING)
+        rule = treatment_instructions(DEFAULT_GIVEN)[rule_start : rule_start + 2200]
         assert "symptom_absence_evidence" in rule
         assert "closed" in rule, (
             "A mitigation must propose closed (not resolved); the rule no "
@@ -515,8 +528,8 @@ class TestResolveProposalRequiresCausalAbsence:
         # and must never be fabricated to force a resolve. Locks in the
         # "provoked, not solicited" semantics: applied != verified, and an
         # unverified resolve request is solicited (NEEDS_INFO), not manufactured.
-        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
+        rule_start = treatment_instructions(DEFAULT_GIVEN).index(_RESOLVED_RULE_HEADING)
+        rule = treatment_instructions(DEFAULT_GIVEN)[rule_start : rule_start + 1200]
         assert "solution_accepted" in rule and "stay in TREATMENT" in rule, (
             "The rule must distinguish solution-applied (solution_accepted) from "
             "verified — the agent must not emit causal_absence at application."

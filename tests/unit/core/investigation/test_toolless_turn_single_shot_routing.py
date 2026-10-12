@@ -198,8 +198,12 @@ def _tool_engine() -> MilestoneEngine:
     repo = MagicMock()
     repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
+    # One given tool, so a tool-loop turn's given set is not empty (#1939):
+    # the set is read off the schemas the loop sends.
+    search_file = MagicMock()
+    search_file.get_schema.return_value = {"name": "search_file", "parameters": {}}
     tools = MagicMock()
-    tools.get_all_tools.return_value = []
+    tools.get_all_tools.return_value = [search_file]
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=tools)
     engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis(

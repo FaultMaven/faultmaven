@@ -36,6 +36,7 @@ from faultmaven.core.investigation.prompts.templates import (
     inquiry,
     investigation,
     terminal,
+    tool_text,
     treatment,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
@@ -62,6 +63,7 @@ _SUBMODULES = (
     inquiry,
     investigation,
     terminal,
+    tool_text,
     treatment,
 )
 
@@ -78,6 +80,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "fence_preamble",
         "problem_summary",
         "system_feedback",
+        "tools_this_turn",
         "user_message",
     },
     "FALLBACK_INVESTIGATION_TEMPLATE": {
@@ -89,6 +92,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "problem_summary",
         "stage",
         "system_feedback",
+        "tools_this_turn",
         "user_message",
     },
     "FALLBACK_TERMINAL_TEMPLATE": {
@@ -96,6 +100,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "problem_summary",
         "resolution_summary",
         "state",
+        "tools_this_turn",
         "user_message",
     },
     "INQUIRY_TEMPLATE": {
@@ -103,19 +108,26 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "conversation_history",
         "core_context",
         "evidence",
+        "reading_uploaded_files",
         "identity",
         "inquiry_state",
+        "kb_check",
+        "knowledge_help",
         "page_capture_hint",
         "system_feedback",
+        "tools_this_turn",
         "user_message",
     },
     "TERMINAL_TEMPLATE": {
         "conversation_history",
         "core_context",
         "identity",
+        "runbook_request_rule",
         "state_lower",
         "state_upper",
         "summary_kind",
+        "summary_request_rule",
+        "tools_this_turn",
         "user_message",
     },
     "INVESTIGATION_BASE": {
@@ -128,6 +140,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "evidence_grounding",
         "evidence_needs",
         "exclusions",
+        "fetch_next_data_point",
         "focus_emphasis",
         "hypotheses",
         "identity",
@@ -137,6 +150,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "page_capture_hint",
         "pending_action",
         "system_feedback",
+        "tools_this_turn",
         "user_message",
         "working_conclusion",
     },

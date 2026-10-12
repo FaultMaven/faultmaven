@@ -1,7 +1,96 @@
+import dataclasses
+
 from .blocks import _ADVISOR_ROLE_CONSTRAINT, _PROMPT_FENCE_RULE
+
+
+@dataclasses.dataclass(frozen=True)
+class TerminalAffordances:
+    """What a terminal Q&A turn offers below its reply (#1955).
+
+    The engine builds it from the suggestion list it attaches to that same
+    reply (``terminal_replies.terminal_affordances``), so the prompt points at
+    a suggestion only when the suggestion is on screen. ``runbook_draft_exists``
+    is the one fact the runbook rule needs when no runbook is offered: it says
+    where the existing draft is instead.
+    """
+
+    summary_regeneration: bool = False
+    runbook_generation: bool = False
+    runbook_draft_exists: bool = False
+
+
+#: A terminal turn that offers nothing.
+NO_TERMINAL_AFFORDANCES = TerminalAffordances()
+
+
+def terminal_summary_rule(summary_kind: str, offers: TerminalAffordances) -> str:
+    """``{summary_request_rule}``: the redirect for a recap-shaped request."""
+    rule = (
+        'If the user asks for a summary, recap, rewrite, or "give me an overview" of the\n'
+        "case in any phrasing, do NOT generate one. Instead respond with a brief redirect\n"
+        "that names the right place to find the existing summary"
+    )
+    example = (
+        f'"The {summary_kind} summary is shown above in this chat and is also in the\n'
+        "**Report** tab of the case."
+    )
+    if not offers.summary_regeneration:
+        return rule + ". For example:\n" + example + '"'
+    return (
+        rule + " AND the right action to\n"
+        "re-create it. For example:\n"
+        + example
+        + " To re-create it, use the **Regenerate** suggestion\n"
+        'below."'
+    )
+
+
+#: The runbook rule while the "Generate a runbook" suggestion is offered.
+_RUNBOOK_RULE_OFFERED = """\
+Runbook creation is a persisted side effect — it writes a draft to the case
+creator's personal **Knowledge Base > Drafts** in the Dashboard. Persistence is reserved for the
+"Generate a runbook from this resolved case" suggestion shown below your reply
+(RESOLVED cases only — runbooks require a confirmed root cause + verified
+solution). Typed requests must NOT generate a runbook inline, because inline
+prose isn't saved anywhere — the user won't be able to find or edit it later.
+
+If the user asks to create, generate, write, or "give me" a runbook in any
+phrasing, do NOT produce runbook content in your reply. Instead redirect:
+"To save a runbook for this case, use the **Generate a runbook from this
+resolved case** suggestion below — that creates a draft in the case
+creator's personal **Knowledge Base > Drafts** in the Dashboard.\""""
+
+#: The runbook rule once a draft exists for the case: the suggestion is gone,
+#: and the draft is where a runbook for it is edited. Worded as the draft
+#: notices word it (#1947, #1951): the creator's, for every reader.
+_RUNBOOK_RULE_DRAFT_EXISTS = """\
+A runbook for this case already exists in the case creator's
+**Knowledge Base** in the Dashboard (under Drafts until it is verified).
+If the user asks for a runbook, point them there to edit it; do not
+produce runbook content inline."""
+
+#: The runbook rule when none can be generated here: a CLOSED case, or a
+#: RESOLVED one whose cause or solution does not make a runbook.
+_RUNBOOK_RULE_NOT_OFFERABLE = """\
+No runbook can be generated from this case here: a runbook needs a RESOLVED
+case with a confirmed root cause and a verified solution. If the user asks
+for one, say so in one sentence and answer what it would contain in prose,
+without formatting the reply as a runbook."""
+
+
+def terminal_runbook_rule(offers: TerminalAffordances) -> str:
+    """``{runbook_request_rule}``: what a typed runbook request is answered with."""
+    if offers.runbook_generation:
+        return _RUNBOOK_RULE_OFFERED
+    if offers.runbook_draft_exists:
+        return _RUNBOOK_RULE_DRAFT_EXISTS
+    return _RUNBOOK_RULE_NOT_OFFERABLE
+
 
 TERMINAL_TEMPLATE = (
     """You are FaultMaven. This investigation is complete.
+
+{tools_this_turn}
 
 STATE: {state_upper}
 {identity}
@@ -48,31 +137,14 @@ is rendered above in this chat AND is available in the **Report** tab of the cas
 in the Dashboard. There is exactly ONE summary per case. Do NOT produce a second,
 parallel summary in your reply.
 
-If the user asks for a summary, recap, rewrite, or "give me an overview" of the
-case in any phrasing, do NOT generate one. Instead respond with a brief redirect
-that names the right place to find the existing summary AND the right action to
-re-create it. For example:
-"The {summary_kind} summary is shown above in this chat and is also in the
-**Report** tab of the case. To re-create it, use the **Regenerate** suggestion
-below."
+{summary_request_rule}
 
 Specific questions about parts of the case ("why did we conclude X?", "what was
 the evidence for Y?") are normal Q&A — answer them. The above guidance is only
 about recap-shaped requests for a competing whole-case summary.
 
 RUNBOOK REQUESTS:
-Runbook creation is a persisted side effect — it writes a draft to the case
-creator's personal **Knowledge Base > Drafts** in the Dashboard. Persistence is reserved for the
-"Generate a runbook from this resolved case" suggestion shown below your reply
-(RESOLVED cases only — runbooks require a confirmed root cause + verified
-solution). Typed requests must NOT generate a runbook inline, because inline
-prose isn't saved anywhere — the user won't be able to find or edit it later.
-
-If the user asks to create, generate, write, or "give me" a runbook in any
-phrasing, do NOT produce runbook content in your reply. Instead redirect:
-"To save a runbook for this case, use the **Generate a runbook from this
-resolved case** suggestion below — that creates a draft in the case
-creator's personal **Knowledge Base > Drafts** in the Dashboard."
+{runbook_request_rule}
 
 Specific questions about what a runbook would contain ("what steps should be in
 a runbook for this?", "which diagnostic commands would I include?") are normal

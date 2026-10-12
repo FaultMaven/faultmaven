@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.case import Case
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 # ============================================================
 # Helpers
@@ -437,7 +438,7 @@ class TestTruncation:
             extract=long_content,
         )
         case = _make_case_with_evidence([ev])
-        result = _build_evidence_context(case)
+        result = _build_evidence_context(case, given_tools=DEFAULT_GIVEN)
 
         assert "[TRUNCATED:" in result
         assert "more characters" in result
@@ -2249,7 +2250,7 @@ def test_da_index_stub_elides_historical_extract_keeps_current_turn():
         processing_mode="directed_analysis",
         provider_name=PROVIDER,
         model_name=MODEL,
-        tools_available=True,
+        given_tools=DEFAULT_GIVEN,
     )
     assert "HISTORICAL_EXTRACT_BODY" not in on, "historical extract body must be elided"
     assert 'elided="directed_analysis"' in on, "elision must be marked (INV-4)"
@@ -2266,7 +2267,7 @@ def test_da_index_stub_elides_historical_extract_keeps_current_turn():
         processing_mode="directed_analysis",
         provider_name=PROVIDER,
         model_name=MODEL,
-        tools_available=False,
+        given_tools=NO_TOOLS,
     )
     assert (
         "HISTORICAL_EXTRACT_BODY" in toolless
@@ -2289,7 +2290,7 @@ def test_da_index_stub_off_in_triage_mode():
         processing_mode="triage",
         provider_name="openai",
         model_name="gpt-4",
-        tools_available=True,
+        given_tools=DEFAULT_GIVEN,
     )
     assert "TRIAGE_EXTRACT_BODY" in out
 

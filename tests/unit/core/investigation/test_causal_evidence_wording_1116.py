@@ -19,15 +19,16 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.core.investigation.prompts.templates.blocks import (
-    _EVIDENCE_GROUNDING_BLOCK,
+    evidence_grounding_block,
 )
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
-    _RCA_DIAGNOSIS_BLOCK,
+    rca_diagnosis_block,
 )
 from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
     SCHEMA_INSTRUCTIONS,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 @pytest.mark.unit
@@ -51,8 +52,12 @@ class TestMeasuredStateIsCausal:
 
     def test_diagnosis_stage_evidence_types_say_the_same(self):
         """The stage block's shorter list must not contradict the tree."""
-        assert "a measured state that IS the mechanism" in _RCA_DIAGNOSIS_BLOCK
-        assert "(deploy logs, config diffs, code changes)\n" not in _RCA_DIAGNOSIS_BLOCK
+        assert "a measured state that IS the mechanism" in rca_diagnosis_block(
+            DEFAULT_GIVEN
+        )
+        assert "(deploy logs, config diffs, code changes)\n" not in rca_diagnosis_block(
+            DEFAULT_GIVEN
+        )
 
 
 @pytest.mark.unit
@@ -83,10 +88,12 @@ class TestInternalIdProhibitionCoversHypothesisIds:
     at the user (#666 class)."""
 
     def test_grounding_rule_names_all_three_id_kinds(self):
-        assert "NEVER cite internal IDs in agent_response" in _EVIDENCE_GROUNDING_BLOCK
-        assert '"ev_a1b2c3d4e5f6"' in _EVIDENCE_GROUNDING_BLOCK
-        assert '"hyp_..."' in _EVIDENCE_GROUNDING_BLOCK
-        assert '"cn_..."' in _EVIDENCE_GROUNDING_BLOCK
+        assert "NEVER cite internal IDs in agent_response" in evidence_grounding_block(
+            DEFAULT_GIVEN
+        )
+        assert '"ev_a1b2c3d4e5f6"' in evidence_grounding_block(DEFAULT_GIVEN)
+        assert '"hyp_..."' in evidence_grounding_block(DEFAULT_GIVEN)
+        assert '"cn_..."' in evidence_grounding_block(DEFAULT_GIVEN)
 
     def test_schema_instructions_extend_the_rule(self):
         assert "hyp_/cn_ id" in SCHEMA_INSTRUCTIONS

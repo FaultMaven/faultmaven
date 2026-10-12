@@ -11,6 +11,18 @@ from .blocks import (
     _PROMPT_FENCE_RULE,
     _READING_DISCIPLINE_BLOCK,
 )
+from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, present
+
+
+def next_data_point_fetch(given: GivenTools) -> str:
+    """``{fetch_next_data_point}``: where the next data point comes from."""
+    searchers = present(given, *EVIDENCE_SEARCH_TOOLS)
+    if not searchers:
+        return "Ask the user for it"
+    return (
+        f"Fetch it via {' / '.join(searchers)} if reachable;\n  otherwise ask the user"
+    )
+
 
 INVESTIGATION_BASE = (
     # DURABLE PREFIX FIRST, PER-TURN TAIL LAST (#613). A provider prompt cache
@@ -20,12 +32,17 @@ INVESTIGATION_BASE = (
     # token, no case data. {adaptive_instructions} changes with the stage and
     # the mode, so it is the LAST thing in the prefix. The DIAGNOSIS focus
     # emphasis moves with the milestones and the wall clock, so it opens the
-    # tail as {focus_emphasis}. Everything that changes per turn sits below
-    # the boundary, in its old relative order, and the immutable
+    # tail as {focus_emphasis}. {tools_this_turn} and {fetch_next_data_point}
+    # vary only with the turn's given tool set, which is constant per
+    # deployment and route and flips at most once a case (#1939). Everything
+    # that changes per turn sits below the boundary, in its old relative
+    # order, and the immutable
     # <security_constraints> and the anti-padding closer END the prompt, after
     # the user's message, so they are read last. Pinned by
     # test_investigation_prefix_613.py.
     """You are FaultMaven, the Lead Investigator for this case.
+
+{tools_this_turn}
 
 """
     # Before the first fenced block, not after the last one — see the note in
@@ -251,8 +268,7 @@ KEY PRINCIPLES:
   if this turn introduces a new symptom, a new hypothesis, fresh evidence, or
   a question that needs case-specific data, identify one specific piece of
   data that would verify a pending milestone or test your strongest active
-  hypothesis. Fetch it via search_file / case_evidence_search if reachable;
-  otherwise ask the user with specifics (which file, time range, command
+  hypothesis. {fetch_next_data_point} with specifics (which file, time range, command
   output) — never a vague "share more logs."
 - ONE PRIMARY ASK: one data request per turn. When several would help, pick the
   most decisive and explain why. Stack a second only when the items are genuinely

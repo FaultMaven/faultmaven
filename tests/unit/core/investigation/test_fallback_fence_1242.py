@@ -91,6 +91,7 @@ from faultmaven.modules.case.domain.models.documentation import JournalEntry
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.unit.core.investigation.given_tools import NO_TOOLS
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -946,6 +947,7 @@ class TestTheCompactRuleStaysCompact:
             _fill(_CJK, 4000),
             None,
             None,
+            NO_TOOLS,
         )
         assert prompt.startswith("You are FaultMaven investigating an issue.")
         assert _fallback_tokens(prompt) > _FALLBACK_MAX_TOKENS

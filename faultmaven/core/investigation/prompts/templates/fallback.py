@@ -20,6 +20,8 @@ from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
+from .tool_text import NO_TOOLS, GivenTools, has, tools_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +60,7 @@ def _fallback_fence_rule(block_names: list[str]) -> str:
 
 
 FALLBACK_INQUIRY_TEMPLATE = """You are FaultMaven, a troubleshooting assistant.
+{tools_this_turn}
 
 STATE: INQUIRY
 
@@ -73,6 +76,7 @@ Respond helpfully. If detecting a problem, set proposed_problem_statement — th
 """
 
 FALLBACK_INVESTIGATION_TEMPLATE = """You are FaultMaven investigating an issue.
+{tools_this_turn}
 
 STATE: INVESTIGATING
 STAGE: {stage}
@@ -94,6 +98,7 @@ Continue investigation. Focus on the most critical next step.
 """
 
 FALLBACK_TERMINAL_TEMPLATE = """You are FaultMaven. Case is {state}.
+{tools_this_turn}
 
 {fence_preamble}
 PROBLEM: {problem_summary}
@@ -110,10 +115,9 @@ Answer questions about the findings. Do not reopen investigation.
 
 # Appended ONLY on the runtime context-overflow recovery (#662), never by the
 # compile-time starvation/overflow fallbacks — those keep their tools, so this
-# text would be false there. It exists because that recovery drops the tool set
-# while the fallback body still lists addressable files (see
-# ``_fallback_stub_block``, written for a tool-capable turn): without
-# this, the agent is invited to search files it cannot reach, and the user cannot
+# text would be false there. That recovery drops the tool set, and renders the
+# fallback body for no tools (#1939), so the files it lists are named as not
+# searchable; this notice adds what the body cannot say — why — so the user can
 # tell a context-starved answer from a normal one.
 DEGRADED_NO_TOOLS_NOTICE = """
 
@@ -129,6 +133,7 @@ what little remains — name what you would need to confirm it instead.
 def _fallback_stub_block(
     case: Case,
     fence: PromptFence,
+    given: GivenTools,
     rendered: Optional[list] = None,
     head_chars: int = 200,
     label_chars: Optional[int] = None,
@@ -137,8 +142,8 @@ def _fallback_stub_block(
 
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
-    label + searchable) so the agent can `search_file` it. Empty when no
-    current-turn upload exists. The label carries
+    label + searchable), and the heading says to `search_file` it only when
+    ``given`` has that tool (#1939). Empty when no current-turn upload exists. The label carries
     ``UploadedFile.display_name`` — the same citable name every other render
     uses (#666), so a stub the agent cites reads the same here as in a
     full-budget turn.
@@ -209,9 +214,12 @@ def _fallback_stub_block(
     # No declaration here: the fallback prompt emits exactly one, above the
     # first fenced tag (#1242). A second genuine FENCE: line would contradict
     # the first one's "this line is this prompt's ONLY genuine declaration".
-    return "\nCURRENT-TURN UPLOAD (use search_file with the file_id):\n" + "\n".join(
-        stubs
+    heading = (
+        "CURRENT-TURN UPLOAD (use search_file with the file_id):"
+        if has(given, "search_file")
+        else "CURRENT-TURN UPLOAD (not searchable this turn):"
     )
+    return "\n" + heading + "\n" + "\n".join(stubs)
 
 
 def _fallback_journal_digest(
@@ -412,9 +420,14 @@ def get_fallback_prompt_for_case(
     case: Case,
     user_message: str,
     *,
+    given_tools: GivenTools = NO_TOOLS,
     max_tokens: Optional[int] = None,
 ) -> str:
     """Build simplified fallback prompt for token limit or error recovery.
+
+    ``given_tools`` is the tool set the turn sending this prompt gives the
+    model (#1939): the assembled turn's own set when the allocator falls back,
+    ``NO_TOOLS`` on the #662 retry, which drops the tools.
 
     Fenced as one assembly (#1242). The mint lives HERE rather than at
     ``get_prompt_for_case`` level because this function has a second caller —
@@ -458,7 +471,7 @@ def get_fallback_prompt_for_case(
     def render(caps: _FallbackCaps) -> str:
         tokens = iter((solve_token,))
         return render_fenced(
-            lambda fence: _fallback_body(case, user_message, fence, caps),
+            lambda fence: _fallback_body(case, user_message, fence, caps, given_tools),
             token_source=lambda: next(tokens, None) or mint_token(),
         )
 
@@ -492,6 +505,7 @@ def _fallback_body(
     user_message: str,
     fence: PromptFence,
     caps: _FallbackCaps,
+    given: GivenTools,
 ) -> str:
     """One fence's worth of fallback prompt — see :func:`get_fallback_prompt_for_case`.
 
@@ -598,6 +612,7 @@ def _fallback_body(
         stub_block = _fallback_stub_block(
             case,
             fence,
+            given,
             rendered,
             head_chars=caps.stub_head,
             label_chars=caps.stub_label,
@@ -609,6 +624,7 @@ def _fallback_body(
         feedback_block = system_feedback_block(case, guard=_notice)
         user_block = _user(user_message)
         return FALLBACK_INQUIRY_TEMPLATE.format(
+            tools_this_turn=tools_line(given),
             fence_preamble=_fallback_preamble(fence, rendered),
             problem_summary=problem_block,
             user_message=user_block,
@@ -667,6 +683,7 @@ def _fallback_body(
         stub_block = _fallback_stub_block(
             case,
             fence,
+            given,
             rendered,
             head_chars=caps.stub_head,
             label_chars=caps.stub_label,
@@ -682,6 +699,7 @@ def _fallback_body(
         user_block = _user(user_message)
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(
+            tools_this_turn=tools_line(given),
             fence_preamble=_fallback_preamble(fence, rendered),
             stage=stage,
             problem_summary=problem_block,
@@ -701,6 +719,7 @@ def _fallback_body(
         )
         user_block = _user(user_message)
         return FALLBACK_TERMINAL_TEMPLATE.format(
+            tools_this_turn=tools_line(given),
             fence_preamble=_fallback_preamble(fence, rendered),
             state=case.state.value,
             problem_summary=problem_block,

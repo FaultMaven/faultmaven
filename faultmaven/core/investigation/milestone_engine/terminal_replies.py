@@ -1,4 +1,7 @@
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+from faultmaven.core.investigation.prompts.templates.terminal import (
+    TerminalAffordances,
+)
 from faultmaven.modules.case.contracts import CaseState
 
 from .cause_state import (
@@ -360,3 +363,28 @@ def _closed_suggestions(case, remaining: int) -> list:
             ),
         },
     ]
+
+
+def terminal_affordances(
+    suggestions: list, *, runbook_draft_exists: bool
+) -> TerminalAffordances:
+    """What the terminal prompt may point at, read off ``suggestions`` (#1955).
+
+    ``suggestions`` is the list the terminal Q&A reply is given, so this is
+    the ONE predicate for "is the chip on screen": the prompt says "use the
+    suggestion below" exactly when the suggestion is below. Nothing here
+    re-derives the offer gates (``runbook_conversion_ready``, the regen cap,
+    the draft lookup) — they already decided the list.
+    """
+    payloads = {s.get("payload") for s in suggestions}
+    return TerminalAffordances(
+        summary_regeneration=bool(
+            payloads
+            & {
+                REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+                REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
+            }
+        ),
+        runbook_generation=GENERATE_RUNBOOK_PAYLOAD in payloads,
+        runbook_draft_exists=runbook_draft_exists,
+    )

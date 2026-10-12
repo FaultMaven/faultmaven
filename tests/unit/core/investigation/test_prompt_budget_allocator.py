@@ -32,6 +32,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 )
 from faultmaven.exceptions import LLMException  # noqa: E402
 from faultmaven.modules.case.domain.models.documentation import JournalEntry
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 PROVIDER, MODEL = "openai", "gpt-4"
 FILE_ID = "file_aabb12345678"
@@ -477,7 +478,7 @@ def _entity_highlights_block() -> str:
             ),
         ),
     ]
-    return _render_entity_highlights(groups, PromptFence("deadbeef"))
+    return _render_entity_highlights(groups, PromptFence("deadbeef"), DEFAULT_GIVEN)
 
 
 def test_a_fenced_section_is_never_silently_empty_at_any_allotment():
@@ -779,10 +780,18 @@ def test_spend_weighted_tokens_downweights_cache_reads():
     assert tr.spend_weighted_tokens < tr.total_tokens
 
 
-def test_tools_effectively_available_gates_on_capability():
+def test_given_tools_gates_on_capability():
+    """#1939: the turn's given set is the registry's names when the resolved
+    provider can call tools, and empty when it cannot (or nothing is
+    registered) — the Layer-1 pre-check would take the non-tool path."""
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    def registry(*names):
+        tools = []
+        for name in names:
+            tool = SimpleNamespace(get_schema=lambda n=name: {"name": n})
+            tools.append(tool)
+        return SimpleNamespace(get_all_tools=lambda: tools)
 
     def eng(tools, provider):
         ns = SimpleNamespace(
@@ -793,9 +802,12 @@ def test_tools_effectively_available_gates_on_capability():
                 da_model=None,
             )
         )
-        # _tools_effectively_available delegates to this method on self.
+        # given_tools delegates to these methods on self.
         ns._da_provider_supports_tools = (
             lambda: StructuredOutputGenerator._da_provider_supports_tools(ns)
+        )
+        ns.build_da_tool_schemas = (
+            lambda: StructuredOutputGenerator.build_da_tool_schemas(ns)
         )
         return ns
 
@@ -803,15 +815,16 @@ def test_tools_effectively_available_gates_on_capability():
     incapable = SimpleNamespace(supports_tool_calling=lambda m: False)
     no_attr = SimpleNamespace()  # missing capability info → assume capable
 
-    f = StructuredOutputGenerator.tools_effectively_available
-    assert f(eng(object(), capable)) is True
-    assert f(eng(None, capable)) is False  # no tools registered
-    assert f(eng(object(), incapable)) is False  # tools present but incapable
-    assert f(eng(object(), no_attr)) is True  # unknown capability → capable
+    tools = registry("search_file", "kb_qa")
+    f = StructuredOutputGenerator.given_tools
+    assert f(eng(tools, capable)) == {"search_file", "kb_qa"}
+    assert f(eng(None, capable)) == frozenset()  # no tools registered
+    assert f(eng(tools, incapable)) == frozenset()  # tools present but incapable
+    assert f(eng(tools, no_attr)) == {"search_file", "kb_qa"}  # unknown → capable
     # The shared helper agrees with the gate's capability half.
     g = StructuredOutputGenerator._da_provider_supports_tools
-    assert g(eng(object(), incapable)) is False
-    assert g(eng(object(), capable)) is True
+    assert g(eng(tools, incapable)) is False
+    assert g(eng(tools, capable)) is True
 
 
 @pytest.mark.parametrize(

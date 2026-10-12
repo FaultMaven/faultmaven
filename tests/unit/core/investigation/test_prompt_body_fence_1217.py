@@ -68,6 +68,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -81,7 +82,7 @@ def _fallback_current_turn_evidence(case):
     itself, so they give it a fence of its own — the same shape it had before,
     with the same collision checks.
     """
-    return render_fenced(lambda f: _fallback_stub_block(case, f))
+    return render_fenced(lambda f: _fallback_stub_block(case, f, DEFAULT_GIVEN))
 
 
 FILE_ID = "file_0e0e0e0e0e05"

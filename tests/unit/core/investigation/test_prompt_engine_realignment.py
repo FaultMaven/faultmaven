@@ -30,7 +30,7 @@ from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK,
 )
 from faultmaven.core.investigation.prompts.templates.treatment import (
-    TREATMENT_INSTRUCTIONS,
+    treatment_instructions,
 )
 from faultmaven.core.investigation.schemas import (
     MilestoneUpdates,
@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     RootCauseConclusion,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
@@ -84,7 +85,7 @@ def test_diagnosis_prompt_does_not_teach_setting_root_cause_identified():
         _DIAGNOSIS_ZONES_PREAMBLE,
     ):
         assert "root_cause_identified" not in block
-    assert "root_cause_identified=True" not in TREATMENT_INSTRUCTIONS
+    assert "root_cause_identified=True" not in treatment_instructions(DEFAULT_GIVEN)
 
 
 def test_rcc_schemas_carry_names_root_node_id():
@@ -92,7 +93,7 @@ def test_rcc_schemas_carry_names_root_node_id():
     authoritative attribution hint, and TREATMENT teaches it."""
     assert "names_root_node_id" in RootCauseConclusionUpdate.model_fields
     assert "names_root_node_id" in RootCauseConclusion.model_fields
-    assert "names_root_node_id" in TREATMENT_INSTRUCTIONS
+    assert "names_root_node_id" in treatment_instructions(DEFAULT_GIVEN)
 
 
 # ---------------------------------------------------------------------------
