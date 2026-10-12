@@ -13,12 +13,12 @@ regression anchor 2-3x the measured cost instead.
 """
 
 import os
-import time
 from unittest.mock import patch
 
 import pytest
 
 from tests.wallclock import assert_latency_within
+from tests.wallclock.sampling import fastest_of_windows
 
 from .budgets import NOOP_TRACK_CALL, PII_PASSTHROUGH_CALL
 
@@ -27,14 +27,14 @@ SAMPLES = 5
 
 
 def _fastest_per_call(call) -> float:
+    """Seconds per call: the fastest of ``SAMPLES`` windows of ``CALLS``."""
     call()  # warm-up
-    best = float("inf")
-    for _ in range(SAMPLES):
-        started = time.perf_counter()
+
+    def calls():
         for _ in range(CALLS):
             call()
-        best = min(best, time.perf_counter() - started)
-    return best / CALLS
+
+    return fastest_of_windows(lambda window: window.seconds(calls), SAMPLES) / CALLS
 
 
 @pytest.mark.performance

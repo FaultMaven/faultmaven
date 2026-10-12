@@ -12,9 +12,9 @@ statistic per mode, because the two modes ask two questions (#1902):
   (Standalone and Cloud) run this beside the whole suite under xdist, where a
   neighbour's fsync puts seconds into a p99 that the CPU calibration cannot
   see (#1902's three red runs); the median does not move for that. It is a
-  gross-regression detector only: a commit must get about 12x slower on the
-  development box, about 6x on CI, to trip it, so it catches an O(n^2) path
-  or an N+1, not a commit doing twice the work (``budgets.py``, the row).
+  gross-regression detector only: the anchor sits 2.5x above the CI p95 of
+  the normalised median (#1910), so it catches an O(n^2) path or an N+1, not
+  a commit doing twice the work (``budgets.py``, the row).
 * the ``FM_BENCHMARK_ABSOLUTE`` nightly asks "does the commit fit its
   reserve?", and judges the **p99** against the reserve itself. That job runs
   ``tests/performance/`` alone, without xdist, so the tail is the commit's.

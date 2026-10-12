@@ -655,7 +655,7 @@ class TestTheTurnCommitJudge:
         assert "p99" in str(excinfo.value)
 
     def test_a_pull_request_does_not_judge_the_tail(self, monkeypatch):
-        # Calibration pinned at 1.0, so 4.0 s against the 0.25 s anchor would
+        # Calibration pinned at 1.0, so 4.0 s against the 0.11 s anchor would
         # fail if the tail were judged here: this is what kills a hard-coded 99.
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
         self._judge()(self._STALLED_TAIL)
@@ -1370,7 +1370,8 @@ def _call_graph(directories) -> Tuple[dict, list]:
     definitions: dict = {}
     tests: list = []
     for directory in directories:
-        for path in _modules_in(directory):
+        paths = _modules_in(directory) if directory.is_dir() else [directory]
+        for path in paths:
             tree = ast.parse(path.read_text(), filename=_key(path))
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1396,13 +1397,16 @@ def _call_graph(directories) -> Tuple[dict, list]:
     return definitions, tests
 
 
-def _reaches(definitions, start, targets, on_ambiguous: bool) -> bool:
+def _reaches(definitions, start, targets, on_ambiguous: bool, stop=None) -> bool:
     """Does ``start`` reach any of ``targets`` through the call graph?
 
     ``on_ambiguous`` is the answer when a called name is defined in more
-    than one scanned module and cannot be resolved. Both callers pass the
+    than one scanned module and cannot be resolved. Every caller passes the
     value that produces MORE findings, so an unresolvable name never
     silences the guard.
+
+    ``stop(module, name)``, when given, names resolved functions the search
+    does not descend into: a route THROUGH them does not count.
     """
     by_name: dict = {}
     for module, name in definitions:
@@ -1418,11 +1422,15 @@ def _reaches(definitions, start, targets, on_ambiguous: bool) -> bool:
             if called in targets:
                 return True
             if (current[0], called) in definitions:
-                stack.append((current[0], called))
+                resolved = (current[0], called)
             elif len(by_name.get(called, [])) == 1:
-                stack.append((by_name[called][0], called))
+                resolved = (by_name[called][0], called)
             elif called in by_name:
                 return on_ambiguous
+            else:
+                continue
+            if stop is None or not stop(*resolved):
+                stack.append(resolved)
     return False
 
 
@@ -1487,6 +1495,220 @@ class TestEveryMeasurementIsJudged:
         }
         dead = sorted(key for key in UNJUDGED_TIMED_TESTS if key not in live)
         assert not dead, dead
+
+
+# ------------------------------------------ no statistic is one window (#1916)
+#
+# Both required gates run ``tests/performance/`` under xdist beside the whole
+# suite, and one timed window cannot tell a preempted runner from a
+# regression: #1916 failed a row on ONE ``asyncio.gather`` that stalled for
+# 1.2 s. So every judged statistic there is taken over several windows by
+# ``tests/wallclock/sampling.py``, which hands each window its clock and
+# refuses fewer windows than survive one stall. The rule below makes that
+# checkable from the call graph:
+#
+# * a judged test under ``tests/performance/`` reads no clock except THROUGH
+#   the sampler (its ``Window``), so a timed region outside a window is a
+#   finding wherever it is written;
+# * and it reaches one of the sampler's aggregators, so a statistic is never
+#   one window's figure.
+#
+# A ``Window`` exists only inside an aggregator, and the aggregator refuses
+# ``windows=1``, so a row cannot be turned back into one window without
+# tripping one of the two.
+
+SAMPLING_MODULE = "tests/wallclock/sampling.py"
+WINDOW_AGGREGATORS = frozenset(
+    {"median_of_windows", "median_of_windows_async", "fastest_of_windows"}
+)
+
+#: The one per-commit timer outside the sampler, scanned so the entry below
+#: is checked for being live rather than trusted.
+TURN_COMMIT_SAMPLES = REPO_ROOT / "tests" / "turn_commit_latency.py"
+
+#: Judged tests whose statistic is an order statistic over MANY samples rather
+#: than a statistic over windows, with the reason it survives one stall.
+ORDER_STATISTIC_TESTS = {
+    (
+        f"{_PERF}/test_turn_commit_latency.py",
+        "test_the_turn_commit_fits_its_reserve",
+    ): "the p50 (per pull request) or p99 (nightly) of 180 commits, each "
+    "timed by tests/turn_commit_latency.py: one stalled commit moves the p50 "
+    "by one rank (#1902)",
+}
+
+
+def _in_the_sampler(module: str, name: str) -> bool:
+    """Where a clock reading is a window's, or the calibration's: not a
+    finding. The helpers reach the calibration's own clock."""
+    return module == SAMPLING_MODULE or name in HELPER_FUNCTIONS
+
+
+def _single_window_findings(definitions, tests) -> List[str]:
+    """Every judged ``tests/performance/`` test that judges one window."""
+    findings = []
+    for _path, name, module in tests:
+        key = (module, name)
+        if not module.startswith(f"{_PERF}/") or key in UNJUDGED_TIMED_TESTS:
+            continue
+        # An unresolvable name counts as judged here: that checks MORE tests.
+        if not _reaches(definitions, key, HELPER_FUNCTIONS, True):
+            continue  # judges nothing: TestEveryMeasurementIsJudged's question
+        if key in ORDER_STATISTIC_TESTS:
+            continue
+        if _reaches(definitions, key, CLOCK_FUNCTIONS, True, stop=_in_the_sampler):
+            findings.append(f"{module}::{name} reads a clock outside {SAMPLING_MODULE}")
+        if not _reaches(definitions, key, WINDOW_AGGREGATORS, False):
+            findings.append(
+                f"{module}::{name} judges a statistic no window aggregator took"
+            )
+    return findings
+
+
+def _performance_graph():
+    return _call_graph((PERFORMANCE_DIR, WALLCLOCK_DIR, TURN_COMMIT_SAMPLES))
+
+
+class TestEveryStatisticIsWindowed:
+    def test_no_judged_statistic_is_one_window(self):
+        definitions, tests = _performance_graph()
+        findings = _single_window_findings(definitions, tests)
+        assert not findings, (
+            "a judged statistic in tests/performance/ must be taken over "
+            "several windows by tests/wallclock/sampling.py (#1916): "
+            + "; ".join(findings)
+        )
+
+    def test_it_checks_the_judged_tests_at_all(self):
+        """A guard whose input came back empty would pass silently."""
+        definitions, tests = _performance_graph()
+        checked = [
+            (module, name)
+            for _path, name, module in tests
+            if module.startswith(f"{_PERF}/")
+            and _reaches(definitions, (module, name), WINDOW_AGGREGATORS, False)
+        ]
+        assert len(checked) >= 25, checked
+
+    def test_every_order_statistic_entry_is_live(self):
+        """Each entry is a judged test that really times outside the sampler;
+        otherwise it is a suppression nobody reads."""
+        definitions, tests = _performance_graph()
+        keys = {(module, name) for _path, name, module in tests}
+        for key in ORDER_STATISTIC_TESTS:
+            assert key in keys, key
+            assert key not in UNJUDGED_TIMED_TESTS, key
+            assert _reaches(
+                definitions, key, CLOCK_FUNCTIONS, True, stop=_in_the_sampler
+            ), key
+
+    _MODULE = f"{_PERF}/test_planted.py"
+
+    def _findings(self, test_calls, extra=None):
+        definitions = {
+            (self._MODULE, "test_x"): set(test_calls),
+            (SAMPLING_MODULE, "seconds"): {"perf_counter"},
+            (SAMPLING_MODULE, "median_of_windows"): {"_run"},
+            (SAMPLING_MODULE, "_run"): {"measure_once"},
+            ("tests/wallclock/assertions.py", "assert_latency_within"): {
+                "calibration_scale"
+            },
+            ("tests/wallclock/calibration.py", "calibration_scale"): {"perf_counter"},
+            **(extra or {}),
+        }
+        tests = [(None, "test_x", self._MODULE)]
+        return _single_window_findings(definitions, tests)
+
+    def test_a_windowed_statistic_is_clean(self):
+        # The calibration's own clock, behind the helper, is not a finding.
+        assert not self._findings(
+            {"median_of_windows", "seconds", "assert_latency_within"}
+        )
+
+    def test_a_clock_read_in_the_test_is_a_finding(self):
+        """#1916's shape: perf_counter around one gather, then the helper."""
+        (finding,) = self._findings({"perf_counter", "assert_latency_within"})[:1]
+        assert "reads a clock outside" in finding
+
+    def test_a_clock_read_in_a_local_helper_is_a_finding(self):
+        findings = self._findings(
+            {"_timed", "median_of_windows", "assert_latency_within"},
+            extra={(self._MODULE, "_timed"): {"perf_counter"}},
+        )
+        assert findings and "reads a clock outside" in findings[0]
+
+    def test_one_window_outside_an_aggregator_is_a_finding(self):
+        """The sampler's clock with no aggregator around it: one window."""
+        findings = self._findings({"seconds", "assert_latency_within"})
+        assert findings == [
+            f"{self._MODULE}::test_x judges a statistic no window aggregator took"
+        ]
+
+    def test_an_unjudged_test_is_not_this_rules_question(self):
+        assert not self._findings({"perf_counter", "print"})
+
+
+class TestTheSampler:
+    """``tests/wallclock/sampling.py``, run rather than described."""
+
+    def test_the_median_ignores_one_stalled_window(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        readings = iter([0.016, 1.2, 0.017])  # #1916: one gather stalled 1.2 s
+        assert median_of_windows(lambda window: next(readings)) == 0.017
+
+    def test_a_regression_moves_every_window_and_so_the_median(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        readings = iter([0.064, 0.066, 0.065, 0.070, 0.063])
+        assert median_of_windows(lambda window: next(readings), windows=5) == 0.065
+
+    def test_the_async_median_is_the_same_statistic(self):
+        import asyncio
+
+        from tests.wallclock.sampling import median_of_windows_async
+
+        readings = iter([0.016, 1.2, 0.017])
+
+        async def measure_once(window):
+            await asyncio.sleep(0)
+            return next(readings)
+
+        assert asyncio.run(median_of_windows_async(measure_once)) == 0.017
+
+    def test_the_fastest_of_two_already_survives_one_stall(self):
+        from tests.wallclock.sampling import fastest_of_windows
+
+        readings = iter([1.2, 0.016])
+        assert fastest_of_windows(lambda window: next(readings), windows=2) == 0.016
+
+    @pytest.mark.parametrize("windows", [0, 1, 2])
+    def test_a_median_of_fewer_than_three_windows_is_refused(self, windows):
+        from tests.wallclock.sampling import median_of_windows
+
+        with pytest.raises(ValueError, match="#1916"):
+            median_of_windows(lambda window: 0.1, windows=windows)
+
+    @pytest.mark.parametrize("windows", [0, 1])
+    def test_a_minimum_of_one_window_is_refused(self, windows):
+        from tests.wallclock.sampling import fastest_of_windows
+
+        with pytest.raises(ValueError, match="#1916"):
+            fastest_of_windows(lambda window: 0.1, windows=windows)
+
+    def test_each_window_is_a_separate_call(self):
+        """A window builds its own state: measure_once runs once per window."""
+        from tests.wallclock.sampling import median_of_windows
+
+        calls = []
+
+        def measure_once(window):
+            calls.append(window.seconds(lambda: None))
+            return 0.0
+
+        median_of_windows(measure_once, windows=5)
+        assert len(calls) == 5
+        assert all(seconds >= 0.0 for seconds in calls)
 
 
 # ------------------------------------ the rest of tests/, in the gates (#1579)

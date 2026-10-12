@@ -25,50 +25,88 @@ on the development box:
   "What was deleted", and two more that review caught in #1557's own
   first draft: see "Two budgets are one budget" below.
 
-The first 21 rows below are what remains. After re-anchoring, median
-utilisation is **30.7%** and the highest **41.9%**, which is the same
-shape #1556 produced for the benchmark suite (2.5% to 34.6%). The last
-seven were moved here by #1579 from tests outside this directory; their
-provenance is in the comment above them.
+The first 21 rows below are what remains; the next seven were moved here
+by #1579 from tests outside this directory, and ``TURN_COMMIT`` came with
+#1882.
 
 Provenance
 ----------
 
-**Anchored 2026-09-21** from **29 runs** of this suite on the FaultMaven
-development box, with ``RUN_PERFORMANCE_TESTS=true`` so the nine tests that
-used to skip were measured too. ``reference`` on each row is the **p95** of
-that row's statistic across those runs; ``regression`` is a round number in
-the 2-3x band above it. ``DEDUPLICATION_OP`` is the p95 of each run's
-WORST loop iteration, because that test compares four times and all four
-must pass.
+**Re-anchored 2026-10-12 (#1910)** from the per-PR rows CI recorded on
+**13 green ``main`` runs** of the CI/CD Pipeline, both profiles (Test
+Standalone and Test Cloud), so **26 jobs** per row: runs 37920418458,
+37923637124, 37923926346, 37924692163, 37978314493, 38010407829,
+38022212638, 38031929009, 38048142028, 38091013985, 38128133212,
+38139448483, 38182679918 (the latest attempt of each; 37924692163's Test
+Cloud is attempt 2, so #1916's stalled attempt 1 is not in the sample).
 
-Two things about that measurement, stated rather than implied:
+Each row's statistic is **normalised by the job's raw_ratio**, the axis
+``tests/wallclock/collect.py`` puts every row on: a latency is
+``observed / raw_ratio``, a throughput ``observed x raw_ratio``. That is the
+same axis the per-PR comparison scales back up from, so the calibration
+applies exactly once. Per job, a row's statistic is the WORST of its
+comparisons in that job (``ADVERSARIAL_LINE_EXTRACTION``'s eleven shapes,
+``DEDUPLICATION_OP``'s four sizes).
 
-* **It is a development box, not CI.** The box measured **3.53x** slower
-  than ``CALIBRATION_REFERENCE_SECONDS`` while these runs were taken, and
-  it was running several other pytest processes throughout — so for the
-  CPU-bound rows the reference is roughly 3.5x above what a healthy runner
-  would report, and every anchor is correspondingly conservative. The error
-  is one-sided toward relief, which is the direction #1555's own reference
-  constant chose.
-  **How a re-anchor gets CI numbers (#1910).** This table's statistics are
-  NOT recoverable from the per-PR job logs: ``Test Standalone`` and ``Test
-  Cloud`` run ``pytest -n logical`` without ``-s``, which hides a passing
-  test's stdout, so the printed statistic never reaches them. Instead every
-  timed comparison is written, where it is computed
-  (``tests/wallclock/record.py``), to ``$FM_WALLCLOCK_RECORD`` — one file
-  per xdist worker — with the calibration scale applied, the unfloored
-  ``raw_ratio``, the job profile and the commit SHA. Both per-PR jobs and
-  the nightly upload them as ``wallclock-rows-{standalone,cloud,nightly}``
-  (90 days). ``python -I tests/wallclock/collect.py <downloaded dirs>``
-  prints each row's normalised min / median / p90 / max per profile; its
-  docstring has the ``gh run download`` commands.
-* **Every anchor also clears the WORST of the 29 runs**, not just their
-  p95 — by 1.40x to 2.65x, except ``DEDUPLICATION_OP`` at 1.23x, the
-  thinnest margin in the table and the one worth watching. Its 100-
-  operation loop measures a ~0.1 ms window, short enough for a single GC
-  pause to double the per-operation figure. The calibration adds its
-  relief on top of all of these on any runner slower than the reference.
+* latency: ``reference = max(old reference / 3.53, p95 of the 26 jobs)``;
+* throughput: ``reference = min(old reference x 3.53, p5 of the 26 jobs)``;
+* ``regression``: a two-figure number near 2.5x ``reference``, inside the
+  2-3x band, no looser than the product target, and **clearing the worst of
+  the 26 jobs by at least 1.5x** (raised for latency, lowered for
+  throughput, until it does). A row that cannot meet all three keeps its
+  old anchor and says so in its comment: ``CONTEXT_COPY``.
+
+The box term is what keeps a run on the development box passing. The old
+references were raw values measured on that box while it ran about **3.5x**
+slower than ``CALIBRATION_REFERENCE_SECONDS`` (3.44-3.62 across the three
+anchoring dates; the arithmetic uses the 3.53 measured for the first 21
+rows), so dividing by it puts them on the same axis as the CI rows.
+
+Reproduce the table (it prints every row's old and new reference, new
+regression, clearance and the min/max raw_ratio it was measured at)::
+
+    for run in 37920418458 37923637124 37923926346 37924692163 37978314493 \\
+               38010407829 38022212638 38031929009 38048142028 38091013985 \\
+               38128133212 38139448483 38182679918; do
+      gh run download "$run" --pattern 'wallclock-rows-*' --dir "rows/$run"
+    done
+    python tests/wallclock/collect.py --propose --box-rev 4ad6d76e0 rows/
+
+**Why this re-anchor.** The table used to hold those RAW box values, and
+the per-PR comparison multiplied them by the runner's calibration scale as
+well, so a row's limit was about 3.5x too loose before the 2-3x band was
+applied: a regression had to be roughly 6-12x to fail (#1910). Divided by
+the box factor, the old references land within 0.6-1.6x of the CI p95 on
+almost every row, which is what showed the error was one of units.
+
+**Every judged statistic is taken over several windows (#1916).** Both
+required gates run this directory under ``pytest-xdist`` beside the whole
+suite, and one timed window cannot tell a preempted runner from a
+regression: one ``asyncio.gather`` that stalled for 1.2 s failed
+``CONCURRENT_REQUEST`` at 7x its limit. So every statistic here is the median
+of at least three independent windows, the fastest of at least two
+(``tests/wallclock/sampling.py``), or ``TURN_COMMIT``'s p50 of 180 commits;
+``TestEveryStatisticIsWindowed`` in
+``tests/unit/ci/test_benchmark_calibration.py`` fails a test that judges one
+window. The rows converted by #1916 are anchored on CI data recorded when
+they were still one window. That is conservative: the median of N windows
+of one workload is no larger than a typical single window and does not have
+its tail. The exception would be a window whose measured PATH changes
+between windows, which is why each window builds its own state
+(``sampling.py``).
+
+**The fixed-cost rows.** ``CONCURRENT_REQUEST``, ``ISOLATED_TASK``,
+``ISOLATION_TIME_SPREAD``, ``HIGH_CONCURRENCY_TASK``,
+``CONCURRENT_CONTEXT_OP`` and the three logging overheads
+(``SERVICE_LOGGING_OVERHEAD``, ``EXTERNAL_CLIENT_LOGGING_OVERHEAD``,
+``API_REQUEST_LOGGING_OVERHEAD``) are dominated by ``asyncio.sleep``, thread
+start-up or timer granularity, which do not scale with the CPU calibration.
+Normalised, they read SMALLER on a slower runner, so their anchors are set
+by the fastest runner in the sample (raw_ratio 2.49 at the least) and their
+headroom thins out on a runner faster than that. ``ISOLATED_TASK`` is the
+thinnest: its window holds 20 sleeps of 1 ms, so on a machine at the
+calibration reference itself its 2.7 ms anchor sits about 1.2x above the
+sleeps alone.
 
 Product targets
 ---------------
@@ -164,19 +202,31 @@ __all__ = ["Budget", "LatencyBudget", "ThroughputBudget", "ALL_BUDGETS"]
 
 
 # --- tests/performance/test_context_overhead.py ------------------------------
+#
+# The anchors below are the #1910 re-anchor described in the module docstring;
+# ``collect.py --propose`` prints each row's derivation.
 
 CONTEXT_GET = LatencyBudget(
     "test_context_variable_access_speed",
-    regression=1.0e-6,
+    regression=2.6e-7,
     product_target=1.0e-5,
-    reference=3.6903e-07,
+    reference=1.0454e-07,
 )
 CONTEXT_SET = LatencyBudget(
     "test_context_variable_access_speed",
-    regression=1.0e-5,
+    regression=3.5e-6,
     product_target=5.0e-5,
-    reference=4.9618e-06,
+    reference=1.4056e-06,
 )
+#: ‼ NOT re-anchored (#1910): the STOP case of the clearance rule. The CI p95
+#: is 2.4104e-7 and the worst job 4.8234e-7, so clearing the worst job by
+#: 1.5x needs at least 7.2352e-7, 3.0017x the reference: a hair past the band
+#: (7.3e-7 at two figures, 3.03x). The anchor stays as #1557 set it on the
+#: development box (2026-09-21), raw box units, so this one row keeps the
+#: units error the re-anchor removed: its limit is 4.15x the CI p95 and clears
+#: the worst job by 2.07x. That worst job was a single window; the statistic is
+#: now the median of five (#1916), so the next re-anchor reads a narrower
+#: spread.
 CONTEXT_COPY = LatencyBudget(
     "test_context_copying_performance",
     regression=1.0e-6,
@@ -185,140 +235,152 @@ CONTEXT_COPY = LatencyBudget(
 )
 CONTEXT_COPY_EXEC = LatencyBudget(
     "test_context_copying_performance",
-    regression=1.8e-6,
+    regression=6.7e-7,
     product_target=0.010,
-    reference=8.2979e-07,
+    reference=2.6675e-07,
 )
+#: Fixed-cost row (module docstring): a window starts a five-thread pool.
 CONCURRENT_CONTEXT_OP = LatencyBudget(
     "test_concurrent_context_access",
-    regression=3.0e-5,
+    regression=1.0e-5,
     product_target=0.100,
-    reference=1.4234e-05,
+    reference=4.0323e-06,
 )
+#: Fixed-cost row (module docstring): a window is 20 sleeps of 1 ms per task,
+#: run concurrently, so it is mostly sleep. The thinnest row on a runner
+#: faster than the sample's fastest (raw_ratio 2.52 on this row).
 ISOLATED_TASK = LatencyBudget(
     "test_context_isolation_performance",
-    regression=0.007,
+    regression=0.0027,
     product_target=10.0,
-    reference=0.0030252,
+    reference=0.0010735,
 )
 #: Not a latency: the spread between the fastest and slowest task's mean
 #: operation time. It is still a duration, it still scales with the
 #: machine, and the ruling's question — regression detector or product
-#: target — has the same answer for it.
+#: target — has the same answer for it. Fixed-cost row (module docstring).
 ISOLATION_TIME_SPREAD = LatencyBudget(
     "test_context_isolation_performance",
-    regression=1.6e-5,
+    regression=5.4e-6,
     product_target=0.100,
-    reference=7.6929e-06,
+    reference=2.1793e-06,
 )
 CONTEXT_SWITCH = LatencyBudget(
     "test_rapid_context_switching",
-    regression=4.0e-6,
+    regression=2.0e-6,
     product_target=1.0e-4,
-    reference=1.7984e-06,
+    reference=8.0412e-07,
 )
+#: Fixed-cost row (module docstring): 100 tasks sleeping 0.1 ms four times.
 HIGH_CONCURRENCY_TASK = LatencyBudget(
     "test_context_under_high_concurrency",
-    regression=3.5e-4,
+    regression=1.7e-4,
     product_target=0.100,
-    reference=1.7181e-04,
+    reference=6.8831e-05,
 )
+#: Each window pays the build: the timed region adds 5000 operations and
+#: 1000 attributes to a fresh context before its 100 checks, as the single
+#: window did, so the per-check figure is mostly the build divided by 100.
 LARGE_DATA_CHECK = LatencyBudget(
     "test_context_with_large_data",
-    regression=1.0e-4,
+    regression=5.6e-5,
     product_target=0.010,
-    reference=3.6082e-05,
+    reference=2.2409e-05,
 )
 
 # --- tests/performance/test_logging_overhead.py ------------------------------
 
 REQUEST_CONTEXT_CREATE = LatencyBudget(
     "test_request_context_creation_overhead",
-    regression=2.4e-5,
+    regression=8.8e-6,
     product_target=0.010,
-    reference=1.0033e-05,
+    reference=3.5319e-06,
 )
 COORDINATOR_CYCLE = LatencyBudget(
     "test_logging_coordinator_overhead",
-    regression=1.0e-4,
+    regression=3.1e-5,
     product_target=0.020,
-    reference=4.0215e-05,
+    reference=1.2587e-05,
 )
 TRACKER_RECORD = LatencyBudget(
     "test_performance_tracker_overhead",
-    regression=3.5e-6,
+    regression=1.6e-6,
     product_target=0.001,
-    reference=1.5947e-06,
+    reference=6.4724e-07,
 )
 UNIFIED_LOGGER_SET = LatencyBudget(
     "test_unified_logger_overhead",
-    regression=4.0e-4,
+    regression=1.4e-4,
     product_target=0.005,
-    reference=1.9172e-04,
+    reference=5.4312e-05,
 )
 #: The two rows below subtract a MEASURED un-logged loop rather than a
 #: nominal sleep total, which is why they survived where the four in "What
 #: was deleted" did not: the timer slack is in both terms and cancels.
 #: Their product target is the percentage they asserted read against the
-#: work — ``< 100%`` of a 0.5 s / 0.15 s workload.
+#: work — ``< 100%`` of a 0.5 s / 0.15 s workload. Both are fixed-cost rows
+#: (module docstring), and both windows time both loops.
 SERVICE_LOGGING_OVERHEAD = LatencyBudget(
     "test_service_operation_logging_overhead",
-    regression=0.060,
+    regression=0.019,
     product_target=0.500,
-    reference=0.026304,
+    reference=0.0074516,
 )
 EXTERNAL_CLIENT_LOGGING_OVERHEAD = LatencyBudget(
     "test_external_client_logging_overhead",
-    regression=0.060,
+    regression=0.020,
     product_target=0.150,
-    reference=0.028320,
+    reference=0.0080227,
 )
+#: Fixed-cost row (module docstring): a window is one gather of 20 logged
+#: requests that each sleep 10 ms, ~16 ms on CI. #1916 failed this row on ONE
+#: gather that stalled for 1.2 s; the statistic is now the median of five.
+#: The tail is deliberately NOT judged nightly (it is not in
+#: ``MIXED_STATISTIC_BUDGETS``): the turn commit's tail is judged because the
+#: commit reserve bounds it, a product requirement, and concurrent logging has
+#: no tail requirement. The nightly judges this median against the product
+#: target like every other row.
 CONCURRENT_REQUEST = LatencyBudget(
     "test_concurrent_logging_performance",
-    regression=0.003,
+    regression=9.9e-4,
     product_target=0.100,
-    reference=0.0013988,
+    reference=3.9626e-04,
 )
 CONTEXT_VARIABLE_ITERATION = LatencyBudget(
     "test_context_variable_performance",
-    regression=1.5e-4,
+    regression=4.3e-5,
     product_target=0.005,
-    reference=6.1121e-05,
+    reference=1.7315e-05,
 )
-#: The thinnest margin in this table: 1.23x the worst of the 29 runs,
-#: because the 100-operation iteration of this test's loop measures a
-#: ~0.1 ms window. ``reference`` is the p95 of each run's WORST iteration,
-#: not of all four, because the test asserts all four.
+#: ``reference`` is the p95 of each job's WORST size, not of all four,
+#: because the test asserts all four. The smallest size's window is ~0.3 ms
+#: on CI, the shortest in the table, so it is the median of five windows.
 DEDUPLICATION_OP = LatencyBudget(
     "test_deduplication_scaling",
-    regression=5.0e-6,
+    regression=4.0e-6,
     product_target=1.0e-4,
-    reference=1.9191e-06,
+    reference=1.599e-06,
 )
 LOG_ONCE_CALL = LatencyBudget(
     "test_log_once_performance",
-    regression=3.5e-6,
+    regression=2.3e-6,
     product_target=5.0e-4,
-    reference=1.7240e-06,
+    reference=9.1179e-07,
 )
+#: Fixed-cost row (module docstring): one request over a 100 ms sleep.
 API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
     "test_typical_api_request_overhead",
-    regression=0.006,
+    regression=0.0020,
     product_target=0.050,
-    reference=0.0028241,
+    reference=8.0003e-04,
 )
 
 
 # --- moved here from the required-gate unit tests (#1579) --------------------
 #
-# Anchored 2026-09-26 from 20 runs of the three modules below on the same
-# development box as the rows above, under its usual load (load average 7-10
-# from other lanes' pytest processes). ``reference`` is the p95 of the
-# statistic across those runs — the p5 for the two throughput rows, where
-# the slow side is the low one — and the anchor is a round number in the
-# 2-3x band above it. Every anchor also clears the WORST of the 20 runs, by
-# 2.0x to 2.4x. Every ``product_target`` is the number the moved assertion
-# used, converted to this row's units:
+# First anchored 2026-09-26 on the development box; re-anchored with the rest
+# of the table (module docstring). Every ``product_target`` is the number the
+# moved assertion used, converted to this row's units:
 #
 # =============================  ====================================  =========
 # row                            asserted before, and where            product
@@ -334,61 +396,66 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 # ADVERSARIAL_LINE_EXTRACTION    ``elapsed < TIER1_TIMEOUT_SECONDS``   2.0 s
 # =============================  ====================================  =========
 #
-# ``ADVERSARIAL_LINE_EXTRACTION`` is the one row near its product target:
-# the worst shape, ``sshd-word-chain``, has a p95 of 0.93 s on this box
-# against a 2.0 s Tier-1 timeout, so its anchor sits AT the product target
-# (2.16x reference) rather than inside it. It is one row for eleven shapes,
-# anchored on the worst of each run as ``DEDUPLICATION_OP`` is on its worst
-# iteration, which means it is a loose anchor for the nine cheap shapes.
-# The two expensive ones are expensive because the extractor is
-# super-linear on them (#1700) — see ``tests/performance/test_extraction_speed.py``.
+# All seven were already fastest-of-N statistics (N = 2 to 5) and keep it.
+# ``ADVERSARIAL_LINE_EXTRACTION`` is one row for eleven shapes, anchored on
+# each job's worst shape, so it is a loose anchor for the nine cheap ones. The
+# two expensive ones are expensive because the extractor is super-linear on
+# them (#1700) — see ``tests/performance/test_extraction_speed.py``.
 
 # tests/performance/test_sanitization_throughput.py
 SANITIZE_LARGE_DOCUMENT = ThroughputBudget(
     "test_large_document_sanitization_throughput",
-    regression=12000.0,
+    regression=40000.0,
     product_target=100.0,
-    reference=28514.0,
+    reference=100650.0,
 )
+#: The clearance rule lowered this floor: 2.5x would be 7900/s, and clearing
+#: the worst job (11675/s) by 1.5x needs it at or below 7784/s.
 SANITIZE_DOCUMENT_BATCH = ThroughputBudget(
     "test_document_batch_sanitization_throughput",
-    regression=2500.0,
+    regression=7700.0,
     product_target=10.0,
-    reference=5569.8,
+    reference=19661.0,
 )
 
 # tests/performance/test_shim_overhead.py
+#: Anchored on the WORST of the 26 jobs at the 3x end of the band
+#: (``ANCHOR_ON_WORST_JOB``), not on the p95. This row and the next do not
+#: track the calibration: normalised, their CI p95 is 3.7-3.9x the box term,
+#: and their CI utilisation of the old anchors was already 0.84 and 0.48. A
+#: p95 anchor at 2-2.5x would have failed the worst job.
 NOOP_TRACK_CALL = LatencyBudget(
     "test_noop_decorator_minimal_overhead",
-    regression=8.0e-7,
+    regression=2.0e-6,
     product_target=1.0e-4,
-    reference=3.2035e-07,
+    reference=6.7509e-07,
 )
+#: As ``NOOP_TRACK_CALL``: the worst job, at the 3x end of the band.
 PII_PASSTHROUGH_CALL = LatencyBudget(
     "test_pii_redactor_passthrough_minimal_overhead",
-    regression=6.5e-7,
+    regression=9.3e-7,
     product_target=5.0e-5,
-    reference=2.6420e-07,
+    reference=3.1315e-07,
 )
 
 # tests/performance/test_extraction_speed.py
 VOCABULARY_EXTRACTION = LatencyBudget(
     "test_vocabulary_extraction_on_a_megabyte_of_logs",
-    regression=0.045,
+    regression=0.014,
     product_target=0.5,
-    reference=0.018410,
+    reference=0.0056866,
 )
 TIMESTAMP_EXTRACTION = LatencyBudget(
     "test_timestamp_extraction_per_line",
-    regression=1.2e-5,
+    regression=3.7e-6,
     product_target=1.0e-3,
-    reference=5.2370e-06,
+    reference=1.4836e-06,
 )
 ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
     "test_an_adversarial_line_extracts_inside_the_tier1_timeout",
-    regression=2.0,
+    regression=0.66,
     product_target=TIER1_TIMEOUT_SECONDS,
-    reference=0.92524,
+    reference=0.26211,
 )
 
 
@@ -417,34 +484,31 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #: ``MIXED_STATISTIC_BUDGETS`` in ``tests/unit/ci/test_benchmark_calibration.py``
 #: declares that, so the guard built on the implication skips this row by name.
 #:
-#: ‼ What the per-PR check catches, measured: only a GROSS regression. The
-#: limit is the anchor times the calibration, so a commit has to get about 12x
-#: slower to trip it on the development box (0.25 s x 3.5 against a 75 ms
-#: median) and about 6x on CI (x3.8-5.5 against 143-218 ms). In #1909's review
-#: a uniform 2.9x slowdown and a commit that upserts every message row twice
-#: both passed. It catches an O(n^2) path or an N+1 across the case's rows, not
-#: a commit that does twice the work. The looseness is the table's, not this
-#: row's: ``TURN_COMMIT_P99`` before it sat at the same multiple, and
-#: re-anchoring from CI-joined measurements is a follow-up of #1902.
+#: Re-anchored with the table (#1910): the p95 of the 26 jobs' normalised p50,
+#: 43.9 ms, and 0.11 s, 2.5x it, which clears the worst job (46.1 ms) by 2.39x.
+#: The development box's 2026-10-09 anchor (0.098 s raw) divided by 3.53 is
+#: 27.8 ms, under the CI p95. The per-PR check still catches only a gross
+#: regression, an O(n^2) path or an N+1, not a commit doing twice the work,
+#: but it trips at about 2.5x the CI median rather than the 6-12x it took
+#: before.
 #:
-#: Anchored 2026-10-09 from **28 runs** on the development box (48 cores, load
-#: average 9-31 from other lanes throughout). ``reference`` is the p95 of the
-#: per-run p50, 97.7 ms; ``regression`` is 2.55x it and clears the worst run
-#: (98.5 ms) by 2.54x. The runs: 12 alone (8 on tmpfs, 4 with the database on
-#: the root disk), 9 beside a 16-worker ``tests/unit`` run and a 64 KB
-#: write+fsync loop on the root disk, and 7 pinned to four cores shared with a
-#: 4-worker ``tests/unit`` run, the nearest this box comes to a contended
-#: runner. Per-run p50 across them: 54.8-98.5 ms, median 74.5 ms; the p99 over
-#: the same runs: 146.2-457.6 ms. Pinned, the p99 rose 2-3x and the p50 at
-#: most 1.3x, which is the split this row is built on. The reserve was sized
-#: from the p99 of this measurement and its PostgreSQL twin at x10
-#: (``turn_budget.py``, R8).
+#: ‼ The two profiles do not agree: the median per-job p50 of Test Standalone
+#: is **3.07x** Test Cloud's (the database work is IO the CPU calibration
+#: cannot see). The anchor pools both, so the p95 is set by Standalone, and
+#: the gate is correspondingly about 3x looser for Test Cloud than for Test
+#: Standalone.
 TURN_COMMIT = LatencyBudget(
     "test_the_turn_commit_fits_its_reserve",
-    regression=0.25,
+    regression=0.11,
     product_target=TURN_COMMIT_RESERVE_SECONDS,
-    reference=0.098,
+    reference=0.0439,
 )
+
+
+#: Rows anchored on the WORST CI job at the 3x end of the band rather than on
+#: the p95 (``tests/wallclock/collect.py --propose``); each row's comment says
+#: why.
+ANCHOR_ON_WORST_JOB = frozenset({"NOOP_TRACK_CALL", "PII_PASSTHROUGH_CALL"})
 
 
 #: Every budget in this table, by constant name.
