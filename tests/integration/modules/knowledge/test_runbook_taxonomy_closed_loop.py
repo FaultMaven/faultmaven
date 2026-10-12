@@ -276,7 +276,6 @@ async def _create_and_verify(service: ConversionService, fields: dict):
         created["conversion_id"],
         draft.draft_id,
         user_id="u1",
-        username="author",
         is_platform_admin=True,
     )
     return created, draft, verified

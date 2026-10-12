@@ -9,6 +9,7 @@ Pipeline:
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,7 +32,7 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
-from faultmaven.modules.auth.contracts import is_team_member
+from faultmaven.modules.auth.contracts import IAccountDirectory, is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
     DE_IDENTIFICATION_RULES,
@@ -151,6 +152,7 @@ class ConversionService:
         share_repository=None,
         team_service=None,
         sanitizer=None,
+        account_reader: Optional[IAccountDirectory] = None,
     ):
         self._llm_router = llm_router
         self._settings = settings
@@ -172,6 +174,12 @@ class ConversionService:
         # teams don't exist in this deployment, so a team-scoped publish is
         # refused rather than silently minting an unresolvable share target.
         self._team_service = team_service
+        # The account store's directory read. A verified runbook's
+        # ``verified_by`` frontmatter names the verifier by the display name on
+        # their users ROW (#1924): the request's principal carries the JWT's
+        # username there, which for an SSO account is the email's local part.
+        # None → ``verified_by`` stays empty.
+        self._account_reader = account_reader
         self._preprocessor = DocumentPreprocessor(llm_router, settings, sanitizer)
         self._scan_lock = asyncio.Lock()
         # In-flight case-conversion dedup. Keyed by case_id; the value is
@@ -1636,11 +1644,36 @@ class ConversionService:
                 quality_warning=quality_warning,
             )
 
+    async def _verifier_display_name(
+        self, user_id: str, enterprise_id: Optional[str]
+    ) -> str:
+        """The verifier's display name, read from their users row (#1924).
+
+        ``verified_by`` is published with the runbook to everyone at its scope,
+        so it carries the stored display name, never the username: an SSO
+        username is the email's local part. An account the read does not find
+        (or no reader wired) leaves the field empty, as the draft had it.
+        """
+        if self._account_reader is None or not enterprise_id:
+            return ""
+        accounts = await self._account_reader.get_many_in_enterprise(
+            enterprise_id, [user_id]
+        )
+        for account in accounts:
+            if account.user_id == user_id:
+                return account.display_name or ""
+        logger.warning(
+            "verify_draft: verifier %s has no account in enterprise %s; "
+            "verified_by left empty",
+            user_id,
+            enterprise_id,
+        )
+        return ""
+
     async def verify_batch(
         self,
         draft_refs: list[tuple[str, str]],  # (conversion_id, draft_id)
         user_id: str,
-        username: str,
         is_platform_admin: bool = False,
     ) -> dict:
         """Verify multiple drafts sequentially. Returns summary with per-item status.
@@ -1662,7 +1695,6 @@ class ConversionService:
                     conversion_id=conversion_id,
                     draft_id=draft_id,
                     user_id=user_id,
-                    username=username,
                     is_platform_admin=is_platform_admin,
                 )
                 results.append(
@@ -1773,7 +1805,6 @@ class ConversionService:
         conversion_id: str,
         draft_id: str,
         user_id: str,
-        username: str,
         is_platform_admin: bool = False,
     ) -> Optional[VerifyResponse]:
         """Promote draft to verified status, update frontmatter, trigger ingestion.
@@ -1872,20 +1903,27 @@ class ConversionService:
                 )
             except RunbookPathEscape as exc:
                 raise self._refuse_escaping_draft(dm.id, exc) from exc
+            verifier_name = await self._verifier_display_name(
+                user_id, job.enterprise_id
+            )
             try:
                 import frontmatter
 
                 post = frontmatter.load(str(file_path))
                 post.metadata["status"] = "verified"
-                post.metadata["verified_by"] = username
+                post.metadata["verified_by"] = verifier_name
                 frontmatter.dump(post, str(file_path))
             except Exception as e:
                 logger.error(f"Failed to update frontmatter: {e}")
                 # Fallback: just update the file content with regex
                 content = file_path.read_text(encoding="utf-8")
                 content = content.replace("status: draft", "status: verified", 1)
+                # A JSON string is a YAML double-quoted scalar: a name holding
+                # a quote or a backslash stays one value (#1924).
                 content = content.replace(
-                    'verified_by: ""', f'verified_by: "{username}"', 1
+                    'verified_by: ""',
+                    f"verified_by: {json.dumps(verifier_name)}",
+                    1,
                 )
                 file_path.write_text(content, encoding="utf-8")
 

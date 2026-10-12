@@ -20,7 +20,15 @@ from faultmaven.exceptions import (
     UserLookupFailed,
     ValidationException,
 )
+from faultmaven.infrastructure.auth.synthesized_email import (
+    is_synthesized_email,
+    synthesized_email,
+)
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
+from faultmaven.modules.auth.domain.display_name import (
+    neutral_display_name,
+    usable_display_name,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
 
@@ -242,7 +250,7 @@ class DatabaseUserStore:
 
             # Auto-generate email if not provided
             if not email:
-                email = f"{username}@faultmaven.example"
+                email = synthesized_email(username)
             else:
                 email = email.strip().lower()
                 if not self._validate_email(email):
@@ -258,15 +266,15 @@ class DatabaseUserStore:
                         conflict_reason="duplicate_email",
                     )
 
-            # Auto-generate display name if not provided
-            if not display_name:
-                display_name = self._generate_display_name(username)
-
             # Generate UUID for user_id
             import uuid
 
             user_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
+
+            display_name = self._display_name_for(
+                user_id, username, email, display_name
+            )
 
             # Create User model for repository
             user = User(
@@ -470,6 +478,27 @@ class DatabaseUserStore:
         if not email:
             return False
         return bool(self.email_pattern.match(email))
+
+    def _display_name_for(
+        self, user_id: str, username: str, email: str, display_name: Optional[str]
+    ) -> str:
+        """The display name a new account is stored with (#1924).
+
+        The name given, else the username's title-cased form, whichever first
+        passes the display-name rule: nothing holding an ``@`` (an address
+        username renders as one), nor the email's local part (username
+        ``alice`` with ``alice@acme.com`` renders as ``Alice``). Neither passing,
+        the neutral label. The rule judges against a REAL email only: a
+        synthesized one was derived from the username, not the other way round.
+        """
+        real_email = None if is_synthesized_email(email) else email
+        return (
+            usable_display_name(display_name, email=real_email)
+            or usable_display_name(
+                self._generate_display_name(username), email=real_email
+            )
+            or neutral_display_name(user_id)
+        )
 
     def _generate_display_name(self, username: str) -> str:
         """Generate display name from username"""

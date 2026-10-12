@@ -196,6 +196,15 @@ JIT-provisions the `users` row and writes an `account_created` entry to
   (`-2`, `-3`, …). `alice@acme.com` normally becomes `alice`, but becomes
   `alice-2` if `alice` is taken. **Verify the derived username before using it**
   in any later command — promoting the wrong `alice` is a real outcome.
+- **Display name** = the name the IdP sends, or, when it sends none,
+  `Member` plus the first four characters of the user id (`Member 3f9a`). It is
+  **never** derived from the email: the username is the email's local part, and
+  the display name is what other people see on shared cases and verified
+  runbooks (#1924). An IdP name that holds an `@`, or equals the email's local
+  part in any case, counts as no name. A name the IdP sends on a later sign-in
+  replaces the label, under the same rule.
+  To find an account labelled this way, search by email
+  (`GET /api/v1/admin/users?search=<email>`), not by name.
 - **No password** (NULL) — WorkOS is the only way in.
 - **Roles = `["user"]`**, never admin. There is no allowlist and no login path
   that grants elevated roles.

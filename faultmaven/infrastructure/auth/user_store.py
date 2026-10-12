@@ -34,6 +34,14 @@ from faultmaven.exceptions import (
     UserLookupFailed,
     ValidationException,
 )
+from faultmaven.infrastructure.auth.synthesized_email import (
+    is_synthesized_email,
+    synthesized_email,
+)
+from faultmaven.modules.auth.domain.display_name import (
+    neutral_display_name,
+    usable_display_name,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 if TYPE_CHECKING:
@@ -264,17 +272,27 @@ class RedisUserStore:
             user_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
 
-            # Auto-generate display name if not provided
-            if not display_name:
-                display_name = self._generate_display_name(username)
-
             # Auto-generate email if not provided
             if not email:
                 # If username is already an email, use it directly
                 if self._validate_email(username):
                     email = username.lower()
                 else:
-                    email = f"{username.lower()}@faultmaven.example"
+                    email = synthesized_email(username.lower())
+
+            # Never a name derived from an email (#1924): the name given, else
+            # the username's title-cased form, whichever first passes the rule
+            # (no ``@``, not the email's local part), else the neutral label.
+            # Judged against a REAL email only: a synthesized one was derived
+            # from the username.
+            real_email = None if is_synthesized_email(email) else email
+            display_name = (
+                usable_display_name(display_name, email=real_email)
+                or usable_display_name(
+                    self._generate_display_name(username), email=real_email
+                )
+                or neutral_display_name(user_id)
+            )
 
             user = DevUser(
                 user_id=user_id,
@@ -507,20 +525,10 @@ class RedisUserStore:
         return bool(email and self.email_pattern.match(email))
 
     def _generate_display_name(self, username: str) -> str:
-        """Generate display name from username"""
-        # If username is an email, use the local part before @
-        if self._validate_email(username):
-            local_part = username.split("@")[0]
-            display_name = (
-                local_part.replace(".", " ").replace("_", " ").replace("-", " ")
-            )
-            return " ".join(word.capitalize() for word in display_name.split())
-        else:
-            # Convert username to title case and replace separators
-            display_name = (
-                username.replace(".", " ").replace("_", " ").replace("-", " ")
-            )
-            return " ".join(word.capitalize() for word in display_name.split())
+        """Title-case a username. The caller passes the result through the
+        display-name rule (#1924)."""
+        display_name = username.replace(".", " ").replace("_", " ").replace("-", " ")
+        return " ".join(word.capitalize() for word in display_name.split())
 
     # Redis async wrapper methods (using async Redis client)
     async def _redis_set(self, key: str, value: str) -> None:

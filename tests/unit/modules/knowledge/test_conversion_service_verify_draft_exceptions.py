@@ -114,7 +114,6 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_missing",
                 draft_id="d_x",
                 user_id="user_x",
-                username="alice",
             )
         assert exc.value.resource_type == "conversion_job"
         assert exc.value.resource_id == "conv_missing"
@@ -126,7 +125,6 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_x",
                 draft_id="d_missing",
                 user_id="user_x",
-                username="alice",
             )
         assert exc.value.resource_type == "draft"
         assert exc.value.resource_id == "d_missing"
@@ -141,7 +139,6 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_x",
                 draft_id="d_verified",
                 user_id="user_x",
-                username="alice",
             )
         assert exc.value.conflict_reason == "already_verified"
         assert exc.value.resource_type == "draft"
@@ -156,7 +153,6 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_x",
                 draft_id="d_discarded",
                 user_id="user_x",
-                username="alice",
             )
         assert exc.value.conflict_reason == "discarded"
 
@@ -172,7 +168,6 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_x",
                 draft_id="d_weird",
                 user_id="user_x",
-                username="alice",
             )
         assert exc.value.conflict_reason == "unexpected_state"
         assert "halfway-converted" in str(exc.value)
@@ -187,6 +182,5 @@ class TestVerifyDraftTypedExceptions:
                 conversion_id="conv_x",
                 draft_id="d_invalid",
                 user_id="user_x",
-                username="alice",
             )
         assert "validation errors" in str(exc.value)

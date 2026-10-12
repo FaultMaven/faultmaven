@@ -127,7 +127,6 @@ class TestVerifyDraftGlobalGate:
                 conversion_id="c",
                 draft_id="d",
                 user_id="user_x",
-                username="alice",
                 is_platform_admin=False,
             )
         assert str(exc.value) == GLOBAL_AUTHORING_ADMIN_MSG
@@ -140,7 +139,6 @@ class TestVerifyDraftGlobalGate:
                 conversion_id="c",
                 draft_id="d",
                 user_id="user_x",
-                username="alice",
                 is_platform_admin=True,
             )
         assert str(exc.value) == GLOBAL_AUTHORING_MULTI_MSG
@@ -156,7 +154,6 @@ class TestVerifyDraftGlobalGate:
                 conversion_id="c",
                 draft_id="d",
                 user_id="user_x",
-                username="alice",
                 is_platform_admin=True,
             )
         assert exc.value.resource_type == "draft"
@@ -171,7 +168,6 @@ class TestVerifyDraftGlobalGate:
                 conversion_id="c",
                 draft_id="d",
                 user_id="user_x",
-                username="alice",
                 is_platform_admin=False,
             )
         assert exc.value.resource_type == "draft"
@@ -186,7 +182,6 @@ class TestVerifyBatchInheritsGate:
         result = await service.verify_batch(
             draft_refs=[("c", "d")],
             user_id="user_x",
-            username="alice",
             is_platform_admin=False,
         )
         assert result["forbidden"] == 1

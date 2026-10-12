@@ -125,9 +125,11 @@ class IConversionService(Protocol):
         ...
 
     async def verify_draft(
-        self, conversion_id: str, draft_id: str, user_id: str, username: str
+        self, conversion_id: str, draft_id: str, user_id: str
     ) -> Optional[Any]:
-        """Promote draft to verified status."""
+        """Promote draft to verified status. The runbook's ``verified_by`` names
+        the verifier by the display name on their account, never a username
+        (#1924)."""
         ...
 
 

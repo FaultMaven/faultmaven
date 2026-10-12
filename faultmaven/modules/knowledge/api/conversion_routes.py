@@ -418,7 +418,6 @@ async def verify_batch(
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
         user_id=current_user.user_id,
-        username=current_user.username,
         is_platform_admin=current_user.is_platform_admin(),
     )
     return result
@@ -456,7 +455,6 @@ async def verify_draft(
         conversion_id=conversion_id,
         draft_id=draft_id,
         user_id=current_user.user_id,
-        username=current_user.username,
         is_platform_admin=current_user.is_platform_admin(),
     )
     if not result:

@@ -68,7 +68,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["skipped"] == 1
@@ -95,7 +94,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["failed"] == 1
@@ -109,7 +107,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["verified"] == 1
@@ -130,7 +127,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["forbidden"] == 1
@@ -150,7 +146,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["failed"] == 1
@@ -167,7 +162,6 @@ class TestVerifyBatchTypedClassification:
         summary = await service.verify_batch(
             draft_refs=[("conv1", "d1")],
             user_id="user_x",
-            username="alice",
         )
 
         assert summary["failed"] == 1
@@ -196,7 +190,7 @@ class TestVerifyBatchTypedClassification:
             ("conv", "failed_other"): RuntimeError("boom"),
         }
 
-        async def _fake_verify(*, conversion_id, draft_id, user_id, username, **_):
+        async def _fake_verify(*, conversion_id, draft_id, user_id, **_):
             outcome = outcomes[(conversion_id, draft_id)]
             if isinstance(outcome, Exception):
                 raise outcome
@@ -205,9 +199,7 @@ class TestVerifyBatchTypedClassification:
         service.verify_draft = _fake_verify
 
         refs = [("conv", d) for _, d in outcomes]
-        summary = await service.verify_batch(
-            draft_refs=refs, user_id="user_x", username="alice"
-        )
+        summary = await service.verify_batch(draft_refs=refs, user_id="user_x")
 
         assert summary["total"] == 5
         assert summary["verified"] == 1

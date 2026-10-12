@@ -622,8 +622,97 @@ async def test_jit_user_reflects_unverified_email(store):
     user = repo.created[0]
     assert user.is_email_verified is False
     assert user.email_verified_at is None
-    # Display name falls back to the derived username when the IdP has none.
-    assert user.display_name == "sam"
+
+
+@pytest.mark.parametrize("idp_name", [None, "", "   \t "])
+async def test_jit_user_with_no_idp_name_gets_the_neutral_label(store, idp_name):
+    """#1924: the username is the email's local part and the display name is
+    shown to everyone who shares a case with the account, so an account the
+    IdP names nothing is labelled ``Member`` + 4 chars of its id, never the
+    username. A whitespace-only name is no name."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam.smith@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    user = repo.created[0]
+    assert user.username == "sam.smith"
+    assert user.display_name == f"Member {user.user_id[:4]}"
+    assert "sam" not in user.display_name.lower()
+
+
+@pytest.mark.parametrize(
+    "idp_name",
+    [
+        "sam.smith@example.com",
+        "Sam <sam.smith@example.com>",
+        "sam.smith@example.com (contractor)",
+        "pat@other.example",
+        "sam.smith",
+        "SAM.SMITH",
+    ],
+)
+async def test_jit_user_whose_idp_name_is_an_address_gets_the_neutral_label(
+    store, idp_name
+):
+    """An IdP ``name`` that holds an address, or equals the email's local part
+    in any case, is no name (#1924)."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam.smith@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    user = repo.created[0]
+    assert user.display_name == f"Member {user.user_id[:4]}"
+
+
+async def test_jit_user_named_like_the_address_with_spaces_keeps_the_name(store):
+    """Separators are not normalised: ``Sam Smith`` is a typed name."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam.smith@example.com",
+        email_verified=True,
+        display_name="Sam Smith",
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    await callback(service, state=start.state)
+
+    assert repo.created[0].display_name == "Sam Smith"
+
+
+async def test_jit_user_idp_name_is_stripped(store):
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam@example.com",
+        email_verified=True,
+        display_name="  Sam Smith  ",
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    await callback(service, state=start.state)
+
+    assert repo.created[0].display_name == "Sam Smith"
 
 
 async def test_jit_username_collision_gets_numeric_suffix(store):
@@ -845,6 +934,81 @@ async def test_callback_syncs_profile_on_returning_subject(store):
     assert user.email_verified_at is not None
     assert user.last_login_at is not None
     assert repo.created == []
+
+
+async def test_an_idp_name_sent_later_replaces_the_neutral_label(store):
+    """The ruling: a name the IdP sends later overwrites the label (#1924)."""
+    user = make_user(display_name="Member 3f9a")
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert user.display_name == "Alex Example"
+
+
+@pytest.mark.parametrize(
+    "idp_name", ["alex@example.com", "Alex <alex@example.com>", "ALEX", "x@y.com (z)"]
+)
+async def test_profile_sync_keeps_the_stored_name_when_the_idp_sends_an_address(
+    store, idp_name
+):
+    """An IdP name holding an address, or the account email's local part, does
+    not replace the stored name (#1924)."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_123",
+        email="alex@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    user = make_user(display_name="Member 3f9a")
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert user.display_name == "Member 3f9a"
+
+
+@pytest.mark.parametrize("idp_name", [None, "", "  \n "])
+async def test_profile_sync_keeps_the_stored_name_when_the_idp_sends_none(
+    store, idp_name
+):
+    """A blank or whitespace-only IdP name is no name. Writing one would break
+    the ``users`` CHECK ``LENGTH(TRIM(display_name)) > 0``, and the resulting
+    IntegrityError is not the ConflictError the sync catches, so the login
+    failed (#1924). The repository here enforces that CHECK."""
+    from sqlalchemy.exc import IntegrityError
+
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_123",
+        email="alex@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    user = make_user(display_name="Member 3f9a")
+
+    class CheckingRepository(FakeUserRepository):
+        async def update(self, user):
+            if not user.display_name.strip():
+                raise IntegrityError(
+                    "UPDATE users", {}, Exception("users_display_name_not_empty")
+                )
+            return await super().update(user)
+
+    repo = CheckingRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "error" not in redirect_params(redirect)
+    assert "code" in redirect_params(redirect)
+    assert user.display_name == "Member 3f9a"
+    assert repo.updated == [user]
 
 
 async def test_profile_sync_ignores_malformed_idp_email(store):
