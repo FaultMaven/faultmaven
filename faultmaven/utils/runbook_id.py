@@ -424,6 +424,12 @@ def draft_filename(runbook_id: str | None) -> str:
 # =============================================================================
 
 
+#: The value :func:`knowledge_root` returns. A module attribute, read on every
+#: call, so the test session can point it under its own data root (#1772)
+#: without touching how production resolves it.
+KNOWLEDGE_ROOT = Path("data/knowledge")
+
+
 def knowledge_root() -> Path:
     """The one anchor every runbook containment check resolves against.
 
@@ -439,7 +445,7 @@ def knowledge_root() -> Path:
     manufacture duplicate drafts. Anchor and candidate resolve against the same
     cwd, so containment is unaffected by where the process runs.
     """
-    return Path("data/knowledge")
+    return KNOWLEDGE_ROOT
 
 
 class RunbookPathEscape(PathEscape):

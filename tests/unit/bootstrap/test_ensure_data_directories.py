@@ -20,7 +20,7 @@ import pytest
 
 from faultmaven.bootstrap.data_init import ensure_data_directories
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")]
 
 _KNOBS = (
     "CHROMADB_KB_PERSIST_DIR",

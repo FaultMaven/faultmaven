@@ -32,7 +32,7 @@ import pytest
 from faultmaven.bootstrap import data_init
 from faultmaven.cli import reset_kb
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")]
 
 
 class _FakeResult:

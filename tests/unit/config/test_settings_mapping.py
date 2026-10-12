@@ -249,7 +249,7 @@ class TestRedisSettingsMapping:
 class TestChromaDBSettingsMapping:
     """Tests for ChromaDB configuration mapping."""
 
-    def test_chromadb_defaults(self):
+    def test_chromadb_defaults(self, shipped_data_defaults):
         """Test that ChromaDB settings have correct defaults."""
         from faultmaven.config.settings import get_settings
 

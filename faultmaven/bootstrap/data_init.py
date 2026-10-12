@@ -212,15 +212,15 @@ def ensure_data_directories() -> None:
     :func:`resolve_data_dir`).
 
     Creates:
-        - ``data/``                          (shared parent, cwd-relative like
-          the SQLite DSN default ``sqlite+aiosqlite:///./data/faultmaven.db``
-          that needs it)
         - ``CHROMADB_KB_PERSIST_DIR``        (ChromaDB KB vectors — permanent)
         - ``CHROMADB_EVIDENCE_PERSIST_DIR``  (ChromaDB case evidence — ephemeral)
         - ``EVIDENCE_STORAGE_ROOT``          (uploaded evidence files)
         - ``data/knowledge/`` + ``global/``  (runbook source files, from
           :func:`~faultmaven.utils.runbook_id.knowledge_root` — the anchor the
-          scan and upload paths resolve against, which is relative on purpose)
+          scan and upload paths resolve against, which is relative on purpose).
+          Its parent is the shared cwd-relative ``data/`` that the SQLite DSN
+          default ``sqlite+aiosqlite:///./data/faultmaven.db`` also needs, so
+          that directory exists whenever the knowledge tree does
 
     The two ChromaDB trees are created ONLY when this deployment opens a local
     store. Under an external ``CHROMADB_URL`` the server never touches a local
@@ -249,17 +249,11 @@ def ensure_data_directories() -> None:
 
     settings = get_settings()
 
-    # The one literal here, and the one knob-derived path this does NOT resolve
-    # from its setting. It exists for the SQLite default
-    # (``sqlite+aiosqlite:///./data/faultmaven.db``), which is cwd-relative, so
-    # the literal is spelled the way that DSN spells it. Deriving it from
-    # ``DATABASE_URL`` would mean parsing a DSN whose non-SQLite forms name no
-    # directory at all, for a directory that costs nothing when unneeded and
-    # that `mkdir(parents=True)` on the trees below already creates in the
-    # default configuration. If that changes — a knob for the database file's
-    # location, say — this becomes the next instance of fm#936 and should be
-    # resolved like the rest.
-    directories = [_absolute(Path("data"))]
+    # No literal ``data/`` of its own: the knowledge tree below is created with
+    # ``parents=True``, and its parent is that directory. A second spelling
+    # would be a path this function writes that no setting or anchor moves —
+    # the one a test session could not relocate (#1772).
+    directories: list[Path] = []
 
     if is_external_chroma_configured(settings):
         logger.info(

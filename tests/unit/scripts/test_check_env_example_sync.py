@@ -24,8 +24,12 @@ def mod():
     return module
 
 
-def test_real_env_example_is_in_sync(mod):
-    """The committed .env.example must match settings.py + registry (the CI guard)."""
+def test_real_env_example_is_in_sync(mod, shipped_data_defaults):
+    """The committed .env.example must match settings.py + registry (the CI guard).
+
+    Against the SHIPPED defaults: the test session moves every ``./data`` one
+    under its own data root (#1772).
+    """
     errors, checked, reg_checked, _skipped = mod.run_checks()
     assert errors == [], errors
     assert checked > 0

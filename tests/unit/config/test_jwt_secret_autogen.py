@@ -58,11 +58,11 @@ def isolated_env(monkeypatch):
 
 
 @pytest.fixture
-def empty_cwd(monkeypatch, tmp_path):
-    """Local mode, the SHIPPED secret path (``data/.jwt_secret`` under the cwd),
-    and the cwd an empty directory, so any write shows up."""
+def empty_cwd(monkeypatch, tmp_path, shipped_data_defaults):
+    """Local mode, the SHIPPED secret path (``data/.jwt_secret`` under the cwd)
+    and database default, and the cwd an empty directory, so any write shows
+    up."""
     monkeypatch.setenv("AUTH_MODE", "local")
-    monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
