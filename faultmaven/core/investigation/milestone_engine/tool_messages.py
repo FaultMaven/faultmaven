@@ -162,7 +162,12 @@ def _build_da_system_instruction(
         )
     else:
         type_b_route = "→ Answer from your own knowledge. "
-    type_c_baseline = ", ".join(["your knowledge", *knowledge_tools])
+    type_c_baseline = (
+        ", ".join(["your knowledge", *knowledge_tools[:-1]])
+        + f", or {knowledge_tools[-1]}"
+        if len(knowledge_tools) > 1
+        else " or ".join(["your knowledge", *knowledge_tools])
+    )
     knowledge_sources = "".join(f"{t}, " for t in knowledge_tools) + (
         "or your own training data" if knowledge_tools else "your own training data"
     )
