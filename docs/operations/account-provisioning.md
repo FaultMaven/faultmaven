@@ -200,7 +200,9 @@ JIT-provisions the `users` row and writes an `account_created` entry to
   `Member` plus the first four characters of the user id (`Member 3f9a`). It is
   **never** derived from the email: the username is the email's local part, and
   the display name is what other people see on shared cases and verified
-  runbooks (#1924). A name the IdP sends on a later sign-in replaces the label.
+  runbooks (#1924). An IdP name that holds an `@`, or equals the email's local
+  part in any case, counts as no name. A name the IdP sends on a later sign-in
+  replaces the label, under the same rule.
   To find an account labelled this way, search by email
   (`GET /api/v1/admin/users?search=<email>`), not by name.
 - **No password** (NULL) — WorkOS is the only way in.

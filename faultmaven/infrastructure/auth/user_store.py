@@ -268,16 +268,6 @@ class RedisUserStore:
             user_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
 
-            # Never a name derived from an email (#1924): an address-shaped
-            # username gets the neutral label, a plain one its title-cased form.
-            display_name = usable_display_name(display_name)
-            if not display_name:
-                display_name = (
-                    neutral_display_name(user_id)
-                    if "@" in username
-                    else self._generate_display_name(username)
-                )
-
             # Auto-generate email if not provided
             if not email:
                 # If username is already an email, use it directly
@@ -285,6 +275,17 @@ class RedisUserStore:
                     email = username.lower()
                 else:
                     email = f"{username.lower()}@faultmaven.example"
+
+            # Never a name derived from an email (#1924): a given name that is
+            # the address or its local part is no name; an address-shaped
+            # username gets the neutral label, a plain one its title-cased form.
+            display_name = usable_display_name(display_name, email=email)
+            if not display_name:
+                display_name = (
+                    neutral_display_name(user_id)
+                    if "@" in username
+                    else self._generate_display_name(username)
+                )
 
             user = DevUser(
                 user_id=user_id,

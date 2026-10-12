@@ -10,48 +10,58 @@ email-derived names already stored; a name the IdP sends later overwrites it.
 Which rows change
 -----------------
 
-No column records that a name was derived, so the rows are matched on the shape
-the old writers left:
+No column records that a name was derived, so the rows are matched on what the
+name holds, with the rule ``auth.domain.display_name.usable_display_name``
+applies to every new write:
 
 1. **SSO accounts** (``sso_provider IS NOT NULL``) whose ``display_name`` equals
    their ``username``. JIT provisioning stored the username when the IdP sent no
    name, and an SSO username is the email's sanitized local part.
-2. **Local accounts** whose ``username`` contains ``@`` and whose
-   ``display_name`` equals ``DatabaseUserStore._generate_display_name(username)``
-   (frozen below): registration with an address as the username and no display
-   name stored a title-cased rendering of the address.
+2. **Any account whose display name contains ``@``.** This covers the local
+   accounts registered with an address as the username and no display name
+   (the database store stored a title-cased address, ``Alice Smith@Example
+   Com``), an address the IdP sent as the ``name`` (``pat@example.com``,
+   ``Quinn <quinn@example.com>``), and an address typed as the name.
+3. **Any account whose display name equals its email's local part**, ignoring
+   case and surrounding whitespace (an IdP ``name`` of ``Erin`` for
+   ``erin@…``). Separators are not normalised: ``Sam Smith`` for
+   ``sam.smith@…`` is a name a person types, and is kept.
 
 Each becomes ``Member`` and the first four characters of its ``user_id``. Every
-other row is untouched: an IdP-sent name, an explicit display name, and the
-title-cased name of a plain (``@``-free) username, which its user or the
-operator chose and which carries no address.
+other row is untouched.
 
-The Redis user store's form (title-casing the local part only) is NOT matched:
-that store never writes these rows, and a name a user typed that happens to
-equal it ("Alice Smith" for ``alice.smith@example.com``) would be relabelled
-with no way back. Rows that match it but not the database store's form are
-counted and logged, never changed.
+The Redis user store's old form (title-casing the local part: ``Alice Smith``
+for ``alice.smith@example.com``) is NOT matched: that store never writes these
+rows, and a typed name equal to it would be relabelled with no way back. Online,
+rows that hold that form are counted and logged, never changed.
 
 Known misclassifications
 ------------------------
 
 * **False positive (SSO):** an IdP name that equals the derived username (the
-  IdP sends ``name = "alice"`` for ``alice@…``) is relabelled. It heals itself:
-  the next sign-in's profile sync writes the IdP's name back.
+  IdP sends ``name = "alice"`` for ``alice@…``) is relabelled. Profile sync
+  now refuses that name too, so the label stays until the IdP sends a real one.
 * **False negative (SSO):** an account whose username was renamed after JIT
-  keeps the old derived name, because it no longer equals the username.
+  keeps the old derived name if it equals neither the new username nor the
+  email's local part.
 
 Dialects
 --------
 
-The rows are matched in Python, not SQL: Python's ``str.title()`` has no SQL
-spelling on either dialect, and the table is small. ``users`` is not enrolled in
-row-level security (the login path reads it before any tenant is bound; see the
-baseline's ``_TENANT_TABLES``), so the migrating role sees every row on
-PostgreSQL with no ``row_security`` toggle. The same statements run on SQLite.
+One ``UPDATE``, the same text on both dialects: ``||``, ``substr``, ``lower``,
+``trim``, ``replace`` and ``LIKE ... ESCAPE`` mean the same thing in SQLite and
+PostgreSQL. Rule 3 builds a ``LIKE`` pattern from the display name, so ``\``,
+``%`` and ``_`` in the name are escaped first: a name ``sam_x`` must not match
+``samAx@…``. SQLite's ``lower`` folds ASCII only; a non-ASCII local part that
+differs from its name only in case is not matched there.
 
-Offline (``--sql``) there are no rows to read, so the revision emits only a SQL
-comment saying it was skipped; run it online to relabel.
+``users`` is not enrolled in row-level security (the login path reads it before
+any tenant is bound; see the baseline's ``_TENANT_TABLES``), so the migrating
+role sees every row on PostgreSQL with no ``row_security`` toggle.
+
+Offline (``--sql``) emits that same ``UPDATE``, so a script applied later
+relabels exactly what an online run would. Only the two log lines (the relabel
+count and the Redis-form count) need a connection.
 
 ``downgrade()``
 ---------------
@@ -66,7 +76,7 @@ Create Date: 2026-10-12 12:00:00
 
 import logging
 import re
-from typing import Optional, Sequence, Union
+from typing import Sequence, Union
 
 from sqlalchemy import text
 
@@ -79,73 +89,56 @@ depends_on: Union[str, Sequence[str], None] = None
 
 _log = logging.getLogger("alembic.runtime.migration")
 
-SELECT_ACCOUNTS = text(
-    "SELECT user_id, username, display_name, sso_provider FROM users"
+#: ``lower(trim(display_name))`` as a LIKE pattern matching itself literally.
+_LITERAL_NAME = (
+    "replace(replace(replace(lower(trim(display_name)), "
+    "'\\', '\\\\'), '%', '\\%'), '_', '\\_')"
 )
-RELABEL = text("UPDATE users SET display_name = :name WHERE user_id = :user_id")
+
+#: Rules 1-3 of the module docstring.
+EMAIL_DERIVED = (
+    "(sso_provider IS NOT NULL AND display_name = username) "
+    "OR display_name LIKE '%@%' "
+    f"OR lower(email) LIKE {_LITERAL_NAME} || '@%' ESCAPE '\\'"
+)
+
+RELABEL = (
+    "UPDATE users SET display_name = 'Member ' || substr(user_id, 1, 4) "
+    f"WHERE {EMAIL_DERIVED}"
+)
+
+#: Local accounts with an address username, for the Redis-form count.
+SELECT_LOCAL_ADDRESS_ACCOUNTS = text(
+    "SELECT username, display_name FROM users "
+    "WHERE sso_provider IS NULL AND username LIKE '%@%'"
+)
 
 #: ``RedisUserStore``'s email test, verbatim from the parent revision's code.
 _REDIS_EMAIL = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
 
 
-def database_store_form(username: str) -> str:
-    """``DatabaseUserStore._generate_display_name`` as the parent revision's code
-    had it. Frozen here because migrations are history."""
-    display = username.replace("_", " ").replace(".", " ").title()
-    return display if display else username
-
-
 def redis_store_form(username: str) -> str:
     """``RedisUserStore._generate_display_name`` as the parent revision's code had
-    it. Matched only to count, never to change (see the module docstring)."""
+    it. Matched only to count, never to change (see the module docstring).
+    Frozen here because migrations are history."""
     source = username.split("@")[0] if _REDIS_EMAIL.match(username) else username
     spaced = source.replace(".", " ").replace("_", " ").replace("-", " ")
     return " ".join(word.capitalize() for word in spaced.split())
 
 
-def neutral_label(user_id: str) -> str:
-    """The ruling's label, as ``auth.domain.display_name.neutral_display_name``
-    spells it today. Frozen here for the same reason."""
-    return f"Member {user_id[:4]}"
-
-
-def is_email_derived(
-    username: Optional[str], display_name: Optional[str], sso_provider: Optional[str]
-) -> bool:
-    """Whether a row's display name is one the old writers derived from an
-    email (rules 1 and 2 of the module docstring)."""
-    if not username or display_name is None:
-        return False
-    if sso_provider is not None:
-        return display_name == username
-    return "@" in username and display_name == database_store_form(username)
-
-
 def upgrade() -> None:
     """Relabel every email-derived display name ``Member <4 chars of user_id>``."""
     if op.get_context().as_sql:
-        op.execute(
-            "-- 016_no_email_derived_display_names: rows are matched in Python; "
-            "run this revision online to relabel them"
-        )
+        op.execute(RELABEL)
         return
     bind = op.get_bind()
-    relabelled = 0
-    redis_form_only = 0
-    for user_id, username, display_name, sso_provider in bind.execute(
-        SELECT_ACCOUNTS
-    ).fetchall():
-        if is_email_derived(username, display_name, sso_provider):
-            bind.execute(RELABEL, {"name": neutral_label(user_id), "user_id": user_id})
-            relabelled += 1
-        elif (
-            sso_provider is None
-            and username
-            and "@" in username
-            and display_name == redis_store_form(username)
-        ):
-            redis_form_only += 1
+    relabelled = bind.execute(text(RELABEL)).rowcount
     _log.info("016: relabelled %d email-derived display name(s)", relabelled)
+    redis_form_only = sum(
+        1
+        for username, display_name in bind.execute(SELECT_LOCAL_ADDRESS_ACCOUNTS)
+        if display_name == redis_store_form(username)
+    )
     if redis_form_only:
         _log.info(
             "016: left %d display name(s) that match only the Redis store's "

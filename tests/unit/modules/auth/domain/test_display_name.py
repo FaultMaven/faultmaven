@@ -9,8 +9,10 @@ every writer of ``users.display_name`` that consults it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis as fakeredis
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -21,6 +23,9 @@ from faultmaven.modules.auth.domain.display_name import (
     neutral_display_name,
     usable_display_name,
 )
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    provision_service_account_credential,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -29,6 +34,35 @@ class TestUsableDisplayName:
     @pytest.mark.parametrize("raw", [None, "", " ", " \t\n ", 42, ["Alice"]])
     def test_no_name(self, raw):
         assert usable_display_name(raw) is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "a@b.com",
+            "Name <a@b.com>",
+            "a@b.com (x)",
+            "  a@b.c ",
+            "@",
+        ],
+    )
+    def test_anything_holding_an_at_sign_is_no_name(self, raw):
+        assert usable_display_name(raw) is None
+        assert usable_display_name(raw, email="someone@else.com") is None
+
+    @pytest.mark.parametrize("raw", ["sam.smith", "SAM.SMITH", "  Sam.Smith "])
+    def test_the_emails_local_part_is_no_name(self, raw):
+        assert usable_display_name(raw, email="sam.smith@example.com") is None
+
+    def test_separators_are_not_normalised(self):
+        """``Sam Smith`` is what a person types for sam.smith@, not a rendering
+        of the address."""
+        assert (
+            usable_display_name("Sam Smith", email="sam.smith@example.com")
+            == "Sam Smith"
+        )
+
+    def test_the_local_part_rule_needs_the_email(self):
+        assert usable_display_name("sam.smith") == "sam.smith"
 
     def test_strips(self):
         assert usable_display_name("  Alice Smith \n") == "Alice Smith"
@@ -109,6 +143,20 @@ class TestDatabaseStoreRegistration:
 
         assert repo.save.call_args.args[0].display_name == "Daniel"
 
+    @pytest.mark.parametrize("name", ["dan@example.com", "dan", "Dan <x@y.com>"])
+    async def test_an_address_or_its_local_part_as_the_name_is_no_name(self, name):
+        store, repo = _database_store()
+
+        await store.create_user(
+            username="dan@example.com",
+            email="dan@example.com",
+            display_name=name,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+        )
+
+        written = repo.save.call_args.args[0]
+        assert written.display_name == f"Member {written.user_id[:4]}"
+
     async def test_a_whitespace_name_is_no_name(self):
         store, repo = _database_store()
 
@@ -141,6 +189,16 @@ class TestRedisStoreRegistration:
 
         assert user.display_name == "Carol X Y"
 
+    @pytest.mark.parametrize("name", ["dan@example.com", "Dan"])
+    async def test_an_address_or_its_local_part_as_the_name_is_no_name(self, name):
+        user = await _redis_store().create_user(
+            username="dan@example.com",
+            display_name=name,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+        )
+
+        assert user.display_name == f"Member {user.user_id[:4]}"
+
     async def test_a_given_name_is_kept_stripped(self):
         user = await _redis_store().create_user(
             username="dan@example.com",
@@ -149,3 +207,69 @@ class TestRedisStoreRegistration:
         )
 
         assert user.display_name == "Daniel"
+
+
+def _token_generator():
+    async def generate_refresh_token(user, *, state_read_at):
+        return "refresh"
+
+    return SimpleNamespace(generate_refresh_token=generate_refresh_token)
+
+
+def _saving_database_store() -> DatabaseUserStore:
+    """A DatabaseUserStore over a repository that keeps what it saves, so
+    ``update_user`` reads back what ``create_user`` wrote."""
+    rows: dict = {}
+    repo = AsyncMock()
+
+    async def _save(user):
+        rows[user.user_id] = user
+        return user
+
+    async def _get(user_id):
+        return rows.get(user_id)
+
+    async def _by_username(username):
+        return next((u for u in rows.values() if u.username == username), None)
+
+    repo.save.side_effect = _save
+    repo.update.side_effect = _save
+    repo.get.side_effect = _get
+    repo.get_by_username.side_effect = _by_username
+    repo.get_by_email.return_value = None
+    return DatabaseUserStore(repo)
+
+
+@pytest.mark.asyncio
+class TestServiceAccountProvisioning:
+    """The operator's service-account command writes a display name too."""
+
+    async def test_a_plain_username_is_named_after_itself(self):
+        store = _saving_database_store()
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=store,
+            token_generator=_token_generator(),
+        )
+
+        assert credential.user.display_name == "slack-agent (service account)"
+
+    async def test_an_address_username_is_labelled_neutrally(self):
+        """The Redis store: the database store cannot create an address
+        username without an email (it would mint ``x@y.com@faultmaven.example``),
+        and provisioning passes none."""
+        store = RedisUserStore(redis_client=fakeredis.FakeRedis(decode_responses=True))
+
+        credential = await provision_service_account_credential(
+            username="bot@example.com",
+            user_store=store,
+            token_generator=_token_generator(),
+        )
+
+        user_id = credential.user.user_id
+        assert credential.user.display_name == (
+            f"Member {user_id[:4]} (service account)"
+        )
+        stored = await store.get_user(user_id)
+        assert stored.display_name == credential.user.display_name

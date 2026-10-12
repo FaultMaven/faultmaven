@@ -649,6 +649,56 @@ async def test_jit_user_with_no_idp_name_gets_the_neutral_label(store, idp_name)
     assert "sam" not in user.display_name.lower()
 
 
+@pytest.mark.parametrize(
+    "idp_name",
+    [
+        "sam.smith@example.com",
+        "Sam <sam.smith@example.com>",
+        "sam.smith@example.com (contractor)",
+        "pat@other.example",
+        "sam.smith",
+        "SAM.SMITH",
+    ],
+)
+async def test_jit_user_whose_idp_name_is_an_address_gets_the_neutral_label(
+    store, idp_name
+):
+    """An IdP ``name`` that holds an address, or equals the email's local part
+    in any case, is no name (#1924)."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam.smith@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    user = repo.created[0]
+    assert user.display_name == f"Member {user.user_id[:4]}"
+
+
+async def test_jit_user_named_like_the_address_with_spaces_keeps_the_name(store):
+    """Separators are not normalised: ``Sam Smith`` is a typed name."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam.smith@example.com",
+        email_verified=True,
+        display_name="Sam Smith",
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    await callback(service, state=start.state)
+
+    assert repo.created[0].display_name == "Sam Smith"
+
+
 async def test_jit_user_idp_name_is_stripped(store):
     identity = SSOIdentity(
         provider="workos",
@@ -896,6 +946,31 @@ async def test_an_idp_name_sent_later_replaces_the_neutral_label(store):
 
     assert "code" in redirect_params(redirect)
     assert user.display_name == "Alex Example"
+
+
+@pytest.mark.parametrize(
+    "idp_name", ["alex@example.com", "Alex <alex@example.com>", "ALEX", "x@y.com (z)"]
+)
+async def test_profile_sync_keeps_the_stored_name_when_the_idp_sends_an_address(
+    store, idp_name
+):
+    """An IdP name holding an address, or the account email's local part, does
+    not replace the stored name (#1924)."""
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_123",
+        email="alex@example.com",
+        email_verified=True,
+        display_name=idp_name,
+    )
+    user = make_user(display_name="Member 3f9a")
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert user.display_name == "Member 3f9a"
 
 
 @pytest.mark.parametrize("idp_name", [None, "", "  \n "])

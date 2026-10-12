@@ -60,48 +60,69 @@ async def _execute(url: str, *statements: str, params: dict | None = None) -> li
         await engine.dispose()
 
 
+#: (username, email, display_name, sso_provider, relabelled?) per enterprise;
+#: ``{n}`` makes each enterprise's values unique.
+_SHAPES = (
+    ("sam{n}", "sam{n}@acme.com", "sam{n}", "workos", True),
+    ("jane{n}", "jane{n}@acme.com", "Jane Doe", "workos", False),
+    ("frank{n}-2", "frank{n}@acme.com", "FRANK{n}", "workos", True),
+    ("pat{n}", "pat{n}@acme.com", "pat{n}@example.com", "workos", True),
+    (
+        "alice.smith{n}@example.com",
+        "alice.smith{n}@example.com",
+        "Alice Smith{n}@Example Com",
+        None,
+        True,
+    ),
+    ("quinn{n}", "quinn{n}@example.com", "Quinn <quinn{n}@example.com>", None, True),
+    ("erin{n}", "erin{n}@example.com", "erin{n}@example.com", None, True),
+    ("samsmith{n}", "sam.smith{n}@example.com", "Sam Smith", None, False),
+    ("samax{n}", "samAx{n}@example.com", "sam_x{n}", None, False),
+)
+
+
 async def _seed(url: str) -> dict:
-    """Two enterprises, each with an SSO account named by its username, an
-    SSO account the IdP named, and a local account whose name title-cases its
-    address. Returns user_id -> the display name 016 must leave."""
+    """Two enterprises, each holding every row shape of ``_SHAPES``. Returns
+    user_id -> the display name 016 must leave."""
     tag = uuid.uuid4().hex[:8]
     expected: dict = {}
-    statements: list[str] = []
-    for index, enterprise in enumerate((f"ent_a_{tag}", f"ent_b_{tag}")):
-        statements.append(
-            "INSERT INTO enterprises (enterprise_id, name, slug) "
-            f"VALUES ('{enterprise}', 'Enterprise {enterprise}', '{enterprise}')"
-        )
-        derived, named, local = (str(uuid.uuid4()) for _ in range(3))
-        rows = (
-            (
-                derived,
-                f"sam{index}{tag}",
-                f"sam{index}{tag}",
-                "'workos'",
-                f"Member {derived[:4]}",
-            ),
-            (named, f"jane{index}{tag}", "Jane Doe", "'workos'", "Jane Doe"),
-            (
-                local,
-                f"alice.smith{index}@example.com",
-                f"Alice Smith{index}@Example Com",
-                "NULL",
-                f"Member {local[:4]}",
-            ),
-        )
-        for user_id, username, display_name, provider, after in rows:
-            sso_id = f"'sub_{user_id}'" if provider != "NULL" else "NULL"
-            password = "NULL" if provider != "NULL" else "'x'"
-            statements.append(
-                "INSERT INTO users (user_id, enterprise_id, username, email, "
-                "display_name, hashed_password, sso_provider, sso_provider_id) "
-                f"VALUES ('{user_id}', '{enterprise}', '{username}', "
-                f"'{user_id}@example.com', '{display_name}', {password}, "
-                f"{provider}, {sso_id})"
-            )
-            expected[user_id] = after
-    await _execute(url, *statements)
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as conn:
+            for index, enterprise in enumerate((f"ent_a_{tag}", f"ent_b_{tag}")):
+                await conn.execute(
+                    text(
+                        "INSERT INTO enterprises (enterprise_id, name, slug) "
+                        "VALUES (:e, :e, :e)"
+                    ),
+                    {"e": enterprise},
+                )
+                n = f"{index}{tag}"
+                for username, email, name, provider, derived in _SHAPES:
+                    user_id = str(uuid.uuid4())
+                    await conn.execute(
+                        text(
+                            "INSERT INTO users (user_id, enterprise_id, username, "
+                            "email, display_name, hashed_password, sso_provider, "
+                            "sso_provider_id) VALUES (:u, :e, :username, :email, "
+                            ":name, :password, :provider, :sub)"
+                        ),
+                        {
+                            "u": user_id,
+                            "e": enterprise,
+                            "username": username.format(n=n),
+                            "email": email.format(n=n),
+                            "name": name.format(n=n),
+                            "password": None if provider else "x",
+                            "provider": provider,
+                            "sub": f"sub_{user_id}" if provider else None,
+                        },
+                    )
+                    expected[user_id] = (
+                        f"Member {user_id[:4]}" if derived else name.format(n=n)
+                    )
+    finally:
+        await engine.dispose()
     return expected
 
 
@@ -129,7 +150,7 @@ async def test_the_owner_relabels_every_enterprises_derived_names():
 
             result = alembic_on(owner_url, f"upgrade {_REVISION}")
             assert result.returncode == 0, result.stderr[-2000:]
-            assert "016: relabelled 4 email-derived display name(s)" in (
+            assert "016: relabelled 12 email-derived display name(s)" in (
                 result.stderr
             ), result.stderr[-2000:]
             assert await _names(su_url, expected) == expected

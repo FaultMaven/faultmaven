@@ -14,7 +14,8 @@ the display name at sign-up. A name the IdP sends later overwrites it.
 This module is the one owner of that fallback. Every writer of
 ``users.display_name`` that has no real name in hand calls
 :func:`neutral_display_name`, and every writer handed a name from outside (an
-IdP, a registration form) passes it through :func:`usable_display_name` first.
+IdP, a registration form, an operator command) passes it through
+:func:`usable_display_name` first, with the account's email when it has one.
 """
 
 from __future__ import annotations
@@ -27,19 +28,32 @@ MAX_DISPLAY_NAME_LENGTH = 200
 _NEUTRAL_PREFIX = "Member"
 
 
-def usable_display_name(raw: object) -> Optional[str]:
+def usable_display_name(raw: object, email: Optional[str] = None) -> Optional[str]:
     """``raw`` stripped and capped at the column width, or ``None`` when it
-    holds no name.
+    holds no name the account may show other people.
 
-    Whitespace-only counts as no name: the ``users`` CHECK
-    ``LENGTH(TRIM(display_name)) > 0`` refuses it, so writing one fails the
-    write rather than keeping the name already stored.
+    No name:
+
+    * empty or whitespace-only. The ``users`` CHECK
+      ``LENGTH(TRIM(display_name)) > 0`` refuses it, so writing one fails the
+      write rather than keeping the name already stored;
+    * anything containing ``@``. An IdP ``name`` or a registration form can hold
+      an address (``pat@example.com``, ``Quinn <quinn@example.com>``,
+      ``x@y.com (contractor)``), and a name with an ``@`` is not worth the
+      risk of being one;
+    * equal, ignoring case, to ``email``'s local part (the whole address is
+      already refused by the ``@`` rule). Separators are not normalised:
+      ``Sam Smith`` stays a name for ``sam.smith@…``, which a person types.
     """
     if not isinstance(raw, str):
         return None
     name = raw.strip()
-    if not name:
+    if not name or "@" in name:
         return None
+    if email:
+        local_part = email.strip().split("@", 1)[0]
+        if local_part and name.casefold() == local_part.casefold():
+            return None
     return name[:MAX_DISPLAY_NAME_LENGTH].rstrip()
 
 

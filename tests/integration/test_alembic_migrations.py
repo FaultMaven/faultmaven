@@ -1506,15 +1506,17 @@ class TestCaseDriverRevision:
 
 
 class TestNoEmailDerivedNamesRevision:
-    """016 relabels the display names the old writers derived from an email
-    (#1924) and nothing else. The downgrade restores nothing."""
+    """016 relabels the display names derived from an email (#1924) and nothing
+    else. The downgrade restores nothing, and the offline script is the same
+    UPDATE an online run executes."""
 
-    #: (user_id, username, display_name, sso_provider, expected after 016)
+    #: (user_id, username, email, display_name, sso_provider, expected after 016)
     ROWS = (
         # SSO, JIT stored the username (the email's local part): relabelled.
         (
             "3f9a1c2e-0000-4000-8000-000000000001",
             "sam",
+            "sam@acme.com",
             "sam",
             "workos",
             "Member 3f9a",
@@ -1523,54 +1525,115 @@ class TestNoEmailDerivedNamesRevision:
         (
             "a1b2c3d4-0000-4000-8000-000000000002",
             "jane",
+            "jane@acme.com",
             "Jane Doe",
             "workos",
             "Jane Doe",
         ),
-        # SSO whose username was renamed after JIT: the documented false
-        # negative, kept.
+        # SSO whose username was renamed after JIT, name equal to neither the
+        # username nor the local part: the documented false negative, kept.
         (
             "b0c0d0e0-0000-4000-8000-000000000003",
             "kim-renamed",
+            "kimberly@acme.com",
             "kim",
             "workos",
             "kim",
+        ),
+        # SSO, the IdP sent the local part in another case as the name.
+        (
+            "f00dface-0000-4000-8000-000000000004",
+            "frank-2",
+            "frank@acme.com",
+            "FRANK",
+            "workos",
+            "Member f00d",
+        ),
+        # SSO, the IdP sent an address as the name.
+        (
+            "0a0b0c0d-0000-4000-8000-000000000005",
+            "pat",
+            "pat@acme.com",
+            "pat@example.com",
+            "workos",
+            "Member 0a0b",
         ),
         # Local, an address as the username and no display name given: the
         # database store title-cased the address. Relabelled.
         (
-            "c3d4e5f6-0000-4000-8000-000000000004",
+            "c3d4e5f6-0000-4000-8000-000000000006",
+            "alice.smith@example.com",
             "alice.smith@example.com",
             "Alice Smith@Example Com",
             None,
             "Member c3d4",
         ),
+        # Local, a name wrapping an address.
+        (
+            "1a2b3c4d-0000-4000-8000-000000000007",
+            "quinn",
+            "quinn@example.com",
+            "Quinn <quinn@example.com>",
+            None,
+            "Member 1a2b",
+        ),
+        # Local, the account's own address as the name.
+        (
+            "5e6f7a8b-0000-4000-8000-000000000008",
+            "erin",
+            "erin@example.com",
+            "erin@example.com",
+            None,
+            "Member 5e6f",
+        ),
         # Local, matches only the Redis store's local-part form: a name the
         # user may have typed. Counted, kept.
         (
-            "e5f60718-0000-4000-8000-000000000005",
+            "e5f60718-0000-4000-8000-000000000009",
+            "bob.jones@example.com",
             "bob.jones@example.com",
             "Bob Jones",
             None,
             "Bob Jones",
         ),
+        # A typed name for sam.smith@: separators are not normalised. Kept.
+        (
+            "9c8d7e6f-0000-4000-8000-00000000000a",
+            "samsmith",
+            "sam.smith@example.com",
+            "Sam Smith",
+            None,
+            "Sam Smith",
+        ),
+        # A LIKE wildcard in the name must not match: "sam_x" is not "samAx".
+        (
+            "2b3c4d5e-0000-4000-8000-00000000000b",
+            "samax",
+            "samAx@example.com",
+            "sam_x",
+            None,
+            "sam_x",
+        ),
         # Local, a plain username's title-cased form: chosen, not derived. Kept.
         (
-            "07182930-0000-4000-8000-000000000006",
+            "07182930-0000-4000-8000-00000000000c",
             "carol_x",
+            "carol@example.com",
             "Carol X",
             None,
             "Carol X",
         ),
         # Local, an address as the username with an explicit name: kept.
         (
-            "92ab3c4d-0000-4000-8000-000000000007",
+            "92ab3c4d-0000-4000-8000-00000000000d",
+            "dan@example.com",
             "dan@example.com",
             "Daniel",
             None,
             "Daniel",
         ),
     )
+    RELABELLED = sum(1 for row in ROWS if row[3] != row[5])
 
     def _seed(self) -> None:
         conn = sqlite3.connect(TEST_DB)
@@ -1578,7 +1641,7 @@ class TestNoEmailDerivedNamesRevision:
             enterprise = conn.execute(
                 "SELECT enterprise_id FROM enterprises LIMIT 1"
             ).fetchone()[0]
-            for user_id, username, display_name, sso_provider, _ in self.ROWS:
+            for user_id, username, email, display_name, provider, _ in self.ROWS:
                 conn.execute(
                     "INSERT INTO users (user_id, enterprise_id, username, email, "
                     "display_name, hashed_password, sso_provider, sso_provider_id) "
@@ -1587,11 +1650,11 @@ class TestNoEmailDerivedNamesRevision:
                         user_id,
                         enterprise,
                         username,
-                        f"{user_id}@example.com",
+                        email,
                         display_name,
-                        None if sso_provider else "x",
-                        sso_provider,
-                        f"sub_{user_id}" if sso_provider else None,
+                        None if provider else "x",
+                        provider,
+                        f"sub_{user_id}" if provider else None,
                     ),
                 )
             conn.commit()
@@ -1620,8 +1683,9 @@ class TestNoEmailDerivedNamesRevision:
 
         result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
-        assert self._names() == {row[0]: row[4] for row in self.ROWS}
-        assert "016: relabelled 2 email-derived display name(s)" in result.stderr
+        assert self._names() == {row[0]: row[5] for row in self.ROWS}
+        assert self.RELABELLED == 6
+        assert "016: relabelled 6 email-derived display name(s)" in result.stderr
         assert "016: left 1 display name(s) that match only the Redis" in (
             result.stderr
         )
@@ -1657,18 +1721,31 @@ class TestNoEmailDerivedNamesRevision:
         assert "016: relabelled 0 email-derived display name(s)" in result.stderr
         assert self._names() == relabelled
 
-    def test_offline_emits_no_statement_against_users(self):
-        pg = "postgresql://offline@localhost/offline"
+    @pytest.mark.parametrize(
+        "url", ["postgresql://offline@localhost/offline", "sqlite:///offline.db"]
+    )
+    def test_offline_emits_the_online_update(self, url):
+        """``--sql`` prints the very statement an online run executes, with no
+        doubled ``%`` from a pyformat driver's escaping."""
+        import importlib.util
+
+        path = next(
+            (PROJECT_ROOT / "alembic" / "versions").glob(
+                f"*_{NO_EMAIL_DERIVED_NAMES_REVISION}_*.py"
+            )
+        )
+        spec = importlib.util.spec_from_file_location("rev016", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
         up = run_alembic(
             f"upgrade {EVIDENCE_SUBMITTED_DATA_REVISION}:"
             f"{NO_EMAIL_DERIVED_NAMES_REVISION} --sql",
-            pg,
+            url,
         )
         assert up.returncode == 0, up.stderr
-        assert "-- 016_no_email_derived_display_names: rows are matched in Python" in (
-            up.stdout
-        )
-        assert "UPDATE users" not in up.stdout
+        assert f"{module.RELABEL};" in up.stdout
+        assert "%%" not in up.stdout
         assert "ROW LEVEL SECURITY" not in up.stdout
 
 

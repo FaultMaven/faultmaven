@@ -21,6 +21,10 @@ from typing import Any, Optional
 import jwt
 
 from faultmaven.config.tenant_context import get_current_enterprise_id
+from faultmaven.modules.auth.domain.display_name import (
+    neutral_display_name,
+    usable_display_name,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
@@ -41,6 +45,9 @@ VALID_ACCOUNT_KINDS = frozenset({INDIVIDUAL_ACCOUNT_KIND, SERVICE_ACCOUNT_KIND})
 #: kind — which is what "slack" as an account_kind would have forced.
 SLACK_SERVICE_CHANNEL = "slack"
 VALID_SERVICE_CHANNELS = frozenset({SLACK_SERVICE_CHANNEL})
+
+#: Appended to a service account's display name.
+_SERVICE_ACCOUNT_SUFFIX = " (service account)"
 
 
 class ServiceAccountProvisioningError(Exception):
@@ -173,13 +180,22 @@ async def provision_service_account_credential(
 
     user = await user_store.get_user_by_username(username)
     if user is None:
+        # Through the display-name rule like every other writer (#1924): an
+        # address-shaped username would put the address in the name, so the
+        # store labels that account neutrally and the suffix is added after.
+        display_name = usable_display_name(f"{username}{_SERVICE_ACCOUNT_SUFFIX}")
         user = await user_store.create_user(
             username=username,
-            display_name=f"{username} (service account)",
+            display_name=display_name,
             account_kind=account_kind,
             service_channel=service_channel,
             enterprise_id=anchor_enterprise_id,
         )
+        if display_name is None:
+            user.display_name = (
+                f"{neutral_display_name(user.user_id)}{_SERVICE_ACCOUNT_SUFFIX}"
+            )
+            user = await user_store.update_user(user)
         account_created = True
     elif (
         getattr(user, "account_kind", None) != account_kind

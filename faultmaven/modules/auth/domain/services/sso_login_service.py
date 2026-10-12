@@ -1532,9 +1532,10 @@ class SSOLoginService:
         username = await self._free_username(derive_username(identity.email))
         user_id = str(uuid.uuid4())
         # Never the username: it is the email's local part, and the display
-        # name is shown to everyone who shares a case with this account (#1924).
+        # name is shown to everyone who shares a case with this account. Nor an
+        # IdP name that is the address or its local part (#1924).
         display_name = usable_display_name(
-            identity.display_name
+            identity.display_name, email=identity.email
         ) or neutral_display_name(user_id)
         try:
             user = RepositoryUser(
@@ -1666,8 +1667,9 @@ class SSOLoginService:
             user.email_verified_at = now
         # A name the IdP sends replaces the stored one, the neutral label
         # included (#1924). A blank or whitespace-only name is no name: the
-        # column's CHECK refuses it, and the login must not fail over it.
-        idp_name = usable_display_name(identity.display_name)
+        # column's CHECK refuses it, and the login must not fail over it. Nor
+        # is the account's address or its local part.
+        idp_name = usable_display_name(identity.display_name, email=user.email)
         if idp_name and idp_name != getattr(user, "display_name", None):
             user.display_name = idp_name
         user.last_login_at = now

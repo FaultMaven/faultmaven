@@ -265,7 +265,9 @@ class DatabaseUserStore:
             user_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
 
-            display_name = self._display_name_for(user_id, username, display_name)
+            display_name = self._display_name_for(
+                user_id, username, email, display_name
+            )
 
             # Create User model for repository
             user = User(
@@ -461,16 +463,17 @@ class DatabaseUserStore:
         return bool(self.email_pattern.match(email))
 
     def _display_name_for(
-        self, user_id: str, username: str, display_name: Optional[str]
+        self, user_id: str, username: str, email: str, display_name: Optional[str]
     ) -> str:
         """The display name a new account is stored with (#1924).
 
-        The name given, when it holds one. Otherwise never one derived from an
-        email: a username containing ``@`` is an address, so the account gets
-        the neutral label. A plain username was chosen by its user or the
-        operator, so its title-cased form is a name and carries no address.
+        The name given, when it is one (not the address, nor its local part, nor
+        anything holding an ``@``). Otherwise never one derived from an email: a
+        username containing ``@`` is an address, so the account gets the neutral
+        label. A plain username was chosen by its user or the operator, so its
+        title-cased form is a name and carries no address.
         """
-        given = usable_display_name(display_name)
+        given = usable_display_name(display_name, email=email)
         if given:
             return given
         if "@" in username:

@@ -13,7 +13,7 @@ the principal would fail here rather than pass on a hand-built ``DevUser``.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import frontmatter
@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.api.v1.auth_dependencies import get_current_user_optional
+from faultmaven.infrastructure.persistence.user_repository import User
 from faultmaven.modules.knowledge.api import conversion_routes as cr
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -36,6 +37,8 @@ USER_ID = "3f9a1c2e-0000-4000-8000-000000000001"
 ENTERPRISE_ID = "ent-1924"
 #: The JWT's ``username`` claim: an SSO username is the email's local part.
 USERNAME = "alice.smith"
+EMAIL = "alice.smith@example.com"
+_NOW = datetime(2026, 10, 12, tzinfo=timezone.utc)
 #: The name on the account row. Quotes and a backslash, so the YAML written
 #: must escape them to read back as this one value.
 ROW_NAME = 'Alice "Ace" O\'Neil \\ Ops'
@@ -61,22 +64,32 @@ class _AuthService:
         return {
             "sub": USER_ID,
             "username": USERNAME,
-            "email": "alice.smith@example.com",
+            "email": EMAIL,
             "roles": ["user"],
             "auth_mode": "local",
         }
 
 
 class _AccountReader:
-    """The user repository's ``get_many_in_enterprise``, over one row."""
+    """The user repository's ``get_many_in_enterprise``, over one full row: the
+    repository's own ``User`` model, username and email included, so a writer
+    that published either instead of the display name is caught here."""
 
     def __init__(self):
         self.calls: list = []
 
     async def get_many_in_enterprise(self, enterprise_id, user_ids):
         self.calls.append((enterprise_id, list(user_ids)))
-        row = SimpleNamespace(
-            user_id=USER_ID, enterprise_id=ENTERPRISE_ID, display_name=ROW_NAME
+        row = User(
+            user_id=USER_ID,
+            enterprise_id=ENTERPRISE_ID,
+            username=USERNAME,
+            email=EMAIL,
+            display_name=ROW_NAME,
+            sso_provider="workos",
+            sso_provider_id="user_wos_1924",
+            created_at=_NOW,
+            updated_at=_NOW,
         )
         return [row] if enterprise_id == ENTERPRISE_ID and USER_ID in user_ids else []
 

@@ -176,7 +176,8 @@ CREATE TABLE users (
     -- Profile
     -- Shown to people other than the owner (a shared case's creator and
     -- driver, driver candidates, a verified runbook's verified_by), so never
-    -- derived from the email (#1924): an account with no real name holds
+    -- derived from the email (#1924): a name holding '@' or equal to the
+    -- email's local part is no name, and an account with no real name holds
     -- 'Member ' || first 4 chars of user_id. One owner of the rule:
     -- faultmaven/modules/auth/domain/display_name.py.
     display_name VARCHAR(200),
