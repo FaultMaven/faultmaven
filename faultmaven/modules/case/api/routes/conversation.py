@@ -244,10 +244,9 @@ async def resume_case_in_session(
 
     try:
         # TWO gates, because this route names two resources (#1390, #1393).
-        # `faultmaven/api/routes/sessions.py` states the rule its own surface
-        # follows — the case gate "covers the case named in the path and
-        # nothing else … Both halves are needed; neither is sufficient" — and
-        # this route had neither.
+        # The case gate covers the case named in the path and nothing else, the
+        # session gate the session; both halves are needed, neither is
+        # sufficient — and this route had neither.
         #
         # ── 1. The case ──────────────────────────────────────────────────
         # Enforced in BOTH places, deliberately (#1398).
@@ -308,10 +307,8 @@ async def resume_case_in_session(
         # answer — `ServiceException("Session store not configured")` is the
         # shipped case. Treating it as a nullable return let that escape to the
         # handler's bare `except` and answer 500 on a request the server simply
-        # could not evaluate. An unevaluable gate is a 503, which is the rule
-        # `faultmaven/api/routes/sessions.py` already states for its own:
-        # "503 if the case service is unavailable (the gate cannot be
-        # evaluated, so nothing is served)".
+        # could not evaluate. An unevaluable gate is a 503: the gate cannot be
+        # evaluated, so nothing is served.
         try:
             session = await session_service.get_session(session_id, validate=True)
         except (ServiceException, SessionException) as exc:

@@ -352,14 +352,11 @@ High-Cardinality Tables (10):
 ├── case_tags             -- Free-form tags on a case
 ├── case_entities         -- Cross-artifact entity index
 └── reports               -- Generated case-summary documents (resolution/closure)
-
-Investigation context (1):
-└── investigation_sessions  -- Per-investigation session (case-owned)
 ```
 
-The full live table count across user + case + knowledge + config domains is **41** — see `er-diagram.md` for the authoritative enumeration.
+See `er-diagram.md` for the authoritative enumeration of every live table across the user, case, knowledge and config domains.
 
-Tables historically present and removed (`evidence_artifacts`, `standalone_evidence`, `agent_executions`, `agent_tool_calls`, `sessions`) are documented in the appendix at the end of this file.
+Tables historically present and removed (`evidence_artifacts`, `standalone_evidence`, `agent_executions`, `agent_tool_calls`, `investigation_sessions`, `sessions`) are documented in the appendix at the end of this file.
 
 ### 4.2 cases (Main Table)
 
@@ -1124,42 +1121,13 @@ COMMENT ON TABLE reports IS 'Auto-generated case-summary documents (resolution /
 - `linked_to_closure` marks reports attached during case closure.
 - Cascade delete when the parent case is deleted — these are case-history artifacts, not standalone records.
 
-### 4.11 investigation_sessions
+### 4.11 investigation_sessions — retired
 
-The investigation engine groups a user-initiated run into a session, which
-deletes by CASCADE from `cases`. Note: `investigation_sessions` is an
-investigation session (per-investigation context), **not** an auth session. Auth
-sessions live in Redis.
-
-
-#### investigation_sessions
-
-Top of the cascade. One session groups all agent executions that occur within a single user-initiated investigation run. This table is case-owned (lives under the case module), not auth-owned.
-
-**When written**: Created when the user submits a turn and the milestone engine starts processing. A session spans multiple agent executions (one per LLM call iteration).
-
-**Key columns** (see `InvestigationSessionModel` in `models.py`):
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `session_id` | VARCHAR(36) PK | |
-| `case_id` | VARCHAR(36) FK → cases CASCADE | |
-| `user_id` | VARCHAR(36) | |
-| `enterprise_id` | VARCHAR(36) NOT NULL | Isolation key (ADR-017 D1); FK → enterprises CASCADE |
-| `organization_id` | VARCHAR(36) nullable | Billing attribution only; FK → organizations SET NULL |
-| `state` | VARCHAR(32) | `active\|paused\|completed\|abandoned` — renamed from `status` in migration 015 (`investigation_sessions_state_check`) |
-| `started_at` | TIMESTAMPTZ | |
-| `ended_at` | TIMESTAMPTZ nullable | |
-| `last_activity_at` | TIMESTAMPTZ | |
-| `total_duration_ms` | INTEGER nullable | |
-| `session_goal` | TEXT nullable | |
-| `findings_summary` | TEXT nullable | |
-| `total_token_usage` | INTEGER | |
-| `total_agent_executions` | INTEGER | |
-| `token_budget_limit` | INTEGER nullable | |
-| `metadata` | TEXT (JSON) | stored as `session_metadata` Python attribute |
-
-**Applicability**: Both deployments.
+Dropped by revision 017 (#1935, owner ruling 2026-10-12). It was the top of an
+agent-execution hierarchy whose lower levels were already gone, served by routes
+no first-party client called; its counters had no writer and its budget was
+never enforced. Appendix A records what replaces each of its purposes. The
+section number is kept so references to §4.12 onward stay valid.
 
 ### 4.12 Supporting Tables
 
@@ -1341,7 +1309,6 @@ WHERE e.case_id = :case_id
 - ✅ `case_tags`
 - ✅ `case_entities`
 - ✅ `reports`
-- ✅ `investigation_sessions`
 - ✅ `knowledge_items`
 - ✅ `conversion_jobs`
 - ✅ `conversion_drafts`
@@ -1659,7 +1626,6 @@ DELETE FROM cases WHERE case_id = :case_id;
 -- - All uploaded_files (ON DELETE CASCADE)
 -- - All case_actions (ON DELETE CASCADE)
 -- - All reports (ON DELETE CASCADE)
--- - All investigation_sessions (ON DELETE CASCADE)
 ```
 
 ---
@@ -1670,7 +1636,7 @@ All tenanted case-domain tables get RLS policies in PostgreSQL deployments, keye
 
 **Tenanted case-domain tables** covered by RLS:
 
-`cases`, `case_messages`, `case_actions`, `case_tags`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
+`cases`, `case_messages`, `case_actions`, `case_tags`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
 
 > The baseline migration (`001_enterprise_baseline`) creates every one of these policies from a shared table list at once, keyed on `enterprise_id`. That list does not reach a table a later revision adds: a new tenanted case-domain table is enrolled by the revision that creates it, or it silently escapes tenant isolation.
 
@@ -1711,7 +1677,7 @@ alembic upgrade head
 psql -U faultmaven -d faultmaven_cases -c "\dt"
 # Expected case-domain tables: cases, evidence, hypotheses, hypothesis_evidence,
 # solutions, uploaded_files, case_messages, case_actions, case_tags,
-# case_entities, reports, investigation_sessions.
+# case_entities, reports.
 # See er-diagram.md for the full table enumeration across all domains.
 
 # Verify indexes created
@@ -1922,7 +1888,8 @@ The following tables and columns existed in earlier iterations of this design bu
 
 - **`evidence_artifacts`** — Standalone-evidence holding table written by a now-removed API endpoint and never read by the investigation engine. Replaced by `evidence` carrying `case_id NOT NULL`. The "primary evidence per case" concept that lived on `evidence_artifacts.is_primary` is preserved on `evidence.is_primary`.
 - **`standalone_evidence`** — Companion to `evidence_artifacts`; same rationale. The standalone evidence path (`POST /api/v1/evidence`, `POST /api/v1/evidence/{id}/link`, the `EvidenceService` and `APIEvidenceArtifactService`) is removed entirely.
-- **`agent_executions` / `agent_tool_calls`** — Per-turn agent run metadata and its tool-call log, written by an `AgentOrchestrationService` behind a `POST /cases/{id}/sessions/{sid}/execute` endpoint. Both the service and the endpoint went when the milestone engine took over turn execution, leaving the tables with no writer; they are absent from the ORM and from the baseline. Investigation activity is recorded in `case_messages` and `case_actions`, and `investigation_sessions.total_agent_executions` is a counter on the session row rather than a pointer into a table of executions.
+- **`agent_executions` / `agent_tool_calls`** — Per-turn agent run metadata and its tool-call log, written by an `AgentOrchestrationService` behind a `POST /cases/{id}/sessions/{sid}/execute` endpoint. Both the service and the endpoint went when the milestone engine took over turn execution, leaving the tables with no writer; they are absent from the ORM and from the baseline. Investigation activity is recorded in `case_messages` and `case_actions`.
+- **`investigation_sessions`** — The top of the same four-level hierarchy (Case → InvestigationSession → AgentExecution → AgentToolCall), served by `/api/v1/cases/{case_id}/sessions…` routes no first-party client called. Its counters (`total_token_usage`, `total_agent_executions`) had no writer once the levels below it went, and its budget was never enforced. Retired with its routes, service and repository in #1935; revision `017_drop_investigation_sessions` drops the table. Per-period grouping lives in `turn_history`, `case_messages` and `turn_receipts`; token spend in `llm_turn_spend` / `llm_usage_daily`; pause and resume in the case state; one active driver per case in ADR-020.
 - **`sessions`** — SQL auth-session table. Auth sessions are Redis-only (FakeRedis on local, Redis on cloud) — they never had any business in the case-domain schema.
 
 ### Removed columns

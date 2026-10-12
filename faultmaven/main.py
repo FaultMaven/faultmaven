@@ -64,7 +64,6 @@ from .api.routes.admin import router as admin_users_router
 from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
-from .api.routes.sessions import router as investigation_sessions_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
 
 # The application lifespan (startup fail-fast gates, background tasks,
@@ -200,11 +199,6 @@ if len(_TURN_ROUTE_PATHS) != 1:
         f"{_TURN_ROUTE_PATHS}"
     )
 declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
-
-app.include_router(
-    investigation_sessions_router
-)  # No prefix - router already has /api/v1/cases/{case_id}/sessions
-logger.info("✅ Investigation session endpoints added")
 
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")

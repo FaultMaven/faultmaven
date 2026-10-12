@@ -449,21 +449,6 @@ def generate_user_id() -> str:
     return f"user_{uuid4().hex[:12]}"
 
 
-def generate_session_id() -> str:
-    """Generate a valid session ID."""
-    return f"sess_{uuid4().hex[:12]}"
-
-
-def generate_agent_execution_id() -> str:
-    """Generate a valid agent execution ID."""
-    return f"agex_{uuid4().hex[:12]}"
-
-
-def generate_investigation_session_id() -> str:
-    """Generate a valid investigation session ID."""
-    return f"is_{uuid4().hex[:12]}"
-
-
 @contextmanager
 def sanitize_pii_pinned(value: bool) -> Iterator[None]:
     """Pin ``SANITIZE_PII`` for the block, whatever the CI job exports.

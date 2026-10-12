@@ -251,10 +251,8 @@ async def create_case(
             # the shipped case. Treating it as a nullable return let that reach
             # this handler's own `except ServiceException` arm and answer 500
             # "Failed to create case" on a request the server simply could not
-            # evaluate. An unevaluable gate is a 503, which is the rule
-            # `faultmaven/api/routes/sessions.py` already states for its own:
-            # "503 if the case service is unavailable (the gate cannot be
-            # evaluated, so nothing is served)".
+            # evaluate. An unevaluable gate is a 503: the gate cannot be
+            # evaluated, so nothing is served.
             try:
                 session = await session_service.get_session(
                     request.session_id, validate=True

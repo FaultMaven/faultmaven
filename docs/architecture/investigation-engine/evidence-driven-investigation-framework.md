@@ -766,10 +766,10 @@ See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-m
 
 When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle has two phases:
 
-1. **Terminal transition** — Investigation stops. Active sessions completed. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
+1. **Terminal transition** — Investigation stops. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
 2. **Terminal mode** — Case state is immutable, but users can interact via the copilot chat (text-only, attachments disabled). Three capabilities: ask questions about the investigation (TERMINAL_TEMPLATE), regenerate the summary report, or generate a runbook (RESOLVED cases only). Report viewing is via Dashboard. Users archive the case from Dashboard when done.
 
-See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation, session cleanup, and auto-summary content.
+See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation and auto-summary content.
 
 ### 7.5.1 Knowledge Flywheel
 

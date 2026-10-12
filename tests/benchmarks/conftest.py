@@ -35,9 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 # DatabaseEvidenceArtifactRepository removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion).
-from faultmaven.infrastructure.persistence.investigation_session_repository import (
-    DatabaseInvestigationSessionRepository,
-)
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import (
@@ -308,14 +305,6 @@ def warm_repository_paths():
     adds ~50MB here, comfortably inside that test's 1500MB assertion (~432MB is
     already resident from `tests/conftest.py`'s own imports).
 
-    Coverage caveat: `test_investigation_session_service_operations.py`
-    defines its own repository fixtures that do NOT request this one. Under the full-suite
-    invocation CI uses, alphabetical collection runs the warmed
-    `test_case_operations.py` first, so it is warm by the time it executes.
-    Run standalone it is not, and the cold import lands in the first
-    iteration of its timed loop — absorbed by its p95 assertion rather
-    than failing. Point those fixtures here too if that ever stops holding.
-
     This warms the import chain and SQLAlchemy/aiosqlite statement setup on a
     throwaway engine, so it perturbs no benchmark's own state. Deliberately a
     *synchronous* fixture driving its own loop via `asyncio.run`: a
@@ -363,14 +352,6 @@ async def case_repository(
 
 # evidence_artifact_repository fixture removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion). Evidence is case-tied only.
-
-
-@pytest.fixture
-async def investigation_session_repository(
-    benchmark_session, warm_repository_paths
-) -> DatabaseInvestigationSessionRepository:
-    """Create investigation session repository for benchmarks."""
-    return DatabaseInvestigationSessionRepository(benchmark_session)
 
 
 @pytest.fixture

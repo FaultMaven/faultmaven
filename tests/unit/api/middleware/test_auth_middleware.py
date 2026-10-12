@@ -61,8 +61,8 @@ def sample_user() -> AuthenticatedUser:
             "cases:read",
             "cases:write",
             "cases:delete",
-            "sessions:read",
-            "sessions:execute",
+            "evidence:read",
+            "evidence:upload",
         ],
         token_jti="token-789",
     )
@@ -79,7 +79,7 @@ def member_user() -> AuthenticatedUser:
         permissions=[
             "cases:read",
             "cases:write",
-            "sessions:read",
+            "evidence:read",
         ],
         token_jti="token-abc",
     )
@@ -95,7 +95,7 @@ def viewer_user() -> AuthenticatedUser:
         roles=["viewer"],
         permissions=[
             "cases:read",
-            "sessions:read",
+            "evidence:read",
         ],
         token_jti="token-def",
     )

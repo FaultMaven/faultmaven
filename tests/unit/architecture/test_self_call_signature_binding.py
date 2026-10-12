@@ -87,9 +87,6 @@ _MODULES_UNDER_GUARD = {
     "faultmaven.modules.knowledge.domain.services.knowledge_service": (
         "KnowledgeService"
     ),
-    "faultmaven.modules.case.domain.services.investigation_session_service": (
-        "APIInvestigationSessionService"
-    ),
     "faultmaven.modules.auth.domain.services.sso_login_service": "SSOLoginService",
     "faultmaven.modules.case.domain.services.case_service": "CaseService",
     "faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository": (  # noqa: E501
@@ -101,9 +98,6 @@ _MODULES_UNDER_GUARD = {
     ),
     "faultmaven.infrastructure.auth.database_user_store": "DatabaseUserStore",
     "faultmaven.infrastructure.auth.user_store": "RedisUserStore",
-    "faultmaven.infrastructure.persistence.investigation_session_repository": (
-        "DatabaseInvestigationSessionRepository"
-    ),
     "faultmaven.api.operator_user_scope": "OperatorUserScope",
 }
 

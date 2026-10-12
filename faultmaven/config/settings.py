@@ -3231,7 +3231,6 @@ class EvidenceStorageSettings(BaseSettings):
     Controls the behavior of evidence artifact storage including:
     - Storage location (local filesystem)
     - File size limits
-    - Allowed MIME types for security
     - Future: Cloud storage configuration (S3, Azure, GCS)
 
     Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
@@ -3251,19 +3250,9 @@ class EvidenceStorageSettings(BaseSettings):
         description="Maximum evidence file size in bytes (default 100MB)",
     )
 
-    # Allowed MIME types (empty list = allow all)
-    allowed_evidence_mime_types: List[str] = Field(
-        default=[],
-        description="Allowed MIME types for evidence files (empty = allow all)",
-    )
-
-    # Common evidence MIME types (for reference/documentation)
-    # Images: image/png, image/jpeg, image/gif, image/webp, image/svg+xml
-    # Logs: text/plain, application/json, application/xml, text/csv
-    # Archives: application/zip, application/gzip, application/x-tar
-    # Network: application/octet-stream (for HAR, pcap files)
-    # Videos: video/mp4, video/webm, video/quicktime
-    # Documents: application/pdf, text/html
+    # ``ALLOWED_EVIDENCE_MIME_TYPES`` lived here and was read only by the
+    # request-scoped service factory removed in #1935, which no route reached:
+    # the knob never constrained an upload. Removed rather than wired.
 
     # Cloud storage configuration (S3)
     # These settings are used when STORAGE_BACKEND=s3
@@ -3424,7 +3413,7 @@ class FaultMavenSettings(BaseSettings):
     # Agent orchestration configuration (TASK-015)
     agent: AgentSettings = Field(default_factory=AgentSettings)
 
-    # Convenience properties for evidence storage (used by ServiceFactory)
+    # Convenience properties for evidence storage
     @property
     def evidence_storage_root(self) -> str:
         """Get evidence storage root directory."""
@@ -3434,11 +3423,6 @@ class FaultMavenSettings(BaseSettings):
     def max_evidence_file_size(self) -> int:
         """Get maximum evidence file size in bytes."""
         return self.evidence_storage.max_evidence_file_size
-
-    @property
-    def allowed_evidence_mime_types(self) -> List[str]:
-        """Get allowed evidence MIME types."""
-        return self.evidence_storage.allowed_evidence_mime_types
 
     @property
     def is_cloud(self) -> bool:

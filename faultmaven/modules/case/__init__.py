@@ -1,6 +1,6 @@
 """Case Module - Vertical Slice
 
-Manages case lifecycle, investigation sessions, and case data ingestion.
+Manages case lifecycle and case data ingestion.
 
 Public API:
     From domain.models:
@@ -8,7 +8,7 @@ Public API:
         - InvestigationProgress, Evidence, Hypothesis, Solution
 
     From domain.services (import directly to avoid circular imports):
-        - CaseService, InvestigationSessionService, CaseActionManager
+        - CaseService, CaseActionManager
 
 Structure:
 - api/: API routes for case endpoints
@@ -30,7 +30,6 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 
 # Domain services - import directly to avoid circular imports:
 # from faultmaven.modules.case.domain.services.case_service import CaseService
-# from faultmaven.modules.case.domain.services.investigation_session_service import InvestigationSessionService
 
 __all__ = [
     # Core

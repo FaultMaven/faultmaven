@@ -67,7 +67,6 @@ TABLE_DOMAIN = {
     "hypothesis_evidence": "case",
     "solutions": "case",
     "uploaded_files": "case",
-    "investigation_sessions": "case",
     "reports": "case",
     # Knowledge domain
     "knowledge_items": "knowledge",
