@@ -48,7 +48,11 @@ The reader passes every column the function returns to
 ``CaseMetadata.from_stored``, which names each one, so this revision and that
 code ship together: application code on either side of it refuses the other's
 row shape (a 500 on the operator list) rather than reading a column it has not
-classified.
+classified. The CD pipeline runs the migration Job before the rolling update,
+so the cloud operator list (``TENANT_PROVIDER=multi`` only) answers 500 from
+the pods not yet replaced: a few minutes, bounded by the rollout. If the deploy
+then fails, its rollback restores the old pods but not the old function, and
+the operator list stays 500 until a deploy of this revision's code succeeds.
 
 ``downgrade()`` issues the same five statements with revision 005's result and
 body. The column is derived, so stepping down loses nothing stored.
