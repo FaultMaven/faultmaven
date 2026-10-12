@@ -1359,13 +1359,45 @@ CLOCK_FUNCTIONS = frozenset(
 HELPER_FUNCTIONS = frozenset({"assert_latency_within", "assert_throughput_at_least"})
 
 
+#: What every clock reading below is recorded as, whatever it was spelled.
+CLOCK_MARKER = "perf_counter"
+
+
+def _clock_spellings(tree: ast.AST) -> Tuple[set, set, set]:
+    """How a module can read a clock: (names bound to the ``time`` module,
+    names bound to the ``timeit`` module, names bound to a clock function).
+
+    ‼ #1940's review planted ``from time import perf_counter as _clock`` around
+    a timed loop and the guards stayed green: only a bare ``perf_counter`` or a
+    literal ``time.time`` was seen. Every import spelling is resolved here.
+    """
+    time_modules, timeit_modules, clocks = {"time"}, {"timeit"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "time":
+                    time_modules.add(alias.asname or "time")
+                elif alias.name == "timeit":
+                    timeit_modules.add(alias.asname or "timeit")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if node.module == "time" and alias.name in TIME_MODULE_CLOCKS:
+                    clocks.add(alias.asname or alias.name)
+                elif node.module == "timeit" and alias.name == "default_timer":
+                    clocks.add(alias.asname or alias.name)
+    return time_modules, timeit_modules, clocks
+
+
 def _call_graph(directories) -> Tuple[dict, list]:
     """Functions in ``directories``, what each calls, and the test ones.
 
     Returns ``({(module, name): {called names}}, [(path, name, module)])``.
-    ``time.time()`` is counted as a clock alongside `perf_counter`, because
-    a threshold written against it is no less a threshold for being badly
-    measured.
+    A clock reading in any spelling — ``time.time()``, ``t.monotonic()``
+    after ``import time as t``, a clock imported under another name,
+    ``timeit.default_timer`` — also records ``CLOCK_MARKER``, because a
+    threshold written against it is no less a threshold for being spelled
+    differently or badly measured. Names are only ever ADDED, so no guard
+    built on this sees fewer clocks than it did.
     """
     definitions: dict = {}
     tests: list = []
@@ -1373,6 +1405,7 @@ def _call_graph(directories) -> Tuple[dict, list]:
         paths = _modules_in(directory) if directory.is_dir() else [directory]
         for path in paths:
             tree = ast.parse(path.read_text(), filename=_key(path))
+            time_modules, timeit_modules, clocks = _clock_spellings(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -1383,14 +1416,21 @@ def _call_graph(directories) -> Tuple[dict, list]:
                     func = child.func
                     if isinstance(func, ast.Attribute):
                         calls.add(func.attr)
-                        if (
-                            isinstance(func.value, ast.Name)
-                            and func.value.id == "time"
-                            and func.attr == "time"
+                        if isinstance(func.value, ast.Name) and (
+                            (
+                                func.value.id in time_modules
+                                and func.attr in TIME_MODULE_CLOCKS
+                            )
+                            or (
+                                func.value.id in timeit_modules
+                                and func.attr == "default_timer"
+                            )
                         ):
-                            calls.add("perf_counter")
+                            calls.add(CLOCK_MARKER)
                     elif isinstance(func, ast.Name):
                         calls.add(func.id)
+                        if func.id in clocks:
+                            calls.add(CLOCK_MARKER)
                 definitions[(_key(path), node.name)] = calls
                 if node.name.startswith("test_"):
                     tests.append((path, node.name, _key(path)))
@@ -1513,9 +1553,16 @@ class TestEveryMeasurementIsJudged:
 # * and it reaches one of the sampler's aggregators, so a statistic is never
 #   one window's figure.
 #
-# A ``Window`` exists only inside an aggregator, and the aggregator refuses
-# ``windows=1``, so a row cannot be turned back into one window without
-# tripping one of the two.
+# * and it never constructs a ``Window`` itself.
+#
+# A clock reading is resolved through every import spelling
+# (``_clock_spellings``): ``time``'s clocks under ``import time as t`` or
+# ``from time import perf_counter as _clock``, and ``timeit.default_timer``.
+# At run time a ``Window`` can only be opened by an aggregator (a token
+# private to ``sampling.py``) and is closed when its window ends, and the
+# aggregator refuses ``windows=1``. #1940's review planted two evasions that
+# the first version of this rule passed, ``set_window(Window())`` and an
+# aliased ``perf_counter``; both are planted below and must fail.
 
 SAMPLING_MODULE = "tests/wallclock/sampling.py"
 WINDOW_AGGREGATORS = frozenset(
@@ -1544,12 +1591,12 @@ def _in_the_sampler(module: str, name: str) -> bool:
     return module == SAMPLING_MODULE or name in HELPER_FUNCTIONS
 
 
-def _single_window_findings(definitions, tests) -> List[str]:
-    """Every judged ``tests/performance/`` test that judges one window."""
+def _single_window_findings(definitions, tests, scope: str = f"{_PERF}/") -> List[str]:
+    """Every judged test under ``scope`` that judges one window."""
     findings = []
     for _path, name, module in tests:
         key = (module, name)
-        if not module.startswith(f"{_PERF}/") or key in UNJUDGED_TIMED_TESTS:
+        if not module.startswith(scope) or key in UNJUDGED_TIMED_TESTS:
             continue
         # An unresolvable name counts as judged here: that checks MORE tests.
         if not _reaches(definitions, key, HELPER_FUNCTIONS, True):
@@ -1558,6 +1605,10 @@ def _single_window_findings(definitions, tests) -> List[str]:
             continue
         if _reaches(definitions, key, CLOCK_FUNCTIONS, True, stop=_in_the_sampler):
             findings.append(f"{module}::{name} reads a clock outside {SAMPLING_MODULE}")
+        if _reaches(definitions, key, {"Window"}, True, stop=_in_the_sampler):
+            findings.append(
+                f"{module}::{name} constructs a Window outside an aggregator"
+            )
         if not _reaches(definitions, key, WINDOW_AGGREGATORS, False):
             findings.append(
                 f"{module}::{name} judges a statistic no window aggregator took"
@@ -1647,6 +1698,83 @@ class TestEveryStatisticIsWindowed:
     def test_an_unjudged_test_is_not_this_rules_question(self):
         assert not self._findings({"perf_counter", "print"})
 
+    # --- #1940's review: two evasions the first version passed, as source --
+
+    #: A module judging two rows: CONTEXT_GET windowed, CONTEXT_SET one window.
+    _TWO_ROWS = (
+        "from tests.wallclock import assert_latency_within\n"
+        "from tests.wallclock.sampling import Window, median_of_windows\n"
+        "{imports}\n"
+        "def test_x():\n"
+        "    def get_window(window):\n"
+        "        return window.seconds(lambda: None)\n"
+        "    get = median_of_windows(get_window, windows=5)\n"
+        "{set_row}\n"
+        "    assert_latency_within(get, CONTEXT_GET, 'get')\n"
+        "    assert_latency_within(set_, CONTEXT_SET, 'set')\n"
+    )
+    _EVASIONS = {
+        # E1: Window is a class anyone can construct.
+        "hand_built_window": (
+            "",
+            "    def set_window(window):\n"
+            "        return window.seconds(lambda: None)\n"
+            "    set_ = set_window(Window())",
+            "constructs a Window",
+        ),
+        # E2: the clock under another name.
+        "aliased_perf_counter": (
+            "from time import perf_counter as _clock",
+            "    started = _clock()\n" "    set_ = _clock() - started",
+            "reads a clock outside",
+        ),
+        "aliased_time_module": (
+            "import time as t",
+            "    started = t.monotonic()\n" "    set_ = t.monotonic() - started",
+            "reads a clock outside",
+        ),
+        "time_time_ns": (
+            "import time",
+            "    started = time.time_ns()\n" "    set_ = time.time_ns() - started",
+            "reads a clock outside",
+        ),
+        "timeit_default_timer": (
+            "import timeit",
+            "    started = timeit.default_timer()\n"
+            "    set_ = timeit.default_timer() - started",
+            "reads a clock outside",
+        ),
+        "imported_default_timer": (
+            "from timeit import default_timer as tick",
+            "    started = tick()\n" "    set_ = tick() - started",
+            "reads a clock outside",
+        ),
+    }
+
+    def _source_findings(self, tmp_path, imports, set_row):
+        probe = tmp_path / "probe"
+        probe.mkdir()
+        (probe / "test_probe.py").write_text(
+            self._TWO_ROWS.format(imports=imports, set_row=set_row)
+        )
+        definitions, tests = _call_graph((probe, WALLCLOCK_DIR))
+        return _single_window_findings(definitions, tests, scope=_key(probe))
+
+    @pytest.mark.parametrize("shape", sorted(_EVASIONS))
+    def test_a_single_window_beside_a_windowed_row_is_a_finding(self, tmp_path, shape):
+        imports, set_row, expected = self._EVASIONS[shape]
+        findings = self._source_findings(tmp_path, imports, set_row)
+        assert any(expected in finding for finding in findings), findings
+
+    def test_both_rows_windowed_is_clean_as_source(self, tmp_path):
+        """The negative control for the evasions: the same module, honest."""
+        findings = self._source_findings(
+            tmp_path,
+            "import time",  # imported and unused: not a reading
+            "    set_ = median_of_windows(get_window)",
+        )
+        assert not findings, findings
+
 
 class TestTheSampler:
     """``tests/wallclock/sampling.py``, run rather than described."""
@@ -1695,6 +1823,29 @@ class TestTheSampler:
 
         with pytest.raises(ValueError, match="#1916"):
             fastest_of_windows(lambda window: 0.1, windows=windows)
+
+    def test_a_window_cannot_be_built_by_hand(self):
+        """#1940 review, E1: a hand-built Window would time one window."""
+        from tests.wallclock.sampling import Window
+
+        with pytest.raises(TypeError, match="#1916"):
+            Window()
+        with pytest.raises(TypeError, match="#1916"):
+            Window(object())
+
+    def test_a_window_kept_past_its_window_is_closed(self):
+        from tests.wallclock.sampling import median_of_windows
+
+        kept = []
+
+        def measure_once(window):
+            kept.append(window)
+            return window.seconds(lambda: None)
+
+        median_of_windows(measure_once)
+        assert len({id(window) for window in kept}) == 3  # one per window
+        with pytest.raises(RuntimeError, match="#1916"):
+            kept[0].seconds(lambda: None)
 
     def test_each_window_is_a_separate_call(self):
         """A window builds its own state: measure_once runs once per window."""

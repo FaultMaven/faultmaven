@@ -67,6 +67,10 @@ extraction shapes or four deduplication sizes, must pass all of them), and:
   raised (latency) or lowered (throughput) until it clears the worst job by
   ``CLEARANCE``; inside the 2-3x band; no looser than the product target.
   ``ANCHOR_ON_WORST_JOB`` rows anchor on the worst job at the 3x end instead.
+* where clearing the worst job would leave the band only because the
+  reference is the p95 to the last digit, the reference is rounded up (down,
+  for throughput) to the nearest three-figure value that brings that
+  ``regression`` inside it, by at most ``MAX_REFERENCE_ROUNDING``.
 
 A row that cannot meet all three is printed ``STOP`` with the reason and no
 value, and the command exits 3. The mapping from a recorded row to a table row is read from the call
@@ -207,6 +211,12 @@ CLEARANCE = 1.5
 #: The multiple for a row in ``ANCHOR_ON_WORST_JOB``: the 3x end of the band.
 WORST_JOB_MULTIPLE = 3.0
 
+#: How far the reference may be rounded past its p95 (p5) so that a two-figure
+#: ``regression`` inside the band clears the worst job (#1940 ruling on
+#: ``CONTEXT_COPY``): to the nearest three-figure value that does, and by at
+#: most this factor. Further than that, the row STOPs.
+MAX_REFERENCE_ROUNDING = 1.05
+
 #: The development box's measured ratio to the calibration reference when the
 #: ``--box-rev`` table was taken (``tests/performance/budgets.py`` header).
 DEFAULT_BOX_FACTOR = 3.53
@@ -215,21 +225,26 @@ DEFAULT_BOX_FACTOR = 3.53
 _HELPERS = ("assert_latency_within", "assert_throughput_at_least")
 
 
-def _sig2(value: float, direction: str) -> float:
-    """``value`` at two significant figures, rounded ``up``, ``down`` or to
-    the ``nearest``."""
-    exponent = math.floor(math.log10(value)) - 1
+def _sig(value: float, direction: str, figures: int) -> float:
+    """``value`` at ``figures`` significant figures, rounded ``up``, ``down``
+    or to the ``nearest``."""
+    exponent = math.floor(math.log10(value)) - (figures - 1)
     step = 10.0**exponent
     scaled = value / step
     # 1e-9 absorbs the float error of the division, so a value that IS a
-    # two-figure number is never pushed to the next one.
+    # number of that many figures is never pushed to the next one.
     if direction == "up":
         digits = math.ceil(scaled - 1e-9)
     elif direction == "down":
         digits = math.floor(scaled + 1e-9)
     else:
         digits = round(scaled)
-    return float(f"{digits * step:.2g}")
+    return float(f"{digits * step:.{figures}g}")
+
+
+def _sig2(value: float, direction: str) -> float:
+    """``value`` at two significant figures (a ``regression``)."""
+    return _sig(value, direction, 2)
 
 
 @dataclass(frozen=True)
@@ -251,6 +266,7 @@ class Proposal:
     stop: str
     min_raw_ratio: float
     max_raw_ratio: float
+    rounded_by: float = 1.0
 
     @property
     def multiple(self) -> float:
@@ -309,9 +325,14 @@ def propose_row(
         multiple, rounding = TARGET_MULTIPLE, "nearest"
 
     stop = ""
+    rounded_by = 1.0
     if throughput:
         candidate = _sig2(reference / multiple, rounding)
         candidate = min(candidate, _sig2(worst / CLEARANCE, "down"))
+        if reference / candidate > 3.0 + 1e-9:
+            lowered = _sig(candidate * 3.0, "down", 3)
+            if reference / lowered <= MAX_REFERENCE_ROUNDING:
+                rounded_by, reference = lowered / reference, lowered
         if reference / candidate > 3.0 + 1e-9:
             stop = (
                 f"clearing the worst job by {CLEARANCE}x needs a floor "
@@ -322,6 +343,10 @@ def propose_row(
     else:
         candidate = _sig2(reference * multiple, rounding)
         candidate = max(candidate, _sig2(worst * CLEARANCE, "up"))
+        if candidate / reference > 3.0 + 1e-9:
+            raised = _sig(candidate / 3.0, "up", 3)
+            if raised / reference <= MAX_REFERENCE_ROUNDING:
+                rounded_by, reference = raised / reference, raised
         if candidate / reference > 3.0 + 1e-9:
             stop = (
                 f"clearing the worst job by {CLEARANCE}x needs "
@@ -346,6 +371,7 @@ def propose_row(
         stop=stop,
         min_raw_ratio=min(raw_ratios) if raw_ratios else float("nan"),
         max_raw_ratio=max(raw_ratios) if raw_ratios else float("nan"),
+        rounded_by=rounded_by,
     )
 
 
@@ -489,10 +515,14 @@ def render_proposals(proposals: Sequence[Proposal]) -> str:
         regression = "STOP: " + p.stop if stopped else f"{p.regression:.3g}"
         multiple = "-" if stopped else f"{p.multiple:.2f}x"
         clearance = "-" if stopped else f"{p.clearance:.2f}x"
+        source = p.source
+        if p.rounded_by != 1.0:
+            source += f", rounded {'up' if p.rounded_by > 1 else 'down'} "
+            source += f"{abs(p.rounded_by - 1) * 100:.1f}%"
         lines.append(
             f"| {p.row} | {p.jobs} | {p.old_reference:.5g} | {p.old_regression:.3g} "
             f"| {p.box:.4g} | {p.ci:.4g} | {p.worst_job:.4g} "
-            f"| {p.reference:.5g} ({p.source}) | {regression} | {multiple} "
+            f"| {p.reference:.5g} ({source}) | {regression} | {multiple} "
             f"| {clearance} | {p.min_raw_ratio:.2f}..{p.max_raw_ratio:.2f} |"
         )
     return "\n".join(lines)

@@ -53,8 +53,11 @@ comparisons in that job (``ADVERSARIAL_LINE_EXTRACTION``'s eleven shapes,
 * ``regression``: a two-figure number near 2.5x ``reference``, inside the
   2-3x band, no looser than the product target, and **clearing the worst of
   the 26 jobs by at least 1.5x** (raised for latency, lowered for
-  throughput, until it does). A row that cannot meet all three keeps its
-  old anchor and says so in its comment: ``CONTEXT_COPY``.
+  throughput, until it does). Where that leaves the band only because the
+  reference is the p95 to the last digit, the reference is rounded up (down
+  for throughput) to the nearest three-figure value that brings the anchor
+  inside it, by at most 5%: ``CONTEXT_COPY``, by 1.2%. A row that still
+  cannot meet all three would keep its old anchor; none does.
 
 The box term is what keeps a run on the development box passing. The old
 references were raw values measured on that box while it ran about **3.5x**
@@ -77,7 +80,12 @@ the per-PR comparison multiplied them by the runner's calibration scale as
 well, so a row's limit was about 3.5x too loose before the 2-3x band was
 applied: a regression had to be roughly 6-12x to fail (#1910). Divided by
 the box factor, the old references land within 0.6-1.6x of the CI p95 on
-almost every row, which is what showed the error was one of units.
+19 of the 29 rows, which is what showed the error was one of units. The
+other ten sit outside that range: the two shims and the deduplication loop at
+0.26-0.34x, the context copy, the large-data check, ``log_once`` and the large
+sanitizer document at 0.46-0.54x, and three of the fixed-cost rows below
+(the isolation spread, the external-client and API overheads) at 1.69-1.77x.
+Each row's anchor takes whichever of the two terms is the more conservative.
 
 **Every judged statistic is taken over several windows (#1916).** Both
 required gates run this directory under ``pytest-xdist`` beside the whole
@@ -102,7 +110,7 @@ between windows, which is why each window builds its own state
 ``API_REQUEST_LOGGING_OVERHEAD``) are dominated by ``asyncio.sleep``, thread
 start-up or timer granularity, which do not scale with the CPU calibration.
 Normalised, they read SMALLER on a slower runner, so their anchors are set
-by the fastest runner in the sample (raw_ratio 2.49 at the least) and their
+by the fastest runner in the sample (raw_ratio 2.52-2.53 on these rows) and their
 headroom thins out on a runner faster than that. ``ISOLATED_TASK`` is the
 thinnest: its window holds 20 sleeps of 1 ms, so on a machine at the
 calibration reference itself its 2.7 ms anchor sits about 1.2x above the
@@ -218,20 +226,19 @@ CONTEXT_SET = LatencyBudget(
     product_target=5.0e-5,
     reference=1.4056e-06,
 )
-#: ‼ NOT re-anchored (#1910): the STOP case of the clearance rule. The CI p95
-#: is 2.4104e-7 and the worst job 4.8234e-7, so clearing the worst job by
-#: 1.5x needs at least 7.2352e-7, 3.0017x the reference: a hair past the band
-#: (7.3e-7 at two figures, 3.03x). The anchor stays as #1557 set it on the
-#: development box (2026-09-21), raw box units, so this one row keeps the
-#: units error the re-anchor removed: its limit is 4.15x the CI p95 and clears
-#: the worst job by 2.07x. That worst job was a single window; the statistic is
-#: now the median of five (#1916), so the next re-anchor reads a narrower
-#: spread.
+#: The one row whose reference is NOT its p95 to the last digit. The CI p95 is
+#: 2.4104e-7 and the worst job 4.8234e-7, so clearing the worst job by 1.5x
+#: needs an anchor of at least 7.2352e-7 (7.3e-7 at two figures): 3.03x the
+#: p95, a hair past the band. The reference is rounded UP 1.2%, to 2.44e-7,
+#: the nearest three-figure value that brings 7.3e-7 inside it (2.99x); the
+#: anchor clears the worst job by 1.51x (``collect.py --propose``; #1940
+#: ruling). That worst job was a single window; the statistic is now the
+#: median of five (#1916), so the next re-anchor should read a narrower spread.
 CONTEXT_COPY = LatencyBudget(
     "test_context_copying_performance",
-    regression=1.0e-6,
+    regression=7.3e-7,
     product_target=0.010,
-    reference=3.9065e-07,
+    reference=2.44e-07,
 )
 CONTEXT_COPY_EXEC = LatencyBudget(
     "test_context_copying_performance",
@@ -488,15 +495,17 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #: 43.9 ms, and 0.11 s, 2.5x it, which clears the worst job (46.1 ms) by 2.39x.
 #: The development box's 2026-10-09 anchor (0.098 s raw) divided by 3.53 is
 #: 27.8 ms, under the CI p95. The per-PR check still catches only a gross
-#: regression, an O(n^2) path or an N+1, not a commit doing twice the work,
-#: but it trips at about 2.5x the CI median rather than the 6-12x it took
-#: before.
+#: regression, an O(n^2) path or an N+1, not a commit doing twice the work.
+#: The 0.11 s anchor is 2.5x the CI **p95** of the per-job p50; against the
+#: median of the per-job p50s it is 5.1x pooled, 3.1x for Test Standalone and
+#: 9.5x for Test Cloud (normalised). Before, the box anchor times the runner's
+#: calibration put it at about 6-12x.
 #:
 #: ‼ The two profiles do not agree: the median per-job p50 of Test Standalone
 #: is **3.07x** Test Cloud's (the database work is IO the CPU calibration
 #: cannot see). The anchor pools both, so the p95 is set by Standalone, and
 #: the gate is correspondingly about 3x looser for Test Cloud than for Test
-#: Standalone.
+#: Standalone (9.5x against 3.1x its median, above).
 TURN_COMMIT = LatencyBudget(
     "test_the_turn_commit_fits_its_reserve",
     regression=0.11,

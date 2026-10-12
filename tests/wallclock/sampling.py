@@ -28,12 +28,24 @@ The clock is handed in
 ----------------------
 
 ``measure_once`` receives a ``Window`` and reads the clock only through it.
-That is what makes the rule checkable: a test module under
-``tests/performance/`` never calls a clock itself, so a timed region outside
-a window is visible to the call-graph guard in
-``tests/unit/ci/test_benchmark_calibration.py``
-(``TestEveryStatisticIsWindowed``), and a ``Window`` exists only inside one of
-the aggregators below, which refuse fewer than ``MIN_WINDOWS`` windows.
+Two things hold that in place, one at run time and one in review:
+
+* **A ``Window`` is open only inside an aggregator.** Constructing one needs a
+  token private to this module, so ``Window()`` in a test raises ``TypeError``;
+  each window gets a fresh ``Window`` that is closed when its ``measure_once``
+  returns, so a stashed one raises on use. The aggregators refuse fewer windows
+  than survive one stall (``MIN_WINDOWS`` for a median, ``MIN_FASTEST_WINDOWS``
+  for a minimum).
+* **The call-graph guard** (``TestEveryStatisticIsWindowed`` in
+  ``tests/unit/ci/test_benchmark_calibration.py``) fails a judged test under
+  ``tests/performance/`` that reads a clock other than through this module
+  (``time``'s clocks under any import spelling or alias, and
+  ``timeit.default_timer``), that constructs a ``Window``, or that takes no
+  aggregate at all.
+
+Neither is proof against a determined author (a private token can be
+imported); together they make the single-window shapes #1916 and its review
+found fail loudly.
 
 A window builds its own state
 -----------------------------
@@ -50,6 +62,9 @@ from __future__ import annotations
 import statistics
 import time
 from typing import Awaitable, Callable, List
+
+#: Proof that a ``Window`` was opened here, by an aggregator.
+_WINDOW_TOKEN = object()
 
 #: The fewest windows a median may be taken over: the smallest count whose
 #: median survives one stalled window.
@@ -69,16 +84,32 @@ class Window:
     un-logged, for an overhead) and combine them into its one figure.
     """
 
-    __slots__ = ()
+    __slots__ = ("_open",)
+
+    def __init__(self, token: object = None) -> None:
+        if token is not _WINDOW_TOKEN:
+            raise TypeError(
+                "a Window is opened by an aggregator in tests/wallclock/sampling.py; "
+                "one constructed by hand would time a single window (#1916)"
+            )
+        self._open = True
+
+    def _check_open(self) -> None:
+        if not self._open:
+            raise RuntimeError(
+                "this Window's window has ended: time inside measure_once (#1916)"
+            )
 
     def seconds(self, work: Callable[[], object]) -> float:
         """Seconds one synchronous call of ``work`` took."""
+        self._check_open()
         started = time.perf_counter()
         work()
         return time.perf_counter() - started
 
     async def seconds_async(self, work: Callable[[], Awaitable[object]]) -> float:
         """Seconds one awaited call of ``work`` took."""
+        self._check_open()
         started = time.perf_counter()
         await work()
         return time.perf_counter() - started
@@ -92,12 +123,29 @@ def _check_windows(windows: int, fewest: int, statistic: str) -> None:
         )
 
 
+def _one_window(measure_once: Callable[[Window], float]) -> float:
+    window = Window(_WINDOW_TOKEN)
+    try:
+        return float(measure_once(window))
+    finally:
+        window._open = False
+
+
+async def _one_window_async(
+    measure_once: Callable[[Window], Awaitable[float]],
+) -> float:
+    window = Window(_WINDOW_TOKEN)
+    try:
+        return float(await measure_once(window))
+    finally:
+        window._open = False
+
+
 def _run(
     measure_once: Callable[[Window], float], windows: int, fewest: int, statistic: str
 ) -> List[float]:
     _check_windows(windows, fewest, statistic)
-    window = Window()
-    return [float(measure_once(window)) for _ in range(windows)]
+    return [_one_window(measure_once) for _ in range(windows)]
 
 
 def median_of_windows(
@@ -112,9 +160,8 @@ async def median_of_windows_async(
 ) -> float:
     """``median_of_windows`` for a window that awaits (a gather, a sleep)."""
     _check_windows(windows, MIN_WINDOWS, "median")
-    window = Window()
     return statistics.median(
-        [float(await measure_once(window)) for _ in range(windows)]
+        [await _one_window_async(measure_once) for _ in range(windows)]
     )
 
 

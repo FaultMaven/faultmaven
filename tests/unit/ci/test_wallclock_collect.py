@@ -261,6 +261,38 @@ def test_a_row_that_cannot_clear_its_worst_job_inside_the_band_stops():
     assert "past the band" in proposal.stop
 
 
+def test_a_reference_a_hair_short_of_the_band_is_rounded_up(monkeypatch):
+    """#1940's ruling on CONTEXT_COPY: the p95 2.4104e-7 and the worst job
+    4.8234e-7 need a 7.3e-7 anchor, 3.03x the p95. Rounding the reference up
+    1.2% to 2.44e-7 puts that anchor at 2.99x, inside the band."""
+    values = [1e-7] * 24 + [2.4104e-7, 4.8234e-7]  # p95 of 26: the 25th
+    proposal = _propose(values, old_reference=3.9065e-7)
+    assert proposal.stop == ""
+    assert proposal.reference == pytest.approx(2.44e-7)
+    assert proposal.regression == pytest.approx(7.3e-7)
+    assert proposal.rounded_by == pytest.approx(2.44e-7 / 2.4104e-7)
+    assert proposal.multiple <= 3.0
+    assert proposal.clearance >= 1.5
+    # Past MAX_REFERENCE_ROUNDING it is a STOP, not a bigger rounding: the
+    # test above needs the reference raised 7%.
+    assert collect.MAX_REFERENCE_ROUNDING == 1.05
+
+
+def test_a_throughput_reference_is_rounded_down_the_same_way():
+    # p5 of 26 is the 2nd smallest, 3010/s. The floor must be <= 1500 / 1.5
+    # = 1000/s, which would sit 3.01x below it. Rounded down to 3000/s, it sits at 3.00x.
+    proposal = _propose(
+        [3010.0] + [5000.0] * 24 + [1500.0],
+        throughput=True,
+        old_reference=10000.0,
+        product_target=10.0,
+    )
+    assert proposal.stop == ""
+    assert proposal.reference == pytest.approx(3000.0)
+    assert proposal.regression == pytest.approx(1000.0)
+    assert proposal.rounded_by < 1.0
+
+
 def test_a_row_that_would_outgrow_its_product_target_stops():
     proposal = _propose([0.020] * 20, product_target=0.040)
     assert proposal.regression is None
