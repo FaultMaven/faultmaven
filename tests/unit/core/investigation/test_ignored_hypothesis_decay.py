@@ -46,10 +46,9 @@ from faultmaven.modules.case.contracts import (
 pytestmark = pytest.mark.unit
 
 
-# A seeded hypothesis's rationale carries this literal prefix; a self-generated
-# one does not. The sweep must behave identically for both — asserting on the
-# behavior, not by importing the marker into the engine (which is banned).
-_SEEDED_RATIONALE = "Seeded from runbook rb1 (Cause A: undersized pool)"
+# The sweep must not branch on rationale text: two hypotheses that differ only
+# in their rationale decay identically.
+_SEEDED_RATIONALE = "Quoted from an earlier note (Cause A: undersized pool)"
 _SELF_RATIONALE = "Model-proposed theory: undersized pool"
 
 

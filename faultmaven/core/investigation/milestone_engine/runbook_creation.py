@@ -276,7 +276,8 @@ class RunbookCreator:
                 agent_response = (
                     "Creating a runbook draft from this case. "
                     "It will appear in the Dashboard under "
-                    f"{_draft_location(case)} once generation finishes."
+                    f"{_draft_location(case)} once generation finishes. You can "
+                    "also create runbooks in your own **Knowledge Base**."
                 )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a

@@ -244,7 +244,7 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 
 | Feature | Status | Notes |
 | ------- | ------ | ----- |
-| Federated search across tiers | Implemented | Single `answer_from_kb` tool searches all scopes (global + personal + team) via `$or` filter |
+| Federated search across tiers | Implemented | Single `kb_qa` tool (wrapping `AnswerFromKB`) searches all scopes (global + personal + team) via `$or` filter |
 | Single-collection storage | Implemented | One `faultmaven_kb` collection with metadata-based scope filtering |
 | Filter-presence check | Implemented | `_require_kb_filter_present()` raises `ValueError` when a KB `where` clause names no scope key. Presence, not tenancy — the vector-layer tenant control is the `enterprise_id` stamp (#1168) |
 | Tenant stamp on every KB chunk | Write side implemented (#1168) | Every KB chunk carries its row's `enterprise_id`; `add_documents` refuses a KB chunk without one. Backfill of older chunks: #1777. Read conjunct: #1775 — not yet consulted by any read |
@@ -253,10 +253,10 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 
 | Tool (registered name) | Class | File | Collection | Purpose |
 | ---------------------- | ----- | ---- | ---------- | ------- |
-| `answer_from_kb` | `AnswerFromKB` | `kb_qa.py` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
+| `kb_qa` | `AnswerFromKB` | `kb_qa.py` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
 | `answer_from_case_evidence` | `AnswerFromCaseEvidence` | `case_evidence_qa.py` | `case_{case_id}` | Case-scoped forensic Q&A on vectorized evidence |
 
-The old per-scope KB tools (`global_kb_qa`, `user_kb_qa`) and the alternate `answer_from_knowledge_base` name have been replaced with the single unified `answer_from_kb` tool — scope filtering is automatic based on user context resolved by `KBToolAdapter`.
+The old per-scope KB tools (`global_kb_qa`, `user_kb_qa`) and the alternate `answer_from_knowledge_base` name have been replaced with the single unified `kb_qa` tool (wrapping `AnswerFromKB`) — scope filtering is automatic based on user context resolved by `KBToolAdapter`.
 
 ### Two channels: the push and the pull
 
@@ -265,7 +265,7 @@ controls.
 
 | Channel | Mechanism | Who decides | Governed by |
 | ------- | --------- | ----------- | ----------- |
-| **Pull** | The `answer_from_kb` tool (`kb_qa.py`) | The model elects it, per turn | Always available |
+| **Pull** | The `kb_qa` tool (`kb_qa.py`) | The model elects it, per turn | Always available |
 | **Push** | `KbPrefetcher.prefetch_kb_context` (`milestone_engine/kb_prefetch.py`) — a deterministic hybrid search fired at case transitions, whose top hits are written to `case.kb_context` and rendered into every subsequent prompt as `<knowledge_context>` | Nobody; it fires on the trigger | `KB_PREFETCH_ENABLED` (default `true`) |
 
 **`KB_PREFETCH_ENABLED=false` turns off the push only.** The tool stays registered and
@@ -467,7 +467,7 @@ Team KB scope filtering is built on every retrieval path:
 
 **Stored excerpts are gated per viewer (#1919).** The model's answer written from the driver's knowledge is accepted disclosure to everyone who reads the case. The stored copies of runbook text are not: a turn's `sources` (the excerpts its prompt carried, persisted on the assistant row) are checked against the reader when `GET /cases/{id}/messages` or `POST /cases/{id}/turns` returns them (`gate_kb_sources`, `modules/knowledge/contracts.py`). The check is the id-addressed document read's rule (global, the viewer's own, or shared to one of the viewer's teams; published or the viewer's own), batched as `visible_document_ids`, one query per response. A source the viewer cannot open, or one with no `document_id`, is returned with empty `content` and `metadata` `{"access": "restricted"}`. The operator break-glass transcript (`/admin/cases`) shows the stored copy.
 
-**Built: team KB management.** `POST /knowledge/documents` with `scope=team` and a `team_id` uploads into a team's knowledge; `GET /knowledge/documents?scope=team` lists it; `DELETE /knowledge/documents/{id}` removes it. The gate on upload is team **membership** (`is_team_member`, `modules/knowledge/api/routes.py`: a caller can publish only to a team they belong to, otherwise 403), not a team-admin role. Delete and update are owner-based (`ensure_document_write_allowed`: the document's owner, or a platform administrator), consistent with ADR-011 D8 (a shared runbook is read-only to the team; its author edits and deletes it).
+**Built: team KB management.** `POST /knowledge/documents` with `scope=team` and a `team_id` uploads into a team's knowledge; `GET /knowledge/documents?scope=team` lists it; `DELETE /knowledge/documents/{id}` removes it. The gate on upload is team **membership** (`is_team_member`, `modules/knowledge/api/routes.py`: a caller can publish only to a team they belong to, otherwise 403), not a team-admin role. Delete and update are owner-based (`ensure_document_write_allowed`: the document's owner; under single-tenant the platform operator may also write, under `TENANT_PROVIDER=multi` the owner only), consistent with ADR-011 D8 (a shared runbook is read-only to the team; its author edits and deletes it).
 
 **Remaining work:**
 
@@ -537,7 +537,7 @@ Personal KB shares the same unified infrastructure as Global and Team — scope 
 | **Upload directly** | Platform admin only | Team member, into a team they belong to | Owner only (Dashboard UI) |
 | **Promote from Personal** | — | Team member submits, team admin approves | — (source tier) |
 | **Query during case** | All users (auto-searched) | Team members only | Owner only |
-| **Delete** | Platform admin only | Document owner (or platform admin) | Owner only |
+| **Delete** | Platform admin only | Document owner (single-tenant: also the platform operator; owner-only under multi) | Owner only |
 | **Cross-user access** | Shared read-only (all orgs) | Shared read-only (within team) | Forbidden |
 
 ---
@@ -598,7 +598,7 @@ During investigation, the agent has two retrieval tools — one for knowledge, o
 
 | Question Type | Tool | Example |
 |---------------|------|---------|
-| Remediation knowledge | `answer_from_kb` | "How to fix PostgreSQL connection pool exhaustion?" |
+| Remediation knowledge | `kb_qa` | "How to fix PostgreSQL connection pool exhaustion?" |
 | Case-specific evidence | `answer_from_case_evidence` | "What errors are on line 1045 of the uploaded server.log?" |
 
 The agent does not decide which KB tier to search — the federated search layer handles that automatically based on the user's authorization context. The agent focuses on *what to ask*, not *where to look*.
@@ -637,7 +637,7 @@ a method (`search_with_context`) that did not exist on `AdvancedKnowledgeRetriev
 so every call raised `AttributeError` and fell through to a fallback that hardcoded
 `scope=global` — a scope-safety bypass. The subsystem and its dead entry points
 have been removed; live retrieval goes through `search_knowledge()` /
-`search_documents()` (scope-enforcing) and the agent's `answer_from_kb` tool
+`search_documents()` (scope-enforcing) and the agent's `kb_qa` tool
 (`hybrid_search`). See [vector-retrieval-architecture.md](./vector-retrieval-architecture.md).
 
 ### Knowledge Suggestions — Removed (#1897)

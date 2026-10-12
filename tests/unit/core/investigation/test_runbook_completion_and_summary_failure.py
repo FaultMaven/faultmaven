@@ -1449,7 +1449,12 @@ class TestDraftLocationIsTrueForTheReader:
         reply, notice = await _kickoff_and_notice(mock_llm, "driver-2")
         for text in (reply, notice):
             assert _CREATORS_DRAFTS in text
-            assert "your" not in text.lower().replace("creator's", "")
+            own_kb = "You can also create runbooks in your own **Knowledge Base**."
+            assert "your" not in text.lower().replace("creator's", "").replace(
+                own_kb.lower(), ""
+            )
+        assert "You can also create runbooks in your own **Knowledge Base**." in reply
+        assert "create and edit runbooks there directly" not in reply
         assert notice == (
             "The runbook draft **Pool Timeout Runbook** is ready. "
             f"View it in the Dashboard under {_CREATORS_DRAFTS}."

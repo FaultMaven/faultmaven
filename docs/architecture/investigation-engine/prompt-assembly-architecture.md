@@ -155,7 +155,7 @@ PER-TURN TAIL (dynamic, ~2-5K+ tokens)
   {identity}                                      (<case_identity>: CURRENT_TIME, CASE_ID, STATE, CURRENT_STAGE)
   {core_context}                                  (the FENCE: declaration, then <problem_context>)
   milestones, evidence, evidence needs, entity highlights,
-  hypotheses, candidate solutions, investigation journal,
+  hypotheses, investigation journal,
   working conclusion, KB results, pending action,
   CONVERSATION HISTORY, system feedback, CURRENT USER MESSAGE
 
