@@ -113,14 +113,23 @@ async def _case_redacted(
     ``_generate_structured_output_inner``), every prompt a builder RE-ASSEMBLES
     after that first pass (the ``ToolCallingUnsupportedError`` full-evidence
     fallback and the #614 tool-loop base resize), and every tool result relayed
-    back into the loop. A builder returns raw case content, so a rebuilt prompt
-    that skipped this would reach the provider with the case's pseudonyms
-    missing — and with whatever only the case-scoped pass redacts in clear.
+    back into the loop. A builder returns raw case content.
 
-    The router's own sanitizer (``SANITIZE_PII``) is not a substitute: a
-    dedicated DA provider is called directly, never through the router, and the
-    case pass is what keeps one pseudonym per value across every call of the
-    case. ``tests/unit/core/investigation/test_rebuilt_prompts_are_redacted_1949.py``
+    What skipping this costs is the case REGISTRY, not the redacted text. The
+    router's own ``DataSanitizer`` pass (under ``SANITIZE_PII``) produces the
+    same text this does: one detection path, and a placeholder that is a keyed
+    function of the value (#971). But only this pass records value ->
+    placeholder in the case registry, so a value first seen in a prompt that
+    skipped it could not be reversed in the reply the user reads:
+    ``CaseRedactionContext.reverse`` would hand the placeholder back unchanged.
+    Without this pass, protection also rests on whichever router is configured
+    (``LLM_ROUTER_CLASS`` can substitute one), and a dedicated DA provider is
+    called without any router at all. One edge case makes the two passes
+    differ: each sanitizer instance decides once, at construction, whether
+    Presidio is available, so instances built on either side of a Presidio
+    outage detect differently for the life of the process.
+
+    ``tests/unit/core/investigation/test_rebuilt_prompts_are_redacted_1949.py``
     pins each site and that no other call in this module sanitizes or builds a
     prompt around this function.
 

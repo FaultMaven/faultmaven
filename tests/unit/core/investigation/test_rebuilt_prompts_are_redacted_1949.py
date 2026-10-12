@@ -4,9 +4,13 @@
 When the tool loop raised ``ToolCallingUnsupportedError`` the fallback replaced
 that prompt with ``fallback_prompt_builder()`` -- a fresh, full-evidence,
 UNREDACTED assembly -- and sent it down the non-tool path with no further pass.
-The router's global sanitizer (``SANITIZE_PII``) still ran, but the case pass
-did not: the case's pseudonyms no longer matched the ones the model saw on
-every other call, and whatever only the case pass redacts went out in clear.
+The router's global sanitizer (``SANITIZE_PII``) still ran and produces the
+same text (one detection path, keyed pseudonyms, #971). What was lost is the
+case REGISTRY: a value first seen in the rebuilt prompt never entered it, so
+its placeholder could not be reversed in the reply the user reads. Protection
+also rested on whichever router is configured. (Presidio availability is fixed
+per sanitizer instance at construction, so instances built across a Presidio
+outage can still differ.)
 
 Every site where case content becomes model-bound text now goes through one
 helper, ``generation._case_redacted``. Each test below drives one site with a
