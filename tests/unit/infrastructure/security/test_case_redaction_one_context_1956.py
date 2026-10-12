@@ -51,15 +51,25 @@ class _Sanitizer:
 
 
 class _CountingRedis(fakeredis.aioredis.FakeRedis):
-    """FakeRedis that counts pipelines executed (the save's one write)."""
+    """FakeRedis that counts the hash fields a save writes, and records
+    whether each pipeline was a MULTI/EXEC transaction."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.writes = 0
+        self.fields_written = 0
+        self.transactions: list[bool] = []
 
-    def pipeline(self, *args, **kwargs):
-        self.writes += 1
-        return super().pipeline(*args, **kwargs)
+    def pipeline(self, transaction=True, shard_hint=None):
+        pipe = super().pipeline(transaction=transaction, shard_hint=shard_hint)
+        self.transactions.append(transaction)
+        hsetnx = pipe.hsetnx
+
+        def counting_hsetnx(*args, **kwargs):
+            self.fields_written += 1
+            return hsetnx(*args, **kwargs)
+
+        pipe.hsetnx = counting_hsetnx
+        return pipe
 
 
 class _FailingLoadRedis(fakeredis.aioredis.FakeRedis):
@@ -139,14 +149,15 @@ class TestTheSaveMerges:
 
         assert await _stored_placeholders(redis) == {EMAIL_PH, IP_PH, HOST_PH}
 
-    async def test_a_save_with_nothing_new_writes_nothing(self):
+    async def test_a_context_with_no_entries_writes_nothing(self):
         redis = _CountingRedis()
         ctx = _ctx(redis)
         await ctx.load()
         await ctx.asanitize("no sensitive value here")
         ctx.sanitize("still none")
         await ctx.save()
-        assert redis.writes == 0
+        assert redis.transactions == []
+        assert not await redis.exists(KEY)
 
     async def test_a_save_writes_each_new_entry_once(self):
         redis = _CountingRedis()
@@ -155,8 +166,48 @@ class TestTheSaveMerges:
         await ctx.asanitize(f"user {EMAIL}")
         await ctx.save()
         await ctx.save()
-        assert redis.writes == 1
+        assert redis.fields_written == 1
         assert ctx.reverse(EMAIL_PH) == EMAIL
+
+    async def test_the_write_and_its_ttl_are_one_transaction(self):
+        redis = _CountingRedis()
+        ctx = _ctx(redis)
+        await ctx.load()
+        await ctx.asanitize(f"user {EMAIL}")
+        await ctx.save()
+        assert redis.transactions and all(redis.transactions)
+
+    async def test_a_save_with_nothing_new_still_refreshes_the_ttl(self):
+        """An active case's registry lives the TTL past its last TURN, not past
+        its last new value: on main every turn rewrote the key with ``ex``."""
+        redis = _CountingRedis()
+        seed = _ctx(redis)
+        await seed.load()
+        await seed.asanitize(f"user {EMAIL}")
+        await seed.save()
+        await redis.expire(KEY, 30)  # most of the TTL has run out
+
+        turn = _ctx(redis)
+        await turn.load()
+        await turn.asanitize(f"again {EMAIL}")  # nothing new
+        written = redis.fields_written
+        await turn.save()
+
+        assert redis.fields_written == written
+        assert await redis.ttl(KEY) > 30
+
+    async def test_a_key_that_expired_under_a_live_context_is_restored(self):
+        redis = fakeredis.aioredis.FakeRedis()
+        ctx = _ctx(redis)
+        await ctx.load()
+        await ctx.asanitize(f"user {EMAIL} from {IP}")
+        await ctx.save()
+        await redis.delete(KEY)  # the TTL ran out mid-context
+
+        await ctx.save()
+
+        assert await _stored_placeholders(redis) == {EMAIL_PH, IP_PH}
+        assert await redis.ttl(KEY) > 0
 
     async def test_the_sync_pass_is_saved_too(self):
         redis = fakeredis.aioredis.FakeRedis()

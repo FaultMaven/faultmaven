@@ -92,7 +92,7 @@ class CaseRedactionContext:
     _reverse: Dict[str, str]             # placeholder → original value
 
     async def load()       # Load registry from Redis
-    async def save()       # Merge new entries into Redis (HSETNX), read the registry back
+    async def save()       # Read the stored registry, merge missing entries in (HSETNX), refresh the TTL
     def sanitize(text)     # Redact PII using case-scoped registry
     def reverse(text)      # Replace placeholders with originals
     async def cleanup()    # Delete Redis key (case closed)
@@ -102,10 +102,10 @@ class CaseRedactionContext:
 
 - `sanitize()` delegates PII detection to `DataSanitizer.sanitize_text_with_registry()` but passes the case-scoped `_forward` registry so the same value always gets the same placeholder
 - `reverse()` sorts placeholders by length descending to avoid partial replacement (`<IP_ADDRESS_10>` before `<IP_ADDRESS_1>`)
-- Redis key: `redaction:registry:{case_id}`, a HASH: field `json.dumps([entity_type, value])`, value the placeholder. TTL: configurable (default 7 days), refreshed on every write
+- Redis key: `redaction:registry:{case_id}`, a HASH: field `json.dumps([entity_type, value])`, value the placeholder. TTL: configurable (default 7 days), refreshed on every save of a case that has entries — so an active case's registry lives the TTL past its last turn
 - If Redis is unavailable: works in-memory (consistent within turn, not across turns)
 - If `enabled=False`: both methods return input unchanged (zero overhead)
-- `save()` MERGES (#1956). It writes each entry not yet stored with `HSETNX`, then reads the stored registry back into the context. The stored registry only grows, and an entry already there is never replaced, so contexts on one case key — two concurrent turns, a turn and the case title, a context whose `load()` failed — never drop each other's entries, in any save order, with no lock and no retry: Redis writes each field atomically. A save with nothing new writes nothing. It used to write the context's whole registry as one JSON value, so the later of two saves erased the other's new entries.
+- `save()` MERGES (#1956). It reads the stored registry into the context, then writes each entry the context holds that is not stored with `HSETNX`, and refreshes the TTL with `EXPIRE`, the writes and the `EXPIRE` in one MULTI/EXEC transaction (a dropped connection cannot leave a registry with no TTL). The stored registry only grows, and an entry already there is never replaced, so contexts on one case key — two concurrent turns, a turn and the case title, a context whose `load()` failed — never drop each other's entries, in any save order, with no lock and no retry: Redis writes each field atomically. Reading first also restores entries the key lost when it expired under a live context. A save with nothing new writes no field but still refreshes the TTL. It used to write the context's whole registry as one JSON value, so the later of two saves erased the other's new entries.
 
 Built through one loader, `load_case_redaction(case_id, sanitizer, redis_client)` (enabled by `should_redact()`, TTL from `redaction_registry_ttl_hours`); the send sites use two helpers, `case_redacted(text, ctx)` and `case_redacted_messages(messages, ctx)`, which pass through when there is no context.
 

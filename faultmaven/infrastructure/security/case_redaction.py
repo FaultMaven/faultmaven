@@ -144,12 +144,12 @@ class CaseRedactionContext:
         return stored
 
     def _absorb(self, stored: Dict[Tuple[str, str], str]) -> None:
-        """Union the stored registry into this one. An entry this context
-        already holds is kept: a placeholder is a keyed function of the value
-        (#971), so the two agree."""
+        """Union the stored registry into this one, and record it as what is
+        stored. An entry this context already holds is kept: a placeholder is
+        a keyed function of the value (#971), so the two agree."""
         for (entity_type, value), placeholder in stored.items():
             self._forward.setdefault(entity_type, {}).setdefault(value, placeholder)
-        self._persisted.update(stored)
+        self._persisted = set(stored)
         self._rebuild_reverse()
 
     async def load(self) -> None:
@@ -177,33 +177,38 @@ class CaseRedactionContext:
         self._loaded = True
 
     async def save(self) -> None:
-        """Add this context's new entries to the stored registry, with TTL.
+        """Merge this context's entries into the stored registry, and refresh
+        its TTL.
 
-        A MERGE, never an overwrite (#1956). Each entry not yet stored is
-        written with ``HSETNX`` into the case's hash, so the stored registry
-        only grows and an entry already there is never replaced. Two contexts
-        on one case — two concurrent turns, a turn and the case title, or a
+        A MERGE, never an overwrite (#1956). The stored registry is read
+        first; each entry this context holds that is not stored is written
+        with ``HSETNX`` into the case's hash, so the stored registry only
+        grows and an entry already there is never replaced. Two contexts on
+        one case — two concurrent turns, a turn and the case title, or a
         context whose ``load()`` failed — therefore cannot drop each other's
         entries, whatever order they save in, with no lock and no retry: each
-        field is written atomically by Redis. The stored registry is then read
-        back into this context, so it can reverse what the others added.
+        field is written atomically by Redis. Reading first also restores
+        entries the key lost when it expired under a live context.
 
-        Writes nothing when every entry is already stored. The key's TTL is
-        refreshed on every write, as before.
+        The writes and the ``EXPIRE`` go in one MULTI/EXEC transaction, so a
+        dropped connection cannot leave a registry with no TTL. The TTL is
+        refreshed on EVERY save of a context that holds any entry, new or not:
+        an active case's registry lives ``redaction_registry_ttl_hours`` past
+        its last turn, not past its last new value. The stored entries are
+        read into this context as well, so it can reverse what others added.
         """
-        if not self.enabled:
-            return
-        unsaved = [
-            (entity_type, value, placeholder)
-            for entity_type, type_map in self._forward.items()
-            for value, placeholder in type_map.items()
-            if (entity_type, value) not in self._persisted
-        ]
-        if not unsaved:
+        if not self.enabled or not self.entity_count:
             return
 
         try:
-            pipe = self.redis_client.pipeline(transaction=False)
+            self._absorb(await self._read_stored())
+            unsaved = [
+                (entity_type, value, placeholder)
+                for entity_type, type_map in self._forward.items()
+                for value, placeholder in type_map.items()
+                if (entity_type, value) not in self._persisted
+            ]
+            pipe = self.redis_client.pipeline(transaction=True)
             for entity_type, value, placeholder in unsaved:
                 pipe.hsetnx(
                     self._redis_key, json.dumps([entity_type, value]), placeholder
@@ -211,7 +216,6 @@ class CaseRedactionContext:
             pipe.expire(self._redis_key, self.ttl_seconds)
             await pipe.execute()
             self._persisted.update((t, v) for t, v, _ in unsaved)
-            self._absorb(await self._read_stored())
             logger.debug(
                 f"Saved redaction registry for case {self.case_id}: "
                 f"{len(unsaved)} new of {self.entity_count} entities"
