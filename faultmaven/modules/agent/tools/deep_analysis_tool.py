@@ -10,6 +10,7 @@ Design Reference: docs/architecture/data-processing/README.md
 import logging
 from typing import Any, Dict, Optional
 
+from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 
@@ -58,11 +59,11 @@ class DeepAnalysisTool(AgentTool):
     entry point for Directed Analysis mode.
     """
 
-    def __init__(self, tier2_service: Any):
-        """Initialize with a Tier 2 analysis service.
+    def __init__(self, tier2_service: LocalTier2Service | None):
+        """Initialize with the deep-analysis service.
 
         Args:
-            tier2_service: ITier2SearchService implementation (or None if disabled)
+            tier2_service: The deep-analysis service, or None if disabled
         """
         self.tier2_service = tier2_service
 

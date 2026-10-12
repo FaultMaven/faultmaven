@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,31 @@ def create_extractors() -> dict[str, Any]:
         "documentation_extractor": DocumentationExtractor(),
         "command_output_extractor": CommandOutputExtractor(),
     }
+
+
+def create_deep_analysis_service(
+    settings: FaultMavenSettings, llm_provider: Any, storage_service: Any
+) -> LocalTier2Service | None:
+    """Create the deep-analysis service, or None when it is disabled.
+
+    ``DEEP_ANALYSIS_BACKEND`` is validated at settings load to ``local`` or
+    ``disabled``, so there is nothing else to dispatch on here: ``local`` is
+    the one implementation, and it reaches the model through the LLM router.
+    """
+    from faultmaven.config.settings import DeepAnalysisBackend
+
+    if settings.deep_analysis.backend == DeepAnalysisBackend.DISABLED:
+        logger.info("Deep analysis: disabled")
+        return None
+
+    from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+
+    logger.info("Deep analysis: local (LLM router)")
+    return LocalTier2Service(
+        llm_client=llm_provider,
+        storage_service=storage_service,
+        max_tokens=settings.deep_analysis.max_tokens,
+    )
 
 
 def create_preprocessing_service(
@@ -620,7 +646,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     )
 
     # File storage service — must be registered BEFORE the Tier 2 deep
-    # analysis service below, because create_tier2_service reads it via
+    # analysis service below, which is built from
     # getattr(container, "file_storage_service", None). The canonical
     # registration name is "file_storage_service"; downstream consumers in
     # infrastructure.py (here), tools.py (via get_service), and services.py
@@ -652,17 +678,9 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         container._register_failed("file_storage_service", str(e))
 
     # Deep analysis service (Tier 3 deep LLM analysis)
-    from faultmaven.core.preprocessing.tier2.factory import create_tier2_service
-
     storage_service = getattr(container, "file_storage_service", None)
-    deep_analysis_service = create_tier2_service(
-        backend=settings.deep_analysis.backend,
-        base_url=settings.deep_analysis.url or None,
-        api_key=settings.deep_analysis.api_key or None,
-        llm_client=llm_provider if settings.deep_analysis.backend == "local" else None,
-        storage_service=storage_service,
-        timeout_seconds=settings.deep_analysis.timeout_seconds,
-        max_tokens=settings.deep_analysis.max_tokens,
+    deep_analysis_service = create_deep_analysis_service(
+        settings, llm_provider, storage_service
     )
     if deep_analysis_service:
         container._register_service("deep_analysis_service", deep_analysis_service)
