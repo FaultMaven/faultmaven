@@ -58,10 +58,6 @@ What this does NOT see, stated so nobody mistakes it for more:
 
 It also does not see ``.route(...)``: that is ``LLMRouter``'s own entry point,
 no provider has one, and everything it calls goes through the chokepoint.
-
-Out of scope: ``core/preprocessing/tier2/external.py``'s
-``ExternalTier2Client``, which calls an external search service whose LLM spend,
-if any, is that service's own.
 """
 
 from __future__ import annotations

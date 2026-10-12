@@ -107,6 +107,17 @@ class StorageBackend(str, Enum):
     S3 = "s3"
 
 
+class DeepAnalysisBackend(str, Enum):
+    """Deep analysis ("interpreted search") selector.
+
+    ``local`` runs it through the LLM router; ``disabled`` withholds the
+    ``deep_analysis`` tool. There is no other backend (#1957).
+    """
+
+    LOCAL = "local"
+    DISABLED = "disabled"
+
+
 class MetricsExporter(str, Enum):
     """Metrics exporter provider selector (PR #5).
 
@@ -2972,35 +2983,16 @@ class DeepAnalysisSettings(BaseSettings):
     search), a dedicated LLM call interprets the relevant sections in
     isolation with the investigation context.
 
-    The 'local' backend uses the already-configured CHAT_PROVIDER — no
-    additional API keys or infrastructure needed. The 'external' backend
-    calls a separate microservice (enterprise only).
+    The call goes through the LLM router on the already-configured
+    CHAT_PROVIDER — no additional API keys or infrastructure needed.
+    ``DEEP_ANALYSIS_BACKEND`` admits ``local`` or ``disabled`` and nothing
+    else; any other value fails settings load.
     """
 
-    backend: str = Field(
-        default="local",
+    backend: DeepAnalysisBackend = Field(
+        default=DeepAnalysisBackend.LOCAL,
         validation_alias="DEEP_ANALYSIS_BACKEND",
-        description="Interpreted search backend: external | local | disabled",
-    )
-
-    url: str = Field(
-        default="",
-        validation_alias="DEEP_ANALYSIS_URL",
-        description="URL for external deep analysis backend",
-    )
-
-    api_key: str = Field(
-        default="",
-        validation_alias="DEEP_ANALYSIS_API_KEY",
-        description="API key for external deep analysis backend",
-    )
-
-    timeout_seconds: int = Field(
-        default=30,
-        validation_alias="DEEP_ANALYSIS_TIMEOUT_SECONDS",
-        ge=5,
-        le=120,
-        description="Timeout for deep analysis calls",
+        description="Interpreted search: 'local' (LLM router) or 'disabled'",
     )
 
     max_tokens: int = Field(
@@ -3008,11 +3000,7 @@ class DeepAnalysisSettings(BaseSettings):
         validation_alias="DEEP_ANALYSIS_MAX_TOKENS",
         ge=256,
         le=16000,
-        description=(
-            "Maximum response tokens for deep-analysis LLM calls. Applied "
-            "by the 'local' backend (LocalTier2Service); the 'external' "
-            "backend governs its own response size on the server side."
-        ),
+        description="Maximum response tokens for the deep-analysis LLM call.",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}

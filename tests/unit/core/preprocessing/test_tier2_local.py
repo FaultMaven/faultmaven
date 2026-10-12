@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
-from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 
@@ -68,10 +67,7 @@ def service(mock_llm, mock_storage):
     )
 
 
-class TestLocalTier2Interface:
-    def test_implements_interface(self):
-        assert issubclass(LocalTier2Service, ITier2SearchService)
-
+class TestLocalTier2Defaults:
     def test_default_params(self):
         s = LocalTier2Service(llm_client=AsyncMock(), storage_service=AsyncMock())
         assert s.context_lines == 20
@@ -148,7 +144,7 @@ class TestLocalTier2Analyze:
 
         This used to assert the opposite — that a plain string was accepted and
         used as the answer — via a ``hasattr(response, "content")`` hedge. The
-        DI cannot produce such a client (``create_tier2_service`` is handed the
+        DI cannot produce such a client (``create_deep_analysis_service`` hands it the
         router), and the hedge stopped being harmless once a response-level
         signal had to be read: ``is_truncated`` cannot be read off a stand-in
         that only pretends to be a response, so tolerating one would mean
@@ -199,35 +195,6 @@ class TestLocalTier2Analyze:
         assert caps == [service.max_tokens, service.max_tokens * 2]
         assert "Found 2 errors rel" in result.answer
         assert TRUNCATION_NOTICE.strip() in result.answer
-
-
-class TestLocalTier2IsAvailable:
-    @pytest.mark.asyncio
-    async def test_available_with_is_available_method(self):
-        llm = AsyncMock()
-        llm.is_available = AsyncMock(return_value=True)
-        service = LocalTier2Service(llm_client=llm, storage_service=AsyncMock())
-        assert await service.is_available() is True
-
-    @pytest.mark.asyncio
-    async def test_not_available(self):
-        llm = AsyncMock()
-        llm.is_available = AsyncMock(return_value=False)
-        service = LocalTier2Service(llm_client=llm, storage_service=AsyncMock())
-        assert await service.is_available() is False
-
-    @pytest.mark.asyncio
-    async def test_default_available_without_method(self):
-        llm = MagicMock(spec=[])  # No is_available method
-        service = LocalTier2Service(llm_client=llm, storage_service=AsyncMock())
-        assert await service.is_available() is True
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        llm = AsyncMock()
-        llm.is_available = AsyncMock(side_effect=RuntimeError("boom"))
-        service = LocalTier2Service(llm_client=llm, storage_service=AsyncMock())
-        assert await service.is_available() is False
 
 
 class TestBuildAnalysisPrompt:

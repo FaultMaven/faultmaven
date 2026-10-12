@@ -3,8 +3,8 @@
 Four-tier data preprocessing pipeline:
 - Tier 0: Classification (DataClassifier in faultmaven.modules.preprocessing.classifier)
 - Tier 1: Mechanical extraction (extractors in faultmaven.modules.preprocessing.extractors)
-- Tier 2: Mechanical search (search_file agent tool + BasicTier2Service)
-- Tier 3: Interpreted search / deep analysis (backends in ``tier2/`` — the
+- Tier 2: Mechanical search (search_file agent tool)
+- Tier 3: Interpreted search / deep analysis (``tier2/`` — the
   ``Tier2`` token refers to the agent-tools tier system: Tier 2 = search,
   Tier 3 = interpreted analysis)
 
