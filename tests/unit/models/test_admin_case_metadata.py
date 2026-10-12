@@ -31,16 +31,14 @@ pytestmark = pytest.mark.unit
 #   valid_next_states — the transitions the *driver* may drive from the
 #       dashboard. An operator does not act on tenant cases from this list, so
 #       it is an affordance with no consumer here.
-#   driver_id — who holds the investigation writes (ADR-020). Not on the
-#       cross-enterprise metadata read (its definer function predates the
-#       column), and the operator list answers "which tenant's cases are stuck",
-#       not "who is working them"; ``user_id`` already names an account.
 #   creator_display_name / driver_display_name — a person's chosen name, text
 #       a user typed: the same reason titles stay off this row (ADR-012 D9).
+#       The row carries both accounts as ids (``user_id``, ``driver_id``), and
+#       an operator maps an id to a name through the ambient ``/admin/users``
+#       list (#1926).
 DELIBERATELY_OMITTED_FIELDS = frozenset(
     {
         "valid_next_states",
-        "driver_id",
         "creator_display_name",
         "driver_display_name",
     }

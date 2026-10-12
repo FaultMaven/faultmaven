@@ -89,6 +89,7 @@ def _stored(**overrides):
         enterprise_id="ent_1",
         organization_id=None,
         user_id="user_1",
+        driver_id="user_1",
         state="inquiry",
         source="copilot",
         closure_reason=None,
@@ -453,7 +454,18 @@ def test_metadata_has_no_field_that_can_hold_user_text():
         "enterprise_id",
         "organization_id",
         "user_id",
+        # The effective driver's id (#1926): a system id, never a name.
+        "driver_id",
         "source",
         "closure_reason",
         "shared_team_ids",
     }
+
+
+@pytest.mark.parametrize("driver_id", ["user_2", "user_1", None])
+def test_the_effective_driver_is_served_as_the_read_returns_it(driver_id):
+    """The database applies ``COALESCE(driver_id, user_id)``; the row carries
+    its answer through unchanged, ``None`` (neither account left) included."""
+    metadata = CaseMetadata.from_stored(**_stored(driver_id=driver_id))
+    assert metadata.driver_id == driver_id
+    assert metadata.user_id == "user_1"

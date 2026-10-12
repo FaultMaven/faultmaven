@@ -38,8 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 012_case_driver
-HEAD_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: 014_admin_case_metadata_driver
+HEAD_REVISION = "831be28d1434"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -69,6 +69,12 @@ REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
 #: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
 #: writes (ADR-020, #1898).
 CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
+#: ``013_evidence_is_submitted_data``: ``evidence_source_invariant`` admits a
+#: fileless row only for an engine inference (#1930).
+EVIDENCE_SUBMITTED_DATA_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``014_admin_case_metadata_driver``: the operator case-metadata page function
+#: names each case's effective driver (#1926).
+ADMIN_CASE_METADATA_DRIVER_REVISION = "831be28d1434"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -358,7 +364,8 @@ class TestAlembicMigrationInfrastructure:
 
 
 class TestFunctionOnlyRevisions:
-    """Revisions 003, 004 and 005 change PostgreSQL functions and nothing else.
+    """Revisions 003, 004, 005 and 014 change PostgreSQL functions and nothing
+    else.
 
     SQLite has no row-level security to bypass and no definer functions, so on
     SQLite each is a no-op in both directions: stepped down to its parent and
@@ -366,7 +373,7 @@ class TestFunctionOnlyRevisions:
     ``tests/integration/security/test_admin_case_metadata_postgres.py`` (003);
     ``tests/integration/security/test_definer_functions_postgres.py``, whose
     step test starts from what 004 leaves and asserts it, and steps 005 down to
-    004 and back.
+    004 and back (005); ``test_admin_case_metadata_postgres.py`` again (014).
     """
 
     @pytest.mark.parametrize(
@@ -386,6 +393,11 @@ class TestFunctionOnlyRevisions:
                 DEFINER_SEARCH_PATH_REVISION,
                 DEFINER_TRIGGER_HARDENING_REVISION,
                 id="005_definer_search_path_without_public",
+            ),
+            pytest.param(
+                ADMIN_CASE_METADATA_DRIVER_REVISION,
+                EVIDENCE_SUBMITTED_DATA_REVISION,
+                id="014_admin_case_metadata_driver",
             ),
         ],
     )

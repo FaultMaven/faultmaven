@@ -59,6 +59,7 @@ def _metadata(case_id: str, enterprise_id: str, **overrides) -> CaseMetadata:
         enterprise_id=enterprise_id,
         organization_id=None,
         user_id=f"user-of-{enterprise_id}",
+        driver_id=f"user-of-{enterprise_id}",
         state=CaseState.INVESTIGATING,
         source="slack",
         closure_reason=None,
@@ -98,7 +99,11 @@ def reader():
     reader = AsyncMock()
     reader.list_case_metadata = AsyncMock(
         return_value=(
-            [_metadata("case-a", "ent-a"), _metadata("case-b", "ent-b")],
+            [
+                _metadata("case-a", "ent-a"),
+                # Handed on: driven by someone other than its creator.
+                _metadata("case-b", "ent-b", driver_id="driver-of-ent-b"),
+            ],
             7,
         )
     )
@@ -144,6 +149,12 @@ class TestServedFromTheCrossEnterpriseRead:
         assert row["stage"] == "treatment"
         assert row["investigation_turn"] == 4
         assert row["shared_team_ids"] == ["team-1"]
+        # Creator and effective driver, both as ids (#1926).
+        assert [(r["user_id"], r["driver_id"]) for r in body["cases"]] == [
+            ("user-of-ent-a", "user-of-ent-a"),
+            ("user-of-ent-b", "driver-of-ent-b"),
+        ]
+        assert "driver_display_name" not in row
         reader.list_case_metadata.assert_awaited_once_with(
             state=CaseState.INVESTIGATING, source="slack", limit=2, offset=0
         )
