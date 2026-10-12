@@ -76,7 +76,7 @@ evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vecto
 ```
 
 - `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes the pack's chunk texts + pre-computed vectors atomically into `knowledge_items` + `chroma-kb/`. Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
-- `knowledge/` holds **authored/converted source markdown** (the draft → verify flow and `/knowledge/scan`) — not the pre-deployed built-ins. See [`kb-ingestion-architecture.md`](../architecture/knowledge-and-ai/kb-ingestion-architecture.md).
+- `knowledge/` is the **standalone import directory** `/knowledge/scan` reads: hand-placed runbook files become drafts holding their text. Nothing writes here; authored and converted drafts live in `conversion_drafts.content` (#1950), and the pre-deployed built-ins come from the pack. See [`document-to-runbook-conversion.md`](../architecture/knowledge-and-ai/document-to-runbook-conversion.md) §9.5.
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
@@ -272,7 +272,7 @@ see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-archite
 
 ### Important: do not ingest runbooks directly into ChromaDB
 
-Copying runbook files into `data/knowledge/` and letting the bootstrap ingest them is the correct way to add runbooks. Do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client) or insert directly into `knowledge_items`. The bootstrap maintains the invariant that **no row exists in `knowledge_items` without a matching set of ChromaDB chunks for the same `item_id`**, and vice versa. Bypassing the bootstrap breaks that invariant and produces:
+Add runbooks through the paths that keep the invariant below: a new KB pack for built-ins, or an upload, conversion or (standalone) `/knowledge/scan` import followed by verify for authored ones. The bootstrap ingests only the pack; a file copied into `data/knowledge/` is ingested by nothing until a scan imports it and someone verifies the draft. Do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client) or insert directly into `knowledge_items`. The bootstrap maintains the invariant that **no row exists in `knowledge_items` without a matching set of ChromaDB chunks for the same `item_id`**, and vice versa. Bypassing the bootstrap breaks that invariant and produces:
 
 - Orphaned vectors with no provenance (no SQL row to identify them).
 - Orphaned SQL rows that aren't searchable (no chunks for retrieval).
@@ -280,16 +280,9 @@ Copying runbook files into `data/knowledge/` and letting the bootstrap ingest th
 
 ### Removing a runbook
 
-Removing a runbook requires two steps — deleting the source file and removing the KB entry:
-
-```bash
-# 1. Remove the source file (so it doesn't get re-ingested on next restart)
-rm data/knowledge/global/my-runbook.md
-
-# 2. Delete via the API or Dashboard so both SQL and ChromaDB are updated
-#    The bootstrap intentionally does NOT garbage-collect files deleted from
-#    disk — explicit deletion is a separate operator concern.
-```
+Delete it via the API or the Dashboard, so both SQL and ChromaDB are updated.
+An authored runbook has no file to remove. A built-in comes back on the next
+startup while the pack still carries it; remove it from the pack to retire it.
 
 For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
 
@@ -522,7 +515,7 @@ du -sh data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/ d
 | `data/chroma-evidence/` | Per-case vector collections | Auto-cleaned on case closure; safe to wipe entirely |
 | `data/chroma-kb/` | KB ingestion | Minimal growth; permanent |
 | `data/faultmaven.db` | All relational writes | Archive resolved cases older than 90 days |
-| `data/knowledge/` | Runbook source files | Minimal growth; manual curation |
+| `data/knowledge/` | Standalone scan import directory (hand-placed runbook files) | Minimal growth; manual curation |
 
 ### Manual cleanup of closed case evidence
 

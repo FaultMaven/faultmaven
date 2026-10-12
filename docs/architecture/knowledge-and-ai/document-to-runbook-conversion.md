@@ -59,8 +59,7 @@ sequenceDiagram
         VAL-->>API: validation_result
         API->>QS: Score quality
         QS-->>API: quality_score
-        API->>FS: Write draft to data/knowledge/{scope}/{id}.md
-        API->>DB: Create ConversionDraft record
+        API->>DB: Create ConversionDraft record (its text in conversion_drafts.content)
     end
     API->>DB: Record the source's name, size and type (uploaded_files, storage_ref NULL)
     API->>FS: Delete the uploaded temp file (sources are not retained, §9.4)
@@ -768,7 +767,7 @@ Runbook IDs are minted deterministically from a failure mode's service and title
 - the LLM conversion path from a case, through `mint_case_runbook_id(content, case_id)` in `faultmaven/modules/knowledge/domain/case_authoring.py`. This runs after the model writes the draft and reads the `service` and `title` the model produced, never the case title, which names the incident. A draft with no usable title falls back to `case-<case_id>`. `usable_title` decides what is usable, for this mint and for the draft's title alike: not blank, not the rule-8 `[INSUFFICIENT SOURCE DATA ...]` placeholder, and not a title with no character the slug keeps (`!!!`);
 - the manual path, `ConversionService.create_runbook_from_template`.
 
-Because a case-built id comes from what the model wrote, two different cases about the same failure can mint the same id, and the slot is enterprise-wide, so the holder can be another user's personal draft. On the case path only, `claim_case_draft_slot` (`conversion_service/draft_slots.py`) re-mints once, as `runbook_id_from_parts(<minted id>, case-<case_id>)`, when the minted id's slot is held. The file, the forced frontmatter `id` and the row all use the id it returns. When the re-minted id is held too, or the minted id already is the case stem, the conversion is refused with the usual 409. With today's `case_<12 hex>` ids the stem is 22 characters, so a minted id over 37 characters leaves no room for it, and the stem then shows only through the over-length hash below.
+Because a case-built id comes from what the model wrote, two different cases about the same failure can mint the same id, and the slot is enterprise-wide, so the holder can be another user's personal draft. On the case path only, `claim_case_draft_slot` (`conversion_service/draft_slots.py`) re-mints once, as `runbook_id_from_parts(<minted id>, case-<case_id>)`, when the minted id's slot is held. The forced frontmatter `id` and the row both use the id it returns. When the re-minted id is held too, or the minted id already is the case stem, the conversion is refused with the usual 409. With today's `case_<12 hex>` ids the stem is 22 characters, so a minted id over 37 characters leaves no room for it, and the stem then shows only through the over-length hash below.
 
 The rules:
 
@@ -905,10 +904,10 @@ Response: Updated draft object with re-run validation and quality score.
 ```
 
 This endpoint:
-1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` on the file on disk (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source.
+1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` in the draft's text, `conversion_drafts.content` (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source.
 2. (Removed in fm#1295.) Until then this step extracted the v4 `## Causes` graph record from the markdown and stored it as `knowledge_items.metadata["causes"]` for the KB cause seeder; with the seeder gone the record had no reader, and extraction, the record and the chunk cause-letter stamp were retired. The runbook's `## Causes` section still chunks one Cause per chunk, so a verified runbook re-enters investigations as retrievable cause→fix units. See **Flywheel closure** below.
 3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
-4. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
+4. Only after ingestion succeeds, commits the verified text with `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts` — one transaction (#1950).
 
 **Flywheel closure.** A verified case-derived runbook closes the loop the same way a built-in one does: it is ingested, chunked one Cause per chunk, and retrieved into later investigations as prose. The `RunbookValidator` gate (§12.1) is anchored on the same shared parse grammar the toolkit's pack builder uses, so a draft the gate passes is one the toolkit parses identically. (A structural closure existed until fm#1295: on verify, an in-repo extractor turned the `## Causes` section into a `metadata["causes"]` record that the KB cause seeder instantiated as candidate hypotheses, guarded by a golden cross-check against the toolkit's output and a runtime refusal of EXPERIMENTAL-tier records. Seeder, extractor, record and guards were all removed; the design and evidence record is in `docs/archive/2026/09/kb-cause-seeder/`.)
 
@@ -916,7 +915,7 @@ This endpoint:
 
 **Atomicity guarantee (changed 2026-05-26):** The DB status flip to `VERIFIED` is the *last* mutation. Previously the status was committed up-front and ingestion failure left half-state rows (status=verified, knowledge_item_id=NULL) which a subsequent KB-page scan would mis-classify and revert. The new ordering eliminates that drift class. See [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the full atomicity contract.
 
-**Frontmatter mutation implementation note:** The `.md` file on disk is updated before ingestion using `python-frontmatter` (or `ruamel.yaml`) — not regex substitution, since YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably. If ingestion subsequently fails, the file's frontmatter retains `status: verified` while the DB row stays in `DRAFT`; this is harmless because the file mutation is idempotent and the next retry uses the same content.
+**Frontmatter mutation implementation note:** The draft's text (`conversion_drafts.content`) is re-serialised before ingestion with `python-frontmatter` — not regex substitution, since YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably; there is no text fallback. The mutated text is committed in the same transaction as the `VERIFIED` status, so a failed ingestion leaves the row exactly as it was, text included (#1950).
 
 ### 6.6 Access Control
 
@@ -1078,16 +1077,11 @@ class ConversionDraft(BaseModel):
                                                    # ?tab=runbook Dashboard link from a resolved case
     validation: ValidationResult
     quality_score: QualityScore
-    file_path: str = Field(exclude=True)  # conversion_drafts.file_path: read on
-                                          # the server, never serialised (#836)
     content_preview: str = Field(
         max_length=500,
         description="First 500 chars of generated markdown"
     )
-    content: Optional[str] = Field(
-        default=None,
-        description="Full markdown content, included on detail requests"
-    )
+    content: str  # conversion_drafts.content, the draft's one home (#1950)
     quality_warning: Optional[str] = Field(
         default=None,
         description="Warning if quality score < 50"
@@ -1274,17 +1268,27 @@ export async function deleteDraft(
 
 ## 9. Storage and Lifecycle
 
-### 9.1 File Storage Layout
+### 9.1 Where a Draft Lives
+
+A draft's text lives in its row, `conversion_drafts.content` (`TEXT NOT NULL`),
+written in the same transaction as the row by every path that makes or edits a
+draft: document conversion, case conversion, the template create, the KB upload
+(`KnowledgeService.upload_document`, an immediately-verified draft) and the
+scan's import. Every API replica reads the same text, and no rollout loses it.
+A published runbook's text lives in `knowledge_items.content` the same way.
+**No draft is written to or read from disk** (#1950; until then the text was a
+file under the writing pod's `data/knowledge/`, which on a multi-replica
+deployment with no shared volume was missing on the other replica and gone
+after a rollout).
+
+`data/knowledge/` survives only as the **standalone import directory** the scan
+reads (§9.5):
 
 ```
 data/knowledge/
-    global/                          # Global KB runbooks
-        pg-connection-pool-exhaustion.md    # status: draft (not in ChromaDB)
-        pg-replication-lag.md               # status: draft (not in ChromaDB)
-    team_{team_id}/                  # Team KB runbooks
-        ...
-    user_{user_id}/                  # Personal KB runbooks
-        ...
+    global/                          # imported as global-scope drafts (operator only)
+    team_{team_id}/                  # imported as team-scope drafts
+    user_{user_id}/                  # imported as personal drafts
 ```
 
 ### 9.2 Database Schema
@@ -1313,7 +1317,7 @@ New table: `conversion_drafts`
 | `conversion_id` | `VARCHAR(36)` FK | Parent conversion job |
 | `runbook_id` | `VARCHAR(100)` | Generated runbook ID (kebab-case) |
 | `title` | `VARCHAR(255)` | Runbook title |
-| `file_path` | `VARCHAR(500)` | Path to draft markdown file |
+| `content` | `TEXT NOT NULL` | The draft's full markdown, frontmatter included. `''` only on a row migration 017 discarded because its text was already gone |
 | `status` | `VARCHAR(20)` | draft, verified, discarded |
 | `validation_passed` | `BOOLEAN` | Whether kb-validate passed |
 | `validation_errors` | `JSON` | Validation error list |
@@ -1335,13 +1339,13 @@ stateDiagram-v2
     Draft --> Discarded: User deletes draft
     Verified --> Discarded: KB document deleted (via KnowledgeService)
     Verified --> [*]: Runbook is live in ChromaDB
-    Discarded --> [*]: Soft-deleted (row kept, file removed)
+    Discarded --> [*]: Soft-deleted (row kept)
 ```
 
 Key rules:
-- **Draft**: File exists on disk. NOT in ChromaDB. NOT searchable by the AI.
-- **Verified**: File updated with `status: verified` and `verified_by`. Ingested into ChromaDB. Searchable.
-- **Discarded**: Soft-delete. Database row retained (audit trail), `knowledge_item_id` cleared, file removed from disk on next cleanup.
+- **Draft**: Text in `conversion_drafts.content`. NOT in ChromaDB. NOT searchable by the AI.
+- **Verified**: Text updated with `status: verified` and `verified_by`. Ingested into ChromaDB. Searchable.
+- **Discarded**: Soft-delete. Database row retained (audit trail), `knowledge_item_id` cleared.
 - **No reverse transition**: Once verified, the runbook follows the standard KB lifecycle. It is no longer a "conversion draft."
 
 ### 9.4 Single-Owner Principle for Draft Mutations
@@ -1352,9 +1356,23 @@ Key rules:
 
 `KnowledgeService` holds no reference to `ConversionService`. `ConversionService` is constructed with its collaborators in the container's service providers (`container/providers/services.py`); the draft-mutation path runs through `ConversionService` alone.
 
-### 9.5 Scan Guard
+### 9.5 The Scan: a Standalone Import
 
-`ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `ScanAbortedError` (a `RuntimeError` subclass) is raised. The API surfaces this refusal, and only this one, as `HTTP 409 Conflict`, with the affected draft IDs and a recovery instruction. Any other failure of the scan is a 500 with no exception text (#836). This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
+`POST /knowledge/scan` (`ConversionService.scan_for_runbooks()`) is an
+**import, never a reconciliation** (#1950). It walks `data/knowledge/` and makes
+a draft row, holding the file's text, for each `.md` file that is not already a
+live draft (matched by `runbook_id`) or a published runbook; such a file is
+counted as skipped. A symlink out of the tree is refused, a file over the edit
+bound (`DRAFT_CONTENT_MAX_CHARS`, 100,000 characters) is reported as an error,
+and a global-scope file is imported only for a platform operator. What is on
+disk decides nothing about an existing draft: a draft whose file is gone keeps
+its row and its text.
+
+Under `TENANT_PROVIDER=multi` the service refuses the scan with a
+`ValidationException` — `422`, detail "This deployment has no runbook
+directory; upload or convert instead" — because the API runs as replicas with
+no shared disk, so there is no directory to import from. Any other failure of
+the scan is a 500 with no exception text (#836).
 
 **Verified-row policy (changed 2026-05-26):** The scan no longer reverts rows with `status=verified` but `knowledge_item_id=NULL` back to `draft`. The atomic `verify_draft` flow cannot produce that half-state anymore, and the previous "self-healing" behaviour turned out to be the destructive corruption path that downgraded user-verified runbooks every time the KB page was visited. Legacy rows are now surfaced via a WARN log so an operator can clean them up explicitly; the scan itself is read-only with respect to verified rows.
 
@@ -1363,7 +1381,7 @@ Key rules:
 - **skips** any on-disk file whose derived `item_id` already exists in `knowledge_items` (no new draft created); and
 - **discards** any existing `status='draft'` row whose `runbook_id` maps to a published `knowledge_items` row.
 
-These already-published discards are tracked separately from the bulk-discard guard above, so clearing redundant phantom drafts is never mistaken for the "files missing from disk" storage-failure signal.
+Both are database-only clean-up, as is discarding a `status='draft'` row that already has a `knowledge_item_id`; a case job whose last live draft one of them discards releases its `live_case_id` in the same transaction.
 
 ### 9.4 Source Files Are Not Retained
 
@@ -1651,7 +1669,7 @@ The Alembic migration for `conversion_jobs` and `conversion_drafts` includes a `
 ### 15.3 Data Cleanup
 
 If the feature is disabled after use:
-- Draft files in `data/knowledge/{scope}/` with `status: draft` can be safely deleted.
+- Unverified drafts can be discarded (`DELETE /knowledge/conversions/{id}/drafts/{draft_id}`); their text is in `conversion_drafts.content` and no file holds it.
 - Verified runbooks remain in the KB (they are now standard knowledge items).
 
 ---
@@ -1723,7 +1741,7 @@ Add Prometheus counters:
 
 - Conversion jobs are scoped to the user who created them.
 - Users can only access their own conversion jobs and drafts.
-- Personal KB drafts are stored in `data/knowledge/user_{user_id}/` -- not accessible to other users.
+- Personal KB drafts are rows of `conversion_drafts` under the enterprise's row-level security, read only through their owner's conversion job.
 - The existing knowledge repository layer enforces user isolation.
 
 ---

@@ -48,8 +48,9 @@ embedding model and no chunking** — pure SQL + ChromaDB writes. This is what t
 still loaded once at boot (~5s) — from the cache **baked into the image** (CPU-only
 torch, `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`, so no HuggingFace fetch — works
 air-gapped) — but it serves *query-time* search and the conversion/verify path; the
-pre-embedded pack is ingested without it. Built-ins are no longer copied to `data/knowledge/global` — that directory
-is now solely the workspace for authored/converted runbooks and `/knowledge/scan`.
+pre-embedded pack is ingested without it. Built-ins are not copied to `data/knowledge/` — that directory
+is only the standalone import source `/knowledge/scan` reads; authored and converted drafts live in
+`conversion_drafts.content`, never on disk (#1950).
 
 ### Algorithm
 

@@ -2026,4 +2026,25 @@ asked to accept, and it belongs to a person.
 # same code and no count; the account's sessions were revoked by then. Additive
 # — one new response on an operator route; no schema changed, and `user_id`
 # stays required on every case schema, because no case can now lose its creator.
-API_CONTRACT_VERSION = "13.5.0"
+
+# 13.6.0 — MINOR. A runbook draft's text lives in the database (#1950).
+#
+# * `DraftUpdateRequest.content` gains `maxLength` 100000
+#   (`DRAFT_CONTENT_MAX_CHARS`): the body of
+#   `PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` is stored as a
+#   row now, and nothing else bounds a JSON body. Sized at twice the largest
+#   shipped runbook (48,354 bytes) and three times a converted draft's
+#   ceiling; no draft the server makes or imports exceeds it, so no existing
+#   client edit is refused.
+#
+# Behaviour a client may notice without a schema change: a draft's `content`
+# in `GET /conversions/{id}` (and every response carrying a draft) is always
+# the full text — never `null` because the serving replica had no file. A
+# verify no longer fails because the file is missing. `POST /knowledge/scan`
+# imports files and never discards a draft; under `TENANT_PROVIDER=multi` it
+# answers 422 with "This deployment has no runbook directory; upload or convert
+# instead" (it was a 409 when a scan would have discarded every draft; that
+# refusal is gone). MINOR because every client survives: the draft routes
+# declare no response model, so `content` going from nullable to always-present
+# is invisible to a generated type, and a client already shows the 422 detail.
+API_CONTRACT_VERSION = "13.6.0"

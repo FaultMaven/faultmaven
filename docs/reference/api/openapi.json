@@ -2931,6 +2931,7 @@
         "properties": {
           "content": {
             "description": "Full runbook markdown content including frontmatter",
+            "maxLength": 100000,
             "minLength": 100,
             "title": "Content",
             "type": "string"
@@ -7217,7 +7218,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "13.5.0"
+    "version": "13.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -13477,7 +13478,7 @@
     },
     "/api/v1/knowledge/scan": {
       "post": {
-        "description": "Scan data/knowledge/ for .md files not tracked in the database.\n\nDiscovers runbooks created by the KB Toolkit or placed on disk manually.\nCreates draft records so they appear in the Drafts tab for review.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator \u2014 an admin in single-tenant, and never a tenant session\nunder multi (#770). Non-global (personal/team) discovery is unaffected.",
+        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global (personal/team) discovery is\nunaffected.",
         "operationId": "scan_for_runbooks_api_v1_knowledge_scan_post",
         "responses": {
           "200": {
