@@ -222,10 +222,13 @@ class EvidenceVectorizer:
         tool_context: Any,
         da_empty_search_counts: dict[str, int],
         proactive_tasks: dict[str, asyncio.Task],
+        given_tools: frozenset[str],
     ) -> str:
         """Track DA failure signals and trigger vectorization when needed.
 
-        Returns result_text, potentially with [SYSTEM] messages appended.
+        Returns result_text, potentially with [SYSTEM] messages appended. An
+        advisory names a tool only when ``given_tools`` (the names this loop
+        offered the model) has it (#1939).
         Dedup of "already vectorized" is sourced from Evidence.vectorized
         (persistent) — within-turn and across-turn.
         """
@@ -275,9 +278,10 @@ class EvidenceVectorizer:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-            # Advisory after 3 consecutive empty searches
+            # Advisory after 3 consecutive empty searches, pointing at
+            # deep_analysis only when this loop offers it.
             count = da_empty_search_counts.get(evidence_id, 0)
-            if count >= 3:
+            if count >= 3 and "deep_analysis" in given_tools:
                 result_text += (
                     f"\n\n[SYSTEM] Last {count} search_file calls on this "
                     "file returned zero results. Consider using "

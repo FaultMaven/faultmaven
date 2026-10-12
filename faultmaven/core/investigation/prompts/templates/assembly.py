@@ -23,17 +23,34 @@ from faultmaven.modules.case.domain.models.progress import CauseState
 
 from .blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
-    _EVIDENCE_GROUNDING_BLOCK,
     _OBSERVATION_TIME_BLOCK,
     AGENT_META_INSTRUCTIONS,
-    KNOWLEDGE_QUERY_INSTRUCTIONS,
+    evidence_grounding_block,
+    knowledge_query_instructions,
+    tool_results_note,
 )
-from .diagnosis import _CHAIN_EMISSION_BLOCK, _RCA_DIAGNOSIS_BLOCK
+from .diagnosis import _CHAIN_EMISSION_BLOCK, rca_diagnosis_block
 from .fallback import get_fallback_prompt_for_case
-from .inquiry import INQUIRY_TEMPLATE
-from .investigation import INVESTIGATION_BASE
-from .terminal import TERMINAL_TEMPLATE
-from .treatment import MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS
+from .inquiry import (
+    INQUIRY_TEMPLATE,
+    inquiry_kb_check,
+    inquiry_knowledge_help,
+    inquiry_reading_uploaded_files,
+)
+from .investigation import (
+    INVESTIGATION_BASE,
+    next_data_point_fetch,
+    prior_files_note,
+)
+from .terminal import (
+    NO_TERMINAL_AFFORDANCES,
+    TERMINAL_TEMPLATE,
+    TerminalAffordances,
+    terminal_runbook_rule,
+    terminal_summary_rule,
+)
+from .tool_text import NO_TOOLS, GivenTools, tools_line
+from .treatment import mitigation_instructions, treatment_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -269,15 +286,16 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
-def _select_diagnosis_block(case: Case) -> str:
-    """The RCA diagnosis block for a diagnosing turn.
+def _select_diagnosis_block(case: Case, given: GivenTools) -> str:
+    """The RCA diagnosis block for a diagnosing turn, naming only the tools
+    ``given``.
 
     Diagnosis has no path fork (redesign R5): hypothesis formulation and
     evidence-needs run as a single opportunistic flow. Stage guidance is
     selected by the assessment variables (``symptom_verified`` /
     ``cause_state`` / ``solution_proposed``) via
     ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice.
-    ``_RCA_DIAGNOSIS_BLOCK`` carries the hypothesis-evidence ordering mandate
+    ``rca_diagnosis_block`` carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
     teaches lazy backward expansion (the engine ingests the emitted chain).
 
@@ -287,7 +305,7 @@ def _select_diagnosis_block(case: Case) -> str:
     prefix. It renders as ``{focus_emphasis}`` at the top of the per-turn
     tail instead (``get_prompt_for_case``).
     """
-    return _RCA_DIAGNOSIS_BLOCK + _CHAIN_EMISSION_BLOCK
+    return rca_diagnosis_block(given) + _CHAIN_EMISSION_BLOCK
 
 
 def _page_capture_hint(source: "str | None") -> str:
@@ -325,9 +343,10 @@ def get_prompt_for_case(
     use_state_summary: Optional[bool] = None,
     processing_mode: Optional[str] = None,
     entity_highlight_groups: Optional[Sequence[EntityHighlightGroup]] = None,
-    tools_available: bool = False,
+    given_tools: GivenTools = NO_TOOLS,
     target_tokens: Optional[int] = None,
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
+    terminal_affordances: TerminalAffordances = NO_TERMINAL_AFFORDANCES,
 ) -> str:
     """Build the final prompt based on case state and stage.
 
@@ -354,11 +373,13 @@ def get_prompt_for_case(
             come out of file content, so the block is fenced, and the fence
             must be able to re-render on a token collision — which it cannot
             do around an awaited query (#1228).
-        tools_available: True when the investigation tools are registered AND the
-            resolved model can do tool calling. Gates the directed-analysis
-            evidence index+stub elision — the extract is only dropped (telling the
-            agent to search_file) when search_file will actually run. Conservative
-            default False: no elision unless the caller confirms tools work.
+        given_tools: The tool names this turn gives the model (#1939): the
+            names of ``build_da_tool_schemas()`` on a tool-loop turn,
+            ``NO_TOOLS`` on a tool-less one. Every tool the prompt names is in
+            it, and it gates the directed-analysis evidence index+stub elision
+            (the extract is dropped only when ``search_file`` is given). The
+            default names no tool: a caller that does not say what the turn
+            offers gets a prompt that points at nothing.
         target_tokens: Optional HARD cap on the assembled prompt, in the
             provider's estimated tokens. It lowers both the fill target and the
             overflow ceiling the backstop enforces, so the result fits it or is
@@ -366,6 +387,9 @@ def get_prompt_for_case(
             base that fits what is left of its per-call budget after the system
             instruction and the ``tools=`` payload (#614). ``None`` (every other
             caller) leaves the resolved budget unchanged.
+        terminal_affordances: What a terminal Q&A turn offers below its reply
+            (#1955), built from the suggestion list the engine attaches to it.
+            The default offers nothing, so the prompt points at no suggestion.
 
     Returns:
         Formatted prompt for the LLM
@@ -392,7 +416,7 @@ def get_prompt_for_case(
             use_state_summary=use_state_summary,
             processing_mode=processing_mode,
             entity_highlight_groups=entity_highlight_groups,
-            tools_available=tools_available,
+            given_tools=given_tools,
             kb_rendered=kb_rendered,
         )
 
@@ -408,6 +432,10 @@ def get_prompt_for_case(
         # Engine-resolved (not LLM-decidable): which page-capture guidance the
         # follow-up suggestions block renders. See _page_capture_hint.
         ctx["page_capture_hint"] = _page_capture_hint(getattr(case, "source", None))
+        # What this turn's tools are, stated once at the top of every template
+        # (#1939). Sorted, so one set renders one byte string (#613 prefix).
+        ctx["tools_this_turn"] = tools_line(given_tools)
+        ctx["tool_results_rule"] = tool_results_note(given_tools)
 
         # #1328: a question about the assistant itself. Rendered as a block
         # in INQUIRY (which has no stage slot) and as the stage instructions
@@ -421,7 +449,12 @@ def get_prompt_for_case(
             # No ``{kb_results}`` slot: the KB block was built and not shown.
             if kb_rendered is not None:
                 kb_rendered.clear()
-            return INQUIRY_TEMPLATE.format(**ctx)
+            return INQUIRY_TEMPLATE.format(
+                knowledge_help=inquiry_knowledge_help(given_tools),
+                kb_check=inquiry_kb_check(given_tools),
+                reading_uploaded_files=inquiry_reading_uploaded_files(given_tools),
+                **ctx,
+            )
 
         elif case.state == CaseState.INVESTIGATING:
             stage = case.current_stage or InvestigationStage.DIAGNOSIS
@@ -440,31 +473,31 @@ def get_prompt_for_case(
             # turn.
             focus_emphasis = ""
             if processing_mode == "knowledge_query":
-                adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
+                adaptive_instr = knowledge_query_instructions(given_tools)
             elif is_agent_meta:
                 adaptive_instr = AGENT_META_INSTRUCTIONS
             else:
                 focus_emphasis = _problem_hold_emphasis(case)
                 # Dispatch to stage instructions (derived display stage)
                 if stage == InvestigationStage.DIAGNOSIS:
-                    adaptive_instr = _select_diagnosis_block(case)
+                    adaptive_instr = _select_diagnosis_block(case, given_tools)
                     if not focus_emphasis:
                         focus_emphasis = _get_diagnosis_focus_emphasis(
                             case.progress, case
                         )
                 elif stage == InvestigationStage.MITIGATION:
-                    adaptive_instr = MITIGATION_INSTRUCTIONS
+                    adaptive_instr = mitigation_instructions(given_tools)
                 elif stage == InvestigationStage.TREATMENT:
-                    adaptive_instr = TREATMENT_INSTRUCTIONS
+                    adaptive_instr = treatment_instructions(given_tools)
                 else:
-                    adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+                    adaptive_instr = rca_diagnosis_block(given_tools)
                 focus_emphasis += _resolve_declined_emphasis(case)
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"
 
             # knowledge_query exempts from evidence grounding AND diagnostic
-            # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
+            # reasoning (knowledge_query_instructions waives both — a
             # general-knowledge answer doesn't ground in case evidence or use
             # the Observation/Analysis/Conclusion structure).
             # agent_meta is waived the same way (#1328): the grounding block is
@@ -484,13 +517,15 @@ def get_prompt_for_case(
             evidence_grounding = (
                 _OBSERVATION_TIME_BLOCK
                 if waive_grounding
-                else _EVIDENCE_GROUNDING_BLOCK
+                else evidence_grounding_block(given_tools)
             )
             diagnostic_reasoning = (
                 "" if waive_grounding else _DIAGNOSTIC_REASONING_BLOCK
             )
 
             return INVESTIGATION_BASE.format(
+                fetch_next_data_point=next_data_point_fetch(given_tools),
+                prior_files=prior_files_note(given_tools),
                 adaptive_instructions=adaptive_instr,
                 focus_emphasis=focus_emphasis,
                 evidence_grounding=evidence_grounding,
@@ -512,6 +547,10 @@ def get_prompt_for_case(
                 state_upper=case.state.value.upper(),
                 state_lower=case.state.value,
                 summary_kind=summary_kind,
+                summary_request_rule=terminal_summary_rule(
+                    summary_kind, terminal_affordances
+                ),
+                runbook_request_rule=terminal_runbook_rule(terminal_affordances),
                 **ctx,
             )
 
@@ -522,6 +561,7 @@ def get_prompt_for_case(
         _render,
         provider_name,
         model_name,
+        given_tools,
         target_tokens=target_tokens,
     )
     if kb_rendered is not None and prompt != rendered.get("prompt"):
@@ -538,6 +578,7 @@ def _budgeted_prompt(
     render,
     provider_name: Optional[str],
     model_name: Optional[str],
+    given_tools: GivenTools,
     target_tokens: Optional[int] = None,
 ) -> str:
     """Whole-prompt token-budget accountant + overflow/starvation backstop.
@@ -592,6 +633,7 @@ def _budgeted_prompt(
         user_message,
         provider_name,
         model_name,
+        given_tools,
     )
 
 
@@ -618,8 +660,13 @@ def _assemble_allocated(
     user_message,
     provider_name,
     model_name,
+    given_tools,
 ) -> str:
-    """Allocator assembly: template-aware section budget + backstop (§4/§6/§7)."""
+    """Allocator assembly: template-aware section budget + backstop (§4/§6/§7).
+
+    A fallback either arm returns is rendered for ``given_tools``, the set the
+    assembled prompt was built for: it replaces that prompt on the same call.
+    """
     target = resolved.prompt_target
     ceiling = resolved.prompt_budget  # None when window unknown
     # What a fallback from either arm below must fit: the hard ceiling when the
@@ -661,7 +708,10 @@ def _assemble_allocated(
     variable_room = target - template_overhead - reserve_tokens - margin
     if variable_room < min_viable:
         fb = get_fallback_prompt_for_case(
-            case, user_message, max_tokens=fallback_budget
+            case,
+            user_message,
+            given_tools=given_tools,
+            max_tokens=fallback_budget,
         )
         logger.warning(
             "prompt_starvation_fallback",
@@ -700,7 +750,10 @@ def _assemble_allocated(
             total = count(prompt)
         if total > ceiling:
             fb = get_fallback_prompt_for_case(
-                case, user_message, max_tokens=fallback_budget
+                case,
+                user_message,
+                given_tools=given_tools,
+                max_tokens=fallback_budget,
             )
             logger.warning(
                 "prompt_overflow_fallback",

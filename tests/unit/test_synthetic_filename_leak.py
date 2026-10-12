@@ -74,6 +74,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 def _fallback_current_turn_evidence(case):
@@ -84,7 +85,7 @@ def _fallback_current_turn_evidence(case):
     (``templates._fallback_body``). These tests are about the names the stub
     render emits, so they give it a fence of its own.
     """
-    return render_fenced(lambda f: _fallback_stub_block(case, f))
+    return render_fenced(lambda f: _fallback_stub_block(case, f, DEFAULT_GIVEN))
 
 
 # The exact string from the #656 P1.3 gate-tier transcript quoted in #666.

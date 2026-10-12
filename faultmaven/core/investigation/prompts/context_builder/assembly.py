@@ -16,6 +16,10 @@ from faultmaven.core.investigation.prompts.fence import (
     split_fenced,
     terminate_dangling,
 )
+from faultmaven.core.investigation.prompts.templates.tool_text import (
+    NO_TOOLS,
+    GivenTools,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -488,7 +492,7 @@ def build_investigation_context(
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
     entity_highlight_groups: Optional[Sequence["EntityHighlightGroup"]] = None,
-    tools_available: bool = False,
+    given_tools: GivenTools = NO_TOOLS,
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     """
@@ -523,6 +527,9 @@ def build_investigation_context(
         use_state_summary: Optional flag to use compact state summary instead of full history
                           (auto-enabled for conversations >15 turns)
         enable_stage_specific_loading: Enable stage-specific context optimization (default: True)
+        given_tools: The tool names this turn gives the model (#1939). The
+            evidence and entity-highlight blocks name a tool only when it is
+            in this set.
 
     Returns:
         Dictionary of formatted context sections
@@ -670,7 +677,7 @@ def build_investigation_context(
     def _render_caller_controlled_blocks(fence: PromptFence) -> str:
         _fenced["core_context"] = _render_problem_context(case, fence)
         _fenced["entity_highlights"] = _render_entity_highlights(
-            entity_highlight_groups, fence
+            entity_highlight_groups, fence, given_tools
         )
         _fenced["evidence"] = _build_evidence_context(
             case,
@@ -679,7 +686,7 @@ def build_investigation_context(
             provider_name=provider_name,
             model_name=model_name,
             char_budget_override=evidence_char_override,
-            tools_available=tools_available,
+            given_tools=given_tools,
             fence=fence,
         )
         # Conversation history — two fidelities, both fenced. ``floor`` is the

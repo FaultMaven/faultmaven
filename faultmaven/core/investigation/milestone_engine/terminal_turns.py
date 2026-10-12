@@ -13,6 +13,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.schemas import (
     TerminalResponse,
 )
@@ -30,6 +31,7 @@ from .terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
     _closed_suggestions,
     _resolved_suggestions,
+    terminal_affordances,
 )
 
 logger = logging.getLogger(__name__)
@@ -413,11 +415,52 @@ class TerminalTurnHandler:
             if hasattr(self.deps.llm_provider, "config")
             else None
         )
-        prompt = get_prompt_for_case(
+        # Attach terminal-Q&A suggestions deterministically. The
+        # TERMINAL_TEMPLATE instructs the LLM to leave its own
+        # suggested_follow_ups empty; the engine owns these so the rules
+        # don't drift turn-to-turn:
+        #   - CLOSED: regen-closure-summary card iff the substance gate
+        #     PASSes (also the chat-side retry path when initial
+        #     generation failed).
+        #   - RESOLVED: regen-resolution-summary + runbook cards. Regen
+        #     mirrors CLOSED's offering; runbook is the forward action
+        #     RESOLVED enables.
+        # Built BEFORE the prompt (#1955): the prompt's redirects point at a
+        # suggestion only when this list carries it, and this same list is
+        # what the reply is given below, so the two cannot disagree.
+        remaining = await _remaining_regens_for(
+            self.deps.report_service,
+            self.deps.repository,
             case,
-            user_message,
-            provider_name=provider_name,
-            model_name=model_name,
+            pending=plan.pending_reports(),
+        )
+        runbook_exists = False
+        if case.state == CaseState.RESOLVED:
+            runbook_exists = await self.runbooks.case_has_runbook_draft(case)
+            offered = _resolved_suggestions(
+                case, remaining, runbook_already_exists=runbook_exists
+            )
+        else:
+            offered = _closed_suggestions(case, remaining)
+        offers = terminal_affordances(offered, runbook_draft_exists=runbook_exists)
+
+        # The tools this turn gives the model (#1939), the same set the tool
+        # loop below sends.
+        given = (
+            self.generator.given_tools() if self.deps.investigation_tools else NO_TOOLS
+        )
+
+        def _build_prompt(given_tools, **sizing) -> str:
+            return get_prompt_for_case(
+                case,
+                user_message,
+                given_tools=given_tools,
+                terminal_affordances=offers,
+                **sizing,
+            )
+
+        prompt = _build_prompt(
+            given, provider_name=provider_name, model_name=model_name
         )
 
         def _build_tool_loop_base(
@@ -428,9 +471,8 @@ class TerminalTurnHandler:
         ) -> str:
             # #614: re-assembled for the model the tool loop sends to, when the
             # chat-sized prompt does not fit there.
-            return get_prompt_for_case(
-                case,
-                user_message,
+            return _build_prompt(
+                given,
                 provider_name=provider_name,
                 model_name=model_name,
                 target_tokens=target_tokens,
@@ -446,6 +488,11 @@ class TerminalTurnHandler:
             )
             tools_kwargs["force_tool_use"] = False
             tools_kwargs["base_prompt_builder"] = _build_tool_loop_base
+            if given:
+                # The non-tool fallback names no tool (#1939).
+                tools_kwargs["fallback_prompt_builder"] = lambda: _build_prompt(
+                    NO_TOOLS, provider_name=provider_name, model_name=model_name
+                )
 
         response_obj = await self.generator.generate_structured_output(
             prompt,
@@ -468,35 +515,8 @@ class TerminalTurnHandler:
                 response_obj.suggested_follow_ups, metadata
             )
 
-        # Attach terminal-Q&A suggestions deterministically. The
-        # TERMINAL_TEMPLATE instructs the LLM to leave its own
-        # suggested_follow_ups empty; the engine owns these so the rules
-        # don't drift turn-to-turn:
-        #   - CLOSED: regen-closure-summary card iff the substance gate
-        #     PASSes (also the chat-side retry path when initial
-        #     generation failed).
-        #   - RESOLVED: regen-resolution-summary + runbook cards. Regen
-        #     mirrors CLOSED's offering; runbook is the forward action
-        #     RESOLVED enables.
-        if case.state == CaseState.CLOSED:
-            remaining = await _remaining_regens_for(
-                self.deps.report_service,
-                self.deps.repository,
-                case,
-                pending=plan.pending_reports(),
-            )
-            follow_ups = follow_ups + _closed_suggestions(case, remaining)
-        elif case.state == CaseState.RESOLVED:
-            remaining = await _remaining_regens_for(
-                self.deps.report_service,
-                self.deps.repository,
-                case,
-                pending=plan.pending_reports(),
-            )
-            runbook_exists = await self.runbooks.case_has_runbook_draft(case)
-            follow_ups = follow_ups + _resolved_suggestions(
-                case, remaining, runbook_already_exists=runbook_exists
-            )
+        # The suggestions the prompt was built for, attached as built.
+        follow_ups = follow_ups + offered
 
         # #1451: this path returns before Step 6, so the service's turn-record
         # backfill reads the flag off this metadata to mark the TurnProgress,

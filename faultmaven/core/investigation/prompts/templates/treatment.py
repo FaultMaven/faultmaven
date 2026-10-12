@@ -3,9 +3,58 @@ from .diagnosis import (
     _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
 )
+from .tool_text import GivenTools, has
 
-MITIGATION_INSTRUCTIONS = (
-    """
+# Tool sentences of the MITIGATION and TREATMENT blocks (#1939): each names a
+# tool only when this turn gives it, and otherwise renders a tool-less wording.
+
+
+def _mitigation_runbook_step(given: GivenTools) -> str:
+    if has(given, "kb_qa"):
+        return (
+            "   - Before suggesting steps, call `kb_qa` for the symptom to find known "
+            "workarounds\n"
+            "     or mitigation procedures. If a match is found, follow those steps as "
+            "the\n"
+            "     default. If no match, proceed with general knowledge for the "
+            "technology stack.\n"
+        )
+    return (
+        "   - Before suggesting steps, use any runbook in <knowledge_context> below for "
+        "known\n"
+        "     workarounds; otherwise proceed from general knowledge of the stack.\n"
+    )
+
+
+def _specific_patterns(given: GivenTools) -> str:
+    if has(given, "search_file"):
+        return (
+            "Call search_file if you need specific patterns (e.g., error rate after "
+            "the fix)."
+        )
+    return (
+        "If you need specific patterns (e.g., error rate after the fix), ask the "
+        "user with specifics."
+    )
+
+
+def _kb_resolution_trigger(given: GivenTools) -> str:
+    source = (
+        "by kb_qa or in <knowledge_context>"
+        if has(given, "kb_qa")
+        else "in <knowledge_context>, or by a knowledge-base search on an earlier turn"
+    )
+    return (
+        f"1. A runbook delivered to this case ({source})\n"
+        "   carried at least one `### Cause <X>` subsection that you proposed as the\n"
+        "   fix.\n"
+    )
+
+
+def mitigation_instructions(given: GivenTools) -> str:
+    """The MITIGATION stage instructions, naming only the tools ``given``."""
+    return (
+        """
 **FOCUS: MITIGATION** (Stop the Bleeding)
 
 **OBJECTIVE:**
@@ -18,10 +67,9 @@ The user has accepted a mitigation approach. This is a controlled detour — the
 goal is to stabilize the situation, NOT to find or fix the root cause.
 
 1. **Guide Implementation** (SUGGEST, don't execute):
-   - Before suggesting steps, call `kb_qa` for the symptom to find known workarounds
-     or mitigation procedures. If a match is found, follow those steps as the
-     default. If no match, proceed with general knowledge for the technology stack.
-   - Emit a SolutionToAdd record in solutions_to_add with solution_type: workaround
+"""
+        + _mitigation_runbook_step(given)
+        + """   - Emit a SolutionToAdd record in solutions_to_add with solution_type: workaround
      describing the specific temporary fix (description, estimated_impact, risks, commands).
      The backend uses this to track the proposed action and open the verification gate —
      without it, `mitigation_verified` cannot be set no matter what the user reports.
@@ -40,7 +88,9 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
    - Analyze the user's feedback on whether the fix helped
    - If the post-fix data shows improvement or the user confirms stabilization:
      1. Analyze the submitted data from the structural index in <evidence_collected>.
-        Call search_file if you need specific patterns (e.g., error rate after the fix).
+        """
+        + _specific_patterns(given)
+        + """
      2. Only when the user SUBMITTED post-mitigation data (a file or pasted data):
         record a `symptom_absence_evidence` row in evidence_to_add — the
         re-verification that the symptom is no longer present after the mitigation:
@@ -109,14 +159,17 @@ Do NOT continue proposing further variants after offering this choice.
   Fresh symptom-purpose needs are still allowed if mitigation work surfaces a
   NEW symptom the original problem didn't cover.
 """
-    + "\n"
-    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
-    + "\n"
-    + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
-)
+        + "\n"
+        + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        + "\n"
+        + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+    )
 
-TREATMENT_INSTRUCTIONS = (
-    """
+
+def treatment_instructions(given: GivenTools) -> str:
+    """The TREATMENT stage instructions, naming only the tools ``given``."""
+    return (
+        """
 **FOCUS: TREATMENT** (Verify Fix & Resolve)
 
 **OBJECTIVE:**
@@ -134,7 +187,9 @@ verify the outcome.
 
 1. **Verify Result** — Analyze the outcome:
    - Evidence submitted: assess it from the structural index in <evidence_collected>.
-     Call search_file if you need specific patterns (e.g., error rate after the fix).
+     """
+        + _specific_patterns(given)
+        + """
    - No evidence yet: name the output of the post-fix checks (metrics, error
      rates, the failing check re-run) in `system_state_report` — FaultMaven asks
      the user to submit it. The user's own account that it worked is a claim: it
@@ -167,9 +222,9 @@ verify the outcome.
 **KB-RESOLUTION VARIANT — Milestone Collapse:**
 
 This variant applies when ALL of the following hold:
-1. A `kb_qa` call earlier in this case returned a runbook with at least one
-   `### Cause <X>` subsection that you proposed as the fix.
-2. The user has now confirmed in this turn that the proposed fix worked
+"""
+        + _kb_resolution_trigger(given)
+        + """2. The user has now confirmed in this turn that the proposed fix worked
    ("That fixed it", "It worked", "Yes — resolved", or equivalent).
 
 When triggered, INVESTIGATING's structured state collapses: the runbook
@@ -456,8 +511,8 @@ analysis, is requesting a state change. Route this through the structured
 field; do not narrate the transition.
 
 """
-    + _AMBIGUITY_FIRST_RULE
-    + """
+        + _AMBIGUITY_FIRST_RULE
+        + """
 
 - INVESTIGATING → RESOLVED:
   Set state_updates.proposed_transition = {{ "to_state": "resolved" }} ONLY IF
@@ -525,11 +580,12 @@ even during the treatment stage.
      rate returned to baseline after the config change, which confirms that
      [hypothesis] was the root cause."
 """
-    + "\n"
-    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
-    + "\n"
-    + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
-)
+        + "\n"
+        + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        + "\n"
+        + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+    )
+
 
 # =============================================================================
 # TERMINAL TEMPLATE

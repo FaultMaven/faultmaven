@@ -2023,6 +2023,12 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         ),
         # A tool result's own label.
         (generation, "StructuredOutputGenerator._format_tool_result"),
+        # THIS terminal turn's engine suggestions, read for the payloads the
+        # prompt may point at (#1955); never a stored row.
+        (
+            "core/investigation/milestone_engine/terminal_replies.py",
+            "terminal_affordances",
+        ),
         # HTTP request/response bodies, unrelated to this seam.
         ("api/middleware/body_size.py", "RequestBodySizeLimitMiddleware.__call__"),
         (

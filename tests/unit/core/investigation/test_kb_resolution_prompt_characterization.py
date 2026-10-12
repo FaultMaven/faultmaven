@@ -20,7 +20,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
 )
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _CHAIN_EMISSION_BLOCK,
-    _RCA_DIAGNOSIS_BLOCK,
+    rca_diagnosis_block,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
     ProblemVerification,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 @pytest.mark.unit
@@ -37,29 +38,31 @@ class TestKBResolutionPromptContract:
     """Pin the runbook-Cause → single-hypothesis attribution contract."""
 
     def test_knowledge_authority_section_present(self):
-        assert "KNOWLEDGE & RUNBOOK AUTHORITY" in _RCA_DIAGNOSIS_BLOCK
-        assert "Cause attribution" in _RCA_DIAGNOSIS_BLOCK
+        assert "KNOWLEDGE & RUNBOOK AUTHORITY" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "Cause attribution" in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_single_match_maps_runbook_cause_to_one_hypothesis(self):
         # Exactly-one-match becomes the hypothesis, and independent hypothesis
         # generation is skipped.
-        assert "Exactly one Cause matches:" in _RCA_DIAGNOSIS_BLOCK
-        assert "that Cause IS your hypothesis" in _RCA_DIAGNOSIS_BLOCK
-        assert "hypotheses_to_add" in _RCA_DIAGNOSIS_BLOCK
-        assert "Skip independent hypothesis" in _RCA_DIAGNOSIS_BLOCK
+        assert "Exactly one Cause matches:" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "that Cause IS your hypothesis" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "hypotheses_to_add" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "Skip independent hypothesis" in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_multi_and_no_match_branches_present(self):
         # The other two attribution outcomes the current prompt encodes.
-        assert "Two or more Causes plausibly match" in _RCA_DIAGNOSIS_BLOCK
-        assert "disambiguating question" in _RCA_DIAGNOSIS_BLOCK
-        assert "No Cause" in _RCA_DIAGNOSIS_BLOCK
+        assert "Two or more Causes plausibly match" in rca_diagnosis_block(
+            DEFAULT_GIVEN
+        )
+        assert "disambiguating question" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "No Cause" in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_knowledge_match_signal_emitted_for_treatment_handoff(self):
         # The attribution persists a knowledge_match signal the TREATMENT-stage
         # KB-RESOLUTION variant reads back (Statement/mechanism direct-copy).
-        assert "knowledge_match" in _RCA_DIAGNOSIS_BLOCK
-        assert "match_likelihood" in _RCA_DIAGNOSIS_BLOCK
-        assert "root_cause_conclusion" in _RCA_DIAGNOSIS_BLOCK
+        assert "knowledge_match" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "match_likelihood" in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "root_cause_conclusion" in rca_diagnosis_block(DEFAULT_GIVEN)
 
 
 def _diagnosis_case() -> Case:
@@ -86,6 +89,6 @@ def _diagnosis_case() -> Case:
 def test_every_diagnosing_turn_gets_the_flat_matched_cause_directive():
     """One directive for every case: nothing writes seeded candidates, so the
     flat "matched Cause IS your hypothesis" directive is never swapped out."""
-    block = _select_diagnosis_block(_diagnosis_case())
+    block = _select_diagnosis_block(_diagnosis_case(), DEFAULT_GIVEN)
     assert "that Cause IS your hypothesis" in block
-    assert block == _RCA_DIAGNOSIS_BLOCK + _CHAIN_EMISSION_BLOCK
+    assert block == rca_diagnosis_block(DEFAULT_GIVEN) + _CHAIN_EMISSION_BLOCK
