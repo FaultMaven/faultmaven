@@ -153,6 +153,50 @@ def create_document_qa_tools(
     return result
 
 
+def create_reclassify_evidence_tool(container: BaseDIContainer) -> Any | None:
+    """Build the ``reclassify_evidence`` tool, or ``None`` when it is not offered.
+
+    Built only under FAULTMAVEN_RECLASSIFY_ENABLED. The tool holds an
+    ``EvidenceReclassifier`` composed here from the case repository, file
+    storage and preprocessing, all registered by ``register_infrastructure``
+    before this layer runs (#1941). It must not hold the investigation
+    service: that is built after the milestone engine, which is built from
+    the tool registry this tool joins, so the tool could only ever receive
+    ``None`` and every call would answer "not wired".
+    """
+    from faultmaven.config.settings import get_settings
+
+    if not get_settings().preprocessing.reclassify_enabled:
+        logger.info(
+            "Reclassify evidence tool NOT registered "
+            "(FAULTMAVEN_RECLASSIFY_ENABLED=false)"
+        )
+        return None
+
+    deps = {
+        name: container.get_service(name)
+        for name in ("case_repository", "file_storage_service", "preprocessing_service")
+    }
+    missing = sorted(name for name, dep in deps.items() if dep is None)
+    if missing:
+        logger.warning(
+            "Reclassify evidence tool NOT registered "
+            "(FAULTMAVEN_RECLASSIFY_ENABLED=true but unavailable: %s)",
+            ", ".join(missing),
+        )
+        return None
+
+    from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (  # noqa: E501
+        EvidenceReclassifier,
+    )
+    from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
+        ReclassifyEvidenceTool,
+    )
+
+    logger.info("Reclassify evidence tool registered (Phase 1.5 escape hatch)")
+    return ReclassifyEvidenceTool(reclassifier=EvidenceReclassifier(**deps))
+
+
 def register_tools(container: BaseDIContainer) -> None:
     """Register all tools with the container.
 
@@ -278,33 +322,13 @@ def register_tools(container: BaseDIContainer) -> None:
     except Exception as e:
         logger.warning(f"Vectorize file tool registration failed: {e}")
 
-    # Phase 1.5 — Reclassify evidence tool. Registered conditionally on
-    # the feature flag so the LLM sees the tool in its function-calling
-    # menu only when the operator has opted in.
+    # Phase 1.5 — Reclassify evidence tool, built only under its flag and then
+    # given to the model by ``_create_investigation_tools`` (#1941).
     try:
-        from faultmaven.config.settings import get_settings
-
-        if get_settings().preprocessing.reclassify_enabled:
-            from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
-                ReclassifyEvidenceTool,
-            )
-
-            investigation_service = (
-                container.get_service("investigation_service")
-                if hasattr(container, "get_service")
-                else None
-            )
-            reclassify_evidence_tool = ReclassifyEvidenceTool(
-                investigation_service=investigation_service,
-            )
-            container.reclassify_evidence_tool = reclassify_evidence_tool
+        reclassify_evidence_tool = create_reclassify_evidence_tool(container)
+        container.reclassify_evidence_tool = reclassify_evidence_tool
+        if reclassify_evidence_tool is not None:
             container.tools.append(reclassify_evidence_tool)
-            logger.info("Reclassify evidence tool registered (Phase 1.5 escape hatch)")
-        else:
-            logger.info(
-                "Reclassify evidence tool NOT registered "
-                "(FAULTMAVEN_RECLASSIFY_ENABLED=false)"
-            )
     except Exception as e:
         logger.warning(f"Reclassify evidence tool registration failed: {e}")
 

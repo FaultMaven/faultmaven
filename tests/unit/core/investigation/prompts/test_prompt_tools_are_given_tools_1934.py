@@ -13,8 +13,10 @@ the DA instruction / vectorization modules and the given tools' own modules
 
 Flag-gated text is paired with its flag explicitly: the entity tools are given
 only under FAULTMAVEN_ENTITY_REGISTRY, so their names may appear in text that
-renders only under that flag. ``reclassify_evidence`` is never given (see
-``_RECLASSIFY_HEDGE``).
+renders only under that flag. ``reclassify_evidence`` is given only under
+FAULTMAVEN_RECLASSIFY_ENABLED (#1941); outside its own tool module it is named
+only behind the "if it is not in your available tools" hedge, which is true
+under either setting.
 
 Scope: names that are conditional only under non-default settings, and
 tool-less turns, are #1939.
@@ -38,6 +40,9 @@ from faultmaven.container.providers.services import _create_investigation_tools
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
 )
+from faultmaven.core.investigation.prompts.templates.blocks import (
+    _EVIDENCE_GROUNDING_BLOCK,
+)
 from faultmaven.modules.agent.tools.base import AgentTool
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
@@ -46,6 +51,9 @@ from faultmaven.modules.agent.tools.kb_tool_adapter import (
     KBToolAdapter,
 )
 from faultmaven.modules.agent.tools.list_top_entities_tool import ListTopEntitiesTool
+from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
+    ReclassifyEvidenceTool,
+)
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
 from faultmaven.modules.agent.tools.web_search import WebSearchTool
@@ -71,6 +79,7 @@ MODEL_FACING = [
             "case_evidence_qa.py",
             "find_entity_tool.py",
             "list_top_entities_tool.py",
+            "reclassify_evidence_tool.py",
         )
     ],
 ]
@@ -89,10 +98,12 @@ _ENTITY_TOOLS = dict(
 # Given only under FAULTMAVEN_ENTITY_REGISTRY; the text naming them renders
 # only under that flag.
 ENTITY_FLAG_NAMES = {"find_entity", "list_top_entities"}
-# Never in the DA registry (its constructor needs the investigation service,
-# which does not exist when the tool is built). blocks.py names it behind an
-# explicit "if it is not in your available tools" hedge, and nowhere else.
-_RECLASSIFY_HEDGE = {"reclassify_evidence": {"blocks.py"}}
+_RECLASSIFY_TOOLS = dict(reclassify_evidence_tool=ReclassifyEvidenceTool)
+# Given only under FAULTMAVEN_RECLASSIFY_ENABLED (#1941). Its own module renders
+# only when it is given; blocks.py names it behind the hedge below.
+RECLASSIFY_FLAG_NAMES = {"reclassify_evidence"}
+_RECLASSIFY_HOMES = {"blocks.py", "reclassify_evidence_tool.py"}
+_RECLASSIFY_HEDGE = "If `reclassify_evidence` is not in your available tools"
 _RETIRED = {"case_evidence_qa", "global_kb_qa", "user_kb_qa"}
 _NOT_TOOLS = {"directed_analysis"}
 _TOKEN = re.compile(r"(?<![\w.])[a-z]+(?:_[a-z]+)+(?![\w(]*\.)")
@@ -156,14 +167,12 @@ def mentions(files=MODEL_FACING) -> dict[str, set[str]]:
 def violations(files=MODEL_FACING, given_names=None, vocab=None):
     g = given(_DEFAULT_TOOLS) if given_names is None else given_names
     vocab = vocabulary() if vocab is None else vocab
-    allowed = g | ENTITY_FLAG_NAMES  # entity text is flag-gated, see below
+    allowed = g | ENTITY_FLAG_NAMES | RECLASSIFY_FLAG_NAMES  # flag-gated, see below
     not_given, near = {}, {}
     for tok, found in mentions(files).items():
         if tok in _NOT_TOOLS or tok in g:
             continue
-        if tok in _RECLASSIFY_HEDGE and found <= _RECLASSIFY_HEDGE[tok]:
-            continue
-        if tok in ENTITY_FLAG_NAMES:
+        if tok in ENTITY_FLAG_NAMES or tok in RECLASSIFY_FLAG_NAMES:
             continue
         if tok in vocab:
             not_given[tok] = sorted(found)
@@ -186,6 +195,26 @@ def test_default_registry_is_the_six() -> None:
 def test_entity_tools_are_given_only_under_their_flag() -> None:
     assert ENTITY_FLAG_NAMES <= given({**_DEFAULT_TOOLS, **_ENTITY_TOOLS})
     assert not ENTITY_FLAG_NAMES & given(_DEFAULT_TOOLS)
+
+
+def test_reclassify_evidence_is_given_only_under_its_flag() -> None:
+    # #1941: the flag used to build a tool nothing registered, so the model
+    # was never given it and the hedge told the user the feature was off.
+    assert given({**_DEFAULT_TOOLS, **_RECLASSIFY_TOOLS}) == given(_DEFAULT_TOOLS) | (
+        RECLASSIFY_FLAG_NAMES
+    )
+    assert not RECLASSIFY_FLAG_NAMES & given(_DEFAULT_TOOLS)
+
+
+def test_reclassify_text_pairs_with_its_flag() -> None:
+    # Outside its own tool module, the only model-facing home of the name is
+    # the evidence-grounding block, and there it sits behind a hedge that is
+    # true with the flag off (not given) and on (given).
+    homes = set().union(
+        *(found for n, found in mentions().items() if n in RECLASSIFY_FLAG_NAMES)
+    )
+    assert homes <= _RECLASSIFY_HOMES, homes
+    assert _RECLASSIFY_HEDGE in _EVIDENCE_GROUNDING_BLOCK
 
 
 def test_every_tool_name_the_model_reads_is_given() -> None:

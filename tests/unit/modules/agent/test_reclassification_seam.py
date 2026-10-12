@@ -456,7 +456,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         return process_turn
 
     async def _run_turn(self, rig):
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.service.evidence_reclassifier)
         rig.engine.process_turn = AsyncMock(
             side_effect=self._engine_that_calls_the_tool(rig, tool)
         )
@@ -528,7 +528,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         produces), which is what the aggregate save exists to prevent.
         """
         rig = _build()
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.service.evidence_reclassifier)
         saves_during_the_tool_call = []
 
         async def process_turn(*, case, user_message, **kwargs):
@@ -627,7 +627,7 @@ class TestATerminalCaseIsNotMutable:
         from faultmaven.modules.agent.tools.base import AgentToolRegistry
 
         registry = AgentToolRegistry()
-        registry.register(ReclassifyEvidenceTool(investigation_service=MagicMock()))
+        registry.register(ReclassifyEvidenceTool(reclassifier=MagicMock()))
         schemas = StructuredOutputGenerator.build_da_tool_schemas(
             SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
         )
@@ -688,7 +688,7 @@ class TestATerminalCaseIsNotMutable:
         """
         rig = _build()
         closed = self._closed(rig)
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.service.evidence_reclassifier)
 
         async def terminal_qa_shaped(*, case, user_message, **kwargs):
             context = ToolContext(

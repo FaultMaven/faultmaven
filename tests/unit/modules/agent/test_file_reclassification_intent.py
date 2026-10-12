@@ -3116,7 +3116,6 @@ def test_every_data_type_writer_retires_the_question():
 
         _Walk(rel).visit(tree)
 
-    service_module = "modules/agent/domain/services/investigation_service/service.py"
     attachments_module = (
         "modules/agent/domain/services/investigation_service/attachments.py"
     )
@@ -3127,7 +3126,7 @@ def test_every_data_type_writer_retires_the_question():
     # a narrowed token list drops hits and the equality below still passes by
     # matching a smaller set against a smaller expectation.
     assert {
-        service_module,
+        attachments_module,
         reclassification_module,
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
 
@@ -3164,10 +3163,12 @@ def test_every_data_type_writer_retires_the_question():
         # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
         # True of BOTH triggers since #1465: a call made from inside a turn
         # now writes the aggregate the turn is holding instead of a copy the
-        # end-of-turn save overwrites.
+        # end-of-turn save overwrites. The PATCH route reaches it through
+        # ``InvestigationService.reclassify_evidence``; the agent tool holds
+        # the reclassifier itself (#1941).
         (
-            service_module,
-            "InvestigationService.reclassify_evidence",
+            reclassification_module,
+            "EvidenceReclassifier.reclassify_evidence",
             "reclassification",
         ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"

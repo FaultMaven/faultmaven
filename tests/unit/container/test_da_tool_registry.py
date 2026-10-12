@@ -63,6 +63,7 @@ def _make_mock_container(
     container.case_evidence_qa_adapter = None
     container.find_entity_tool = None
     container.list_top_entities_tool = None
+    container.reclassify_evidence_tool = None
 
     return container
 

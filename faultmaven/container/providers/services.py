@@ -176,6 +176,7 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     - web_search: trusted domain web search (Google CSE or Tavily)
     - kb_qa: unified knowledge base Q&A (all accessible scopes)
     - find_entity / list_top_entities: entity registry (FAULTMAVEN_ENTITY_REGISTRY)
+    - reclassify_evidence: evidence reclassification (FAULTMAVEN_RECLASSIFY_ENABLED)
 
     Returns:
         AgentToolRegistry with investigation tools, or None if no tools available.
@@ -219,11 +220,16 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
         registry.register(case_evidence_qa_adapter)
         tool_count += 1
 
-    # Entity registry tools: ``container/providers/tools.py`` builds these only
-    # when FAULTMAVEN_ENTITY_REGISTRY is on, so by default the attribute is
-    # absent (None) and the registry stays the six above. (reclassify_evidence
-    # is deliberately not registered here: see the PR notes on #1934.)
-    for attr in ("find_entity_tool", "list_top_entities_tool"):
+    # Flag-gated tools: ``container/providers/tools.py`` builds the entity
+    # registry tools only when FAULTMAVEN_ENTITY_REGISTRY is on, and
+    # ``reclassify_evidence`` only when FAULTMAVEN_RECLASSIFY_ENABLED is on
+    # (#1941), so by default each attribute is absent (None) and the registry
+    # stays the six above.
+    for attr in (
+        "find_entity_tool",
+        "list_top_entities_tool",
+        "reclassify_evidence_tool",
+    ):
         flag_gated_tool = getattr(container, attr, None)
         if flag_gated_tool:
             registry.register(flag_gated_tool)
