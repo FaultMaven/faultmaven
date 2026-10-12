@@ -62,6 +62,9 @@ async def test_flag_on_the_engine_is_given_a_wired_tool(
     assert tool is not None, "flag on, yet the engine's tool registry lacks it"
     reclassifier = tool.reclassifier
     assert isinstance(reclassifier, EvidenceReclassifier)
+    # One instance: the tool holds the reclassifier the container registers,
+    # which is the one the composition root publishes to the PATCH route.
+    assert reclassifier is fresh_container.get_service("evidence_reclassifier")
     assert reclassifier.repository is fresh_container.get_service("case_repository")
     assert reclassifier.file_storage_service is fresh_container.get_service(
         "file_storage_service"
@@ -78,3 +81,8 @@ async def test_flag_off_the_engine_is_not_given_it(reclassify_enabled, fresh_con
     await fresh_container.initialize()
 
     assert _engine_tools(fresh_container).get("reclassify_evidence") is None
+    # Built regardless of the flag: the PATCH route answers 404 off its own
+    # flag check, not 503 for a missing reclassifier.
+    assert isinstance(
+        fresh_container.get_service("evidence_reclassifier"), EvidenceReclassifier
+    )

@@ -50,7 +50,6 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapError,
     billing_subject_for,
 )
-from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     IntentType,
     QueryIntent,
@@ -69,7 +68,6 @@ from faultmaven.modules.agent.domain.services.investigation_service.intent_gates
     _minted_intent_swallows_gate_consent,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
-    EvidenceReclassifier,
     _handle_file_reclassification,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_messages import (
@@ -111,9 +109,6 @@ from faultmaven.modules.case.contracts import (
     TurnReceiptKey,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
-from faultmaven.modules.case.domain.models.evidence import (
-    Evidence,
-)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -267,9 +262,6 @@ class InvestigationService:
         self.repository = case_repository
         self.preprocessing_service = preprocessing_service
         self.file_storage_service = file_storage_service
-        self.evidence_reclassifier = EvidenceReclassifier(
-            case_repository, file_storage_service, preprocessing_service
-        )
         self._turn_cap = turn_cap
         self.intent_resolver = IntentResolver(milestone_engine.deps.llm_provider)
         self.out_of_band_triage = OutOfBandTriage(milestone_engine.deps.llm_provider)
@@ -1419,27 +1411,3 @@ class InvestigationService:
                 **report_turn_uploads(case.case_id, case.current_turn, None),
             },
         }
-
-    async def reclassify_evidence(
-        self,
-        case_id: str,
-        evidence_id: str,
-        user_id: str,
-        data_type: DataType,
-        trigger: str = "api",
-        in_flight_case: Optional["Case"] = None,
-        caller_reads_case: bool = False,
-    ) -> Evidence:
-        """Reclassify the file behind an evidence row (the PATCH endpoint's
-        entry). The work is :class:`EvidenceReclassifier`'s, which the
-        ``reclassify_evidence`` agent tool also holds (#1941); see
-        :meth:`EvidenceReclassifier.reclassify_evidence` for the contract."""
-        return await self.evidence_reclassifier.reclassify_evidence(
-            case_id=case_id,
-            evidence_id=evidence_id,
-            user_id=user_id,
-            data_type=data_type,
-            trigger=trigger,
-            in_flight_case=in_flight_case,
-            caller_reads_case=caller_reads_case,
-        )

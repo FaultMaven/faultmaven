@@ -185,6 +185,23 @@ def test_milestone_engine_holds_the_services_the_app_publishes(booted_app_client
     assert engine.deps.team_service is app.state.team_service
 
 
+def test_the_reclassification_route_gets_the_containers_reclassifier(
+    booted_app_client,
+):
+    """#1941: the PATCH route reads ``app.state.evidence_reclassifier``, and it
+    is the instance the container registers, which is the one the
+    ``reclassify_evidence`` tool holds. A second instance here would let the
+    route and the tool reclassify through different collaborators."""
+    from faultmaven.container import container
+    from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (  # noqa: E501
+        EvidenceReclassifier,
+    )
+
+    reclassifier = app.state.evidence_reclassifier
+    assert isinstance(reclassifier, EvidenceReclassifier)
+    assert reclassifier is container.get_service("evidence_reclassifier")
+
+
 def test_capabilities_team_flags_gate_on_team_service(booted_app_client):
     """``teamSharing``/``managementConsole`` follow the live TeamService signal.
 

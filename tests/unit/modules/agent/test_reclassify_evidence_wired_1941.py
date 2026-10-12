@@ -6,11 +6,12 @@ constructed with ``None`` and nothing put it in the DA registry. With
 FAULTMAVEN_RECLASSIFY_ENABLED=true the model was not given the tool, and the
 evidence-grounding hedge had it tell the user the feature was off.
 
-The tool now holds an ``EvidenceReclassifier`` composed from the deps the
-infrastructure layer registers before any tool is built, and
-``_create_investigation_tools`` gives it to the model when the flag built it.
-These tests drive the real builder and the real registry, then execute the tool
-the registry hands back against an in-flight case.
+The container now builds ONE ``EvidenceReclassifier`` from the deps the
+infrastructure layer registers before any tool is built, whatever the flag
+says (the PATCH route reads it through ``app.state``). The tool holds that same
+instance, and ``_create_investigation_tools`` gives the tool to the model when
+the flag built it. These tests drive the real builders and the real registry,
+then execute the tool the registry hands back against an in-flight case.
 """
 
 from types import SimpleNamespace
@@ -19,7 +20,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.container.providers.services import _create_investigation_tools
-from faultmaven.container.providers.tools import create_reclassify_evidence_tool
+from faultmaven.container.providers.tools import (
+    create_evidence_reclassifier,
+    create_reclassify_evidence_tool,
+)
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (  # noqa: E501
     EvidenceReclassifier,
@@ -83,9 +87,12 @@ def _deps():
 
 
 def _composed(deps=None) -> _Container:
-    """A container after ``register_tools``: the flag-gated tool attribute is
-    whatever the builder returned."""
+    """A container after ``register_tools``: the reclassifier registered (when
+    built), and the flag-gated tool attribute whatever its builder returned."""
     container = _Container(services=_deps() if deps is None else deps)
+    container.services["evidence_reclassifier"] = create_evidence_reclassifier(
+        container
+    )
     container.reclassify_evidence_tool = create_reclassify_evidence_tool(container)
     return container
 
@@ -112,6 +119,8 @@ def test_flag_on_builds_the_tool_on_the_registered_deps(reclassify_flag) -> None
     container = _composed()
     reclassifier = container.reclassify_evidence_tool.reclassifier
     assert isinstance(reclassifier, EvidenceReclassifier)
+    # The one instance the PATCH route is published, not a second one.
+    assert reclassifier is container.services["evidence_reclassifier"]
     services = container.services
     assert reclassifier.repository is services["case_repository"]
     assert reclassifier.file_storage_service is services["file_storage_service"]
@@ -153,6 +162,9 @@ def test_flag_off_builds_nothing_and_gives_nothing(reclassify_flag) -> None:
     reclassify_flag(False)
     container = _composed()
     assert container.reclassify_evidence_tool is None
+    # The reclassifier is still built: the route answers 404 off its own flag
+    # check, never 503 for a missing reclassifier.
+    assert isinstance(container.services["evidence_reclassifier"], EvidenceReclassifier)
     registry = _create_investigation_tools(container)
     assert registry is None or registry.get("reclassify_evidence") is None
 
@@ -165,4 +177,6 @@ def test_a_missing_dependency_builds_nothing(reclassify_flag, absent) -> None:
     reclassify_flag(True)
     deps = _deps()
     deps[absent] = None
-    assert _composed(deps).reclassify_evidence_tool is None
+    container = _composed(deps)
+    assert container.services["evidence_reclassifier"] is None
+    assert container.reclassify_evidence_tool is None

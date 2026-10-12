@@ -582,14 +582,15 @@ async def _reextract_under_override(
 class EvidenceReclassifier:
     """Reclassify the file behind an existing evidence row (#1941).
 
-    The port both callers share: ``InvestigationService.reclassify_evidence``
-    (the PATCH endpoint) and the ``reclassify_evidence`` agent tool. It needs
-    only the case repository, file storage and preprocessing, which the
-    infrastructure layer registers before any tool is built. That is what lets
-    the tool be constructed complete: it used to hold the whole investigation
-    service, which is built after the milestone engine, which is built from the
-    tool registry, so the tool was constructed with ``None`` and every call
-    answered "not wired".
+    The port both callers share, as ONE instance the container builds: the
+    ``PATCH .../classification`` route (``app.state.evidence_reclassifier``)
+    and the ``reclassify_evidence`` agent tool. It needs only the case
+    repository, file storage and preprocessing, which the infrastructure layer
+    registers before any tool is built, and no engine or LLM. That is what
+    lets the tool be constructed complete: it used to hold the whole
+    investigation service, which is built after the milestone engine, which is
+    built from the tool registry, so the tool was constructed with ``None`` and
+    every call answered "not wired".
     """
 
     def __init__(self, case_repository, file_storage_service, preprocessing_service):
