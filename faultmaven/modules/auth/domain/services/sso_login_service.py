@@ -90,6 +90,10 @@ from faultmaven.infrastructure.persistence.user_repository import (
 )
 from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.domain.display_name import (
+    neutral_display_name,
+    usable_display_name,
+)
 from faultmaven.modules.auth.domain.personal_tenant import (
     PERSONAL_ENTERPRISE_NAME,
     domain_enterprise_slug,
@@ -165,7 +169,6 @@ _MAX_CODE_LENGTH = 512
 _USERNAME_BASE_MAX = 64
 _USERNAME_SUFFIX_ATTEMPTS = 30
 _MAX_EMAIL_LENGTH = 255
-_MAX_DISPLAY_NAME_LENGTH = 200
 
 # The JIT path validates emails via User model construction; the profile-sync
 # path assigns onto an existing model (no validate_assignment), so it runs the
@@ -1527,10 +1530,15 @@ class SSOLoginService:
 
         now = datetime.now(UTC)
         username = await self._free_username(derive_username(identity.email))
-        display_name = (identity.display_name or username)[:_MAX_DISPLAY_NAME_LENGTH]
+        user_id = str(uuid.uuid4())
+        # Never the username: it is the email's local part, and the display
+        # name is shown to everyone who shares a case with this account (#1924).
+        display_name = usable_display_name(
+            identity.display_name
+        ) or neutral_display_name(user_id)
         try:
             user = RepositoryUser(
-                user_id=str(uuid.uuid4()),
+                user_id=user_id,
                 username=username,
                 enterprise_id=(
                     enterprise.enterprise_id if enterprise is not None else None
@@ -1656,10 +1664,12 @@ class SSOLoginService:
         elif identity.email_verified and not getattr(user, "is_email_verified", False):
             user.is_email_verified = True
             user.email_verified_at = now
-        if identity.display_name and identity.display_name != getattr(
-            user, "display_name", None
-        ):
-            user.display_name = identity.display_name[:_MAX_DISPLAY_NAME_LENGTH]
+        # A name the IdP sends replaces the stored one, the neutral label
+        # included (#1924). A blank or whitespace-only name is no name: the
+        # column's CHECK refuses it, and the login must not fail over it.
+        idp_name = usable_display_name(identity.display_name)
+        if idp_name and idp_name != getattr(user, "display_name", None):
+            user.display_name = idp_name
         user.last_login_at = now
         try:
             await self._users.update(user)

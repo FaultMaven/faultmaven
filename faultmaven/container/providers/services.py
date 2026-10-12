@@ -1518,6 +1518,11 @@ def register_services(container: BaseDIContainer) -> None:
             # The engine's sanitizer: every model call conversion makes is
             # redacted with it, as an investigation turn's is (#1901).
             sanitizer=container.get_service("sanitizer", required=True),
+            # The verifier's display name for a verified runbook's
+            # ``verified_by`` comes from their account row (#1924).
+            account_reader=getattr(
+                getattr(container, "user_store", None), "user_repository", None
+            ),
         )
     except Exception as conv_err:
         logger.warning(

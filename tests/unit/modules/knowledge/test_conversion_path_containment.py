@@ -353,7 +353,6 @@ class TestADatabasePathThatEscapesIsRefused:
                 conversion_id="conv_x",
                 draft_id="draft_deadbeef",
                 user_id="user_x",
-                username="alice",
             )
 
         # The frontmatter rewrite would have flipped this to ``verified``, and

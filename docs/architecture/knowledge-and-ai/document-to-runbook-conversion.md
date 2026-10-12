@@ -910,7 +910,7 @@ Response: Updated draft object with re-run validation and quality score.
 ```
 
 This endpoint:
-1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` on the file on disk (so chunk metadata carries `status=verified`).
+1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` on the file on disk (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source.
 2. (Removed in fm#1295.) Until then this step extracted the v4 `## Causes` graph record from the markdown and stored it as `knowledge_items.metadata["causes"]` for the KB cause seeder; with the seeder gone the record had no reader, and extraction, the record and the chunk cause-letter stamp were retired. The runbook's `## Causes` section still chunks one Cause per chunk, so a verified runbook re-enters investigations as retrievable cause→fix units. See **Flywheel closure** below.
 3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
 4. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
@@ -1222,7 +1222,7 @@ On save, the API re-runs validation and quality scoring. The results update in r
 |                                                   |
 |  This will:                                        |
 |  - Set status to "verified"                        |
-|  - Set verified_by to your username                |
+|  - Set verified_by to your display name            |
 |  - Ingest into ChromaDB (faultmaven_kb collection) |
 |  - Make the runbook searchable by the AI           |
 |                                                   |

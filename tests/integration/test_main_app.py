@@ -150,6 +150,21 @@ def test_conversion_redacts_with_the_engines_sanitizer(booted_app_client):
     assert cs._preprocessor._sanitizer is sanitizer
 
 
+def test_conversion_names_the_verifier_from_the_account_store(booted_app_client):
+    """#1924: a verified runbook's ``verified_by`` is the verifier's display
+    name read from their users row. Conversion must hold the account store's
+    directory read, the same one the case service names creators and drivers
+    through; with none it writes an empty ``verified_by``, and every
+    behavioural test that hands a reader in by hand would still pass."""
+    from faultmaven.container import container
+
+    cs = app.state.conversion_service
+    reader = container.user_store.user_repository
+    assert reader is not None
+    assert cs._account_reader is reader
+    assert app.state.case_service.account_reader is reader
+
+
 def test_milestone_engine_holds_the_services_the_app_publishes(booted_app_client):
     """The engine is built with the same services app.state holds (#1722).
 

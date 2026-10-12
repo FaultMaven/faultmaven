@@ -19,6 +19,10 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
+from faultmaven.modules.auth.domain.display_name import (
+    neutral_display_name,
+    usable_display_name,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 logger = logging.getLogger(__name__)
@@ -255,15 +259,13 @@ class DatabaseUserStore:
                         conflict_reason="duplicate_email",
                     )
 
-            # Auto-generate display name if not provided
-            if not display_name:
-                display_name = self._generate_display_name(username)
-
             # Generate UUID for user_id
             import uuid
 
             user_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
+
+            display_name = self._display_name_for(user_id, username, display_name)
 
             # Create User model for repository
             user = User(
@@ -457,6 +459,23 @@ class DatabaseUserStore:
         if not email:
             return False
         return bool(self.email_pattern.match(email))
+
+    def _display_name_for(
+        self, user_id: str, username: str, display_name: Optional[str]
+    ) -> str:
+        """The display name a new account is stored with (#1924).
+
+        The name given, when it holds one. Otherwise never one derived from an
+        email: a username containing ``@`` is an address, so the account gets
+        the neutral label. A plain username was chosen by its user or the
+        operator, so its title-cased form is a name and carries no address.
+        """
+        given = usable_display_name(display_name)
+        if given:
+            return given
+        if "@" in username:
+            return neutral_display_name(user_id)
+        return self._generate_display_name(username)
 
     def _generate_display_name(self, username: str) -> str:
         """Generate display name from username"""

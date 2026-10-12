@@ -301,7 +301,6 @@ class TestVerifyTimeMembershipRecheck:
                 conversion_id="c",
                 draft_id="d1",
                 user_id="u1",
-                username="u1",
             )
         ks.ingest_runbook.assert_not_awaited()
 
@@ -315,7 +314,6 @@ class TestVerifyTimeMembershipRecheck:
             conversion_id="c",
             draft_id="d1",
             user_id="u1",
-            username="u1",
         )
         assert result is not None and result.status == "verified"
         ks.ingest_runbook.assert_awaited_once()
@@ -334,7 +332,6 @@ class TestVerifyTimeMembershipRecheck:
                 conversion_id="c",
                 draft_id="d1",
                 user_id="u1",
-                username="u1",
             )
         ks.ingest_runbook.assert_not_awaited()
 

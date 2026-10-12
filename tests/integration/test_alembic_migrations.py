@@ -38,8 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 012_case_driver
-HEAD_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: 016_no_email_derived_display_names
+HEAD_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -69,6 +69,11 @@ REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
 #: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
 #: writes (ADR-020, #1898).
 CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
+#: ``013_evidence_is_submitted_data`` (#1930).
+EVIDENCE_SUBMITTED_DATA_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``016_no_email_derived_display_names``: email-derived display names become
+#: ``Member <4 chars of user_id>`` (#1924).
+NO_EMAIL_DERIVED_NAMES_REVISION = "b5334d07ae6c"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -1498,6 +1503,173 @@ class TestCaseDriverRevision:
         assert down.returncode == 0, down.stderr
         assert "DROP INDEX ix_cases_driver_id;" in down.stdout
         assert "ALTER TABLE cases DROP COLUMN driver_id;" in down.stdout
+
+
+class TestNoEmailDerivedNamesRevision:
+    """016 relabels the display names the old writers derived from an email
+    (#1924) and nothing else. The downgrade restores nothing."""
+
+    #: (user_id, username, display_name, sso_provider, expected after 016)
+    ROWS = (
+        # SSO, JIT stored the username (the email's local part): relabelled.
+        (
+            "3f9a1c2e-0000-4000-8000-000000000001",
+            "sam",
+            "sam",
+            "workos",
+            "Member 3f9a",
+        ),
+        # SSO, the IdP sent a name: kept.
+        (
+            "a1b2c3d4-0000-4000-8000-000000000002",
+            "jane",
+            "Jane Doe",
+            "workos",
+            "Jane Doe",
+        ),
+        # SSO whose username was renamed after JIT: the documented false
+        # negative, kept.
+        (
+            "b0c0d0e0-0000-4000-8000-000000000003",
+            "kim-renamed",
+            "kim",
+            "workos",
+            "kim",
+        ),
+        # Local, an address as the username and no display name given: the
+        # database store title-cased the address. Relabelled.
+        (
+            "c3d4e5f6-0000-4000-8000-000000000004",
+            "alice.smith@example.com",
+            "Alice Smith@Example Com",
+            None,
+            "Member c3d4",
+        ),
+        # Local, matches only the Redis store's local-part form: a name the
+        # user may have typed. Counted, kept.
+        (
+            "e5f60718-0000-4000-8000-000000000005",
+            "bob.jones@example.com",
+            "Bob Jones",
+            None,
+            "Bob Jones",
+        ),
+        # Local, a plain username's title-cased form: chosen, not derived. Kept.
+        (
+            "07182930-0000-4000-8000-000000000006",
+            "carol_x",
+            "Carol X",
+            None,
+            "Carol X",
+        ),
+        # Local, an address as the username with an explicit name: kept.
+        (
+            "92ab3c4d-0000-4000-8000-000000000007",
+            "dan@example.com",
+            "Daniel",
+            None,
+            "Daniel",
+        ),
+    )
+
+    def _seed(self) -> None:
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            enterprise = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()[0]
+            for user_id, username, display_name, sso_provider, _ in self.ROWS:
+                conn.execute(
+                    "INSERT INTO users (user_id, enterprise_id, username, email, "
+                    "display_name, hashed_password, sso_provider, sso_provider_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        user_id,
+                        enterprise,
+                        username,
+                        f"{user_id}@example.com",
+                        display_name,
+                        None if sso_provider else "x",
+                        sso_provider,
+                        f"sub_{user_id}" if sso_provider else None,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _names(self) -> dict:
+        ids = tuple(row[0] for row in self.ROWS)
+        return {
+            user_id: name
+            for user_id, name in query_rows(
+                TEST_DB, "SELECT user_id, display_name FROM users"
+            )
+            if user_id in ids
+        }
+
+    def test_upgrade_relabels_only_the_derived_names(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(
+            f"upgrade {EVIDENCE_SUBMITTED_DATA_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        tables = get_tables(TEST_DB)
+
+        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._names() == {row[0]: row[4] for row in self.ROWS}
+        assert "016: relabelled 2 email-derived display name(s)" in result.stderr
+        assert "016: left 1 display name(s) that match only the Redis" in (
+            result.stderr
+        )
+        assert get_tables(TEST_DB) == tables
+
+    def test_downgrade_restores_nothing_and_a_rerun_changes_nothing(
+        self, clean_database, database_url
+    ):
+        assert (
+            run_alembic(
+                f"upgrade {EVIDENCE_SUBMITTED_DATA_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        self._seed()
+        assert (
+            run_alembic(
+                f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url
+            ).returncode
+            == 0
+        )
+        relabelled = self._names()
+
+        result = run_alembic(
+            f"downgrade {EVIDENCE_SUBMITTED_DATA_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == EVIDENCE_SUBMITTED_DATA_REVISION
+        assert self._names() == relabelled
+
+        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert "016: relabelled 0 email-derived display name(s)" in result.stderr
+        assert self._names() == relabelled
+
+    def test_offline_emits_no_statement_against_users(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {EVIDENCE_SUBMITTED_DATA_REVISION}:"
+            f"{NO_EMAIL_DERIVED_NAMES_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        assert "-- 016_no_email_derived_display_names: rows are matched in Python" in (
+            up.stdout
+        )
+        assert "UPDATE users" not in up.stdout
+        assert "ROW LEVEL SECURITY" not in up.stdout
 
 
 class TestRbacSeed:
