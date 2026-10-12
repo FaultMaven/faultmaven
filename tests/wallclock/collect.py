@@ -485,14 +485,15 @@ def render_proposals(proposals: Sequence[Proposal]) -> str:
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for p in proposals:
-        regression = (
-            "STOP: " + p.stop if p.regression is None else f"{p.regression:.3g}"
-        )
+        stopped = p.regression is None
+        regression = "STOP: " + p.stop if stopped else f"{p.regression:.3g}"
+        multiple = "-" if stopped else f"{p.multiple:.2f}x"
+        clearance = "-" if stopped else f"{p.clearance:.2f}x"
         lines.append(
             f"| {p.row} | {p.jobs} | {p.old_reference:.5g} | {p.old_regression:.3g} "
             f"| {p.box:.4g} | {p.ci:.4g} | {p.worst_job:.4g} "
-            f"| {p.reference:.5g} ({p.source}) | {regression} | {p.multiple:.2f}x "
-            f"| {p.clearance:.2f}x | {p.min_raw_ratio:.2f}..{p.max_raw_ratio:.2f} |"
+            f"| {p.reference:.5g} ({p.source}) | {regression} | {multiple} "
+            f"| {clearance} | {p.min_raw_ratio:.2f}..{p.max_raw_ratio:.2f} |"
         )
     return "\n".join(lines)
 
