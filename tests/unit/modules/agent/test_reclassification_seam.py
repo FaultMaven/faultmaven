@@ -53,6 +53,7 @@ from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    EvidenceReclassifier,
     _handle_file_reclassification,
     _reclassified_collections,
 )
@@ -178,12 +179,23 @@ def _build(
         preprocessing_service=preprocessing,
         file_storage_service=storage,
     )
-    return SimpleNamespace(repo=repo, case=case, service=service, engine=engine)
+    reclassifier = EvidenceReclassifier(
+        case_repository=repo,
+        file_storage_service=storage,
+        preprocessing_service=preprocessing,
+    )
+    return SimpleNamespace(
+        repo=repo,
+        case=case,
+        service=service,
+        engine=engine,
+        reclassifier=reclassifier,
+    )
 
 
 async def _out_of_band(rig, evidence_id=EV_1):
     """The ``PATCH /evidence/{id}/classification`` path. Returns the saved case."""
-    await rig.service.reclassify_evidence(
+    await rig.reclassifier.reclassify_evidence(
         case_id=rig.case.case_id,
         evidence_id=evidence_id,
         user_id=OWNER,
@@ -456,7 +468,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         return process_turn
 
     async def _run_turn(self, rig):
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.reclassifier)
         rig.engine.process_turn = AsyncMock(
             side_effect=self._engine_that_calls_the_tool(rig, tool)
         )
@@ -528,7 +540,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         produces), which is what the aggregate save exists to prevent.
         """
         rig = _build()
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.reclassifier)
         saves_during_the_tool_call = []
 
         async def process_turn(*, case, user_message, **kwargs):
@@ -589,7 +601,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         rig = _build()
         stranger = create_sample_case(user_id=OWNER)
         with pytest.raises(ValidationException):
-            await rig.service.reclassify_evidence(
+            await rig.reclassifier.reclassify_evidence(
                 case_id=rig.case.case_id,
                 evidence_id=EV_1,
                 user_id=OWNER,
@@ -627,7 +639,7 @@ class TestATerminalCaseIsNotMutable:
         from faultmaven.modules.agent.tools.base import AgentToolRegistry
 
         registry = AgentToolRegistry()
-        registry.register(ReclassifyEvidenceTool(investigation_service=MagicMock()))
+        registry.register(ReclassifyEvidenceTool(reclassifier=MagicMock()))
         schemas = StructuredOutputGenerator.build_da_tool_schemas(
             SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
         )
@@ -655,7 +667,7 @@ class TestATerminalCaseIsNotMutable:
         rig = _build()
         closed = self._closed(rig)
         with pytest.raises(ValidationException) as exc:
-            await rig.service.reclassify_evidence(
+            await rig.reclassifier.reclassify_evidence(
                 case_id=closed.case_id,
                 evidence_id=EV_1,
                 user_id=OWNER,
@@ -669,7 +681,7 @@ class TestATerminalCaseIsNotMutable:
         rig = _build()
         self._closed(rig)
         with pytest.raises(ValidationException):
-            await rig.service.reclassify_evidence(
+            await rig.reclassifier.reclassify_evidence(
                 case_id=rig.case.case_id,
                 evidence_id=EV_1,
                 user_id=OWNER,
@@ -688,7 +700,7 @@ class TestATerminalCaseIsNotMutable:
         """
         rig = _build()
         closed = self._closed(rig)
-        tool = ReclassifyEvidenceTool(investigation_service=rig.service)
+        tool = ReclassifyEvidenceTool(reclassifier=rig.reclassifier)
 
         async def terminal_qa_shaped(*, case, user_message, **kwargs):
             context = ToolContext(
@@ -1248,7 +1260,7 @@ class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
     async def test_an_open_case_answers_not_found(self):
         rig = _build()
         with pytest.raises(NotFoundError):
-            await rig.service.reclassify_evidence(
+            await rig.reclassifier.reclassify_evidence(
                 case_id=rig.case.case_id,
                 evidence_id="ev_does_not_exist",
                 user_id=OWNER,
@@ -1268,7 +1280,7 @@ class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
         )
         rig.repo._storage[closed.case_id] = closed
         with pytest.raises(NotFoundError):
-            await rig.service.reclassify_evidence(
+            await rig.reclassifier.reclassify_evidence(
                 case_id=closed.case_id,
                 evidence_id="ev_does_not_exist",
                 user_id=OWNER,

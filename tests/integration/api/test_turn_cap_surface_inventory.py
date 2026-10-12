@@ -64,15 +64,6 @@ TURN_SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "that reaches InvestigationService.process_turn, where the reservation "
         "is taken.",
     ),
-    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
-        _EXEMPT,
-        "flagged by reachability because it holds the investigation service, "
-        "but it calls reclassify_evidence, not process_turn: it re-runs the "
-        "Tier 0/1 mechanical preprocessor over bytes already stored, consumes "
-        "no turn number and reaches no model. It is also off by default "
-        "(FAULTMAVEN_RECLASSIFY_ENABLED). Charging it would bill a tenant for "
-        "correcting the classifier's mistake.",
-    ),
 }
 
 #: Request-body fields only a turn submission carries. ``query`` alone is

@@ -1,7 +1,7 @@
 """Phase 1.5 — ReclassifyEvidenceTool
 
 Covers the agent-tool wrapper around
-``InvestigationService.reclassify_evidence``. The tool is lean by
+``EvidenceReclassifier.reclassify_evidence``. The tool is lean by
 design — validation + delegation — so tests focus on the validation
 surface and the exception-to-ToolResult mapping.
 """
@@ -62,15 +62,15 @@ def _ctx(in_memory_case=_UNSET):
 
 
 @pytest.fixture
-def service():
+def reclassifier():
     svc = MagicMock()
     svc.reclassify_evidence = AsyncMock()
     return svc
 
 
 @pytest.fixture
-def tool(service):
-    return ReclassifyEvidenceTool(investigation_service=service)
+def tool(reclassifier):
+    return ReclassifyEvidenceTool(reclassifier=reclassifier)
 
 
 class TestSchemaAndDescription:
@@ -130,14 +130,14 @@ class TestInputValidation:
         assert "totally_fake" in result.error
 
 
-class TestServiceDelegation:
+class TestReclassifierDelegation:
     @pytest.mark.asyncio
-    async def test_success_path_returns_updated_data(self, tool, service):
+    async def test_success_path_returns_updated_data(self, tool, reclassifier):
         updated = MagicMock()
         updated.evidence_id = "ev_abc"
         updated.source_type.value = "logs_and_errors"
         updated.summary = "Re-extracted"
-        service.reclassify_evidence.return_value = updated
+        reclassifier.reclassify_evidence.return_value = updated
 
         with _enable_flag(True):
             result = await tool.execute_with_context(
@@ -154,15 +154,17 @@ class TestServiceDelegation:
         assert "summary" not in result.data
         assert result.data["evidence_summary"] == "Re-extracted"
         # Tool must pass trigger="agent_tool" for observability labelling.
-        kwargs = service.reclassify_evidence.call_args.kwargs
+        kwargs = reclassifier.reclassify_evidence.call_args.kwargs
         assert kwargs["trigger"] == "agent_tool"
         assert kwargs["case_id"] == "case_xyz"
         assert kwargs["user_id"] == "user_abc"
         assert kwargs["data_type"] == DataType.LOGS_AND_ERRORS
 
     @pytest.mark.asyncio
-    async def test_not_found_maps_to_error(self, tool, service):
-        service.reclassify_evidence.side_effect = NotFoundError("Evidence", "ev_abc")
+    async def test_not_found_maps_to_error(self, tool, reclassifier):
+        reclassifier.reclassify_evidence.side_effect = NotFoundError(
+            "Evidence", "ev_abc"
+        )
         with _enable_flag(True):
             result = await tool.execute_with_context(
                 params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
@@ -172,9 +174,9 @@ class TestServiceDelegation:
         assert "ev_abc" in result.error
 
     @pytest.mark.asyncio
-    async def test_authorization_error_maps_to_error(self, tool, service):
+    async def test_authorization_error_maps_to_error(self, tool, reclassifier):
         """AuthorizationError surfaces as a failed ToolResult."""
-        service.reclassify_evidence.side_effect = AuthorizationError("nope")
+        reclassifier.reclassify_evidence.side_effect = AuthorizationError("nope")
         with _enable_flag(True):
             result = await tool.execute_with_context(
                 params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
@@ -183,11 +185,11 @@ class TestServiceDelegation:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_no_backing_file_maps_to_error(self, tool, service):
+    async def test_no_backing_file_maps_to_error(self, tool, reclassifier):
         """Evidence with no stored raw file → ConflictError → failed
         ToolResult.
         """
-        service.reclassify_evidence.side_effect = ConflictError(
+        reclassifier.reclassify_evidence.side_effect = ConflictError(
             "Evidence ev_abc has no stored raw file",
             resource_type="evidence",
             resource_id="ev_abc",
@@ -202,8 +204,8 @@ class TestServiceDelegation:
         assert "no stored raw file" in result.error
 
     @pytest.mark.asyncio
-    async def test_the_in_flight_case_is_forwarded(self, tool, service):
-        """#1465: the turn's own aggregate reaches the service.
+    async def test_the_in_flight_case_is_forwarded(self, tool, reclassifier):
+        """#1465: the turn's own aggregate reaches the reclassifier.
 
         The whole fix is that the write lands on the object the turn will
         save. The tool is where that object is picked up, so this pins the
@@ -213,7 +215,7 @@ class TestServiceDelegation:
         updated.evidence_id = "ev_abc"
         updated.source_type.value = "logs_and_errors"
         updated.summary = "Re-extracted"
-        service.reclassify_evidence.return_value = updated
+        reclassifier.reclassify_evidence.return_value = updated
 
         ctx = _ctx()
         with _enable_flag(True):
@@ -223,19 +225,19 @@ class TestServiceDelegation:
             )
 
         assert result.success is True
-        kwargs = service.reclassify_evidence.call_args.kwargs
+        kwargs = reclassifier.reclassify_evidence.call_args.kwargs
         assert kwargs["in_flight_case"] is ctx.in_memory_case
 
     @pytest.mark.asyncio
     async def test_no_in_flight_case_refuses_rather_than_losing_the_write(
-        self, tool, service
+        self, tool, reclassifier
     ):
         """A context without the turn's case gets a refusal, not a no-op.
 
         Without the aggregate this call would write a row the end-of-turn
         save overwrites and still report success — the #1465 shape, where the
         model asserts a reclassification back to the user that did not
-        survive the turn. Refusing is the honest answer, and the service is
+        survive the turn. Refusing is the honest answer, and the reclassifier is
         never reached.
         """
         with _enable_flag(True):
@@ -246,4 +248,4 @@ class TestServiceDelegation:
 
         assert result.success is False
         assert "in-flight case" in result.error
-        service.reclassify_evidence.assert_not_awaited()
+        reclassifier.reclassify_evidence.assert_not_awaited()

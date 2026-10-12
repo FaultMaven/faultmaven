@@ -421,6 +421,10 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     app.state.session_service = container.get_session_service()
     app.state.case_service = container.get_case_service()
     app.state.investigation_service = container.get_investigation_service()
+    # Optional: None when its storage/preprocessing deps are missing, and the
+    # reclassification route then answers 503. The same instance the
+    # ``reclassify_evidence`` tool holds (#1941).
+    app.state.evidence_reclassifier = container.get_service("evidence_reclassifier")
 
     # knowledge_service is the one exception to the paragraph above, and it
     # names itself here. Since #899 the container returns None rather than

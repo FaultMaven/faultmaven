@@ -45,6 +45,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.clarificatio
     _sanitize_label_fragment,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    EvidenceReclassifier,
     _handle_file_reclassification,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -1892,13 +1893,12 @@ class TestAnUnreadableIntentIsNeverAnException:
         reclassifies an unrelated evidence row, and the call must succeed."""
         repo, case = repo_with_case
         case.last_suggestions = [self.BAD]
-        service = InvestigationService(
-            milestone_engine=MockMilestoneEngine(),
+        reclassifier = EvidenceReclassifier(
             case_repository=repo,
-            preprocessing_service=preprocessing_service,
             file_storage_service=file_storage,
+            preprocessing_service=preprocessing_service,
         )
-        updated = await service.reclassify_evidence(
+        updated = await reclassifier.reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id=case.user_id,
@@ -2808,7 +2808,9 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
             preprocessing_service, file_storage
         )
 
-        await service.reclassify_evidence(
+        await EvidenceReclassifier(
+            repo, service.file_storage_service, service.preprocessing_service
+        ).reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -2851,7 +2853,9 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
         service, repo, case, file_id = await self._armed_case(
             preprocessing_service, file_storage
         )
-        await service.reclassify_evidence(
+        await EvidenceReclassifier(
+            repo, service.file_storage_service, service.preprocessing_service
+        ).reclassify_evidence(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
@@ -3116,7 +3120,6 @@ def test_every_data_type_writer_retires_the_question():
 
         _Walk(rel).visit(tree)
 
-    service_module = "modules/agent/domain/services/investigation_service/service.py"
     attachments_module = (
         "modules/agent/domain/services/investigation_service/attachments.py"
     )
@@ -3127,7 +3130,7 @@ def test_every_data_type_writer_retires_the_question():
     # a narrowed token list drops hits and the equality below still passes by
     # matching a smaller set against a smaller expectation.
     assert {
-        service_module,
+        attachments_module,
         reclassification_module,
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
 
@@ -3164,10 +3167,11 @@ def test_every_data_type_writer_retires_the_question():
         # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
         # True of BOTH triggers since #1465: a call made from inside a turn
         # now writes the aggregate the turn is holding instead of a copy the
-        # end-of-turn save overwrites.
+        # end-of-turn save overwrites. The PATCH route and the agent tool hold
+        # the same reclassifier (#1941).
         (
-            service_module,
-            "InvestigationService.reclassify_evidence",
+            reclassification_module,
+            "EvidenceReclassifier.reclassify_evidence",
             "reclassification",
         ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"

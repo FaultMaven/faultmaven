@@ -6,9 +6,12 @@ Triggered by corrective-intent phrases ("that's actually a log file",
 "treat server.log as config") — see the prompt rule in
 ``core/investigation/prompts/templates/blocks.py``.
 
-The tool delegates to ``InvestigationService.reclassify_evidence`` which
-handles auth, storage fetch, preprocessing re-run, and persistence. This
-tool just validates inputs and passes them through.
+The tool delegates to ``EvidenceReclassifier.reclassify_evidence``, which
+handles auth, storage fetch, preprocessing re-run, and the write. This tool
+just validates inputs and passes them through. It holds the reclassifier,
+not the investigation service: the service is built after the milestone
+engine, which is built from this tool's registry, so a tool holding the
+service could only ever be constructed with ``None`` (#1941).
 
 Design Reference:
     docs/working/WIP-data-processing-improvement-plan.md Phase 1.5
@@ -49,8 +52,10 @@ class ReclassifyEvidenceTool(AgentTool):
     persisted on its own (#1465) — see ``execute_with_context``.
     """
 
-    def __init__(self, investigation_service: Any = None):
-        self.investigation_service = investigation_service
+    def __init__(self, reclassifier: Any):
+        # ``EvidenceReclassifier`` (agent domain). Typed ``Any`` because the
+        # tools layer sits below the domain layer (import-linter contract 7).
+        self.reclassifier = reclassifier
 
     @property
     def name(self) -> str:
@@ -65,8 +70,8 @@ class ReclassifyEvidenceTool(AgentTool):
             "server.log as config'. The evidence is re-extracted with "
             "the chosen data type; the new structural index is available "
             "in context on the next turn. Returns the updated "
-            "classification so the agent can confirm the change. Call "
-            "list_evidence first to find the evidence_id."
+            "classification so the agent can confirm the change. The "
+            "evidence_id is in the <evidence id=...> tag in your context."
         )
 
     @property
@@ -77,9 +82,8 @@ class ReclassifyEvidenceTool(AgentTool):
                 "evidence_id": {
                     "type": "string",
                     "description": (
-                        "The evidence_id to reclassify. Get this from "
-                        "list_evidence or the <evidence id=...> tag in "
-                        "your context."
+                        "The evidence_id to reclassify, from the "
+                        "<evidence id=...> tag in your context."
                     ),
                 },
                 "data_type": {
@@ -99,7 +103,7 @@ class ReclassifyEvidenceTool(AgentTool):
         params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
-        """Execute reclassification through the investigation service."""
+        """Execute reclassification through the evidence reclassifier."""
         if not get_settings().preprocessing.reclassify_enabled:
             return ToolResult(
                 success=False,
@@ -108,13 +112,6 @@ class ReclassifyEvidenceTool(AgentTool):
                     "Reclassification is not enabled on this deployment. "
                     "Inform the user and do not retry."
                 ),
-            )
-
-        if self.investigation_service is None:
-            return ToolResult(
-                success=False,
-                data=None,
-                error="Investigation service not wired; reclassification unavailable",
             )
 
         evidence_id = params.get("evidence_id")
@@ -145,7 +142,7 @@ class ReclassifyEvidenceTool(AgentTool):
         # engine's tool loop, and a turn ends by saving that one object — so a
         # reclassification written to a freshly loaded copy is overwritten
         # seconds later and the model is told it succeeded. Handing the
-        # in-flight aggregate to the service puts the change on the object the
+        # in-flight aggregate to the reclassifier puts the change on the object the
         # turn will actually save.
         #
         # Refused rather than degraded when it is missing. Without it this
@@ -168,7 +165,7 @@ class ReclassifyEvidenceTool(AgentTool):
             )
 
         try:
-            updated = await self.investigation_service.reclassify_evidence(
+            updated = await self.reclassifier.reclassify_evidence(
                 case_id=context.case_id,
                 evidence_id=evidence_id,
                 user_id=context.user_id,
@@ -185,7 +182,7 @@ class ReclassifyEvidenceTool(AgentTool):
             return ToolResult(success=False, data=None, error=str(e))
         except ValidationException as e:
             # A REFUSAL the model must not retry — today, a closed case (the
-            # service refuses terminal mutation the way the clarification
+            # reclassifier refuses terminal mutation the way the clarification
             # handler always has) or an in-flight case that is not this one.
             # Without this arm it fell through the catch-all below, which
             # logs a stack trace for a correctly-refused call and hands the

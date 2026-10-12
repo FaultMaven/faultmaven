@@ -106,6 +106,20 @@ async def get_investigation_service(request: Request):
     return service
 
 
+async def get_evidence_reclassifier(request: Request):
+    """Get the EvidenceReclassifier from app.state (#1941).
+
+    Needs no engine or LLM, so the reclassification route answers 503 only
+    when the reclassifier's own storage/preprocessing deps are missing.
+    """
+    reclassifier = getattr(request.app.state, "evidence_reclassifier", None)
+    if reclassifier is None:
+        raise HTTPException(
+            status_code=503, detail="Evidence reclassification not available"
+        )
+    return reclassifier
+
+
 # TD-001: get_report_store removed - reports now accessed via get_case_repository()
 
 

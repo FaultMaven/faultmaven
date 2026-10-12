@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.dependencies import get_investigation_service
+from faultmaven.api.v1.dependencies import get_evidence_reclassifier
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
@@ -171,15 +171,15 @@ class TestAccessFilter:
 
 
 class TestReclassifyRouteForwardsTheReadFact:
-    """The PATCH route tells the service whether the caller READS the case,
-    the one fact the service cannot resolve for itself (ADR-020 D2)."""
+    """The PATCH route tells the reclassifier whether the caller READS the
+    case, the one fact it cannot resolve for itself (ADR-020 D2)."""
 
     @pytest.fixture
     def recording(self, stack, monkeypatch):
         from faultmaven.config.settings import get_settings
 
         monkeypatch.setattr(get_settings().preprocessing, "reclassify_enabled", True)
-        investigation = SimpleNamespace(
+        reclassifier = SimpleNamespace(
             reclassify_evidence=AsyncMock(
                 return_value=SimpleNamespace(
                     evidence_id="ev_aaaaaaaaaaaa",
@@ -190,13 +190,13 @@ class TestReclassifyRouteForwardsTheReadFact:
             )
         )
 
-        async def _investigation():
-            return investigation
+        async def _reclassifier():
+            return reclassifier
 
         stack.as_user(CREATOR).dependency_overrides[
-            get_investigation_service
-        ] = _investigation
-        return investigation
+            get_evidence_reclassifier
+        ] = _reclassifier
+        return reclassifier
 
     @pytest.mark.parametrize(
         "caller, reads",
