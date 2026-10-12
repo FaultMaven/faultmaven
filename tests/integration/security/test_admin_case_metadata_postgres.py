@@ -15,7 +15,8 @@ can answer:
   says so, never a partial list.
 * **Parity.** One fixture set — every investigation stage, asides including a
   duplicate turn number, a terminal case, team shares, an empty case, a null
-  and a missing mitigation, a clock behind its history, a deleted owner — read
+  and a missing mitigation, a clock behind its history, a deleted owner, a case
+  its creator drives and one handed to a colleague — read
   through the multi path equals the single-tenant path's
   ``AdminCaseMetadata.from_summary`` rows, team enrichment included, field for
   field.
@@ -28,6 +29,10 @@ can answer:
 * **Failure direction.** Without the functions the read raises
   ``CaseMetadataUnavailableError`` — which the route answers with a 503 — and
   revision 003 steps down and back up.
+* **Revision 014 keeps the hardening.** It drops and re-creates the page
+  function to add the effective driver; stepped down and back up, the function
+  keeps its settings, its comment, the runtime role's grant and no ``PUBLIC``
+  one, at either definition.
 
 Everything runs as a role with the deployed ``faultmaven_app`` grants —
 including ``EXECUTE`` on both functions, which revision 003 grants that role by
@@ -79,6 +84,9 @@ _ROLE = f"fm_casemeta_probe_{uuid.uuid4().hex[:8]}"
 _PW = "fm_casemeta_probe_pw"
 _BASELINE_REVISION = "a1e0c17bd001"
 _LEDGER_REVISION = "65913afe773c"  # 002_llm_usage_ledger, 003's parent
+#: ``014_admin_case_metadata_driver`` and its parent, ``013``.
+_DRIVER_REVISION = "831be28d1434"  # pragma: allowlist secret
+_PRE_DRIVER_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
 
 #: Every fixture case is updated "in 2099", so the fixtures lead the
 #: newest-first order ahead of any row another module left in the shared
@@ -93,6 +101,7 @@ _PAGE_COLUMNS = [
     ("enterprise_id", "text"),
     ("organization_id", "text"),
     ("user_id", "text"),
+    ("driver_id", "text"),
     ("state", "text"),
     ("source", "text"),
     ("closure_reason", "text"),
@@ -234,6 +243,8 @@ async def world(limited_role_env):
     suffix = uuid.uuid4().hex[:8]
     ent_a, ent_b = f"ent_meta_a_{suffix}", f"ent_meta_b_{suffix}"
     user_a, user_b = f"user_meta_a_{suffix}", f"user_meta_b_{suffix}"
+    # A's second account: the colleague a case is handed to (ADR-020).
+    colleague = f"user_meta_a2_{suffix}"
     org_a = f"org_meta_a_{suffix}"
     team_1, team_2 = f"team_meta_1_{suffix}", f"team_meta_2_{suffix}"
     # Codepoint order puts "B" before "a"; a linguistic collation (en_US, the
@@ -243,12 +254,13 @@ async def world(limited_role_env):
     # Cleanup is armed before the first insert: a setup that fails half way
     # must not leave enterprises behind for the rest of the lane to count.
     try:
-        for enterprise, user in ((ent_a, user_a), (ent_b, user_b)):
+        for enterprise in (ent_a, ent_b):
             await _as_owner(
                 owner,
                 "INSERT INTO enterprises (enterprise_id, name, slug) VALUES (:e, :e, :e)",
                 e=enterprise,
             )
+        for enterprise, user in ((ent_a, user_a), (ent_b, user_b), (ent_a, colleague)):
             await _as_owner(
                 owner,
                 "INSERT INTO users (user_id, enterprise_id, username, email, "
@@ -398,11 +410,26 @@ async def world(limited_role_env):
                 turn_history=turns((1, False), (2, True), (3, False)),
                 current_turn=3,
             ),
-            # Shaped below: the owning account was deleted (FK SET NULL).
+            # Shaped below: the owning account was deleted (FK SET NULL), and
+            # the case had been handed to the colleague, who still drives it.
             "orphan": _case(
                 ent_a,
                 user_a,
                 "orphan",
+                turn_history=turns((1, False)),
+                current_turn=1,
+            ),
+            # Shaped below: the owning account was deleted, and nobody else
+            # drives — neither account is left.
+            "orphan_undriven": _case(ent_a, user_a, "orphan_undriven"),
+            # Its creator drives: a NULL driver_id reads as the creator.
+            "creator_driven": _case(ent_a, user_a, "creator_driven"),
+            # Shaped below: handed to the colleague (ADR-020).
+            "handed_on": _case(
+                ent_a,
+                user_a,
+                "handed_on",
+                state=investigating,
                 turn_history=turns((1, False)),
                 current_turn=1,
             ),
@@ -464,11 +491,19 @@ async def world(limited_role_env):
             "UPDATE cases SET current_turn = 1 WHERE case_id = :c",
             c=a["lagging_clock"].case_id,
         )
-        await _as_owner(
-            owner,
-            "UPDATE cases SET user_id = NULL WHERE case_id = :c",
-            c=a["orphan"].case_id,
-        )
+        for case_key in ("handed_on", "orphan"):
+            await _as_owner(
+                owner,
+                "UPDATE cases SET driver_id = :d WHERE case_id = :c",
+                d=colleague,
+                c=a[case_key].case_id,
+            )
+        for case_key in ("orphan", "orphan_undriven"):
+            await _as_owner(
+                owner,
+                "UPDATE cases SET user_id = NULL WHERE case_id = :c",
+                c=a[case_key].case_id,
+            )
         # Two team shares and an organization-scope one, which is not a team;
         # and two teams whose ids differ only in case, on a second case.
         for case_key, scope_type, scope_id in (
@@ -516,6 +551,8 @@ async def world(limited_role_env):
             owner=owner,
             ent_a=ent_a,
             ent_b=ent_b,
+            user_a=user_a,
+            colleague=colleague,
             a=a,
             b=b,
             teams=sorted([team_1, team_2]),
@@ -794,7 +831,8 @@ async def test_the_multi_path_serves_what_the_single_tenant_path_serves(world):
         case_id
         for case_id in world.order
         if case_id in {c.case_id for c in world.a.values()}
-        and case_id != world.a["orphan"].case_id
+        and case_id
+        not in {world.a["orphan"].case_id, world.a["orphan_undriven"].case_id}
     ]
     assert single_total == len(world.a)
     # …and every shape reads as the loaded case says it does.
@@ -822,11 +860,43 @@ async def test_the_multi_path_serves_what_the_single_tenant_path_serves(world):
         world.mixed_case_teams
     )
     assert rows[a["diagnosis"].case_id].organization_id is not None
-    # The deleted owner's case is dropped by both paths' projection, not by the
-    # read: the metadata read did return it.
-    assert a["orphan"].case_id in {m.case_id for m in metadata}
+    # The effective driver (#1926): NULL driver_id reads as the creator; a case
+    # handed on reads as the account it was handed to.
+    assert rows[a["creator_driven"].case_id].driver_id == world.user_a
+    assert rows[a["handed_on"].case_id].driver_id == world.colleague
+    assert rows[a["handed_on"].case_id].user_id == world.user_a
+    # The deleted owners' cases are dropped by both paths' projection, not by
+    # the read: the metadata read did return them.
+    assert {a["orphan"].case_id, a["orphan_undriven"].case_id} <= {
+        m.case_id for m in metadata
+    }
 
     assert multi == single
+
+
+async def test_the_page_function_names_the_effective_driver(world):
+    """``COALESCE(driver_id, user_id)`` on the function's own rows, including
+    the two the projection drops: a deleted creator whose case a colleague
+    still drives reads as the colleague, and with neither account left the
+    driver is NULL."""
+    rows = await _as_owner(
+        world.owner,
+        "SELECT case_id, user_id, driver_id "
+        "FROM admin_case_metadata_page(NULL, NULL, 100000, 0) "
+        "WHERE case_id = ANY(:ids)",
+        ids=[
+            world.a[key].case_id
+            for key in ("creator_driven", "handed_on", "orphan", "orphan_undriven")
+        ],
+    )
+    by_case = {row.case_id: (row.user_id, row.driver_id) for row in rows}
+    a = world.a
+    assert by_case == {
+        a["creator_driven"].case_id: (world.user_a, world.user_a),
+        a["handed_on"].case_id: (world.user_a, world.colleague),
+        a["orphan"].case_id: (None, world.colleague),
+        a["orphan_undriven"].case_id: (None, None),
+    }
 
 
 async def test_a_page_boundary_among_tied_updates_falls_in_the_same_place(world):
@@ -1376,3 +1446,85 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
         result = alembic_on(url, f"downgrade {_BASELINE_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await functions_and_ledger() == (set(), 0)
+
+
+async def test_revision_014_steps_down_and_up_keeping_the_hardening(limited_role_env):
+    """Revision 014 drops the page function and creates it again, so everything
+    a drop takes with it is re-stated: ``PUBLIC`` revoked, 003's comment, the
+    runtime role's grant. Checked at head, after stepping down to 013 (005's
+    definition restored) and at head again — with the runtime role present, so
+    the grant branch runs. In a database of its own, for the reason 003's step
+    test gives."""
+    async with database_of_its_own(
+        limited_role_env, "fm_casemeta_driver", runtime_role=True
+    ) as url:
+
+        async def page_function():
+            engine = create_async_engine(url, future=True)
+            try:
+                async with engine.connect() as conn:
+                    columns = [
+                        tuple(row)
+                        for row in (
+                            await conn.execute(
+                                text(
+                                    "SELECT u.name, format_type(u.type, NULL) "
+                                    "FROM pg_proc p, unnest(p.proargnames, "
+                                    "p.proallargtypes, p.proargmodes::text[]) "
+                                    "WITH ORDINALITY AS u(name, type, mode, position) "
+                                    "WHERE p.proname = 'admin_case_metadata_page' "
+                                    "AND u.mode = 't' ORDER BY u.position"
+                                )
+                            )
+                        ).all()
+                    ]
+                    catalog = (
+                        await conn.execute(
+                            text(
+                                "SELECT p.prosecdef, p.provolatile::text, p.proconfig, "
+                                "pg_get_userbyid(p.proowner) = t.tableowner, "
+                                "obj_description(p.oid, 'pg_proc'), "
+                                "has_function_privilege(:r, p.oid, 'EXECUTE'), "
+                                "EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, "
+                                "acldefault('f', p.proowner))) a WHERE a.grantee = 0) "
+                                "FROM pg_proc p, pg_tables t "
+                                "WHERE p.proname = 'admin_case_metadata_page' "
+                                "AND t.tablename = 'cases'"
+                            ),
+                            {"r": RUNTIME_ROLE},
+                        )
+                    ).one()
+                    return columns, tuple(catalog)
+            finally:
+                await engine.dispose()
+
+        def hardened(catalog):
+            definer, volatility, config, owned, comment, runtime, public = catalog
+            assert (definer, volatility, owned) == (True, "s", True)
+            assert config == ["search_path=pg_catalog, pg_temp", "row_security=off"]
+            assert comment == (
+                "Cross-enterprise operator case list (ADR-012 D9). Returns "
+                "metadata only; executable by the runtime role, not PUBLIC."
+            )
+            assert runtime is True, "the runtime role lost EXECUTE"
+            assert public is False, "PUBLIC may execute"
+
+        previous_columns = [c for c in _PAGE_COLUMNS if c[0] != "driver_id"]
+
+        result = alembic_on(url, "upgrade head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        columns, catalog = await page_function()
+        assert columns == _PAGE_COLUMNS
+        hardened(catalog)
+
+        result = alembic_on(url, f"downgrade {_PRE_DRIVER_REVISION}")
+        assert result.returncode == 0, result.stderr[-2000:]
+        columns, catalog = await page_function()
+        assert columns == previous_columns
+        hardened(catalog)
+
+        result = alembic_on(url, f"upgrade {_DRIVER_REVISION}")
+        assert result.returncode == 0, result.stderr[-2000:]
+        columns, catalog = await page_function()
+        assert columns == _PAGE_COLUMNS
+        hardened(catalog)

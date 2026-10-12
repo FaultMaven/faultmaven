@@ -631,7 +631,14 @@ class AdminCaseMetadata(BaseModel):
     last_activity_at: datetime
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
+    #: The CREATOR (ADR-020 D1): the account that opened the case.
     user_id: str
+    #: The EFFECTIVE DRIVER (ADR-020 D5): who holds the investigation writes —
+    #: the creator unless the case was handed on; ``None`` only when neither
+    #: account exists any more. An id, never a name: display names are text a
+    #: user typed (ADR-012 D9), and an operator maps an id to a name through
+    #: the ambient ``/admin/users`` list.
+    driver_id: Optional[str] = None
     #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
     #: it, so a client can key its own caches on it.
     enterprise_id: str
@@ -679,6 +686,7 @@ class AdminCaseMetadata(BaseModel):
             resolved_at=summary.resolved_at,
             closed_at=summary.closed_at,
             user_id=summary.user_id,
+            driver_id=summary.driver_id,
             enterprise_id=summary.enterprise_id,
             organization_id=summary.organization_id,
             source=summary.source,
@@ -710,6 +718,7 @@ class AdminCaseMetadata(BaseModel):
             resolved_at=metadata.resolved_at,
             closed_at=metadata.closed_at,
             user_id=metadata.user_id,
+            driver_id=metadata.driver_id,
             enterprise_id=metadata.enterprise_id,
             organization_id=metadata.organization_id,
             source=metadata.source,
