@@ -314,8 +314,8 @@ CREATE TABLE conversion_drafts (
     conversion_id VARCHAR(36) NOT NULL REFERENCES conversion_jobs(id) ON DELETE CASCADE,
     runbook_id VARCHAR(100) NOT NULL,
     title VARCHAR(255) NOT NULL,
-    file_path VARCHAR(500) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'draft',       -- draft, verified, deleted
+    content TEXT NOT NULL,                   -- the draft's full markdown: its one home (#1950)
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',       -- draft, verified, discarded
     source_type VARCHAR(20) NOT NULL DEFAULT 'document', -- mirrors job source_type
     validation_passed BOOLEAN NOT NULL DEFAULT TRUE,
     validation_errors JSON,

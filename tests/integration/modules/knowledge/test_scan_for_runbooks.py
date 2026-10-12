@@ -293,8 +293,9 @@ class TestScanForRunbooks:
     async def test_scan_idempotent_on_second_run(
         self, conversion_service, seeded_session_factory
     ):
-        """Re-running scan over the same directory should skip already-tracked
-        runbooks (drafts deduplicated by file_path) and not error."""
+        """Re-running scan over the same directory should skip already-imported
+        runbooks (deduplicated by the live draft's ``runbook_id``) and not
+        error."""
         first = await conversion_service.scan_for_runbooks(
             user_id=None, enterprise_id=None, is_platform_admin=True
         )
@@ -312,6 +313,66 @@ class TestScanForRunbooks:
             uploads = (await session.execute(select(UploadedFileModel))).scalars().all()
             # Still 2 uploads — the second scan didn't create duplicates.
             assert len(uploads) == 2
+
+    @pytest.mark.asyncio
+    async def test_scan_stores_each_files_text_in_its_draft(
+        self, conversion_service, seeded_session_factory, runbook_dir
+    ):
+        """The import copies the file's text into ``conversion_drafts.content``
+        (#1950): from then on the row, not the file, is the draft."""
+        await conversion_service.scan_for_runbooks(
+            user_id=None, enterprise_id=None, is_platform_admin=True
+        )
+
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            stored = dict(
+                (
+                    await session.execute(
+                        select(
+                            ConversionDraftModel.runbook_id,
+                            ConversionDraftModel.content,
+                        )
+                    )
+                ).all()
+            )
+        assert stored == {
+            "redis-oom": (runbook_dir / "global/database/redis-oom.md").read_text(
+                encoding="utf-8"
+            ),
+            "pg-slow-queries": (
+                runbook_dir / "global/database/pg-slow-queries.md"
+            ).read_text(encoding="utf-8"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_scan_never_discards_a_draft_whose_file_is_gone(
+        self, conversion_service, seeded_session_factory, runbook_dir
+    ):
+        """#1950: a scan used to discard every draft whose file the serving pod
+        could not see — on a two-replica deployment with no shared disk, every
+        draft the other pod wrote. The file decides nothing now: with every
+        file deleted, the drafts and their text are untouched."""
+        await conversion_service.scan_for_runbooks(
+            user_id=None, enterprise_id=None, is_platform_admin=True
+        )
+        for path in runbook_dir.rglob("*.md"):
+            path.unlink()
+
+        result = await conversion_service.scan_for_runbooks(
+            user_id=None, enterprise_id=None, is_platform_admin=True
+        )
+
+        assert result["discovered"] == 0
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            drafts = (
+                (await session.execute(select(ConversionDraftModel))).scalars().all()
+            )
+        assert sorted(d.status for d in drafts) == ["draft", "draft"]
+        assert all(d.content.startswith("---\nid: ") for d in drafts)
 
     @pytest.mark.asyncio
     async def test_scan_with_explicit_enterprise_id(

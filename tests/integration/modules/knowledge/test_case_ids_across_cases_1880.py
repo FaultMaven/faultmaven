@@ -53,7 +53,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.utils.runbook_id import draft_filename
 from tests.runbook_samples import valid_runbook
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
@@ -171,9 +170,8 @@ async def test_two_cases_with_one_produced_title_get_two_drafts(
     assert case_stem_runbook_id(CASE_B[0]) in second.runbook_id
     for draft in (first, second):
         _assert_no_case_title_in(draft.runbook_id)
-        # The file, the forced frontmatter id and the row all use the final id.
+        # The forced frontmatter id and the row both use the final id.
         assert f"\nid: {draft.runbook_id}\n" in draft.content
-        assert draft.file_path.endswith(draft_filename(draft.runbook_id))
     assert await _persisted_ids(session_factory) == [
         first.runbook_id,
         second.runbook_id,
@@ -208,7 +206,6 @@ async def test_a_held_re_minted_id_is_still_refused(session_factory, tmp_path):
             ENTERPRISE_ID,
             mint_case_runbook_id(produced, CASE_B[0]),
             CASE_B[0],
-            lambda rid: tmp_path / draft_filename(rid),
         )
 
 
@@ -225,5 +222,4 @@ async def test_a_held_case_stem_is_refused_not_re_minted(session_factory, tmp_pa
             ENTERPRISE_ID,
             case_stem_runbook_id(CASE_A[0]),
             CASE_A[0],
-            lambda rid: tmp_path / draft_filename(rid),
         )

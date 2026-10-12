@@ -47,7 +47,7 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
-from faultmaven.exceptions import AuthorizationError
+from faultmaven.exceptions import AuthorizationError, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
@@ -332,21 +332,13 @@ async def upload_document(
             raise HTTPException(
                 status_code=400, detail="team_id is required for team scope"
             )
-        # PARSED, not merely validated, and the distinction is the point: the
-        # value carried onward is one this route CONSTRUCTED from a parsed UUID,
-        # so the caller's string never reaches the scope directory
-        # (`team_{team_id}`) that `KnowledgeService.upload_document` builds.
+        # PARSED, not merely validated: the value carried onward is one this
+        # route CONSTRUCTED from a parsed UUID, never the caller's string.
         #
         # Team ids are `str(uuid.uuid4())` in a `String(36)` column, so a
         # non-UUID can never name a real team — 400 is the honest answer, and it
         # is a FORMAT error rather than an existence one, so it is not an
         # enumeration oracle.
-        #
-        # `safe_path_component` already slugs the component and
-        # `resolve_runbook_path` already checks containment; this bounds the
-        # taint at the boundary instead of relying on two sanitisers further
-        # down, which is also what makes the guarantee legible to the
-        # path-injection analysis (#1388 review).
         try:
             team_id = str(uuid.UUID(team_id))
         except (ValueError, AttributeError, TypeError):
@@ -462,8 +454,7 @@ async def upload_document(
             scope=scope.value,
             team_id=team_id,
             # REQUIRED for personal scope, and it was never passed while this
-            # route only wrote global. `owner_id` decides two things: the
-            # on-disk path (`user_<id>/`) and, through
+            # route only wrote global. `owner_id` decides, through
             # `build_kb_scope_filter`, whether the author can see their own
             # item at all — the filter admits a non-global row by
             # `{"owner_id": owner_id}`. Omitted, a personal upload would
@@ -492,6 +483,10 @@ async def upload_document(
         raise HTTPException(
             status_code=422, detail=runbook_quality_detail(quality_error)
         ) from quality_error
+    except ValidationException:
+        # The service's other typed refusal — the draft bound (#1950) — goes to
+        # the global handler's 422, not the blanket 500 below.
+        raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
         # No str(e) in the response — the rule for every 500 in this module

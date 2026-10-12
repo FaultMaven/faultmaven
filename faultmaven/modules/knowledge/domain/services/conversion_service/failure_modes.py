@@ -71,25 +71,25 @@ def _partition_failure_modes(
     2. The minted ``runbook_id`` (#1258). Migration 046 admits one live draft
        per ``(enterprise_id, runbook_id)``, and nothing is committed while a
        multi-mode conversion runs, so two modes minting one id were invisible to
-       both ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken``.
-       They wrote both runbooks to a single file (both ids resolve to one
-       ``draft_filename``) and then failed the commit with a bare
-       ``IntegrityError`` — a 500 that says nothing, after silent data loss.
+       both ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken``,
+       and failed the commit with a bare ``IntegrityError`` — a 500 that says
+       nothing.
        Measured on ``e1cf27371``: ``"Redis OOM"`` and ``"redis oom"`` under
        service ``"redis"`` both mint ``redis-redis-oom``.
 
     Called BEFORE any conversion runs, which is what makes key 2 a fix rather
     than a nicer error: ``runbook_id_from_parts`` is a pure function of
     ``(service, title)``, so the whole batch is knowable up front and a losing
-    mode never spends an LLM call or touches the filesystem. It also cannot race
+    mode never spends an LLM call. It also cannot race
     — the parallel branch dispatches with ``asyncio.gather``, so a check made
     inside the per-mode coroutine would be concurrent readers of one
     unsynchronised set.
 
     **Key 2 refuses rather than disambiguating.** Minting a distinct id for the
     second mode — the way the empty-slug branch appends a hash — cannot be made
-    deterministic, and determinism is not optional (the disk scan reconciles a
-    file to its row by this id). A disambiguator must be a function of something
+    deterministic, and determinism is not optional (re-converting a source must
+    arrive at the id its live draft holds). A disambiguator must be a function
+    of something
     that DIFFERS between the two modes; but "collide" means their
     ``(service, title)`` are identical after normalisation, and every other
     field on a ``FailureModeAnalysis`` is LLM output for this one analysis pass,
@@ -113,13 +113,8 @@ def _partition_failure_modes(
     mint itself is deliberately untouched: it is a PERSISTED id, and re-minting
     it would orphan rows that already exist — the boundary #1230 and #1243 drew.
 
-    Keying on the id ALONE is safe because ``draft_filename`` is injective over
-    the ids this mint produces: they match ``^[a-z0-9]+(-[a-z0-9]+)*$`` and are
-    bounded by ``_MAX_RUNBOOK_ID_CHARS``, which is ``<= _MAX_SLUG_CHARS``, so
-    ``draft_filename`` neither re-slugs nor truncates them. That is a property
-    of two constants that are deliberately SEPARATE, so it is pinned by a test
-    rather than trusted; a second index over filenames here would be dead code
-    whose failure mode is looking like coverage.
+    Keying on the id ALONE is complete: a draft's text is a column of its own
+    row (#1950), so the id is the only slot a draft occupies.
     """
     survivors: List[FailureModeAnalysis] = []
     errors: List[ConversionError] = []

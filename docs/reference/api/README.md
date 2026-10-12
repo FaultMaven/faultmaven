@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.0.0
+**Version:** 14.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -3285,14 +3285,19 @@ Create a runbook manually from template fields. Returns a draft for review.
 
 **Scan For Runbooks**
 
-Scan data/knowledge/ for .md files not tracked in the database.
+Import the .md files under data/knowledge/ as drafts (standalone only).
 
-Discovers runbooks created by the KB Toolkit or placed on disk manually.
-Creates draft records so they appear in the Drafts tab for review.
+Each file that is not already a live draft or a published runbook becomes a
+draft holding the file's text, so it appears in the Drafts tab for review.
+The import never changes an existing draft (#1950).
+
+Under ``TENANT_PROVIDER=multi`` the API has no runbook directory — its
+replicas share no disk — so the service refuses with a
+``ValidationException``, which the global handler answers as 422.
 
 Global-scope files (the platform corpus) are minted into drafts only for a
-platform operator — an admin in single-tenant, and never a tenant session
-under multi (#770). Non-global (personal/team) discovery is unaffected.
+platform operator (#770). Non-global (personal/team) discovery is
+unaffected.
 
 **Tags:** `knowledge-conversion`
 

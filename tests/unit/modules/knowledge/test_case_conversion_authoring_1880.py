@@ -28,7 +28,6 @@ Pinned here, with the knowledge model stubbed (no live LLM call):
    alike.
 """
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,7 +52,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.utils.runbook_id import draft_filename
 from tests.runbook_samples import valid_runbook
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -198,10 +196,8 @@ async def test_the_id_and_title_come_from_the_produced_frontmatter(tmp_path):
     for leaked in LEAKS:
         assert leaked not in draft.runbook_id, draft.runbook_id
         assert leaked not in draft.title.lower(), draft.title
-    # The frontmatter, the file and the row agree on the one id.
+    # The frontmatter and the row agree on the one id.
     assert f"\nid: {draft.runbook_id}\n" in draft.content
-    assert Path(draft.file_path).name == draft_filename(draft.runbook_id)
-    assert Path(draft.file_path).read_text(encoding="utf-8") == draft.content
 
 
 async def test_the_case_failure_mode_carries_no_service(tmp_path):

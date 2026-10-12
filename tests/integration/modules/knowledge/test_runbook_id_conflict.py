@@ -19,8 +19,8 @@ Four claims:
    refused rather than silently persisted (the #1230 defect).
 2. It is refused as a ``ConflictError`` (409) naming the id, not as a bare
    ``IntegrityError`` (500).
-3. The scan DEGRADES: one unmintable file is skipped with an error entry, and
-   the walk over the rest completes.
+3. The scan DEGRADES: a file whose id a live draft already holds is skipped,
+   and the walk over the rest completes.
 4. And the case the index CANNOT see — two drafts in ONE job, where nothing is
    committed yet — is refused before either is written, as the losing failure
    mode's own error rather than as that bare ``IntegrityError`` (#1258).
@@ -61,7 +61,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.utils.runbook_id import RunbookPathEscape
 
 pytestmark = pytest.mark.integration
 
@@ -185,23 +184,19 @@ class TestTheIndexBitesThroughTheService:
 
         assert await _live_draft_count(session_factory, runbook_id) == 1
 
-    async def test_the_refused_create_does_not_clobber_the_existing_file(
-        self, service, tmp_path
+    async def test_the_refused_create_leaves_the_existing_draft_alone(
+        self, service, session_factory
     ):
-        """A 409 must mean nothing happened.
-
-        The draft file is named after ``runbook_id``, so the second create
-        resolves to the SAME path. Writing first and rejecting at the INSERT
-        would leave the first draft's row pointing at the second author's
-        content — a worse state than the duplicate rows this index removes.
-        """
+        """A 409 must mean nothing happened: the holder's text is unchanged."""
         first = await service.create_runbook_from_template(
             title="Connection Pool Exhausted",
             service_name="checkout-api",
             **TEMPLATE_ARGS,
         )
-        path = Path(first["draft"].file_path)
-        before = path.read_text(encoding="utf-8")
+        async with session_factory() as session:
+            before = (
+                await session.get(ConversionDraftModel, first["draft"].draft_id)
+            ).content
         assert "Connection Pool Exhausted" in before
 
         with pytest.raises(ConflictError):
@@ -211,8 +206,12 @@ class TestTheIndexBitesThroughTheService:
                 **{**TEMPLATE_ARGS, "prevention": "A DIFFERENT PREVENTION SECTION"},
             )
 
-        assert path.read_text(encoding="utf-8") == before
-        assert "A DIFFERENT PREVENTION SECTION" not in path.read_text(encoding="utf-8")
+        async with session_factory() as session:
+            after = (
+                await session.get(ConversionDraftModel, first["draft"].draft_id)
+            ).content
+        assert after == before
+        assert "A DIFFERENT PREVENTION SECTION" not in after
 
     async def test_a_punctuation_only_title_no_longer_collides_at_all(
         self, service, session_factory
@@ -266,11 +265,11 @@ class TestTheIndexBitesThroughTheService:
 
 
 class TestTheScanDegradesRatherThanAborting:
-    """One file the index will not take must not kill the whole walk.
+    """One file whose id is already a live draft must not kill the whole walk.
 
-    The scan already skips a path it cannot contain; a taken id is the same
-    class of problem and gets the same treatment, because a scan that aborts
-    on file 3 of 90 leaves the operator with no inventory and no filename.
+    The scan skips it, as it skips a path it cannot contain, because a scan that
+    aborts on file 3 of 90 leaves the operator with no inventory. It is already
+    a draft, so it is SKIPPED, not an error (#1950).
     """
 
     @staticmethod
@@ -320,30 +319,26 @@ redis-cli INFO memory | grep used_memory_human
 
         minted = {d["runbook_id"] for d in result["drafts"]}
         assert "redis-oom" in minted
-        # The walk continued past the refusal — this is the whole claim.
+        # The walk continued past the duplicate — this is the whole claim.
         assert "redis-slow" in minted, result
         assert result["discovered"] == 2, result
-        assert any("already held" in e for e in result["errors"]), result["errors"]
+        assert result["skipped"] == 1, result
+        assert result["errors"] == [], result["errors"]
         assert await _live_draft_count(session_factory, "redis-oom") == 1
 
 
 class TestTheGuardCoversEveryNewDraftWritePath:
-    """The clobber fix reached one write site; the review found the others.
+    """``refuse_if_draft_slot_taken`` (or, on the case path, its sibling
+    ``claim_case_draft_slot``) is the single guard, and every method that mints
+    a NEW draft must ask it."""
 
-    ``refuse_if_draft_slot_taken`` is the single guard, and these test it
-    through the paths rather than by calling it — a guard wired into only one
-    of two callers passes a direct-call test and fails a user.
-    """
-
-    async def test_the_guard_is_reached_before_every_new_draft_write(self):
-        """Structural: every ``write_runbook_file`` on a NEW draft has the
-        guard above it in the same function.
+    async def test_the_guard_is_reached_by_every_new_draft_mint(self):
+        """Structural: every method of the service that mints a new draft id
+        (``generate_draft_id()``) also asks the slot guard.
 
         Source-level on purpose. Driving the LLM path end to end needs a
         scripted provider and the whole analysis pipeline; what actually
-        regressed was a missing CALL, and that is what this sees. ``update_draft``
-        is exempt and named, so adding a third write site fails here until
-        someone decides which kind it is.
+        regressed was a missing CALL, and that is what this sees.
         """
         import inspect
 
@@ -362,65 +357,26 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             elif current is not None:
                 methods[current].append(line)
 
-        writers = {
+        minters = {
             name: "\n".join(body)
             for name, body in methods.items()
-            if "write_runbook_file(" in "\n".join(body)
+            if "generate_draft_id(" in "\n".join(body)
         }
-        assert writers, "no runbook write site found — this test has gone blind"
+        assert minters, "no draft mint site found — this test has gone blind"
+        assert {"_convert_single_failure_mode", "create_runbook_from_template"} <= set(
+            minters
+        ), sorted(minters)
 
-        # ``update_draft`` rewrites the file its OWN row already owns, so the
-        # row it would conflict with is itself.
-        exempt = {"update_draft"}
         unguarded = [
             name
-            for name, body in writers.items()
-            if name not in exempt and "refuse_if_draft_slot_taken(" not in body
+            for name, body in minters.items()
+            if "refuse_if_draft_slot_taken(" not in body
+            and "claim_case_draft_slot(" not in body
         ]
         assert not unguarded, (
-            f"these write a NEW draft file without checking the slot first: "
-            f"{unguarded}. Either call refuse_if_draft_slot_taken before the "
-            f"write, or add the method to `exempt` with the reason."
+            f"these mint a NEW draft without checking the slot first: "
+            f"{unguarded}. Call refuse_if_draft_slot_taken before building it."
         )
-        # And the exemption is not vacuous.
-        assert exempt <= set(writers), (exempt, sorted(writers))
-
-    async def test_the_guard_keys_on_the_PATH_not_only_the_id(
-        self, service, session_factory
-    ):
-        """``draft_filename`` collapses a hyphen run, so a legacy row holding
-        ``foo--bar`` owns ``foo-bar.md`` — the file a fresh ``foo-bar`` mint
-        resolves to. An id-only lookup misses it and the write clobbers.
-
-        Measured as 0 rows on the dev database, so this is a guard against a
-        state that was not reproduced in the wild; it is cheap and the failure
-        it prevents is silent data loss.
-        """
-        first = await service.create_runbook_from_template(
-            title="Connection Pool Exhausted",
-            service_name="checkout-api",
-            **TEMPLATE_ARGS,
-        )
-        # Rewrite the row's id to the double-hyphen form a pre-#1243 mint could
-        # have produced. Its file_path is unchanged, and that is the point.
-        legacy_id = first["draft"].runbook_id.replace("-connection-", "--connection-")
-        assert legacy_id != first["draft"].runbook_id
-        async with session_factory() as session:
-            row = await session.get(ConversionDraftModel, first["draft"].draft_id)
-            row.runbook_id = legacy_id
-            await session.commit()
-
-        path = Path(first["draft"].file_path)
-        before = path.read_text(encoding="utf-8")
-
-        with pytest.raises(ConflictError):
-            await service.create_runbook_from_template(
-                title="Connection Pool Exhausted",
-                service_name="checkout-api",
-                **{**TEMPLATE_ARGS, "prevention": "SECOND AUTHOR CONTENT"},
-            )
-        assert path.read_text(encoding="utf-8") == before
-        assert "SECOND AUTHOR CONTENT" not in before
 
     async def test_an_empty_runbook_id_still_classifies(self, service, session_factory):
         """The falsy filter dropped ``''`` from the lookup, so a collision on
@@ -463,7 +419,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
                     conversion_id="conv_legacy",
                     runbook_id="",
                     title="Legacy",
-                    file_path="data/knowledge/global/legacy.md",
+                    content="---\nid: legacy\n---\n",
                     status="draft",
                     source_type="document",
                 )
@@ -541,8 +497,8 @@ class TestTwoDraftsInOneJobCannotMintOneId:
     ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken`` both work
     by reading COMMITTED rows. A multi-failure-mode conversion commits nothing
     until ``_persist_job``, so two modes whose ``(service, title)`` slug
-    identically were invisible to both: they wrote both runbooks to one file and
-    then failed the commit with a bare ``IntegrityError`` — a 500, on a document
+    identically were invisible to both: they failed the commit with a bare
+    ``IntegrityError`` — a 500, on a document
     the user has every reason to expect a partial result from.
 
     Everything here runs against the real engine and the real 046 index, so the
@@ -610,7 +566,7 @@ Alert on the used_memory to maxmemory ratio.
         Only the two LLM calls are stubbed — preprocessing (which needs a real
         file parser) and analysis (which needs a model that emits failure-mode
         JSON). Everything the defect lives in — the batch walk, the per-mode
-        conversion, the disk write, and the single ``_persist_job`` commit — is
+        conversion, and the single ``_persist_job`` commit — is
         the production path.
         """
         modes = [
@@ -675,22 +631,28 @@ Alert on the used_memory to maxmemory ratio.
         assert "Redis OOM" in warning and "redis oom" in warning, warning
         assert "redis-redis-oom" in warning, warning
 
-    async def test_the_loser_never_writes_over_the_winners_file(
-        self, service, tmp_path
+    async def test_exactly_one_draft_row_holds_the_id_and_its_text(
+        self, service, session_factory, tmp_path
     ):
-        """The half that is worse than the 500 and invisible without this.
-
-        Both ids resolve to one ``draft_filename``, so pre-fix the second mode's
-        content replaced the first mode's on disk BEFORE the commit failed. The
-        refusal happens before any conversion runs, so exactly one file exists
-        and it belongs to the surviving draft.
-        """
+        """The refusal happens before any conversion runs, so exactly one row
+        holds the id, and it holds the surviving draft's text."""
         response = await self._convert(service, tmp_path, ["Redis OOM", "redis oom"])
 
-        scope_dir = tmp_path / "data/knowledge/global"
-        written = sorted(p.name for p in scope_dir.glob("*.md"))
-        assert written == ["redis-redis-oom.md"], written
-        assert Path(response.drafts[0].file_path).read_text(encoding="utf-8")
+        async with session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ConversionDraftModel).where(
+                            ConversionDraftModel.runbook_id == "redis-redis-oom"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [r.id for r in rows] == [response.drafts[0].draft_id]
+        assert rows[0].content == response.drafts[0].content
+        assert "id: redis-redis-oom" in rows[0].content
 
     async def test_the_non_colliding_modes_in_the_same_job_still_yield(
         self, service, session_factory, tmp_path
@@ -866,85 +828,3 @@ class TestATakenIdCostsNoGeneration:
         assert [e.failure_mode_id for e in errors] == ["fm-taken"]
         # Exactly one generation: the free mode's. The taken one cost nothing.
         assert route.await_count == 1, route.await_count
-
-
-class TestAPathEscapeIsNeverLaunderedIntoAResponse:
-    """``RunbookPathEscape`` carries RESOLVED SERVER PATHS in its message.
-
-    ``_convert_single_failure_mode`` re-raises it bare, deliberately, so it can
-    never become a ``ConversionError`` — whose ``error`` string
-    ``convert_document`` appends to ``response.warnings``, i.e. a 201 body
-    (#866). The parallel branch dispatches with
-    ``asyncio.gather(return_exceptions=True)``, which turns that re-raise into a
-    RETURNED value, so the escape was being caught by the generic
-    ``isinstance(result, Exception)`` arm and laundered into exactly the channel
-    the re-raise exists to avoid. The sequential branch propagated it. Identical
-    events behaved differently purely on how many failure modes the document had.
-    """
-
-    @staticmethod
-    def _escaping_mode(fm_id, title, symptom_class):
-        return FailureModeAnalysis(
-            id=fm_id,
-            title=title,
-            domain="platform",
-            service="redis",
-            symptom_class=[symptom_class],
-            severity="high",
-            symptoms_summary="x",
-            resolution_summary="y",
-        )
-
-    async def _run(self, service, n_modes):
-        modes = [
-            self._escaping_mode(f"fm-{i}", f"Redis Failure {i}", c)
-            for i, c in enumerate(
-                ["saturation", "latency", "errors", "other", "x", "y"][:n_modes]
-            )
-        ]
-        service._llm_router.route = AsyncMock(
-            return_value=SimpleNamespace(
-                content=TestTwoDraftsInOneJobCannotMintOneId.RUNBOOK,
-                is_truncated=False,
-            )
-        )
-        with patch(
-            "faultmaven.modules.knowledge.domain.services.conversion_service.service.refuse_if_draft_slot_taken",
-            AsyncMock(
-                side_effect=RunbookPathEscape(
-                    "/srv/secret/etc/passwd is outside /srv/kb"
-                )
-            ),
-        ):
-            return await service._convert_all_failure_modes(
-                text="source text",
-                failure_modes=modes,
-                scope="global",
-                filename="doc.md",
-                conversion_id=f"conv_esc_{n_modes}",
-                user_id="user_x",
-                enterprise_id=ENTERPRISE_ID,
-                team_id=None,
-            )
-
-    async def test_the_parallel_branch_propagates_instead_of_warning(self, service):
-        """2 modes -> parallel branch (below PARALLEL_THRESHOLD)."""
-        with pytest.raises(RunbookPathEscape):
-            await self._run(service, 2)
-
-    async def test_the_sequential_branch_propagates_too(self, service):
-        """6 modes -> sequential branch. The two branches must agree."""
-        with pytest.raises(RunbookPathEscape):
-            await self._run(service, 6)
-
-    async def test_the_resolved_path_never_reaches_a_conversion_error(self, service):
-        """The property that actually matters, stated over the message text."""
-        for n in (2, 6):
-            try:
-                drafts, errors = await self._run(service, n)
-            except RunbookPathEscape:
-                continue
-            raise AssertionError(
-                f"{n} modes: escape was swallowed into "
-                f"{[e.error for e in errors]} instead of propagating"
-            )

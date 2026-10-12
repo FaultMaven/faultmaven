@@ -146,9 +146,9 @@ class TestTheEmptySlugBranch:
         )
 
     def test_the_mint_is_deterministic(self):
-        """Not incidental — the disk scan reconciles a file to its row BY this
-        id, so a random fallback (which is what ``draft_filename`` correctly
-        uses for a FILENAME) would manufacture a phantom draft on every scan."""
+        """Not incidental — re-converting a source must arrive at the id its
+        live draft holds, so a random fallback would mint a second draft of
+        one source every time."""
         for service, title in self.DEGENERATE:
             first = runbook_id_from_parts(service, title)
             assert all(
@@ -367,14 +367,14 @@ class TestWhatTheMintDeliberatelyDoesNotDo:
         """Not a leftover defect — the documented boundary.
 
         The mint is a pure function of ``(service, title)`` and MUST stay
-        deterministic (the disk scan reconciles a file to its row by this id),
-        so it cannot see the other rows and cannot make these distinct.
+        deterministic (re-converting a source must arrive at its live draft's
+        id), so it cannot see the other rows and cannot make these distinct.
         Uniqueness is enforced where the other rows ARE visible: the partial
         unique index on ``(organization_id, runbook_id)`` from migration 046,
         exercised in ``tests/integration/test_alembic_migrations.py``.
 
         If someone later makes the mint globally unique, this test fails and
-        they are made to notice that they have also broken scan reconciliation.
+        they are made to notice that they have also broken that refusal.
         """
         assert runbook_id_from_parts("svc", "Foo Bar") == runbook_id_from_parts(
             "svc", "foo-bar"

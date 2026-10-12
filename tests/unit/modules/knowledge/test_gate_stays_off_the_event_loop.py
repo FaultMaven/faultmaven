@@ -537,17 +537,18 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
         "idle-in-transaction for the gate's whole runtime"
     )
 
-    # The gate must also precede the WRITE, and nothing may await between the
-    # write and the commit. The gate's ``await`` is a cancellation point that
-    # main did not have — there the write, gate and commit were one synchronous
-    # stretch. With the write first, a disconnect or timeout during the gate
-    # leaves the file rewritten and the row carrying the PREVIOUS verdict,
-    # permanently: a reviewer reads a green verdict about text the gate never
-    # saw. Gating first makes a cancellation change nothing.
+    # The gate must also precede the text's WRITE — the conditional ``UPDATE``
+    # whose ``.values(content=…)`` stores it (#1950) — and nothing may await
+    # between that write and the commit. The gate's ``await`` is a cancellation point; with the write
+    # first, a disconnect or timeout during the gate could commit the new text
+    # under the PREVIOUS verdict: a reviewer reads a green verdict about text
+    # the gate never saw. Gating first makes a cancellation change nothing.
     writes = [
         n.lineno
         for n in ast.walk(target)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "write_runbook_file"
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", "") == "values"
+        and any(k.arg == "content" for k in n.keywords)
     ]
     commits = [
         n.lineno
@@ -558,9 +559,9 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
     ]
     assert writes and commits, "update_draft no longer writes or commits"
     assert line < min(writes), (
-        f"the gate runs at line {line}, AFTER the disk write at {min(writes)} — "
-        "a cancellation at the gate would leave the file rewritten with a stale "
-        "verdict on the row"
+        f"the gate runs at line {line}, AFTER the text is written at "
+        f"{min(writes)} — a cancellation at the gate could leave the new text "
+        "with a stale verdict on the row"
     )
     stranded = [
         n.lineno
@@ -569,6 +570,6 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
     ]
     assert not stranded, (
         f"await(s) at {stranded} sit between the write ({min(writes)}) and the "
-        f"commit ({max(commits)}) — each is a cancellation point that can strand "
-        "the file ahead of the row"
+        f"commit ({max(commits)}) — each is a cancellation point between the "
+        "text and its verdict"
     )

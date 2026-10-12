@@ -355,7 +355,8 @@ class TestConvertDocumentPipeline:
                 _make_llm_response(mock_runbook_content),
             ]
 
-            # Patch _data_dir to use tmp_path so files write there
+            # The runbook directory is tmp_path, so a draft file written
+            # anywhere under it would show below: none may be (#1950).
             with patch.object(
                 type(service),
                 "_data_dir",
@@ -378,6 +379,9 @@ class TestConvertDocumentPipeline:
         assert len(result.analysis.failure_modes) == 1
         assert result.drafts[0].title == "PostgreSQL Replication Lag"
         assert result.conversion_id.startswith("conv_")
+        # The draft's text travels in the draft, and no file holds it.
+        assert result.drafts[0].content.startswith("---")
+        assert sorted(p.name for p in tmp_path.rglob("*.md")) == [source_file.name]
 
     @pytest.mark.asyncio
     async def test_convert_document_llm_called_twice(
@@ -1214,145 +1218,6 @@ class TestSourceFileRetention:
 
 
 # =============================================================================
-# Test: Scan bulk-discard guard
-# =============================================================================
-
-
-@pytest.mark.unit
-class TestScanBulkDiscardGuard:
-    """scan_for_runbooks must abort when it would discard every active draft."""
-
-    def _make_draft_model(
-        self, draft_id: str, file_path: str, status: str = "verified"
-    ):
-        dm = MagicMock()
-        dm.id = draft_id
-        dm.file_path = file_path
-        dm.status = status
-        dm.knowledge_item_id = f"kb_{draft_id}"
-        return dm
-
-    def _make_db_session(self, draft_models):
-        """Return an async context manager that yields a session with the given drafts."""
-        session = AsyncMock()
-        result = MagicMock()
-        result.scalars.return_value.all.return_value = draft_models
-        session.execute = AsyncMock(return_value=result)
-
-        class _CM:
-            async def __aenter__(self_):
-                return session
-
-            async def __aexit__(self_, *args):
-                pass
-
-        return _CM
-
-    @pytest.mark.asyncio
-    async def test_raises_when_all_files_missing(self, tmp_path):
-        """If every active draft file is absent, scan must raise RuntimeError."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
-            ConversionService,
-        )
-
-        # Three drafts whose files do not exist. The paths are INSIDE the
-        # knowledge root (``tmp_path``, patched below) and simply missing —
-        # a wiped data directory, which is the failure this guard exists for.
-        # They were ``/nonexistent/*.md``, outside the root, which since the
-        # containment work means "not this service's file" and is SKIPPED
-        # rather than discarded, so the guard could never fire (#1213
-        # follow-up).
-        drafts = [
-            self._make_draft_model("d1", str(tmp_path / "a.md")),
-            self._make_draft_model("d2", str(tmp_path / "b.md")),
-            self._make_draft_model("d3", str(tmp_path / "c.md")),
-        ]
-        db_cm = self._make_db_session(drafts)
-
-        svc = ConversionService(
-            llm_router=AsyncMock(),
-            settings=MagicMock(),
-            db_session_factory=db_cm,
-            knowledge_service=None,
-        )
-        # Point data_dir to tmp_path so the directory-walk doesn't fail
-        with patch.object(
-            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
-        ):
-            with pytest.raises(RuntimeError, match="Scan aborted"):
-                await svc.scan_for_runbooks(user_id="u1")
-
-    @pytest.mark.asyncio
-    async def test_allows_partial_discard_when_some_files_survive(self, tmp_path):
-        """If at least one file exists, scan should proceed normally."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
-            ConversionService,
-        )
-
-        surviving = tmp_path / "good.md"
-        surviving.write_text(
-            "---\ntitle: Good Runbook\nstatus: verified\n---\n\n" + "x" * 200,
-            encoding="utf-8",
-        )
-
-        drafts = [
-            # Inside the root, missing — see test_raises_when_all_files_missing.
-            self._make_draft_model("d1", str(tmp_path / "a.md")),
-            self._make_draft_model("d2", str(surviving), status="verified"),
-        ]
-        # d2 has knowledge_item_id set AND status=verified → kept (tracked)
-        drafts[1].knowledge_item_id = "kb_abc"
-
-        db_cm = self._make_db_session(drafts)
-
-        svc = ConversionService(
-            llm_router=AsyncMock(),
-            settings=MagicMock(),
-            db_session_factory=db_cm,
-            knowledge_service=None,
-        )
-        with patch.object(
-            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
-        ):
-            # Should not raise; surviving file prevents the guard from firing
-            result = await svc.scan_for_runbooks(user_id="u1")
-        assert isinstance(result, dict)
-
-    @pytest.mark.asyncio
-    async def test_already_discarded_drafts_not_counted(self, tmp_path):
-        """Pre-discarded rows don't count toward the guard threshold."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
-            ConversionService,
-        )
-
-        already_gone = self._make_draft_model(
-            "d_old", str(tmp_path / "old.md"), status="discarded"
-        )
-        surviving = tmp_path / "live.md"
-        surviving.write_text(
-            "---\ntitle: Live Runbook\nstatus: verified\n---\n\n" + "x" * 200,
-            encoding="utf-8",
-        )
-        live = self._make_draft_model("d_live", str(surviving), status="verified")
-        live.knowledge_item_id = "kb_live"
-
-        drafts = [already_gone, live]
-        db_cm = self._make_db_session(drafts)
-
-        svc = ConversionService(
-            llm_router=AsyncMock(),
-            settings=MagicMock(),
-            db_session_factory=db_cm,
-            knowledge_service=None,
-        )
-        with patch.object(
-            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
-        ):
-            result = await svc.scan_for_runbooks(user_id="u1")
-        assert isinstance(result, dict)
-
-
-# =============================================================================
 # Case Conversion Dedup
 # =============================================================================
 
@@ -1703,11 +1568,9 @@ def _make_case_draft(
     *,
     draft_id: str | None = None,
     status: DraftStatus = DraftStatus.DRAFT,
-    tmp_path: Path | None = None,
 ) -> ConversionDraft:
     """A minimal case-source ``ConversionDraft`` for the persistence paths."""
     did = draft_id or generate_draft_id()
-    file_path = str(tmp_path / f"{did}.md") if tmp_path else f"/nonexistent/{did}.md"
     return ConversionDraft(
         draft_id=did,
         runbook_id=f"rb-{did}",
@@ -1724,8 +1587,8 @@ def _make_case_draft(
             actionability=80.0,
             comprehensiveness=80.0,
         ),
-        file_path=file_path,
         content_preview="preview",
+        content=f"---\nid: rb-{did}\n---\n\n# Case Runbook\n",
     )
 
 
@@ -1783,14 +1646,11 @@ async def _insert_case_job(
     live_case_id: str | None,
     draft_statuses: list[DraftStatus],
     status: ConversionStatus = ConversionStatus.COMPLETED,
-    draft_files_present: list[bool] | None = None,
-    tmp_path: Path | None = None,
 ) -> None:
     """Insert a conversion job + its drafts directly, bypassing the service, so
     tests can construct shapes the service does not produce today (e.g. a job
-    with two live drafts). ``draft_files_present[i]`` writes a real file under
-    ``tmp_path`` for draft i (the scan reconciliation keys on file existence);
-    default is a nonexistent path for every draft."""
+    with two live drafts). Every draft carries a ``knowledge_item_id``, so a
+    scan discards each one still in DRAFT status (its duplicate branch)."""
     async with session_factory() as session:
         file_id = f"file_{conversion_id}"
         session.add(
@@ -1823,21 +1683,7 @@ async def _insert_case_job(
             )
         )
         for i, ds in enumerate(draft_statuses):
-            present = bool(draft_files_present and draft_files_present[i])
-            # The path is built under ``tmp_path`` whether or not the file is
-            # written: "the file is gone" must be a MISSING path inside the
-            # knowledge root, which is the only shape production produces (every
-            # persisted path is relative under ``data/knowledge``). Expressing it
-            # as ``/nonexistent/...`` — outside the root — means something else
-            # entirely now that the scan skips what it refuses to touch, and the
-            # draft would never be reconciled away (#1213 follow-up).
-            d = _make_case_draft(
-                draft_id=f"{conversion_id}-d{i}",
-                status=ds,
-                tmp_path=tmp_path,
-            )
-            if present:
-                Path(d.file_path).write_text("# runbook body", encoding="utf-8")
+            d = _make_case_draft(draft_id=f"{conversion_id}-d{i}", status=ds)
             session.add(
                 ConversionDraftModel(
                     id=d.draft_id,
@@ -1845,7 +1691,7 @@ async def _insert_case_job(
                     conversion_id=conversion_id,
                     runbook_id=d.runbook_id,
                     title=d.title,
-                    file_path=d.file_path,
+                    content=d.content,
                     status=d.status.value,
                     source_type=source_type,
                     knowledge_item_id=f"kb_{d.draft_id}",
@@ -2126,11 +1972,9 @@ class TestRegenerationAfterDiscard:
 
 
 def _isolated_kb(tmp_path: Path) -> Path:
-    """A knowledge root holding ONLY what the test puts in it.
-
-    The scan walks its root, so a root shared with the rest of ``tmp_path``
-    makes what the walk sees depend on unrelated fixtures.
-    """
+    """A runbook directory holding ONLY what the test puts in it — here,
+    nothing: these tests are about the database clean-up, so the walk must
+    find no file to import."""
     kb = tmp_path / "kb"
     kb.mkdir(exist_ok=True)
     return kb
@@ -2138,31 +1982,16 @@ def _isolated_kb(tmp_path: Path) -> Path:
 
 @pytest.mark.unit
 class TestScanReleasesLiveCaseKey:
-    """Scan reconciliation also discards drafts (missing file, duplicate with a
-    knowledge_item_id); when that drains a case job's live drafts it must
-    release ``live_case_id`` like the explicit discard paths, or the case is
-    locked out of regeneration forever."""
+    """The scan's database clean-up discards redundant drafts (a DRAFT that
+    already has a ``knowledge_item_id``); when that drains a case job's live
+    drafts it must release ``live_case_id`` like the explicit discard paths, or
+    the case is locked out of regeneration forever. What is on disk decides
+    nothing (#1950)."""
 
     def _scan_service(self, session_factory) -> ConversionService:
         return _make_live_case_service(session_factory)
 
     async def _run_scan(self, svc: ConversionService, kb_dir: Path):
-        # Point the knowledge root at the DEDICATED directory the surviving
-        # draft files were written into (``_isolated_kb``), not at the bare
-        # ``tmp_path``.
-        #
-        # It was ``tmp_path / "kb-empty"`` — deliberately empty, so the disk
-        # walk found nothing and these tests exercised only the DB
-        # reconciliation sweep. The containment check added in #1213's
-        # follow-up forced the surviving files to live under the root the
-        # service actually uses, and pointing the root at ``tmp_path`` itself
-        # met that at the cost of the isolation: the walk then saw every file
-        # any part of the test had written. "All tracked" was not true of them
-        # — a duplicate-discarded draft's file is untracked, and only the
-        # 100-character minimum length kept the walk from minting it.
-        #
-        # A dedicated subdirectory restores both properties at once: the
-        # surviving files are inside the root, and nothing else is.
         with patch.object(
             type(svc),
             "_data_dir",
@@ -2174,7 +2003,7 @@ class TestScanReleasesLiveCaseKey:
     async def test_scan_discard_of_last_live_draft_clears_key(
         self, live_case_session_factory, tmp_path
     ):
-        # Job A: case job holding the key, its only draft's file is gone.
+        # Job A: case job holding the key; its only draft is redundant.
         await _insert_case_job(
             live_case_session_factory,
             conversion_id="conv-scan-a",
@@ -2182,13 +2011,8 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-1",
             draft_statuses=[DraftStatus.DRAFT],
-            # Inside the knowledge root, file NOT written: the reconciliation
-            # shape this test is about is "tracked runbook whose file is gone".
-            draft_files_present=[False],
-            tmp_path=_isolated_kb(tmp_path),
         )
-        # Job B: an unaffected case job (verified draft, file present) so the
-        # scan's discard-all abort guard does not trip.
+        # Job B: an unaffected case job (verified draft).
         await _insert_case_job(
             live_case_session_factory,
             conversion_id="conv-scan-b",
@@ -2196,8 +2020,6 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-2",
             draft_statuses=[DraftStatus.VERIFIED],
-            draft_files_present=[True],
-            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
@@ -2212,7 +2034,7 @@ class TestScanReleasesLiveCaseKey:
     async def test_scan_keeps_key_while_another_draft_live(
         self, live_case_session_factory, tmp_path
     ):
-        # One draft's file is gone, but a verified sibling survives the scan —
+        # One draft is redundant, but a verified sibling survives the scan —
         # the job still holds a live draft, so the key stays.
         await _insert_case_job(
             live_case_session_factory,
@@ -2221,8 +2043,6 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-3",
             draft_statuses=[DraftStatus.DRAFT, DraftStatus.VERIFIED],
-            draft_files_present=[False, True],
-            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
@@ -2232,13 +2052,11 @@ class TestScanReleasesLiveCaseKey:
         assert job.live_case_id == "case-scan-3"
 
     @pytest.mark.asyncio
-    async def test_scan_draining_job_via_two_branches_clears_key(
+    async def test_scan_draining_job_in_one_sweep_clears_key(
         self, live_case_session_factory, tmp_path
     ):
-        # Both of the job's drafts fall in ONE sweep, via different scan
-        # branches: d0 by missing file, d1 (status=draft with a
-        # knowledge_item_id, file present) by the duplicate-cleanup branch.
-        # The release must see both in-session status flips.
+        # Both of the job's drafts fall in ONE sweep. The release must see
+        # both in-session status flips.
         await _insert_case_job(
             live_case_session_factory,
             conversion_id="conv-scan-drain",
@@ -2246,8 +2064,6 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-4",
             draft_statuses=[DraftStatus.DRAFT, DraftStatus.DRAFT],
-            draft_files_present=[False, True],
-            tmp_path=_isolated_kb(tmp_path),
         )
         await _insert_case_job(
             live_case_session_factory,
@@ -2256,8 +2072,6 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-5",
             draft_statuses=[DraftStatus.VERIFIED],
-            draft_files_present=[True],
-            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
@@ -2697,7 +2511,7 @@ class TestPersistJobOrgStamp:
                     missing_information=[],
                 ),
             ),
-            drafts=[_make_case_draft(draft_id="draft_org1143", tmp_path=tmp_path)],
+            drafts=[_make_case_draft(draft_id="draft_org1143")],
             created_at=datetime.now(UTC),
             source_type="case",
             case_id="case_1765256eccdd",

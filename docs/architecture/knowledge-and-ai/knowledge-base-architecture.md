@@ -135,8 +135,8 @@ data/
 **Design decisions:**
 
 - **Flat by scope.** Each scope folder (`global/`, `team_{id}/`, `user_{id}/`) contains runbook files directly — no subdirectories by domain. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
-- **Source files are retained.** Vectors are derived artifacts. If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the source files are re-ingested. Without source files, vectors cannot be regenerated.
-- **Scope determines the folder, not the ingestion path.** Whether a runbook was created by the KB Toolkit, the Dashboard upload, or the document-to-runbook conversion feature, it ends up in the same `data/knowledge/{scope}/` directory.
+- **Sources are retained.** Vectors are derived artifacts. If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the sources are re-ingested: the KB pack for built-ins, `knowledge_items.content` for published runbooks. Without them, vectors cannot be regenerated.
+- **Authored text lives in the database, not in this tree.** A runbook made by the Dashboard upload, the template create or the document-to-runbook conversion is a draft row holding its text (`conversion_drafts.content`) and, once verified, a `knowledge_items` row; nothing is written under `data/knowledge/` (#1950). The tree is the standalone scan's import source.
 
 ### Authoring vs Runtime
 
@@ -146,7 +146,7 @@ The KB Toolkit and FaultMaven runtime use different directories:
 |------|---------|-----------|-----------|
 | `faultmaven/resources/knowledge/runbooks/<domain>/` | **Authoritative built-in runbook sources** (public, transparent, PR-able). Edit/contribute here. | Maintainers, community PRs; KB Toolkit tools | KB Toolkit (`kb-validate`, `kb-quality`, `kb-build-pack`) |
 | `faultmaven/resources/knowledge/pack/` (or `KB_PACK_DIR`) | The **KB pack** — generated from the sources above (runbooks + build-time vectors), ingested at startup with no embedding model | `kb-build-pack` (toolkit), vendored here | FaultMaven API |
-| `faultmaven/data/knowledge/{scope}/` | Runtime workspace for **authored / converted** runbooks (draft → verify flow) and `/knowledge/scan` reconciliation. Pre-deployed runbooks no longer use this directory. | Conversion feature, manual file drop | FaultMaven API |
+| `faultmaven/data/knowledge/{scope}/` | **Standalone import directory**: `/knowledge/scan` copies each hand-placed file's text into a draft row. Nothing writes here, and under `TENANT_PROVIDER=multi` the scan refuses (no shared disk). | Manual file drop (standalone) | `/knowledge/scan` |
 | `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
 
 To add/update a built-in runbook: edit the source in this repo, rebuild the **KB
