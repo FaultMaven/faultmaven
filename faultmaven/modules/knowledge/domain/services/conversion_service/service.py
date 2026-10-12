@@ -136,6 +136,53 @@ def _already_verified(draft_id: str) -> ConflictError:
     )
 
 
+def _verification_lost(
+    draft_id: str,
+    current_status: Optional[str],
+    knowledge_item_id: str,
+    withdrawn: bool,
+) -> ConflictError:
+    """The 409 for a verify whose compare-and-swap missed, naming what won.
+
+    ``already_verified`` — another verify won (``verify_batch`` records this
+    one as skipped); ``discarded`` — a delete won; otherwise the text was
+    edited during ingestion. When the item this verify published could not be
+    withdrawn, the sentence says so rather than claiming nothing was published.
+    """
+    if current_status == DraftStatus.VERIFIED.value:
+        reason, sentence = (
+            "already_verified",
+            "This runbook was verified by another request meanwhile",
+        )
+    elif current_status is None or current_status == DraftStatus.DISCARDED.value:
+        reason, sentence = (
+            "discarded",
+            "This draft was discarded while it was being verified",
+        )
+    else:
+        reason, sentence = (
+            "changed_during_verification",
+            "This draft changed while it was being verified",
+        )
+    if withdrawn:
+        outcome = (
+            "; nothing was published by this request. Review the latest version "
+            "and verify again if needed."
+        )
+    else:
+        outcome = (
+            f"; the copy this request published (knowledge item "
+            f"{knowledge_item_id}) could not be withdrawn and must be removed by "
+            "an operator."
+        )
+    return ConflictError(
+        sentence + outcome,
+        resource_type="draft",
+        resource_id=draft_id,
+        conflict_reason=reason,
+    )
+
+
 @dataclass(frozen=True)
 class _PreparedConversion:
     """One failure mode's generation request, built and REDACTED, not yet sent.
@@ -959,15 +1006,6 @@ class ConversionService:
                 )
 
             # Validate LLM output before it becomes a draft
-            if len(runbook_content) > DRAFT_CONTENT_MAX_CHARS:
-                # Refused here, per mode: one oversized runbook must not fail
-                # the rest of the document (#1950). Not retryable — the same
-                # source yields the same size.
-                return ConversionError(
-                    failure_mode_id=failure_mode.id,
-                    error=draft_content_too_long_message(len(runbook_content)),
-                    retryable=False,
-                )
             if not runbook_content or len(runbook_content) < 100:
                 return ConversionError(
                     failure_mode_id=failure_mode.id,
@@ -1019,6 +1057,17 @@ class ConversionService:
             # value we computed. The row and the frontmatter share this single
             # source of truth.
             runbook_content = _force_frontmatter_id(runbook_content, runbook_id)
+
+            # The draft bound, on the text the row will hold: refused here, per
+            # mode — one oversized runbook must not fail the rest of the
+            # document (#1950). Not retryable: the same source yields the same
+            # size.
+            if len(runbook_content) > DRAFT_CONTENT_MAX_CHARS:
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error=draft_content_too_long_message(len(runbook_content)),
+                    retryable=False,
+                )
 
             draft_id = generate_draft_id()
 
@@ -1455,6 +1504,8 @@ class ConversionService:
             # its row would leave the row's text and the published text apart.
             if dm.status != DraftStatus.DRAFT.value:
                 raise _already_verified(draft_id)
+            # For the response, built after the write session.
+            runbook_id, title = dm.runbook_id, dm.title
 
             # Line endings, before the gate below and before the text is stored
             # (#1403). ``content`` is a JSON body field from
@@ -1492,61 +1543,95 @@ class ConversionService:
         # about text the gate never saw.
         validation, quality = await avalidate_and_score(content)
 
+        # The text and its verdict, written as ONE CONDITIONAL UPDATE: only
+        # while the row is still a draft. Splitting the sessions widened the
+        # read-modify-write window to cover the whole gate, and a read-then-write
+        # in the second session would not close it: SQLAlchemy drops ``FOR
+        # UPDATE`` on SQLite, and pysqlite's deferred transaction does not
+        # cover a SELECT, so a verify could commit between that read and this
+        # write — and the row would then say verified while holding text that
+        # was never published. The predicate is evaluated by the database at
+        # write time, on both dialects: a verify that committed first leaves
+        # nothing to update (409 below); one that commits after finds its
+        # compare-and-swap on the text missing and publishes nothing. A Core
+        # statement, so the content validator does not see it — the bound is
+        # applied here explicitly.
+        content = ensure_draft_content_within_bound(content)
         async with self._db_session_factory() as session:
-            # RE-READ rather than reusing ``dm``: splitting the sessions widened
-            # the read-modify-write window to cover the whole gate, so the row is
-            # re-fetched and the verdict applied to that fresh copy. Without this
-            # a concurrent discard would be overwritten by a stale snapshot.
-            #
-            # ``FOR UPDATE`` (PostgreSQL; SQLite serialises writers anyway): a
-            # verify finishing now either committed first — the row is verified
-            # and this refuses — or waits for this commit, and its
-            # compare-and-swap then sees the new text and publishes nothing.
-            draft_result = await session.execute(
-                select(ConversionDraftModel)
+            written = await session.execute(
+                update(ConversionDraftModel)
                 .where(
                     ConversionDraftModel.id == draft_id,
                     ConversionDraftModel.conversion_id == conversion_id,
+                    ConversionDraftModel.status == DraftStatus.DRAFT.value,
                 )
-                .with_for_update()
+                .values(
+                    content=content,
+                    validation_passed=validation.passed,
+                    validation_errors=validation.errors,
+                    validation_warnings=validation.warnings,
+                    quality_score=quality.overall,
+                    quality_details=quality.model_dump(),
+                )
+                .execution_options(synchronize_session=False)
             )
-            dm = draft_result.scalar_one_or_none()
-            if not dm or dm.status == DraftStatus.DISCARDED.value:
-                # Discarded while we were scoring: nothing is written — neither
-                # the text nor a verdict for a draft nobody wants.
-                return None
-            if dm.status != DraftStatus.DRAFT.value:
-                # Verified while we were scoring: the published text stands.
+            if written.rowcount == 1:
+                await session.commit()
+            else:
+                await session.rollback()
+                # Nothing written. Why: discarded (or gone) while we were
+                # scoring — a draft nobody wants, 404 as before — or verified
+                # meanwhile, whose published text stands.
+                status = (
+                    await session.execute(
+                        select(ConversionDraftModel.status).where(
+                            ConversionDraftModel.id == draft_id,
+                            ConversionDraftModel.conversion_id == conversion_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if status is None or status == DraftStatus.DISCARDED.value:
+                    return None
                 raise _already_verified(draft_id)
 
-            # The text and its verdict, in ONE commit (#1950).
-            dm.content = content
-            dm.validation_passed = validation.passed
-            dm.validation_errors = validation.errors
-            dm.validation_warnings = validation.warnings
-            dm.quality_score = quality.overall
-            dm.quality_details = quality.model_dump()
+        quality_warning = None
+        if quality.overall < QUALITY_WARNING_THRESHOLD:
+            quality_warning = "Quality score is below 50. Manual editing recommended."
 
-            await session.commit()
+        return ConversionDraft(
+            draft_id=draft_id,
+            runbook_id=runbook_id,
+            title=title,
+            scope=job_scope,
+            status=DraftStatus.DRAFT,
+            validation=validation,
+            quality_score=quality,
+            content_preview=content[:500],
+            content=content,
+            quality_warning=quality_warning,
+        )
 
-            quality_warning = None
-            if quality.overall < QUALITY_WARNING_THRESHOLD:
-                quality_warning = (
-                    "Quality score is below 50. Manual editing recommended."
-                )
-
-            return ConversionDraft(
-                draft_id=dm.id,
-                runbook_id=dm.runbook_id,
-                title=dm.title,
-                scope=job_scope,
-                status=DraftStatus(dm.status),
-                validation=validation,
-                quality_score=quality,
-                content_preview=content[:500],
-                content=content,
-                quality_warning=quality_warning,
+    async def _withdraw_published_item(self, knowledge_item_id: str) -> bool:
+        """Remove what a verify published but could not record. True when the
+        item is gone; on failure an ERROR names the orphaned item for an
+        operator, and the caller says so instead of "nothing was published"."""
+        try:
+            outcome = await self._knowledge_service.delete_document(knowledge_item_id)
+        except Exception as exc:
+            logger.error(
+                "verify_draft: could not withdraw orphaned knowledge_item %s: %s",
+                knowledge_item_id,
+                exc,
             )
+            return False
+        if not (outcome or {}).get("success"):
+            logger.error(
+                "verify_draft: could not withdraw orphaned knowledge_item %s: %s",
+                knowledge_item_id,
+                (outcome or {}).get("error", "no success reported"),
+            )
+            return False
+        return True
 
     async def _verifier_display_name(
         self, user_id: str, enterprise_id: Optional[str]
@@ -1933,23 +2018,31 @@ class ConversionService:
             )
             if swapped.rowcount == 1:
                 await session.commit()
+                current_status = DraftStatus.VERIFIED.value
             else:
                 await session.rollback()
+                # Why the swap missed: another verify won, a delete won, or an
+                # edit changed the text.
+                current_status = (
+                    await session.execute(
+                        select(ConversionDraftModel.status).where(
+                            ConversionDraftModel.id == draft_id,
+                            ConversionDraftModel.conversion_id == conversion_id,
+                        )
+                    )
+                ).scalar_one_or_none()
 
         if swapped.rowcount != 1:
             logger.warning(
-                "verify_draft: draft %s changed during verification; "
-                "withdrawing published item %s",
+                "verify_draft: draft %s is no longer the draft that was published "
+                "(status now %s); withdrawing published item %s",
                 draft_id,
+                current_status,
                 knowledge_item_id,
             )
-            await self._knowledge_service.delete_document(knowledge_item_id)
-            raise ConflictError(
-                "This draft changed while it was being verified; nothing was "
-                "published. Review the latest version and verify again.",
-                resource_type="draft",
-                resource_id=draft_id,
-                conflict_reason="changed_during_verification",
+            withdrawn = await self._withdraw_published_item(knowledge_item_id)
+            raise _verification_lost(
+                draft_id, current_status, knowledge_item_id, withdrawn
             )
 
         return VerifyResponse(

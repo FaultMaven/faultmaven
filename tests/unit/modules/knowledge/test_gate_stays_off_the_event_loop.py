@@ -537,17 +537,18 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
         "idle-in-transaction for the gate's whole runtime"
     )
 
-    # The gate must also precede the text's WRITE — the assignment to the row's
-    # ``content`` (#1950) — and nothing may await between that write and the
-    # commit. The gate's ``await`` is a cancellation point; with the write
+    # The gate must also precede the text's WRITE — the conditional ``UPDATE``
+    # whose ``.values(content=…)`` stores it (#1950) — and nothing may await
+    # between that write and the commit. The gate's ``await`` is a cancellation point; with the write
     # first, a disconnect or timeout during the gate could commit the new text
     # under the PREVIOUS verdict: a reviewer reads a green verdict about text
     # the gate never saw. Gating first makes a cancellation change nothing.
     writes = [
         n.lineno
         for n in ast.walk(target)
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Attribute) and t.attr == "content" for t in n.targets)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", "") == "values"
+        and any(k.arg == "content" for k in n.keywords)
     ]
     commits = [
         n.lineno

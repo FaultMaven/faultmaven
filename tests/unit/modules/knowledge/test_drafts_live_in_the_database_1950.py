@@ -13,6 +13,7 @@ draft is ever written to disk.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +21,7 @@ import frontmatter
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -28,6 +30,7 @@ from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
     EnterpriseModel,
+    UserModel,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     service as service_module,
@@ -763,3 +766,304 @@ class TestAnUploadsConversionOpens:
         assert draft.content == content
         assert draft.quality_score.overall > 0
         assert draft.quality_score.grade
+
+
+# ---------------------------------------------------------------------------
+# Races, on SQLite AND PostgreSQL (#1961 review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(
+    params=[
+        "sqlite",
+        pytest.param(
+            "postgresql",
+            marks=[
+                pytest.mark.postgres,
+                pytest.mark.skipif(
+                    not os.environ.get("DATABASE_URL", "").startswith("postgresql"),
+                    reason="PostgreSQL-only; set DATABASE_URL to a PG instance.",
+                ),
+            ],
+        ),
+    ]
+)
+async def race_factory(request, tmp_path):
+    """A shared database where concurrent sessions are real connections: SQLite
+    on disk with the production PRAGMAs, or a fresh PostgreSQL database."""
+    if request.param == "sqlite":
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/race.db")
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _pragmas(connection, _record):
+            cursor = connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+
+        async for factory in _seeded(engine):
+            yield factory
+        return
+
+    from tests.integration.security.conftest import database_of_its_own
+
+    async with database_of_its_own(os.environ["DATABASE_URL"], "fm_1950_race") as url:
+        engine = create_async_engine(url)
+        async for factory in _seeded(engine):
+            yield factory
+
+
+async def _seeded(engine):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        session.add(
+            EnterpriseModel(enterprise_id=STANDALONE_ENTERPRISE_ID, name="E", slug="e")
+        )
+        await session.flush()
+        # PostgreSQL enforces the author/verifier foreign keys.
+        session.add(
+            UserModel(
+                user_id="u1",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                username="u1",
+                email="u1@example.com",
+                display_name="U One",
+            )
+        )
+        await session.commit()
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
+async def _verifiable_draft(factory, root: Path) -> tuple[str, str]:
+    created = await _Replica(root, factory).service.create_runbook_from_template(
+        **TEMPLATE
+    )
+    cid, did = created["conversion_id"], created["draft"].draft_id
+    async with factory() as session:
+        (await session.get(ConversionDraftModel, did)).validation_passed = True
+        await session.commit()
+    return cid, did
+
+
+async def _published(factory) -> dict:
+    from sqlalchemy import select
+
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+    async with factory() as session:
+        rows = (await session.execute(select(KnowledgeItemModel))).scalars()
+        return {row.item_id: row.content for row in rows}
+
+
+def _hooked(factory, *, before_dml=None, before_commit=None):
+    """A session factory whose sessions run ``before_dml`` just before their
+    first conversion_drafts UPDATE executes, or ``before_commit`` just before a
+    commit that follows one."""
+
+    def make():
+        session = factory()
+        real_execute, real_commit = session.execute, session.commit
+        state = {"dml": False}
+
+        async def execute(statement, *args, **kwargs):
+            is_update = getattr(statement, "is_dml", False) and (
+                "conversion_drafts" in str(statement)
+            )
+            if is_update and not state["dml"] and before_dml is not None:
+                await before_dml()
+            result = await real_execute(statement, *args, **kwargs)
+            state["dml"] = state["dml"] or is_update
+            return result
+
+        async def commit():
+            if state["dml"] and before_commit is not None:
+                await before_commit()
+            return await real_commit()
+
+        session.execute = execute
+        session.commit = commit
+        return session
+
+    return make
+
+
+class TestEditAndVerifyRaceOnBothDialects:
+    async def test_a_verify_landing_before_the_edits_write_refuses_the_edit(
+        self, race_factory, tmp_path, monkeypatch
+    ):
+        """The edit has read the row as a draft and scored its text; a verify
+        commits before the edit writes. The edit's write is conditional on the
+        row still being a draft, so it writes nothing: the row stays the
+        published text, and the editor hears 409 instead of a silent loss."""
+        monkeypatch.chdir(tmp_path)
+        factory = race_factory
+        cid, did = await _verifiable_draft(factory, tmp_path)
+        knowledge = _knowledge(factory)
+        verifier = _Replica(tmp_path / "a", factory, knowledge).service
+
+        async def verify_now():
+            await verifier.verify_draft(cid, did, "u1")
+
+        editor = _Replica(tmp_path / "b", factory).service
+        editor._db_session_factory = _hooked(factory, before_dml=verify_now)
+        edit = valid_runbook("An Edit That Read The Draft Before Verify")
+
+        with pytest.raises(ConflictError) as refused:
+            await editor.update_draft(cid, did, "u1", edit)
+
+        assert refused.value.conflict_reason == "already_verified"
+        row = await _row(factory, did)
+        published = await _published(factory)
+        assert row.status == "verified"
+        assert published == {row.knowledge_item_id: row.content}
+        assert "An Edit That Read The Draft" not in row.content
+
+    async def test_an_edit_against_verifys_uncommitted_write_is_refused(
+        self, race_factory, tmp_path, monkeypatch
+    ):
+        """Verify's compare-and-swap has run but not committed when the edit
+        writes. The edit waits for it (row lock on PostgreSQL, the write lock
+        on SQLite), then finds the row verified and writes nothing."""
+        monkeypatch.chdir(tmp_path)
+        factory = race_factory
+        cid, did = await _verifiable_draft(factory, tmp_path)
+        swapped, resume = asyncio.Event(), asyncio.Event()
+
+        async def hold_commit():
+            swapped.set()
+            await resume.wait()
+
+        knowledge = _knowledge(factory)
+        verifier = _Replica(tmp_path / "a", factory, knowledge).service
+        verifier._db_session_factory = _hooked(factory, before_commit=hold_commit)
+        editor = _Replica(tmp_path / "b", factory).service
+
+        verifying = asyncio.create_task(verifier.verify_draft(cid, did, "u1"))
+        await swapped.wait()
+        editing = asyncio.create_task(
+            editor.update_draft(cid, did, "u1", valid_runbook("Edit Against Verify"))
+        )
+        done, _ = await asyncio.wait({editing}, timeout=1)
+        assert not done, "the edit wrote while verify's write was uncommitted"
+        resume.set()
+        assert (await verifying).status == "verified"
+        with pytest.raises(ConflictError) as refused:
+            await editing
+
+        assert refused.value.conflict_reason == "already_verified"
+        row = await _row(factory, did)
+        assert await _published(factory) == {row.knowledge_item_id: row.content}
+        assert "Edit Against Verify" not in row.content
+
+    async def test_two_verifies_publish_once_and_the_loser_is_already_verified(
+        self, race_factory, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        factory = race_factory
+        cid, did = await _verifiable_draft(factory, tmp_path)
+        knowledge = _knowledge(factory)
+        both = asyncio.Barrier(2)
+        real_index = knowledge._index_document_in_vector_store
+
+        async def index_together(*args, **kwargs):
+            await both.wait()
+            return await real_index(*args, **kwargs)
+
+        knowledge._index_document_in_vector_store = index_together
+        one = _Replica(tmp_path / "a", factory, knowledge).service
+        two = _Replica(tmp_path / "b", factory, knowledge).service
+
+        results = await asyncio.gather(
+            one.verify_draft(cid, did, "u1"),
+            two.verify_draft(cid, did, "u1"),
+            return_exceptions=True,
+        )
+
+        won = [r for r in results if not isinstance(r, Exception)]
+        lost = [r for r in results if isinstance(r, Exception)]
+        assert len(won) == 1 and len(lost) == 1, results
+        assert isinstance(lost[0], ConflictError)
+        assert lost[0].conflict_reason == "already_verified"
+        assert "nothing was published by this request" in str(lost[0])
+        row = await _row(factory, did)
+        assert row.knowledge_item_id == won[0].knowledge_item_id
+        assert await _published(factory) == {row.knowledge_item_id: row.content}
+
+    async def test_a_delete_during_verify_wins_and_nothing_stays_published(
+        self, race_factory, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        factory = race_factory
+        cid, did = await _verifiable_draft(factory, tmp_path)
+        knowledge = _knowledge(factory)
+        entered, release = asyncio.Event(), asyncio.Event()
+        real_index = knowledge._index_document_in_vector_store
+
+        async def slow_index(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await real_index(*args, **kwargs)
+
+        knowledge._index_document_in_vector_store = slow_index
+        verifier = _Replica(tmp_path / "a", factory, knowledge).service
+        verifying = asyncio.create_task(verifier.verify_draft(cid, did, "u1"))
+        await entered.wait()
+        assert await _Replica(tmp_path / "b", factory).service.delete_draft(
+            cid, did, "u1"
+        )
+        release.set()
+        with pytest.raises(ConflictError) as lost:
+            await verifying
+
+        assert lost.value.conflict_reason == "discarded"
+        assert (await _row(factory, did)).status == "discarded"
+        assert await _published(factory) == {}
+
+
+class TestAWithdrawalThatFailsIsReportedTruthfully:
+    @pytest.mark.parametrize("failure", ["raises", "reports_no_success"])
+    async def test_the_orphan_is_named_and_the_409_does_not_claim_nothing_published(
+        self, file_session_factory, tmp_path, monkeypatch, caplog, failure
+    ):
+        monkeypatch.chdir(tmp_path)
+        factory = file_session_factory
+        cid, did = await _verifiable_draft(factory, tmp_path)
+        knowledge = _knowledge(factory)
+        if failure == "raises":
+            knowledge.delete_document = AsyncMock(side_effect=RuntimeError("db gone"))
+        else:
+            knowledge.delete_document = AsyncMock(
+                return_value={"success": False, "error": "not deleted"}
+            )
+        entered, release = asyncio.Event(), asyncio.Event()
+        real_index = knowledge._index_document_in_vector_store
+
+        async def slow_index(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await real_index(*args, **kwargs)
+
+        knowledge._index_document_in_vector_store = slow_index
+        verifier = _Replica(tmp_path / "a", factory, knowledge).service
+        verifying = asyncio.create_task(verifier.verify_draft(cid, did, "u1"))
+        await entered.wait()
+        await _Replica(tmp_path / "b", factory).service.update_draft(
+            cid, did, "u1", valid_runbook("Edited While Verifying")
+        )
+        release.set()
+        with caplog.at_level("ERROR"), pytest.raises(ConflictError) as lost:
+            await verifying
+
+        (orphan,) = await _published(factory)
+        assert lost.value.conflict_reason == "changed_during_verification"
+        assert "nothing was published" not in str(lost.value)
+        assert f"knowledge item {orphan}" in str(lost.value)
+        assert "could not be withdrawn" in str(lost.value)
+        assert any(
+            r.levelname == "ERROR" and orphan in r.getMessage() for r in caplog.records
+        )

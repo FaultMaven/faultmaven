@@ -2053,8 +2053,9 @@ asked to accept, and it belongs to a person.
 # mode whose runbook exceeds it is reported in `warnings`, like any other
 # failed mode. `PUT …/drafts/{draft_id}` on a verified draft answers 409
 # `conflict_reason: "already_verified"` (it used to rewrite the row), and a
-# verify that finds the draft edited during its ingestion answers 409
-# `conflict_reason: "changed_during_verification"` and publishes nothing.
+# verify whose draft changed during its ingestion publishes nothing and answers
+# 409 naming what won: `already_verified` (another verify), `discarded` (a
+# delete) or `changed_during_verification` (an edit).
 # `GET /conversions/{id}` of a KB upload no longer answers 500 (its draft had
 # no stored score). MINOR because every client survives: the draft routes
 # declare no response model, so `content` going from nullable to always-present
