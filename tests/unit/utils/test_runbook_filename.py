@@ -27,7 +27,7 @@ import pytest
 from faultmaven.utils.runbook_id import runbook_filename
 from tests.runbook_samples import valid_runbook
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")]
 
 DOC_ID = "kb_abcdef0123456789"
 

@@ -49,7 +49,11 @@ BILLING_ORG_ID = "org-billing-9999"
 
 # No ``asyncio`` mark: ``asyncio_mode = auto``, and marking the module would
 # also mark the synchronous helper tests.
-pytestmark = [pytest.mark.unit, pytest.mark.security]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.security,
+    pytest.mark.usefixtures("shipped_data_defaults"),
+]
 
 
 # ---------------------------------------------------------------------------

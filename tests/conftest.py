@@ -43,53 +43,78 @@ except ImportError:
     pass  # dotenv not installed, which is fine for tests
 
 
-# One database per xdist worker (#1636). The default DSN is cwd-relative
-# (``sqlite+aiosqlite:///./data/faultmaven.db``), so every worker that boots
-# ``faultmaven.main.app`` -- migrations, the Standalone enterprise seed, the
-# bootstrap admin -- would do it against ONE file, concurrently. Measured on
-# #1630's runs: ``FOREIGN KEY constraint failed`` out of the bootstrap on
-# whichever worker lost. Set here, at conftest import, because that is before
-# anything in the worker can build the settings singleton, and the lifespan's
-# ``alembic upgrade`` subprocess inherits it from ``os.environ``.
+# One data root per test process (#1636, #1772). Every path whose shipped
+# default sits under the cwd-relative ``./data`` -- the SQLite file, both
+# ChromaDB trees, the evidence files, the redaction pseudonym key, the local
+# JWT secret, the runbook tree -- is pointed under a temporary directory of
+# this process's own, removed when it exits. Under ``-n`` each worker is its
+# own process, so no two workers share a store; a serial run gets one root.
 #
-# Only the database: after a boot under the required jobs' environment it is
-# the only thing the app writes under ``./data`` (the vector stores are
-# in-memory there and the other trees stay empty), and moving the other knobs
-# would change what tests that read their defaults observe. An explicitly set
-# DATABASE_URL (the ``-m postgres`` lane) is the caller's choice and is left
-# alone. Serial runs are untouched.
+# Measured before this: ``./data/chroma-kb`` was one directory for every worker
+# of every run in a checkout, and an HNSW segment in it reached 66-72 GB in
+# minutes, filling ``/`` (#1772); one SQLite file for every worker made the
+# bootstrap fail with ``FOREIGN KEY constraint failed`` on whichever lost
+# (#1636).
 #
-# The variable alone does not survive a test that empties or pins the
+# Set here, at conftest import, because that is before anything in the process
+# can build the settings singleton, and the lifespan's ``alembic upgrade``
+# subprocess (and any other child) inherits the variables from ``os.environ``.
+# A variable the CALLER set (the ``-m postgres`` lane's DATABASE_URL) is the
+# caller's choice and is left alone; one an ancestor test process set (the
+# xdist controller, a pytest that runs a pytest) names that process's root and
+# is replaced, which is why the root is recorded together with the pid that
+# made it.
+#
+# The variables alone do not survive a test that empties or pins the
 # environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
 # ``delenv("DATABASE_URL")`` + ``reset_settings()``): the next settings object
-# built there falls back to the shipped cwd-relative default, i.e. the SHARED
-# file. So ``pytest_configure`` below also makes the per-worker file the
-# settings field's DEFAULT for this worker process -- what a settings object
-# resolves to when nothing in the environment says otherwise. The variable is
-# kept for child processes, which inherit the environment but not the patch.
+# falls back to the shipped default, i.e. the shared ``./data``. So
+# ``_default_to_the_test_data_root`` below also makes each per-process path the
+# DEFAULT of its settings field (and of the module attribute, for the two paths
+# that have no field). A test that exercises the shipped cwd-relative layout
+# requests ``shipped_data_defaults``, which runs it in ``tmp_path``.
 #
-# The URL is also recorded under its own name, because this file is imported
-# TWICE in a worker (as ``conftest`` and as ``tests.conftest``, which some test
-# modules import from) and the second import sees DATABASE_URL already set. A
-# module global would be None in whichever copy pytest registered.
-WORKER_DATABASE_URL_ENV = "FAULTMAVEN_TEST_WORKER_DATABASE_URL"
-_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
-if (
-    _XDIST_WORKER
-    and not os.environ.get("DATABASE_URL")
-    and not os.environ.get(WORKER_DATABASE_URL_ENV)
-):
+# The root is read back from the environment, not a module global, because this
+# file is imported TWICE in a process (as ``conftest`` and as
+# ``tests.conftest``, which some test modules import from), and the second
+# import must reuse the first one's root.
+TEST_DATA_ROOT_ENV = "FAULTMAVEN_TEST_DATA_ROOT"
+_TEST_DATA_ROOT_PID_ENV = "FAULTMAVEN_TEST_DATA_ROOT_PID"
+
+
+def data_paths_under(root: str) -> dict[str, str]:
+    """Each ``./data`` path's per-process value, by the variable that sets it."""
+    return {
+        "DATABASE_URL": f"sqlite+aiosqlite:///{root}/faultmaven.db",
+        "CHROMADB_KB_PERSIST_DIR": os.path.join(root, "chroma-kb"),
+        "CHROMADB_EVIDENCE_PERSIST_DIR": os.path.join(root, "chroma-evidence"),
+        "EVIDENCE_STORAGE_ROOT": os.path.join(root, "evidence"),
+        "REDACTION_PSEUDONYM_KEY_PATH": os.path.join(root, ".redaction_pseudonym_key"),
+        "JWT_SECRET_FILE": os.path.join(root, ".jwt_secret"),
+    }
+
+
+if os.environ.get(_TEST_DATA_ROOT_PID_ENV) != str(os.getpid()):
     import atexit
     import shutil
     import tempfile
 
-    _WORKER_DATA_DIR = tempfile.mkdtemp(prefix=f"faultmaven-{_XDIST_WORKER}-")
-    atexit.register(shutil.rmtree, _WORKER_DATA_DIR, ignore_errors=True)
-    _url = f"sqlite+aiosqlite:///{_WORKER_DATA_DIR}/faultmaven.db"
-    os.environ["DATABASE_URL"] = _url
-    os.environ[WORKER_DATABASE_URL_ENV] = _url
+    _inherited_root = os.environ.get(TEST_DATA_ROOT_ENV)
+    _root = tempfile.mkdtemp(
+        prefix=f"faultmaven-{os.environ.get('PYTEST_XDIST_WORKER') or 'main'}-"
+    )
+    atexit.register(shutil.rmtree, _root, ignore_errors=True)
+    for _name, _value in data_paths_under(_root).items():
+        _current = os.environ.get(_name)
+        if _current is None or (
+            _inherited_root and (_inherited_root + os.sep) in _current
+        ):
+            os.environ[_name] = _value
+    os.environ[TEST_DATA_ROOT_ENV] = _root
+    os.environ[_TEST_DATA_ROOT_PID_ENV] = str(os.getpid())
 
 import importlib.machinery
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 # --------------------------------------------------------------------------- #
@@ -900,7 +925,7 @@ def _install_app_boot_guard() -> SimpleNamespace:
     """Wrap ``TestClient.__enter__`` and ``__exit__`` once; return their context.
 
     Idempotent across copies of this file. It can be imported under more than
-    one module name in one process (see ``WORKER_DATABASE_URL_ENV``), and a
+    one module name in one process (see ``TEST_DATA_ROOT_ENV``), and a
     second copy adopts the installed guard's context rather than wrapping twice
     or writing to a context no wrapper reads. That is also why the broker's
     exemption is a field of this shared context and not a global of one copy.
@@ -1267,30 +1292,159 @@ except Exception:
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 
+#: Every ``./data`` default the test session moves: (module, owner, attribute,
+#: variable). ``owner`` is a settings class whose FIELD default moves, or None
+#: for a module attribute read at call time (the two paths with no field).
+_DATA_DEFAULT_TARGETS = (
+    ("faultmaven.config.settings", "DatabaseSettings", "database_url", "DATABASE_URL"),
+    (
+        "faultmaven.config.settings",
+        "DatabaseSettings",
+        "chromadb_kb_persist_dir",
+        "CHROMADB_KB_PERSIST_DIR",
+    ),
+    (
+        "faultmaven.config.settings",
+        "DatabaseSettings",
+        "chromadb_evidence_persist_dir",
+        "CHROMADB_EVIDENCE_PERSIST_DIR",
+    ),
+    (
+        "faultmaven.config.settings",
+        "EvidenceStorageSettings",
+        "evidence_storage_root",
+        "EVIDENCE_STORAGE_ROOT",
+    ),
+    (
+        "faultmaven.config.settings",
+        "ProtectionSettings",
+        "pseudonym_key_path",
+        "REDACTION_PSEUDONYM_KEY_PATH",
+    ),
+    ("faultmaven.config.settings", None, "DEFAULT_JWT_SECRET_FILE", "JWT_SECRET_FILE"),
+    ("faultmaven.utils.runbook_id", None, "KNOWLEDGE_ROOT", None),
+)
 
-def _default_to_the_worker_database() -> None:
-    """Make the per-worker database the settings DEFAULT on an xdist worker.
 
-    See the comment on ``WORKER_DATABASE_URL_ENV`` above. Module level rather
-    than a ``pytest_configure`` hook: a run whose arguments sit under
+def _data_default_value(root: str, attribute: str, variable):
+    if variable is None:  # KNOWLEDGE_ROOT: a Path, like the shipped value
+        return Path(root) / "knowledge"
+    return data_paths_under(root)[variable]
+
+
+def _get_data_default(module_name: str, owner, attribute: str):
+    module = importlib.import_module(module_name)
+    if owner is None:
+        return getattr(module, attribute)
+    return getattr(module, owner).model_fields[attribute].default
+
+
+def _set_data_default(module_name: str, owner, attribute: str, value) -> None:
+    module = importlib.import_module(module_name)
+    if owner is None:
+        setattr(module, attribute, value)
+        return
+    cls = getattr(module, owner)
+    field = cls.model_fields[attribute]
+    if field.default == value:
+        return
+    field.default = value
+    cls.model_rebuild(force=True)
+
+
+def _shipped_data_defaults_of_another_copy():
+    """The shipped values a copy of this file imported earlier recorded.
+
+    Only the first copy can read them: by the time the second runs, the
+    defaults are already this process's paths.
+    """
+    here = os.path.abspath(__file__)
+    for module in list(sys.modules.values()):
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue
+        path = namespace.get("__file__")
+        if not isinstance(path, str) or os.path.abspath(path) != here:
+            continue
+        recorded = namespace.get("SHIPPED_DATA_DEFAULTS")
+        if recorded:
+            return recorded
+    return None
+
+
+#: ``(module, owner, attribute) -> shipped value`` for every target above, as
+#: the code under test ships it. Read by ``shipped_data_defaults`` and pinned by
+#: ``tests/unit/test_test_data_root.py``.
+SHIPPED_DATA_DEFAULTS: dict = {}
+
+
+def _default_to_the_test_data_root() -> None:
+    """Make this process's data root the DEFAULT of every ``./data`` path.
+
+    See the comment on ``TEST_DATA_ROOT_ENV`` above. Module level rather than a
+    ``pytest_configure`` hook: a run whose arguments sit under
     ``tests/integration`` reaches this file through that conftest's
     ``import conftest``, and a hook on a copy pytest never registered does not
     fire. Idempotent, so the second copy re-applying it is harmless.
     """
-    worker_url = os.environ.get(WORKER_DATABASE_URL_ENV)
-    if not worker_url:
+    root = os.environ.get(TEST_DATA_ROOT_ENV)
+    if not root:
         return
-    from faultmaven.config.settings import DatabaseSettings, reset_settings
+    from faultmaven.config.settings import reset_settings
 
-    field = DatabaseSettings.model_fields["database_url"]
-    if field.default == worker_url:
-        return
-    field.default = worker_url
-    DatabaseSettings.model_rebuild(force=True)
+    recorded = _shipped_data_defaults_of_another_copy()
+    if recorded is None:
+        recorded = {
+            target[:3]: _get_data_default(*target[:3])
+            for target in _DATA_DEFAULT_TARGETS
+        }
+    SHIPPED_DATA_DEFAULTS.update(recorded)
+    for module_name, owner, attribute, variable in _DATA_DEFAULT_TARGETS:
+        _set_data_default(
+            module_name,
+            owner,
+            attribute,
+            _data_default_value(root, attribute, variable),
+        )
     reset_settings()
 
 
-_default_to_the_worker_database()
+_default_to_the_test_data_root()
+
+
+@pytest.fixture
+def shipped_data_defaults(monkeypatch, tmp_path):
+    """The shipped cwd-relative ``./data`` defaults, in a cwd of the test's own.
+
+    For a test that exercises the layout production ships: a relative default
+    resolved against the working directory (``knowledge_root()`` is relative
+    on purpose). Changes into ``tmp_path`` first, so the shipped defaults land
+    there and never in the checkout, which is what this session's data root
+    exists to prevent (#1772); a test may still ``chdir`` elsewhere. Unsets the
+    variables too, so the defaults are what settings resolve, and restores this
+    process's paths afterwards.
+    """
+    from faultmaven.config.settings import reset_settings
+
+    monkeypatch.chdir(tmp_path)
+    root = os.environ[TEST_DATA_ROOT_ENV]
+    for _module, _owner, _attribute, variable in _DATA_DEFAULT_TARGETS:
+        if variable is not None:
+            monkeypatch.delenv(variable, raising=False)
+    for target, shipped in SHIPPED_DATA_DEFAULTS.items():
+        _set_data_default(*target, shipped)
+    reset_settings()
+    yield
+    for module_name, owner, attribute, variable in _DATA_DEFAULT_TARGETS:
+        _set_data_default(
+            module_name,
+            owner,
+            attribute,
+            _data_default_value(root, attribute, variable),
+        )
+    reset_settings()
+
 
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
