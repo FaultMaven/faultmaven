@@ -2611,24 +2611,34 @@ class TestRunbookDraftsInTheDatabaseRevision:
 class TestVerifiedByIsTheDisplayNameRevision:
     """019 rewrites a verified runbook's frontmatter ``verified_by`` to its
     verifier's current display name (#1948): the published item and its
-    verified draft alike, byte-equal; rows chosen by the verifier foreign key,
-    never by matching text. Uploads and the pack keep their own text."""
+    verified draft alike, byte-equal. Runbooks are chosen by the verifier
+    foreign key, and only a value derived from the verifier's account (the
+    username, an address, the real email's local part) is rewritten; a name the
+    owner chose stays. Uploads and the pack keep their own text."""
 
     OTHER_ENTERPRISE = "0e0e0e0e-0000-4000-8000-0000000000ee"
     ALICE = "a11ce000-0000-4000-8000-000000000001"
     KIM = "c1a00000-0000-4000-8000-000000000002"
     DANA = "da0a0000-0000-4000-8000-000000000003"
     ELSEWHERE = "e15e0000-0000-4000-8000-000000000004"
+    FRANK = "f4a0c000-0000-4000-8000-000000000005"
+    ROBERT = "40be4700-0000-4000-8000-000000000006"
 
     #: (user_id, username, email, display_name, in the other enterprise)
     USERS = (
         (ALICE, "alice.smith", "alice.smith@example.com", "Alice Smith", False),
-        # Renamed since the verification: the runbook still holds "kim".
-        (KIM, "kim-renamed", "kim@example.com", "Kim Lee", False),
+        # Renamed since the verification: the runbook still holds "kim", which
+        # is neither the username now nor the email's local part.
+        (KIM, "kim-renamed", "kimberly@example.com", "Kim Lee", False),
         (DANA, "dana", "dana@example.com", "Dana", False),
         # Anchored in another enterprise than the runbook's: verify finds no
         # account there, and writes "".
         (ELSEWHERE, "eve", "eve@example.com", "Eve Example", True),
+        # A username that is not the email's local part.
+        (FRANK, "frank-2", "frank@acme.com", "Frank Ng", False),
+        # Registered with no email: the store synthesized one from the username
+        # it had then, so its local part is not an email-derived name.
+        (ROBERT, "robert2", "robert@faultmaven.example", "Robert R", False),
     )
 
     @staticmethod
@@ -2671,15 +2681,22 @@ class TestVerifiedByIsTheDisplayNameRevision:
             "verified_by: alice.smith@example.com",
             "verified_by: Alice Smith",
         ),
-        # A username renamed since: no text rule would catch it; the key does.
+        # The real email's local part, in another case: account-derived.
         (
-            "ki_renamed",
-            KIM,
+            "ki_localpart",
+            FRANK,
             1,
             "conversion:job_1",
-            "verified_by: kim",
-            "verified_by: Kim Lee",
+            "verified_by: FRANK",
+            "verified_by: Frank Ng",
         ),
+        # A username renamed since the verification: the documented false
+        # negative, left as it is.
+        ("ki_renamed", KIM, 1, "conversion:job_1", "verified_by: kim", None),
+        # A name the owner chose: not derived from the account, kept.
+        ("ki_team", ALICE, 1, "conversion:job_1", "verified_by: SRE Team", None),
+        # The local part of a SYNTHESIZED email is not an email-derived name.
+        ("ki_synth", ROBERT, 1, "conversion:job_1", "verified_by: robert", None),
         # Already the display name: untouched, byte for byte.
         ("ki_current", DANA, 1, "conversion:job_1", "verified_by: Dana", None),
         # The verifier's account is gone (FK cleared): emptied.
@@ -2690,6 +2707,16 @@ class TestVerifiedByIsTheDisplayNameRevision:
             "conversion:job_1",
             "verified_by: gone@example.com",
             "verified_by: ''",
+        ),
+        # The verifier is gone and the value holds no '@': nothing shows it
+        # was derived from the account, so it stays.
+        (
+            "ki_gone_name",
+            None,
+            1,
+            "conversion:job_1",
+            "verified_by: Former Lead",
+            None,
         ),
         # The verifier is anchored in another enterprise: emptied.
         (
@@ -2827,13 +2854,19 @@ class TestVerifiedByIsTheDisplayNameRevision:
         self._seed()
         return run_alembic(f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url)
 
-    def test_upgrade_rewrites_by_the_verifier_key(self, clean_database, database_url):
+    def _assert_row(self, items: dict, item_id: str) -> None:
+        _, _, _, _, line, after = next(row for row in self.ITEMS if row[0] == item_id)
+        assert items[item_id] == self._expected(item_id, line, after), item_id
+
+    def test_upgrade_rewrites_the_account_derived_values(
+        self, clean_database, database_url
+    ):
         result = self._migrate_seeded(database_url)
 
         assert result.returncode == 0, result.stderr
         items = self._items()
-        for item_id, _, _, _, line, after in self.ITEMS:
-            assert items[item_id] == self._expected(item_id, line, after), item_id
+        for row in self.ITEMS:
+            self._assert_row(items, row[0])
         assert items["ki_broken"] == self.UNPARSEABLE.replace(
             '"alice.smith"', '"Alice Smith"'
         )
@@ -2845,6 +2878,41 @@ class TestVerifiedByIsTheDisplayNameRevision:
             "019: left 2 runbook(s) not verified through FaultMaven (uploads, the "
             "pack) whose own verified_by holds an '@': kb_0123456789ab, ki_upload"
         ) in result.stderr
+        assert (
+            "019: left 4 verified runbook(s) whose verified_by is not derived from "
+            "the verifier's account (a name the owner chose): ki_gone_name, "
+            "ki_renamed, ki_synth, ki_team"
+        ) in result.stderr
+
+    def test_a_name_the_owner_chose_stays(self, clean_database, database_url):
+        """``verified_by`` is a free name-or-team field: ``SRE Team`` is not
+        derived from the verifier's account, so it survives, as does a plain
+        name on a runbook whose verifier is gone."""
+        assert self._migrate_seeded(database_url).returncode == 0
+        items = self._items()
+        self._assert_row(items, "ki_team")
+        self._assert_row(items, "ki_gone_name")
+        assert "verified_by: SRE Team\n" in items["ki_team"]
+
+    def test_the_real_emails_local_part_is_account_derived(
+        self, clean_database, database_url
+    ):
+        """``FRANK`` for ``frank@acme.com`` (username ``frank-2``) is rewritten;
+        ``robert`` for a synthesized ``robert@faultmaven.example`` is not."""
+        assert self._migrate_seeded(database_url).returncode == 0
+        items = self._items()
+        assert "verified_by: Frank Ng\n" in items["ki_localpart"]
+        self._assert_row(items, "ki_synth")
+
+    def test_a_renamed_username_is_the_documented_false_negative(
+        self, clean_database, database_url
+    ):
+        """The runbook holds ``kim``, the username at verification; the account
+        is now ``kim-renamed`` with ``kimberly@example.com``. Nothing on record
+        ties ``kim`` to the account, so it stays (the docstring's known false
+        negative)."""
+        assert self._migrate_seeded(database_url).returncode == 0
+        self._assert_row(self._items(), "ki_renamed")
 
     def test_each_verified_draft_holds_its_items_text(
         self, clean_database, database_url

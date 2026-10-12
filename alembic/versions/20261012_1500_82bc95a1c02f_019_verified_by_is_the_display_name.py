@@ -16,29 +16,46 @@ standalone and Cloud alike.
 Which rows change
 -----------------
 
-Rows are identified by who verified them, never by matching text:
+The runbooks are identified by who verified them (the verifier foreign key),
+never by matching text; within them, only a VALUE derived from the verifier's
+account is rewritten. ``verified_by`` is also a free "name or team" field
+(kb-toolkit writes it so, and an owner can edit a published runbook), so a value
+someone chose — ``SRE Team`` — stays.
 
 1. **Runbooks verified through FaultMaven** (``knowledge_items.verified_by``, the
-   verifier's user id; only verify sets it). ``verified_by`` becomes the name
-   verify writes today: the ``display_name`` of that user's row in the runbook's
-   enterprise, or ``""`` when the user is anchored in another enterprise (verify
-   reads the verifier within the job's enterprise, and the item carries the
-   job's). This is unconditional on the old value: a username, an address, a
-   display name the verifier has since changed, and a value an owner edited into
-   a published runbook all become the verifier's current name. A text match
-   (username, email local part, ``@``) would miss a username renamed since the
-   verification, which still names the account.
+   verifier's user id; only verify sets it). An account-derived value becomes
+   the name verify writes today: the ``display_name`` of that user's row in the
+   runbook's enterprise, or ``""`` when the user is anchored in another
+   enterprise (verify reads the verifier within the job's enterprise, and the
+   item carries the job's). A value is account-derived when it
+
+   * equals the verifier's current ``username``, ignoring case and surrounding
+     whitespace;
+   * contains ``@``; or
+   * equals the local part of the verifier's REAL email, ignoring case and
+     surrounding whitespace. An email the store synthesized for an account
+     registered without one (``<username>@faultmaven.example``) is not real
+     (``is_synthesized_email``, frozen below as 016 froze it).
+
 2. **Runbooks whose verifier account is gone**: the foreign key cleared it
    (``ON DELETE SET NULL``), but the row is still recognisable as verified
    through FaultMaven — ``verification_level = 1`` (COMMUNITY, which verify
    derives from a verifier) and ``source_url LIKE 'conversion:%'`` (verify's
-   source). ``verified_by`` becomes ``""``: there is no account to name, which
-   is also what verify writes when it finds none.
+   source). With no account, the username and email are unknown, so only a
+   value containing ``@`` counts as account-derived; it becomes ``""``, what
+   verify writes when it finds no account.
 3. Each such runbook's **verified draft** (``conversion_drafts`` with
    ``status = 'verified'`` and that ``knowledge_item_id``) gets the same rewrite.
-   The rewrite is a function of the text and the target name, so a draft
-   holding the same text as its item (#1950's invariant) ends holding the same
-   text as its item.
+   The rewrite is a function of the text and the verifier, so a draft holding
+   the same text as its item (#1950's invariant) ends holding the same text as
+   its item.
+
+Any other value is left untouched, and the ids of those runbooks are logged.
+
+Known false negative: a username renamed since the verification. The runbook
+holds the old username, which is neither the current username nor (unless it
+was) the email's local part, so it stays. Its account is not recorded anywhere
+to match on.
 
 How the text changes
 --------------------
@@ -58,6 +75,8 @@ line (or whose verifier is gone) is left, and its id is logged.
 Rows left untouched
 -------------------
 
+* **Values not derived from the account** (above): a name or team the owner
+  chose, a display name the verifier has since changed, a renamed username.
 * **Uploaded runbooks** (``upload_document``: ``knowledge_items.verified_by``
   NULL, ``verification_level = 0``) and their drafts: their frontmatter is the
   uploader's own text, not something FaultMaven wrote. Their ``verified_by``
@@ -132,12 +151,12 @@ _VERIFIER_GONE = (
 )
 
 #: Rules 1 and 2: each runbook verified through FaultMaven, with the name verify
-#: would write today (NULL → ``""``) and the verifier's username (for the
-#: unparseable fallback).
+#: would write today (NULL → ``""``) and the verifier's username and email (NULL
+#: when the account is gone).
 SELECT_VERIFIED_ITEMS = text(
     "SELECT k.item_id, k.content, "
     "CASE WHEN v.enterprise_id = k.enterprise_id THEN v.display_name END, "
-    "v.username "
+    "v.username, v.email "
     "FROM knowledge_items AS k LEFT JOIN users AS v ON v.user_id = k.verified_by "
     f"WHERE k.verified_by IS NOT NULL OR {_VERIFIER_GONE} "
     "ORDER BY k.item_id"
@@ -171,17 +190,46 @@ OFFLINE_NOTICE = (
 )
 
 
+#: ``infrastructure/auth/synthesized_email.SYNTHESIZED_EMAIL_DOMAIN``, frozen.
+_SYNTHESIZED_EMAIL_SUFFIX = "@faultmaven.example"
+
+
 class _Unparseable(Exception):
     """The text's frontmatter does not parse and holds no line to rewrite."""
 
 
+class _NotDerived(Exception):
+    """The value is not derived from the verifier's account: it stays."""
+
+
+def is_account_derived(
+    value: object, username: Optional[str], email: Optional[str]
+) -> bool:
+    """Whether a stored ``verified_by`` value was derived from the verifier's
+    account (see the module docstring). ``username`` and ``email`` are ``None``
+    when the account is gone, leaving only the ``@`` rule."""
+    if value is None:
+        return False
+    text_value = str(value)
+    if "@" in text_value:
+        return True
+    folded = text_value.strip().lower()
+    if username is not None and folded == username.strip().lower():
+        return True
+    if email and not email.lower().endswith(_SYNTHESIZED_EMAIL_SUFFIX):
+        if folded == email.split("@", 1)[0].strip().lower():
+            return True
+    return False
+
+
 def rewrite_verified_by(
-    content: str, name: str, username: Optional[str]
+    content: str, name: str, username: Optional[str], email: Optional[str]
 ) -> Optional[str]:
     """``content`` with its frontmatter ``verified_by`` set to ``name``, or
     ``None`` when nothing changes.
 
-    Raises ``_Unparseable`` for a frontmatter that does not parse and does not
+    Raises ``_NotDerived`` for a value not derived from the verifier's account,
+    and ``_Unparseable`` for a frontmatter that does not parse and does not
     hold the line verify's old fallback wrote for ``username``.
     """
     try:
@@ -198,6 +246,8 @@ def rewrite_verified_by(
     current = post.metadata["verified_by"]
     if current == name or (current is None and name == ""):
         return None
+    if not is_account_derived(current, username, email):
+        raise _NotDerived()
     post.metadata["verified_by"] = name
     return frontmatter.dumps(post)
 
@@ -214,15 +264,19 @@ def _rewrite() -> None:
     bind = op.get_bind()
     targets: dict = {}
     unparseable: list = []
+    kept: list = []
     items_rewritten = 0
     emptied = 0
-    for item_id, content, display_name, username in bind.execute(
+    for item_id, content, display_name, username, email in bind.execute(
         SELECT_VERIFIED_ITEMS
     ).fetchall():
         name = display_name or ""
-        targets[item_id] = (name, username)
+        targets[item_id] = (name, username, email)
         try:
-            new = rewrite_verified_by(content, name, username)
+            new = rewrite_verified_by(content, name, username, email)
+        except _NotDerived:
+            kept.append(item_id)
+            continue
         except _Unparseable:
             unparseable.append(item_id)
             continue
@@ -236,9 +290,11 @@ def _rewrite() -> None:
     for draft_id, item_id, content in bind.execute(SELECT_VERIFIED_DRAFTS).fetchall():
         if item_id not in targets:
             continue
-        name, username = targets[item_id]
+        name, username, email = targets[item_id]
         try:
-            new = rewrite_verified_by(content, name, username)
+            new = rewrite_verified_by(content, name, username, email)
+        except _NotDerived:
+            continue
         except _Unparseable:
             unparseable.append(draft_id)
             continue
@@ -254,6 +310,13 @@ def _rewrite() -> None:
         drafts_rewritten,
         emptied,
     )
+    if kept:
+        _log.info(
+            "019: left %d verified runbook(s) whose verified_by is not derived "
+            "from the verifier's account (a name the owner chose): %s",
+            len(kept),
+            ", ".join(kept),
+        )
     if unparseable:
         _log.warning(
             "019: left %d runbook text(s) whose frontmatter does not parse and "
