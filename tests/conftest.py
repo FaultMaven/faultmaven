@@ -1666,32 +1666,6 @@ def mock_ollama_client():
     return client
 
 
-@pytest.fixture
-def test_config():
-    """Test configuration for FaultMaven."""
-    return {
-        "llm": {
-            "fireworks": {"api_key": "test-key", "model": "test-model"},
-            "openrouter": {"api_key": "test-key", "model": "test-model"},
-            "ollama": {"base_url": "http://localhost:11434", "model": "llama2"},
-        },
-        "chromadb": {
-            "persist_directory": "./test_chroma",
-            "collection_name": "test_collection",
-        },
-        "session": {
-            "timeout": 1800,  # 30 minutes for testing
-            "cleanup_interval": 300,  # 5 minutes for testing
-        },
-        "security": {
-            "secret_patterns": {
-                "test_key": r"TEST_[A-Z0-9]{16}",
-                "test_token": r"TEST_TOKEN_[A-Z0-9]{32}",
-            }
-        },
-    }
-
-
 # Case persistence fixtures
 @pytest.fixture
 def sample_case():

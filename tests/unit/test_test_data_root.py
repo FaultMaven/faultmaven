@@ -19,6 +19,7 @@ import pathlib
 from unittest.mock import patch
 
 import pytest
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 from tests.conftest import SHIPPED_DATA_DEFAULTS, TEST_DATA_ROOT_ENV
@@ -43,36 +44,70 @@ KNOWN_DATA_FIELDS = {
 
 
 def _is_under_data(value: object) -> bool:
+    """Whether ``value`` names the cwd-relative ``data/`` tree.
+
+    A path, or a DSN around one: ``scheme:///`` is stripped first, so a
+    relative SQLite URL (``sqlite:///data/new.db``) counts. Absolute paths
+    (``sqlite:////tmp/x.db``) do not.
+    """
     if not isinstance(value, (str, pathlib.PurePath)):
         return False
     text = str(value)
-    return "./data" in text or text.startswith("data/") or text == "data"
+    _scheme, separator, rest = text.partition(":///")
+    if not separator:
+        rest = text
+    parts = pathlib.PurePosixPath(rest).parts[:2]
+    return parts[:1] == ("data",) or parts == (".", "data")
 
 
-def _data_fields() -> list[tuple[type, str]]:
-    """Every settings field whose SHIPPED default is under ``./data``.
+def _settings_classes() -> list[type]:
+    from faultmaven.config import settings as settings_module
+
+    return [
+        cls
+        for cls in vars(settings_module).values()
+        if isinstance(cls, type)
+        and issubclass(cls, BaseSettings)
+        and cls.__module__ == SETTINGS_MODULE
+    ]
+
+
+def _data_fields_of(classes) -> list[tuple[type, str]]:
+    """Every field of ``classes`` whose SHIPPED default is under ``./data``.
 
     The shipped default is what the conftest recorded before moving it, or the
     field's default where the conftest moved nothing -- which is how a new
-    field shows up here.
+    field shows up here. A ``default_factory`` is called, so a factory-built
+    default is seen too.
     """
-    from faultmaven.config import settings as settings_module
-
     found = []
-    for cls in vars(settings_module).values():
-        if not (
-            isinstance(cls, type)
-            and issubclass(cls, BaseSettings)
-            and cls.__module__ == SETTINGS_MODULE
-        ):
-            continue
+    for cls in classes:
         for name, field in cls.model_fields.items():
-            shipped = SHIPPED_DATA_DEFAULTS.get(
-                (SETTINGS_MODULE, cls.__name__, name), field.default
-            )
+            key = (cls.__module__, cls.__name__, name)
+            if key in SHIPPED_DATA_DEFAULTS:
+                shipped = SHIPPED_DATA_DEFAULTS[key]
+            else:
+                shipped = field.get_default(call_default_factory=True)
             if _is_under_data(shipped):
                 found.append((cls, name))
     return found
+
+
+def _data_fields() -> list[tuple[type, str]]:
+    return _data_fields_of(_settings_classes())
+
+
+def _variable_of(cls: type, name: str) -> str:
+    """The environment variable a field binds (the models use no prefix)."""
+    alias = cls.model_fields[name].validation_alias
+    return alias if isinstance(alias, str) else name.upper()
+
+
+def _set_by_the_caller(variable: str) -> bool:
+    """Set, and not to a path under this session's root: the caller's choice,
+    which the conftest leaves alone (the ``-m postgres`` lane's DATABASE_URL)."""
+    value = os.environ.get(variable)
+    return value is not None and (os.environ[TEST_DATA_ROOT_ENV] + os.sep) not in value
 
 
 def _module_attributes() -> list[tuple[str, str]]:
@@ -89,9 +124,7 @@ def _assert_in_the_session_root(label: str, value: object) -> None:
     text = str(value)
     assert (root + os.sep) in text, f"{label} = {text!r} is not under {root}"
     assert str(REPO_ROOT) not in text, f"{label} = {text!r} is in the checkout"
-    assert "./data" not in text and not text.startswith(
-        "data"
-    ), f"{label} = {text!r} is the cwd-relative ./data"
+    assert not _is_under_data(value), f"{label} = {text!r} is the cwd-relative ./data"
 
 
 def test_the_session_root_is_outside_the_checkout_and_names_this_process():
@@ -115,12 +148,53 @@ def test_the_introspection_finds_every_known_data_field():
         assert _is_under_data(value), "the record holds the shipped ./data values"
 
 
-def _assert_every_data_default_in_the_session_root() -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        Field(default_factory=lambda: "./data/planted"),
+        Field(default="sqlite:///data/planted.db"),
+    ],
+    ids=["default-factory", "relative-sqlite-dsn"],
+)
+def test_a_planted_data_field_fails_the_guard(field):
+    """Two spellings the introspection once missed: a factory-built default,
+    and a relative SQLite DSN. Planted on a settings class of their own, each
+    must be found and must fail the session-root check."""
+    planted = type(
+        "PlantedSettings",
+        (BaseSettings,),
+        {"__annotations__": {"planted_path": str}, "planted_path": field},
+    )
+
+    assert _data_fields_of([planted]) == [(planted, "planted_path")]
+    with pytest.raises(AssertionError, match="is not under"):
+        _assert_in_the_session_root("planted", planted().planted_path)
+
+
+def test_absolute_and_unrelated_values_are_not_data():
+    for value in (
+        "sqlite:////tmp/x.db",
+        "/data/chroma-kb",
+        "postgresql+asyncpg://u@h/db",
+        "database",
+        "metadata/x",
+    ):
+        assert not _is_under_data(value), value
+
+
+def _assert_every_data_default_in_the_session_root() -> list[str]:
+    """Assert every ``./data`` default is in the session root; return the
+    variables skipped because the caller set them explicitly."""
     import importlib
 
     from faultmaven.config.settings import get_settings, reset_settings
 
+    skipped = []
     for cls, name in _data_fields():
+        variable = _variable_of(cls, name)
+        if _set_by_the_caller(variable):
+            skipped.append(variable)
+            continue
         _assert_in_the_session_root(f"{cls.__name__}.{name}", getattr(cls(), name))
     for module, attribute in _module_attributes():
         value = getattr(importlib.import_module(module), attribute)
@@ -129,26 +203,45 @@ def _assert_every_data_default_in_the_session_root() -> None:
     reset_settings()
     try:
         settings = get_settings()
-        for label, value in {
-            "database.database_url": settings.database.database_url,
-            "database.chromadb_kb_persist_dir": (
-                settings.database.chromadb_kb_persist_dir
+        for variable, label, value in (
+            ("DATABASE_URL", "database.database_url", settings.database.database_url),
+            (
+                "CHROMADB_KB_PERSIST_DIR",
+                "database.chromadb_kb_persist_dir",
+                settings.database.chromadb_kb_persist_dir,
             ),
-            "database.chromadb_evidence_persist_dir": (
-                settings.database.chromadb_evidence_persist_dir
+            (
+                "CHROMADB_EVIDENCE_PERSIST_DIR",
+                "database.chromadb_evidence_persist_dir",
+                settings.database.chromadb_evidence_persist_dir,
             ),
-            "evidence_storage.evidence_storage_root": (
-                settings.evidence_storage.evidence_storage_root
+            (
+                "EVIDENCE_STORAGE_ROOT",
+                "evidence_storage.evidence_storage_root",
+                settings.evidence_storage.evidence_storage_root,
             ),
-            "protection.pseudonym_key_path": settings.protection.pseudonym_key_path,
-        }.items():
-            _assert_in_the_session_root(label, value)
+            (
+                "REDACTION_PSEUDONYM_KEY_PATH",
+                "protection.pseudonym_key_path",
+                settings.protection.pseudonym_key_path,
+            ),
+        ):
+            if variable not in skipped:
+                _assert_in_the_session_root(label, value)
     finally:
         reset_settings()
+    return skipped
 
 
 def test_every_data_default_resolves_in_the_session_root():
-    _assert_every_data_default_in_the_session_root()
+    skipped = _assert_every_data_default_in_the_session_root()
+    if skipped:
+        pytest.skip(
+            f"the caller set {', '.join(sorted(skipped))} explicitly, to a path "
+            "outside this session's root; the caller's value wins (#1772), so "
+            "those fields were not checked (every other one passed). The "
+            "emptied-environment test still checks their defaults."
+        )
 
 
 @pytest.mark.parametrize(

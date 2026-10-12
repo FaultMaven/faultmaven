@@ -29,10 +29,12 @@ import pytest
 from faultmaven.config.settings import set_env_var
 from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
+from tests.conftest import TEST_DATA_ROOT_ENV
 
-# Test database path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-TEST_DB = str(PROJECT_ROOT / "test_migration.db")
+#: Under this process's own data root (#1772), not the checkout: one fixed file
+#: there was migrated by every xdist worker at once.
+TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 
 # Current head revision. The chain is ADR-017's clean baseline (which replaced
 # the 001-053 chain) plus additive revisions on top of it, so the seed
