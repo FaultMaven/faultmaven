@@ -60,17 +60,26 @@ to match on.
 How the text changes
 --------------------
 
-The frontmatter is parsed and written back with ``python-frontmatter``
-(``loads``/``dumps``), the library and serialiser verify uses, so a runbook verify
-wrote changes only in its ``verified_by`` line. A runbook whose frontmatter has
-no ``verified_by`` key is left alone (there is nothing derived to remove), as is
-one that already holds the target name (so a re-run changes nothing).
+Only the value's own characters change. The frontmatter block is found with the
+application's grammar (``utils/frontmatter.FRONTMATTER_RE``, frozen here: an
+optional BOM, ``---`` delimiter lines with LF or CRLF endings, anchored at the
+start), parsed with ``yaml.compose`` to find where the ``verified_by`` value
+starts and ends, and the new value is spliced into that span as a YAML
+double-quoted scalar escaped by ``json.dumps`` (the form #1924's fallback writer
+uses). Re-serialising the frontmatter instead would rewrite every other line of a
+runbook its owner edited (``PUT /knowledge/documents/{id}`` stores the text
+verbatim): comments dropped, keys re-sorted, quoting and timestamps
+re-spelled, CRLF and the trailing newline lost. A block scalar's trailing line
+breaks stay. A runbook whose frontmatter has no ``verified_by`` key is left
+alone (there is nothing derived to remove), as is one that already holds the
+target name (so a re-run changes nothing).
 
 Verify's old fallback, for a frontmatter that did not parse, replaced the
 literal ``verified_by: ""`` with ``verified_by: "<username>"``. Such a text still
 does not parse, so its rewrite is that same literal replacement in reverse,
-keyed on the verifier's username; a text that does not parse and holds no such
-line (or whose verifier is gone) is left, and its id is logged.
+keyed on the verifier's username and confined to the frontmatter block (the
+body may quote the line); a text that does not parse and holds no such line in
+its frontmatter (or whose verifier is gone) is left, and its id is logged.
 
 Rows left untouched
 -------------------
@@ -109,10 +118,11 @@ Offline (``--sql``)
 
 The rewrite parses each runbook's frontmatter, which a generated script cannot
 do. Both dialects render a SQL comment saying so in place of the rewrite, and
-nothing else: a script loses nothing, it only leaves the old values. Because
-``downgrade()`` is a no-op and the upgrade is idempotent, an online
-``alembic downgrade c4441b83ba24`` then ``alembic upgrade 82bc95a1c02f`` applies
-the rewrite later. (On SQLite a whole-chain render already stops at 018.)
+nothing else: a script loses nothing, it only leaves the old values. The
+upgrade is idempotent, so it can be applied later, online, on its own:
+``alembic stamp c4441b83ba24``, then ``alembic upgrade 82bc95a1c02f``, then
+``alembic stamp head``. Stamping, not downgrading, so no later revision's
+``downgrade()`` runs. (On SQLite a whole-chain render already stops at 018.)
 
 ``downgrade()``
 ---------------
@@ -127,9 +137,10 @@ Create Date: 2026-10-12 15:00:00
 
 import json
 import logging
+import re
 from typing import Optional, Sequence, Union
 
-import frontmatter
+import yaml
 from sqlalchemy import text
 
 from alembic import op
@@ -147,7 +158,7 @@ _log = logging.getLogger("alembic.runtime.migration")
 #: source), its verifier since deleted. Frozen: migrations are history.
 _VERIFIER_GONE = (
     "(k.verified_by IS NULL AND k.verification_level = 1 "
-    "AND k.source_url LIKE 'conversion:%')"
+    "AND COALESCE(k.source_url, '') LIKE 'conversion:%')"
 )
 
 #: Rules 1 and 2: each runbook verified through FaultMaven, with the name verify
@@ -185,10 +196,17 @@ OFFLINE_NOTICE = (
     "-- WARNING (019): this script does NOT rewrite runbook verified_by values: "
     "the rewrite parses each runbook's frontmatter and needs a connection. "
     "Usernames written by verify before #1942 stay published. To apply it, run "
-    "online: alembic downgrade c4441b83ba24 (a no-op), then alembic upgrade "
-    "82bc95a1c02f"
+    "online: alembic stamp c4441b83ba24, then alembic upgrade 82bc95a1c02f, then "
+    "alembic stamp head"
 )
 
+
+#: ``faultmaven/utils/frontmatter.FRONTMATTER_RE``, frozen: the app's one
+#: frontmatter grammar (an optional BOM, ``---`` lines with CRLF or LF endings,
+#: the block anchored at the start of the text). Group 1 is the YAML.
+_FRONTMATTER_RE = re.compile(
+    "^\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", re.DOTALL
+)
 
 #: ``infrastructure/auth/synthesized_email.SYNTHESIZED_EMAIL_DOMAIN``, frozen.
 _SYNTHESIZED_EMAIL_SUFFIX = "@faultmaven.example"
@@ -222,41 +240,90 @@ def is_account_derived(
     return False
 
 
+def _frontmatter_block(content: str) -> Optional[re.Match]:
+    """The frontmatter block at the start of ``content`` (group 1), or ``None``."""
+    return _FRONTMATTER_RE.match(content)
+
+
+def _verified_by_node(block: str) -> Optional[yaml.Node]:
+    """The ``verified_by`` value node of a parsed frontmatter block (the last
+    one, as a load keeps the last of a repeated key), or ``None``. Raises
+    ``yaml.YAMLError`` for a block that does not parse."""
+    root = yaml.compose(block, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return None
+    found = None
+    for key, value in root.value:
+        if isinstance(key, yaml.ScalarNode) and key.value == "verified_by":
+            found = value
+    return found
+
+
+def _quoted(name: str) -> str:
+    """``name`` as a YAML double-quoted scalar: JSON's escaping, which YAML's
+    double-quoted style reads back unchanged (#1924's fallback writer's form)."""
+    return json.dumps(name, ensure_ascii=False)
+
+
 def rewrite_verified_by(
     content: str, name: str, username: Optional[str], email: Optional[str]
 ) -> Optional[str]:
-    """``content`` with its frontmatter ``verified_by`` set to ``name``, or
-    ``None`` when nothing changes.
+    """``content`` with its frontmatter ``verified_by`` VALUE replaced by
+    ``name``, or ``None`` when nothing changes.
+
+    Only the value's own characters change: the frontmatter is parsed to find
+    where the value starts and ends, and ``name`` is spliced in, double-quoted.
+    Line endings, comments, key order, the other values' quoting and the body
+    stay byte for byte (an owner-edited runbook is stored verbatim).
 
     Raises ``_NotDerived`` for a value not derived from the verifier's account,
     and ``_Unparseable`` for a frontmatter that does not parse and does not
     hold the line verify's old fallback wrote for ``username``.
     """
-    try:
-        post = frontmatter.loads(content)
-    except Exception:
-        written = f'verified_by: "{username}"' if username is not None else None
-        if written is None or written not in content:
-            raise _Unparseable()
-        replacement = f"verified_by: {json.dumps(name, ensure_ascii=False)}"
-        new = content.replace(written, replacement, 1)
-        return None if new == content else new
-    if "verified_by" not in post.metadata:
+    match = _frontmatter_block(content)
+    if match is None:
         return None
-    current = post.metadata["verified_by"]
+    block, offset = match.group(1), match.start(1)
+    try:
+        node = _verified_by_node(block)
+        current = yaml.safe_load(block).get("verified_by") if node else None
+    except yaml.YAMLError:
+        # Verify's old fallback wrote this exact line into a frontmatter that
+        # did not parse. Replaced inside the frontmatter only, never the body.
+        written = f'verified_by: "{username}"' if username is not None else None
+        if written is None or written not in block:
+            raise _Unparseable()
+        fixed = block.replace(written, f"verified_by: {_quoted(name)}", 1)
+        if fixed == block:
+            return None
+        return content[:offset] + fixed + content[offset + len(block) :]
+    if node is None:
+        return None
     if current == name or (current is None and name == ""):
         return None
-    if not is_account_derived(current, username, email):
+    if not isinstance(node, yaml.ScalarNode) or not is_account_derived(
+        current, username, email
+    ):
         raise _NotDerived()
-    post.metadata["verified_by"] = name
-    return frontmatter.dumps(post)
+    start = offset + node.start_mark.index
+    end = offset + node.end_mark.index
+    span = content[start:end]
+    # A block scalar's span runs through its trailing line breaks: keep them.
+    kept_tail = span[len(span.rstrip()) :]
+    return content[:start] + _quoted(name) + kept_tail + content[end:]
 
 
 def _holds_an_address(content: str) -> bool:
-    try:
-        value = frontmatter.loads(content).metadata.get("verified_by")
-    except Exception:
+    match = _frontmatter_block(content)
+    if match is None:
         return False
+    try:
+        metadata = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    value = metadata.get("verified_by")
     return value is not None and "@" in str(value)
 
 

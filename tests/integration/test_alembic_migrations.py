@@ -2661,7 +2661,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             "verified_by: alice.smith",
-            "verified_by: Alice Smith",
+            'verified_by: "Alice Smith"',
         ),
         # The same value quoted.
         (
@@ -2670,7 +2670,18 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             'verified_by: "alice.smith"',
-            "verified_by: Alice Smith",
+            'verified_by: "Alice Smith"',
+        ),
+        # The username in another case, padded: compared folded and stripped.
+        # Frank's username is not his email's local part, so only the username
+        # rule can match it.
+        (
+            "ki_mixed",
+            FRANK,
+            1,
+            "conversion:job_1",
+            'verified_by: "  FRANK-2 "',
+            'verified_by: "Frank Ng"',
         ),
         # An address.
         (
@@ -2679,7 +2690,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             "verified_by: alice.smith@example.com",
-            "verified_by: Alice Smith",
+            'verified_by: "Alice Smith"',
         ),
         # The real email's local part, in another case: account-derived.
         (
@@ -2688,7 +2699,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             "verified_by: FRANK",
-            "verified_by: Frank Ng",
+            'verified_by: "Frank Ng"',
         ),
         # A username renamed since the verification: the documented false
         # negative, left as it is.
@@ -2706,7 +2717,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             "verified_by: gone@example.com",
-            "verified_by: ''",
+            'verified_by: ""',
         ),
         # The verifier is gone and the value holds no '@': nothing shows it
         # was derived from the account, so it stays.
@@ -2725,7 +2736,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
             1,
             "conversion:job_1",
             "verified_by: eve",
-            "verified_by: ''",
+            'verified_by: ""',
         ),
         # No verified_by key: nothing to rewrite.
         ("ki_nokey", ALICE, 1, "conversion:job_1", None, None),
@@ -2738,21 +2749,61 @@ class TestVerifiedByIsTheDisplayNameRevision:
             "verified_by: up@example.com",
             None,
         ),
-        # The pack (COMMUNITY, no verifier, no conversion source).
+        # The pack (COMMUNITY, no verifier, and no source: NULL, as shipped).
         (
             "kb_0123456789ab",
             None,
             1,
-            "https://example.com/runbook",
+            None,
             "verified_by: sre@example.com",
             None,
         ),
     )
     #: Verify's old fallback for a frontmatter that did not parse: the literal
-    #: ``verified_by: ""`` replaced with the quoted username.
+    #: ``verified_by: ""`` replaced with the quoted username. The body quotes
+    #: the same line, which is never touched.
     UNPARSEABLE = (
         '---\nid: rb-broken\ntitle: [unclosed\nverified_by: "alice.smith"\n'
-        "---\n\n# Broken"
+        '---\n\n# Broken\n\nverified_by: "alice.smith"\n'
+    )
+    #: A frontmatter that does not parse and lacks the line; only the body holds
+    #: it. Left as it is (and logged).
+    UNPARSEABLE_BODY_ONLY = (
+        "---\nid: rb-broken-2\ntitle: [unclosed\nstatus: verified\n---\n\n"
+        '# Broken\n\nexample verified_by: "alice.smith"\n'
+    )
+    #: Texts stored verbatim, as ``PUT /knowledge/documents/{id}`` stores an
+    #: owner's edit: (item id, before, after). Only the value changes.
+    VERBATIM = (
+        # Comment, unsorted keys, quoting, list indent, a timestamp, the
+        # trailing newline, and the body quoting the line.
+        (
+            "ki_edited",
+            '---\n# reviewed quarterly\ntitle: "Disk full"\nverified_by: alice.smith\n'
+            "status: verified\ntags:\n  - disk\n  - linux\nts: 2024-05-01T10:00:00Z\n"
+            "---\n\n# Disk full\n\nedited body\nverified_by: alice.smith\n",
+            '---\n# reviewed quarterly\ntitle: "Disk full"\n'
+            'verified_by: "Alice Smith"\n'
+            "status: verified\ntags:\n  - disk\n  - linux\nts: 2024-05-01T10:00:00Z\n"
+            "---\n\n# Disk full\n\nedited body\nverified_by: alice.smith\n",
+        ),
+        # CRLF line endings throughout, kept.
+        (
+            "ki_crlf",
+            "---\r\nid: rb-crlf\r\nstatus: verified\r\nverified_by: alice.smith\r\n"
+            "---\r\n\r\n# Disk full\r\n\r\nRun df -h.\r\n",
+            "---\r\nid: rb-crlf\r\nstatus: verified\r\n"
+            'verified_by: "Alice Smith"\r\n'
+            "---\r\n\r\n# Disk full\r\n\r\nRun df -h.\r\n",
+        ),
+        # A folded block scalar: its span ends past its line break, kept.
+        (
+            "ki_folded",
+            "---\nid: rb-folded\nverified_by: >-\n  alice.smith\nstatus: verified\n"
+            "---\n\nbody\n",
+            '---\nid: rb-folded\nverified_by: "Alice Smith"\nstatus: verified\n'
+            "---\n\nbody\n",
+        ),
     )
 
     def _expected(self, item_id: str, line: Optional[str], after: Optional[str]):
@@ -2802,6 +2853,19 @@ class TestVerifiedByIsTheDisplayNameRevision:
             ]
             rows.append(
                 ("ki_broken", self.ALICE, 1, "conversion:job_1", self.UNPARSEABLE)
+            )
+            rows.append(
+                (
+                    "ki_broken_body",
+                    self.ALICE,
+                    1,
+                    "conversion:job_1",
+                    self.UNPARSEABLE_BODY_ONLY,
+                )
+            )
+            rows.extend(
+                (item_id, self.ALICE, 1, "conversion:job_1", before)
+                for item_id, before, _ in self.VERBATIM
             )
             for item_id, verifier, level, source, content in rows:
                 conn.execute(
@@ -2867,12 +2931,19 @@ class TestVerifiedByIsTheDisplayNameRevision:
         items = self._items()
         for row in self.ITEMS:
             self._assert_row(items, row[0])
+        # The fallback line in the frontmatter only; the body's copy stays.
         assert items["ki_broken"] == self.UNPARSEABLE.replace(
-            '"alice.smith"', '"Alice Smith"'
+            '"alice.smith"', '"Alice Smith"', 1
         )
+        assert items["ki_broken"].endswith('verified_by: "alice.smith"\n')
+        assert items["ki_broken_body"] == self.UNPARSEABLE_BODY_ONLY
         assert (
-            "019: rewrote verified_by in 7 published runbook(s) and 7 verified "
+            "019: rewrote verified_by in 11 published runbook(s) and 11 verified "
             "draft(s); 2 of those runbooks have no verifier account and now hold ''"
+        ) in result.stderr
+        assert (
+            "019: left 2 runbook text(s) whose frontmatter does not parse and "
+            "holds no verified_by line verify wrote: ki_broken_body, d_ki_broken_body"
         ) in result.stderr
         assert (
             "019: left 2 runbook(s) not verified through FaultMaven (uploads, the "
@@ -2901,8 +2972,32 @@ class TestVerifiedByIsTheDisplayNameRevision:
         ``robert`` for a synthesized ``robert@faultmaven.example`` is not."""
         assert self._migrate_seeded(database_url).returncode == 0
         items = self._items()
-        assert "verified_by: Frank Ng\n" in items["ki_localpart"]
+        assert 'verified_by: "Frank Ng"\n' in items["ki_localpart"]
         self._assert_row(items, "ki_synth")
+
+    def test_only_the_value_changes_in_a_text_stored_verbatim(
+        self, clean_database, database_url
+    ):
+        """An owner-edited runbook, a CRLF one and a folded value: the rewrite
+        changes the ``verified_by`` value's characters and nothing else, so
+        comments, key order, quoting, line endings and the body stay byte for
+        byte."""
+        assert self._migrate_seeded(database_url).returncode == 0
+        items = self._items()
+        for item_id, before, after in self.VERBATIM:
+            assert items[item_id] == after, item_id
+            if item_id == "ki_folded":
+                continue  # Two value lines become one; the equality above holds.
+            changed = [
+                (old, new)
+                for old, new in zip(
+                    before.splitlines(keepends=True),
+                    items[item_id].splitlines(keepends=True),
+                )
+                if old != new
+            ]
+            assert len(changed) == 1, (item_id, changed)
+            assert changed[0][0].startswith("verified_by:"), (item_id, changed)
 
     def test_a_renamed_username_is_the_documented_false_negative(
         self, clean_database, database_url
@@ -2968,7 +3063,10 @@ class TestVerifiedByIsTheDisplayNameRevision:
         sql = result.stdout
         revision = sql.index("-- Running upgrade c4441b83ba24 -> 82bc95a1c02f")
         assert revision < sql.index("-- WARNING (019): this script does NOT rewrite")
-        assert "alembic downgrade c4441b83ba24" in sql
+        assert (
+            "alembic stamp c4441b83ba24, then alembic upgrade 82bc95a1c02f, then "
+            "alembic stamp head"
+        ) in sql
         assert "UPDATE knowledge_items" not in sql
         assert "UPDATE conversion_drafts" not in sql
         assert "row_security" not in sql[revision:]

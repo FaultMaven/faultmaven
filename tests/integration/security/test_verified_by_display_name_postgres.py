@@ -172,8 +172,8 @@ async def test_the_owner_rewrites_every_enterprises_runbooks():
                 await _execute(su_url, "SELECT id, content FROM conversion_drafts")
             )
             for e in enterprises:
-                assert items[f"ki_{e}"] == _runbook(f"Name {e}")
-                assert items[f"ki_gone_{e}"] == _runbook("''")
+                assert items[f"ki_{e}"] == _runbook(f'"Name {e}"')
+                assert items[f"ki_gone_{e}"] == _runbook('""')
                 for item in (f"ki_{e}", f"ki_gone_{e}"):
                     assert drafts[f"d_{item}"] == items[item], item
 

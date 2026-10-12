@@ -324,10 +324,10 @@ database.
 
 The revision after it rewrites verified runbooks' frontmatter `verified_by`
 (#1948), which means parsing each runbook, so a script cannot do it: it renders
-a SQL-comment warning in place of the rewrite on both dialects. Its
-`downgrade()` is a no-op and its upgrade idempotent, so stepping down to its
-parent and up again online applies the rewrite later; the comment names both
-revisions.
+a SQL-comment warning in place of the rewrite on both dialects. Its upgrade is
+idempotent, so it can be applied later, online, on its own: `alembic stamp` to
+its parent, `alembic upgrade` to it, then `alembic stamp head` — stamping, so no
+later revision's `downgrade()` runs. The comment names both revisions.
 
 Offline mode cannot render a batch operation on SQLite: batch mode reflects the
 live table, so `--sql` stops with `This operation cannot proceed in --sql mode`
