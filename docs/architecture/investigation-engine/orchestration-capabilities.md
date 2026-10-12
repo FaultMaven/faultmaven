@@ -283,7 +283,7 @@ See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-desi
 | the case has no searchable material (`_has_searchable_material()` is False) | no evidence row, and no upload with a searchable structural index — the loop would offer tools with nothing to target |
 | the turn is not `knowledge_query` | `kb_qa` and `web_search` exist only inside the loop, and a knowledge question needs them |
 
-On that path the call declares `ReasoningIntent.INFERENCE` with `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` (2048). The intent is what lifts the structured-call effort from the `"low"` shape default to `"medium"`; the floor is mandatory alongside `INFERENCE` (#1117) because the intent lifts provider starvation guards and reasoning bills against the same budget as the visible answer. The prompt for this route is built with `tools_available=False`, so no evidence extract is replaced by an index stub that no `search_file` will recover.
+On that path the call declares `ReasoningIntent.INFERENCE` with `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` (2048). The intent is what lifts the structured-call effort from the `"low"` shape default to `"medium"`; the floor is mandatory alongside `INFERENCE` (#1117) because the intent lifts provider starvation guards and reasoning bills against the same budget as the visible answer. The prompt for this route is built with `given_tools=NO_TOOLS` (#1939), so it names no tool and no evidence extract is replaced by an index stub that no `search_file` will recover.
 
 The route is decided from case state, not configuration. It stops firing for a case as soon as the case holds anything searchable, which is normally the first upload.
 

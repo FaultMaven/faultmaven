@@ -105,13 +105,15 @@ in the evidence tiers, and the one that used to sit there was unreachable and wa
 deleted in #1603. TRIAGE turns are unchanged (triage answers *from* the structural
 index).
 
-**Gated on tool-availability, not a flag.** The elision is only sound when
+**Gated on the given tool set, not a flag.** The elision is only sound when
 `search_file` will actually run — otherwise a tool-less / tool-incapable turn is
 stranded with a stub pointing at an uncallable tool. So the condition is
-`processing_mode == "directed_analysis" AND tools_available`, where
-`tools_available` (investigation tools registered AND `supports_tool_calling`) is
-computed by `milestone_engine.generation.StructuredOutputGenerator.tools_effectively_available()` and threaded through
-`get_prompt_for_case` → `build_investigation_context` → `_build_evidence_context`.
+`processing_mode == "directed_analysis" AND "search_file" in given_tools`, where
+`given_tools` is the turn's given set (#1939; prompt-assembly-architecture.md §2.2):
+the names `StructuredOutputGenerator.given_tools()` reads off the tool loop's schemas
+when the provider can call tools, `NO_TOOLS` on a single-shot or tool-less turn. It is
+threaded through `get_prompt_for_case` → `build_investigation_context` →
+`_build_evidence_context`.
 
 **Measured effect (offline A/B, deterministic):** the historical evidence block
 drops **87–93%** — e.g. ~1,655 → 118 tokens for one file, and the whole block from
