@@ -398,6 +398,15 @@ for when that job runs.
 | `LLM_USAGE_DAILY_RETENTION_DAYS` | int (>= 1) | 400 | Days of `llm_usage_daily` rows kept; a row goes when its UTC `usage_date` is older than today minus this |
 | `LLM_USAGE_TURN_RETENTION_DAYS` | int (>= 1) | 90 | Days of `llm_turn_spend` rows kept; a row goes when its `occurred_at` is older than now minus this |
 
+## API Server Keep-Alive
+
+`ServerSettings.timeout_keep_alive` (`settings.server`), passed to `uvicorn.run`
+(which does not read `UVICORN_TIMEOUT_KEEP_ALIVE`).
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `TIMEOUT_KEEP_ALIVE` | int (>= 1) | 75 | Seconds uvicorn holds an idle keep-alive connection. Keep it above the fronting proxy's upstream keep-alive (ingress-nginx `upstream-keepalive-timeout`, 60 s) and every client's idle expiry (slack-agent httpx `keepalive_expiry`, 5 s), so a POST is never sent on a connection the API just closed |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

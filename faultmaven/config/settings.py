@@ -133,6 +133,13 @@ class ServerSettings(BaseSettings):
     port: int = Field(default=8090)
     reload: bool = Field(default=False)
     workers: int = Field(default=1)
+    timeout_keep_alive: int = Field(
+        default=75,
+        ge=1,
+        description="Seconds uvicorn holds an idle keep-alive connection. Must "
+        "exceed ingress-nginx's upstream-keepalive-timeout (60 s) so the "
+        "proxy never reuses a connection the API has just closed.",
+    )
 
     # Environment and behavior
     environment: Environment = Field(default=Environment.DEVELOPMENT)
