@@ -31,23 +31,13 @@ logger = logging.getLogger(__name__)
 _CONVERSION_TASKS: set["asyncio.Task[None]"] = set()
 
 
-def _driver_is_creator(case: "Case") -> bool:
-    """Whether the turn's actor (the effective driver) is the case creator."""
-    return case.effective_driver_id == case.user_id
-
-
-def _draft_location(case: "Case") -> str:
-    """Where the runbook draft is, worded for the turn's actor.
-
-    The draft always lands in the case CREATOR's personal KB (ADR-020 D6; the
-    conversion runs as ``case.user_id``). A turn's reply and the draft
-    notices address the effective driver, so a driver who is not the creator
-    is told the draft is in the creator's Drafts, not theirs. Every engine
-    text about the draft's location takes its wording from here.
-    """
-    if _driver_is_creator(case):
-        return "**Knowledge Base > Drafts**"
-    return "the case creator's **Knowledge Base > Drafts**"
+#: Where a case-generated runbook draft lands: always the case CREATOR's
+#: personal KB (ADR-020 D6; the conversion runs as ``case.user_id``). Every
+#: draft text this module persists (the turn reply and the SYSTEM_NOTICE rows)
+#: is rendered to EVERY reader of the case — creator, driver, read-only
+#: teammate — so it names the destination the same way for all of them and
+#: never addresses "you" about the draft (#1947).
+_DRAFT_LOCATION = "the case creator's **Knowledge Base > Drafts**"
 
 
 class RunbookCreator:
@@ -199,8 +189,8 @@ class RunbookCreator:
         if existing and existing.has_live_draft():
             return {
                 "agent_response": (
-                    "A runbook draft already exists for this case. You can view or "
-                    f"update it in the Dashboard under {_draft_location(case)}."
+                    "A runbook draft already exists for this case, in "
+                    f"{_DRAFT_LOCATION} in the Dashboard."
                 ),
                 "suggested_follow_ups": [],
                 "case_updated": case,
@@ -226,8 +216,6 @@ class RunbookCreator:
                     request,
                     case.user_id,
                     case.enterprise_id,
-                    draft_location=_draft_location(case),
-                    driver_is_creator=_driver_is_creator(case),
                     committed=plan.gate(),
                 )
             )
@@ -237,12 +225,13 @@ class RunbookCreator:
             # Name only what the reader can act on while reading this turn.
             #
             # No in-chat notification is promised. The background task DOES
-            # write a completion notification into the transcript, but it is a
-            # `role: "system"` row and the copilot's conversation loader keeps
-            # only user/assistant rows — and there is no push channel for case
-            # messages, so that row is invisible on this turn and after a
-            # reload alike. The FAILURE notifications ride the same row, so a
-            # failed or empty conversion is silent there.
+            # write a completion notification into the transcript, a
+            # SYSTEM_NOTICE row that the copilot (since copilot#209) and the
+            # Dashboard render to every reader. But there is no push channel
+            # for case messages, so the row appears only when the transcript
+            # is next loaded — not on this turn. The FAILURE notifications
+            # ride the same row, so a failed or empty conversion surfaces
+            # only there, never as a reply.
             #
             # No chat affordance is named either. "Generate runbook from this
             # case" is deliberately suppressed on THIS turn (see
@@ -265,20 +254,12 @@ class RunbookCreator:
             # later from the Dashboard"). That is the durable way out when the
             # silent failure above happens, and it costs the reader nothing
             # when it does not.
-            if _driver_is_creator(case):
-                agent_response = (
-                    "Creating your runbook draft from this case. "
-                    "It will appear in the Dashboard under "
-                    f"{_draft_location(case)} once generation finishes. You can "
-                    "also create and edit runbooks there directly."
-                )
-            else:
-                agent_response = (
-                    "Creating a runbook draft from this case. "
-                    "It will appear in the Dashboard under "
-                    f"{_draft_location(case)} once generation finishes. You can "
-                    "also create runbooks in your own **Knowledge Base**."
-                )
+            agent_response = (
+                "Creating a runbook draft from this case. "
+                f"It will appear in {_DRAFT_LOCATION} in the Dashboard once "
+                "generation finishes. You can also create runbooks in your "
+                "own **Knowledge Base**."
+            )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a
             # SUGGEST_WITH_CAVEATS verdict would otherwise reach the user as
@@ -375,8 +356,6 @@ class RunbookCreator:
         user_id: str,
         enterprise_id: str,
         *,
-        draft_location: str,
-        driver_is_creator: bool,
         committed: "asyncio.Future[Any]",
     ) -> None:
         """Background task for runbook conversion.
@@ -388,12 +367,6 @@ class RunbookCreator:
         (``ConversionService.convert_from_case``: the conversion job, its
         draft, the synthetic source upload, and this method's completion
         notice) all sit behind the gate.
-
-        ``draft_location`` and ``driver_is_creator`` are the wording for where
-        the draft lands (``_draft_location(case)``, ``_driver_is_creator(case)``)
-        and who it addresses, captured when the run starts: the notice
-        is written after a background run, and the case's driver can change
-        while it works.
 
         ``enterprise_id`` is the SOURCE CASE's enterprise, and it is required, not
         optional. The conversion persists three RLS-tenanted rows (the synthetic
@@ -424,14 +397,15 @@ class RunbookCreator:
         background task swallows the secondary error rather than masking the
         primary outcome.
 
-        Who reads these three strings decides what they may name. The copilot
-        drops `role: "system"` rows, so its users never see them at all; the
-        Dashboard renders the transcript, so it is the only reader to write
-        for. That rules out naming a chat affordance — the Dashboard has no
-        suggestion-chip UI whatsoever, so "click X" there points at a control
-        that has never existed, and it also has no case-to-runbook trigger of
-        its own to redirect to. What a Dashboard reader can reach is the
-        Knowledge Base: the Drafts tab to view, and the "write a runbook from
+        Who reads these three strings decides what they may name. They are
+        SYSTEM_NOTICE rows that the copilot (since copilot#209) and the
+        Dashboard render to EVERY reader of a shared case, so each is true for
+        the creator, the driver and a read-only teammate alike: the draft is
+        always in the case creator's Drafts, never "yours" (#1947). The
+        Dashboard has no suggestion-chip UI whatsoever, so naming a chat affordance
+        ("click X") points at a control that has never existed, and it also
+        has no case-to-runbook trigger of its own to redirect to. What a
+        reader can reach is the Knowledge Base: the Drafts tab to view, and the "write a runbook from
         the template" form to author one by hand. The two unhappy notices
         therefore state plainly that nothing was saved and offer that manual
         path, which is a weaker remedy than the conversion they were promised
@@ -472,9 +446,8 @@ class RunbookCreator:
                     },
                 )
                 notification_content = (
-                    f"{'Your' if driver_is_creator else 'The'} "
-                    f"runbook draft **{draft.title}** is ready. "
-                    f"View it in the Dashboard under {draft_location}."
+                    f"The runbook draft **{draft.title}** is ready in "
+                    f"{_DRAFT_LOCATION} in the Dashboard."
                 )
             else:
                 logger.warning(

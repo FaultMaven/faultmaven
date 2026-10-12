@@ -1994,9 +1994,9 @@ async def evaluate_runbook_suggestion(
                             f"A similar runbook already exists: **{title}** "
                             f"({similarity:.0%} best-chunk match). That "
                             "measures overlap, not full coverage, so I have "
-                            "not created a draft. Review the existing runbook "
-                            "in the Dashboard Knowledge Base, or generate a "
-                            "new one anyway."
+                            "not created a draft. The existing runbook is in the "
+                            "knowledge available to this case's driver; review "
+                            "it there, or generate a new one anyway."
                         ),
                     )
         except Exception as e:
