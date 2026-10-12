@@ -149,6 +149,14 @@ def _reset_outcomes() -> None:
     _session_outcomes = _SessionOutcomes()
 
 
+# The root conftest's per-test restore of the root logger (#1944). Run as
+# ``pytest tests/integration``, the rootdir is this directory (its own
+# ``pytest.ini``), so ``tests/conftest.py`` is only imported above, never
+# registered, and its hooks do not fire here. Under ``pytest tests/`` both
+# copies run for these tests; a nested snapshot and restore is the same restore.
+pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
+
+
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""
     _reset_outcomes()

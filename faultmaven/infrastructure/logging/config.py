@@ -10,24 +10,42 @@ at runtime, not at import time.
 
 import logging
 import sys
-from typing import Any, Dict, Optional, TextIO
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional, TextIO
 
 import structlog
 from opentelemetry import trace
 
 from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
 
-# Third-party loggers whose output is per-connection network tracing rather
-# than signal. httpcore logs exclusively at DEBUG, a record for every TCP/TLS
-# step of every request, and Opik's connection monitor probes its backend on a
-# timer from a daemon thread — so raising our own verbosity to DEBUG (what the
-# `local` preset does) buries the log in connection chatter nobody asked for.
+# Third-party loggers whose DEBUG output is per-operation tracing rather than
+# signal, each with the level it is pinned at. Raising our own verbosity to
+# DEBUG (what the `local` preset does) would otherwise bury the log in it:
+#
+# * httpcore logs exclusively at DEBUG, a record for every TCP/TLS step of
+#   every request, and Opik's connection monitor probes its backend on a timer
+#   from a daemon thread. Pinned at WARNING.
+# * aiosqlite logs two DEBUG records per statement ("executing ..." and
+#   "operation ... completed", each carrying the SQL), from its worker thread.
+#   Measured on the 180-commit turn-commit benchmark at DEBUG: 87,546 records,
+#   and the commit's p50 rose from ~70 ms to 224 ms (#1944). Pinned at INFO,
+#   not WARNING, so its one INFO record
+#   ("exception occurred while closing connection") still reaches the log.
+#
+# The other database loggers need no pin: SQLAlchemy pins its own "sqlalchemy"
+# logger at WARN when nothing set it (its echo flag is the opt-in), and asyncpg
+# logs nothing per statement.
 #
 # httpx is deliberately NOT listed. It logs only at INFO, and only the one
 # "HTTP Request: <method> <url> -> <status>" line per request, which is the
 # signal we want when an LLM provider starts returning 429s. It has no DEBUG
 # output, so pinning it would cost that line and suppress nothing.
-NOISY_THIRD_PARTY_LOGGERS = ("httpcore",)
+NOISY_THIRD_PARTY_LOGGERS: Mapping[str, int] = MappingProxyType(
+    {
+        "httpcore": logging.WARNING,
+        "aiosqlite": logging.INFO,
+    }
+)
 
 
 class LateBindingStreamHandler(logging.StreamHandler):
@@ -254,18 +272,18 @@ class FaultMavenLogger:
 
     @staticmethod
     def quiet_noisy_third_party_loggers() -> None:
-        """Pin per-connection network tracing at WARNING.
+        """Pin each per-operation tracer at its level in NOISY_THIRD_PARTY_LOGGERS.
 
         An explicit level set on the logger by anyone else wins — an operator
-        debugging HTTP, or ``caplog.set_level(..., logger="httpcore")`` — so
-        this only supplies a default where none was chosen. Setting the level
-        on the parent logger beats the root's level for the whole subtree,
-        which is what keeps LOG_LEVEL=DEBUG from reaching these.
+        debugging HTTP or SQL, or ``caplog.set_level(..., logger="httpcore")``
+        — so this only supplies a default where none was chosen. Setting the
+        level on the parent logger beats the root's level for the whole
+        subtree, which is what keeps LOG_LEVEL=DEBUG from reaching these.
         """
-        for logger_name in NOISY_THIRD_PARTY_LOGGERS:
+        for logger_name, level in NOISY_THIRD_PARTY_LOGGERS.items():
             third_party_logger = logging.getLogger(logger_name)
             if third_party_logger.level == logging.NOTSET:
-                third_party_logger.setLevel(logging.WARNING)
+                third_party_logger.setLevel(level)
 
     @staticmethod
     def add_request_context(
