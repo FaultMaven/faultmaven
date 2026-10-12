@@ -101,6 +101,37 @@ STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
 
 
+async def _case_redacted(
+    text: Optional[str], redaction_ctx: Any | None
+) -> Optional[str]:
+    """Case content as the model may see it: through the case-scoped redaction.
+
+    The one place this module turns case content into model-bound text (#1949).
+    Every prompt or message body that carries case content passes here before
+    it is handed to a provider: the prompt a generation starts from (which is
+    also how the #662 minimal-prompt retry is covered — it re-enters
+    ``_generate_structured_output_inner``), every prompt a builder RE-ASSEMBLES
+    after that first pass (the ``ToolCallingUnsupportedError`` full-evidence
+    fallback and the #614 tool-loop base resize), and every tool result relayed
+    back into the loop. A builder returns raw case content, so a rebuilt prompt
+    that skipped this would reach the provider with the case's pseudonyms
+    missing — and with whatever only the case-scoped pass redacts in clear.
+
+    The router's own sanitizer (``SANITIZE_PII``) is not a substitute: a
+    dedicated DA provider is called directly, never through the router, and the
+    case pass is what keeps one pseudonym per value across every call of the
+    case. ``tests/unit/core/investigation/test_rebuilt_prompts_are_redacted_1949.py``
+    pins each site and that no other call in this module sanitizes or builds a
+    prompt around this function.
+
+    ``None`` (no context: redaction disabled at the caller) and empty text pass
+    through unchanged.
+    """
+    if not redaction_ctx or not text:
+        return text
+    return await redaction_ctx.asanitize(text)
+
+
 class StructuredOutputGenerator:
     """Drives the tool-augmented and single-shot structured-output generation paths, holding the class constants (MAX_TOOL_ITERATIONS, TOOL_RESULT_MAX_CHARS, MAX_DEEP_ANALYSIS) that bound them."""
 
@@ -395,13 +426,14 @@ class StructuredOutputGenerator:
         resized: Optional[str] = None
         if base_prompt_builder is not None and room > 0:
             try:
-                resized = base_prompt_builder(
-                    target_tokens=room,
-                    provider_name=sizing_provider,
-                    model_name=model,
+                resized = await _case_redacted(
+                    base_prompt_builder(
+                        target_tokens=room,
+                        provider_name=sizing_provider,
+                        model_name=model,
+                    ),
+                    redaction_ctx,
                 )
-                if redaction_ctx and resized:
-                    resized = await redaction_ctx.asanitize(resized)
             except Exception as exc:  # never break the turn on a rebuild
                 logger.warning("tool-loop base re-assembly failed: %s", exc)
                 resized = None
@@ -1030,8 +1062,7 @@ class StructuredOutputGenerator:
                 # Tool results contain raw file content (search_file,
                 # deep_analysis) which bypasses prompt-level redaction.
                 # Off the event loop via the async boundary (#654).
-                if redaction_ctx:
-                    result_text = await redaction_ctx.asanitize(result_text)
+                result_text = await _case_redacted(result_text, redaction_ctx)
 
                 # Truncate long results.
                 #
@@ -1539,8 +1570,7 @@ class StructuredOutputGenerator:
         # Apply case-scoped PII redaction to the prompt before any LLM call.
         # This covers both the tool-augmented (DA) and single-shot paths.
         # Off the event loop via the async boundary (#654).
-        if redaction_ctx:
-            prompt = await redaction_ctx.asanitize(prompt)
+        prompt = await _case_redacted(prompt, redaction_ctx)
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -1585,9 +1615,14 @@ class StructuredOutputGenerator:
                     # index+stub). On the non-tool path there is no search_file,
                     # so rebuild with full evidence — otherwise the agent would
                     # be stranded (elided evidence + no tool to recover it).
+                    # The rebuild is raw case content assembled AFTER the
+                    # redaction above, so it is redacted again (#1949). A
+                    # failure here keeps the already-redacted ``prompt``.
                     if fallback_prompt_builder is not None:
                         try:
-                            prompt = fallback_prompt_builder()
+                            prompt = await _case_redacted(
+                                fallback_prompt_builder(), redaction_ctx
+                            )
                         except Exception as rebuild_exc:  # never break the fallback
                             logger.warning(
                                 "fallback_prompt_builder failed (non-fatal): %s",
