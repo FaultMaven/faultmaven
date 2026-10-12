@@ -201,3 +201,188 @@ def test_absolute_mode_row_carries_the_ratio_it_did_not_apply(tmp_path, monkeypa
     ]
     assert row["scale"] == 1.0
     assert row["raw_ratio"] == pytest.approx(2.5)
+
+
+# ------------------------------------------------------------ --propose (#1910)
+
+
+def _propose(values, **overrides):
+    kwargs = dict(
+        throughput=False,
+        old_reference=0.0353,  # 0.010 once divided by the 3.53 box factor
+        old_regression=0.08,
+        product_target=1.0,
+        box_factor=3.53,
+    )
+    kwargs.update(overrides)
+    return collect.propose_row("ROW", values, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "value,direction,expected",
+    [
+        (0.0123, "nearest", 0.012),
+        (0.0126, "nearest", 0.013),
+        (0.0121, "up", 0.013),
+        (0.0129, "down", 0.012),
+        (0.012, "up", 0.012),  # already two figures: not pushed up
+        (7.2352e-7, "up", 7.3e-7),
+        (19661 / 2.5, "nearest", 7900.0),
+    ],
+)
+def test_two_significant_figures(value, direction, expected):
+    assert collect._sig2(value, direction) == pytest.approx(expected)
+
+
+def test_a_latency_reference_is_the_larger_of_the_box_and_the_ci_p95():
+    # 20 jobs at 4 ms: the box term (10 ms) wins and the anchor is 2.5x it.
+    box_wins = _propose([0.004] * 20)
+    assert (box_wins.source, box_wins.reference) == ("box", pytest.approx(0.010))
+    assert box_wins.regression == pytest.approx(0.025)
+    # 20 jobs at 20 ms: the CI p95 wins.
+    ci_wins = _propose([0.020] * 20)
+    assert (ci_wins.source, ci_wins.reference) == ("ci", pytest.approx(0.020))
+    assert ci_wins.regression == pytest.approx(0.050)
+
+
+def test_the_anchor_is_raised_until_it_clears_the_worst_job():
+    # p95 of 20 is the 19th value: 10 ms. 2.5x is 25 ms, but one job read
+    # 18 ms, and 1.5x that is 27 ms.
+    proposal = _propose([0.005] * 18 + [0.010, 0.018], old_reference=0.001)
+    assert proposal.reference == pytest.approx(0.010)
+    assert proposal.regression == pytest.approx(0.027)
+    assert proposal.clearance == pytest.approx(1.5)
+    assert proposal.stop == ""
+
+
+def test_a_row_that_cannot_clear_its_worst_job_inside_the_band_stops():
+    proposal = _propose([0.005] * 18 + [0.010, 0.021], old_reference=0.001)
+    assert proposal.regression is None
+    assert "past the band" in proposal.stop
+
+
+def test_a_reference_a_hair_short_of_the_band_is_rounded_up(monkeypatch):
+    """#1940's ruling on CONTEXT_COPY: the p95 2.4104e-7 and the worst job
+    4.8234e-7 need a 7.3e-7 anchor, 3.03x the p95. Rounding the reference up
+    1.2% to 2.44e-7 puts that anchor at 2.99x, inside the band."""
+    values = [1e-7] * 24 + [2.4104e-7, 4.8234e-7]  # p95 of 26: the 25th
+    proposal = _propose(values, old_reference=3.9065e-7)
+    assert proposal.stop == ""
+    assert proposal.reference == pytest.approx(2.44e-7)
+    assert proposal.regression == pytest.approx(7.3e-7)
+    assert proposal.rounded_by == pytest.approx(2.44e-7 / 2.4104e-7)
+    assert proposal.multiple <= 3.0
+    assert proposal.clearance >= 1.5
+    # Past MAX_REFERENCE_ROUNDING it is a STOP, not a bigger rounding: the
+    # test above needs the reference raised 7%.
+    assert collect.MAX_REFERENCE_ROUNDING == 1.05
+
+
+def test_a_throughput_reference_is_rounded_down_the_same_way():
+    # p5 of 26 is the 2nd smallest, 3010/s. The floor must be <= 1500 / 1.5
+    # = 1000/s, which would sit 3.01x below it. Rounded down to 3000/s, it sits at 3.00x.
+    proposal = _propose(
+        [3010.0] + [5000.0] * 24 + [1500.0],
+        throughput=True,
+        old_reference=10000.0,
+        product_target=10.0,
+    )
+    assert proposal.stop == ""
+    assert proposal.reference == pytest.approx(3000.0)
+    assert proposal.regression == pytest.approx(1000.0)
+    assert proposal.rounded_by < 1.0
+
+
+def test_a_row_that_would_outgrow_its_product_target_stops():
+    proposal = _propose([0.020] * 20, product_target=0.040)
+    assert proposal.regression is None
+    assert "product target" in proposal.stop
+
+
+def test_a_throughput_reference_is_the_smaller_and_its_floor_divides():
+    # Box term 1000/s x 3.53 = 3530/s; CI p5 = 5000/s: the box wins.
+    proposal = _propose(
+        [5000.0] * 20, throughput=True, old_reference=1000.0, product_target=10.0
+    )
+    assert (proposal.source, proposal.reference) == ("box", pytest.approx(3530.0))
+    assert proposal.regression == pytest.approx(1400.0)  # 3530 / 2.5, two figures
+    assert proposal.multiple == pytest.approx(3530.0 / 1400.0)
+
+
+def test_a_throughput_floor_is_lowered_until_it_clears_the_worst_job():
+    # SANITIZE_DOCUMENT_BATCH's shape: 2.5x would be 7900/s, the worst job
+    # 11675/s needs the floor at or below 7784/s.
+    proposal = _propose(
+        [30000.0] * 25 + [11675.0],
+        throughput=True,
+        old_reference=19661.0 / 3.53,
+        product_target=10.0,
+    )
+    assert proposal.regression == pytest.approx(7700.0)
+    assert proposal.clearance >= 1.5
+
+
+def test_a_worst_job_row_anchors_on_the_worst_at_the_3x_end():
+    proposal = _propose([1e-7] * 25 + [6.7509e-7], anchor_on_worst=True)
+    assert (proposal.source, proposal.reference) == ("worst", pytest.approx(6.7509e-7))
+    assert proposal.regression == pytest.approx(2.0e-6)
+    assert 2.9 <= proposal.multiple <= 3.0
+
+
+def test_the_job_statistic_is_the_worst_comparison_of_each_job():
+    rows = [
+        _row(run_id="1", run_attempt="1", observed=0.4, label="a"),
+        _row(run_id="1", run_attempt="1", observed=0.8, label="b"),
+        _row(run_id="2", run_attempt="1", observed=0.2),
+        _row(run_id="2", run_attempt="1", observed=9.9, profile="nightly"),
+    ]
+    stats = collect.job_statistics(rows, lambda row: "ROW", throughput_rows=())
+    values, ratios = stats["ROW"]
+    assert sorted(values) == [pytest.approx(0.05), pytest.approx(0.2)]
+    assert len(ratios) == 3  # the nightly row is not a per-PR job
+
+
+def test_every_recorded_comparison_in_the_performance_suite_maps_to_a_row():
+    """The mapping is read from the call sites. A test owning two rows must
+    label each comparison with a literal, or a re-anchor cannot tell them
+    apart; this fails if one stops doing so."""
+    import ast
+
+    from tests.performance import budgets
+
+    row_of = collect.row_mapper(budgets.ALL_BUDGETS)
+    resolved = set()
+    for path in sorted(collect.PERFORMANCE_DIR.rglob("test_*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id in collect._HELPERS
+                ):
+                    label = call.args[2]
+                    text = label.value if isinstance(label, ast.Constant) else "f"
+                    # A judge outside the test (judge_turn_commit) records
+                    # under the test that calls it, the row's own test.
+                    test = node.name
+                    if not test.startswith("test_"):
+                        test = budgets.ALL_BUDGETS[call.args[1].id].test
+                    record = {"nodeid": f"x.py::{test}[p]", "label": text}
+                    name = row_of(record)
+                    assert name == call.args[1].id, (node.name, text)
+                    resolved.add(name)
+    assert resolved == set(budgets.ALL_BUDGETS)
+
+
+def test_the_worst_job_rows_are_rows_of_the_table():
+    from tests.performance import budgets
+
+    assert budgets.ANCHOR_ON_WORST_JOB <= set(budgets.ALL_BUDGETS)
+
+
+def test_propose_needs_the_box_revision(tmp_path):
+    (tmp_path / "x.jsonl").write_text(json.dumps(_row()) + "\n")
+    with pytest.raises(SystemExit):
+        collect.main(["--propose", str(tmp_path)])
