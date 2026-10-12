@@ -1734,10 +1734,8 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
             return RunbookReadiness(
                 verdict=RunbookReadiness.NEEDS_ENRICHMENT,
                 message=(
-                    "I can generate a runbook, but some sections will be thin. "
-                    "The following information would improve quality:\n\n"
-                    + "\n".join(missing_desc)
-                    + "\n\nWould you like to proceed anyway, or provide more detail first?"
+                    "Some sections of the runbook draft will be thin. "
+                    "This information would improve it:\n\n" + "\n".join(missing_desc)
                 ),
                 section_coverage=coverage,
             )
@@ -1995,8 +1993,9 @@ async def evaluate_runbook_suggestion(
                             f"({similarity:.0%} best-chunk match). That "
                             "measures overlap, not full coverage, so I have "
                             "not created a draft. The existing runbook is in the "
-                            "knowledge available to this case's driver; review "
-                            "it there, or generate a new one anyway."
+                            "knowledge searched for whoever drove the case at "
+                            "that point; review it there, or generate a new one "
+                            "anyway."
                         ),
                     )
         except Exception as e:
@@ -2040,8 +2039,8 @@ async def evaluate_runbook_suggestion(
             cause = "the knowledge base search did not run"
         caveats.append(
             f"I could not check whether a similar runbook already exists — "
-            f"{cause}. Creating one now risks duplicating existing content; "
-            f"you may want to check the Dashboard Knowledge Base first."
+            f"{cause}, so the draft may duplicate a runbook already in the "
+            f"knowledge base."
         )
 
     if caveats:

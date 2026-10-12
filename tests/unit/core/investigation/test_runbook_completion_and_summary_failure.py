@@ -1413,6 +1413,23 @@ async def _kickoff_and_notice(mock_llm, driver_id, *, existing: bool = False):
     return result["agent_response"], notice
 
 
+def _real_thin_readiness_message() -> str:
+    """The NEEDS_ENRICHMENT text ``assess_runbook_readiness`` really produces."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        assess_runbook_readiness,
+    )
+
+    case = _make_resolved_case()
+    _make_runbook_ready(case)
+    case.solutions[0].verification_method = None
+    result = assess_runbook_readiness(case)
+    assert result.verdict == result.NEEDS_ENRICHMENT, result
+    return result.message
+
+
+_THIN_READINESS_MESSAGE = _real_thin_readiness_message()
+
+
 @pytest.mark.unit
 class TestDraftLocationIsTrueForTheReader:
     """Every persisted draft text is rendered to EVERY reader of the case
@@ -1431,8 +1448,8 @@ class TestDraftLocationIsTrueForTheReader:
         f"{_CREATORS_DRAFTS} in the Dashboard."
     )
     _EXISTS = (
-        "A runbook draft already exists for this case, in "
-        f"{_CREATORS_DRAFTS} in the Dashboard."
+        "A runbook for this case already exists in the case creator's "
+        "Knowledge Base (under Drafts until it is verified)."
     )
 
     @pytest.mark.asyncio
@@ -1463,6 +1480,48 @@ class TestDraftLocationIsTrueForTheReader:
         reply, _ = await _kickoff_and_notice(mock_llm, driver_id, existing=True)
         assert reply == self._EXISTS
         assert "your" not in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_caveat_prefixed_kickoff_reply_states_facts_not_questions(
+        self, mock_llm
+    ):
+        """The caveat is prepended to a turn on which conversion HAS started,
+        so it may neither ask whether to proceed nor tell the reader to act
+        "first" (the draft is already being made)."""
+        from faultmaven.core.investigation import terminal_transitions as tt
+
+        readiness = tt.RunbookReadiness(
+            verdict=tt.RunbookReadiness.NEEDS_ENRICHMENT,
+            message=_THIN_READINESS_MESSAGE,
+            section_coverage={},
+        )
+        with patch.object(tt, "assess_runbook_readiness", return_value=readiness):
+            reply, _ = await _kickoff_and_notice(mock_llm, None)
+        # The readiness caveat is the real text, not a stand-in.
+        assert reply.startswith(_THIN_READINESS_MESSAGE)
+
+        lowered = reply.lower()
+        assert "creating a runbook draft" in lowered  # conversion did start
+        assert (
+            "so the draft may duplicate a runbook already in the knowledge base"
+            in reply
+        )
+        assert "?" not in reply
+        for phrase in (
+            "proceed anyway",
+            "provide more detail",
+            "first",
+            "would you like",
+        ):
+            assert phrase not in lowered, (phrase, reply)
+
+    def test_terminal_prompt_never_says_yours(self):
+        from faultmaven.core.investigation.prompts.templates import terminal
+
+        text = " ".join(
+            v for v in vars(terminal).values() if isinstance(v, str)
+        ).lower()
+        assert not re.search(r"\byours\b", text), "the redirect must not say 'yours'"
 
     def test_model_facing_prompt_names_the_creators_drafts(self):
         from faultmaven.core.investigation.prompts.templates import terminal

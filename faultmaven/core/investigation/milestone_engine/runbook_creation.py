@@ -189,8 +189,9 @@ class RunbookCreator:
         if existing and existing.has_live_draft():
             return {
                 "agent_response": (
-                    "A runbook draft already exists for this case, in "
-                    f"{_DRAFT_LOCATION} in the Dashboard."
+                    "A runbook for this case already exists in the case "
+                    "creator's Knowledge Base (under Drafts until it is "
+                    "verified)."
                 ),
                 "suggested_follow_ups": [],
                 "case_updated": case,
