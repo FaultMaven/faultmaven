@@ -84,7 +84,9 @@ def engine():
     which makes every assertion below unfailable.
     """
     double = create_autospec(MilestoneEngine, instance=True)
-    double.deps = SimpleNamespace(llm_provider=MagicMock())
+    double.deps = SimpleNamespace(
+        llm_provider=MagicMock(), sanitizer=None, redis_client=None
+    )
 
     async def terminal_shaped(
         *,
@@ -95,6 +97,7 @@ def engine():
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
         typed: bool = False,
+        redaction_ctx=None,
     ) -> dict[str, Any]:
         case.updated_at = datetime.now(timezone.utc)
         return {

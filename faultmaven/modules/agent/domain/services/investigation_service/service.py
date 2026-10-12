@@ -50,6 +50,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapError,
     billing_subject_for,
 )
+from faultmaven.infrastructure.security.case_redaction import load_case_redaction
 from faultmaven.models.api_models import (
     IntentType,
     QueryIntent,
@@ -454,6 +455,18 @@ class InvestigationService:
             # invent a row for turn 0.
             turn_consumed = True
 
+            # The turn's ONE case redaction context (#1956). Every model call
+            # made on the turn's behalf sends through it — the intent
+            # classifier, the out-of-band triage and answer, the engine's
+            # prompts and its tools' own calls — so every value they redact
+            # enters the one registry, and the reply's placeholders are
+            # reversed from it (``turn_results``). Two contexts on one case key
+            # would each hold a snapshot, and the later save would drop the
+            # other's new entries.
+            redaction_ctx = await load_case_redaction(
+                case_id, self.engine.deps.sanitizer, self.engine.deps.redis_client
+            )
+
             # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
             #
@@ -484,8 +497,17 @@ class InvestigationService:
                     query=query,
                     user_id=user_id,
                     user_message_obj=user_message_obj,
+                    redaction_ctx=redaction_ctx,
                 )
             )
+            # Persisted when the turn's calls grew the registry, whichever
+            # route the turn took (the engine also saves at its own turn end;
+            # a save with nothing new writes nothing). Like the engine's, it
+            # does not wait for the turn's commit (class C, #1882).
+            await redaction_ctx.save()
+            # Every route's reply is reversed with it, in ``turn_results``: the
+            # out-of-band answer and the terminal Q&A answer included.
+            result["redaction_ctx"] = redaction_ctx
             # The engine's plan, or an empty one for a route that never
             # reached the engine (greeting, out-of-band, file
             # reclassification): those commit the case alone.
@@ -785,8 +807,13 @@ class InvestigationService:
         query,
         user_id,
         user_message_obj,
+        redaction_ctx,
     ):
-        """Resolve intent (orientation, typed-choice, out-of-band triage) and dispatch the turn to its handler."""
+        """Resolve intent (orientation, typed-choice, out-of-band triage) and dispatch the turn to its handler.
+
+        ``redaction_ctx`` is the turn's one case redaction context (#1956):
+        every model call below, and the engine, sends through it.
+        """
         if (
             intent_type == IntentType.CONVERSATION
             and not payload.has_attachments
@@ -853,6 +880,7 @@ class InvestigationService:
                 await self.intent_resolver.resolve(
                     user_message=query,
                     last_suggestions=on_offer,
+                    redaction_ctx=redaction_ctx,
                 )
                 if on_offer
                 else None
@@ -960,7 +988,9 @@ class InvestigationService:
             # (#1841), never the classifier's: see above.
             and not (_gate1_is_pending(case) and gate1_bare_consent(query))
         ):
-            oob_kind = await self.out_of_band_triage.triage(case, query, classification)
+            oob_kind = await self.out_of_band_triage.triage(
+                case, query, classification, redaction_ctx=redaction_ctx
+            )
             if oob_kind is not None:
                 user_message_obj["metadata"]["out_of_band"] = oob_kind.value
                 logger.info(
@@ -1002,7 +1032,10 @@ class InvestigationService:
             # resolved intent (a greeting, a typed choice) keeps its own
             # route even when triage had an opinion.
             result = await self._handle_out_of_band(
-                case=case, user_message=query or "", kind=oob_kind
+                case=case,
+                user_message=query or "",
+                kind=oob_kind,
+                redaction_ctx=redaction_ctx,
             )
         elif dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
             # Intent value is defined in the IntentType enum (API
@@ -1033,6 +1066,7 @@ class InvestigationService:
                     user_id=user_id,
                     attachments=attachment_metadata or None,
                     typed=intent_minted,
+                    redaction_ctx=redaction_ctx,
                 )
             elif intent_type == IntentType.CONFIRMATION:
                 result = await self._handle_confirmation(
@@ -1043,6 +1077,7 @@ class InvestigationService:
                     user_id=user_id,
                     attachments=attachment_metadata or None,
                     typed=intent_minted,
+                    redaction_ctx=redaction_ctx,
                 )
             elif intent_type == IntentType.HYPOTHESIS_ACTION:
                 result = await self._handle_hypothesis_action(
@@ -1052,6 +1087,7 @@ class InvestigationService:
                     action=intent.action if intent else None,
                     user_id=user_id,
                     attachments=attachment_metadata or None,
+                    redaction_ctx=redaction_ctx,
                 )
             elif intent_type == IntentType.GREETING:
                 result = await self._handle_greeting(
@@ -1108,6 +1144,7 @@ class InvestigationService:
                 # client-supplied intent payload, and the KB read allowlist
                 # must not be keyed on anything a client can set.
                 user_id=user_id,
+                redaction_ctx=redaction_ctx,
             )
         else:
             # Defensive: _IntentDispatchKind only has three values
@@ -1139,6 +1176,8 @@ class InvestigationService:
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1164,6 +1203,8 @@ class InvestigationService:
                 its own ``typed`` keyword, which names how a terminal transition
                 was confirmed (#1748) — never inside ``intent_data``, which the
                 client's intent payload fills.
+            redaction_ctx: The turn's case redaction context, handed to the
+                engine (#1956).
 
         Returns:
             Result dict with agent response and updated case
@@ -1228,6 +1269,7 @@ class InvestigationService:
             },
             user_id=user_id,
             typed=typed,
+            redaction_ctx=redaction_ctx,
         )
 
         return result
@@ -1241,6 +1283,8 @@ class InvestigationService:
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1258,6 +1302,7 @@ class InvestigationService:
                 ``_handle_status_transition``; #1229).
             typed: The intent was minted from typed text, not clicked (see
                 ``_handle_status_transition``; #1748).
+            redaction_ctx: The turn's case redaction context (#1956).
 
         Returns:
             Result dict with agent response and updated case
@@ -1274,6 +1319,7 @@ class InvestigationService:
             intent_data={"value": confirmation_value, "proposal_id": proposal_id},
             user_id=user_id,
             typed=typed,
+            redaction_ctx=redaction_ctx,
         )
 
         return result
@@ -1286,6 +1332,8 @@ class InvestigationService:
         action: Optional[str],
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1319,6 +1367,7 @@ class InvestigationService:
             intent_type="hypothesis_action",
             intent_data={"hypothesis_id": hypothesis_id, "action": action},
             user_id=user_id,
+            redaction_ctx=redaction_ctx,
         )
 
         return result
@@ -1373,7 +1422,12 @@ class InvestigationService:
         }
 
     async def _handle_out_of_band(
-        self, case: "Case", user_message: str, kind: OutOfBandKind
+        self,
+        case: "Case",
+        user_message: str,
+        kind: OutOfBandKind,
+        *,
+        redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Answer an aside without touching the investigation (#1329).
 
@@ -1384,9 +1438,17 @@ class InvestigationService:
         and out of every fidelity of the conversation history. The reply comes
         from a small fixed prompt on the synthesis role; the engine, the tools
         and the case context are never involved.
+
+        The answer's prompt goes through the turn's ``redaction_ctx``, and the
+        reply's placeholders are reversed with it in ``turn_results``, where
+        every route's reply is (#1956).
         """
         agent_response = await answer_out_of_band(
-            self.engine.deps.llm_provider, case, user_message, kind
+            self.engine.deps.llm_provider,
+            case,
+            user_message,
+            kind,
+            redaction_ctx=redaction_ctx,
         )
         return {
             "agent_response": agent_response,

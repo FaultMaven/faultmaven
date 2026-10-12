@@ -1,4 +1,4 @@
-"""Loading the redaction context and generating the LLM (or single-shot) response for a turn."""
+"""Generating the LLM (or single-shot) response for a turn."""
 
 import logging
 from typing import Optional
@@ -33,37 +33,27 @@ logger = logging.getLogger(__name__)
 async def _generate_turn_response(
     investigation_tools,
     llm_provider,
-    redis_client,
     repository,
-    sanitizer,
     generator,
     *,
     case,
+    redaction_ctx,
     intent_data,
     user_id,
     user_message,
     kb_rendered=None,
 ):
-    """Load the redaction context and generate the LLM (or single-shot) response for this turn.
+    """Generate the LLM (or single-shot) response for this turn.
+
+    ``redaction_ctx`` is the turn's case redaction context, loaded once per
+    turn by the investigation service (or by the engine on a direct call),
+    never here (#1956): two contexts on one case key would each save a
+    snapshot of the registry, and the later save would drop the other's
+    entries.
 
     ``kb_rendered`` is refilled by every prompt build with the KB entries that
     prompt carries; the last build is the prompt the model answered from.
     """
-    from faultmaven.config.settings import get_settings
-    from faultmaven.infrastructure.security.case_redaction import (
-        CaseRedactionContext,
-        should_redact,
-    )
-
-    redaction_settings = get_settings()
-    redaction_ctx = CaseRedactionContext(
-        case_id=case.case_id,
-        sanitizer=sanitizer,
-        redis_client=redis_client,
-        enabled=should_redact(sanitizer),
-        ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
-    )
-    await redaction_ctx.load()
 
     # Build prompt using the adaptive template system
     # Gap #6: Pass provider info for dynamic token budget calculation
@@ -252,7 +242,9 @@ async def _generate_turn_response(
         )
     elif investigation_tools:
         da_tools = generator.build_da_tool_schemas()
-        da_context = await generator.build_tool_context(case, user_id=user_id)
+        da_context = await generator.build_tool_context(
+            case, user_id=user_id, redaction_ctx=redaction_ctx
+        )
         response_obj = await generator.generate_structured_output(
             prompt,
             schema_model,
@@ -282,4 +274,4 @@ async def _generate_turn_response(
     logger.info(
         f"Turn {case.current_turn} response type: {type(response_obj).__name__}"
     )
-    return redaction_ctx, response_obj
+    return response_obj

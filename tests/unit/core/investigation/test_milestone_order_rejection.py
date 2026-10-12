@@ -216,7 +216,7 @@ class TestRejectionWhenPrerequisiteMissing:
 
         # Should NOT raise. Previously this crashed at save with
         # "Cannot verify mitigation without acceptance first".
-        result = await engine.process_turn(case, "test message")
+        result = await engine.process_turn(case, "test message", redaction_ctx=None)
         updated = result["case_updated"]
 
         # Verified is rejected because accept was never signalled. With no
@@ -243,7 +243,7 @@ class TestRejectionWhenPrerequisiteMissing:
             {"mitigation_verified": True}
         )
 
-        result = await engine.process_turn(case, "test message")
+        result = await engine.process_turn(case, "test message", redaction_ctx=None)
         # system_feedback flows through TurnProgress, not through the
         # returned metadata payload (which only carries turn-summary
         # signals for the API layer).
@@ -273,7 +273,7 @@ class TestRejectionWhenPrerequisiteMissing:
         # The engine commits nothing itself (#1882); the turn's one commit runs
         # the repository's own re-validation (the real SQLite repo calls
         # Case.model_validate), which is what used to 500.
-        result = await engine.process_turn(case, "test message")
+        result = await engine.process_turn(case, "test message", redaction_ctx=None)
         mock_repo.save.assert_not_called()
         await commit_turn_plan(mock_repo, result["case_updated"], result["commit_plan"])
         assert mock_repo.save.called
@@ -305,7 +305,9 @@ class TestPrerequisiteSatisfiedPasses:
             {"mitigation_accepted": True, "mitigation_verified": True}
         )
 
-        result = await engine.process_turn(case, "applied + verified")
+        result = await engine.process_turn(
+            case, "applied + verified", redaction_ctx=None
+        )
         updated = result["case_updated"]
 
         assert _stab_accepted(updated) is True
@@ -332,7 +334,7 @@ class TestPrerequisiteSatisfiedPasses:
             {"mitigation_verified": True}
         )
 
-        result = await engine.process_turn(case, "verified")
+        result = await engine.process_turn(case, "verified", redaction_ctx=None)
         updated = result["case_updated"]
 
         assert _stab_verified(updated) is True
@@ -351,7 +353,7 @@ class TestPrerequisiteSatisfiedPasses:
             {"mitigation_accepted": True}
         )
 
-        result = await engine.process_turn(case, "accepted")
+        result = await engine.process_turn(case, "accepted", redaction_ctx=None)
         updated = result["case_updated"]
 
         assert _stab_accepted(updated) is True

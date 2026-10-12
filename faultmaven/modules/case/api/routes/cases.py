@@ -1086,6 +1086,8 @@ async def generate_case_title(
                 max_words=max_words,
                 hint=hint,
                 correlation_id=correlation_id,
+                sanitizer=getattr(request.app.state, "sanitizer", None),
+                redis_client=getattr(request.app.state, "redis_client", None),
             )
         )
 

@@ -267,7 +267,9 @@ async def test_synthesis_prompt_tells_the_model_its_allowance():
     )
 
     tool = DocumentQATool(vector_store, router, UnifiedKBConfig())
-    await tool.answer_question(question="Why was it OOMKilled?", scope_id=None, k=5)
+    await tool.answer_question(
+        question="Why was it OOMKilled?", scope_id=None, k=5, redaction_ctx=None
+    )
 
     router.route.assert_awaited()
     prompt = router.route.await_args.kwargs["messages"][-1]["content"]
@@ -306,7 +308,9 @@ async def test_case_evidence_answers_are_not_told_the_kb_relay_allowance():
     )
 
     tool = DocumentQATool(vector_store, router, CaseEvidenceConfig())
-    await tool.answer_question(question="What errors?", scope_id="case_1", k=5)
+    await tool.answer_question(
+        question="What errors?", scope_id="case_1", k=5, redaction_ctx=None
+    )
 
     prompt = router.route.await_args.kwargs["messages"][-1]["content"]
 

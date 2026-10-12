@@ -55,6 +55,9 @@ from enum import Enum
 from typing import Any, Optional
 
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
+from faultmaven.infrastructure.security.case_redaction import (
+    case_redacted_messages,
+)
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
     QueryClassification,
@@ -292,8 +295,16 @@ class OutOfBandTriage:
         self.llm_router = llm_router
 
     async def triage(
-        self, case: Any, message: str, classification: QueryClassification
+        self,
+        case: Any,
+        message: str,
+        classification: QueryClassification,
+        *,
+        redaction_ctx: Any,
     ) -> Optional[OutOfBandKind]:
+        """``redaction_ctx`` is the turn's case redaction context: the
+        classifier prompt (the user's message and the last answer) is sent
+        through it (#1956)."""
         if classification.mode == ProcessingMode.AGENT_META:
             return OutOfBandKind.AGENT_META
         if not needs_llm_triage(classification):
@@ -308,17 +319,24 @@ class OutOfBandTriage:
         # error?" was never examined, because it contains "error".
         if reads_as_continuation(message) and has_investigation_history(case):
             return None
-        return await self._classify(case, message)
+        return await self._classify(case, message, redaction_ctx=redaction_ctx)
 
-    async def _classify(self, case: Any, message: str) -> Optional[OutOfBandKind]:
+    async def _classify(
+        self, case: Any, message: str, *, redaction_ctx: Any
+    ) -> Optional[OutOfBandKind]:
         prompt = self._build_prompt(case, message)
         try:
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
+            # Inside the try: a redaction failure is a triage failure — the
+            # message is treated as incident work and nothing is sent.
+            messages = await case_redacted_messages(
+                [{"role": "user", "content": prompt}], redaction_ctx
+            )
             response = await asyncio.wait_for(
                 self.llm_router.route(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
                     model=settings.llm.get_classifier_model(),
                     max_tokens=TRIAGE_MAX_TOKENS,
                     min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS,
@@ -603,11 +621,24 @@ def fallback_answer(case: Any, kind: OutOfBandKind) -> str:
 
 
 async def _one_answer_attempt(
-    llm_router: Any, prompt: str, model: Optional[str], route_kwargs: dict[str, Any]
+    llm_router: Any,
+    prompt: str,
+    model: Optional[str],
+    route_kwargs: dict[str, Any],
+    *,
+    redaction_ctx: Any,
 ) -> Optional[str]:
-    """One generation; ``None`` when the body is unusable (empty or cut)."""
+    """One generation; ``None`` when the body is unusable (empty or cut).
+
+    The prompt passes the turn's case redaction here, at the send, so each
+    attempt sends what it was handed only once it is redacted. A redaction
+    failure fails the attempt, and nothing is sent.
+    """
+    messages = await case_redacted_messages(
+        [{"role": "user", "content": prompt}], redaction_ctx
+    )
     response = await llm_router.route(
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         model=model,
         max_tokens=ANSWER_MAX_TOKENS,
         temperature=0.5,
@@ -630,7 +661,12 @@ async def _one_answer_attempt(
 
 
 async def answer_out_of_band(
-    llm_router: Any, case: Any, message: str, kind: OutOfBandKind
+    llm_router: Any,
+    case: Any,
+    message: str,
+    kind: OutOfBandKind,
+    *,
+    redaction_ctx: Any,
 ) -> str:
     """Generate the reply: synthesis role first, chat chain second, canned last.
 
@@ -639,6 +675,11 @@ async def answer_out_of_band(
     health-aware chat chain gets one attempt before the static fallback,
     rather than every aside (and every #1328 "what model are you?") degrading
     to a canned sentence while the rest of the deployment is healthy.
+
+    ``redaction_ctx`` is the turn's case redaction context (#1956). The prompt
+    carries the user's message and the last answer, so it is sent through it;
+    the reply's placeholders are reversed by the caller with the same context,
+    where every turn's reply is (``turn_results``).
     """
     prompt = build_answer_prompt(case, message, kind)
     try:
@@ -656,7 +697,11 @@ async def answer_out_of_band(
         for model, route_kwargs in attempts:
             try:
                 text = await _one_answer_attempt(
-                    llm_router, prompt, model, route_kwargs
+                    llm_router,
+                    prompt,
+                    model,
+                    route_kwargs,
+                    redaction_ctx=redaction_ctx,
                 )
             except Exception:
                 logger.warning(

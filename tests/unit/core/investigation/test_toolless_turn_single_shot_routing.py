@@ -218,7 +218,9 @@ def _tool_engine() -> MilestoneEngine:
 async def test_turn_with_nothing_to_search_takes_the_single_shot_seam_with_intent():
     engine = _tool_engine()
     await engine.process_turn(
-        case=_investigating_case(), user_message="df -h shows /var/lib 100%"
+        case=_investigating_case(),
+        user_message="df -h shows /var/lib 100%",
+        redaction_ctx=None,
     )
     kwargs = engine.generator.generate_structured_output.call_args.kwargs
     assert kwargs.get("investigation_tools") is None
@@ -232,7 +234,9 @@ async def test_turn_with_searchable_evidence_stays_on_the_tool_loop():
     engine = _tool_engine()
     case = _investigating_case()
     case.evidence.append(_evidence())
-    await engine.process_turn(case=case, user_message="df -h shows /var/lib 100%")
+    await engine.process_turn(
+        case=case, user_message="df -h shows /var/lib 100%", redaction_ctx=None
+    )
     kwargs = engine.generator.generate_structured_output.call_args.kwargs
     assert kwargs.get("investigation_tools") is not None
     assert "reasoning_intent" not in kwargs

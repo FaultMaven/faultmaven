@@ -5,6 +5,8 @@ Wrapper for DocumentQATool configured for Case Evidence Store.
 Provides case-scoped forensic analysis of uploaded files.
 """
 
+from typing import Any
+
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
@@ -62,7 +64,9 @@ Use this tool for detailed forensic questions that require precise citations."""
             kb_config=CaseEvidenceConfig(),  # Inject case evidence strategy
         )
 
-    async def _arun(self, case_id: str, question: str, k: int = 5) -> str:
+    async def _arun(
+        self, case_id: str, question: str, k: int = 5, *, redaction_ctx: Any
+    ) -> str:
         """
         Query case evidence.
 
@@ -70,6 +74,9 @@ Use this tool for detailed forensic questions that require precise citations."""
             case_id: Case identifier (REQUIRED)
             question: Factual question about case evidence
             k: Number of chunks to retrieve (default: 5)
+            redaction_ctx: The turn's case redaction context. The chunks are
+                raw case evidence (files are stored raw by design), so the
+                synthesis call sends them through it (#1956)
 
         Returns:
             Factual answer with forensic citations
@@ -79,4 +86,6 @@ Use this tool for detailed forensic questions that require precise citations."""
         # if not await self._can_access_case(current_user, case_id):
         #     raise PermissionError(f"No access to case {case_id}")
 
-        return await super()._arun(question, scope_id=case_id, k=k)
+        return await super()._arun(
+            question, scope_id=case_id, k=k, redaction_ctx=redaction_ctx
+        )

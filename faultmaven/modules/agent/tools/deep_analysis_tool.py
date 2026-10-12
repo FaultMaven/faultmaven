@@ -271,6 +271,7 @@ class DeepAnalysisTool(AgentTool):
                 query=query,
                 context=analysis_context,
                 data_type=data_type,
+                redaction_ctx=context.redaction_ctx,
             )
 
             # Format result for agent consumption

@@ -69,6 +69,7 @@ async def test_a_confirmed_close_credits_the_driver_on_the_engine_confirm():
             "proposal_id": terminal_offer_key(case.pending_transition),
         },
         user_id=DRIVER,
+        redaction_ctx=None,
     )
 
     assert case.state == CaseState.CLOSED

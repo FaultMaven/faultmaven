@@ -432,7 +432,11 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
 
     plan = TurnCommitPlan()
     result = await engine.terminal.process_terminal_turn(
-        case, GENERATE_RUNBOOK_ANYWAY_PAYLOAD, metadata={}, plan=plan
+        case,
+        GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+        metadata={},
+        plan=plan,
+        redaction_ctx=None,
     )
 
     assert result == {"routed": True}
@@ -466,7 +470,11 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine.terminal.process_terminal_turn(
-            ready_case, GENERATE_RUNBOOK_PAYLOAD, metadata={}, plan=TurnCommitPlan()
+            ready_case,
+            GENERATE_RUNBOOK_PAYLOAD,
+            metadata={},
+            plan=TurnCommitPlan(),
+            redaction_ctx=None,
         )
 
     engine.runbooks._run_runbook_conversion.assert_not_called()

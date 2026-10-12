@@ -13,7 +13,8 @@ per sanitizer instance at construction, so instances built across a Presidio
 outage can still differ.)
 
 Every site where case content becomes model-bound text now goes through one
-helper, ``generation._case_redacted``. Each test below drives one site with a
+helper, ``case_redaction.case_redacted`` (moved there from ``generation`` by
+#1956, so every send site outside the engine shares it). Each test below drives one site with a
 fake provider (no live LLM call) and a redaction double whose output is
 recognisable, and asserts what the provider RECEIVED:
 
@@ -354,7 +355,7 @@ class TestToolResultsAreRedactedBeforeTheModelSeesThem:
 # ---------------------------------------------------------------------------
 
 _ENGINE_DIR = Path(generation.__file__).parent
-_HELPER = "_case_redacted"
+_HELPER = "case_redacted"
 _BUILDERS = {"fallback_prompt_builder", "base_prompt_builder"}
 
 
@@ -394,11 +395,10 @@ class TestOneChokePoint:
                     and node.func.attr in {"asanitize", "sanitize"}
                 ):
                     where = _enclosing_function(node, parents)
-                    if not (path.name == "generation.py" and where == _HELPER):
-                        offenders.append(f"{path.name}:{node.lineno} in {where}")
+                    offenders.append(f"{path.name}:{node.lineno} in {where}")
         assert offenders == [], (
             "case content must reach the redaction through "
-            f"generation.{_HELPER}, not a direct call: {offenders}"
+            f"case_redaction.{_HELPER}, not a direct call: {offenders}"
         )
 
     def test_every_prompt_builder_call_is_the_helpers_argument(self):

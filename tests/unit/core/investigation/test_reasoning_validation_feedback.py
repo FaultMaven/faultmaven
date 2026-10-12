@@ -289,7 +289,9 @@ class TestStripReachesNextPrompt:
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
 
         mock_llm.generate.return_value = _claims_symptom_verified_unjustified()
-        first = await engine.process_turn(_investigating_case(), "it still fails")
+        first = await engine.process_turn(
+            _investigating_case(), "it still fails", redaction_ctx=None
+        )
         case = first["case_updated"]
 
         assert case.progress.symptom_verified is False, "the claim was stripped"
@@ -305,7 +307,7 @@ class TestStripReachesNextPrompt:
                 "state_updates": {"outcome": "conversation"},
             }
         )
-        await engine.process_turn(case, "what next?")
+        await engine.process_turn(case, "what next?", redaction_ctx=None)
 
         prompts = [c.kwargs["prompt"] for c in mock_llm.generate.call_args_list]
         assert prompts, "the second turn made no LLM call"
@@ -318,7 +320,7 @@ class TestStripReachesNextPrompt:
         case.progress.problem_status = ProblemStatus.VERIFIED
 
         mock_llm.generate.return_value = _claims_symptom_verified_unjustified()
-        result = await engine.process_turn(case, "it still fails")
+        result = await engine.process_turn(case, "it still fails", redaction_ctx=None)
         updated = result["case_updated"]
 
         assert updated.progress.symptom_verified is True

@@ -98,7 +98,9 @@ def _proposes(to_state: str) -> _DSU:
 async def _turn(engine, case, message: str, dsu: _DSU | None = None, **kw) -> dict:
     case.current_turn += 1
     _respond(engine, dsu or _DSU(), follow_ups=kw.pop("follow_ups", None))
-    return await engine.process_turn(case=case, user_message=message, **kw)
+    return await engine.process_turn(
+        case=case, user_message=message, **kw, redaction_ctx=None
+    )
 
 
 def _feedback(result) -> str:
@@ -204,6 +206,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             user_message="Close this case as unresolved.",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         pending = case.pending_transition
         assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
@@ -246,7 +249,9 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
     async def test_a_bare_no_to_another_close_keeps_the_ordinary_reply(self):
         engine, case = _engine(), _case(ProblemStatus.VERIFIED)
         _respond(engine, _proposes("closed"))
-        await engine.process_turn(case=case, user_message="let's stop here")
+        await engine.process_turn(
+            case=case, user_message="let's stop here", redaction_ctx=None
+        )
         result = await _turn(engine, case, "no")
         assert "further investigation" in result["agent_response"]
         assert result["suggested_follow_ups"] == []
@@ -264,6 +269,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             user_message=card["payload"],
             intent_type=card["intent"]["type"],
             intent_data={"to_state": card["intent"]["to_state"]},
+            redaction_ctx=None,
         )
         assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
         key = terminal_offer_key(case.pending_transition)
@@ -296,6 +302,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             user_message=card["payload"],
             intent_type=card["intent"]["type"],
             intent_data={"to_state": card["intent"]["to_state"]},
+            redaction_ctx=None,
         )
         await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
@@ -400,6 +407,7 @@ class TestTheHoldEndsWithItsPremise:
             user_message="Close this case as unresolved.",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         assert terminal_offer_key(case.pending_transition) == key
         assert case.problem_verification.invalidation.close_declined_at_turn is None
@@ -414,6 +422,7 @@ class TestTheHoldEndsWithItsPremise:
             user_message="Close this case as unresolved.",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
         await _turn(engine, case, "yes")
@@ -433,7 +442,9 @@ class TestADeclinedDeferredCloseBindsTheModel:
         _respond(
             engine, _DSU(milestones=MilestoneUpdates(solution_feasible="deferred"))
         )
-        await engine.process_turn(case=case, user_message="the platform team ships it")
+        await engine.process_turn(
+            case=case, user_message="the platform team ships it", redaction_ctx=None
+        )
         assert case.pending_transition["closure_reason"] == "solution_deferred"
         signature = case.pending_transition[_SIGNED]
         await _turn(engine, case, "no")
@@ -477,6 +488,7 @@ class TestADeclinedDeferredCloseBindsTheModel:
             user_message=card["payload"],
             intent_type=card["intent"]["type"],
             intent_data={"to_state": card["intent"]["to_state"]},
+            redaction_ctx=None,
         )
         assert case.pending_transition["closure_reason"] == "solution_deferred"
         key = terminal_offer_key(case.pending_transition)

@@ -23,9 +23,21 @@ Usage:
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+#: A placeholder as the sanitizer writes it: ``<TYPE_digest>``
+#: (``DataSanitizer._hashed_placeholder``). The digest width is not pinned: a
+#: registry persisted before #971 holds narrower ones, and a loaded registry
+#: keeps handing them out.
+REDACTION_PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_[0-9a-f]+>")
+
+
+def _as_text(raw: Any) -> str:
+    """A Redis reply as text, whether the client decodes responses or not."""
+    return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
 
 def should_redact(sanitizer) -> bool:
@@ -83,7 +95,10 @@ class CaseRedactionContext:
     all evidence files, tool results, and conversation turns within a case.
     """
 
-    REDIS_KEY_PREFIX = "redaction"
+    #: One Redis HASH per case: field ``json.dumps([entity_type, value])``,
+    #: value the placeholder. The ``redaction:`` namespace is the one the
+    #: deployment wipe clears.
+    REDIS_KEY_PREFIX = "redaction:registry"
     DEFAULT_TTL_HOURS = 168  # 7 days
 
     def __init__(
@@ -114,8 +129,28 @@ class CaseRedactionContext:
         # Bidirectional mapping state
         self._forward: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
         self._reverse: Dict[str, str] = {}  # placeholder → original value
-        self._dirty = False  # Track whether save is needed
+        # The (type, value) entries known to be in the stored registry: read
+        # by load()/save() or written by save(). save() writes the rest.
+        self._persisted: Set[Tuple[str, str]] = set()
         self._loaded = False
+
+    async def _read_stored(self) -> Dict[Tuple[str, str], str]:
+        """The stored registry, as ``{(entity_type, value): placeholder}``."""
+        raw = await self.redis_client.hgetall(self._redis_key)
+        stored: Dict[Tuple[str, str], str] = {}
+        for field, placeholder in (raw or {}).items():
+            entity_type, value = json.loads(_as_text(field))
+            stored[(entity_type, value)] = _as_text(placeholder)
+        return stored
+
+    def _absorb(self, stored: Dict[Tuple[str, str], str]) -> None:
+        """Union the stored registry into this one, and record it as what is
+        stored. An entry this context already holds is kept: a placeholder is
+        a keyed function of the value (#971), so the two agree."""
+        for (entity_type, value), placeholder in stored.items():
+            self._forward.setdefault(entity_type, {}).setdefault(value, placeholder)
+        self._persisted = set(stored)
+        self._rebuild_reverse()
 
     async def load(self) -> None:
         """Load existing registry from Redis.
@@ -128,15 +163,11 @@ class CaseRedactionContext:
             return
 
         try:
-            raw = await self.redis_client.get(self._redis_key)
-            if raw:
-                data = json.loads(raw)
-                self._forward = data.get("forward", {})
-                self._reverse = data.get("reverse", {})
-                logger.debug(
-                    f"Loaded redaction registry for case {self.case_id}: "
-                    f"{sum(len(v) for v in self._forward.values())} entities"
-                )
+            self._absorb(await self._read_stored())
+            logger.debug(
+                f"Loaded redaction registry for case {self.case_id}: "
+                f"{self.entity_count} entities"
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to load redaction registry from Redis for case "
@@ -146,20 +177,48 @@ class CaseRedactionContext:
         self._loaded = True
 
     async def save(self) -> None:
-        """Persist current registry to Redis with TTL.
+        """Merge this context's entries into the stored registry, and refresh
+        its TTL.
 
-        Only writes if the registry was modified since last load/save.
+        A MERGE, never an overwrite (#1956). The stored registry is read
+        first; each entry this context holds that is not stored is written
+        with ``HSETNX`` into the case's hash, so the stored registry only
+        grows and an entry already there is never replaced. Two contexts on
+        one case — two concurrent turns, a turn and the case title, or a
+        context whose ``load()`` failed — therefore cannot drop each other's
+        entries, whatever order they save in, with no lock and no retry: each
+        field is written atomically by Redis. Reading first also restores
+        entries the key lost when it expired under a live context.
+
+        The writes and the ``EXPIRE`` go in one MULTI/EXEC transaction, so a
+        dropped connection cannot leave a registry with no TTL. The TTL is
+        refreshed on EVERY save of a context that holds any entry, new or not:
+        an active case's registry lives ``redaction_registry_ttl_hours`` past
+        its last turn, not past its last new value. The stored entries are
+        read into this context as well, so it can reverse what others added.
         """
-        if not self.enabled or not self._dirty:
+        if not self.enabled or not self.entity_count:
             return
 
         try:
-            data = json.dumps({"forward": self._forward, "reverse": self._reverse})
-            await self.redis_client.set(self._redis_key, data, ex=self.ttl_seconds)
-            self._dirty = False
+            self._absorb(await self._read_stored())
+            unsaved = [
+                (entity_type, value, placeholder)
+                for entity_type, type_map in self._forward.items()
+                for value, placeholder in type_map.items()
+                if (entity_type, value) not in self._persisted
+            ]
+            pipe = self.redis_client.pipeline(transaction=True)
+            for entity_type, value, placeholder in unsaved:
+                pipe.hsetnx(
+                    self._redis_key, json.dumps([entity_type, value]), placeholder
+                )
+            pipe.expire(self._redis_key, self.ttl_seconds)
+            await pipe.execute()
+            self._persisted.update((t, v) for t, v, _ in unsaved)
             logger.debug(
                 f"Saved redaction registry for case {self.case_id}: "
-                f"{sum(len(v) for v in self._forward.values())} entities"
+                f"{len(unsaved)} new of {self.entity_count} entities"
             )
         except Exception as e:
             logger.warning(
@@ -184,11 +243,7 @@ class CaseRedactionContext:
             return text
 
         result = self.sanitizer.sanitize_text_with_registry(text, self._forward)
-
-        # Sync reverse mapping from forward registry
         self._rebuild_reverse()
-        self._dirty = True
-
         return result
 
     async def asanitize(self, text: str) -> str:
@@ -207,10 +262,7 @@ class CaseRedactionContext:
         result = await asyncio.to_thread(
             self.sanitizer.sanitize_text_with_registry, text, self._forward
         )
-
         self._rebuild_reverse()
-        self._dirty = True
-
         return result
 
     async def asanitize_messages(
@@ -302,3 +354,70 @@ class CaseRedactionContext:
     def entity_count(self) -> int:
         """Total number of unique PII entities tracked."""
         return sum(len(v) for v in self._forward.values())
+
+
+async def load_case_redaction(
+    case_id: str, sanitizer: Any, redis_client: Any
+) -> CaseRedactionContext:
+    """The case's redaction context for one turn, loaded from its registry.
+
+    The one constructor every caller of a case-scoped redaction uses (#1956):
+    the investigation service builds the turn's context here once and hands
+    the same instance to every model call it makes on the turn's behalf (the
+    intent classifier, the out-of-band triage and answer, the engine and its
+    tools), so the turn has one load, one save and one reverse. Two contexts
+    loaded on one case key would each hold a snapshot, and whichever saved
+    last would drop the other's new entries. The case title builds its own,
+    after the turn's save. Enabled by :func:`should_redact`; the registry TTL
+    comes from ``protection.redaction_registry_ttl_hours``.
+    """
+    from faultmaven.config.settings import get_settings
+
+    ctx = CaseRedactionContext(
+        case_id=case_id,
+        sanitizer=sanitizer,
+        redis_client=redis_client,
+        enabled=should_redact(sanitizer),
+        ttl_hours=get_settings().protection.redaction_registry_ttl_hours,
+    )
+    await ctx.load()
+    return ctx
+
+
+async def case_redacted(text: Optional[str], ctx: Any | None) -> Optional[str]:
+    """Case content as a model may see it: through the case-scoped redaction.
+
+    The helper every send site turns case content into model-bound text with
+    (#1949, #1956). What skipping it costs is the case REGISTRY, not the
+    redacted text: the router's own ``DataSanitizer`` pass (under
+    ``SANITIZE_PII``) produces the same text — one detection path, and a
+    placeholder that is a keyed function of the value (#971) — but only this
+    pass records value -> placeholder in the case registry, so a value first
+    seen in a prompt that skipped it cannot be reversed in the reply the user
+    reads. Without it, protection also rests on whichever router
+    ``LLM_ROUTER_CLASS`` configures. (Each sanitizer instance decides once,
+    at construction, whether Presidio is available, so instances built on
+    either side of a Presidio outage can still detect differently.)
+
+    ``None`` (no context) and empty text pass through unchanged.
+    ``tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py``
+    pins every send site to this module's helpers.
+    """
+    if not ctx or not text:
+        return text
+    return await ctx.asanitize(text)
+
+
+async def case_redacted_messages(
+    messages: List[Dict[str, Any]], ctx: Any | None
+) -> List[Dict[str, Any]]:
+    """:func:`case_redacted` for a chat-shaped call (``route(messages=...)``).
+
+    Every message's ``content`` passes the case context, the system prompt
+    included (:meth:`CaseRedactionContext.asanitize_messages`, which refuses
+    structured content rather than send it in clear). ``None`` returns copies
+    unchanged.
+    """
+    if not ctx:
+        return [dict(message) for message in messages]
+    return await ctx.asanitize_messages(messages)

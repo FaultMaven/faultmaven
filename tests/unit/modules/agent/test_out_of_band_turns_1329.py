@@ -133,6 +133,7 @@ def engine():
         intent_type=None,
         intent_data=None,
         user_id=None,
+        redaction_ctx=None,
     ):
         case.updated_at = datetime.now(timezone.utc)
         return {
@@ -185,7 +186,9 @@ def case(sample_case, sample_user_id):
 
 
 def _service(engine, repo, ledger, verdict="2"):
-    engine.deps = SimpleNamespace(llm_provider=_router(verdict))
+    engine.deps = SimpleNamespace(
+        llm_provider=_router(verdict), sanitizer=None, redis_client=None
+    )
     return InvestigationService(
         milestone_engine=engine, case_repository=repo, turn_cap=_cap(ledger)
     )

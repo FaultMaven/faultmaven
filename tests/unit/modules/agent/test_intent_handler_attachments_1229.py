@@ -100,7 +100,9 @@ def engine(seen):
     double = create_autospec(MilestoneEngine, instance=True)
     # Set in ``MilestoneEngine.__init__``, so class autospec does not carry it;
     # the service reads it to build its IntentResolver.
-    double.deps = SimpleNamespace(llm_provider=MagicMock())
+    double.deps = SimpleNamespace(
+        llm_provider=MagicMock(), sanitizer=None, redis_client=None
+    )
 
     async def spy(
         *,
@@ -111,6 +113,7 @@ def engine(seen):
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
         typed: bool = False,
+        redaction_ctx=None,
     ) -> dict[str, Any]:
         seen["attachments"] = copy.deepcopy(attachments)
         seen["intent_type"] = intent_type

@@ -79,7 +79,9 @@ class _Engine:
     writes it — the path the engine's terminal short-circuit takes."""
 
     def __init__(self, text: str, flagged: bool, records: bool) -> None:
-        self.deps = SimpleNamespace(llm_provider=MagicMock())
+        self.deps = SimpleNamespace(
+            llm_provider=MagicMock(), sanitizer=None, redis_client=None
+        )
         self._text, self._flagged, self._records = text, flagged, records
         self.process_turn = AsyncMock(side_effect=self._turn)
 

@@ -39,6 +39,7 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.modules.case.contracts import (
     CaseState,
     InvestigationProgress,
@@ -50,6 +51,10 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+
+#: A redaction context that redacts nothing: the terminal Q&A path takes the
+#: turn's context as a required argument (#1956).
+_DISABLED_REDACTION = CaseRedactionContext("case", None, enabled=False)
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -143,7 +148,9 @@ _TOOLS = ("search_file", "kb_qa", "case_evidence_search")
 
 async def test_a_tool_loop_turn_names_the_tools_the_loop_sends():
     engine = _engine(*_TOOLS)
-    await engine.process_turn(case=_case(), user_message="what does the log show?")
+    await engine.process_turn(
+        case=_case(), user_message="what does the log show?", redaction_ctx=None
+    )
 
     call = engine.generator.generate_structured_output.call_args
     prompt = call.args[0]
@@ -168,7 +175,9 @@ async def test_a_single_shot_turn_names_no_tool():
     no tools, so its prompt names none — though the registry has them."""
     engine = _engine(*_TOOLS)
     await engine.process_turn(
-        case=_case(with_evidence=False), user_message="df -h shows /var 100%"
+        case=_case(with_evidence=False),
+        user_message="df -h shows /var 100%",
+        redaction_ctx=None,
     )
 
     call = engine.generator.generate_structured_output.call_args
@@ -182,7 +191,9 @@ async def test_a_provider_that_cannot_call_tools_gets_a_prompt_naming_none():
     """The Layer-1 pre-check will take the non-tool path, so nothing is
     given even on a turn the tool loop is asked for."""
     engine = _engine(*_TOOLS, capable=False)
-    await engine.process_turn(case=_case(), user_message="what does the log show?")
+    await engine.process_turn(
+        case=_case(), user_message="what does the log show?", redaction_ctx=None
+    )
 
     call = engine.generator.generate_structured_output.call_args
     prompt = call.args[0]
@@ -233,7 +244,11 @@ async def test_the_terminal_prompt_points_at_the_suggestions_its_reply_gets(
     object.__setattr__(case, "state", CaseState.RESOLVED)
 
     result = await engine.terminal._process_terminal_qa(
-        case, "write me a runbook", metadata={}, plan=TurnCommitPlan()
+        case,
+        "write me a runbook",
+        metadata={},
+        plan=TurnCommitPlan(),
+        redaction_ctx=_DISABLED_REDACTION,
     )
 
     call = engine.generator.generate_structured_output.call_args
@@ -270,7 +285,11 @@ async def test_the_terminal_turn_offers_nothing_on_an_exhausted_closed_case(
     object.__setattr__(case, "state", CaseState.CLOSED)
 
     result = await engine.terminal._process_terminal_qa(
-        case, "summarise it", metadata={}, plan=TurnCommitPlan()
+        case,
+        "summarise it",
+        metadata={},
+        plan=TurnCommitPlan(),
+        redaction_ctx=_DISABLED_REDACTION,
     )
 
     prompt = engine.generator.generate_structured_output.call_args.args[0]

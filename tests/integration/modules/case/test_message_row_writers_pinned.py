@@ -165,7 +165,9 @@ def _turn_service(session, answer: str, extra_metadata: dict | None = None):
         return {"case_updated": case, "agent_response": answer, "metadata": metadata}
 
     engine.process_turn = AsyncMock(side_effect=_turn)
-    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps = SimpleNamespace(
+        llm_provider=MagicMock(), sanitizer=None, redis_client=None
+    )
     engine.deps.llm_provider.route = AsyncMock(return_value=None)
 
     cap = TurnCapService(

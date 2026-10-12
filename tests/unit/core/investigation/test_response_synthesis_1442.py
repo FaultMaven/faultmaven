@@ -341,7 +341,9 @@ class TestThroughAProcessedTurn:
         case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
         result = await _turn_engine(
             _synthesized_diagnosis(StopReason.CONTENT_FILTER)
-        ).process_turn(case=case, user_message="failover is holding for now")
+        ).process_turn(
+            case=case, user_message="failover is holding for now", redaction_ctx=None
+        )
 
         assert result["agent_response"] == RESPONSE_WITHHELD_TEXT
         assert result["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED) is True
@@ -363,7 +365,9 @@ class TestThroughAProcessedTurn:
         case = _confirmed_case()
         result = await _turn_engine(
             _synthesized_diagnosis(StopReason.CONTENT_FILTER)
-        ).process_turn(case=case, user_message="yep, the errors are gone now")
+        ).process_turn(
+            case=case, user_message="yep, the errors are gone now", redaction_ctx=None
+        )
 
         text = result["agent_response"]
         # Positive control: the INV-43 gate really composed on this turn.
@@ -392,7 +396,9 @@ class TestThroughAProcessedTurn:
         case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
         result = await _turn_engine(
             InvestigationResponse_Diagnosis(agent_response="", state_updates={})
-        ).process_turn(case=case, user_message="failover is holding for now")
+        ).process_turn(
+            case=case, user_message="failover is holding for now", redaction_ctx=None
+        )
 
         assert result["agent_response"] == ""
         assert MESSAGE_METADATA_AGENT_SYNTHESIZED not in result["metadata"]
@@ -434,7 +440,9 @@ async def test_the_terminal_qa_path_reports_the_flag_on_its_metadata():
     )
     assert case.is_terminal
 
-    result = await engine.process_turn(case=case, user_message="what was it?")
+    result = await engine.process_turn(
+        case=case, user_message="what was it?", redaction_ctx=None
+    )
 
     engine.generator.generate_structured_output.assert_awaited_once()
     assert result["agent_response"] == RESPONSE_TRUNCATED_TEXT
@@ -551,7 +559,7 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
     case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
     with route:
         result = await engine.process_turn(
-            case=case, user_message="failover is holding for now"
+            case=case, user_message="failover is holding for now", redaction_ctx=None
         )
 
     # Positive control: the call went out as a schema-tool call on the path
@@ -703,7 +711,9 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
         )
     )
     with detector:
-        result = await engine.process_turn(case=case, user_message="and now?")
+        result = await engine.process_turn(
+            case=case, user_message="and now?", redaction_ctx=None
+        )
 
     reply = result["agent_response"]
     case_updated = result["case_updated"]

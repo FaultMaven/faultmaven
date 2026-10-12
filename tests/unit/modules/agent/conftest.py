@@ -136,7 +136,9 @@ class MockMilestoneEngine:
     """
 
     def __init__(self):
-        self.deps = SimpleNamespace(llm_provider=MagicMock())
+        self.deps = SimpleNamespace(
+            llm_provider=MagicMock(), sanitizer=None, redis_client=None
+        )
         self.process_turn = AsyncMock(side_effect=self._process_turn)
 
     async def _process_turn(
@@ -148,6 +150,7 @@ class MockMilestoneEngine:
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
         typed: bool = False,
+        redaction_ctx=None,
     ) -> dict[str, Any]:
         """Mock turn processing.
 

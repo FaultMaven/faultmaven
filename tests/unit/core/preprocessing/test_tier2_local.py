@@ -83,6 +83,7 @@ class TestLocalTier2Analyze:
             query="what errors occurred",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
         assert result.backend_used == "local_llm"
         assert result.confidence == 0.6
@@ -98,6 +99,7 @@ class TestLocalTier2Analyze:
             query="critical database failure",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
         assert result.confidence == 0.2
         assert len(result.excerpts) == 0
@@ -110,6 +112,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
         assert "LLM analysis failed" in result.answer
         assert result.backend_used == "local_llm"
@@ -122,6 +125,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
         assert result.backend_used == "local_llm"
 
@@ -133,6 +137,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
         assert result.backend_used == "local_llm"
 
@@ -160,6 +165,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
 
         assert "LLM analysis failed" in result.answer
@@ -186,6 +192,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
+            redaction_ctx=None,
         )
 
         assert service.llm_client.generate.await_count == 2

@@ -4686,7 +4686,11 @@ async def test_a_teammates_turn_is_refused_by_the_service_and_costs_nothing(
 
     service = InvestigationService(
         milestone_engine=SimpleNamespace(
-            deps=SimpleNamespace(llm_provider=_Tripwire("llm_provider"))
+            deps=SimpleNamespace(
+                llm_provider=_Tripwire("llm_provider"),
+                sanitizer=None,
+                redis_client=None,
+            )
         ),
         case_repository=SessionlessCaseRepository(),
         preprocessing_service=_Tripwire("preprocessing_service"),

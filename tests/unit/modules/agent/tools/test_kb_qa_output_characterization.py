@@ -127,6 +127,7 @@ class TestAnswerFromKBRelaysProseWithSources:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         # The synthesizer was consulted, and its prose is relayed verbatim.
@@ -147,6 +148,7 @@ class TestAnswerFromKBRelaysProseWithSources:
             question="coredns cache",
             scope_id=None,
             filters={"$or": [{"scope": "global"}]},
+            redaction_ctx=None,
         )
 
         # The tool hands the engine a single prose blob with a citation line —
@@ -180,7 +182,9 @@ class TestTruncatedSynthesis:
             ]
         )
 
-        result = await tool.answer_question("why", scope_id="u1", k=5)
+        result = await tool.answer_question(
+            "why", scope_id="u1", k=5, redaction_ctx=None
+        )
 
         assert llm_router.route.call_count == 2
         caps = [c.kwargs["max_tokens"] for c in llm_router.route.call_args_list]
@@ -199,7 +203,9 @@ class TestTruncatedSynthesis:
             ]
         )
 
-        result = await tool.answer_question("why", scope_id="u1", k=5)
+        result = await tool.answer_question(
+            "why", scope_id="u1", k=5, redaction_ctx=None
+        )
 
         assert result["truncated"] is False
         assert result["answer"] == "the whole answer"
@@ -208,7 +214,9 @@ class TestTruncatedSynthesis:
     async def test_a_complete_answer_is_not_retried(self):
         tool, llm_router = _make_tool(_make_chunks(["Runbook A"]))
 
-        result = await tool.answer_question("why", scope_id="u1", k=5)
+        result = await tool.answer_question(
+            "why", scope_id="u1", k=5, redaction_ctx=None
+        )
 
         assert llm_router.route.call_count == 1
         assert result["truncated"] is False
@@ -222,7 +230,9 @@ class TestTruncatedSynthesis:
         """
         tool, llm_router = _make_tool([])
 
-        result = await tool.answer_question("why", scope_id="u1", k=5)
+        result = await tool.answer_question(
+            "why", scope_id="u1", k=5, redaction_ctx=None
+        )
 
         assert result["truncated"] is False
         llm_router.route.assert_not_called()

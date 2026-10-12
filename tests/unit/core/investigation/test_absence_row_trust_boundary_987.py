@@ -1285,7 +1285,9 @@ async def test_incident_emission_through_process_turn_does_not_start_the_cascade
         _incident_emission(root.node_id, hypothesis.hypothesis_id)
     )
     result = await engine.process_turn(
-        case=case, user_message="Fixed the ClientIDList — auth works now."
+        case=case,
+        user_message="Fixed the ClientIDList — auth works now.",
+        redaction_ctx=None,
     )
 
     updated = result["case_updated"]
@@ -1377,7 +1379,9 @@ async def test_incident_emission_is_metered_on_both_axes_through_the_pipeline():
         "absence_row_link_refused_total"
     ) as counter:
         await engine.process_turn(
-            case=case, user_message="Fixed the ClientIDList — auth works now."
+            case=case,
+            user_message="Fixed the ClientIDList — auth works now.",
+            redaction_ctx=None,
         )
 
     axes = {c.kwargs.get("axis") for c in counter.labels.call_args_list}

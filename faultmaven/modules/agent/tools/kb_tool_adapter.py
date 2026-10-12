@@ -90,6 +90,7 @@ class KBToolAdapter(AgentTool):
                 question=question,
                 scope_filter=context.kb_scope_filter,
                 k=5,
+                redaction_ctx=context.redaction_ctx,
             )
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:
@@ -166,6 +167,7 @@ class CaseEvidenceQAAdapter(AgentTool):
                 case_id=context.case_id,
                 question=question,
                 k=5,
+                redaction_ctx=context.redaction_ctx,
             )
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:

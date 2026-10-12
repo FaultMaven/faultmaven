@@ -225,7 +225,9 @@ def refused():
 
 
 async def _turn(engine, case, message="", **kw):
-    return await engine.process_turn(case=case, user_message=message, **kw)
+    return await engine.process_turn(
+        case=case, user_message=message, **kw, redaction_ctx=None
+    )
 
 
 def _assert_refused_on_terminal(result, case, before: dict):

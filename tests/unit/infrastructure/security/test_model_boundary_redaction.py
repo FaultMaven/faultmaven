@@ -158,17 +158,14 @@ def test_every_redaction_context_is_enabled_by_should_redact():
         )
         sites.append((where, func_name, decided_by_should_redact))
 
-    # Positive control: the scan sees the three constructions that exist — the
-    # investigation turn, the terminal Q&A turn, and the shared helper every
-    # knowledge-authoring path builds through.
+    # Positive control: the scan sees the two constructions that exist — the
+    # case loader every case-scoped caller builds through (the turn, once, at
+    # the investigation service; the engine on a direct call; the case title;
+    # #1956), and the helper every knowledge-authoring path builds through.
     assert {(w, f) for w, f, _ in sites} == {
         (
-            "faultmaven/core/investigation/milestone_engine/turn_generation.py",
-            "_generate_turn_response",
-        ),
-        (
-            "faultmaven/core/investigation/milestone_engine/terminal_turns.py",
-            "_process_terminal_qa",
+            "faultmaven/infrastructure/security/case_redaction.py",
+            "load_case_redaction",
         ),
         (
             "faultmaven/infrastructure/security/case_redaction.py",

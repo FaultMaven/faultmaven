@@ -333,7 +333,9 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(base_case, "Verify the symptom")
+        result = await engine.process_turn(
+            base_case, "Verify the symptom", redaction_ctx=None
+        )
 
         # Verify LLM called
         mock_llm.generate.assert_called_once()
@@ -384,7 +386,9 @@ class TestMilestoneEngine:
             }
         )
 
-        result = await engine.process_turn(base_case, "What could be wrong?")
+        result = await engine.process_turn(
+            base_case, "What could be wrong?", redaction_ctx=None
+        )
 
         case = result["case_updated"]
         # No auto-projection: the only node is the engine-seeded PROBLEM node D
@@ -429,7 +433,7 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(case, "Help me")
+        result = await engine.process_turn(case, "Help me", redaction_ctx=None)
 
         # Verify
         updated_case = result["case_updated"]
@@ -453,7 +457,7 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(base_case, "Chat")
+        result = await engine.process_turn(base_case, "Chat", redaction_ctx=None)
 
         metadata = result["metadata"]
         assert metadata["progress_made"] is False
@@ -580,7 +584,7 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(base_case, "Check logs")
+        result = await engine.process_turn(base_case, "Check logs", redaction_ctx=None)
 
         # Verify blocker surfaced as system_feedback in the turn record
         updated_case = result["case_updated"]
@@ -619,7 +623,9 @@ class TestMilestoneEngine:
         mock_llm.generate.return_value = mock_response_content
 
         # Should process without error
-        result = await engine.process_turn(base_case, "Analyze evidence")
+        result = await engine.process_turn(
+            base_case, "Analyze evidence", redaction_ctx=None
+        )
 
         # Verify no exception raised and case is returned
         assert result["case_updated"] is not None
@@ -675,7 +681,7 @@ class TestMilestoneEngine:
         # This should NOT fail with reasoning validation error
         # because pending_transition exists (case transitioning to terminal).
         # A bare token: a longer typed reply is re-asked, not executed (#1783).
-        result = await engine.process_turn(base_case, "yes")
+        result = await engine.process_turn(base_case, "yes", redaction_ctx=None)
 
         # Verify transition executed via handshake confirmation
         assert result["case_updated"] is not None
@@ -722,7 +728,9 @@ class TestMilestoneEngine:
             }
         )
 
-        result_turn_n = await engine.process_turn(base_case, "the fix worked")
+        result_turn_n = await engine.process_turn(
+            base_case, "the fix worked", redaction_ctx=None
+        )
 
         updated_case = result_turn_n["case_updated"]
 
@@ -761,6 +769,7 @@ class TestMilestoneEngine:
                 "value": True,
                 "proposal_id": yes_card["intent"]["proposal_id"],
             },
+            redaction_ctx=None,
         )
 
         final_case = result_turn_n1["case_updated"]
@@ -839,6 +848,7 @@ class TestMilestoneEngine:
                 "to_state": "closed",
                 "user_confirmed": True,
             },
+            redaction_ctx=None,
         )
 
         updated_case = result["case_updated"]
@@ -904,6 +914,7 @@ class TestMilestoneEngine:
                 "to_state": "closed",
                 "user_confirmed": True,
             },
+            redaction_ctx=None,
         )
 
         updated_case = result["case_updated"]
@@ -987,6 +998,7 @@ class TestMilestoneEngine:
                     "to_state": "investigating",
                     "user_confirmed": True,
                 },
+                redaction_ctx=None,
             )
 
         # Refused at the boundary — no LLM call, no synthetic message, no state
@@ -1023,6 +1035,7 @@ class TestMilestoneEngine:
                     "to_state": "resolved",
                     "user_confirmed": True,
                 },
+                redaction_ctx=None,
             )
 
         assert not mock_llm.generate.called
@@ -1049,6 +1062,7 @@ class TestMilestoneEngine:
             user_message="Close without resolution",
             intent_type="status_transition",
             intent_data={"from_state": "investigating", "to_state": "closed"},
+            redaction_ctx=None,
         )
 
         updated_case = result["case_updated"]
@@ -1096,7 +1110,9 @@ class TestInquiryConfirmation:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(case, "yes, that's correct")
+        result = await engine.process_turn(
+            case, "yes, that's correct", redaction_ctx=None
+        )
 
         updated_case = result["case_updated"]
         # No fallback — LLM is the sole decision-maker for confirmation
@@ -1132,7 +1148,7 @@ class TestInquiryConfirmation:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(case, "yes")
+        result = await engine.process_turn(case, "yes", redaction_ctx=None)
 
         updated_case = result["case_updated"]
         # Should stay in INQUIRY — no statement to confirm
@@ -1186,7 +1202,9 @@ class TestInquiryConfirmation:
             }
         )
 
-        result = await engine.process_turn(case, "<analysis of the DNS issue>")
+        result = await engine.process_turn(
+            case, "<analysis of the DNS issue>", redaction_ctx=None
+        )
         follow_ups = result["suggested_follow_ups"]
         labels = [f["label"] for f in follow_ups]
 
@@ -1241,7 +1259,7 @@ class TestInquiryConfirmation:
 
         # Bare: the LLM's flag commits Gate 1 only on a bare consent token
         # (#1794); "yes, proceed" is read the same way and commits nothing.
-        result = await engine.process_turn(case, "yes")
+        result = await engine.process_turn(case, "yes", redaction_ctx=None)
 
         updated_case = result["case_updated"]
         # Gate 1 closed via the LLM path (problem_statement_confirmed=True)
@@ -2048,6 +2066,7 @@ class TestContradictingIntentCancelsPendingTransition:
             "Actually, just close it — we are not going to chase this",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
 
         updated_case = result["case_updated"]
@@ -2118,6 +2137,7 @@ class TestContradictingIntentCancelsPendingTransition:
             "Close this case",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
 
         updated_case = result["case_updated"]
@@ -2188,7 +2208,9 @@ class TestRootCauseConclusionPersistence:
             }
         )
 
-        result = await engine.process_turn(base_case, "What is the root cause?")
+        result = await engine.process_turn(
+            base_case, "What is the root cause?", redaction_ctx=None
+        )
         updated_case = result["case_updated"]
 
         rcc = updated_case.root_cause_conclusion
@@ -2221,7 +2243,9 @@ class TestRootCauseConclusionPersistence:
             }
         )
 
-        result = await engine.process_turn(base_case, "Any progress?")
+        result = await engine.process_turn(
+            base_case, "Any progress?", redaction_ctx=None
+        )
         updated_case = result["case_updated"]
 
         assert updated_case.root_cause_conclusion is None
@@ -2695,7 +2719,7 @@ class TestVerificationStatusRecordedOnTurn:
         mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
 
         case = self._stalled_insufficient_case(base_case)
-        result = await engine.process_turn(case, "Any ideas?")
+        result = await engine.process_turn(case, "Any ideas?", redaction_ctx=None)
 
         # The handoff fired (still stalled + not grounded after the no-op turn),
         # and the recorded status is present in the RETURNED metadata — the write
@@ -2711,7 +2735,7 @@ class TestVerificationStatusRecordedOnTurn:
 
         # base_case as-is: no hypotheses/evidence, turn 0 → NOT_YET_PRODUCTIVE, not
         # INSUFFICIENT_EVIDENCE. The key is still threaded, valued None (no fire).
-        result = await engine.process_turn(base_case, "Hello")
+        result = await engine.process_turn(base_case, "Hello", redaction_ctx=None)
 
         assert result["metadata"]["verification_status"] is None
 
@@ -2731,7 +2755,7 @@ class TestVerificationStatusRecordedOnTurn:
         mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
 
         case = self._stalled_insufficient_case(base_case)
-        await engine.process_turn(case, "Any ideas?")
+        await engine.process_turn(case, "Any ideas?", redaction_ctx=None)
 
         assert (
             case.progress.verification_status
@@ -2765,7 +2789,7 @@ class TestRestatementStallNotice:
         base_case.turns_without_progress = 2
 
         result = await engine.process_turn(
-            base_case, "Again: what rules out the alternatives?"
+            base_case, "Again: what rules out the alternatives?", redaction_ctx=None
         )
 
         record = result["case_updated"].turn_history[-1]
@@ -2782,7 +2806,7 @@ class TestRestatementStallNotice:
         base_case.turns_without_progress = 1
 
         result = await engine.process_turn(
-            base_case, "What rules out the alternatives?"
+            base_case, "What rules out the alternatives?", redaction_ctx=None
         )
 
         record = result["case_updated"].turn_history[-1]

@@ -306,7 +306,7 @@ async def _deferred_disposition(*, resolvable: bool):
         state_updates={"milestones": MilestoneUpdates(solution_feasible="deferred")},
     )
     result = await _engine(response).process_turn(
-        case=case, user_message="the platform team ships it"
+        case=case, user_message="the platform team ships it", redaction_ctx=None
     )
     assert case.pending_transition["to_state"] == (
         "resolved" if resolvable else "closed"
@@ -317,7 +317,9 @@ async def _deferred_disposition(*, resolvable: bool):
 async def _resolution_backstop():
     """terminal_proposals.py: the INV-43 backstop on a READY case."""
     case = _investigating(cause=True, absence=True)
-    result = await _engine().process_turn(case=case, user_message="it's gone now")
+    result = await _engine().process_turn(
+        case=case, user_message="it's gone now", redaction_ctx=None
+    )
     assert case.pending_transition["to_state"] == "resolved"
     _served_the_standing_offer(result, case)
 
@@ -326,7 +328,9 @@ async def _gate_re_asks():
     """transition_turns.py: the re-ask, for both targets."""
     for to_state in ("resolved", "closed"):
         case = _pending(to_state)
-        result = await _engine().process_turn(case=case, user_message="hmm")
+        result = await _engine().process_turn(
+            case=case, user_message="hmm", redaction_ctx=None
+        )
         _served_the_standing_offer(result, case)
 
 
@@ -342,6 +346,7 @@ async def _click_close_on_a_resolvable_case():
                 "value": True,
                 "proposal_id": terminal_offer_key(case.pending_transition),
             },
+            redaction_ctx=None,
         )
     assert case.pending_transition["to_state"] == "resolved"
     _served_the_standing_offer(result, case)
@@ -356,6 +361,7 @@ async def _close_picked_from_the_menu():
             user_message="",
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         assert case.pending_transition["to_state"] == (
             "resolved" if resolvable else "closed"
@@ -414,6 +420,7 @@ async def _reopen_chip_click():
         user_message=chip["payload"],
         intent_type="status_transition",
         intent_data=dict(chip["intent"]),
+        redaction_ctx=None,
     )
     assert case.pending_transition["to_state"] == "resolved"
     _served_the_standing_offer(result, case)
@@ -448,7 +455,7 @@ async def _needs_info_answered():
         case = _pending("resolved", cause=True, absence=met)
         case.pending_transition["needs_info"] = True
         result = await _engine().process_turn(
-            case=case, user_message="here is how we verified it"
+            case=case, user_message="here is how we verified it", redaction_ctx=None
         )
         assert case.pending_transition["to_state"] == ("resolved" if met else "closed")
         _served_the_standing_offer(result, case)
@@ -462,6 +469,7 @@ async def _stale_click_on_gate1():
         user_message="Yes, the issue is resolved.",
         intent_type="confirmation",
         intent_data={"value": True, "proposal_id": "2026-01-01T00:00:00+00:00"},
+        redaction_ctx=None,
     )
     assert _keys(result["suggested_follow_ups"]) == [gate1_offer_key(STATEMENT)] * 2
 
@@ -497,6 +505,7 @@ async def _stale_click_on_the_revision():
         user_message="Yes, the revised problem statement is right.",
         intent_type="confirmation",
         intent_data={"value": True, "proposal_id": "revision:0000000000000000"},
+        redaction_ctx=None,
     )
     assert _keys(result["suggested_follow_ups"]) == [revision_offer_key(REVISED)] * 2
 

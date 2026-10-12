@@ -225,6 +225,7 @@ class TestGateOneCommitsOnConsentOnly:
             intent_type="confirmation",
             # Names the standing offer, so the value rule is what decides.
             intent_data={"proposal_id": gate1_offer_key(PROPOSED)},
+            redaction_ctx=None,
         )
         _assert_gate_one_uncommitted(case)
 
@@ -248,6 +249,7 @@ class TestGateOneCommitsOnConsentOnly:
             user_message=DECLINE_PAYLOAD,
             intent_type="confirmation",
             intent_data=_gate1_click(False),
+            redaction_ctx=None,
         )
 
         assert llm.calls > 0, "the decline never reached the LLM — it was a no-op turn"
@@ -309,6 +311,7 @@ class TestGateOneCommitsOnConsentOnly:
                 if answerable
                 else _gate1_click(False)
             ),
+            redaction_ctx=None,
         )
         _assert_gate_one_uncommitted(case)
 
@@ -340,6 +343,7 @@ class TestGateOneCommitsOnConsentOnly:
             intent_data={"value": False},
             # ADOPTED from typed text: a mint, not a click.
             typed=True,
+            redaction_ctx=None,
         )
         _assert_gate_one_uncommitted(case)
 

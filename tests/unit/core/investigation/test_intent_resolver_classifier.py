@@ -101,7 +101,9 @@ class TestClassifierSettingsResolution:
         router = _router_returning("1")
         resolver = IntentResolver(router)
 
-        result = await resolver._classify("go ahead and close this one", CHOICES)
+        result = await resolver._classify(
+            "go ahead and close this one", CHOICES, redaction_ctx=None
+        )
 
         assert result == {"type": "confirm_resolution"}
         router.route.assert_awaited_once()
@@ -115,7 +117,7 @@ class TestClassifierSettingsResolution:
         production_shaped_settings.llm = LLMSettings()
 
         router = _router_returning("none")
-        await IntentResolver(router)._classify("whatever", CHOICES)
+        await IntentResolver(router)._classify("whatever", CHOICES, redaction_ctx=None)
 
         assert router.route.await_args.kwargs["model"] == "gpt-5.4-mini"
 
@@ -133,7 +135,7 @@ class TestClassifierSettingsResolution:
         """
         production_shaped_settings.llm = LLMSettings(classifier_provider=None)
         router = _router_returning("none")
-        await IntentResolver(router)._classify("whatever", CHOICES)
+        await IntentResolver(router)._classify("whatever", CHOICES, redaction_ctx=None)
 
         assert "provider_override" not in router.route.await_args.kwargs
 
@@ -144,7 +146,7 @@ class TestClassifierSettingsResolution:
         """Conversely, the shipped default DOES route the classifier to gemini
         even though CHAT_PROVIDER is openai here — the pin is static."""
         router = _router_returning("none")
-        await IntentResolver(router)._classify("whatever", CHOICES)
+        await IntentResolver(router)._classify("whatever", CHOICES, redaction_ctx=None)
 
         assert router.route.await_args.kwargs["provider_override"] == "gemini"
         assert router.route.await_args.kwargs["model"] == "gemini-3.5-flash-lite"
@@ -158,7 +160,9 @@ class TestClassifierSettingsResolution:
         production_shaped_settings.llm = LLMSettings()
 
         router = _router_returning("2")
-        result = await IntentResolver(router)._classify("keep digging", CHOICES)
+        result = await IntentResolver(router)._classify(
+            "keep digging", CHOICES, redaction_ctx=None
+        )
 
         assert result == {"type": "continue_investigation"}
         kwargs = router.route.await_args.kwargs
@@ -174,7 +178,12 @@ class TestClassifierSettingsResolution:
         router = AsyncMock()
         router.route = AsyncMock(side_effect=RuntimeError("provider down"))
 
-        assert await IntentResolver(router)._classify("whatever", CHOICES) is None
+        assert (
+            await IntentResolver(router)._classify(
+                "whatever", CHOICES, redaction_ctx=None
+            )
+            is None
+        )
 
 
 @pytest.mark.unit
@@ -190,7 +199,7 @@ class TestClassifierCallIsBudgetedToAnswer:
         and how little visible output it can live with (the floor turns a
         starved body into a raised error instead of a silent None)."""
         router = _router_returning("1")
-        await IntentResolver(router)._classify("close it", CHOICES)
+        await IntentResolver(router)._classify("close it", CHOICES, redaction_ctx=None)
 
         kwargs = router.route.await_args.kwargs
         assert kwargs["reasoning_intent"] is ReasoningIntent.EXTRACTION

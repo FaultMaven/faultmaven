@@ -239,7 +239,9 @@ async def test_pull_the_tool_context_carries_the_cases_scope_not_the_turn_users(
     that forgot to re-key) still reads the case's scope, never the user's."""
     generator = _generator(_Teams(), _Shares())
 
-    context = await generator.build_tool_context(_case(), user_id=TEAMMATE)
+    context = await generator.build_tool_context(
+        _case(), user_id=TEAMMATE, redaction_ctx=None
+    )
 
     assert context.kb_scope_filter == DRIVER_SCOPE
     assert context.user_id == TEAMMATE
@@ -248,7 +250,9 @@ async def test_pull_the_tool_context_carries_the_cases_scope_not_the_turn_users(
 async def test_pull_an_engine_internal_turn_still_gets_the_cases_scope():
     generator = _generator(_Teams(), _Shares())
 
-    context = await generator.build_tool_context(_case(), user_id=None)
+    context = await generator.build_tool_context(
+        _case(), user_id=None, redaction_ctx=None
+    )
 
     assert context.user_id == "system"
     assert context.kb_scope_filter == DRIVER_SCOPE
@@ -259,7 +263,7 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
 
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _case(), user_id=DRIVER
+        _case(), user_id=DRIVER, redaction_ctx=None
     )
     wrapped = MagicMock()
     wrapped._arun = AsyncMock(return_value="answer")
@@ -269,7 +273,9 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     )
 
     assert result.success, result.error
-    wrapped._arun.assert_awaited_once_with(question="q", scope_filter=DRIVER_SCOPE, k=5)
+    wrapped._arun.assert_awaited_once_with(
+        question="q", scope_filter=DRIVER_SCOPE, k=5, redaction_ctx=None
+    )
 
 
 def _runbook_creator(teams: _Teams, shares: _Shares):
@@ -335,7 +341,7 @@ async def test_push_after_a_hand_off_searches_the_drivers_scope_and_stamps_it():
 
 async def test_pull_after_a_hand_off_carries_the_drivers_scope():
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _handed_off_case(), user_id=DRIVER
+        _handed_off_case(), user_id=DRIVER, redaction_ctx=None
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE

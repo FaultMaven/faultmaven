@@ -174,7 +174,9 @@ async def _turn(engine, case, message: str, **kw) -> dict:
         k: kw.pop(k) for k in ("intent_type", "intent_data", "typed") if k in kw
     }
     _respond(engine, **kw)
-    return await engine.process_turn(case=case, user_message=message, **process_kw)
+    return await engine.process_turn(
+        case=case, user_message=message, **process_kw, redaction_ctx=None
+    )
 
 
 def _feedback(result) -> str:
@@ -641,7 +643,9 @@ class TestTheChip:
     async def test_a_typed_exact_match_mints_the_chip_and_only_proposes(self):
         engine, case, _ = await _offered_then_declined()
         chip = declined_resolve_card(case)
-        minted = await IntentResolver(None).resolve("Mark this case resolved.", [chip])
+        minted = await IntentResolver(None).resolve(
+            "Mark this case resolved.", [chip], redaction_ctx=None
+        )
         assert minted == chip["intent"]
         # INV-26: the mint proposes, it commits no gate, so it is adopted.
         assert not _minted_intent_swallows_gate_consent(
@@ -748,6 +752,7 @@ async def _at_the_boundary(service, case, proposal_id):
         to_state="resolved",
         user_confirmed=False,
         proposal_id=proposal_id,
+        redaction_ctx=None,
     )
 
 
@@ -789,6 +794,7 @@ class TestTheRefusalSitesAdmitOnlyTheCurrentKey:
                 user_message="",
                 intent_type="status_transition",
                 intent_data={"to_state": "resolved", "proposal_id": stale},
+                redaction_ctx=None,
             )
         assert case.pending_transition == offer
 
@@ -808,6 +814,7 @@ class TestTheRefusalSitesAdmitOnlyTheCurrentKey:
                 user_message="",
                 intent_type="status_transition",
                 intent_data={"to_state": "resolved", "proposal_id": forged},
+                redaction_ctx=None,
             )
         assert case.pending_transition is None
 
@@ -831,6 +838,7 @@ class TestTheRefusalSitesAdmitOnlyTheCurrentKey:
                 user_message="",
                 intent_type="status_transition",
                 intent_data={"to_state": "resolved", "proposal_id": wrong},
+                redaction_ctx=None,
             )
         assert case.pending_transition is None
 
@@ -886,14 +894,18 @@ class TestTheRestOfTheSpace:
         engine.generator.generate_structured_output = AsyncMock(
             return_value=_deferred_response()
         )
-        await engine.process_turn(case=case, user_message="the platform team ships it")
+        await engine.process_turn(
+            case=case, user_message="the platform team ships it", redaction_ctx=None
+        )
         assert case.pending_transition["to_state"] == "closed"
         case.current_turn += 1
-        await engine.process_turn(case=case, user_message="no")
+        await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
         assert len(_declined(case)) == 1 and _declined(case)[0].endswith("|")
 
         case.current_turn += 1
-        await engine.process_turn(case=case, user_message="what should we change?")
+        await engine.process_turn(
+            case=case, user_message="what should we change?", redaction_ctx=None
+        )
         assert case.pending_transition is None, "the declined offer came back"
         result = await _turn(engine, case, "ok, close it", propose="closed")
         assert case.pending_transition is None
@@ -985,7 +997,9 @@ async def _deferred_offer(*, resolvable: bool):
     engine.generator.generate_structured_output = AsyncMock(
         return_value=_deferred_response()
     )
-    await engine.process_turn(case=case, user_message="the platform team ships it")
+    await engine.process_turn(
+        case=case, user_message="the platform team ships it", redaction_ctx=None
+    )
     assert case.pending_transition["to_state"] == (
         "resolved" if resolvable else "closed"
     )
@@ -1019,7 +1033,9 @@ class TestTheDeclineTurnReachesTheApplyStep:
         engine.generator.generate_structured_output = AsyncMock(
             return_value=_deferred_response()
         )
-        await engine.process_turn(case=case, user_message="anything else?")
+        await engine.process_turn(
+            case=case, user_message="anything else?", redaction_ctx=None
+        )
         assert case.pending_transition is None
 
     @pytest.mark.parametrize("resolvable", [False, True])
@@ -1032,13 +1048,17 @@ class TestTheDeclineTurnReachesTheApplyStep:
         flavour = "resolve" if resolvable else "close"
         case.current_turn += 1
         await engine.process_turn(
-            case=case, user_message=f"what happens to the runbook if I {flavour} this?"
+            case=case,
+            user_message=f"what happens to the runbook if I {flavour} this?",
+            redaction_ctx=None,
         )
         assert case.pending_transition is None
         assert _declined(case) == []
 
         case.current_turn += 1
-        await engine.process_turn(case=case, user_message="ok, makes sense")
+        await engine.process_turn(
+            case=case, user_message="ok, makes sense", redaction_ctx=None
+        )
         assert case.pending_transition is not None, "the offer returns next turn"
 
 

@@ -136,7 +136,9 @@ def service(session):
     # ``process_turn``'s broad ``except Exception`` and re-raised as a generic
     # ServiceException, burying the diagnostic. The tests assert on the mock
     # afterwards instead.
-    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps = SimpleNamespace(
+        llm_provider=MagicMock(), sanitizer=None, redis_client=None
+    )
     engine.deps.llm_provider.route = AsyncMock(return_value=None)
 
     return InvestigationService(

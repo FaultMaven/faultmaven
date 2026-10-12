@@ -170,6 +170,7 @@ async def _gate_turn(engine: MilestoneEngine, case: Case, attachments) -> dict:
         attachments=attachments,
         intent_type="status_transition",
         intent_data={"to_state": "closed"},
+        redaction_ctx=None,
     )
     assert not engine.generator.generate_structured_output.called, (
         "this turn must short-circuit on the deterministic gate branch — if it "
@@ -225,6 +226,7 @@ class TestAGateTurnCarryingANovelUpload:
             attachments=[_novel()],
             intent_type="status_transition",
             intent_data={"to_state": "closed"},
+            redaction_ctx=None,
         )
         assert saved == [], "the engine committed mid-turn"
         await commit_turn_plan(
@@ -350,6 +352,7 @@ class TestTheTerminalShortCircuit:
             *,
             plan: TurnCommitPlan,
             user_id: Optional[str] = None,
+            redaction_ctx: Any = None,
         ) -> dict[str, Any]:
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
@@ -357,7 +360,10 @@ class TestTheTerminalShortCircuit:
         engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
-            case=case, user_message="what happened here?", attachments=[_novel()]
+            case=case,
+            user_message="what happened here?",
+            attachments=[_novel()],
+            redaction_ctx=None,
         )
 
         assert seen["files_uploaded"] == ["file_aaaaaaaaaaaa"]
@@ -377,14 +383,19 @@ class TestTheTerminalShortCircuit:
         case = self._terminal_case()
         seen: dict = {}
 
-        async def spy(case, user_message, metadata, *, plan, user_id=None):
+        async def spy(
+            case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None
+        ):
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
         engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
-            case=case, user_message="what happened here?", attachments=[_novel()]
+            case=case,
+            user_message="what happened here?",
+            attachments=[_novel()],
+            redaction_ctx=None,
         )
 
         assert seen["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
@@ -394,13 +405,18 @@ class TestTheTerminalShortCircuit:
         engine = _engine()
         case = self._terminal_case()
 
-        async def spy(case, user_message, metadata, *, plan, user_id=None):
+        async def spy(
+            case, user_message, metadata, *, plan, user_id=None, redaction_ctx=None
+        ):
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
         engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
-            case=case, user_message="what happened here?", attachments=[_novel()]
+            case=case,
+            user_message="what happened here?",
+            attachments=[_novel()],
+            redaction_ctx=None,
         )
 
         assert case.turns_without_progress == STANDING_STALL
@@ -432,7 +448,10 @@ class TestTheGenerationPathReturnBoundary:
         case = _investigating_case()
 
         result = await engine.process_turn(
-            case=case, user_message="here is a brand new log", attachments=[_novel()]
+            case=case,
+            user_message="here is a brand new log",
+            attachments=[_novel()],
+            redaction_ctx=None,
         )
 
         assert engine.generator.generate_structured_output.called, (
@@ -448,7 +467,9 @@ class TestTheGenerationPathReturnBoundary:
         engine = _generating_engine()
         case = _investigating_case()
 
-        result = await engine.process_turn(case=case, user_message="any news?")
+        result = await engine.process_turn(
+            case=case, user_message="any news?", redaction_ctx=None
+        )
 
         assert "files_uploaded" not in result["metadata"]
         assert "novel_files_uploaded" not in result["metadata"]
@@ -484,7 +505,10 @@ class TestTheGenerationPathReturnBoundary:
         case = _investigating_case()
 
         await engine.process_turn(
-            case=case, user_message="here is a brand new log", attachments=[_novel()]
+            case=case,
+            user_message="here is a brand new log",
+            attachments=[_novel()],
+            redaction_ctx=None,
         )
 
         assert seen, "prompt building must reach the state-summary reader"
@@ -515,6 +539,7 @@ class TestBothPathsAgree:
             case=_investigating_case(),
             user_message="here is a log",
             attachments=[attachment],
+            redaction_ctx=None,
         )
         assert engine.generator.generate_structured_output.called
         return result["metadata"]
@@ -547,7 +572,7 @@ class TestBothPathsAgree:
         case = _investigating_case(pending="closed")
 
         result = await engine.process_turn(
-            case=case, user_message="hmm", attachments=[_novel()]
+            case=case, user_message="hmm", attachments=[_novel()], redaction_ctx=None
         )
 
         assert engine.generator.generate_structured_output.called

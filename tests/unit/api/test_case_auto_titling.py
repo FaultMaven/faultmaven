@@ -155,6 +155,8 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
+            sanitizer=None,
+            redis_client=None,
         )
 
         assert not _is_default_case_title(case.title)
@@ -177,6 +179,8 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
+            sanitizer=None,
+            redis_client=None,
         )
 
         assert case.title == "Postgres connection pool exhaustion"
@@ -202,6 +206,8 @@ class TestAutoTitleTask:
                 user_id="user_123",
                 case_service=service,
                 llm_provider=None,
+                sanitizer=None,
+                redis_client=None,
             )
 
         llm.assert_not_awaited()
@@ -240,6 +246,8 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
+                    sanitizer=None,
+                    redis_client=None,
                 ),
                 timeout=5,
             )
@@ -256,6 +264,8 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
+            sanitizer=None,
+            redis_client=None,
         )
 
         service.update_case.assert_not_awaited()
@@ -279,6 +289,8 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
+            sanitizer=None,
+            redis_client=None,
         )
 
     @pytest.mark.asyncio
@@ -295,6 +307,8 @@ class TestAutoTitleTask:
                 user_id="user_123",
                 case_service=service,
                 llm_provider=None,
+                sanitizer=None,
+                redis_client=None,
             )
 
     @pytest.mark.asyncio
@@ -321,6 +335,8 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
+                    sanitizer=None,
+                    redis_client=None,
                 )
         assert caplog.records == []
 
@@ -340,6 +356,8 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
+                    sanitizer=None,
+                    redis_client=None,
                 )
         assert any("Auto-titling failed" in r.message for r in caplog.records)
 
@@ -599,6 +617,8 @@ class TestTitlingOrdering:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
+            sanitizer=None,
+            redis_client=None,
         )
 
         assert seen["write"] == TENANT_ORG
@@ -627,6 +647,8 @@ async def test_the_auto_title_asks_for_the_driver():
         user_id="user_123",
         case_service=service,
         llm_provider=None,
+        sanitizer=None,
+        redis_client=None,
     )
 
     assert not _is_default_case_title(case.title), "the driver's case was named"

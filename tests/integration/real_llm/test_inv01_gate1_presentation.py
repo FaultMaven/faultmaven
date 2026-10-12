@@ -63,7 +63,7 @@ async def test_llm_neither_restates_nor_auto_confirms_on_a_pending_turn(
         investigation_tools=MagicMock(),
     )
 
-    result = await engine.process_turn(case, "ok, what now?")
+    result = await engine.process_turn(case, "ok, what now?", redaction_ctx=None)
     case_after = result["case_updated"]
     reply = result["agent_response"]
 

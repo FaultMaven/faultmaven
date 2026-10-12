@@ -321,7 +321,9 @@ class TestAnEngineTurn:
             await _route(router, model="claude-haiku-4-5")
 
         _stand_in(engine, body)
-        result = await engine.process_turn(_case(), "why?", user_id=USER)
+        result = await engine.process_turn(
+            _case(), "why?", user_id=USER, redaction_ctx=None
+        )
         assert result["agent_response"] == "the answer"
 
         (turn,) = await _turns(usage_db)
@@ -353,8 +355,12 @@ class TestAnEngineTurn:
         engine = _engine(router)
         _stand_in(engine, lambda: _route(router))
 
-        await engine.process_turn(_case(current_turn=4), "one", user_id=USER)
-        await engine.process_turn(_case(current_turn=5), "two", user_id=USER)
+        await engine.process_turn(
+            _case(current_turn=4), "one", user_id=USER, redaction_ctx=None
+        )
+        await engine.process_turn(
+            _case(current_turn=5), "two", user_id=USER, redaction_ctx=None
+        )
 
         assert [t["turn_number"] for t in await _turns(usage_db)] == [4, 5]
         (row,) = await _daily(usage_db)
@@ -396,7 +402,7 @@ class TestAnEngineTurn:
             )
 
         _stand_in(engine, body)
-        await engine.process_turn(_case(), "why?", user_id=USER)
+        await engine.process_turn(_case(), "why?", user_id=USER, redaction_ctx=None)
 
         assert da.calls == 1 and provider.calls == 0
         (turn,) = await _turns(usage_db)
@@ -442,7 +448,7 @@ class TestAnEngineTurn:
             )
 
         _stand_in(engine, body)
-        await engine.process_turn(_case(), "resolved", user_id=USER)
+        await engine.process_turn(_case(), "resolved", user_id=USER, redaction_ctx=None)
         # The turn has flushed; now let the conversion make its call.
         (turn,) = await _turns(usage_db)
         assert turn["calls"] == 1
@@ -471,7 +477,9 @@ class TestAnEngineTurn:
             await _route(router)
 
         _stand_in(engine, body)
-        result = await engine.process_turn(_case(), "why?", user_id=USER)
+        result = await engine.process_turn(
+            _case(), "why?", user_id=USER, redaction_ctx=None
+        )
 
         assert result["agent_response"] == "the answer"
         assert unpersisted == {REASON_STORE_ERROR: 2}
@@ -492,7 +500,7 @@ class TestAnEngineTurn:
 
         with caplog.at_level(logging.WARNING, logger=usage_ledger.__name__):
             result = await engine.process_turn(
-                _case(case_id=orphan), "why?", user_id=USER
+                _case(case_id=orphan), "why?", user_id=USER, redaction_ctx=None
             )
 
         assert result["agent_response"] == "the answer"
@@ -533,7 +541,9 @@ class TestAnEngineTurn:
             await _route(router)
 
         _stand_in(engine, body)
-        result = await engine.process_turn(_case(), "why?", user_id=USER)
+        result = await engine.process_turn(
+            _case(), "why?", user_id=USER, redaction_ctx=None
+        )
 
         assert result["agent_response"] == "the answer"
         assert unpersisted == {REASON_ATTRIBUTION_ERROR: 2}
@@ -550,7 +560,7 @@ class TestARestart:
 
         engine = _engine(router)
         _stand_in(engine, lambda: _route(router))
-        await engine.process_turn(_case(), "why?", user_id=USER)
+        await engine.process_turn(_case(), "why?", user_id=USER, redaction_ctx=None)
         before = (await _daily(usage_db), await _turns(usage_db))
 
         # Everything process-local goes: the container, the engine, the ledger.
@@ -582,12 +592,17 @@ class TestOutsideATurn:
         )
 
         set_current_actor_user_id(USER)  # as require_authentication binds it
-        engine = SimpleNamespace(deps=SimpleNamespace(llm_provider=router))
+        engine = SimpleNamespace(
+            deps=SimpleNamespace(llm_provider=router, sanitizer=None, redis_client=None)
+        )
         service = InvestigationService(
             milestone_engine=engine, case_repository=InMemoryCaseRepository()
         )
         result = await service._handle_out_of_band(
-            _case(), "who won the 1998 world cup?", OutOfBandKind.OFF_TOPIC
+            _case(),
+            "who won the 1998 world cup?",
+            OutOfBandKind.OFF_TOPIC,
+            redaction_ctx=None,
         )
         await drain_pending_usage_writes()
 

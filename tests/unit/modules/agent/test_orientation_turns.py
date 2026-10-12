@@ -70,6 +70,7 @@ def engine():
         intent_type=None,
         intent_data=None,
         user_id=None,
+        redaction_ctx=None,
     ):
         case.updated_at = datetime.now(timezone.utc)
         return {
@@ -83,7 +84,9 @@ def engine():
     router.route = AsyncMock(
         side_effect=AssertionError("no LLM call expected on an orientation turn")
     )
-    double.deps = SimpleNamespace(llm_provider=router)
+    double.deps = SimpleNamespace(
+        llm_provider=router, sanitizer=None, redis_client=None
+    )
     return double
 
 

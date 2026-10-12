@@ -451,7 +451,9 @@ class TestTheEngineMintsOnTheLiveTurn:
         case = _investigating_case()
         engine = _engine([_block(_PODS.splitlines()[0], _PODS.splitlines()[-1])])
 
-        result = await engine.process_turn(case=case, user_message=_MESSAGE)
+        result = await engine.process_turn(
+            case=case, user_message=_MESSAGE, redaction_ctx=None
+        )
 
         (offer,) = case.chat_data_offers
         assert offer.blocks == [_PODS]
@@ -466,7 +468,9 @@ class TestTheEngineMintsOnTheLiveTurn:
             StateReport(request="the output of kubectl get pods")
         )
 
-        result = await engine.process_turn(case=case, user_message="it's stable now")
+        result = await engine.process_turn(
+            case=case, user_message="it's stable now", redaction_ctx=None
+        )
 
         (offer,) = case.chat_data_offers
         assert offer.request == "the output of kubectl get pods"
@@ -474,7 +478,9 @@ class TestTheEngineMintsOnTheLiveTurn:
 
     async def test_a_turn_with_nothing_named_records_nothing(self):
         case = _investigating_case()
-        result = await _engine(None).process_turn(case=case, user_message=_MESSAGE)
+        result = await _engine(None).process_turn(
+            case=case, user_message=_MESSAGE, redaction_ctx=None
+        )
         assert case.chat_data_offers == []
         assert result["metadata"][TURN_METADATA_CHAT_DATA_OFFER] is None
 
