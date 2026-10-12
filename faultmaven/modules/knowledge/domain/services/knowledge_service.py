@@ -2048,32 +2048,6 @@ class KnowledgeService:
             logger.error(f"Failed to resolve visible document ids: {e}")
             return set()
 
-    async def get_runbook_title(self, item_id: str) -> Optional[str]:
-        """Return a knowledge item's display title, or None.
-
-        Names the runbook a legacy case was resolved by applying, when
-        ``_handle_runbook_creation`` short-circuits on seeded provenance
-        (``seeded_provenance``, rows written before fm#1295 removed the
-        seeder). None for a falsy id, a missing row, or a lookup error — the
-        caller degrades to an unnamed message.
-        """
-        try:
-            if not item_id:
-                return None
-
-            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
-                DatabaseKnowledgeItemRepository,
-            )
-
-            async with self._db_session_factory() as session:
-                repo = DatabaseKnowledgeItemRepository(session)
-                item = await repo.get_by_id(item_id)
-
-            return getattr(item, "title", None) if item is not None else None
-        except Exception as e:
-            logger.error(f"Failed to load title for {item_id}: {e}")
-            return None
-
     async def get_relevant_snippet(
         self,
         document_id: str,

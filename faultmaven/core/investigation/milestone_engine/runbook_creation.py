@@ -31,6 +31,25 @@ logger = logging.getLogger(__name__)
 _CONVERSION_TASKS: set["asyncio.Task[None]"] = set()
 
 
+def _driver_is_creator(case: "Case") -> bool:
+    """Whether the turn's actor (the effective driver) is the case creator."""
+    return case.effective_driver_id == case.user_id
+
+
+def _draft_location(case: "Case") -> str:
+    """Where the runbook draft is, worded for the turn's actor.
+
+    The draft always lands in the case CREATOR's personal KB (ADR-020 D6; the
+    conversion runs as ``case.user_id``). A turn's reply and the draft
+    notices address the effective driver, so a driver who is not the creator
+    is told the draft is in the creator's Drafts, not theirs. Every engine
+    text about the draft's location takes its wording from here.
+    """
+    if _driver_is_creator(case):
+        return "**Knowledge Base > Drafts**"
+    return "the case creator's **Knowledge Base > Drafts**"
+
+
 class RunbookCreator:
     """Creates a runbook draft from a resolved case, deduplicating against existing runbooks in the caller's visible scope before converting."""
 
@@ -99,45 +118,10 @@ class RunbookCreator:
                 similar-runbook candidate on the previous turn and chosen to
                 proceed.
         """
-        from faultmaven.core.investigation.seeded_provenance import (
-            confirmed_root_seed_origin,
-        )
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
         )
-
-        # Step 0: Provenance-based uniqueness (Phase 5.2b), LEGACY rows only —
-        # the seeder that stamped this provenance is gone (fm#1295, see
-        # ``seeded_provenance``). A case resolved by validating a cause it had
-        # planted from an existing runbook needs no
-        # new runbook — it would duplicate that one. This is the cheap SYNC tier
-        # ABOVE the async embedding-similarity dedup (Step 2, which stops and
-        # names a ≥70% match for the user to decide on):
-        # a direct, certain "you applied runbook X" signal, so we short-circuit
-        # with the covering runbook named before spending an embedding search.
-        # (The offer gate already suppresses the affordance for these cases; this
-        # covers the residual typed-exact-payload path and names the runbook.)
-        # A knowledge-lifecycle decision, not a safety gate — the manual
-        # POST /knowledge/runbooks/create path stays open.
-        seed_origin = confirmed_root_seed_origin(case)
-        if seed_origin:
-            title = None
-            if self.deps.knowledge_service and hasattr(
-                self.deps.knowledge_service, "get_runbook_title"
-            ):
-                title = await self.deps.knowledge_service.get_runbook_title(seed_origin)
-            named = f"**{title}**" if title else "an existing runbook"
-            return {
-                "agent_response": (
-                    f"This case was resolved by applying {named}, so it is already "
-                    "covered — no new runbook is needed. You can view or update it "
-                    "from the Dashboard Knowledge Base."
-                ),
-                "suggested_follow_ups": [],
-                "case_updated": case,
-                "metadata": metadata,
-            }
 
         # Step 1+2: Evaluate readiness and deduplication. The KB is injected
         # explicitly (constructor param) — the old probe here,
@@ -216,7 +200,7 @@ class RunbookCreator:
             return {
                 "agent_response": (
                     "A runbook draft already exists for this case. You can view or "
-                    "update it in the Dashboard under **Knowledge Base > Drafts**."
+                    f"update it in the Dashboard under {_draft_location(case)}."
                 ),
                 "suggested_follow_ups": [],
                 "case_updated": case,
@@ -242,6 +226,8 @@ class RunbookCreator:
                     request,
                     case.user_id,
                     case.enterprise_id,
+                    draft_location=_draft_location(case),
+                    driver_is_creator=_driver_is_creator(case),
                     committed=plan.gate(),
                 )
             )
@@ -279,12 +265,19 @@ class RunbookCreator:
             # later from the Dashboard"). That is the durable way out when the
             # silent failure above happens, and it costs the reader nothing
             # when it does not.
-            agent_response = (
-                "Creating your runbook draft from this case. "
-                "It will appear in the Dashboard under "
-                "**Knowledge Base > Drafts** once generation finishes. You can "
-                "also create and edit runbooks there directly."
-            )
+            if _driver_is_creator(case):
+                agent_response = (
+                    "Creating your runbook draft from this case. "
+                    "It will appear in the Dashboard under "
+                    f"{_draft_location(case)} once generation finishes. You can "
+                    "also create and edit runbooks there directly."
+                )
+            else:
+                agent_response = (
+                    "Creating a runbook draft from this case. "
+                    "It will appear in the Dashboard under "
+                    f"{_draft_location(case)} once generation finishes."
+                )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a
             # SUGGEST_WITH_CAVEATS verdict would otherwise reach the user as
@@ -381,6 +374,8 @@ class RunbookCreator:
         user_id: str,
         enterprise_id: str,
         *,
+        draft_location: str,
+        driver_is_creator: bool,
         committed: "asyncio.Future[Any]",
     ) -> None:
         """Background task for runbook conversion.
@@ -392,6 +387,12 @@ class RunbookCreator:
         (``ConversionService.convert_from_case``: the conversion job, its
         draft, the synthetic source upload, and this method's completion
         notice) all sit behind the gate.
+
+        ``draft_location`` and ``driver_is_creator`` are the wording for where
+        the draft lands (``_draft_location(case)``, ``_driver_is_creator(case)``)
+        and who it addresses, captured when the run starts: the notice
+        is written after a background run, and the case's driver can change
+        while it works.
 
         ``enterprise_id`` is the SOURCE CASE's enterprise, and it is required, not
         optional. The conversion persists three RLS-tenanted rows (the synthetic
@@ -470,8 +471,9 @@ class RunbookCreator:
                     },
                 )
                 notification_content = (
-                    f"Your runbook draft **{draft.title}** is ready. "
-                    f"View it in the Dashboard under **Knowledge Base > Drafts**."
+                    f"{'Your' if driver_is_creator else 'The'} "
+                    f"runbook draft **{draft.title}** is ready. "
+                    f"View it in the Dashboard under {draft_location}."
                 )
             else:
                 logger.warning(

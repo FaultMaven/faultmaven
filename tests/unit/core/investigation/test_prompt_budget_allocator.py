@@ -367,7 +367,6 @@ _VARIABLE_KEYS = (
     "working_conclusion",
     "kb_results",
     "hypotheses",
-    "candidate_solutions",
     "evidence_needs",
     "entity_highlights",
 )
@@ -398,7 +397,6 @@ def _allocate(budget, **variable):
         hypothesis_str="",
         evidence_needs_str="",
         entity_highlights_str="",
-        candidate_solutions_str="",
     )
     sections.update(variable)
     case = t._make_case_with_evidence([])
@@ -441,7 +439,6 @@ def test_a_non_empty_section_allotted_two_tokens_or_fewer_is_marked(room):
         conclusion_str="CONCLUSION " * 50,
         kb_str="KB " * 50,
         hypothesis_str="HYPOTHESIS " * 50,
-        candidate_solutions_str="SOLUTION " * 50,
         entity_highlights_str="ENTITY " * 50,
         # evidence_needs left empty: nothing existed, so nothing is marked.
     )
@@ -621,7 +618,6 @@ def test_no_section_vanishes_unmarked_on_the_assembled_prompt(monkeypatch):
             "working_conclusion": kw["conclusion_str"],
             "kb_results": kw["kb_str"],
             "hypotheses": kw["hypothesis_str"],
-            "candidate_solutions": kw["candidate_solutions_str"],
             "evidence_needs": kw["evidence_needs_str"],
             "entity_highlights": kw["entity_highlights_str"],
         }

@@ -460,17 +460,18 @@ Team KB scope filtering is built on every retrieval path:
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs, excluding retired teams
-- Inside an investigation, the pre-fetch, `kb_qa` and the runbook dedup take one scope from `case_retrieval_scope(case)` (`core/investigation/milestone_engine/retrieval_scope.py`, #1919): the **case driver's** knowledge, global ∪ the driver's personal KB ∪ the runbooks shared to the driver's teams. Until #1898 the driver is the creator (`case.user_id`), never the session user. `kb_qa` receives it as `ToolContext.kb_scope_filter`
+- Inside an investigation, the pre-fetch, `kb_qa` and the runbook dedup take one scope from `case_retrieval_scope(case)` (`core/investigation/milestone_engine/retrieval_scope.py`, #1919): the **case driver's** knowledge, global ∪ the driver's personal KB ∪ the runbooks shared to the driver's teams. The driver is the case's effective driver (`case.effective_driver_id`; the creator when none was handed the case, ADR-020, #1898), never the session user. `kb_qa` receives it as `ToolContext.kb_scope_filter`
 - `search_documents` and report recommendations build the requesting user's scope with `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`, plus the tenant's `enterprise_id`, #1168) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
 **Stored excerpts are gated per viewer (#1919).** The model's answer written from the driver's knowledge is accepted disclosure to everyone who reads the case. The stored copies of runbook text are not: a turn's `sources` (the excerpts its prompt carried, persisted on the assistant row) are checked against the reader when `GET /cases/{id}/messages` or `POST /cases/{id}/turns` returns them (`gate_kb_sources`, `modules/knowledge/contracts.py`). The check is the id-addressed document read's rule (global, the viewer's own, or shared to one of the viewer's teams; published or the viewer's own), batched as `visible_document_ids`, one query per response. A source the viewer cannot open, or one with no `document_id`, is returned with empty `content` and `metadata` `{"access": "restricted"}`. The operator break-glass transcript (`/admin/cases`) shows the stored copy.
 
+**Built: team KB management.** `POST /knowledge/documents` with `scope=team` and a `team_id` uploads into a team's knowledge; `GET /knowledge/documents?scope=team` lists it; `DELETE /knowledge/documents/{id}` removes it. The gate on upload is team **membership** (`is_team_member`, `modules/knowledge/api/routes.py`: a caller can publish only to a team they belong to, otherwise 403), not a team-admin role. Delete and update are owner-based (`ensure_document_write_allowed`: the document's owner, or a platform administrator), consistent with ADR-011 D8 (a shared runbook is read-only to the team; its author edits and deletes it).
+
 **Remaining work:**
 
-1. Team KB management API endpoints (upload, list, delete restricted to team admin role)
-2. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
+1. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
 
 ---
 
@@ -533,10 +534,10 @@ Personal KB shares the same unified infrastructure as Global and Team — scope 
 
 | Action | Global | Team | Personal |
 |--------|--------|------|----------|
-| **Upload directly** | Platform admin only | Team admin only | Owner only (Dashboard UI) |
+| **Upload directly** | Platform admin only | Team member, into a team they belong to | Owner only (Dashboard UI) |
 | **Promote from Personal** | — | Team member submits, team admin approves | — (source tier) |
 | **Query during case** | All users (auto-searched) | Team members only | Owner only |
-| **Delete** | Platform admin only | Team admin | Owner only |
+| **Delete** | Platform admin only | Document owner (or platform admin) | Owner only |
 | **Cross-user access** | Shared read-only (all orgs) | Shared read-only (within team) | Forbidden |
 
 ---

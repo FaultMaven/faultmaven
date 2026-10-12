@@ -438,6 +438,8 @@ class TestSystemNoticeRow:
             request,
             USER_ID,
             ENTERPRISE,
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
             committed=_committed_gate(),
         )
         live = spy.saved[-1]
@@ -574,6 +576,8 @@ class TestNewRowsGoLast:
             ),
             USER_ID,
             ENTERPRISE,
+            draft_location="**Knowledge Base > Drafts**",
+            driver_is_creator=True,
             committed=_committed_gate(),
         )
 
