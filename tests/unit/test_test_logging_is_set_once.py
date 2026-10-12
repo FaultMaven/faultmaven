@@ -17,6 +17,9 @@ state between tests:
   ``aiosqlite`` is not enabled for DEBUG;
 * after a test that lowers the root and adds a handler without restoring
   either, the next test still finds the session's level and handlers.
+* a singleton rebuilt mid-session from freshly read settings, as the
+  logging config tests leave it to be, still lands on the session's level:
+  ``clean_test_environment`` keeps ``LOG_LEVEL`` pinned past session start.
 """
 
 from __future__ import annotations
@@ -35,10 +38,15 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 #: Importing ``tests.conftest`` runs it: the ``LOG_LEVEL`` pin and the logging
-#: configuration happen at import. The restore is a hook, so it is re-exported
-#: by name for the child's pytest to register.
+#: configuration happen at import. The restore is a hook and the session pin is
+#: a fixture, so both are re-exported by name for the child's pytest to
+#: register: without ``clean_test_environment`` the child would never run the
+#: code that keeps ``LOG_LEVEL`` pinned for the rest of the session.
 _CHILD_CONFTEST = """
-from tests.conftest import pytest_runtest_protocol  # noqa: F401
+from tests.conftest import (  # noqa: F401
+    clean_test_environment,
+    pytest_runtest_protocol,
+)
 """
 
 _CHILD_TESTS = """
@@ -80,11 +88,36 @@ def test_3_a_test_lowers_the_root_and_adds_a_handler():
 
 def test_4_the_next_test_finds_the_session_level_and_handlers():
     _assert_as_the_session_set_it()
+
+
+def test_5_a_rebuilt_singleton_lands_on_the_session_level():
+    # What tests/infrastructure/logging/test_config.py's teardowns leave
+    # behind: no singleton, so the next get_logger builds one from settings
+    # read afresh. With the zero-config preset applied, only the session's
+    # LOG_LEVEL pin keeps that rebuild off DEBUG.
+    import faultmaven.infrastructure.logging.config as logging_config
+    from faultmaven.config.settings import reset_settings
+
+    reset_settings()
+    logging_config._logger_config = None
+    try:
+        logging_config.get_logger(__name__)
+        assert logging.getLevelName(logging.getLogger().level) == STATE["session"][0]
+    finally:
+        reset_settings()
 """
 
-#: What makes the zero-config ``local`` preset (``LOG_LEVEL=DEBUG``) apply, or
-#: not: any of these set and it declines. The Cloud job sets ``REDIS_HOST``,
-#: which is why the leak only showed in Test Standalone.
+#: Removed from the child's environment so the zero-config ``local`` preset
+#: (``LOG_LEVEL=DEBUG``) applies there, as it did in Test Standalone:
+#:
+#: * ``LOG_LEVEL`` and ``CONFIG_PRESET`` because the child must start from
+#:   neither pin nor preset of the parent's: the preset never overrides a
+#:   ``LOG_LEVEL`` already set, and a set ``CONFIG_PRESET`` applies that
+#:   preset instead of the detected one;
+#: * the rest because ``detect_zero_config_preset`` declines the preset when
+#:   any of them is set (``ENVIRONMENT`` only when it names something other
+#:   than ``development``). The Cloud job sets ``REDIS_HOST``, which is why
+#:   the leak only showed in Test Standalone.
 _PRESET_DECIDERS = (
     "LOG_LEVEL",
     "CONFIG_PRESET",
@@ -117,4 +150,4 @@ def test_no_test_changes_the_logging_the_next_one_runs_under(pytester, monkeypat
 
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", timeout=600)
 
-    result.assert_outcomes(passed=5)
+    result.assert_outcomes(passed=6)
