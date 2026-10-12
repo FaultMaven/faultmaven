@@ -45,7 +45,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseTagModel,
     EvidenceModel,
     HypothesisModel,
-    InvestigationSessionModel,
     KnowledgeItemModel,
     SolutionModel,
     UploadedFileModel,
@@ -295,7 +294,6 @@ class TestSchemaModelConsistency:
             "hypotheses",
             "case_messages",
             "evidence",
-            "investigation_sessions",
         }
 
         missing_tables = critical_tables - tables
@@ -313,7 +311,6 @@ class TestSchemaModelConsistency:
             ("uploaded_files", UploadedFileModel),
             ("case_actions", CaseActionModel),
             ("case_tags", CaseTagModel),
-            ("investigation_sessions", InvestigationSessionModel),
             ("knowledge_items", KnowledgeItemModel),
         ],
     )

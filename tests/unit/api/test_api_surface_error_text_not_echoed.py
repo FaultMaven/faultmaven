@@ -91,7 +91,6 @@ _KNOWN_RESPONSE_PRODUCERS = frozenset(
         "faultmaven/api/routes/admin_cases.py",
         "faultmaven/api/routes/admin_config.py",
         "faultmaven/api/routes/admin_grants.py",
-        "faultmaven/api/routes/sessions.py",
         "faultmaven/modules/auth/api/auth.py",
         "faultmaven/modules/auth/api/invitations.py",
         "faultmaven/modules/auth/api/oauth.py",

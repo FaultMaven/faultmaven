@@ -149,6 +149,14 @@ def _reset_outcomes() -> None:
     _session_outcomes = _SessionOutcomes()
 
 
+# The root conftest's per-test restore of the root logger (#1944). Run as
+# ``pytest tests/integration``, the rootdir is this directory (its own
+# ``pytest.ini``), so ``tests/conftest.py`` is only imported above, never
+# registered, and its hooks do not fire here. Under ``pytest tests/`` both
+# copies run for these tests; a nested snapshot and restore is the same restore.
+pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
+
+
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""
     _reset_outcomes()
@@ -1316,27 +1324,6 @@ async def case_service() -> CaseService:
             "case_service is None - container initialization may have failed"
         )
     return service
-
-
-@pytest.fixture
-def inmemory_session_repository():
-    """Create in-memory investigation session repository for testing.
-
-    Used for testing InMemory repository implementation without database.
-    Each test gets a fresh repository instance.
-    """
-    from faultmaven.infrastructure.persistence.investigation_session_repository import (
-        InMemoryInvestigationSessionRepository,
-    )
-    from faultmaven.infrastructure.persistence.repository_factory import (
-        reset_inmemory_investigation_session_repository,
-    )
-
-    # Reset singleton to ensure fresh state
-    reset_inmemory_investigation_session_repository()
-
-    # Return the singleton instance
-    return InMemoryInvestigationSessionRepository()
 
 
 #: The URL the engine fixtures below point the process at. One spelling, in one

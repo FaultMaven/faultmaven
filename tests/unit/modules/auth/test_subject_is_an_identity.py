@@ -23,8 +23,8 @@ in a commit message:
    ``AuthenticatedUser.from_jwt_claims`` (``claims.get("sub", "")`` — defaulting
    a missing subject to the empty string, which is the value the scope checks
    read as "no owner"). That second one serves
-   ``api/middleware/auth.get_current_user``, and therefore the admin routers and
-   ``api/routes/sessions.py``. Both refuse now, and
+   ``api/middleware/auth.get_current_user``, and therefore the admin routers.
+   Both refuse now, and
    :func:`test_every_principal_constructor_refuses_a_subjectless_claim_set`
    is the scan.
 

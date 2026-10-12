@@ -1,7 +1,7 @@
 """List Evidence Tool for Agent Execution (TASK-015)
 
 This tool allows agents to list all evidence artifacts uploaded
-to a case during investigation sessions.
+to a case during its investigation.
 
 Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """

@@ -1,103 +1,15 @@
-"""API Request/Response Models (TASK-014)
+"""API Request/Response Models
 
-Purpose: Pydantic models for FastAPI request validation and response serialization.
+Pydantic models for FastAPI request validation and response serialization:
 
-This module provides:
-- Request and response models for investigation sessions
 - Admin user, LLM configuration and config-status models
 - The backend-capabilities response (``GET /api/v1/meta/capabilities``)
-
-Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from faultmaven.models.investigation_session import SessionState
-
-# ============================================================
-# Session Models
-# ============================================================
-
-
-class SessionCreateRequest(BaseModel):
-    """Request model for creating investigation session."""
-
-    session_goal: Optional[str] = None
-    token_budget_limit: Optional[int] = Field(None, ge=0)
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class SessionUpdateRequest(BaseModel):
-    """Request model for updating session."""
-
-    session_goal: Optional[str] = None
-    token_budget_limit: Optional[int] = Field(None, ge=0)
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class InvestigationSessionResponse(BaseModel):
-    """Response model for investigation session."""
-
-    session_id: str
-    case_id: str
-    user_id: str
-    enterprise_id: str
-    state: SessionState
-    started_at: datetime
-    ended_at: Optional[datetime] = None
-    last_activity_at: datetime
-    total_duration_ms: Optional[int] = None
-    session_goal: Optional[str] = None
-    findings_summary: Optional[str] = None
-    total_token_usage: int
-    total_agent_executions: int
-    token_budget_limit: Optional[int] = None
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-    @classmethod
-    def from_domain(cls, session: Any) -> "InvestigationSessionResponse":
-        """Create InvestigationSessionResponse from domain InvestigationSession model.
-
-        Args:
-            session: Domain InvestigationSession object
-
-        Returns:
-            InvestigationSessionResponse instance
-        """
-        return cls(
-            session_id=session.session_id,
-            case_id=session.case_id,
-            user_id=session.user_id,
-            enterprise_id=session.enterprise_id,
-            state=session.state,
-            started_at=session.started_at,
-            ended_at=session.ended_at,
-            last_activity_at=session.last_activity_at,
-            total_duration_ms=session.total_duration_ms,
-            session_goal=session.session_goal,
-            findings_summary=session.findings_summary,
-            total_token_usage=session.total_token_usage,
-            total_agent_executions=session.total_agent_executions,
-            token_budget_limit=session.token_budget_limit,
-            created_at=session.created_at,
-            updated_at=session.updated_at,
-        )
-
-
-class SessionListResponse(BaseModel):
-    """Response model for session list."""
-
-    items: List[InvestigationSessionResponse]
-    total: int
-    limit: int
-    offset: int
-
 
 # ============================================================
 # Admin User Management Models (TASK-019)

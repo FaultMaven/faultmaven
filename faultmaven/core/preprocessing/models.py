@@ -4,7 +4,7 @@ Preprocessing Models
 Defines the core types for the four-tier preprocessing pipeline:
 - Tier 0: Classification (DataType, ClassificationResult)
 - Tier 1: Mechanical Extraction (ExtractionResult, PreprocessingResult)
-- Tier 2: Mechanical Search (search_file agent tool + BasicTier2Service backends)
+- Tier 2: Mechanical Search (search_file agent tool)
 - Tier 3: Interpreted Search / Deep Analysis (DeepAnalysisResult, AnalysisContext, DataExcerpt)
 - Vector DB: Chunk model for structural index storage
 
@@ -323,7 +323,9 @@ class DeepAnalysisResult(BaseModel):
     )
     tokens_used: int = Field(default=0)
     processing_time_ms: int = Field(default=0)
-    backend_used: str = Field(default="", description="Which Tier 2 backend was used")
+    backend_used: str = Field(
+        default="", description="Which implementation produced the result"
+    )
 
 
 # =============================================================================

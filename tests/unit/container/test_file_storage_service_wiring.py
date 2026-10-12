@@ -65,20 +65,21 @@ class TestFileStorageServiceWiring:
 
     def test_infrastructure_provider_constructs_before_tier2_consumer(self):
         """The FileStorageService() construction must appear lexically
-        before the create_tier2_service() call in infrastructure.py. If the
+        before the create_deep_analysis_service() call in infrastructure.py. If the
         order reverses (even on the same function), Tier 2 again gets None.
         """
         source = _INFRASTRUCTURE_PROVIDER.read_text()
         construct_idx = source.find("FileStorageService(")
-        tier2_idx = source.find("create_tier2_service(")
+        # The call site, not the ``def`` (which precedes register_infrastructure).
+        tier2_idx = source.find("= create_deep_analysis_service(")
         assert construct_idx > 0, (
             "FileStorageService is not constructed in infrastructure.py at "
             "all. The Tier 2 consumer below will receive None."
         )
-        assert tier2_idx > 0, "create_tier2_service call not found"
+        assert tier2_idx > 0, "create_deep_analysis_service call not found"
         assert construct_idx < tier2_idx, (
             "FileStorageService must be constructed BEFORE "
-            "create_tier2_service in infrastructure.py. Otherwise Tier 2 is "
+            "create_deep_analysis_service in infrastructure.py. Otherwise Tier 2 is "
             "built with storage_service=None and deep_analysis crashes "
             "mid-turn."
         )

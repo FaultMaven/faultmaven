@@ -1529,7 +1529,7 @@ async def logout(current_user, auth_service, ...) -> LogoutResponse:
 > signing out on one device does not sign the user out everywhere. Revoking
 > every token for a user is the separate per-user watermark path described
 > under [Token Validation Middleware](#token-validation-middleware). Logout
-> still does not delete investigation/session state.
+> deletes no case: cases outlive every session.
 
 ## Frontend Implementation
 

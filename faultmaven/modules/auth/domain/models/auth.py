@@ -262,7 +262,7 @@ class AuthenticatedUser:
             it must never be read as a visibility predicate.
         email: User email address
         roles: List of organization-level roles (admin, member, viewer)
-        permissions: List of granular permissions (cases:read, sessions:execute, etc.)
+        permissions: List of granular permissions (cases:read, evidence:upload, etc.)
         token_jti: JWT ID for token revocation tracking (optional)
     """
 

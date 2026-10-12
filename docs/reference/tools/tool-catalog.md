@@ -296,16 +296,10 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 **Future**: Will be merged into `search_file` as an `interpret: true` option.
 
-**Backends**:
-- `local` (default): Uses configured CHAT_PROVIDER — no extra config needed
-- `external`: HTTP call to cloud microservice (enterprise only)
-
 **Configuration**:
 ```env
-# Enabled by default (local). No config needed for standard use.
-# DEEP_ANALYSIS_BACKEND=local       # local | external | disabled
-# DEEP_ANALYSIS_URL=                # URL for external backend (enterprise only)
-# DEEP_ANALYSIS_API_KEY=            # API key for external backend (enterprise only)
+# Enabled by default (local): uses the configured CHAT_PROVIDER through the LLM router.
+# DEEP_ANALYSIS_BACKEND=local       # local | disabled; any other value fails startup
 ```
 
 ---

@@ -266,8 +266,13 @@ start_app() {
     print_info "Starting FaultMaven API on port $port..."
     echo ""
 
+    # Idle keep-alive: uvicorn's CLI would otherwise use its own default; read
+    # the same TIMEOUT_KEEP_ALIVE the API setting reads (default 75).
+    local keepalive=$(grep -E '^TIMEOUT_KEEP_ALIVE=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    keepalive=${keepalive:-75}
+
     # Start uvicorn
-    uvicorn faultmaven.main:app --host 0.0.0.0 --port "$port" > "$LOG_FILE" 2>&1 &
+    uvicorn faultmaven.main:app --host 0.0.0.0 --port "$port" --timeout-keep-alive "$keepalive" > "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
 

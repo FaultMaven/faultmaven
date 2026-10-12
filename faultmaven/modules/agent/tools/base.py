@@ -53,11 +53,11 @@ class ToolContext:
     """Context passed to tool execution.
 
     Contains all the information a tool needs to perform its operation
-    within the scope of an investigation session.
+    within the scope of one case's turn.
 
     Attributes:
-        session_id: Investigation session ID
-        case_id: Case ID the session belongs to
+        session_id: The engine passes the case id here
+        case_id: Case ID the turn belongs to
         enterprise_id: Enterprise the request is isolated to (ADR-017 D1)
         user_id: User ID making the request
         case_repository: Case repository for loading case + embedded evidence

@@ -41,12 +41,7 @@ case.
 
 SCOPE. This file is about the case router and about AUTH sessions — the ones
 ``POST /api/v1/sessions`` mints, whose ids spend as identity and which key
-``session:{id}:current_case_id``. The ``{session_id}`` in
-``/api/v1/cases/{case_id}/sessions/{session_id}/…`` is a different thing (an
-INVESTIGATION session), served by a different router
-(``faultmaven/api/routes/sessions.py``) which gates on the CASE named in its
-path with ``driver_only`` chosen from the HTTP method. Those routes are not
-missing from the lists below; they are not in this router.
+``session:{id}:current_case_id``.
 """
 
 from __future__ import annotations

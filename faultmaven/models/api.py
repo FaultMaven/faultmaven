@@ -91,10 +91,7 @@ class ProcessingStatus(str, Enum):
 
 
 class AuthSessionStatus(str, Enum):
-    """Defines the status of authentication sessions (not investigation sessions).
-
-    For investigation session status, see faultmaven.models.investigation_session.SessionState
-    """
+    """Defines the status of authentication sessions."""
 
     ACTIVE = "active"
     EXPIRED = "expired"

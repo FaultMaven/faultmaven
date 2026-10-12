@@ -159,20 +159,19 @@ before/after.
 What it corrects well, and what only partly
 -------------------------------------------
 
-Most of the suite compares ``measure_min_latency``'s MINIMUM, which
-is a clean-window estimate like the calibration's own, so the two measure
-the same quantity. The rest
-(``test_investigation_session_service_operations``)
-compare a **p95** over 50-100 iterations, which absorbs contention a
+The suite compares ``measure_min_latency``'s MINIMUM, which is a
+clean-window estimate like the calibration's own, so the two measure the
+same quantity. A **p95** over 50-100 iterations absorbs contention a
 minimum rejects; there the scale moves the budget the right way but cannot
-be expected to cancel exactly.
+be expected to cancel exactly. No p95 site remains in ``tests/benchmarks/``:
+the module that had them was retired in #1935.
 
-Measured rather than assumed: dividing every test's reported statistic in a
-green ``main`` CI run (35499510079) by the same test's value on the
-development box gives a median of **0.322** across the 34
-minimum-statistic tests and **0.300** across the 16 p95 ones — the two
-families track machine throughput to within about 7% of each other, so one
-scale for both is reasonable.
+Measured rather than assumed, while both families existed: dividing every
+test's reported statistic in a green ``main`` CI run (35499510079) by the
+same test's value on the development box gave a median of **0.322** across
+the 34 minimum-statistic tests and **0.300** across the 16 p95 ones — the
+two families track machine throughput to within about 7% of each other, so
+one scale for both is reasonable.
 
 The scale is deliberately NOT capped from above. A cap would hand a
 genuinely degraded machine a budget it cannot meet, which is the false red
@@ -192,10 +191,9 @@ relief. Two consequences worth being explicit about:
 * **The scale can never tighten a budget**, on CI or on a developer's
   laptop. Whatever the calibration does, the worst case is that it does
   nothing. (Stated about the scale rather than about the pull request as a
-  whole, because one unrelated part of #908 is a hair stricter: the nine
-  budgets in ``test_investigation_session_service_operations`` moved from
-  ``p95 <= target`` to the shared helper's ``observed < budget``. See its
-  ``report_benchmark`` docstring.)
+  whole, because one unrelated part of #908 was a hair stricter: nine
+  p95 budgets moved from ``p95 <= target`` to the shared helper's
+  ``observed < budget``. Their module was retired in #1935.)
 * It makes the reference constant fail safe in one direction, so being
   approximately right is enough. That asymmetry is spelled out where the
   constant is defined.

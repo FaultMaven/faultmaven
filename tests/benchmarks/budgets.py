@@ -25,9 +25,9 @@ green ``main`` runs** of ``.github/workflows/benchmarks.yml``, spanning
 
 ``reference`` on each row is the **p95 across those 20 runs** of the
 statistic that row's test compares — the minimum for a
-``measure_min_latency`` site, the p95 for a ``report_p95`` /
-``report_benchmark`` one, the rate for a throughput one. ``regression`` is
-a round number in the 2-3x band above it.
+``measure_min_latency`` site, the rate for a throughput one. (The p95
+sites the reference was also taken over went with their benchmark module
+in #1935.) ``regression`` is a round number in the 2-3x band above it.
 
 The anchor is **observed CI cost, not** ``CALIBRATION_REFERENCE_SECONDS``.
 That constant is derived (development box x an artifact ratio, rounded up)
@@ -110,156 +110,6 @@ CASE_SEARCH = LatencyBudget(
     regression=0.400,
     product_target=1.000,
     reference=0.148755,
-)
-
-# --- tests/benchmarks/test_investigation_session_operations.py ---------------
-
-SESSION_CREATE = LatencyBudget(
-    "test_single_session_creation_latency",
-    regression=0.010,
-    product_target=0.200,
-    reference=0.004400,
-)
-SESSION_CREATE_WITH_METADATA = LatencyBudget(
-    "test_session_creation_with_metadata_latency",
-    regression=0.012,
-    product_target=0.200,
-    reference=0.004600,
-)
-SESSION_CREATE_THROUGHPUT = ThroughputBudget(
-    "test_batch_session_creation_throughput",
-    regression=100,
-    product_target=20,
-    reference=260.50,
-)
-SESSION_RETRIEVE = LatencyBudget(
-    "test_single_session_retrieval_latency",
-    regression=0.005,
-    product_target=0.100,
-    reference=0.001900,
-)
-SESSION_GET_ACTIVE = LatencyBudget(
-    "test_get_active_session_latency",
-    regression=0.005,
-    product_target=0.100,
-    reference=0.002000,
-)
-SESSION_LIST_BY_CASE = LatencyBudget(
-    "test_list_sessions_by_case_latency",
-    regression=0.010,
-    product_target=0.200,
-    reference=0.004000,
-)
-SESSION_LIST_FILTERED = LatencyBudget(
-    "test_list_sessions_with_status_filter_latency",
-    regression=0.008,
-    product_target=0.150,
-    reference=0.003005,
-)
-SESSION_LIST_BY_USER = LatencyBudget(
-    "test_list_sessions_by_user_latency",
-    regression=0.008,
-    product_target=0.200,
-    reference=0.003005,
-)
-SESSION_STATUS_UPDATE = LatencyBudget(
-    "test_session_status_update_latency",
-    regression=0.008,
-    product_target=0.150,
-    reference=0.002825,
-)
-SESSION_COMPLETION_UPDATE = LatencyBudget(
-    "test_session_completion_update_latency",
-    regression=0.006,
-    product_target=0.150,
-    reference=0.002705,
-)
-SESSION_TOKEN_USAGE_UPDATE = LatencyBudget(
-    "test_session_token_usage_update_latency",
-    regression=0.006,
-    product_target=0.150,
-    reference=0.002705,
-)
-SESSION_DELETE = LatencyBudget(
-    "test_session_delete_latency",
-    regression=0.006,
-    product_target=0.150,
-    reference=0.002405,
-)
-SESSION_COUNT = LatencyBudget(
-    "test_count_sessions_latency",
-    regression=0.005,
-    product_target=0.050,
-    reference=0.001900,
-)
-SESSION_LIFECYCLE_WORKLOAD = LatencyBudget(
-    "test_session_lifecycle_workload",
-    regression=0.030,
-    product_target=0.600,
-    reference=0.012605,
-)
-SESSION_PAUSE_RESUME_WORKLOAD = LatencyBudget(
-    "test_session_pause_resume_workload",
-    regression=0.050,
-    product_target=0.900,
-    reference=0.018325,
-)
-
-# --- tests/benchmarks/test_investigation_session_service_operations.py -------
-
-SESSION_SERVICE_CREATE = LatencyBudget(
-    "test_benchmark_create_session",
-    regression=0.050,
-    product_target=0.200,
-    reference=0.019045,
-)
-SESSION_SERVICE_GET = LatencyBudget(
-    "test_benchmark_get_session",
-    regression=0.050,
-    product_target=0.100,
-    reference=0.018939,
-)
-SESSION_SERVICE_UPDATE = LatencyBudget(
-    "test_benchmark_update_session",
-    regression=0.050,
-    product_target=0.150,
-    reference=0.019258,
-)
-SESSION_SERVICE_PAUSE = LatencyBudget(
-    "test_benchmark_pause_session",
-    regression=0.050,
-    product_target=0.150,
-    reference=0.019047,
-)
-SESSION_SERVICE_RESUME = LatencyBudget(
-    "test_benchmark_resume_session",
-    regression=0.050,
-    product_target=0.150,
-    reference=0.019020,
-)
-SESSION_SERVICE_COMPLETE = LatencyBudget(
-    "test_benchmark_complete_session",
-    regression=0.050,
-    product_target=0.150,
-    reference=0.018537,
-)
-SESSION_SERVICE_LIST_50 = LatencyBudget(
-    "test_benchmark_list_sessions_50",
-    regression=0.050,
-    product_target=0.300,
-    reference=0.020203,
-)
-SESSION_SERVICE_CHECK_BUDGET = LatencyBudget(
-    "test_benchmark_check_budget_exceeded",
-    regression=0.050,
-    product_target=0.100,
-    reference=0.018609,
-)
-SESSION_SERVICE_STATISTICS = LatencyBudget(
-    "test_benchmark_get_statistics_100_sessions",
-    regression=0.050,
-    product_target=0.500,
-    reference=0.021672,
 )
 
 # --- tests/benchmarks/test_knowledge_item_operations.py ----------------------

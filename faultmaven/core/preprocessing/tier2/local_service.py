@@ -1,9 +1,12 @@
 """
-LocalTier2Service — In-process Tier 3 deep analysis using local LLM (Ollama/vLLM).
+LocalTier2Service — the deep-analysis ("interpreted search") service.
 
-Reads raw file from local storage, finds relevant sections via single-pass
-keyword search (ANY-match, no Pass-2 fallback), then sends them to a local
-LLM for analysis.
+The one implementation behind the agent's ``deep_analysis`` tool, built by the
+container when ``DEEP_ANALYSIS_BACKEND=local``. Reads the raw file from file
+storage, finds relevant sections via single-pass keyword search (ANY-match, no
+Pass-2 fallback), then sends them to the LLM router for interpretation — so
+the call is routed, metered and sanitized (``SANITIZE_PII``) like every other
+LLM call.
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md §4
@@ -19,7 +22,6 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
-from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
@@ -28,8 +30,8 @@ from faultmaven.infrastructure.llm.truncation import (
 logger = logging.getLogger(__name__)
 
 
-class LocalTier2Service(ITier2SearchService):
-    """In-process Tier 2 using local filesystem + local LLM (Ollama/vLLM)."""
+class LocalTier2Service:
+    """Deep analysis over a stored file through the LLM router."""
 
     def __init__(
         self,
@@ -86,7 +88,7 @@ class LocalTier2Service(ITier2SearchService):
                 label="tier-2 deep analysis",
             )
             # ``llm_client`` is an ILLMProvider — the router, per
-            # ``create_tier2_service`` — so ``generate`` returns an
+            # ``create_deep_analysis_service`` — so ``generate`` returns an
             # ``LLMResponse``. This used to hedge with
             # ``hasattr(response, "content") else str(response)``, tolerating a
             # bare string the DI cannot actually produce. The hedge is gone
@@ -126,15 +128,6 @@ class LocalTier2Service(ITier2SearchService):
             processing_time_ms=processing_time_ms,
             backend_used="local_llm",
         )
-
-    async def is_available(self) -> bool:
-        try:
-            # Ping local LLM
-            if hasattr(self.llm_client, "is_available"):
-                return await self.llm_client.is_available()
-            return True
-        except Exception:
-            return False
 
     def _find_relevant_sections(self, content: str, query: str) -> List[dict]:
         """Keyword/regex search to find sections relevant to the query."""
