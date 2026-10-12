@@ -387,8 +387,6 @@ STATE: INVESTIGATING
 
 {hypotheses}
 
-{candidate_solutions}
-
 {investigation_journal}
 
 {working_conclusion}

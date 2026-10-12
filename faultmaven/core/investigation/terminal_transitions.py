@@ -1960,7 +1960,7 @@ async def evaluate_runbook_suggestion(
         logger.warning(
             f"Runbook deduplication skipped for case {case.case_id}: "
             f"no scope resolver supplied, so the search cannot be scoped to "
-            f"the case owner. Duplicate runbooks may be created if a similar "
+            f"the case driver. Duplicate runbooks may be created if a similar "
             f"one already exists in the KB.",
             extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
         )

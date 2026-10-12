@@ -68,6 +68,7 @@ def _case() -> MagicMock:
     case.title = "Pods OOMKilled after deploy"
     case.description = "memory limit too low"
     case.user_id = "user-1"
+    case.effective_driver_id = "user-1"  # the creator drives
     case.organization_id = "org-1"
     case.tags = ["oom"]
     case.root_cause_conclusion = None

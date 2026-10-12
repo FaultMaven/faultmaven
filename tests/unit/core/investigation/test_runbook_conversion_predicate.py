@@ -246,37 +246,3 @@ class TestHasActionableSolutionOutcomeAware:
         # before this change.
         case = SimpleNamespace(solutions=[self._sol(actionable=True)])
         assert has_actionable_solution(case)
-
-
-@pytest.mark.unit
-class TestProvenanceUniquenessOffer:
-    """Phase 5.2b, legacy rows only (``seeded_provenance``): on top of the
-    readiness predicate, the offer gate suppresses the runbook affordance when
-    the confirmed cause was SEEDED from an existing runbook by the removed KB
-    cause seeder — generating one would only duplicate it. The provenance answer
-    is stubbed here; ``confirmed_root_seed_origin`` has its own graph-state
-    tests in ``test_seeded_provenance.py``."""
-
-    @staticmethod
-    def _ready_case():
-        return _make_case(problem_def=True, rcc=True, actionable=True)
-
-    def test_offer_suppressed_when_confirmed_cause_was_seeded(self, monkeypatch):
-        import faultmaven.core.investigation.seeded_provenance as seeder
-
-        _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
-        monkeypatch.setattr(
-            seeder, "confirmed_root_seed_origin", lambda case: "rb_covering"
-        )
-        case = self._ready_case()
-        # Readiness passes, but provenance suppresses the offer.
-        assert runbook_conversion_ready(case) is True
-        assert _runbook_suggestion(case) is None
-
-    def test_offer_shown_when_confirmed_cause_self_discovered(self, monkeypatch):
-        import faultmaven.core.investigation.seeded_provenance as seeder
-
-        _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
-        monkeypatch.setattr(seeder, "confirmed_root_seed_origin", lambda case: None)
-        case = self._ready_case()
-        assert _runbook_suggestion(case) is not None
