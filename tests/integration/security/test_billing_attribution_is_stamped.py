@@ -265,7 +265,7 @@ def test_the_knowledge_writer_reads_the_actors_organization():
 
 
 def test_the_remaining_writers_read_the_actors_organization():
-    """``cases``, ``investigation_sessions`` and ``conversion_jobs``.
+    """``cases`` and ``conversion_jobs``.
 
     Asserted on the SOURCE rather than by a round trip, for the reason the
     knowledge case above states: each of these writers reaches its row through
@@ -280,7 +280,6 @@ def test_the_remaining_writers_read_the_actors_organization():
     """
     import inspect
 
-    from faultmaven.modules.case.domain.services import investigation_session_service
     from faultmaven.modules.case.domain.services.case_service import CaseService
     from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
         _persist_job_rows,
@@ -290,12 +289,6 @@ def test_the_remaining_writers_read_the_actors_organization():
         (
             "cases",
             inspect.getsource(CaseService.create_case),
-        ),
-        (
-            "investigation_sessions",
-            inspect.getsource(
-                investigation_session_service.APIInvestigationSessionService.create_session
-            ),
         ),
         (
             "conversion_jobs",
@@ -313,6 +306,5 @@ _STAMPED_HERE = (
     "resource_shares",
     "knowledge_items",
     "cases",
-    "investigation_sessions",
     "conversion_jobs",
 )

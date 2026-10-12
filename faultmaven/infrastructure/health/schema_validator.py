@@ -36,7 +36,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseTagModel,
     EvidenceModel,
     HypothesisModel,
-    InvestigationSessionModel,
     KnowledgeItemModel,
     SolutionModel,
     UploadedFileModel,
@@ -121,7 +120,6 @@ class SchemaValidator:
         "uploaded_files": UploadedFileModel,
         "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,
-        "investigation_sessions": InvestigationSessionModel,
         "knowledge_items": KnowledgeItemModel,
     }
 

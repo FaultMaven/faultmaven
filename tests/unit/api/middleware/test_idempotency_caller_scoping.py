@@ -809,8 +809,10 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     # shaped route is added or removed. Contract 5.0.0 took it from twelve to
     # ten (`POST /sessions/cleanup` and `POST /sessions/{id}/restore`) and
     # 6.0.0 to nine (`POST /cases/sessions/{id}/case`), and a threshold of
-    # `> 10` made the first of those look like a broken route table.
-    assert len(session_shaped) > 5, "expected many session-shaped POST routes"
+    # `> 10` made the first of those look like a broken route table. 14.0.0
+    # took it to five: the four case-nested session writes were retired
+    # (#1935). Four non-mint routes still demonstrate the trap.
+    assert len(session_shaped) > 4, "expected many session-shaped POST routes"
     assert session_shaped - excluded == session_shaped - {"/api/v1/sessions"}
     assert "/api/v1/cases/sessions/{session_id}/resume/{case_id}" not in excluded
 

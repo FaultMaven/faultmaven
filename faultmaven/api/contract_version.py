@@ -2026,4 +2026,40 @@ asked to accept, and it belongs to a person.
 # same code and no count; the account's sessions were revoked by then. Additive
 # — one new response on an operator route; no schema changed, and `user_id`
 # stays required on every case schema, because no case can now lose its creator.
-API_CONTRACT_VERSION = "13.5.0"
+
+# 14.0.0 — MAJOR. The investigation-sessions subsystem is retired (#1935, owner
+# ruling 2026-10-12). Eight operations go, every one under
+# `/api/v1/cases/{case_id}/sessions`:
+#
+# * `POST` and `GET` on the collection, `GET .../active`;
+# * `GET` and `PATCH .../{session_id}`;
+# * `POST .../{session_id}/pause`, `/resume` and `/complete`.
+#
+# And five schemas: `InvestigationSessionResponse`, `SessionCreateRequest`,
+# `SessionUpdateRequest`, `SessionState` and the generated
+# `Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post`.
+# With them goes `total_token_usage`, the counter #1696 ruled to retire:
+# nothing had written it since #1350. `AuthSessionCreateRequest` and
+# `AuthSessionStatus` keep their shapes; only their descriptions stop naming
+# the retired concept.
+#
+# The AUTH session surface is untouched: `/api/v1/sessions…` and
+# `POST /api/v1/cases/sessions/{session_id}/resume/{case_id}` serve the session
+# a client signs in with, and neither changes.
+#
+# The subsystem was the top of a Case → InvestigationSession → AgentExecution →
+# AgentToolCall hierarchy for an agent orchestrator that no longer exists; the
+# lower levels went in #982 and #1001. Its purposes are covered elsewhere:
+# grouping per period by `turn_history` / `case_messages` / `turn_receipts`,
+# token spend by the usage ledger (#640), pause and resume by the case state,
+# one active session by the case's single driver (ADR-020). The table is
+# dropped by alembic `017_drop_investigation_sessions`.
+#
+# MAJOR because operations are removed, which this file names as MAJOR
+# outright. The measured impact is nil: no first-party client calls any of the
+# eight — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
+# reference them only in GENERATED types (the copilot's own
+# `SessionCreateRequest` is a hand-written type for the auth `/api/v1/sessions`
+# mint, unrelated). The system is pre-user, so there is no deprecation window.
+# Clients only regenerate.
+API_CONTRACT_VERSION = "14.0.0"

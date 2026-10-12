@@ -85,7 +85,7 @@ EXCLUDED_PATH_MARKERS = ("/auth/",)
 # top of this comment. What the invariant bounds is the BLAST RADIUS of a
 # replay, and the log record is no longer part of it.
 #
-# A ``/sessions`` substring marker is still not an option: it catches nine POST
+# A ``/sessions`` substring marker is still not an option: it catches five POST
 # routes in this app, among them ``/api/v1/cases/sessions/{session_id}/resume/
 # {case_id}``, silently disabling idempotency on routes that need it. Match the
 # minting route and nothing else.

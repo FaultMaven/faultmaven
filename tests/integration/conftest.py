@@ -1318,27 +1318,6 @@ async def case_service() -> CaseService:
     return service
 
 
-@pytest.fixture
-def inmemory_session_repository():
-    """Create in-memory investigation session repository for testing.
-
-    Used for testing InMemory repository implementation without database.
-    Each test gets a fresh repository instance.
-    """
-    from faultmaven.infrastructure.persistence.investigation_session_repository import (
-        InMemoryInvestigationSessionRepository,
-    )
-    from faultmaven.infrastructure.persistence.repository_factory import (
-        reset_inmemory_investigation_session_repository,
-    )
-
-    # Reset singleton to ensure fresh state
-    reset_inmemory_investigation_session_repository()
-
-    # Return the singleton instance
-    return InMemoryInvestigationSessionRepository()
-
-
 #: The URL the engine fixtures below point the process at. One spelling, in one
 #: place, so the isolating fixture and the engines it covers cannot drift into
 #: naming two different databases.

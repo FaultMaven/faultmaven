@@ -169,9 +169,8 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
 class AuthSessionCreateRequest(BaseModel):
     """Request model for authentication session creation.
 
-    This schema is for auth sessions (user authentication), not investigation sessions.
-    Investigation sessions use a different schema in the case module.
-    See: docs/architecture/case-and-session-concepts.md for the three-tier architecture.
+    This schema is for auth sessions (user authentication).
+    See: docs/architecture/case-and-session/case-and-session-concepts.md.
     """
 
     timeout_minutes: Optional[int] = Field(

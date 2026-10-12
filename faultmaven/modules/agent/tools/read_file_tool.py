@@ -1,7 +1,7 @@
 """Read File Tool for Agent Execution (TASK-015)
 
 This tool allows agents to read the contents of evidence artifacts
-uploaded to a case during investigation sessions.
+uploaded to a case during its investigation.
 
 Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """

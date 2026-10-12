@@ -12,8 +12,8 @@ Schema is organized into four domains:
   `llm_turn_spend` are the LLM usage ledger (#640): what the billed calls cost,
   per payer and actor per UTC day, and per engine turn.
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
-  messages, files, actions, tags, entities, sessions, agent
-  executions, tool calls, hypothesis-evidence junction, reports.
+  messages, files, actions, tags, entities, hypothesis-evidence junction,
+  reports.
 - **Knowledge domain** — `knowledge_items` (RAG corpus), `conversion_jobs` /
   `conversion_drafts` (document-to-runbook).
 - **Config domain** — `config_overrides` (dashboard hot-reloaded settings).
@@ -144,13 +144,6 @@ class ReportStatus(str, enum.Enum):
     GENERATING = "generating"
     COMPLETED = "completed"
     FAILED = "failed"
-
-
-class InvestigationSessionState(str, enum.Enum):
-    ACTIVE = "active"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    ABANDONED = "abandoned"
 
 
 class MessageRole(str, enum.Enum):
@@ -2668,83 +2661,6 @@ class CaseTagModel(Base):
         # Tag value cannot contain comma so the SQLite comma-separated tag
         # serialization round-trips losslessly.
         CheckConstraint("tag NOT LIKE '%,%'", name="case_tags_no_commas"),
-    )
-
-
-class InvestigationSessionModel(Base):
-    """Investigation session: a temporal grouping of agent executions within a
-    case. The four-level cascade chain is
-    Case → InvestigationSession."""
-
-    __tablename__ = "investigation_sessions"
-
-    session_id = Column(String(36), primary_key=True)
-    enterprise_id = Column(
-        String(36),
-        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    organization_id = Column(
-        String(36),
-        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    case_id = Column(
-        String(36),
-        ForeignKey("cases.case_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    user_id = Column(
-        String(36),
-        ForeignKey("users.user_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    state = Column(String(32), nullable=False, server_default="active", index=True)
-    started_at = Column(DateTime(timezone=True), nullable=False)
-    ended_at = Column(DateTime(timezone=True), nullable=True)
-    last_activity_at = Column(DateTime(timezone=True), nullable=False)
-    total_duration_ms = Column(Integer, nullable=True)
-    session_goal = Column(Text, nullable=True)
-    findings_summary = Column(Text, nullable=True)
-    total_token_usage = Column(Integer, nullable=False, server_default="0")
-    total_agent_executions = Column(Integer, nullable=False, server_default="0")
-    token_budget_limit = Column(Integer, nullable=True)
-    session_metadata = Column("metadata", JsonBlob, nullable=False, server_default="{}")
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "state IN ('active', 'paused', 'completed', 'abandoned')",
-            name="investigation_sessions_state_check",
-        ),
-        CheckConstraint(
-            "total_duration_ms IS NULL OR total_duration_ms >= 0",
-            name="investigation_sessions_duration_check",
-        ),
-        CheckConstraint(
-            "total_token_usage >= 0", name="investigation_sessions_token_usage_check"
-        ),
-        CheckConstraint(
-            "total_agent_executions >= 0",
-            name="investigation_sessions_executions_check",
-        ),
-        CheckConstraint(
-            "token_budget_limit IS NULL OR token_budget_limit >= 0",
-            name="investigation_sessions_budget_check",
-        ),
     )
 
 

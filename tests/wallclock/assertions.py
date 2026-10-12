@@ -75,8 +75,8 @@ def assert_latency_within(
     compared against a threshold. Before #908 the comparison was written out
     three times — ``measured.best < 0.200`` inline here,
     ``stats["p95_ms"] < 200`` inline in ``test_case_service_operations``, and
-    a bool returned by ``report_benchmark`` in
-    ``test_investigation_session_service_operations`` — which is why
+    a bool returned by a ``report_benchmark`` helper in a benchmark module
+    since retired (#1935) — which is why
     calibrating "the benchmark assertion" meant finding all three. #1557
     then found 27 more in ``tests/performance/``. Route new sites here;
     ``tests/unit/ci/test_benchmark_calibration.py`` scans both trees and

@@ -176,8 +176,8 @@ async def get_current_user(
         # other authenticated path — `api/v1/auth_dependencies.py`
         # `get_current_user_optional` → `require_authentication` — already
         # answers 401 here, so the SAME revoked token produced 401 on case
-        # routes and 403 on the routes reaching this dependency (sessions,
-        # admin). One client can only reasonably implement one rule.
+        # routes and 403 on the routes reaching this dependency (admin). One
+        # client can only reasonably implement one rule.
         #
         # Made urgent by account-scoped logout (this PR): revocation used to be
         # a rare admin action and is now what every deliberate sign-out does to

@@ -3429,7 +3429,7 @@ class FaultMavenSettings(BaseSettings):
     # Agent orchestration configuration (TASK-015)
     agent: AgentSettings = Field(default_factory=AgentSettings)
 
-    # Convenience properties for evidence storage (used by ServiceFactory)
+    # Convenience properties for evidence storage
     @property
     def evidence_storage_root(self) -> str:
         """Get evidence storage root directory."""

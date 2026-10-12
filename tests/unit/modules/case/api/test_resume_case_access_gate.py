@@ -1,9 +1,8 @@
 """POST /cases/sessions/{session_id}/resume/{case_id} — the route's half (#1390, #1393, #1398).
 
-This route names two resources and needs a check for each;
-`faultmaven/api/routes/sessions.py` states the rule: the case gate "covers the
-case named in the path and nothing else … Both halves are needed; neither is
-sufficient". It originally had neither.
+This route names two resources and needs a check for each: the case gate covers
+the case named in the path and nothing else, the session gate the session; both
+halves are needed, neither is sufficient. It originally had neither.
 
 They now live in different places, deliberately:
 

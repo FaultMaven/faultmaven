@@ -187,17 +187,6 @@ confinement)                                        enterprises_user``,
 ``users.enterprise_id`` when the claim is absent    enterprise_claim_is_refused``
 (the binder's refusal of a claim-less token)        in both arms — the fallback
                                                     ADR-017 forbids by name.
-``require_case_access`` resolves every session      1: ``test_a_share_grants_
-method through the READ allowlist                   read_not_write_on_the_
-(``driver_only=False``, the router-level gate's     derived_surfaces``. The
-choice of resolver by request method)               teammate's PATCH answers
-                                                    **200** and rewrites the
-                                                    OWNER's ``session_goal`` to
-                                                    PWNED. One row, not two: the
-                                                    sibling battery above names
-                                                    only the case row itself,
-                                                    which this gate does not
-                                                    guard.
 ``InvestigationService._verify_access_and_reserve`` 1: ``test_a_teammates_turn_
 drops its ``effective_driver_id != user_id``        is_refused_by_the_service_
 refusal (the turn's driver check, ADR-020 D2)       and_costs_nothing``. The
@@ -299,7 +288,6 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "evidence_needs",
         "hypotheses",
         "hypothesis_evidence",
-        "investigation_sessions",
         "knowledge_items",
         "llm_turn_spend",
         "llm_usage_daily",
@@ -3282,46 +3270,6 @@ CASE_ADDRESSED_OPERATIONS = [
         {"report_type": "closure_summary"},
         id="reports-generate",
     ),
-    pytest.param("POST", "/api/v1/cases/{case_id}/sessions", {}, id="session-create"),
-    pytest.param("GET", "/api/v1/cases/{case_id}/sessions", None, id="session-list"),
-    pytest.param(
-        "GET", "/api/v1/cases/{case_id}/sessions/active", None, id="session-active"
-    ),
-    pytest.param(
-        "GET",
-        "/api/v1/cases/{case_id}/sessions/sess_probe_0001",
-        None,
-        id="session-get",
-    ),
-    pytest.param(
-        "PATCH",
-        "/api/v1/cases/{case_id}/sessions/sess_probe_0001",
-        {},
-        id="session-patch",
-    ),
-    pytest.param(
-        "POST",
-        "/api/v1/cases/{case_id}/sessions/sess_probe_0001/pause",
-        {},
-        id="session-pause",
-    ),
-    pytest.param(
-        "POST",
-        "/api/v1/cases/{case_id}/sessions/sess_probe_0001/resume",
-        {},
-        id="session-resume",
-    ),
-    pytest.param(
-        "POST",
-        "/api/v1/cases/{case_id}/sessions/sess_probe_0001/complete",
-        # ``findings_summary`` is a REQUIRED field on this route's body, so an
-        # empty one dies in request validation and the control's 422 guard fires
-        # for a reason that has nothing to do with the boundary. Filled in for
-        # the same reason every other body here is: a parametrisation that never
-        # reaches the tenant check asserts nothing.
-        {"findings_summary": "probe"},
-        id="session-complete",
-    ),
     pytest.param(
         "POST",
         "/api/v1/cases/sessions/sess_probe_0001/resume/{case_id}",
@@ -4522,38 +4470,24 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
 
     A share is read visibility; the writes are the driver's (ADR-020 D2), and the
     surfaces above are the ones that name the case row itself. These name
-    something derived from it — an investigation session, the case's report
-    set — and every one of them was reachable to a teammate, because the gate they
-    resolved through was the READ allowlist:
+    something derived from it — the case's report set — and every one of them
+    was reachable to a teammate, because the gate they resolved through was the
+    READ allowlist:
 
-    * the session routes are gated by one router-level dependency, which asked
-      for ``owner ∪ shared`` on every method; the only predicate left downstream
-      is ``case.enterprise_id``, and in this arm both parties carry it;
     * report **regeneration** flips ``is_current`` across the owner's reports;
     * ``POST /reports/generate`` mints report rows against the owner's case.
 
-    Asserted against the ROWS, not the responses. The refusals here are 404 and
-    the OWNER's own call against an absent session is also 404 — correctly
-    indistinguishable — so a status code alone cannot tell "refused" from
-    "reached the route and did nothing". Only the rows can.
+    Asserted against the ROWS as well as the responses: a status code alone
+    cannot tell "refused" from "reached the route and did nothing". Only the
+    rows can.
     """
     world = shared_world
     case_id = world.shared_case.case_id
     report_id = world.shared_case.report_id
 
-    async def _rows():
+    async def _report():
         async with world.superuser_engine.begin() as conn:
-            sessions = (
-                await conn.execute(
-                    text(
-                        "SELECT session_id, state, session_goal "
-                        "FROM investigation_sessions WHERE case_id = :c "
-                        "ORDER BY session_id"
-                    ),
-                    {"c": case_id},
-                )
-            ).all()
-            report = (
+            return (
                 await conn.execute(
                     text(
                         "SELECT is_current, version, title FROM reports "
@@ -4562,52 +4496,10 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
                     {"r": report_id},
                 )
             ).first()
-        return sessions, report
 
-    # The OWNER opens a session. Control, and the thing the teammate's calls
-    # address: a battery aimed at a session id that names nothing would be
-    # refused for having no target rather than for who asked.
-    opened = await as_owner(
-        world,
-        "POST",
-        f"/api/v1/cases/{case_id}/sessions",
-        json={"session_goal": SHARED},
-    )
-    assert opened.status_code == 201, (
-        "control: the owner cannot open a session on their own case, so every "
-        f"refusal below is unattributable: {opened.text[:300]}"
-    )
-    session_id = opened.json()["session_id"]
-
-    before_sessions, before_report = await _rows()
-    assert len(before_sessions) == 1
+    before_report = await _report()
 
     attacks = (
-        ("POST /cases/{id}/sessions", "POST", f"/api/v1/cases/{case_id}/sessions", {}),
-        (
-            "PATCH /cases/{id}/sessions/{sid}",
-            "PATCH",
-            f"/api/v1/cases/{case_id}/sessions/{session_id}",
-            {"session_goal": "PWNED"},
-        ),
-        (
-            "POST .../sessions/{sid}/pause",
-            "POST",
-            f"/api/v1/cases/{case_id}/sessions/{session_id}/pause",
-            {},
-        ),
-        (
-            "POST .../sessions/{sid}/resume",
-            "POST",
-            f"/api/v1/cases/{case_id}/sessions/{session_id}/resume",
-            {},
-        ),
-        (
-            "POST .../sessions/{sid}/complete",
-            "POST",
-            f"/api/v1/cases/{case_id}/sessions/{session_id}/complete",
-            {"findings_summary": "PWNED"},
-        ),
         (
             "POST /cases/{id}/reports",
             "POST",
@@ -4631,29 +4523,10 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
         )
         assert_no_private_content(response, label)
 
-    after_sessions, after_report = await _rows()
-    assert after_sessions == before_sessions, (
-        "a refused session call changed the owner's sessions — a new row, a "
-        f"moved state, or a rewritten goal: {before_sessions} -> {after_sessions}"
-    )
-    assert after_sessions[0][1] == "active", "a refused pause/complete moved it"
-    assert after_sessions[0][2] == SHARED, "a refused PATCH rewrote the goal"
+    after_report = await _report()
     assert after_report == before_report, (
         "a refused regeneration moved the owner's report set — is_current, the "
         f"version, or the title: {before_report} -> {after_report}"
-    )
-
-    # The controls, where a control is meaningful. The owner's PATCH is the
-    # sharpest: same session, same body, same instant — only the caller differs.
-    patched = await as_owner(
-        world,
-        "PATCH",
-        f"/api/v1/cases/{case_id}/sessions/{session_id}",
-        json={"session_goal": f"{SHARED}-owner-edit"},
-    )
-    assert patched.status_code == 200, (
-        "control: the owner cannot patch their OWN session, so the teammate's "
-        f"404 is not attributable to ownership: {patched.text[:300]}"
     )
 
     # Regeneration's control is a DIFFERENT refusal, which is the point: the
@@ -5489,33 +5362,7 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "410 Gone — removed in favour of turn attachments; the handler reads "
         "no case at all.",
     ),
-    # --- investigation sessions (case-nested) ------------------------------
-    ("GET", "/api/v1/cases/{case_id}/sessions"): (_PROBED, "case-addressed battery"),
-    ("POST", "/api/v1/cases/{case_id}/sessions"): (_PROBED, "case-addressed battery"),
-    ("GET", "/api/v1/cases/{case_id}/sessions/active"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/sessions/{session_id}"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
-    ("PATCH", "/api/v1/cases/{case_id}/sessions/{session_id}"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/sessions/{session_id}/pause"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/sessions/{session_id}/resume"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/sessions/{session_id}/complete"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
+    # --- auth session resume onto a case --------------------------------
     ("POST", "/api/v1/cases/sessions/{session_id}/resume/{case_id}"): (
         _PROBED,
         "case-addressed battery",
