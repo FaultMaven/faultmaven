@@ -12,23 +12,28 @@ the DA instruction / vectorization modules and the given tools' own modules
 (docstrings excluded: they are for developers).
 
 Flag-gated text is paired with its flag explicitly: the entity tools are given
-only under FAULTMAVEN_ENTITY_REGISTRY, so their names may appear in text that
-renders only under that flag. ``reclassify_evidence`` is given only under
-FAULTMAVEN_RECLASSIFY_ENABLED (#1941); outside its own tool module it is named
-only behind the "if it is not in your available tools" hedge, which is true
-under either setting.
+only under FAULTMAVEN_ENTITY_REGISTRY and ``reclassify_evidence`` only under
+FAULTMAVEN_RECLASSIFY_ENABLED (#1941), so their names may appear in source that
+renders only when they are given.
 
-Scope: names that are conditional only under non-default settings, and
-tool-less turns, are #1939.
+The source scan above answers "is every name a real, possibly-given tool". The
+render matrix below (#1939, #1955) answers the per-turn question: every tool
+the prompts of a turn name is one THAT turn gives. Rows are given sets derived
+from the real registry under each condition that removes or adds a tool, plus
+the tool-less turn; columns are the real renders a turn sends. A terminal turn
+also points at suggestions, and those cells pair the prompt with the
+suggestion list the reply is given.
 """
 
 from __future__ import annotations
 
 import ast
+import asyncio
 import difflib
 import importlib
 import pkgutil
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,12 +42,37 @@ import pytest
 import faultmaven
 import faultmaven.modules.agent.tools as tools_pkg
 from faultmaven.container.providers.services import _create_investigation_tools
+from faultmaven.core.investigation import terminal_transitions
+from faultmaven.core.investigation.milestone_engine import terminal_replies
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    GENERATE_RUNBOOK_PAYLOAD,
+    REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
+    REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+    _closed_suggestions,
+    _resolved_suggestions,
+    terminal_affordances,
+)
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
 )
-from faultmaven.core.investigation.prompts.templates.blocks import (
-    _EVIDENCE_GROUNDING_BLOCK,
+from faultmaven.core.investigation.milestone_engine.vectorization import (
+    EvidenceVectorizer,
 )
+from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
+    EntityHighlightGroup,
+    EntityHighlightRow,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
+    _build_evidence_context,
+)
+from faultmaven.core.investigation.prompts.templates.assembly import (
+    get_prompt_for_case,
+)
+from faultmaven.core.investigation.prompts.templates.fallback import (
+    get_fallback_prompt_for_case,
+)
+from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
+from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
@@ -57,6 +87,16 @@ from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
 from faultmaven.modules.agent.tools.web_search import WebSearchTool
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    InquiryData,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
 pytestmark = pytest.mark.unit
 
@@ -100,10 +140,9 @@ _ENTITY_TOOLS = dict(
 ENTITY_FLAG_NAMES = {"find_entity", "list_top_entities"}
 _RECLASSIFY_TOOLS = dict(reclassify_evidence_tool=ReclassifyEvidenceTool)
 # Given only under FAULTMAVEN_RECLASSIFY_ENABLED (#1941). Its own module renders
-# only when it is given; blocks.py names it behind the hedge below.
+# only when it is given, and blocks.py names it only when it is given (#1939).
 RECLASSIFY_FLAG_NAMES = {"reclassify_evidence"}
 _RECLASSIFY_HOMES = {"blocks.py", "reclassify_evidence_tool.py"}
-_RECLASSIFY_HEDGE = "If `reclassify_evidence` is not in your available tools"
 _RETIRED = {"case_evidence_qa", "global_kb_qa", "user_kb_qa"}
 _NOT_TOOLS = {"directed_analysis"}
 _TOKEN = re.compile(r"(?<![\w.])[a-z]+(?:_[a-z]+)+(?![\w(]*\.)")
@@ -208,13 +247,12 @@ def test_reclassify_evidence_is_given_only_under_its_flag() -> None:
 
 def test_reclassify_text_pairs_with_its_flag() -> None:
     # Outside its own tool module, the only model-facing home of the name is
-    # the evidence-grounding block, and there it sits behind a hedge that is
-    # true with the flag off (not given) and on (given).
+    # the evidence-grounding block, which renders it only when it is given —
+    # the render matrix below pins that per turn.
     homes = set().union(
         *(found for n, found in mentions().items() if n in RECLASSIFY_FLAG_NAMES)
     )
     assert homes <= _RECLASSIFY_HOMES, homes
-    assert _RECLASSIFY_HEDGE in _EVIDENCE_GROUNDING_BLOCK
 
 
 def test_every_tool_name_the_model_reads_is_given() -> None:
@@ -281,3 +319,382 @@ def test_da_instruction_with_both_names_both() -> None:
         ["search_file", "deep_analysis", "kb_qa", "web_search"], "Schema"
     )
     assert "kb_qa" in text and "web_search" in text
+
+
+# ===========================================================================
+# #1939 / #1955: the render matrix — what ONE turn's prompts name
+# ===========================================================================
+
+#: A tool name as rendered text carries it: snake_case, not a dotted path's
+#: part, and — unlike ``_TOKEN`` — still caught at the end of a sentence.
+_RENDERED_TOKEN = re.compile(r"(?<![\w.])[a-z]+(?:_[a-z]+)+(?!\w|\.\w)")
+VOCAB = vocabulary()
+
+
+def rendered_mentions(text: str) -> set[str]:
+    """The tool names ``text`` mentions."""
+    return {t for t in _RENDERED_TOKEN.findall(text) if t in VOCAB}
+
+
+def _minus(*attrs: str) -> dict:
+    return {k: v for k, v in _DEFAULT_TOOLS.items() if k not in attrs}
+
+
+#: Given sets, each derived from the real ``_create_investigation_tools`` under
+#: a condition that removes or adds tools, plus the tool-less turn (the
+#: single-shot route, a DA provider without tool calling, the
+#: ``ToolCallingUnsupportedError`` fallback, the #662 retry).
+ROWS: dict[str, frozenset[str]] = {
+    "six": frozenset(given(_DEFAULT_TOOLS)),
+    "no_kb": frozenset(given(_minus("kb_adapter"))),
+    "no_deep_analysis": frozenset(given(_minus("deep_analysis_tool"))),
+    "no_web_search": frozenset(given(_minus("web_search_tool"))),
+    # SKIP_SERVICE_CHECKS, or no vector stores: neither QA adapter is built,
+    # while the container still builds vectorize_file_tool — the registry is
+    # what keeps it from being given alone.
+    "no_vector_stores": frozenset(
+        given(_minus("kb_adapter", "case_evidence_qa_adapter"))
+    ),
+    "entity": frozenset(given({**_DEFAULT_TOOLS, **_ENTITY_TOOLS})),
+    "reclassify": frozenset(given({**_DEFAULT_TOOLS, **_RECLASSIFY_TOOLS})),
+    "none": frozenset(),
+}
+
+_MSG = "what does the log show?"
+_FILE_ID = "file_1939aaaaaaaa"
+#: Longer than the per-item extract cap, so the truncation markers render.
+_BIG_INDEX = "\n".join(
+    f"2026-10-12T10:{i % 60:02d}:00Z ERROR upstream timeout req={i}" for i in range(400)
+)
+_GROUPS = [
+    EntityHighlightGroup(
+        entity_type="ip", rows=(EntityHighlightRow("10.61.3.99", 214, True),)
+    )
+]
+
+
+def _file(file_id: str = _FILE_ID, turn: int = 1) -> UploadedFile:
+    return UploadedFile(
+        file_id=file_id,
+        filename=f"{file_id}.log",
+        size_bytes=900_000,
+        content_type="text/plain",
+        uploaded_at_turn=turn,
+        upload_source="file_upload",
+        storage_ref=f"evidence/case_1939/{file_id}.txt",
+        data_type="logs",
+        summary="App log.",
+        structural_index=_BIG_INDEX,
+    )
+
+
+def _evidence() -> Evidence:
+    return Evidence(
+        evidence_id="ev_193900000001",
+        source_file_id=_FILE_ID,
+        summary="upstream timeouts",
+        extract="ERROR upstream timeout",
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+        source_type=EvidenceSourceType.LOGS,
+        primary_purpose="Test",
+        collected_by="user_1939",
+        collected_at_turn=1,
+    )
+
+
+def _case(state: CaseState = CaseState.INVESTIGATING, stage: str = "diagnosis"):
+    case = Case(
+        case_id="case_1939aaaaaaaa",
+        title="API timeouts",
+        description="Upstream timeouts since 10:00",
+        user_id="user_1939",
+        enterprise_id="org_1939",
+        state=CaseState.INVESTIGATING,
+        inquiry=InquiryData(
+            problem_statement_confirmed=True,
+            proposed_problem_statement="API timeouts",
+        ),
+        uploaded_files=[_file(), _file("file_1939bbbbbbbb", turn=3)],
+        evidence=[_evidence()],
+        current_turn=3,
+    )
+    if stage == "mitigation":
+        case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
+    elif stage == "treatment":
+        case.progress.solution_accepted = True
+    if state == CaseState.INQUIRY:
+        case = case.model_copy(
+            update={"state": state, "evidence": [], "inquiry": InquiryData()}
+        )
+    elif state != CaseState.INVESTIGATING:
+        stamp = "resolved_at" if state == CaseState.RESOLVED else "closed_at"
+        case = case.model_copy(
+            update={"state": state, stamp: datetime.now(timezone.utc)}
+        )
+    return case
+
+
+def _crowded_case():
+    """More files than the evidence budget holds: the degraded renders."""
+    case = _case()
+    case.uploaded_files += [_file(f"file_1939c{i:011d}", turn=1) for i in range(6)]
+    case.uploaded_files += [_file(f"file_1939d{i:011d}", turn=3) for i in range(3)]
+    return case
+
+
+def _advisory(given_tools: frozenset[str]) -> str:
+    """The engine's advisory after three empty searches of one file."""
+    vectorizer = EvidenceVectorizer(deps=SimpleNamespace(investigation_tools=None))
+    return asyncio.run(
+        vectorizer.track_da_result(
+            func_name="search_file",
+            evidence_id="ev_1",
+            tool_result=ToolResult(success=True, data={"results_count": 0}),
+            result_text="",
+            case=None,
+            tool_context=None,
+            da_empty_search_counts={"ev_1": 2},
+            proactive_tasks={},
+            given_tools=given_tools,
+        )
+    )
+
+
+#: The stage/mode columns of an investigating turn.
+_INVESTIGATING = {
+    "diagnosis": ("diagnosis", "triage"),
+    "diagnosis_directed": ("diagnosis", "directed_analysis"),
+    "mitigation": ("mitigation", "triage"),
+    "treatment": ("treatment", "triage"),
+    "knowledge_query": ("diagnosis", "knowledge_query"),
+    "agent_meta": ("diagnosis", "agent_meta"),
+}
+
+
+def renders(g: frozenset[str]) -> dict[str, str]:
+    """Every model-facing text a turn given ``g`` can send, by column."""
+    out = {
+        "inquiry": get_prompt_for_case(_case(CaseState.INQUIRY), _MSG, given_tools=g),
+    }
+    for column, (stage, mode) in _INVESTIGATING.items():
+        out[column] = get_prompt_for_case(
+            _case(stage=stage),
+            _MSG,
+            processing_mode=mode,
+            given_tools=g,
+            entity_highlight_groups=_GROUPS,
+        )
+    out["evidence_over_budget"] = _build_evidence_context(
+        _crowded_case(), char_budget_override=12_000, given_tools=g
+    )
+    for state in (CaseState.INQUIRY, CaseState.INVESTIGATING, CaseState.RESOLVED):
+        out[f"fallback_{state.value}"] = get_fallback_prompt_for_case(
+            _case(state), _MSG, given_tools=g
+        )
+    out["da_instruction"] = _build_da_system_instruction(sorted(g), "Schema")
+    out["empty_search_advisory"] = _advisory(g)
+    return out
+
+
+#: Columns that are whole prompts, so they state the turn's tools.
+_PROMPTS = {
+    "inquiry",
+    *_INVESTIGATING,
+    "fallback_inquiry",
+    "fallback_investigating",
+    "fallback_resolved",
+}
+
+
+def _without_tools_line(text: str) -> str:
+    return "\n".join(
+        line
+        for line in text.split("\n")
+        if not line.startswith("Tools available on this turn:")
+    )
+
+
+def test_the_rows_are_what_the_registry_gives() -> None:
+    """Guard the matrix: each condition really removes or adds the tool."""
+    six = ROWS["six"]
+    assert ROWS["no_kb"] == six - {"kb_qa"}
+    assert ROWS["no_deep_analysis"] == six - {"deep_analysis"}
+    assert ROWS["no_web_search"] == six - {"web_search"}
+    # vectorize_file goes with case_evidence_search: its results send the
+    # model to that tool.
+    assert ROWS["no_vector_stores"] == six - {
+        "kb_qa",
+        "case_evidence_search",
+        "vectorize_file",
+    }
+    assert ROWS["entity"] == six | ENTITY_FLAG_NAMES
+    assert ROWS["reclassify"] == six | RECLASSIFY_FLAG_NAMES
+
+
+def test_vectorize_file_is_given_only_beside_case_evidence_search() -> None:
+    assert "vectorize_file" not in given(_minus("case_evidence_qa_adapter"))
+    assert "vectorize_file" in given(_DEFAULT_TOOLS)
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_every_tool_a_turn_names_is_one_it_gives(row: str) -> None:
+    g = ROWS[row]
+    not_given = {
+        column: sorted(rendered_mentions(text) - g)
+        for column, text in renders(g).items()
+        if rendered_mentions(text) - g
+    }
+    assert not not_given, f"given {sorted(g)}, the turn names: {not_given}"
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_each_given_tool_is_named_where_it_is_used(row: str) -> None:
+    """Non-vacuity: a gate that never renders its tool would pass the cell
+    above. Each given tool with prompt text of its own is named outside the
+    tools line (``vectorize_file`` has none: the engine runs it)."""
+    g = ROWS[row]
+    named = set().union(
+        *(rendered_mentions(_without_tools_line(t)) for t in renders(g).values())
+    )
+    assert g - {"vectorize_file"} <= named, sorted(g - {"vectorize_file"} - named)
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_every_prompt_states_the_turns_tools(row: str) -> None:
+    g = ROWS[row]
+    line = tools_line(g)
+    missing = [c for c, t in renders(g).items() if c in _PROMPTS and line not in t]
+    assert not missing, missing
+    if not g:
+        assert line.startswith("No investigation tools are available on this turn")
+
+
+def test_the_degraded_evidence_renders_were_reached() -> None:
+    """Non-vacuity for the stub cells: the over-budget column really renders
+    the omitted-to-fit stub, the omission marker and a truncation marker."""
+    text = renders(ROWS["six"])["evidence_over_budget"]
+    assert "[Full content omitted to fit budget" in text
+    assert "evidence_omitted" in text
+    assert "[TRUNCATED:" in text
+
+
+def _tool_class_strings(cls) -> list[str]:
+    """Model-facing strings of one tool: its class body and its module's
+    top-level constants (results it builds), docstrings excluded."""
+    path = Path(importlib.import_module(cls.__module__).__file__)
+    tree = ast.parse(path.read_text())
+    out = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name != cls.__name__:
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        wrapper = ast.Module(body=[node], type_ignores=[])
+        docstrings = {
+            id(n.body[0].value)
+            for n in ast.walk(wrapper)
+            if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.body
+            and isinstance(n.body[0], ast.Expr)
+            and isinstance(n.body[0].value, ast.Constant)
+        }
+        out += [
+            n.value
+            for n in ast.walk(wrapper)
+            if isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and id(n) not in docstrings
+            and not (isinstance(node, ast.Expr) and n is node.value)
+        ]
+    return out
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_a_given_tools_own_text_names_only_given_tools(row: str) -> None:
+    """A tool's description and results reach the model on the turns it is
+    given; what they point at must be given on those turns too."""
+    g = ROWS[row]
+    by_name = {}
+    for cls in _subclasses(AgentTool):
+        try:
+            by_name[_bare(cls).name] = cls
+        except Exception:
+            continue
+    bad = {
+        name: sorted(
+            set().union(*map(rendered_mentions, _tool_class_strings(by_name[name]))) - g
+        )
+        for name in g
+    }
+    assert not {k: v for k, v in bad.items() if v}, bad
+
+
+# ---------------------------------------------------------------------------
+# #1955: the terminal prompt points at a suggestion only when it is offered
+# ---------------------------------------------------------------------------
+
+_REGENERATE_REDIRECT = "use the **Regenerate** suggestion"
+_RUNBOOK_REDIRECT = "use the **Generate a runbook from this\nresolved case** suggestion"
+_DRAFT_POINTER = "A runbook for this case already exists in the case creator's"
+
+#: (state, ready, draft exists, regenerations left) per terminal condition.
+_TERMINAL = {
+    "resolved_offered": (CaseState.RESOLVED, True, False, 2),
+    "resolved_draft_exists": (CaseState.RESOLVED, True, True, 2),
+    "resolved_not_ready": (CaseState.RESOLVED, False, False, 2),
+    "resolved_regen_exhausted": (CaseState.RESOLVED, True, False, 0),
+    "closed": (CaseState.CLOSED, False, False, 2),
+    "closed_regen_exhausted": (CaseState.CLOSED, False, False, 0),
+}
+
+
+def _terminal_turn(condition: str, g: frozenset[str], monkeypatch):
+    """The suggestion list a terminal Q&A reply is given, and the prompt
+    built from it — through the same builders the engine uses."""
+    state, ready, draft, remaining = _TERMINAL[condition]
+    monkeypatch.setattr(terminal_replies, "runbook_conversion_ready", lambda c: ready)
+    monkeypatch.setattr(
+        terminal_transitions, "should_generate_terminal_summary", lambda c: True
+    )
+    case = _case(state)
+    offered = (
+        _resolved_suggestions(case, remaining, runbook_already_exists=draft)
+        if state == CaseState.RESOLVED
+        else _closed_suggestions(case, remaining)
+    )
+    prompt = get_prompt_for_case(
+        case,
+        _MSG,
+        given_tools=g,
+        terminal_affordances=terminal_affordances(offered, runbook_draft_exists=draft),
+    )
+    return {s["payload"] for s in offered}, prompt
+
+
+@pytest.mark.parametrize("condition", sorted(_TERMINAL))
+@pytest.mark.parametrize("row", ["six", "none"])
+def test_the_terminal_prompt_points_only_at_offered_suggestions(
+    condition: str, row: str, monkeypatch
+) -> None:
+    payloads, prompt = _terminal_turn(condition, ROWS[row], monkeypatch)
+    regen = bool(
+        payloads
+        & {REGENERATE_RESOLUTION_SUMMARY_PAYLOAD, REGENERATE_CLOSURE_SUMMARY_PAYLOAD}
+    )
+    assert (_REGENERATE_REDIRECT in prompt) is regen
+    assert (_RUNBOOK_REDIRECT in prompt) is (GENERATE_RUNBOOK_PAYLOAD in payloads)
+    assert (_DRAFT_POINTER in prompt) is (condition == "resolved_draft_exists")
+    assert rendered_mentions(prompt) <= ROWS[row]
+    assert tools_line(ROWS[row]) in prompt
+
+
+def test_each_terminal_redirect_renders_somewhere(monkeypatch) -> None:
+    """Non-vacuity: each redirect is reachable, so the pairing above is not
+    passing on prompts that never name any suggestion."""
+    seen = {
+        c: _terminal_turn(c, ROWS["six"], monkeypatch)[1] for c in sorted(_TERMINAL)
+    }
+    assert _RUNBOOK_REDIRECT in seen["resolved_offered"]
+    assert _REGENERATE_REDIRECT in seen["closed"]
+    assert _DRAFT_POINTER in seen["resolved_draft_exists"]
+    assert "No runbook can be generated from this case here" in seen["closed"]
