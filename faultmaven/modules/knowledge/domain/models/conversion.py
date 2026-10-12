@@ -19,6 +19,7 @@ from faultmaven.modules.case.contracts import (
     classify_solution_outcome,
     mechanism_for_display,
 )
+from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.modules.knowledge.taxonomy import RunbookDomain
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 
@@ -226,17 +227,12 @@ class ConversionDraft(BaseModel):
     case_id: Optional[str] = None
     validation: ValidationResult
     quality_score: QualityScore
-    #: The draft's file on the server, which ``conversion_drafts.file_path``
-    #: persists. Read on the server and never serialised: every dump and every
-    #: response leaves it out, because a server filesystem path is not the
-    #: client's to see (#836).
-    file_path: str = Field(exclude=True)
     content_preview: str = Field(
         max_length=500, description="First 500 chars of generated markdown"
     )
-    content: Optional[str] = Field(
-        default=None, description="Full markdown content, included on detail requests"
-    )
+    #: ``conversion_drafts.content``, the draft's one home (#1950): every
+    #: replica serves the same text. Required: there is no draft without it.
+    content: str = Field(description="Full markdown content, frontmatter included")
     quality_warning: Optional[str] = Field(
         default=None, description="Warning if quality score < 50"
     )
@@ -282,6 +278,7 @@ class ConversionResponse(BaseModel):
 class DraftUpdateRequest(BaseModel):
     content: str = Field(
         min_length=100,
+        max_length=DRAFT_CONTENT_MAX_CHARS,
         description="Full runbook markdown content including frontmatter",
     )
 

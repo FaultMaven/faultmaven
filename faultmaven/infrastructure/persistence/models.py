@@ -61,11 +61,14 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship, validates
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON, TypeDecorator
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_MAX_LENGTH
+from faultmaven.modules.knowledge.draft_content import (
+    ensure_draft_content_within_bound,
+)
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     RunbookSeverity,
@@ -3067,7 +3070,11 @@ class ConversionDraftModel(Base):
 
     runbook_id = Column(String(100), nullable=False)
     title = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False)
+    #: The draft's full markdown, frontmatter included: its one home (#1950).
+    #: Every replica reads the same text, and nothing about a draft lives on a
+    #: pod's disk. ``''`` only on a row migration 018 discarded because its
+    #: text was already gone.
+    content = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, server_default="draft")
     source_type = Column(String(20), nullable=False, server_default="document")
     document_type = Column(String(50), nullable=True, server_default="runbook")
@@ -3088,6 +3095,15 @@ class ConversionDraftModel(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     conversion_job = relationship("ConversionJobModel", back_populates="drafts")
+
+    @validates("content")
+    def _content_within_bound(self, _key, content):
+        """Every ORM write of a draft's text is held to the edit bound
+        (``DRAFT_CONTENT_MAX_CHARS``, #1950): a draft the user could not save
+        back is a draft they cannot edit. Raises ``ValidationException`` (422).
+        Verify's compare-and-swap ``UPDATE`` is the one write this does not see,
+        deliberately — see ``faultmaven.modules.knowledge.draft_content``."""
+        return ensure_draft_content_within_bound(content)
 
     __table_args__ = (
         CheckConstraint(

@@ -4,6 +4,8 @@ import inspect
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,12 @@ def _build_da_system_instruction(
     Adapts to whichever investigation tools are actually registered.
     Without this, the LLM sees tool definitions but has no guidance on
     when or why to call them, leading to non-deterministic tool usage.
+
+    ``tool_names`` is the turn's given set (#1939): every tool this text
+    names is in it, and what it says about the set is derived from the names
+    present, never counted from the guidance lines.
     """
+    given = frozenset(tool_names)
     has_search = "search_file" in tool_names
     has_da = "deep_analysis" in tool_names
     has_web = "web_search" in tool_names
@@ -126,7 +133,8 @@ def _build_da_system_instruction(
             )
 
         tool_guidance = (
-            f"You have {len(tool_lines)} investigation tools:\n"
+            tools_line(given)
+            + "\n"
             + "\n".join(tool_lines)
             + "\n\nTool priority:\n"
             + "\n".join(priority_parts)
@@ -134,10 +142,7 @@ def _build_da_system_instruction(
         if has_search:
             tool_guidance += f"\n\n{search_mode_guidance}"
     else:
-        tool_guidance = (
-            "No investigation tools are available for this turn. "
-            "Base your analysis on the evidence context provided."
-        )
+        tool_guidance = tools_line(given)
 
     # Knowledge-routing text names kb_qa / web_search only when the model is
     # given them (#1934): an instruction to call an absent tool is a name the
@@ -175,21 +180,55 @@ def _build_da_system_instruction(
         "or your own knowledge" if knowledge_tools else "your own knowledge"
     )
 
-    return (
+    evidence_readers = [t for t in ["search_file", "deep_analysis"] if t in tool_names]
+    opener = (
         "You have investigation tools available to search and analyze "
         "the raw evidence files attached to this case.\n\n"
-        f"{tool_guidance}\n\n"
+        if evidence_readers
+        else ""
+    )
+    type_a_route = (
+        f"→ You MUST search the evidence ({', '.join(evidence_readers)}) before "
+        "responding. The structural indexes are summaries — they lack the "
+        "specific values needed for grounded analysis. After searching, call "
+        f"{schema_tool_name} to produce your structured response.\n\n"
+        if evidence_readers
+        else "→ You MUST read the evidence in <evidence_collected> before "
+        f"responding, then call {schema_tool_name} to produce your structured "
+        "response.\n\n"
+    )
+    search_rules = (
+        "IMPORTANT — Search for the specific entity, not the event type:\n"
+        "When the user asks about a specific IP, hostname, username, error "
+        "code, or timestamp, search for THAT value directly — e.g., "
+        'query="173.234.31.186", not query="Failed password". Searching '
+        "for event types returns results for ALL entities and buries the "
+        "relevant lines.\n\n"
+        "IMPORTANT — PII tokens vs raw data:\n"
+        "The <evidence_collected> summaries use PII placeholders "
+        "(e.g., <IP_ADDRESS_1>). The raw files contain ORIGINAL values. "
+        "When calling search_file, use ORIGINAL values from the user's "
+        "message, NOT PII tokens.\n\n"
+        "SEARCHABLE EVIDENCE — Only use search_file on evidence with "
+        'searchable="true" in <evidence_collected>. These are uploaded '
+        "files with raw content on disk. Evidence WITHOUT this attribute "
+        "are investigation notes — they have no file to search. If you "
+        "need to search a file, take its id and its label from the "
+        "searchable entries.\n\n"
+        if has_search
+        else ""
+    )
+
+    return (
+        opener + f"{tool_guidance}\n\n"
         "QUESTION ROUTING — Decide which type of question the user is asking:\n\n"
         "TYPE A — CASE QUESTION (about THIS case's evidence):\n"
         "Questions about specific data in the submitted files — IPs, errors, "
         "timestamps, patterns, configurations, or anything that requires "
         "examining the evidence. Examples: 'What IPs failed auth?', "
         "'What happened at 14:00?', 'Is there a pattern in the errors?'\n"
-        f"→ You MUST search the evidence ({', '.join(t for t in ['search_file', 'deep_analysis'] if t in tool_names)}) before "
-        "responding. The structural indexes are summaries — they lack the "
-        "specific values needed for grounded analysis. After searching, call "
-        f"{schema_tool_name} to produce your structured response.\n\n"
-        "TYPE B — KNOWLEDGE QUESTION (general technical knowledge):\n"
+        + type_a_route
+        + "TYPE B — KNOWLEDGE QUESTION (general technical knowledge):\n"
         "Questions about technologies, concepts, best practices, or setup "
         "procedures that are NOT answerable from case evidence. Examples: "
         "'What is Opik?', 'How to set up Redis clustering?', "
@@ -219,24 +258,8 @@ def _build_da_system_instruction(
         "(case question) — evidence search is always safe. Only skip "
         "evidence search when the question clearly cannot be answered from "
         "log files, configs, or other submitted data.\n\n"
-        "IMPORTANT — Search for the specific entity, not the event type:\n"
-        "When the user asks about a specific IP, hostname, username, error "
-        "code, or timestamp, search for THAT value directly — e.g., "
-        'query="173.234.31.186", not query="Failed password". Searching '
-        "for event types returns results for ALL entities and buries the "
-        "relevant lines.\n\n"
-        "IMPORTANT — PII tokens vs raw data:\n"
-        "The <evidence_collected> summaries use PII placeholders "
-        "(e.g., <IP_ADDRESS_1>). The raw files contain ORIGINAL values. "
-        "When calling search_file, use ORIGINAL values from the user's "
-        "message, NOT PII tokens.\n\n"
-        "SEARCHABLE EVIDENCE — Only use search_file on evidence with "
-        'searchable="true" in <evidence_collected>. These are uploaded '
-        "files with raw content on disk. Evidence WITHOUT this attribute "
-        "are investigation notes — they have no file to search. If you "
-        "need to search a file, take its id and its label from the "
-        "searchable entries.\n\n"
-        "EVIDENCE vs KNOWLEDGE — These are fundamentally different data types:\n"
+        + search_rules
+        + "EVIDENCE vs KNOWLEDGE — These are fundamentally different data types:\n"
         "- EVIDENCE is case-specific data submitted by the user: log files, "
         "metrics, configs, pasted text, screenshots. What the user writes in "
         "their message is their account, never evidence, and an evidence row "

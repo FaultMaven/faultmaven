@@ -303,7 +303,7 @@ def test_the_parser_strips_a_cr_smuggled_through_an_html_entity(tmp_path):
 #
 # These are what make the fix true of STORAGE rather than only of matching.
 # Layer 4 normalises what the gate SEES; if the service then persisted the raw
-# string, the file, the `knowledge_items.content` row, `size_bytes` and the
+# string, the draft row, the `knowledge_items.content` row, `size_bytes` and the
 # ChromaDB chunks would all keep the `\r` — and the authoring gate's claim to
 # measure "exactly as the chunker sees it" would be quietly false.
 #
@@ -368,18 +368,30 @@ def _service(session_factory) -> KnowledgeService:
     return service
 
 
+async def _stored_draft_contents(session_factory) -> list[str]:
+    """Every ``conversion_drafts.content`` row: the draft's one home (#1950)."""
+    from sqlalchemy import select
+
+    from faultmaven.infrastructure.persistence.models import ConversionDraftModel
+
+    async with session_factory() as session:
+        return list(
+            (await session.execute(select(ConversionDraftModel.content))).scalars()
+        )
+
+
 @pytest.mark.asyncio
-async def test_upload_document_stores_lf_on_disk(
-    _session_factory, tmp_path, monkeypatch
-):
-    """What is written must be what was validated.
+async def test_upload_document_stores_lf(_session_factory):
+    """What is stored must be what was validated.
 
     Mutation: drop ``content = normalize_line_endings(content)`` from
     ``upload_document`` — the gate still passes (layer 4 normalises what it
-    SEES) and a CRLF file lands on disk, which is exactly the silent split
+    SEES) and a CRLF document is stored, which is exactly the silent split
     between verdict and storage this pins.
     """
-    monkeypatch.chdir(tmp_path)
+    from sqlalchemy import select
+
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     await _service(_session_factory).upload_document(
         content=_crlf(valid_runbook("Redis Notes For The Cache Tier")),
@@ -389,10 +401,14 @@ async def test_upload_document_stores_lf_on_disk(
         owner_id="user-42",
     )
 
-    written = list((tmp_path / "data" / "knowledge").rglob("*.md"))
-    assert len(written) == 1, written
-    on_disk = written[0].read_bytes().decode("utf-8")
-    assert CR not in on_disk, repr(on_disk[:200])
+    (stored,) = await _stored_draft_contents(_session_factory)
+    assert stored.startswith("---"), repr(stored[:200])
+    assert CR not in stored, repr(stored[:200])
+    async with _session_factory() as session:
+        (published,) = (
+            await session.execute(select(KnowledgeItemModel.content))
+        ).scalars()
+    assert published == stored
 
 
 @pytest.mark.asyncio
@@ -432,13 +448,13 @@ async def test_update_document_metadata_reindexes_lf(
 
 
 @pytest.mark.asyncio
-async def test_update_draft_writes_lf_to_disk(_session_factory, tmp_path, monkeypatch):
+async def test_update_draft_stores_lf(_session_factory):
     """``PUT /knowledge/conversions/{id}/drafts/{draft_id}`` is a JSON body
-    field, so nothing upstream has decoded it through ``Path.read_text``.
+    field, so nothing upstream has decoded it with universal newlines.
 
-    This method persists BEFORE it validates, so the normalisation has to
-    happen ahead of the write or the file and the recorded verdict disagree —
-    which is what this asserts by reading the bytes back off disk.
+    The text and its verdict are committed together, so the normalisation has
+    to happen ahead of the gate or the stored text and the recorded verdict
+    disagree — which is what this asserts by reading the row back.
 
     Mutation: move or drop the normalisation in ``update_draft``.
     """
@@ -450,10 +466,6 @@ async def test_update_draft_writes_lf_to_disk(_session_factory, tmp_path, monkey
     from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
-
-    monkeypatch.chdir(tmp_path)
-    rel = "data/knowledge/global/rb.md"
-    (tmp_path / "data" / "knowledge" / "global").mkdir(parents=True)
 
     async with _session_factory() as session:
         session.add(
@@ -484,7 +496,7 @@ async def test_update_draft_writes_lf_to_disk(_session_factory, tmp_path, monkey
                 conversion_id="conv_1",
                 runbook_id="rb-1",
                 title="T",
-                file_path=rel,
+                content="---\nid: rb-1\n---\n",
                 status="draft",
                 validation_passed=True,
             )
@@ -505,14 +517,13 @@ async def test_update_draft_writes_lf_to_disk(_session_factory, tmp_path, monkey
         is_platform_admin=True,
     )
 
-    on_disk = (tmp_path / rel).read_bytes().decode("utf-8")
-    assert CR not in on_disk, repr(on_disk[:200])
+    (stored,) = await _stored_draft_contents(_session_factory)
+    assert "## Causes" in stored, repr(stored[:200])
+    assert CR not in stored, repr(stored[:200])
 
 
 @pytest.mark.asyncio
-async def test_create_runbook_from_template_writes_lf(
-    _session_factory, tmp_path, monkeypatch
-):
+async def test_create_runbook_from_template_stores_lf(_session_factory):
     """``POST /knowledge/runbooks/create`` does not carry a document at all — it
     carries five free-text JSON fields that are interpolated into an LF markdown
     template here. A CRLF client therefore produces a MIXED-ending document, and
@@ -520,17 +531,16 @@ async def test_create_runbook_from_template_writes_lf(
     ``### Cause N:`` headings and ``**Statement:**`` sub-fields, every one of
     which is matched line-anchored.
 
-    Asserts on the bytes written, because this method persists before it scores.
+    Asserts on the stored row and on the returned draft.
 
-    Mutation: drop any of the five ``normalize_line_endings`` calls — this was
-    added after a mutation run showed the site had NO guard while the other four
-    layer-3 sites did.
+    Mutation: drop the ``normalize_line_endings`` call — this was added after a
+    mutation run showed the site had NO guard while the other four layer-3
+    sites did.
     """
     from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 
-    monkeypatch.chdir(tmp_path)
     service = ConversionService(
         llm_router=MagicMock(),
         settings=MagicMock(),
@@ -567,19 +577,14 @@ async def test_create_runbook_from_template_writes_lf(
         enterprise_id=_DEFAULT_ENTERPRISE_ID,
     )
 
-    written = list((tmp_path / "data" / "knowledge").rglob("*.md"))
-    assert len(written) == 1, written
-    on_disk = written[0].read_bytes().decode("utf-8")
-    assert CR not in on_disk, repr(on_disk[:300])
-    assert "### Cause A: maxmemory reached\n" in on_disk
-    assert "Redis Runs Out\nOf Memory" in on_disk
+    (stored,) = await _stored_draft_contents(_session_factory)
+    assert CR not in stored, repr(stored[:300])
+    assert "### Cause A: maxmemory reached\n" in stored
+    assert "Redis Runs Out\nOf Memory" in stored
 
-    # The RETURNED draft, not just the file. `write_runbook_file` normalises as
-    # a backstop, so the on-disk assertion above can no longer tell whether this
-    # method normalised -- but `content`, `content_preview` and `size_bytes` are
-    # built from the in-memory string and handed straight back to the client, so
-    # they can. Without this the service-level call is unguarded, which a
-    # mutation run showed.
+    # The RETURNED draft too: ``content``, ``content_preview`` and
+    # ``size_bytes`` are built from the in-memory string and handed straight
+    # back to the client.
     draft = result["draft"]
     assert CR not in draft.content, repr(draft.content[:300])
     assert CR not in draft.content_preview, repr(draft.content_preview)
@@ -618,38 +623,67 @@ def test_a_bom_does_not_hide_the_frontmatter():
         assert scorer.score_content(text).overall == scorer.score_content(lf).overall
 
 
-def test_write_runbook_file_writes_lf_bytes(tmp_path):
-    """Enumerating the writing services missed one — the LLM conversion draft at
-    ``_convert_single_failure_mode`` wrote model output verbatim while the
-    validate/score calls on the next line judged the normalised twin. An
-    enumeration is only ever as good as the enumeration, so the guarantee lives
-    at the choke point every runbook write already goes through.
+async def test_the_converted_draft_is_stored_lf():
+    """The LLM conversion draft at ``_convert_single_failure_mode`` once kept
+    model output verbatim while the validate/score calls on the next line
+    judged the normalised twin. Its text is now what the row stores (#1950), so
+    it is normalised where it is produced.
 
-    Asserted on the RAW BYTES, not the decoded text. Text mode defaults to
-    ``newline=None``, which translates ``\n`` back to ``os.linesep`` on write,
-    and ``read_text`` would translate it straight back and hide that — so on a
-    non-LF host the whole fix is undone at the last step and a decoded
-    assertion still passes.
-
-    Mutation: the normalisation half of the write line. The ``newline="\n"``
-    half is NOT observable on an LF host -- ``os.linesep`` is already ``"\n"``
-    and cannot be faked for ``write_text`` -- so it is asserted by construction
-    rather than by this test, and a mutation of it correctly kills nothing here.
+    Mutation: drop the ``normalize_line_endings`` around the model's answer in
+    ``_convert_single_failure_mode``.
     """
-    from faultmaven.utils.runbook_id import write_runbook_file
-
-    root = tmp_path / "data" / "knowledge"
-    root.mkdir(parents=True)
-    written = write_runbook_file(
-        root / "global" / "rb.md",
-        "## Causes\r\n### Cause A: x\r\nbody\rmore\n",
-        source="test",
-        root=root,
+    from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
+    from faultmaven.modules.knowledge.domain.models.conversion import (
+        ConversionDraft,
+        FailureModeAnalysis,
+    )
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+        ConversionService,
+        _PreparedConversion,
     )
 
-    raw = written.read_bytes()
-    assert b"\r" not in raw, repr(raw)
-    assert raw == b"## Causes\n### Cause A: x\nbody\nmore\n"
+    router = MagicMock()
+    router.route = AsyncMock(
+        return_value=LLMResponse(
+            content=_crlf(valid_runbook("Redis Notes For The Cache Tier")),
+            confidence=0.9,
+            provider="test",
+            model="test-model",
+            tokens_used=100,
+            response_time_ms=10,
+            stop_reason=StopReason.STOP,
+        )
+    )
+    settings = MagicMock()
+    settings.llm.explicit_role_provider.return_value = None
+    service = ConversionService(
+        llm_router=router, settings=settings, db_session_factory=None
+    )
+
+    draft = await service._convert_single_failure_mode(
+        prepared=_PreparedConversion(
+            knowledge_model="test-model",
+            redacted_messages=[],
+            runbook_id="redis-notes",
+        ),
+        failure_mode=FailureModeAnalysis(
+            id="fm-1",
+            title="Redis Notes",
+            domain="database",
+            service="redis",
+            symptom_class=[],
+            severity="high",
+            symptoms_summary="s",
+            resolution_summary="r",
+        ),
+        scope="global",
+        user_id="u1",
+        enterprise_id=None,
+    )
+
+    assert isinstance(draft, ConversionDraft), draft
+    assert CR not in draft.content, repr(draft.content[:200])
+    assert CR not in draft.content_preview
 
 
 def test_normalize_leaves_a_non_string_alone():

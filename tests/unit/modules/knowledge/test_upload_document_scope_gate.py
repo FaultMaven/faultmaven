@@ -86,9 +86,9 @@ def test_a_regular_user_can_upload_at_personal_scope(service):
 def test_the_uploader_is_recorded_as_the_owner(service):
     """`owner_id` is not bookkeeping — it is personal-scope VISIBILITY.
 
-    It decides the on-disk path (`user_<id>/`) and, through
-    `build_kb_scope_filter`, whether the author can see their own item: the
-    filter admits a non-global row by `{"owner_id": owner_id}`. The route never
+    It decides, through `build_kb_scope_filter`, whether the author can see
+    their own item: the filter admits a non-global row by
+    `{"owner_id": owner_id}`. The route never
     passed it while it only wrote global, so without this a personal upload
     would succeed and then be invisible to the person who made it.
     """
@@ -277,49 +277,8 @@ def test_upload_stamps_the_session_enterprise_not_a_sentinel():
 
 
 # ---------------------------------------------------------------------------
-# team_id reaches a filesystem path, and is now caller-supplied here
+# team_id is caller-supplied here
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "hostile",
-    [
-        "../../../../escaped",
-        "/etc/passwd",
-        "team-9/../../x",
-        "..",
-        ".",
-        "..%2f..%2fetc",
-    ],
-)
-def test_a_hostile_team_id_cannot_escape_the_knowledge_tree(hostile):
-    """`team_id` is a REQUEST BODY field on this route since #1377.
-
-    `KnowledgeService.upload_document` interpolates it into a scope directory
-    (`team_{team_id}`), so opening this route to a caller-supplied value added a
-    new taint path from an HTTP form field to a filesystem path — which is what
-    CodeQL's `py/path-injection` flags on the head of this PR.
-
-    `safe_path_component` is the protection and it predates this change; what
-    this pins is that the protection actually holds for the source that is now
-    reachable. #1213 is the reason it matters: a containment check on the
-    FILENAME is worthless once the DIRECTORY has escaped — an `owner_id` of
-    `../../../../escaped` sent the write to `<cwd>/escaped` while every
-    filename-level guard passed.
-    """
-    from pathlib import Path
-
-    from faultmaven.utils.runbook_id import safe_path_component
-
-    root = Path("/data/knowledge")
-    resolved = (root / f"team_{safe_path_component(hostile)}").resolve()
-
-    assert str(resolved).startswith(
-        "/data/knowledge/"
-    ), f"team_id {hostile!r} escaped the knowledge tree to {resolved}"
-    assert (
-        resolved.parent == root
-    ), f"team_id {hostile!r} produced more than one path segment: {resolved}"
 
 
 @pytest.mark.parametrize(
@@ -327,13 +286,11 @@ def test_a_hostile_team_id_cannot_escape_the_knowledge_tree(hostile):
     ["../../../../escaped", "/etc/passwd", "team-9", "..", "not-a-uuid", "' OR 1=1"],
 )
 def test_a_team_id_that_is_not_an_identifier_is_refused(service, malformed):
-    """Parsed at the boundary, so the caller's string never reaches a path.
+    """Parsed at the boundary, so the caller's string never travels on.
 
     Team ids are `str(uuid.uuid4())` in a `String(36)` column, so a non-UUID
     can never name a real team. Refusing it here means the value that travels
-    on to `team_{team_id}` is one this route CONSTRUCTED from a parsed UUID —
-    the taint is bounded at the boundary rather than relying on
-    `safe_path_component` and `resolve_runbook_path` further down.
+    on — into a share row — is one this route CONSTRUCTED from a parsed UUID.
 
     400, and a FORMAT error rather than an existence one, so it says nothing
     about which teams exist.
@@ -353,7 +310,7 @@ def test_the_team_id_forwarded_is_the_reconstructed_one(service):
 
     A UUID has equivalent spellings (case, braces, urn: prefix). What reaches
     the service is always the canonical form this route built, which is what
-    makes "the caller's string never reaches the path" true rather than
+    makes "the caller's string never travels on" true rather than
     usually-true.
     """
     _post(

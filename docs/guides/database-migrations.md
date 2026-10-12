@@ -303,12 +303,24 @@ alembic upgrade +2             # by relative count
 
 ### Generate SQL without executing
 
+Offline SQL is a **PostgreSQL** tool. Point `DATABASE_URL` at a PostgreSQL URL
+(only its dialect is read):
+
 ```bash
-./scripts/db_migrate.sh upgrade --sql
+DATABASE_URL=postgresql://offline@localhost/offline ./scripts/db_migrate.sh upgrade --sql
 
 # Or
-alembic upgrade head --sql
+DATABASE_URL=postgresql://offline@localhost/offline alembic upgrade head --sql
 ```
+
+SQLite (standalone) migrates **online**, from the application root — the app's
+own startup run does. On SQLite, `upgrade head --sql` prints the SQL up to the
+revision before the runbook-drafts backfill (#1950) and then exits non-zero:
+that revision reads each draft's file under `data/knowledge/`, which a script
+cannot do, so it refuses to render rather than hand over a script that would
+discard every standalone draft. Its PostgreSQL script opens with a SQL-comment
+warning that it discards every live draft whose text is not already in the
+database.
 
 Offline mode cannot render a batch operation on SQLite: batch mode reflects the
 live table, so `--sql` stops with `This operation cannot proceed in --sql mode`

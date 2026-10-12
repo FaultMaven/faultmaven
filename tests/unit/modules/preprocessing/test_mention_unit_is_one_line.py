@@ -59,6 +59,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     is_pid,
     is_port,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 # ---------------------------------------------------------------------------
 # One line per data type, on which EVERY entity type that extractor can
@@ -540,10 +541,10 @@ class TestLogsExtractorProfileCountsLines:
         a line count or an upper bound, or it contradicts the header.
         """
         from faultmaven.core.investigation.prompts.templates.blocks import (
-            _EVIDENCE_GROUNDING_BLOCK,
+            evidence_grounding_block,
         )
 
-        routing = " ".join(_EVIDENCE_GROUNDING_BLOCK.split())
+        routing = " ".join(evidence_grounding_block(DEFAULT_GIVEN).split())
         start = routing.index("For auth counts per IP")
         clause = routing[start : routing.index('For "list all X"', start)]
         assert "IP auth breakdown" in clause, clause

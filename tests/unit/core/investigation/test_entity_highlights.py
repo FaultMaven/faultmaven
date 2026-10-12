@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import CaseEntity, EntityType
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 def _entity(
@@ -92,7 +93,7 @@ def repo_with_entities():
 
 def _render(groups) -> str:
     """The block the assembly would emit for ``groups`` (own fence token)."""
-    return render_fenced(lambda f: _render_entity_highlights(groups, f))
+    return render_fenced(lambda f: _render_entity_highlights(groups, f, DEFAULT_GIVEN))
 
 
 class TestFetchEntityHighlights:

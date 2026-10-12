@@ -26,7 +26,7 @@ Document metadata is stored in the `conversion_drafts` table:
 | `conversion_id` | FK to `conversion_jobs` |
 | `runbook_id` | Stable document identifier |
 | `title` | Display name |
-| `file_path` | Path to markdown on disk |
+| `content` | The draft's full markdown (no file holds it, #1950) |
 | `status` | `draft`, `verified`, `deactivated`, `deleted` |
 | `knowledge_item_id` | ID used as `parent_document_id` in ChromaDB chunks |
 | `domain` | Dashboard filter (compute, database, networking, etc.) |

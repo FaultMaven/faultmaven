@@ -39,6 +39,9 @@ from tests.utils import reset_settings_singleton
 RUNBOOK_TITLE = "ENOSPC triage on a full root volume"
 RUNBOOK_EXCERPT = "Look for deleted-but-open descriptors with lsof +L1"
 RUNBOOK_ID = "rb_enospc_triage"
+#: The pushed block's own opening. The bare tag is not a marker: the prompt's
+#: instructions name ``<knowledge_context>`` as the place runbooks appear (#1939).
+KB_BLOCK = "<knowledge_context>\nThe following runbooks matched"
 
 #: Two hits, ordered so that the FIRST is not the highest-scoring one. The
 #: pre-fetch orders by the reranker's blend and floors on the raw cosine, so
@@ -141,7 +144,7 @@ class TestTheRenderedPrompt:
             provider_name="openai",
             model_name="gpt-4o",
         )
-        assert "<knowledge_context>" in prompt
+        assert KB_BLOCK in prompt
         assert RUNBOOK_TITLE in prompt
         assert RUNBOOK_EXCERPT in prompt
 
@@ -161,7 +164,7 @@ class TestTheRenderedPrompt:
             model_name="gpt-4o",
         )
         assert message in prompt, "positive control: the prompt was really built"
-        assert "<knowledge_context>" not in prompt
+        assert KB_BLOCK not in prompt
         assert RUNBOOK_TITLE not in prompt
         assert RUNBOOK_EXCERPT not in prompt
         assert RUNBOOK_ID not in prompt
@@ -201,7 +204,7 @@ class TestTheRenderedPrompt:
             reloaded, "anything", provider_name="openai", model_name="gpt-4o"
         )
         assert "anything" in prompt
-        assert "<knowledge_context>" not in prompt
+        assert KB_BLOCK not in prompt
 
 
 class TestThePreFetchItself:
@@ -484,7 +487,7 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         event = build_case_turn_event(case, path=TurnPath.LLM)
 
         assert "the volume filled again" in prompt, "positive control"
-        assert "<knowledge_context>" not in prompt
+        assert KB_BLOCK not in prompt
         assert RUNBOOK_ID not in prompt
         assert _kb_sources(prompt_kb_entries(case)) == []
         assert event["kb_prefetch_hits"] == 0
@@ -505,7 +508,7 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         )
         event = build_case_turn_event(case, path=TurnPath.LLM)
 
-        assert "<knowledge_context>" in prompt
+        assert KB_BLOCK in prompt
         assert RUNBOOK_TITLE in prompt
         assert len(_kb_sources(prompt_kb_entries(case))) == 2
         assert event["kb_prefetch_hits"] == 2

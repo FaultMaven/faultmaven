@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProblemVerification,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +64,7 @@ def _case() -> Case:
 
 
 def test_diagnosis_prompt_includes_chain_block():
-    block = _select_diagnosis_block(_case())
+    block = _select_diagnosis_block(_case(), DEFAULT_GIVEN)
     assert "CAUSAL CHAINS" in block
     # Step 3 spells out every required NodeEvidenceLinkToAdd field (the alignment).
     assert "node_evidence_links" in block
@@ -79,7 +80,7 @@ def test_diagnosis_prompt_includes_f3_signature_screening():
     """F3 (methodology §4): the formation prompt instructs the LLM to reject a
     cause whose mechanism cannot produce D's observed signature, before emitting
     it. A future edit that drops the screening rule trips here."""
-    block = _select_diagnosis_block(_case())
+    block = _select_diagnosis_block(_case(), DEFAULT_GIVEN)
     assert "Signature-screen before you emit" in block
     assert "observed signature" in block.lower()
 

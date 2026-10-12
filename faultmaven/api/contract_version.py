@@ -2068,4 +2068,39 @@ asked to accept, and it belongs to a person.
 # `SessionCreateRequest` is a hand-written type for the auth `/api/v1/sessions`
 # mint, unrelated). The system is pre-user, so there is no deprecation window.
 # Clients only regenerate.
-API_CONTRACT_VERSION = "14.0.0"
+
+# 14.1.0 — MINOR. A runbook draft's text lives in the database (#1950).
+#
+# * `DraftUpdateRequest.content` gains `maxLength` 100000
+#   (`DRAFT_CONTENT_MAX_CHARS`): the body of
+#   `PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` is stored as a
+#   row now, and nothing else bounds a JSON body. Sized at twice the largest
+#   shipped runbook (48,354 bytes) and three times a converted draft's
+#   ceiling; no draft the server makes or imports exceeds it, so no existing
+#   client edit is refused.
+#
+# Behaviour a client may notice without a schema change: a draft's `content`
+# in `GET /conversions/{id}` (and every response carrying a draft) is always
+# the full text — never `null` because the serving replica had no file. A
+# verify no longer fails because the file is missing. `POST /knowledge/scan`
+# imports files and never discards a draft; under `TENANT_PROVIDER=multi` it
+# answers 422 with "This deployment has no runbook directory; upload or convert
+# instead" (it was a 409 when a scan would have discarded every draft; that
+# refusal is gone).
+#
+# The same 100,000-character bound holds wherever a draft's text is born, as a
+# 422 naming the bound: `POST /knowledge/documents` (a runbook upload becomes a
+# draft row; the cap is new — before it only `MAX_UPLOAD_SIZE_MB` applied) and
+# `POST /knowledge/runbooks/create` (the composed runbook). A `/convert` failure
+# mode whose runbook exceeds it is reported in `warnings`, like any other
+# failed mode. `PUT …/drafts/{draft_id}` on a verified draft answers 409
+# `conflict_reason: "already_verified"` (it used to rewrite the row), and a
+# verify whose draft changed during its ingestion publishes nothing and answers
+# 409 naming what won: `already_verified` (another verify), `discarded` (a
+# delete) or `changed_during_verification` (an edit).
+# `GET /conversions/{id}` of a KB upload no longer answers 500 (its draft had
+# no stored score). MINOR because every client survives: the draft routes
+# declare no response model, so `content` going from nullable to always-present
+# is invisible to a generated type, and a client already shows a 409's or a
+# 422's detail.
+API_CONTRACT_VERSION = "14.1.0"

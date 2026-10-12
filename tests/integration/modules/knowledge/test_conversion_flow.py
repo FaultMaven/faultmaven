@@ -100,7 +100,6 @@ def _make_draft(
             actionability=0.65,
             comprehensiveness=0.75,
         ),
-        file_path="/tmp/test/nginx-502-bad-gateway.md",
         content_preview="---\nid: nginx-502-bad-gateway\ntitle: ...",
         content="---\nid: nginx-502-bad-gateway\ntitle: Nginx 502 Bad Gateway\n---\n# Full content here",
     )

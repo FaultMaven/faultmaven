@@ -1,8 +1,8 @@
-# The two functions that make a caller-supplied path safe, declared to CodeQL.
+# The function that makes a caller-supplied path safe, declared to CodeQL.
 #
 # WHY THIS FILE EXISTS
 #
-# `py/path-injection` has raised FOUR alerts over ONE guarded write —
+# `py/path-injection` raised FOUR alerts over ONE guarded write —
 # #60, #61, #65 and #66, all `write_runbook_file` — and every one was triaged,
 # by execution, as correct-and-guarded. (A fifth, #59, is a different sink in
 # the checker itself; see below.) Three were dismissed; the fourth was raised
@@ -12,6 +12,9 @@
 # preserves those dismissals: a comment-only change to an unrelated file re-raised
 # the alert and reddened a pull request's CodeQL check (#1423). A fifth dismissal
 # would buy nothing. Telling the analysis what the guard does ends it.
+# (`write_runbook_file` itself is gone: no runbook is written to disk since
+# #1950, which also retired `safe_path_component`, the second row this file
+# carried. The row below still covers the scan's read and the KB pack's.)
 #
 # WHAT IS BEING ASSERTED, AND WHERE IT IS CHECKED
 #
@@ -19,12 +22,10 @@
 # it directly — `PathInjectionCustomizations.qll` declares
 # `class SanitizerFromModel extends Sanitizer { ModelOutput::barrierNode(this,
 # "path-injection") }` and the query's `isBarrier` is `node instanceof Sanitizer`
-# — so a wrong row silences a real vulnerability. Both claims below are pinned by
+# — so a wrong row silences a real vulnerability. The claim below is pinned by
 # tests that drive the function with hostile input:
 #
 #   resolve_within_root   tests/unit/utils/test_path_containment.py
-#   safe_path_component   tests/unit/utils/test_runbook_id_consolidation.py
-#                         tests/unit/modules/knowledge/test_upload_document_scope_gate.py
 #
 # and `tests/unit/ci/test_codeql_config.py` fails if a row here names
 # a function that no longer exists, or that no longer routes through the check.
@@ -32,8 +33,9 @@
 # WHAT IT CLOSES, MEASURED
 #
 # CodeQL 2.27.0 (the version this repository's analyses run), the `default`
-# Python suite, over this tree plus three probe endpoints written to have known
-# verdicts. Counts are alerts, not flows:
+# Python suite, over the tree as it was before #1950 removed the write, plus
+# three probe endpoints written to have known verdicts. Counts are alerts, not
+# flows:
 #
 #                                          no model   with model
 #   runbook_id.py:561   guarded write          1           0   <- #61, #66
@@ -65,16 +67,17 @@
 # holding if someone later added a read to the function. It stays dismissed, with
 # the narrower reason that it is the containment check and not a use of the path.
 #
-# WHY ONLY TWO ROWS
+# WHY ONLY ONE ROW
 #
 # `resolve_runbook_path` is NOT modelled, though it is the function the alerts
 # point at. It is a four-line delegation to `resolve_within_root`, and taint
 # stops at the barrier inside its body, so the alert clears anyway — measured,
 # not assumed. Modelling it as well would assert containment for a function that
 # does not implement containment, and would keep asserting it if the delegation
-# were ever removed. The same argument keeps `write_runbook_file` and
-# `runbook_filename` out: a model should name the function that enforces the
-# rule, so that deleting the enforcement deletes the claim with it.
+# were ever removed. The same argument kept `write_runbook_file` and
+# `runbook_filename` out while they existed: a model should name the function
+# that enforces the rule, so that deleting the enforcement deletes the claim
+# with it.
 
 extensions:
   # `resolve_within_root(path, *, root, ...)` -> the resolved path, GUARANTEED
@@ -90,8 +93,8 @@ extensions:
   # a wrapper without asserting anything about the wrapper — but only where the
   # wrapper USES what it returns. Two of the three trees do:
   #
-  #   runbook tree   `resolve_runbook_path` -> `write_runbook_file` acts on the
-  #                  resolved path.                                    COVERED
+  #   runbook tree   `resolve_runbook_path` -> the scan reads the resolved
+  #                  path.                                             COVERED
   #   KB pack        `KbPack.load` reads `content_path`, the return.   COVERED
   #   evidence blobs `FilesystemStorageBackend._get_full_path` calls this for
   #                  its raising side effect, DISCARDS the result, and returns
@@ -108,37 +111,3 @@ extensions:
       extensible: barrierModel
     data:
       - ['faultmaven.utils.path_containment!', 'Member[resolve_within_root].ReturnValue', 'path-injection']
-
-  # `safe_path_component(value, *, fallback)` -> ONE path segment matching
-  # `[a-z0-9]+(-[a-z0-9]+)*`, never empty. Both inputs go through the same
-  # allowlist (`[^a-z0-9]+` -> `-`), so a separator, a `..`, a NUL, a drive
-  # letter and a leading dot are gone by construction rather than by
-  # enumerating what to strip.
-  #
-  # ‼ THIS ROW WAS WRONG WHEN FIRST WRITTEN, in the direction that silences a
-  # real vulnerability, and the fix is in `runbook_id.py` rather than here —
-  # because a barrier row cannot say "only when the second argument is
-  # defaulted". Two holes, both found by review measuring the function instead
-  # of reading it:
-  #
-  #   safe_path_component(value="???", fallback="../../../../escaped")
-  #       was -> '../../../../escaped'   (only `value` was slugged)
-  #   safe_path_component("a"*59 + " " + "b"*10)
-  #       was -> 'aaa…a-'                (`[:60]` can land on a hyphen)
-  #
-  # The first is the one that mattered: an unfiltered `fallback` is returned
-  # verbatim AND has its flow to the filesystem silenced by this row. No caller
-  # passes a `fallback` today, which is precisely why it could rot unnoticed.
-  # `fallback` is now slugged and the truncation strips again; the parametrised
-  # cases in `tests/unit/ci/test_codeql_config.py` include a hostile fallback
-  # and inputs past the 60-character bound, so neither can come back quietly.
-  #
-  # Modelled separately from containment because it guards a different thing: the
-  # DIRECTORY the write lands in. #1213 showed containment is worthless when the
-  # directory has already escaped — an `owner_id` of `../../../../escaped` sent
-  # the write outside the tree while every filename-level guard passed.
-  - addsTo:
-      pack: codeql/python-all
-      extensible: barrierModel
-    data:
-      - ['faultmaven.utils.runbook_id!', 'Member[safe_path_component].ReturnValue', 'path-injection']

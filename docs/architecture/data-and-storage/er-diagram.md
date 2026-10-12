@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-12 10:24 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-12 17:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -195,7 +195,7 @@ erDiagram
         VARCHAR verified_by FK
         VARCHAR runbook_id
         VARCHAR title
-        VARCHAR file_path
+        TEXT content
         VARCHAR status
         VARCHAR source_type
         VARCHAR document_type

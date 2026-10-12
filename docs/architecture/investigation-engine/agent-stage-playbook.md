@@ -32,8 +32,8 @@ A **phase** is a distinct operational mode of the investigation. Each phase has 
 | ------------- | ------------ | ---------- | --------------- |
 | `INQUIRY` | *(none — starting phase)* | INQUIRY | `INQUIRY_TEMPLATE` |
 | `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `mitigation` (see §5 *cause_state-driven investigation guidance*) |
-| `INVESTIGATING` | `mitigation.accepted = True` | MITIGATION (display: "Mitigating") | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (mitigation guidance) |
-| `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS` |
+| `INVESTIGATING` | `mitigation.accepted = True` | MITIGATION (display: "Mitigating") | `INVESTIGATION_BASE` + `mitigation_instructions(given)` (mitigation guidance) |
+| `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `treatment_instructions(given)` |
 | `RESOLVED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
 | `CLOSED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
 
@@ -112,8 +112,8 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
 | | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | DECIDE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | DECIDE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
-| MITIGATION ("Mitigating") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `mitigation.verified`) | Gate | User confirms the mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
-| TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | DECIDE → TERMINAL | [TREATMENT](#treatment-stage) |
+| MITIGATION ("Mitigating") | `mitigation_instructions(given)` | 5 | `mitigation_verified` (→ `mitigation.verified`) | Gate | User confirms the mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
+| TREATMENT | `treatment_instructions(given)` | 7 | `solution_verified` | Gate | User confirms solution worked | DECIDE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 
 **Gate** variables are mandatory checkpoints: the investigation cannot leave the current stage until the condition is met (`problem_statement_confirmed`, `mitigation_verified`, `solution_verified`). **Trigger** variables open an optional branch: when the user acknowledges executing the proposed action, the stage redirects — but nothing in the current stage was blocked waiting for it (`mitigation_accepted`, `solution_accepted`).
@@ -180,7 +180,7 @@ Establish a shared understanding of the problem before investigation begins. The
    - HIGH: checkout failing, payments broken, 30%+ requests failing, SLA violation
    - MEDIUM: intermittent, partial failure, degraded experience
    - LOW: historical, post-mortem, optimization, cosmetic
-3. **Search KB first** (`kb_qa`) — before proposing investigation, check whether a past case or runbook resolves the issue. If a match exists, surface it and await the user's attempt.
+3. **Search KB first** (`kb_qa`, when the turn gives it; otherwise the knowledge base is not claimed as checked and `knowledge_match` stays unset) — before proposing investigation, check whether a past case or runbook resolves the issue. If a match exists, surface it and await the user's attempt.
 4. **Propose a problem statement** — one sentence: symptom + scope + temporal state. Set `proposed_problem_statement`.
 5. **Surface mitigation path hint for CRITICAL/HIGH + ONGOING** — "This is actively affecting [scope]. Should I focus on a quick mitigation first while we find the root cause?"
 6. **Await confirmation** — do not transition, request data, or propose next steps on the same turn as the problem statement.
@@ -287,7 +287,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 **Agent duties:**
 
-1. **Search KB first (once, at Zone 2 entry)** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
+1. **Search KB first (once, at Zone 2 entry)** — when `kb_qa` is given, call it for the confirmed symptom before generating hypotheses; on a turn without it, runbooks the engine matched in `<knowledge_context>` stand in for the KB result. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
 2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
 3. **Use timeline as the search anchor.** Every data request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (evidence-category set is the verification quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`).
 4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for the grounded cause signal (`cause_state = IDENTIFIED`) → validate or refute.
@@ -399,13 +399,13 @@ A well-documented partial investigation that narrows the problem is a valid outc
 ### MITIGATION Stage — the Mitigation Insert (display: "Mitigating")
 
 **Phase marker:** `mitigation.accepted = True` (materialized from the `mitigation_accepted` emission)  
-**Prompt assembly:** `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (the mitigation-guidance block; symbol name retained from the pre-redesign code)
+**Prompt assembly:** `INVESTIGATION_BASE` + `mitigation_instructions(given)` (the mitigation-guidance block; symbol name retained from the pre-redesign code)
 
 The **mitigation insert**: apply a temporary fix to stop active impact when an Axis-B gap exists — something is hurting now that can't be fully resolved this session. Goal is stabilization, not resolution. This is an optional inserted sub-activity in the one unified flow, not a path (see lifecycle §2).
 
 **Agent Duties:**
 
-1. **Search KB first** — call `kb_qa` for the symptom to find known mitigation procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
+1. **Search KB first** — when `kb_qa` is given, call it for the symptom to find known mitigation procedures or workarounds before suggesting steps (otherwise use any runbook in `<knowledge_context>`). If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
 4. Request post-fix data — metrics, error rates, user observation — confirming the symptom has stopped.
@@ -435,7 +435,7 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 ### TREATMENT Stage
 
 **Phase marker:** `solution_accepted = True`  
-**Prompt assembly:** `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS`
+**Prompt assembly:** `INVESTIGATION_BASE` + `treatment_instructions(given)`
 
 Verify that the applied fix resolves the problem. If it does not, diagnose the failure and revise — without returning to DIAGNOSIS.
 
@@ -536,10 +536,10 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 | Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding | Diagnostic reasoning |
 | --- | --- | --- | --- | --- | --- |
 | INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
-| DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `_RCA_DIAGNOSIS_BLOCK` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`), with `focus_emphasis()` rendered separately at the top of the per-turn tail (#613) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| MITIGATION ("Mitigating") | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` (mitigation guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
+| DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `rca_diagnosis_block(given)` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`), with `focus_emphasis()` rendered separately at the top of the per-turn tail (#613) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| MITIGATION ("Mitigating") | `INVESTIGATION_BASE` | same | `mitigation_instructions(given)` (mitigation guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| TREATMENT | `INVESTIGATION_BASE` | same | `treatment_instructions(given)` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `knowledge_query_instructions(given)` | ✗ (suppressed) | ✗ (suppressed) |
 | TERMINAL | `TERMINAL_TEMPLATE` | `_ADVISOR_ROLE` only | (built into shell) | ✗ | ✗ |
 | Fallback INQUIRY | `FALLBACK_INQUIRY_TEMPLATE` | none | none | ✗ | ✗ |
 | Fallback INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` | none | none | ✗ | ✗ |
@@ -559,18 +559,18 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 | ----- | ----------------- | ---- |
 | INQUIRY | `INQUIRY_TEMPLATE` (YOUR TASK section) | Self-contained shell |
 | DIAGNOSIS | `_select_diagnosis_block(case)` | cause_state-driven (see below); single block |
-| MITIGATION | `MITIGATION_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
-| TREATMENT | `TREATMENT_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
+| MITIGATION | `mitigation_instructions(given)` | Injected as `{adaptive_instructions}` |
+| TREATMENT | `treatment_instructions(given)` | Injected as `{adaptive_instructions}` |
 | TERMINAL | `TERMINAL_TEMPLATE` | Self-contained shell |
-| Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` | Replaces stage dispatch entirely |
+| Knowledge query | `knowledge_query_instructions(given)` | Replaces stage dispatch entirely |
 
 #### cause_state-driven investigation guidance
 
 Post-redesign there is **no path fork**. `_select_diagnosis_block(case)` returns a
-single block — `_RCA_DIAGNOSIS_BLOCK` plus the chain-emission block — and
+single block — `rca_diagnosis_block(given)` plus the chain-emission block — and
 `_get_diagnosis_focus_emphasis(case.progress, case)` renders beside it as
 `{focus_emphasis}`, at the top of the prompt's per-turn tail (#613). The hypothesis-creation mandate
-(`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) lives inside `_RCA_DIAGNOSIS_BLOCK` and is
+(`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) lives inside `rca_diagnosis_block(given)` and is
 always present; the agent applies it **iff the cause is uncertain**
 (`cause_state ∈ {UNKNOWN, CANDIDATES}`) per the single diagnostic-machinery rule.
 The four path-conditional blocks (`_PRE_PATH_DIAGNOSIS_BLOCK`,
@@ -590,4 +590,4 @@ emphasis strings are documented once, in
 (the canonical rendition). The Zone-3-pending emphasis is a non-suppressive hold
 (INV-33) — it names the exit rather than forbidding further evidence.
 
-**`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `KNOWLEDGE_QUERY_INSTRUCTIONS` replaces `adaptive_instructions`, and both `_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK` are passed as `""`. The two waived rule blocks are absent from the rendered prompt entirely (rather than sandwiching an exemption clause between active rules). This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver: "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply."
+**`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `knowledge_query_instructions(given)` replaces `adaptive_instructions`, and both `evidence_grounding_block(given)` and `_DIAGNOSTIC_REASONING_BLOCK` are passed as `""`. The two waived rule blocks are absent from the rendered prompt entirely (rather than sandwiching an exemption clause between active rules). This matches the `knowledge_query_instructions(given)` waiver: "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply."

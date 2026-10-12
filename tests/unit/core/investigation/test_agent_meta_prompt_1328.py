@@ -37,11 +37,11 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.prompts.templates.blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
-    _EVIDENCE_GROUNDING_BLOCK,
     _FAULTMAVEN_DOCS_URL,
     _SELF_REFERENCE_RULE,
     AGENT_META_INSTRUCTIONS,
-    KNOWLEDGE_QUERY_INSTRUCTIONS,
+    evidence_grounding_block,
+    knowledge_query_instructions,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _EVIDENCE_REROUTE_MODES,
@@ -61,6 +61,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = [pytest.mark.unit]
 
@@ -75,7 +76,7 @@ GROUNDING_MARKER = "EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination)"
 DIAGNOSTIC_MARKER = "When you make a diagnostic claim, propose an action"
 ABOUT_MARKER = "ABOUT FAULTMAVEN (self-knowledge"
 
-assert GROUNDING_MARKER in _EVIDENCE_GROUNDING_BLOCK
+assert GROUNDING_MARKER in evidence_grounding_block(DEFAULT_GIVEN)
 assert DIAGNOSTIC_MARKER in _DIAGNOSTIC_REASONING_BLOCK
 assert GROUNDING_MARKER not in AGENT_META_INSTRUCTIONS
 assert DIAGNOSTIC_MARKER not in AGENT_META_INSTRUCTIONS
@@ -130,7 +131,7 @@ def _render(state: CaseState, mode: str, case: Case | None = None) -> str:
         case or _case(state),
         REPORTED,
         processing_mode=mode,
-        tools_available=True,
+        given_tools=DEFAULT_GIVEN,
     )
 
 
@@ -143,7 +144,7 @@ class TestPromptDispatch:
         assert DIAGNOSTIC_MARKER not in prompt
         # The stage instructions are replaced, not appended.
         assert "**FOCUS: QUESTION ABOUT FAULTMAVEN ITSELF**" in prompt
-        assert KNOWLEDGE_QUERY_INSTRUCTIONS.strip() not in prompt
+        assert knowledge_query_instructions(DEFAULT_GIVEN).strip() not in prompt
 
     def test_investigating_directed_analysis_is_unchanged_in_shape(self):
         prompt = _render(CaseState.INVESTIGATING, "directed_analysis")
@@ -201,7 +202,9 @@ class TestBackstopRule:
         assert "never guess a vendor or model name" in flat
 
     def test_grounding_block_skip_list_names_self_reference(self):
-        assert "questions about FaultMaven\nitself" in _EVIDENCE_GROUNDING_BLOCK
+        assert "questions about FaultMaven\nitself" in evidence_grounding_block(
+            DEFAULT_GIVEN
+        )
 
 
 class TestSelfKnowledgeContent:
@@ -221,7 +224,8 @@ class TestSelfKnowledgeContent:
     def test_answer_discipline_is_short_and_leaves_the_case_alone(self):
         assert "Three to six sentences" in AGENT_META_INSTRUCTIONS
         assert (
-            "Do NOT call search_file, deep_analysis or kb_qa" in AGENT_META_INSTRUCTIONS
+            "Do NOT search the evidence or the knowledge base for this question"
+            in " ".join(AGENT_META_INSTRUCTIONS.split())
         )
         assert "Leave the investigation untouched" in AGENT_META_INSTRUCTIONS
 

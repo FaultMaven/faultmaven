@@ -1,12 +1,10 @@
-"""Draft-slot conflict checks: whether a runbook id or file path is
-already held by a live draft in this tenant, before any new draft
-write."""
+"""Draft-slot conflict checks: whether a runbook id is already held by a
+live draft in this tenant, before any new draft row is written."""
 
 import logging
-from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from faultmaven.config.tenant_context import (
     writable_enterprise_id,
@@ -33,26 +31,13 @@ async def _find_live_draft_owning(
     db_session_factory,
     enterprise_id: str,
     runbook_ids: Sequence[Optional[str]],
-    file_path: str = None,
-) -> Optional[Tuple[str, str, str]]:
-    """``(runbook_id, file_path, draft_id)`` of a live draft already holding
-    one of these ids OR this file, in this tenant. ``None`` if the slot is
-    free.
+) -> Optional[Tuple[str, str]]:
+    """``(runbook_id, draft_id)`` of a live draft already holding one of these
+    ids in this tenant. ``None`` if the slot is free.
 
-    Two keys, one query, because a draft occupies two slots and losing
-    either one loses a runbook:
-
-    - its ``runbook_id``, which migration 046 makes unique per tenant; and
-    - its ``file_path``, which is NOT in that index and does not follow
-      from the id. ``draft_filename`` runs the id back through ``_slug``,
-      so ``"foo--bar"`` and ``"foo-bar"`` resolve to one ``foo-bar.md``.
-      A legacy row holding the double-hyphen form — which the mint could
-      produce before #1243 — is invisible to an id lookup, and the write would
-      clobber its file while the INSERT sailed past the index. Measured on
-      the dev database: 0 rows of that shape today, so this is a guard
-      against a state I could not reproduce rather than one I observed —
-      which is exactly the case for keying on the resolved slot rather than
-      on the id that was supposed to imply it.
+    One key: the ``runbook_id``, which ``uq_conversion_drafts_enterprise_runbook_id``
+    makes unique per tenant among live drafts. A draft's text is a column of its
+    own row (#1950), so there is no second slot — no file two ids could share.
 
     Ordered, and deliberately not ``LIMIT 1`` on an unordered scan: the
     message names a specific row, and naming a different row on each call
@@ -66,22 +51,13 @@ async def _find_live_draft_owning(
     # ``IntegrityError`` escape past every caller written to catch the
     # typed refusal.
     ids = [rid for rid in runbook_ids if rid is not None]
-    if not ids and file_path is None:
+    if not ids:
         return None
-    conditions = []
-    if ids:
-        conditions.append(ConversionDraftModel.runbook_id.in_(ids))
-    if file_path is not None:
-        conditions.append(ConversionDraftModel.file_path == file_path)
     async with db_session_factory() as probe:
         result = await probe.execute(
-            select(
-                ConversionDraftModel.runbook_id,
-                ConversionDraftModel.file_path,
-                ConversionDraftModel.id,
-            )
+            select(ConversionDraftModel.runbook_id, ConversionDraftModel.id)
             .where(ConversionDraftModel.enterprise_id == enterprise_id)
-            .where(or_(*conditions))
+            .where(ConversionDraftModel.runbook_id.in_(ids))
             .where(ConversionDraftModel.status != "discarded")
             .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
             .limit(1)
@@ -89,16 +65,14 @@ async def _find_live_draft_owning(
         return result.first()
 
 
-def _duplicate_draft_conflict(taken: Tuple[str, str, str]) -> ConflictError:
+def _duplicate_draft_conflict(taken: Tuple[str, str]) -> ConflictError:
     """The 409 for a slot already held. One wording, both call sites.
 
-    Names the draft and the runbook id, never the draft's file (#836). The
-    slot is enterprise-wide, so the holder can be a colleague's draft, and its
-    ``conversion_drafts.file_path`` is a server path that names their
-    directory. The message also reaches ``/convert``'s persisted warnings, so a
-    path here would be stored and served again.
+    Names the draft and the runbook id and nothing of the draft's text: the
+    slot is enterprise-wide, so the holder can be a colleague's draft, and the
+    message also reaches ``/convert``'s persisted warnings.
     """
-    runbook_id, _file_path, draft_id = taken
+    runbook_id, draft_id = taken
     return ConflictError(
         f"A runbook draft with id '{runbook_id}' already exists in this "
         f"enterprise (draft {draft_id}). Discard it before "
@@ -168,8 +142,8 @@ async def _refuse_modes_whose_id_is_taken(
 
 async def _find_live_drafts_owning(
     db_session_factory, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
-) -> Dict[str, Tuple[str, str, str]]:
-    """``{runbook_id: (runbook_id, file_path, draft_id)}`` for every live
+) -> Dict[str, Tuple[str, str]]:
+    """``{runbook_id: (runbook_id, draft_id)}`` for every live
     draft in this tenant holding one of these ids.
 
     The batch form of ``_find_live_draft_owning``. That one answers "is this
@@ -187,38 +161,28 @@ async def _find_live_drafts_owning(
         return {}
     async with db_session_factory() as probe:
         result = await probe.execute(
-            select(
-                ConversionDraftModel.runbook_id,
-                ConversionDraftModel.file_path,
-                ConversionDraftModel.id,
-            )
+            select(ConversionDraftModel.runbook_id, ConversionDraftModel.id)
             .where(ConversionDraftModel.enterprise_id == enterprise_id)
             .where(ConversionDraftModel.runbook_id.in_(ids))
             .where(ConversionDraftModel.status != "discarded")
             .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
         )
-        found: Dict[str, Tuple[str, str, str]] = {}
+        found: Dict[str, Tuple[str, str]] = {}
         for row in result.all():
-            found.setdefault(row[0], (row[0], row[1], row[2]))
+            found.setdefault(row[0], (row[0], row[1]))
         return found
 
 
 async def refuse_if_draft_slot_taken(
-    db_session_factory, enterprise_id: Optional[str], runbook_id: str, draft_path: str
+    db_session_factory, enterprise_id: Optional[str], runbook_id: str
 ) -> None:
-    """Refuse BEFORE writing, on every path that mints a NEW draft file.
+    """Refuse a NEW draft whose ``runbook_id`` a live draft already holds,
+    before its row is built.
 
-    The draft file is named after ``runbook_id``, so a duplicate resolves
-    to the SAME path. Writing first and letting migration 046 reject the
-    INSERT leaves the EXISTING draft's row pointing at the new author's
-    content — a worse state than the duplicate rows the index removes,
-    because the surviving row then lies about its own file.
-
-    Both new-draft write paths call this: the LLM conversion
-    (``_generate_runbook_draft``) and the manual template create. The edit
-    path (``update_draft``) does NOT and must not — it rewrites the file
-    its own row already owns, so the row it would "conflict" with is
-    itself.
+    Both new-draft paths with a fixed id call this: the document conversion
+    (``_convert_single_failure_mode``) and the manual template create. The edit
+    path (``update_draft``) does NOT and must not — it rewrites its own row,
+    so the row it would "conflict" with is itself.
 
     This is the ordinary case; the index stays the backstop for the genuine
     cross-replica race, which is what an index is for.
@@ -233,10 +197,7 @@ async def refuse_if_draft_slot_taken(
     if not db_session_factory:
         return
     taken = await _find_live_draft_owning(
-        db_session_factory,
-        writable_enterprise_id(enterprise_id),
-        [runbook_id],
-        file_path=draft_path,
+        db_session_factory, writable_enterprise_id(enterprise_id), [runbook_id]
     )
     if taken:
         raise _duplicate_draft_conflict(taken)
@@ -247,7 +208,6 @@ async def claim_case_draft_slot(
     enterprise_id: Optional[str],
     minted_id: str,
     case_id: str,
-    path_for: Callable[[str], Path],
 ) -> str:
     """The id a case-built draft is written under: ``minted_id``, or its
     case-disambiguated form when ``minted_id``'s slot is held. Raises the
@@ -261,29 +221,22 @@ async def claim_case_draft_slot(
     re-minted id is a collision within one case, and is refused as before.
     So is a held case-stem id, which only this case mints.
 
-    The same check as :func:`refuse_if_draft_slot_taken`, on both keys (id and
-    file path), so the caller writes the file, forces the frontmatter id and
-    persists the row under the one id this returns. Only the case path calls
+    The same check as :func:`refuse_if_draft_slot_taken`, so the caller forces
+    the frontmatter id and persists the row under the one id this returns.
+    Only the case path calls
     it: the document path's ids are fixed before the model call and are
     refused outright.
     """
     if not db_session_factory:
         return minted_id
     scoped = writable_enterprise_id(enterprise_id)
-    taken = await _find_live_draft_owning(
-        db_session_factory, scoped, [minted_id], file_path=str(path_for(minted_id))
-    )
+    taken = await _find_live_draft_owning(db_session_factory, scoped, [minted_id])
     if not taken:
         return minted_id
     disambiguated = case_disambiguated_runbook_id(minted_id, case_id)
     if disambiguated is None:
         raise _duplicate_draft_conflict(taken)
-    retaken = await _find_live_draft_owning(
-        db_session_factory,
-        scoped,
-        [disambiguated],
-        file_path=str(path_for(disambiguated)),
-    )
+    retaken = await _find_live_draft_owning(db_session_factory, scoped, [disambiguated])
     if retaken:
         raise _duplicate_draft_conflict(retaken)
     logger.info(
@@ -301,8 +254,7 @@ async def _raise_if_runbook_id_taken(
     ``uq_conversion_drafts_enterprise_runbook_id`` (migration 046) admits one LIVE
     draft per ``(enterprise_id, runbook_id)``. Two drafts reaching the
     same id is ordinary — ``runbook_id_from_parts`` is deterministic on
-    ``(service, title)``, deliberately, because the disk scan reconciles a
-    file to its row by that id — so a user converting the same source
+    ``(service, title)``, deliberately — so a user converting the same source
     twice lands here, and so do two cases about the same failure that race
     past ``claim_case_draft_slot``. Without this
     the whole commit surfaces as an unhandled ``IntegrityError``, i.e. a
@@ -330,9 +282,8 @@ async def _raise_if_runbook_id_taken(
     Two drafts in ONE job colliding with each other no longer reaches here
     (#1258), and could never have been resolved here: nothing is committed,
     so the re-read finds nothing, this returns, and the caller re-raises the
-    bare ``IntegrityError`` — a 500 that says nothing, after the second
-    draft's write has already replaced the first one's file (both ids
-    resolve to one ``draft_filename``). It is refused where the duplicate is
+    bare ``IntegrityError`` — a 500 that says nothing. It is refused where the
+    duplicate is
     produced instead: ``_partition_failure_modes`` mints every id in the
     batch before any conversion runs and degrades each repeat to that
     failure mode's ``ConversionError``, so every draft list reaching

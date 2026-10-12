@@ -19,6 +19,8 @@
 #
 # Options:
 #   --sql             upgrade only: print the SQL instead of executing it
+#                     (a PostgreSQL tool: on SQLite the runbook-drafts revision
+#                     refuses to render, #1950; SQLite migrates online)
 #                     (offline mode)
 #   --verbose, -v     status, heads: verbose output (history is always verbose)
 #
@@ -116,6 +118,8 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --sql             upgrade only: print the SQL instead of executing it"
+    echo "                    (PostgreSQL only: SQLite migrates online; on SQLite the"
+    echo "                    runbook-drafts revision refuses to render, #1950)"
     echo "  --verbose, -v     status, heads: verbose output"
     echo ""
     echo "Examples:"

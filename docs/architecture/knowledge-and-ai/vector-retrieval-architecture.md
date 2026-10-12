@@ -491,7 +491,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (ACTIVE → VALIDATED/
 | Redis removed from KB lifecycle | **Implemented** | No Redis reads or writes for KB documents. SQLite is the sole inventory. |
 | Chunk-aware deletion | **Implemented** | `delete_documents_by_parent_id()` removes all chunks for a document. |
 | Batch activation endpoint | **Implemented** | `POST /knowledge/drafts/verify-batch` — batch activate up to 100 drafts per request. |
-| Startup KB scan | **Removed** | The server no longer scans a directory on startup — KB ingestion is owned by the bootstrap (KB pack). `POST /knowledge/scan` remains as a manual draft-reconciliation endpoint, not an automatic ingestion path. |
+| Startup KB scan | **Removed** | The server no longer scans a directory on startup — KB ingestion is owned by the bootstrap (KB pack). `POST /knowledge/scan` remains as a manual, standalone-only import of hand-placed files into drafts, not an automatic ingestion path. |
 
 ### Evidence Retrieval
 

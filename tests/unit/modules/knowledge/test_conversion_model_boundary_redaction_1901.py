@@ -374,8 +374,6 @@ class TestTheCasePath:
         (draft,) = response.drafts
         assert f"The replica at {placeholder} refused." in draft.content
         assert PII_IP not in draft.content
-        on_disk = Path(draft.file_path).read_text()
-        assert placeholder in on_disk and PII_IP not in on_disk
 
 
 class TestTheDocumentPath:
@@ -457,18 +455,13 @@ class TestARedactionThatCannotRunStopsTheSend:
         self, tmp_path, redaction_on, modes, n
     ):
         """Every mode is redacted before any is sent. A refusal on the Nth
-        mode fails the whole conversion — not after modes 1..N-1 went out and
-        left draft files on disk with no job row to own them, for a later
-        ``/scan`` to adopt."""
+        mode fails the whole conversion — not after modes 1..N-1 went out."""
         router = RecordingRouter(modes=modes)
 
         with pytest.raises(RedactionUnavailableError):
             await _convert_document(tmp_path, router, _RefusingNthGeneration(n))
 
         assert router.stages() == ["triage", "analysis"], "no generation was sent"
-        knowledge = tmp_path / "knowledge"
-        written = list(knowledge.rglob("*.md")) if knowledge.exists() else []
-        assert written == [], written
 
     @pytest.mark.parametrize(
         "modes", [2, PARALLEL_THRESHOLD], ids=["parallel", "sequential"]

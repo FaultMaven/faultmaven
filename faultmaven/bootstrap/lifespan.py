@@ -367,10 +367,11 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Middleware already configured")
 
     # KB Bootstrap: atomic, idempotent ingestion of shipped runbooks.
-    # Pre-deployed `.md` files under data/knowledge/{scope}/ are ingested
-    # directly into knowledge_items + ChromaDB without passing through the
-    # conversion_drafts table. Idempotent: unchanged files are skipped on
-    # subsequent runs. See faultmaven/bootstrap/kb_init.py.
+    # The KB pack (`KB_PACK_DIR`, default `resources/knowledge/pack`) is
+    # ingested directly into knowledge_items + ChromaDB without passing through
+    # the conversion_drafts table. Idempotent: runbooks whose content hash is
+    # unchanged are skipped on subsequent runs. See
+    # faultmaven/bootstrap/kb_init.py.
     #
     # Single-tenant only: the pack writes the org-free global platform tier,
     # which under TENANT_PROVIDER=multi is seeded exclusively via the audited

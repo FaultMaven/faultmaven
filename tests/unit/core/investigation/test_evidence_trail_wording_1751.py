@@ -65,6 +65,11 @@ import faultmaven
 import faultmaven.core.investigation.prompts.templates as templates_pkg
 from faultmaven.core.investigation import schemas
 from faultmaven.core.investigation.milestone_engine import turn_generation
+from faultmaven.core.investigation.prompts.templates import (
+    blocks,
+    diagnosis,
+    treatment,
+)
 from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
     SCHEMA_INSTRUCTIONS,
@@ -74,6 +79,7 @@ from faultmaven.utils.schema_converter import (
     pydantic_to_openai_tools,
     pydantic_to_strict_openai_tools,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 pytestmark = pytest.mark.unit
 
@@ -667,16 +673,31 @@ def test_the_source_scan_finds_a_planted_old_name():
 #: Blocks the scan must have read, so a rename of the discovery cannot empty it.
 _REQUIRED_CONSTANTS = {
     "blocks._DIAGNOSTIC_REASONING_BLOCK",
-    "blocks.KNOWLEDGE_QUERY_INSTRUCTIONS",
     "blocks.AGENT_META_INSTRUCTIONS",
-    "diagnosis._RCA_DIAGNOSIS_BLOCK",
-    "treatment.MITIGATION_INSTRUCTIONS",
-    "treatment.TREATMENT_INSTRUCTIONS",
     "investigation.INVESTIGATION_BASE",
     "investigation.SCHEMA_INSTRUCTIONS",
     "inquiry.INQUIRY_TEMPLATE",
     "terminal.TERMINAL_TEMPLATE",
 }
+
+#: The stage blocks that name tools are rendered per given tool set (#1939):
+#: scanned as rendered for the default six and for a tool-less turn, the two
+#: ends of what a turn can be given.
+_RENDERERS = {
+    "blocks.knowledge_query_instructions": blocks.knowledge_query_instructions,
+    "blocks.evidence_grounding_block": blocks.evidence_grounding_block,
+    "diagnosis.rca_diagnosis_block": diagnosis.rca_diagnosis_block,
+    "treatment.mitigation_instructions": treatment.mitigation_instructions,
+    "treatment.treatment_instructions": treatment.treatment_instructions,
+}
+
+
+def _rendered_blocks() -> dict[str, str]:
+    return {
+        f"{name}({label})": render(given)
+        for name, render in _RENDERERS.items()
+        for label, given in (("default", DEFAULT_GIVEN), ("none", NO_TOOLS))
+    }
 
 
 def _template_modules() -> list[types.ModuleType]:
@@ -714,7 +735,7 @@ def test_template_constants_carry_no_old_name_or_bisected_phrase():
     assert _REQUIRED_CONSTANTS <= set(constants), sorted(
         _REQUIRED_CONSTANTS - set(constants)
     )
-    assert _template_hits(constants) == []
+    assert _template_hits(constants | _rendered_blocks()) == []
 
 
 def test_the_template_scan_finds_a_planted_phrase():

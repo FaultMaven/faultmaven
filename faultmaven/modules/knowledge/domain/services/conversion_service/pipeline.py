@@ -1,8 +1,7 @@
 """Document analysis (the LLM pass that identifies failure modes) and
-the scope/route helpers it and the conversion pass share."""
+the route helper it and the conversion pass share."""
 
 import logging
-from pathlib import Path
 
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
@@ -21,32 +20,8 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     ANALYSIS_MAX_TOKENS_CEILING,
     ANALYSIS_SYSTEM_PROMPT,
 )
-from faultmaven.utils.runbook_id import (
-    safe_path_component,
-)
 
 logger = logging.getLogger(__name__)
-
-
-def _scope_dir(data_dir, scope: str, team_id: str = None, user_id: str = None) -> Path:
-    """Scope directory for a draft, with both id components sanitised.
-
-    #1213: these are interpolated into a directory NAME. They come from the
-    auth context rather than a request body, so they are a lower-risk source
-    than a title — but the same shape bit ``KnowledgeService.upload_document``,
-    where a ``user_id`` of ``../../../../escaped`` sent the write outside
-    ``data/knowledge`` entirely. ``safe_path_component`` reduces each to one
-    segment, so the layout (``global/``, ``team_*/``, ``user_*/``) that the
-    scan pass infers scope from is preserved while an escape is
-    unconstructible.
-    """
-    if scope == "global":
-        return data_dir / "global"
-    elif scope == "team" and team_id:
-        return data_dir / f"team_{safe_path_component(team_id)}"
-    elif scope == "personal" and user_id:
-        return data_dir / f"user_{safe_path_component(user_id)}"
-    return data_dir / "global"
 
 
 def _knowledge_route_kwargs(settings) -> dict:

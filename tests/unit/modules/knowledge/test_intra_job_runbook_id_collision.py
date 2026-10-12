@@ -310,34 +310,3 @@ class TestTheCoarseCollapseIsAccountedFor:
         assert "symptom class" in coarse[0].error
         assert "Runbook id" in minted[0].error
         assert coarse[0].error != minted[0].error
-
-
-class TestKeyingOnTheIdAloneIsSafe:
-    """``_partition_failure_modes`` indexes minted ids and NOT the filenames
-    they resolve to. That is sound only while ``draft_filename`` is injective
-    over the ids the mint produces, which rests on two constants that are
-    deliberately SEPARATE — so it is pinned here rather than trusted.
-    """
-
-    def test_the_id_bound_does_not_exceed_the_filename_bound(self):
-        from faultmaven.utils import runbook_id as rid
-
-        assert rid._MAX_RUNBOOK_ID_CHARS <= rid._MAX_SLUG_CHARS, (
-            "draft_filename truncates at _MAX_SLUG_CHARS, so an id bound above "
-            "it lets two distinct ids resolve to one file and the id-only index "
-            "in _partition_failure_modes stops being sufficient"
-        )
-
-    def test_distinct_minted_ids_resolve_to_distinct_filenames(self):
-        """Executed over every shape this suite enumerates, plus the bound."""
-        from faultmaven.utils.runbook_id import draft_filename
-
-        ids = set()
-        for _, a, b in COLLIDING_SHAPES:
-            ids.add(runbook_id_from_parts(*a))
-            ids.add(runbook_id_from_parts(*b))
-        ids.add(runbook_id_from_parts("svc", "x" * 500))
-        ids.add(runbook_id_from_parts("svc", "y" * 500))
-        ids.add(runbook_id_from_parts("a", "b"))
-        names = {draft_filename(i) for i in ids}
-        assert len(names) == len(ids), sorted(ids)

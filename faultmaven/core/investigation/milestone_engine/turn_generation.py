@@ -7,6 +7,10 @@ from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.tool_text import (
+    NO_TOOLS,
+    GivenTools,
+)
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     TerminalResponse,
@@ -105,16 +109,15 @@ async def _generate_turn_response(
             exc,
         )
 
-    # Build the prompt. In directed-analysis turns with tools available,
-    # historical evidence is rendered as index+stub (the agent will
-    # search_file). If tools then fail at RUNTIME and we fall through to
-    # the non-tool path, that elided prompt would strand the agent (no
-    # tool to recover the evidence), so keep a builder that reconstructs
-    # the full-evidence prompt for that fallback.
-    _tools_avail = generator.tools_effectively_available()
-
+    # Build the prompt for the tools this turn gives the model (#1939): every
+    # tool the prompt names is in ``given``, and in directed-analysis turns
+    # with search_file given, historical evidence is rendered as index+stub
+    # (the agent will search_file). If tools then fail at RUNTIME and we fall
+    # through to the non-tool path, that prompt would name tools the model no
+    # longer has and strand it on elided evidence, so keep a builder that
+    # reconstructs the prompt for no tools for that fallback.
     def _build_prompt(
-        tools_available: bool,
+        given: GivenTools,
         *,
         target_tokens: Optional[int] = None,
         sizing_provider: Optional[str] = provider_name,
@@ -128,7 +131,7 @@ async def _generate_turn_response(
             model_name=sizing_model,
             processing_mode=processing_mode,
             entity_highlight_groups=entity_highlight_groups,
-            tools_available=tools_available,
+            given_tools=given,
             target_tokens=target_tokens,
             kb_rendered=kb_rendered,
         )
@@ -140,9 +143,10 @@ async def _generate_turn_response(
         model_name: Optional[str],
     ) -> str:
         # #614: the same prompt, re-assembled for the model the tool
-        # loop sends to, when the chat-sized one does not fit there.
+        # loop sends to, when the chat-sized one does not fit there — for the
+        # SAME given set, so its cached prefix is the first build's.
         return _build_prompt(
-            _tools_avail,
+            given,
             target_tokens=target_tokens,
             sizing_provider=provider_name,
             sizing_model=model_name,
@@ -162,8 +166,16 @@ async def _generate_turn_response(
     route_single_shot = bool(investigation_tools) and _route_toolless_turn_single_shot(
         processing_mode, case, force_tools
     )
+    # The turn's given set, computed ONCE: the first build, the #614 resize
+    # and the tool loop's ``tools=`` all derive from the same registry, and a
+    # single-shot turn is given nothing.
+    given = (
+        NO_TOOLS
+        if route_single_shot or not investigation_tools
+        else generator.given_tools()
+    )
 
-    prompt = _build_prompt(_tools_avail and not route_single_shot)
+    prompt = _build_prompt(given)
 
     # Determine schema based on status/stage
     if case.state == CaseState.INQUIRY:
@@ -242,10 +254,10 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
-            # Only meaningful when elision happened (tools available);
-            # the non-tool fallback rebuilds with full evidence.
+            # The non-tool fallback rebuilds for no tools: no tool names,
+            # full evidence. Nothing to rebuild when nothing was given.
             fallback_prompt_builder=(
-                (lambda: _build_prompt(False)) if _tools_avail else None
+                (lambda: _build_prompt(NO_TOOLS)) if given else None
             ),
             base_prompt_builder=_build_tool_loop_base,
         )

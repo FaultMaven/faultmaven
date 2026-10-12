@@ -21,7 +21,6 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
-import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -1483,21 +1482,18 @@ class KnowledgeService:
 
         Raises:
             RunbookQualityError: the content fails the runbook quality gate
-                (422 at the API boundary). Raised BEFORE the file write and
-                before any row is created, so a refusal leaves nothing behind
-                and needs no compensation.
+                (422 at the API boundary). Raised before any row is
+                created, so a refusal leaves nothing behind and needs no
+                compensation.
         """
         try:
             import uuid as _uuid
 
-            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
-            from faultmaven.utils.runbook_id import (
-                authored_item_id,
-                knowledge_root,
-                runbook_filename,
-                safe_path_component,
-                write_runbook_file,
+            from faultmaven.modules.knowledge.draft_content import (
+                ensure_draft_content_within_bound,
             )
+            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+            from faultmaven.utils.runbook_id import authored_item_id
 
             # Line endings, before the gate and before any write (#1403). This
             # is the publish choke point, which is why the quality gate was
@@ -1506,17 +1502,23 @@ class KnowledgeService:
             #
             # Placed here rather than only at the request boundary because this
             # method owns what gets STORED: ``content`` below becomes the
-            # ``knowledge_items.content`` row, ``size_bytes``, the file on disk
-            # AND the ChromaDB chunks. Normalising only for matching would leave
-            # the authoring gate measuring an LF document while the chunker
+            # ``knowledge_items.content`` row, the draft row's ``content``,
+            # ``size_bytes`` AND the ChromaDB chunks. Normalising only for
+            # matching would leave the authoring gate measuring an LF document
+            # while the chunker
             # chunked a CRLF one — the gate's "measured exactly as the chunker
             # sees it" claim (``_validate_cause_chunk_boundaries``) would become
             # false, silently.
             content = normalize_line_endings(content)
 
-            # The quality gate, FIRST — before the id is minted, before the file
-            # is written, before any row exists. A refusal must leave nothing
-            # behind, which is only free if nothing has happened yet.
+            # The draft bound (#1950), ahead of the gate's CPU: this text becomes
+            # a draft row, and one over the bound could never be saved back.
+            # Refused before anything is minted or ingested; 422.
+            ensure_draft_content_within_bound(content)
+
+            # The quality gate, before the id is minted and before any row
+            # exists. A refusal must leave nothing behind, which is only free
+            # if nothing has happened yet.
             #
             # Off the event loop: the validator is pure CPU (compiled regexes +
             # yaml.safe_load, no shared mutable state, so thread-safe) and
@@ -1566,59 +1568,6 @@ class KnowledgeService:
             conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
 
-            # Flat by scope, matching the canonical layout the scan pass
-            # infers scope from (ConversionService._scope_dir): global/,
-            # team_{id}/, user_{id}/ — NO domain subdirectory (domain lives
-            # in frontmatter + ChromaDB metadata). Writing a literal
-            # "personal"/"team" folder would break scan scope-inference,
-            # which keys off the user_/team_ prefixes.
-            data_dir = knowledge_root()
-            # #1213: ``team_id``/``owner_id`` are interpolated into the
-            # directory name. They come from the auth context rather than a
-            # request body, so they are a lower-risk source than ``title`` — but
-            # a filename-level guard is WORTHLESS if the directory has already
-            # escaped. Measured on the first version of this fix: an
-            # ``owner_id`` of ``../../../../escaped`` sent the write to
-            # ``<cwd>/escaped`` while every filename check passed, because the
-            # containment assertion was anchored on the escaped directory
-            # itself. Both components are now reduced to a single safe segment.
-            if scope == "team" and team_id:
-                target_dir = data_dir / f"team_{safe_path_component(team_id)}"
-            elif scope == "personal" and owner_id:
-                target_dir = data_dir / f"user_{safe_path_component(owner_id)}"
-            else:
-                target_dir = data_dir / "global"
-
-            # ``title`` is caller-supplied — a form field on
-            # ``POST /knowledge/documents``. It used to be
-            # interpolated with only spaces replaced, so a title of
-            # ``../../../etc/pwned`` produced a path resolving OUTSIDE
-            # ``data/knowledge`` and the content was written there.
-            filename = runbook_filename(title, document_id)
-            file_path = target_dir / filename
-
-            # Containment — anchored on the ROOT of the knowledge tree, checked
-            # BEFORE anything is created. Both properties now live in
-            # ``write_runbook_file``, the one helper every runbook write goes
-            # through (#1213 follow-up); this used to be an inline block here
-            # and nowhere else, which is the shape of mistake that let the
-            # conversion write sites keep the hole after #1215 closed this one.
-            #
-            # Belt-and-braces: ``safe_path_component`` and ``runbook_filename``
-            # already make an escape unconstructible. The guard keeps holding if
-            # either rule is loosened, or if a new caller assembles its own path.
-            #
-            # Off the event loop: ``mkdir`` and ``write_text`` are blocking disk
-            # I/O, and inline they stall every request the process is serving
-            # (#836).
-            await asyncio.to_thread(
-                write_runbook_file,
-                file_path,
-                content,
-                source=f"uploaded runbook (document_id={document_id})",
-                root=data_dir,
-            )
-
             async with self._db_session_factory() as session:
                 # ``conversion_jobs.source_file_id`` is a FK to
                 # ``uploaded_files``. Create the upload row first.
@@ -1628,13 +1577,14 @@ class KnowledgeService:
                     enterprise_id=enterprise_id,
                     case_id=None,  # KB-bound, not case-bound
                     uploaded_by=owner_id,
-                    filename=filename,
+                    # The title, which is what this upload has for a name:
+                    # nothing is written to a file (#1950).
+                    filename=title,
                     size_bytes=len(content.encode()),
                     content_type="text/markdown",
-                    # A storage-backend key or NULL, never a path: the runbook
-                    # is on this replica's disk, not in a backend, so there is
-                    # no key to store (#836). ``conversion_drafts.file_path``
-                    # below is what locates the file.
+                    # A storage-backend key or NULL, never a path: the text is
+                    # in the draft row below and in ``knowledge_items``, not
+                    # in a backend, so there is no key to store (#836).
                     storage_ref=None,
                     upload_source="conversion_source",
                     uploaded_at_turn=0,
@@ -1663,7 +1613,7 @@ class KnowledgeService:
                     conversion_id=conversion_id,
                     runbook_id=document_id,
                     title=title,
-                    file_path=str(file_path),
+                    content=content,
                     status="verified",
                     source_type="document",
                     validation_passed=True,

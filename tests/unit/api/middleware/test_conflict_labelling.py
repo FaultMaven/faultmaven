@@ -74,10 +74,6 @@ UNLABELLED_BY_DESIGN = {
         "faultmaven/api/routes/admin.py",
         "assign_role",
     ): "Role assignment's only 409 (the role is already held); not a case route.",
-    (
-        "faultmaven/modules/knowledge/api/conversion_routes.py",
-        "scan_for_runbooks",
-    ): "The runbook scan's only 409 (the scan aborted); not a case route.",
 }
 
 #: Emitters whose status is not a literal the scan can read, keyed by
