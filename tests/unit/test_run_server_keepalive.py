@@ -13,7 +13,10 @@ NGINX_UPSTREAM_KEEPALIVE_S = 60
 
 
 def test_default_exceeds_ingress_nginx_upstream_keepalive():
-    assert ServerSettings().timeout_keep_alive > NGINX_UPSTREAM_KEEPALIVE_S
+    assert (
+        ServerSettings.model_fields["timeout_keep_alive"].default
+        > NGINX_UPSTREAM_KEEPALIVE_S
+    )
 
 
 @pytest.mark.parametrize("workers", [1, 3])
