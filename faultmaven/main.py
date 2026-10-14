@@ -35,6 +35,7 @@ load_dotenv()
 
 # Now import everything else
 import os
+import re
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -1594,8 +1595,39 @@ async def trigger_system_cleanup():
         }
 
 
-def run_server() -> None:
-    """Start uvicorn with the configured host, port, workers and keep-alive."""
+# ``module.path:attribute`` -- the import-string form uvicorn resolves.
+_APP_IMPORT_STRING_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
+    r":[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
+
+
+def run_server(app: str = "faultmaven.main:app") -> None:
+    """Start uvicorn with the configured host, port, workers and keep-alive.
+
+    ``app`` is the ASGI application as an import string (``module:attr``),
+    never an app object: uvicorn refuses an object when ``workers > 1`` or
+    ``reload`` is set, so a string is the only form that works for every
+    setting. Every uvicorn option below is owned here, once, so any image
+    that launches through this function inherits all of them. The Cloud image
+    is to launch ``run_server("faultmaven_cloud.main:app")`` once
+    faultmaven-cloud#25 bumps its core pin, rather than the ``uvicorn`` CLI,
+    which cannot express ``log_config=None`` (it also must set
+    ``PORT=8000 HOST=0.0.0.0 RELOAD=false``, since host, port and reload come
+    from settings, and must not launch as ``python -m faultmaven_cloud.main``:
+    that module mounts its routers at import, so a ``__main__`` run followed by
+    uvicorn's import of the string mounts them twice, #1985).
+
+    Raises:
+        ValueError: ``app`` is not a ``module:attr`` import string.
+    """
+    if not isinstance(app, str) or not _APP_IMPORT_STRING_RE.fullmatch(app):
+        raise ValueError(
+            f"run_server() needs the app as a 'module:attr' import string "
+            f"(uvicorn refuses an app object when workers > 1 or reload is "
+            f"set), got {app!r}"
+        )
+
     import uvicorn
 
     # Configuration from unified settings
@@ -1609,7 +1641,7 @@ def run_server() -> None:
     # structured (JSON) request start/completion logs emitted by
     # LoggingMiddleware -- one access log, structured, with correlation IDs.
     uvicorn.run(
-        "faultmaven.main:app",
+        app,
         host=server.host,
         port=server.port,
         reload=server.reload,

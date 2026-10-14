@@ -1,13 +1,21 @@
 """Data Directory and Database Initialization (Bootstrap).
 
 Handles first-run initialization tasks:
-1. Create data directories (data/chroma-kb, data/chroma-evidence, data/evidence)
-2. Copy built-in runbooks to data/knowledge/global/ if empty
-3. Run Alembic migrations to ensure schema is up-to-date
-4. Create default local admin user if database is empty
+1. Create data directories (data/chroma-kb, data/chroma-evidence, data/evidence,
+   and data/knowledge/, the standalone import directory ``POST /knowledge/scan``
+   reads)
+2. Run Alembic migrations to ensure schema is up-to-date
+
+The default local admin user is not created here: ``bootstrap/startup.py`` calls
+:func:`ensure_default_admin_exists` on every startup (skipped under
+multi-tenancy), after the default enterprise exists.
 
 This runs at application startup to ensure a smooth out-of-the-box experience
 for local deployments without requiring manual setup steps.
+
+It places no runbooks anywhere. The built-in runbooks are ingested from the KB
+pack (``KB_PACK_DIR``, default ``resources/knowledge/pack``) by
+``faultmaven/bootstrap/kb_init.py``; nothing at startup reads ``data/knowledge/``.
 
 Design Notes:
     - Idempotent: Safe to call multiple times
@@ -624,10 +632,12 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
 async def initialize_data_layer(container: Any) -> None:
     """Initialize the data layer on application startup.
 
-    Orchestrates all initialization tasks:
+    Orchestrates the initialization tasks:
     1. Create data directories
     2. Run database migrations
-    3. Create default admin user
+
+    (The default admin user is created by ``bootstrap/startup.py``, which calls
+    :func:`ensure_default_admin_exists` after the default enterprise exists.)
 
     Args:
         container: DI container with initialized services
@@ -643,8 +653,10 @@ async def initialize_data_layer(container: Any) -> None:
     # Step 2: (removed) Built-in runbooks are no longer copied to
     # data/knowledge/global. They ship pre-chunked + pre-embedded in the KB pack
     # (resources/knowledge/pack, or KB_PACK_DIR) and are ingested directly into
-    # knowledge_items + ChromaDB by the KB bootstrap. data/knowledge/ remains the
-    # workspace for authored/converted runbooks and the /knowledge/scan flow.
+    # knowledge_items + ChromaDB by the KB bootstrap. data/knowledge/ is only the
+    # standalone import directory the /knowledge/scan flow reads: authored and
+    # converted runbooks live in the database (conversion_drafts.content,
+    # knowledge_items.content), never there (#1950).
 
     # Step 3: Run database migrations (only when this app owns its schema).
     # When an external migration Job owns schema (the K8s deployment) the app

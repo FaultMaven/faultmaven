@@ -5,8 +5,12 @@
 # Equivalent:  docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
 # The `image:` tag from docker-compose.yml still applies — the locally built
-# image is tagged ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}, so a
-# later plain `./faultmaven.sh start` reuses your build until you re-pull.
+# image is tagged ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}. On the
+# default `latest` that is the tag a later plain `./faultmaven.sh start` (or a
+# `restart` issued while the stack is stopped) refreshes from GHCR, replacing
+# your build. Keep starting with `--build`, or set FM_IMAGE_TAG=local and pin
+# FM_DASHBOARD_IMAGE_TAG in .env before building: `start` pulls only while
+# one of the two tags is `latest`.
 services:
   api:
     build:

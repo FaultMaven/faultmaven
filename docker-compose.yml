@@ -57,10 +57,14 @@ services:
       - HOST=0.0.0.0  # Container must bind all interfaces for port mapping
       # KB pack override (optional): update the knowledge base offline WITHOUT
       # rebuilding/repulling the image. Extract a pack (kb-pack-<version>.tar.gz,
-      # built by faultmaven-kb-toolkit `kb-build-pack --tar`) into ./kb-pack so it
-      # contains pack.json + vectors.npz + runbooks/, uncomment the line below AND
-      # the ./kb-pack mount, then `./faultmaven.sh restart` to re-ingest. Unset →
-      # the baseline pack bundled in the image is used (zero-config default).
+      # built by faultmaven-kb-toolkit `kb-build-pack --tar`; its root directory is
+      # kb-pack/) with `mkdir -p kb-pack && tar xzf kb-pack-<version>.tar.gz
+      # -C kb-pack --strip-components=1` so ./kb-pack directly contains pack.json +
+      # vectors.npz + runbooks/, uncomment the line below AND the ./kb-pack mount,
+      # then `./faultmaven.sh restart` to re-ingest. Unset → the baseline pack
+      # bundled in the image is used (zero-config default); a pack vendored into
+      # resources/knowledge/pack/ goes live only in an image built with it
+      # (`./faultmaven.sh stop && ./faultmaven.sh start --build`).
       # - KB_PACK_DIR=/kb-pack
     volumes:
       - *env-mount          # shared .env mount (see x-env-mount above)

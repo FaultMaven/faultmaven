@@ -288,12 +288,13 @@ class TestInquiryUploadedFilesBlock:
         assert "<file_meta>" in fence_read.unfenced(result)
         assert "line_count=2048" in result
 
-    def test_marks_uploaded_file_searchable(self):
-        """The block declares searchable=\"true\" so the LLM knows it can
-        pass the file_id to search_file."""
+    def test_marks_uploaded_file_file_backed(self):
+        """The block declares file_backed=\"true\": the case holds the raw
+        file behind it, so the LLM can pass the file_id to search_file when
+        the turn gives that tool."""
         case = _make_inquiry_case_with_uploaded_files([self._file()])
         result = _build_evidence_context(case)
-        assert 'searchable="true"' in result
+        assert 'file_backed="true"' in result
 
     def test_truncates_long_extract_with_file_id_pointer(self):
         """Long file_extract → truncation note mentions file_id (not the
@@ -832,9 +833,9 @@ class TestTierDOrphanUploads:
         assert 'file_id="file_aaaaaaaa0001"' in result
         assert "PENDING: deployment.yaml shows JAVA_OPTS" in result
         assert "[Source: deployment.yaml]" in result
-        # The pending block must be marked searchable so the LLM knows it
-        # can pass the file_id to search_file.
-        assert 'searchable="true"' in result
+        # The pending block must be marked file-backed so the LLM knows the
+        # file is held and can pass the file_id to search_file.
+        assert 'file_backed="true"' in result
 
     def test_dedup_does_not_emit_orphan_block_for_already_referenced_file(
         self,
@@ -1231,8 +1232,8 @@ class TestVerbatimQuoteRendering:
             "<verbatim_quote>HTTP/1.1 503 Service Unavailable - "
             "upstream connect error</verbatim_quote>" in fence_read.unfenced(result)
         )
-        # Tier C is never searchable — no file behind it.
-        assert 'searchable="true"' not in result
+        # Tier C is never file-backed — no file behind it.
+        assert 'file_backed="true"' not in result
 
     def test_tier_c_omits_verbatim_quote_when_extract_is_none(self):
         """Chat-extracted evidence with only a summary → summary

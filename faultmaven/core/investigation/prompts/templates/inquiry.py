@@ -71,7 +71,7 @@ SEARCHING UPLOADED FILES — When the user asks a specific question about an upl
 Pass the identifier from the context element verbatim into search_file's `evidence_id`
 parameter — the tool resolves either form:
 - If context has `<uploaded_file file_id="file_...">`: pass that `file_id` value.
-- If context has `<evidence id="ev_..." searchable="true">`: pass that `id` value.
+- If context has `<evidence id="ev_..." file_backed="true">`: pass that `id` value.
 - For count queries ("how many X?", "how many times does Y appear?"): use
   output_format="count". The file_extract is a structural summary — it does NOT provide
   authoritative counts. Always search the raw file for counting questions.
