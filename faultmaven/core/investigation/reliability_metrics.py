@@ -22,7 +22,8 @@ Read as rates, never the numerator alone:
   ``(ok + execution_error) / total``: an ``execution_error`` is a well-formed
   call whose TOOL failed (infrastructure noise, not model behavior), while
   ``invalid_args`` (arguments that don't parse as JSON) and ``unknown_tool``
-  (a hallucinated name — bounded to ``unknown`` label the same way
+  (a name the call did not offer, hallucinated or withheld — refused at
+  dispatch since #1964, and bounded to ``unknown`` label the same way
   ``tool_loop_metrics`` bounds it) are the model failing the contract.
   The schema tool is deliberately NOT counted here — it is the response
   channel, measured by the schema counter below.

@@ -21,7 +21,9 @@ render matrix below (#1939, #1955) answers the per-turn question: every tool
 the prompts of a turn name is one THAT turn gives. Rows are given sets derived
 from the real registry under each condition that removes or adds a tool, plus
 the tool-less turn; columns are the real renders a turn sends. A terminal turn
-also points at suggestions, and those cells pair the prompt with the
+is given the row's tools in ``TERMINAL_QA_TOOLS`` (#1964), so its cells — the
+prompt, and the terminal DA message — are fed that intersection; the terminal
+prompt also points at suggestions, and those cells pair the prompt with the
 suggestion list the reply is given.
 """
 
@@ -30,6 +32,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import difflib
+import hashlib
 import importlib
 import pkgutil
 import re
@@ -51,6 +54,9 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _closed_suggestions,
     _resolved_suggestions,
     terminal_affordances,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    TERMINAL_QA_TOOLS,
 )
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
@@ -286,9 +292,11 @@ def test_the_scan_passes_a_given_name(tmp_path: Path) -> None:
 
 
 def test_entity_text_pairs_with_its_flag() -> None:
-    # The only model-facing home of the entity names is text that renders when
-    # FAULTMAVEN_ENTITY_REGISTRY is on (the caller of the highlights block
-    # gates on it); their tools are given under exactly that flag.
+    # The only model-facing homes of the entity names are text that renders
+    # when FAULTMAVEN_ENTITY_REGISTRY is on (the caller of the highlights block
+    # gates on it; their tools are given under exactly that flag), and the
+    # terminal DA message's per-tool lines, each rendered only when its tool is
+    # given (#1964; the terminal column of the render matrix pins it per row).
     homes = set().union(
         *(found for n, found in mentions().items() if n in ENTITY_FLAG_NAMES)
     )
@@ -296,6 +304,7 @@ def test_entity_text_pairs_with_its_flag() -> None:
         "entity_highlights.py",
         "find_entity_tool.py",
         "list_top_entities_tool.py",
+        "tool_messages.py",
     }, homes
 
 
@@ -732,12 +741,19 @@ def _terminal_turn(condition: str, g: frozenset[str], monkeypatch):
     return {s["payload"] for s in offered}, prompt
 
 
+def terminal_given(row: str) -> frozenset[str]:
+    """What a terminal Q&A turn is given on ``row``: its tools in the terminal
+    set (#1964)."""
+    return ROWS[row] & TERMINAL_QA_TOOLS
+
+
 @pytest.mark.parametrize("condition", sorted(_TERMINAL))
-@pytest.mark.parametrize("row", ["six", "none"])
+@pytest.mark.parametrize("row", sorted(ROWS))
 def test_the_terminal_prompt_points_only_at_offered_suggestions(
     condition: str, row: str, monkeypatch
 ) -> None:
-    payloads, prompt = _terminal_turn(condition, ROWS[row], monkeypatch)
+    g = terminal_given(row)
+    payloads, prompt = _terminal_turn(condition, g, monkeypatch)
     regen = bool(
         payloads
         & {REGENERATE_RESOLUTION_SUMMARY_PAYLOAD, REGENERATE_CLOSURE_SUMMARY_PAYLOAD}
@@ -745,17 +761,111 @@ def test_the_terminal_prompt_points_only_at_offered_suggestions(
     assert (_REGENERATE_REDIRECT in prompt) is regen
     assert (_RUNBOOK_REDIRECT in prompt) is (GENERATE_RUNBOOK_PAYLOAD in payloads)
     assert (_DRAFT_POINTER in prompt) is (condition == "resolved_draft_exists")
-    assert rendered_mentions(prompt) <= ROWS[row]
-    assert tools_line(ROWS[row]) in prompt
+    assert rendered_mentions(prompt) <= g
+    assert tools_line(g) in prompt
 
 
 def test_each_terminal_redirect_renders_somewhere(monkeypatch) -> None:
     """Non-vacuity: each redirect is reachable, so the pairing above is not
     passing on prompts that never name any suggestion."""
     seen = {
-        c: _terminal_turn(c, ROWS["six"], monkeypatch)[1] for c in sorted(_TERMINAL)
+        c: _terminal_turn(c, terminal_given("six"), monkeypatch)[1]
+        for c in sorted(_TERMINAL)
     }
     assert _RUNBOOK_REDIRECT in seen["resolved_offered"]
     assert _REGENERATE_REDIRECT in seen["closed"]
     assert _DRAFT_POINTER in seen["resolved_draft_exists"]
     assert "No runbook can be generated from this case here" in seen["closed"]
+
+
+# ---------------------------------------------------------------------------
+# #1964: the terminal DA message, and the investigating one unchanged
+# ---------------------------------------------------------------------------
+
+#: What a terminal turn's system message must not carry: the investigating
+#: message's routing, search mandates and evidence-row rules, all of which
+#: imply new investigation or point at blocks the terminal prompt does not
+#: render.
+TERMINAL_FORBIDDEN = (
+    "investigation tools",
+    "MUST",
+    "Type A",
+    "TYPE B",
+    "TYPE C",
+    "DEFAULT:",
+    "Tool priority",
+    "before responding",
+    "evidence_collected",
+    "evidence_to_add",
+)
+
+#: The synonyms of a tool, by the tool; a terminal message renders none of a
+#: tool it does not give.
+_IMPLIED_BY = {
+    "kb_qa": MISSING_TOOL_IMPLYING["no_kb"],
+    "case_evidence_search": MISSING_TOOL_IMPLYING["no_vector_stores"],
+    "deep_analysis": MISSING_TOOL_IMPLYING["no_deep_analysis"],
+}
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_the_terminal_da_message_names_only_its_offered_tools(row: str) -> None:
+    g = terminal_given(row)
+    if not g:
+        # Nothing offered: the turn sends no tools, so no tool-loop system
+        # message exists, and the builder refuses to make one.
+        with pytest.raises(ValueError):
+            _build_da_system_instruction([], "Schema", terminal=True)
+        return
+    text = _build_da_system_instruction(sorted(g), "Schema", terminal=True)
+    assert tools_line(g) in text
+    assert rendered_mentions(text) == g
+    # Each offered tool has its own line, beyond the tools line.
+    assert rendered_mentions(_without_tools_line(text)) == g
+    assert [p for p in TERMINAL_FORBIDDEN if p in text] == []
+    absent = [p for t, ps in _IMPLIED_BY.items() if t not in g for p in ps]
+    assert synonym_hits(text, absent) == []
+
+
+def test_the_terminal_da_message_column_is_not_vacuous() -> None:
+    """The forbidden phrases are the investigating message's own: each one is
+    in the default six's investigating render, so their absence above is the
+    terminal branch, not a phrase that never renders anywhere."""
+    six = _build_da_system_instruction(sorted(ROWS["six"]), "Schema")
+    assert [p for p in TERMINAL_FORBIDDEN if p not in six] == []
+
+
+#: sha256 of ``_build_da_system_instruction(sorted(row), "Schema")`` per row,
+#: captured from origin/main 069b9906e before #1964 gave the builder a terminal
+#: branch. #1964 leaves the investigating message byte-identical; a change that
+#: edits that text on purpose recaptures these (the failure prints the digest).
+_MAIN_DA_INSTRUCTION_SHA256 = {
+    "entity": "fc36a565ce92d3df9f6b092bd3389e621aa9e7520b5bc92744f0c3392df898ad",
+    "no_deep_analysis": (
+        "19fb59faccaaf1b9703c254aa40171998fce8f7138b1507740d8ab1339f55ee4"
+    ),
+    "no_kb": "834318e66a603a149e342f2ef1e9621760997a830dfbe0cd8f37a6108a353cbe",
+    "no_vector_stores": (
+        "39f5ddbc627f839c18e4e2b2f389234dd2aa010c494856444f01d13c4ed8ec5c"
+    ),
+    "no_web_search": (
+        "9ee786ac16117d13caa59782c3d68ff458a394454a1ea4e2b8f5918e408d409c"
+    ),
+    "none": "d936321c73db0ef7610e8e6d7f4709540d1dcace70f7f0f60e4a2d268386ed5d",
+    "reclassify": "e201709cbfed63b3cbb7a36493867681c4c8e92bb2b95d2faa458f130215598d",
+    "six": "298fea746d08fa5cb86b558058e8d0c28c4c8ff03466a927e740c380d470e554",
+}
+
+
+def test_the_pinned_rows_are_the_matrix_rows() -> None:
+    assert set(_MAIN_DA_INSTRUCTION_SHA256) == set(ROWS)
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_the_investigating_da_message_is_unchanged(row: str) -> None:
+    text = _build_da_system_instruction(sorted(ROWS[row]), "Schema")
+    assert text == _build_da_system_instruction(
+        sorted(ROWS[row]), "Schema", terminal=False
+    )
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    assert digest == _MAIN_DA_INSTRUCTION_SHA256[row], digest

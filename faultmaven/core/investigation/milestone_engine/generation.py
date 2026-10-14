@@ -27,6 +27,9 @@ from faultmaven.core.investigation.milestone_engine.structured_output import (
     _synthesize_agent_response,
     _validate_with_degradation,
 )
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    TERMINAL_QA_TOOLS,
+)
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_assistant_message,
     _build_da_system_instruction,
@@ -35,6 +38,7 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
 from faultmaven.core.investigation.prompts.templates.tool_text import (
     NO_TOOLS,
     GivenTools,
+    tools_line,
 )
 from faultmaven.core.investigation.reliability_metrics import (
     tool_call_attempts_total,
@@ -455,11 +459,20 @@ class StructuredOutputGenerator:
         4. When LLM calls schema tool → parse and return structured output
         5. After max iterations → force schema with only schema tools available
 
+        Only offered tools run: a call naming a tool not in
+        ``investigation_tools`` gets a tool error naming the offered set, and
+        nothing executes (#1964).
+
         Vectorization (v5.2):
         - Proactive: starts background vectorization for large evidence files
           at loop entry. Runs concurrently with tool calls.
         - Reactive: tracks per-evidence DA failure signals (empty searches,
           timeouts, low confidence). Triggers vectorization as fallback.
+          Never on a terminal case's turn (#1964), whose record is final.
+
+        Terminal case (``case.is_terminal``): the offered tools must be within
+        ``TERMINAL_QA_TOOLS`` (a ``MilestoneEngineError`` otherwise), and the
+        system message is the read-only terminal one.
 
         Args:
             prompt: Full investigation prompt
@@ -495,13 +508,14 @@ class StructuredOutputGenerator:
         # _fit_tool_loop_base / _bound_tool_loop_messages /
         # _resolve_tool_loop_budget).
         tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
-        # Label vocabulary for the tool-result budget metrics below. The
-        # tool name on a tool call is MODEL-SUPPLIED, so it is unbounded:
-        # a hallucinated name reaches `execute_tool`, comes back as a short
-        # "Tool 'x' not found" error, and would still be relayed -- and a
+        # What this call OFFERED: the dispatch gate below runs no other name
+        # (#1964), and it is the label vocabulary for the tool-result budget
+        # metrics. The tool name on a tool call is MODEL-SUPPLIED, so it is
+        # unbounded: a name the call did not offer comes back as a short
+        # "not available on this turn" error that is still relayed -- and a
         # model that invents names freely would mint a Prometheus label per
-        # invention. Bound it to what this call actually OFFERED; anything
-        # else is by definition not a tool and folds into `unknown`.
+        # invention. Anything not offered is by definition not a tool of this
+        # call and folds into `unknown`.
         offered_tool_names = frozenset(
             (t.get("function") or {}).get("name") or ""
             for t in investigation_tools
@@ -544,10 +558,25 @@ class StructuredOutputGenerator:
         # Build tool name list for the DA system instruction
         tool_names = [t["function"]["name"] for t in investigation_tools]
 
+        # A terminal Q&A turn (#1964) is offered only TERMINAL_QA_TOOLS: its
+        # caller filters the registry, and an offer outside the set is a
+        # caller bug, refused before any call is made. Such a turn also gets
+        # the read-only system message and runs no reactive vectorization
+        # (below). ``is True``: the property is a bool, and a stand-in case
+        # whose attribute is merely truthy stays on the investigating path.
+        terminal = getattr(case, "is_terminal", False) is True
+        if terminal and not offered_tool_names <= TERMINAL_QA_TOOLS:
+            raise MilestoneEngineError(
+                "A terminal Q&A turn was offered tools outside "
+                "TERMINAL_QA_TOOLS: "
+                + ", ".join(sorted(offered_tool_names - TERMINAL_QA_TOOLS))
+            )
+
         # Initialize conversation with DA system instruction + user prompt
         da_system_instruction = _build_da_system_instruction(
             tool_names,
             schema_tool_name,
+            terminal=terminal,
         )
         # Size the base to the WINDOW of the model that receives it (#614): when
         # the window is known, the head must fit it beside the first attempt's
@@ -976,8 +1005,18 @@ class StructuredOutputGenerator:
                 # only from "ok", because a model that named a tool that
                 # does not exist failed the contract first.
                 try:
+                    # The dispatch gate (#1964): a name this call did not
+                    # offer is not run, whatever the registry holds. The
+                    # registry's own "not found" covered only names it lacks;
+                    # a registered tool the turn withheld (deep_analysis on a
+                    # terminal turn) would otherwise run when named.
+                    if func_name not in offered_tool_names:
+                        result_text = (
+                            f"Error: Tool '{func_name}' is not available on "
+                            f"this turn. " + tools_line(offered_tool_names)
+                        )
                     # Enforce deep_analysis limit
-                    if (
+                    elif (
                         func_name == "deep_analysis"
                         and deep_analysis_count >= self.MAX_DEEP_ANALYSIS
                     ):
@@ -1008,10 +1047,15 @@ class StructuredOutputGenerator:
                         # --- Per-evidence DA failure tracking (v5.2) ---
                         # Track search_file empty results and check vectorization
                         # triggers. Same pattern as deep_analysis_count above.
+                        # Not on a terminal turn (#1964): the reactive
+                        # vectorization it can start writes the case's vectors
+                        # and its Evidence.vectorized flag, and a terminal
+                        # case's record is final.
                         evidence_id = args.get("evidence_id", "")
-                        if evidence_id and func_name in (
-                            "search_file",
-                            "deep_analysis",
+                        if (
+                            evidence_id
+                            and func_name in ("search_file", "deep_analysis")
+                            and not terminal
                         ):
                             result_text = await self.vectorizer.track_da_result(
                                 func_name=func_name,
@@ -1165,11 +1209,11 @@ class StructuredOutputGenerator:
         except Exception:
             return False
 
-    def given_tools(self) -> GivenTools:
+    def given_tools(self, allowed: Optional[GivenTools] = None) -> GivenTools:
         """The tool names a tool-loop turn gives the model (#1939).
 
-        The names of ``build_da_tool_schemas()`` (the ``tools=`` the loop
-        sends) when the resolved provider/model can call tools, else
+        The names of ``build_da_tool_schemas(allowed=allowed)`` (the ``tools=``
+        the loop sends) when the resolved provider/model can call tools, else
         ``NO_TOOLS``: the Layer-1 pre-check would take the non-tool path, so
         nothing would run. Every tool a prompt names comes from this set, and
         so does the directed-analysis evidence index+stub elision: an extract
@@ -1178,22 +1222,30 @@ class StructuredOutputGenerator:
         with neither the data nor a working tool — the premature-conclusion
         failure FaultMaven guards against. A single-shot turn passes
         ``NO_TOOLS`` instead of calling this; so do the fallbacks that drop
-        the tools.
+        the tools. ``allowed`` narrows the registry to a turn's own set (the
+        terminal Q&A turn's ``TERMINAL_QA_TOOLS``, #1964); ``None`` is all of it.
         """
         if not self._da_provider_supports_tools():
             return NO_TOOLS
-        return frozenset(
+        names = frozenset(
             schema["function"]["name"] for schema in self.build_da_tool_schemas()
         )
+        return names if allowed is None else names & allowed
 
-    def build_da_tool_schemas(self) -> list[dict]:
-        """Build OpenAI-format tool definitions for DA investigation tools."""
+    def build_da_tool_schemas(self, allowed: Optional[GivenTools] = None) -> list[dict]:
+        """Build OpenAI-format tool definitions for DA investigation tools.
+
+        Every registered tool, or with ``allowed`` only the registered tools
+        named in it.
+        """
         if not self.deps.investigation_tools:
             return []
 
         tools = []
         for agent_tool in self.deps.investigation_tools.get_all_tools():
             schema = agent_tool.get_schema()
+            if allowed is not None and schema["name"] not in allowed:
+                continue
             tools.append(
                 {
                     "type": "function",

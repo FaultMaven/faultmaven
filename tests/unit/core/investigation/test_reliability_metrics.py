@@ -124,6 +124,8 @@ class TestToolCallAttempts:
         assert _attempt_labels(attempts) == [
             {"tool": "unknown", "outcome": "unknown_tool"}
         ]
+        # #1964: a name the call did not offer is refused at dispatch.
+        engine.deps.investigation_tools.execute_tool.assert_not_awaited()
 
     async def test_malformed_arguments_count_invalid_args(self):
         engine = _engine(
@@ -279,12 +281,13 @@ class TestAttemptSurvivesDispatchFailure:
         ]
 
     async def test_contract_failure_is_not_relabelled_by_a_later_raise(self):
-        """A hallucinated name failed the MODEL's contract before any tool ran;
+        """Malformed arguments failed the MODEL's contract before any tool ran;
         an exception from the dispatch must not overwrite that with the
-        infrastructure-noise label."""
+        infrastructure-noise label. (A name the call did not offer used to be
+        the example, until #1964 stopped such a call reaching the dispatch.)"""
         engine = _engine(
-            _response_with_calls(_tool_call("kubectl_delete_prod", "{}")),
-            ToolResult(success=False, data=None, error="Tool not found"),
+            _response_with_calls(_tool_call("search_file", '{"q": broken')),
+            ToolResult(success=True, data="ran with {} args"),
         )
         engine.deps.investigation_tools.execute_tool = AsyncMock(
             side_effect=RuntimeError("boom")
@@ -293,7 +296,7 @@ class TestAttemptSurvivesDispatchFailure:
             with pytest.raises(RuntimeError):
                 await _run(engine)
         assert _attempt_labels(attempts) == [
-            {"tool": "unknown", "outcome": "unknown_tool"}
+            {"tool": "search_file", "outcome": "invalid_args"}
         ]
 
 

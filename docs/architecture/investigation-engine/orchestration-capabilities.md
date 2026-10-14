@@ -206,23 +206,24 @@ or absent with the marker accounting for it.
 2. `tool_choice` varies by query context:
    - **Directed Analysis + evidence**: `tool_choice="required"` — LLM must search evidence before answering
    - **All other turns** (knowledge queries, triage, terminal Q&A): `tool_choice="auto"` — LLM decides whether to use tools
-3. The LLM receives investigation tools plus the schema tool as function-calling tools, with a system instruction that includes Type A/B/C question routing, evidence-vs-knowledge distinction, and OBSERVATION + ANALYSIS response format.
+3. The LLM receives investigation tools plus the schema tool as function-calling tools, with a system instruction that includes Type A/B/C question routing, evidence-vs-knowledge distinction, and OBSERVATION + ANALYSIS response format. A **terminal Q&A turn** is the exception (#1964): it is offered only the registered tools in `TERMINAL_QA_TOOLS` (a subset of the registry, the read-only lookups in the table below) and gets a short read-only system message naming exactly those, with no question routing or search mandate — see [investigation-lifecycle-logic.md §1.7.2](./investigation-lifecycle-logic.md#172-terminal-mode).
 4. The loop runs for up to 4 iterations. Each iteration either:
-   - Executes a tool call and feeds the result back to the LLM
+   - Executes a tool call and feeds the result back to the LLM. Only a tool the call offered is executed; a call naming any other tool (one the registry lacks, or a registered one the turn withheld) gets a tool error stating the offered set, and is counted `unknown_tool`
    - Terminates when the LLM returns a structured response via `schema_tool`
 5. If the LLM returns no tool calls (auto mode), its text response is captured and the next iteration forces the schema tool.
 
 **Investigation Tools** (registered in `_create_investigation_tools()`):
 
-| Tool | Purpose | Cost |
-|------|---------|------|
-| `search_file` | Keyword/regex search on raw evidence files | $0 |
-| `deep_analysis` | LLM-interpreted analysis of evidence sections (1/turn limit) | ~$0.01 |
-| `web_search` | Search trusted technical domains (Google CSE or Tavily provider) | $0 |
-| `kb_qa` | Unified KB Q&A — searches all accessible scopes (global + personal + team) | ~$0.01 |
-| `case_evidence_search` | Case-scoped forensic Q&A via semantic search on vectorized evidence | ~$0.01 |
+| Tool | Purpose | Cost | Terminal Q&A |
+|------|---------|------|--------------|
+| `search_file` | Keyword/regex search on raw evidence files | $0 | offered |
+| `deep_analysis` | LLM-interpreted analysis of evidence sections (1/turn limit) | ~$0.01 | withheld (new investigation) |
+| `web_search` | Search trusted technical domains (Google CSE or Tavily provider) | $0 | withheld (outside the case record and the KB) |
+| `kb_qa` | Unified KB Q&A — searches all accessible scopes (global + personal + team) | ~$0.01 | offered |
+| `case_evidence_search` | Case-scoped forensic Q&A via semantic search on vectorized evidence | ~$0.01 | offered |
+| `vectorize_file` | Index one evidence file into the case vector store for `case_evidence_search`; registered only beside it. The engine also runs it directly for proactive and reactive vectorization | $0 (local embedding) | withheld (writes) |
 
-Tools are registered conditionally — only available tools appear in the LLM's function-calling schema. If no search provider API key is configured, `web_search` is omitted. If KB vector stores aren't populated, `kb_qa` is omitted.
+Tools are registered conditionally — only available tools appear in the LLM's function-calling schema. If no search provider API key is configured, `web_search` is omitted. If KB vector stores aren't populated, `kb_qa` is omitted. `find_entity` and `list_top_entities` (offered on terminal Q&A: they read the case's entity registry) are registered only under `FAULTMAVEN_ENTITY_REGISTRY`, and `reclassify_evidence` (withheld on terminal Q&A: it writes) only under `FAULTMAVEN_RECLASSIFY_ENABLED`. On a terminal turn the offered tools are a subset of the registered ones, and reactive vectorization is skipped.
 
 **DA System Instruction (Type A/B/C question routing)**: The system instruction injected for DA turns includes:
 

@@ -1589,6 +1589,20 @@ def is_terminal(self) -> bool:
 - Agent can NOT: accept new evidence, update milestones, propose transitions
 - Agent CAN: explain what happened, clarify evidence, interpret timeline, extract lessons learned
 
+**Terminal tool set** (#1964): the Q&A turn runs the tool loop with `tool_choice="auto"`, offered the registered tools in `TERMINAL_QA_TOOLS` (`milestone_engine/terminal_turns.py`): read-only lookups of this case's record and the knowledge base.
+
+| Tool | Offered | Why |
+|------|---------|-----|
+| `search_file` | yes | Reads one of the case's uploaded files: the read access to evidence above. A file under the vectorization size floor is readable no other way. The terminal prompt renders no evidence block, so the tool's own miss error is what lists the case's file-backed evidence ids. |
+| `case_evidence_search` | yes | Reads the case's vectorized evidence. |
+| `kb_qa` | yes | Reads the knowledge base, the reason terminal Q&A has had tools since 3c6c8c5c8. |
+| `find_entity`, `list_top_entities` | yes, when `FAULTMAVEN_ENTITY_REGISTRY` registers them | Read the case's entity registry. |
+| `deep_analysis` | no | A new model analysis of a raw file is new investigation. |
+| `web_search` | no | Brings in material that is neither the case's record nor the knowledge base, and sends case text outside the deployment. |
+| `vectorize_file`, `reclassify_evidence` | no | They write. |
+
+The prompt's tools line, the `tools=` the loop sends and the loop's system message all come from that one set. The system message is a short read-only one (`_build_da_system_instruction(..., terminal=True)`): it repeats the template's CANNOT list and gives one line per offered tool, with none of the investigating message's question routing or evidence-search mandates. The loop executes only tools it offered: a call naming any other tool gets a tool error listing the offered set (this dispatch gate holds on every turn). On a terminal turn the loop also skips reactive vectorization, which would write the case's vectors and its `Evidence.vectorized` flag. Proactive vectorization runs only on directed-analysis turns (`force_tool_use=True`), and a terminal turn is not one. When none of the set is registered, no tools are sent and the turn takes the non-tool path.
+
 **Three interaction scenarios**:
 
 1. **User asks to regenerate the report** → Pattern matching triggers `_handle_report_regeneration`, which renders the summary with `ReportGenerationService.render_reports` **synchronously** (deterministic, from case fields — no LLM call) and embeds the rendered markdown inline in the chat reply. The substance gate is re-applied for CLOSED so low-substance cases can't be regenerated into existence by clicking around. The new version (up to `MAX_REGENERATIONS`) is marked current, and its row commits in the turn's one commit (#1882): a regenerate turn that fails consumes no slot.
