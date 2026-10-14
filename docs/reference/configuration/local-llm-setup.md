@@ -223,9 +223,14 @@ ollama serve
 ollama pull llama3:8b-instruct
 
 # Configure FaultMaven for Ollama
+CHAT_PROVIDER=local
 LOCAL_LLM_URL=http://localhost:11434
 LOCAL_LLM_MODEL=llama3:8b-instruct
 ```
+
+`CHAT_PROVIDER=local` is required: `LOCAL_LLM_URL` alone configures the local
+provider but does not select it, and startup refuses to boot on the shipped
+default provider without its API key.
 
 ## Testing and Validation
 
