@@ -286,12 +286,12 @@ def _build_da_system_instruction(
         "(e.g., <IP_ADDRESS_1>). The raw files contain ORIGINAL values. "
         "When calling search_file, use ORIGINAL values from the user's "
         "message, NOT PII tokens.\n\n"
-        "SEARCHABLE EVIDENCE — Only use search_file on evidence with "
-        'searchable="true" in <evidence_collected>. These are uploaded '
-        "files with raw content on disk. Evidence WITHOUT this attribute "
+        "FILE-BACKED EVIDENCE — search_file only searches rows marked "
+        'file_backed="true" in <evidence_collected>. These are uploaded '
+        "files with raw content on disk. Rows WITHOUT this attribute "
         "are investigation notes — they have no file to search. If you "
         "need to search a file, take its id and its label from the "
-        "searchable entries.\n\n"
+        'rows marked file_backed="true".\n\n'
         if has_search
         else ""
     )

@@ -515,7 +515,7 @@ class SearchFileTool(AgentTool):
             return (
                 f"Evidence {evidence_id} has no stored file behind it (it's an "
                 f"inference the engine recorded). Use a file-backed "
-                f'evidence_id (searchable="true") for this search.{alts}'
+                f'evidence_id (file_backed="true") for this search.{alts}'
             )
 
         # Read raw file via UploadedFile.storage_ref

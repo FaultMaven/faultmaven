@@ -57,7 +57,7 @@ floored at one `max_chars_per_item`):
   is **always present**: rendered in full (structural index, per-item capped)
   while the reserve has room — the *first* is guaranteed full even if it alone
   exceeds the reserve — and otherwise as a **summary stub** (the `<uploaded_file>`
-  tag with `file_id`/`searchable` and a "use search_file" note, no body). They
+  tag with `file_id`/`file_backed` and a "use search_file" note, no body). They
   are marked handled so the historical tiers neither re-render nor drop them.
 
 The guarantee is therefore: a current-turn item is **always present** (full

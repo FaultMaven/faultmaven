@@ -34,7 +34,7 @@ from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 # A bootstrap-published (platform built-in) runbook has a deterministic
 # ``kb_<12-hex>`` item_id (see ``item_id_from_runbook_id``). This is the
 # provenance discriminator the inventory surface uses to decide delete
-# semantics: built-ins are *unpublished* (the file on disk would resurrect a
+# semantics: built-ins are *unpublished* (the KB pack would resurrect a
 # hard delete on the next bootstrap), authored items are *hard-deleted*.
 #
 # The anchor is EXACTLY 12 hex chars on purpose: the manual-create path

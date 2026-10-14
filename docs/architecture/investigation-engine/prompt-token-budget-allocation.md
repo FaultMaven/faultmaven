@@ -295,7 +295,7 @@ exceeding the hard limit).
   remains in `user_message` is truncated with a visible `[… truncated, N
   tokens …]` marker.
 - **Current-turn evidence floor** is reserved as a *bounded addressable stub*
-  (file_id, filename, data_type, `searchable`, a short head + the `search_file`
+  (file_id, filename, data_type, `file_backed`, a short head + the `search_file`
   pointer), **not** the full extract — so a huge fresh upload cannot blow the
   reserve while INV-1 still holds.
 - **Continuity** is guaranteed but **bounded**. *As built*, this is realized via
@@ -347,7 +347,7 @@ all — so firing it on a fresh upload would drop the just-uploaded file, which 
 the original turn-8 bug re-triggered in the *exact* tight-budget scenario INV-1
 exists to prevent. The fix is part of this design: the `FALLBACK_*` templates
 gain a minimal current-turn slot (the reserved addressable stub: `file_id` +
-`searchable` + a one-line head), and the fallback path injects the reserved stub
+`file_backed` + a one-line head), and the fallback path injects the reserved stub
 into it. The `FALLBACK_*` templates also carry a **compact journal slot**
 (strictly capped, §5.2) — the journal is the anti-amnesia memory, and the
 tight-budget case that triggers the fallback is precisely when re-treading
