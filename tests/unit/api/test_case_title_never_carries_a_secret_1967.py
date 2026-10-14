@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+import string
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -470,21 +472,40 @@ async def test_a_missing_pseudonym_key_does_not_block_a_case_with_no_secret():
     assert title == "Checkout Api Returns 502 for a Third"
 
 
-async def test_a_presidio_failure_under_fail_closed_titles_nothing(caplog):
-    """``RedactionUnavailableError`` from the full detection: no title, and no
-    model call after it — the failure is on the extractive candidate."""
+def _analyzer_down(sanitizer):
+    """The analyzer errors on every call."""
+
+    def post(*args, **kwargs):
+        raise ConnectionError("analyzer down")
+
+    return patch.object(sanitizer.session, "post", side_effect=post)
+
+
+def _breaker_open(sanitizer):
+    """The circuit breaker in front of the analyzer is open."""
+    for _ in range(sanitizer.circuit_breaker.failure_threshold + 1):
+        sanitizer.circuit_breaker.record_failure(ConnectionError("analyzer down"))
+    assert not sanitizer.circuit_breaker.can_execute()
+    return patch.object(sanitizer.session, "post", side_effect=AssertionError)
+
+
+@pytest.mark.parametrize("outage", [_analyzer_down, _breaker_open])
+async def test_the_fail_closed_posture_writes_nothing_while_the_analyzer_errors(
+    outage, caplog
+):
+    """``RedactionUnavailableError`` from the full detection under the
+    fail-closed posture (``SANITIZE_PII=true``, ``PROTECTION_FAIL_OPEN=false``):
+    no title, and no model call after it — the failure is on the extractive
+    candidate. (A fail-open posture accepts regex-only detection while the
+    analyzer errors, as every other redaction path does: the invariant's stated
+    scope, not this gate's to override.)"""
     sanitizer = regex_only_sanitizer(SANITIZE_PII="true", PROTECTION_FAIL_OPEN="false")
     sanitizer.analyzer_available = True
-    case = _case("checkout api returns 502 for a third of all requests")
+    case = _case(f"card {CARD} declined at the checkout gateway")
     service = _service(case)
     model = _model("unused")
 
-    with (
-        patch.object(
-            sanitizer, "call_external_sync", side_effect=Exception("timed out")
-        ),
-        caplog.at_level(logging.WARNING),
-    ):
+    with outage(sanitizer), caplog.at_level(logging.WARNING):
         with pytest.raises(RedactionUnavailableError):
             sanitizer.sanitize_text_with_registry("anything at all", {})
         with pytest.raises(_TitleDisclosureGateUnavailable):
@@ -610,23 +631,36 @@ async def test_an_analyzer_entity_in_the_candidate_titles_nothing(reported, capl
 
 
 # ---------------------------------------------------------------------------
-# The scrub order (ruling A4) and placeholders in any letter case (D1)
+# The scrub order (re-ruled after the review of #1993) and placeholders in any
+# letter case (D1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "text, expected",
     [
-        # ``_sanitize_title_content`` first keeps today's ``[ip]`` marker.
+        # The sanitizer reads the RAW text first. This pin is inverted from
+        # the PR's first head, which ran ``_sanitize_title_content`` first to
+        # keep ``[ip]`` and to stop the database-URL pattern from reaching a
+        # later email: that order cut credentials into fragments the sanitizer
+        # no longer recognised (the fragment tests below). With type markers a
+        # private address keeps a marker of its own...
         (
             "10.0.0.5 unreachable from the bastion host",
+            "[ip_address] unreachable from the bastion host",
+        ),
+        # ...a public one, which the sanitizer does not cover, still gets
+        # ``_sanitize_title_content``'s, which runs after...
+        (
+            "8.8.8.8 unreachable from the bastion host",
             "[ip] unreachable from the bastion host",
         ),
-        # ...and stops the database-URL pattern (``[^@]+@``) from swallowing
-        # everything up to a later email into one span.
+        # ...and the database-URL pattern's ``[^@]+`` crossing whitespace to a
+        # later ``@`` over-redacts: the safe direction, and the pattern set is
+        # #1980's.
         (
             "postgresql://db:5432 is down, email me@example.com when fixed",
-            "postgresql://db:5432 is down, email [email] when fixed",
+            "[database_url] when fixed",
         ),
         # A placeholder already in a source, in any letter case, becomes the
         # type marker.
@@ -638,6 +672,140 @@ async def test_an_analyzer_entity_in_the_candidate_titles_nothing(reported, capl
 )
 def test_the_source_scrub_order(text, expected):
     assert _scrub_title_source(text, SANITIZER) == expected
+
+
+# The review's fragment cases (p1): spans the sanitizer detects whole on the
+# raw text, which ``_sanitize_title_content`` running first cut into pieces the
+# sanitizer no longer matched — and which then passed the candidate gate too.
+_FRAGMENT_CASES = [
+    pytest.param(
+        "uploads fail with aws_secret_access_key="
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY on the s3 role",
+        ["wJalrXUtnFEMI", "K7MDENG", "bPxRfiCYEXAMPLEKEY"],
+        id="aws-secret-with-slashes",
+    ),
+    pytest.param(
+        "replica sync fails for "
+        "postgresql://app:Winter2024!x@db.prod.example.com:5432 from app pods",
+        ["Winter2024", "app:"],
+        id="db-url-bang-dotted-host",
+    ),
+    pytest.param(
+        "replica sync fails for postgresql://app:Winter2024!x@db.internal:5432 now",
+        ["Winter2024"],
+        id="db-url-bang-internal-host",
+    ),
+    pytest.param(
+        "mysql://root:S3cr3t#1@db.internal.net refuses connections from batch",
+        ["S3cr3t", "root:"],
+        id="db-url-hash-in-password",
+    ),
+    pytest.param(
+        "replica sync fails for postgresql://u:ab/cd/ef@db:5432 from app pods",
+        ["ab/cd", "cd/ef", "ef@db"],
+        id="db-url-slashes-in-password",
+    ),
+    pytest.param(
+        "replica sync fails for "
+        "postgresql://admin:hunter2@db.prod.example.com:5432 from app pods",
+        ["hunter2", "admin:"],
+        id="db-url-plain-password-dotted-host",
+    ),
+]
+
+
+@pytest.mark.parametrize("text, fragments", _FRAGMENT_CASES)
+async def test_no_fragment_of_a_detected_secret_survives_the_source_scrub(
+    text, fragments
+):
+    assert SANITIZER.apply_regex_redaction(text, {}) != text, "control: detected"
+
+    scrubbed = _scrub_title_source(text, SANITIZER)
+    title = _generate_smart_extractive_title(scrubbed, 12)
+
+    for fragment in fragments:
+        assert fragment.lower() not in scrubbed.lower(), (fragment, scrubbed)
+        assert title is None or fragment.lower() not in title.lower()
+    if title:
+        assert await title_generation._passes_disclosure_gate(title, SANITIZER)
+
+
+@pytest.mark.parametrize("sanitize_pii", [False, True])
+async def test_no_fragment_reaches_the_title_prompt(sanitize_pii):
+    """p8: the prompt is built from the scrubbed sources, so a fragment cut
+    out of a credential would reach the provider under either posture."""
+    chat = "\n".join(
+        [_LONG_CHAT.replace(f", password={SECRET}", "")]
+        + [f"User: and then {text}" for text, _ in (c.values for c in _FRAGMENT_CASES)]
+    )
+    case = _case()
+    service = _service(case, chat)
+    model = _model("Replica Login Failures After Maintenance")
+
+    with sanitize_pii_pinned(sanitize_pii):
+        await _name(case, service, llm=model)
+
+    prompt = model.generate.await_args.kwargs["prompt"]
+    for _, fragments in (c.values for c in _FRAGMENT_CASES):
+        for fragment in fragments:
+            assert fragment.lower() not in prompt.lower(), fragment
+
+
+# The review's fuzz (p2), bounded and seeded: per class the sanitizer detects,
+# no run of 6+ characters of the secret survives the source scrub. A trial the
+# sanitizer itself misses on the raw text is the pattern set's (#1980), not
+# this gate's, and is skipped — but each class must exercise real trials.
+_FUZZ_TRIALS = 250
+_B64 = string.ascii_letters + string.digits + "/+"
+_PW = string.ascii_letters + string.digits + "!#$%&*?=^~"
+
+
+def _aws(rng):
+    secret = "".join(rng.choice(_B64) for _ in range(40))
+    return secret, f"uploads fail with aws_secret_access_key={secret} on the role"
+
+
+def _db_dotted(rng):
+    pw = "".join(rng.choice(_PW) for _ in range(12))
+    return pw, f"replica fails for postgresql://app:{pw}@db.prod.example.com:5432 now"
+
+
+def _db_dotted_path(rng):
+    pw = "".join(rng.choice(_PW) for _ in range(12))
+    return pw, f"replica fails for postgresql://app:{pw}@db.example.com:5432/app now"
+
+
+def _db_bare_host(rng):
+    pw = "".join(rng.choice(_PW + "/") for _ in range(12))
+    return pw, f"replica fails for mysql://app:{pw}@db:3306 from pods"
+
+
+def _password_kv(rng):
+    pw = "".join(rng.choice(_PW + "/@.") for _ in range(12))
+    return pw, f"db login fails with password={pw} on replica"
+
+
+def _leaks(secret: str, text: str, run: int = 6) -> bool:
+    secret, text = secret.lower(), text.lower()
+    return any(secret[i : i + run] in text for i in range(len(secret) - run + 1))
+
+
+@pytest.mark.parametrize(
+    "make", [_aws, _db_dotted, _db_dotted_path, _db_bare_host, _password_kv]
+)
+def test_no_run_of_a_detected_secret_survives_the_source_scrub_fuzz(make):
+    rng = random.Random(f"1967-{make.__name__}")
+    exercised, leaked = 0, []
+    for _ in range(_FUZZ_TRIALS):
+        secret, text = make(rng)
+        if _leaks(secret, SANITIZER.apply_regex_redaction(text, {})):
+            continue  # a sanitizer miss on the raw text: #1980's
+        exercised += 1
+        scrubbed = _scrub_title_source(text, SANITIZER)
+        if _leaks(secret, scrubbed):
+            leaked.append((text, scrubbed))
+    assert exercised >= _FUZZ_TRIALS // 2, exercised
+    assert leaked == [], leaked[:3]
 
 
 def test_the_extractive_path_refuses_a_placeholder_before_title_casing():
@@ -657,3 +825,191 @@ def test_a_lower_case_placeholder_is_not_a_title():
         is_title_valid(f"Pods Crash on {PLACEHOLDER.lower()} After the Deploy") is False
     )
     assert is_title_valid("Pods Crash on [ip_address] After the Deploy") is True
+
+
+# ---------------------------------------------------------------------------
+# One full detection per distinct candidate (the verdict memo)
+# ---------------------------------------------------------------------------
+
+
+class _CountingSanitizer:
+    """A real regex-only sanitizer that records every full detection."""
+
+    def __init__(self) -> None:
+        self.inner = regex_only_sanitizer()
+        self.detections: list[str] = []
+
+    def apply_regex_redaction(self, text, registry):
+        return self.inner.apply_regex_redaction(text, registry)
+
+    def sanitize_text_with_registry(self, text, registry):
+        self.detections.append(text)
+        return self.inner.sanitize_text_with_registry(text, registry)
+
+
+_CLEAN_LONG_CHAT = _LONG_CHAT.replace(f", password={SECRET}", " since the window")
+
+
+@pytest.mark.parametrize(
+    "statement, chat, model_title, expected_source, detections",
+    [
+        pytest.param(
+            "checkout api returns 502 for a third of all requests",
+            "",
+            "unused",
+            "extractive",
+            1,
+            id="extractive",
+        ),
+        pytest.param(
+            None,
+            _CLEAN_LONG_CHAT,
+            "Replica Login Failures After Maintenance",
+            "llm",
+            1,
+            id="llm",
+        ),
+        pytest.param(
+            None,
+            _CLEAN_LONG_CHAT,
+            f"Fix password={SECRET} Login",
+            "fallback",
+            2,
+            id="llm-refused-then-fallback",
+        ),
+    ],
+)
+async def test_a_candidate_costs_one_full_detection_backstop_included(
+    statement, chat, model_title, expected_source, detections
+):
+    """The backstop re-checks the very string the validation point passed;
+    the generation's memo answers it, so the analyzer is asked once per
+    distinct candidate. Prompt redaction is pinned off so only the gate's
+    detections are counted."""
+    sanitizer = _CountingSanitizer()
+    case = _case(statement)
+    service = _service(case, chat)
+
+    with sanitize_pii_pinned(False):
+        title, source, _ = await _name(
+            case, service, llm=_model(model_title), sanitizer=sanitizer
+        )
+
+    assert source == expected_source
+    assert sanitizer.detections[-1] == title
+    assert len(sanitizer.detections) == detections, sanitizer.detections
+    assert len(set(sanitizer.detections)) == len(sanitizer.detections)
+
+
+# ---------------------------------------------------------------------------
+# The regenerate route's hint is a title source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sanitize_pii", [False, True])
+async def test_the_hint_is_scrubbed_before_it_reaches_the_prompt(sanitize_pii):
+    case = _case()
+    service = _service(case, _CLEAN_LONG_CHAT)
+    model = _model("Replica Login Failures After Maintenance")
+
+    with sanitize_pii_pinned(sanitize_pii):
+        await _generate_and_persist_title(
+            case=case,
+            case_id=case.case_id,
+            user_id="user_123",
+            case_service=service,
+            llm_provider=model,
+            max_words=8,
+            hint=f"the db password={SECRET} is the one being rejected",
+            correlation_id="c-1967",
+            sanitizer=SANITIZER,
+            redis_client=None,
+        )
+
+    prompt = model.generate.await_args.kwargs["prompt"]
+    assert SECRET not in prompt
+    assert "the db [password] is the one being rejected" in prompt
+
+
+# ---------------------------------------------------------------------------
+# POST /cases/{case_id}/title answers an unavailable gate 503
+# ---------------------------------------------------------------------------
+
+
+class _DetectionRaisesWithTheText:
+    """Real regex half; the full detection raises with the text in its message,
+    which must not reach the response."""
+
+    def apply_regex_redaction(self, text, registry):
+        return SANITIZER.apply_regex_redaction(text, registry)
+
+    def sanitize_text_with_registry(self, text, registry):
+        raise RuntimeError(f"analyzer exploded on: {text}")
+
+
+def _title_route(case, sanitizer):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.exception_handlers import get_exception_handlers
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.auth.contracts import UserDTO
+    from faultmaven.modules.case.api.routes.dependencies import (
+        _di_get_case_service_dependency,
+    )
+    from faultmaven.modules.case.api.routes.router import router
+
+    app = FastAPI()
+    for exc, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc, handler)
+    app.include_router(router, prefix="/api/v1")
+    service = _service(case)
+    app.state.llm_provider = None
+    app.state.sanitizer = sanitizer
+    app.state.redis_client = None
+    user = UserDTO(
+        user_id="user_123",
+        username="testuser",
+        email="test@example.com",
+        display_name="Test User",
+        is_active=True,
+    )
+    app.dependency_overrides[require_authentication] = lambda: user
+    app.dependency_overrides[_di_get_case_service_dependency] = lambda: service
+    return TestClient(app, raise_server_exceptions=False), service
+
+
+@pytest.mark.parametrize(
+    "sanitizer",
+    [
+        pytest.param(None, id="no-sanitizer"),
+        pytest.param(MagicMock(), id="mock-sanitizer"),
+        pytest.param(_DetectionRaisesWithTheText(), id="detection-raises"),
+    ],
+)
+def test_the_title_route_answers_an_unavailable_gate_503(sanitizer):
+    case = _case(f"db login fails with password={SECRET} on replica")
+    client, service = _title_route(case, sanitizer)
+
+    with client:
+        response = client.post(f"/api/v1/cases/{case.case_id}/title", json={})
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "Title generation is temporarily unavailable"
+    assert response.headers["x-correlation-id"]
+    assert SECRET not in response.text and "password" not in response.text
+    service.update_case.assert_not_awaited()
+    assert case.title == "Case-260101-1"
+
+
+def test_the_title_route_control_names_the_case():
+    case = _case(f"db login fails with password={SECRET} on replica")
+    client, service = _title_route(case, SANITIZER)
+
+    with client:
+        response = client.post(f"/api/v1/cases/{case.case_id}/title", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["title"] == "Db Login Fails with [password] on Replica"
+    assert case.title == response.json()["title"]
+    service.update_case.assert_awaited_once()

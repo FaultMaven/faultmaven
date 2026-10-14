@@ -2353,6 +2353,10 @@ Generate a concise, case-specific title from case messages and metadata.
   a title (pre-LLM length gate, or LLM + fallback both fail).
   Clients SHOULD keep the existing title unchanged and may retry
   later.
+- 503: the check that keeps sensitive data out of titles could not run
+  (a server-side dependency is unavailable), so no title was written.
+  The detail is generic. Clients SHOULD keep the existing title and may
+  retry later.
 
 **Tags:** `cases`
 
