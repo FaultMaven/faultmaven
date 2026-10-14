@@ -92,10 +92,11 @@ HOST=0.0.0.0 PORT=8090 RELOAD=true python -m faultmaven.main
 ```
 
 The server takes host, port and reload from settings (`HOST`, `PORT`,
-`RELOAD`). A bare `python -m faultmaven.main` with no OpenAI, Anthropic,
-Fireworks, Groq or Cohere API key configured applies the zero-config `local`
-preset: it serves `127.0.0.1:8000` with the reloader on, not `:8090`. Set the
-three variables, or put them in `.env`, to bind where the URLs below expect.
+`RELOAD`). A bare `python -m faultmaven.main` with no LLM provider configured
+(no API key for any of the nine providers, and no `LOCAL_LLM_URL`) applies the
+zero-config `local` preset: it serves `127.0.0.1:8000` with the reloader on, not
+`:8090`. Configuring any one provider declines the preset. Set the three
+variables, or put them in `.env`, to bind where the URLs below expect.
 
 **First startup** is fast. FaultMaven automatically:
 - Creates data directories and runs database migrations

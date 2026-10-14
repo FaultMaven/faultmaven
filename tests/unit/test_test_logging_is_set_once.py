@@ -39,6 +39,11 @@ import pathlib
 
 import pytest
 
+from faultmaven.infrastructure.llm.providers.registry import (
+    PROVIDER_SCHEMA,
+    configuration_env_var,
+)
+
 pytest_plugins = ["pytester"]
 
 pytestmark = pytest.mark.unit
@@ -205,11 +210,9 @@ _PRESET_DECIDERS = (
     "ENVIRONMENT",
     "REDIS_HOST",
     "CHROMADB_URL",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "FIREWORKS_API_KEY",
-    "GROQ_API_KEY",
-    "COHERE_API_KEY",
+    # Every provider the registry knows: the preset check asks the registry,
+    # not a list of five keys (#1984), so this must too.
+    *(configuration_env_var(provider) for provider in PROVIDER_SCHEMA),
 )
 
 

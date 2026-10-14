@@ -326,6 +326,156 @@ class TestZeroConfigDetection:
         assert result.value == "local"
 
 
+#: What configures each provider the router supports, written out literally (not
+#: through the registry helper the code under test uses) so a wrong or dropped
+#: ``api_key_var`` / ``endpoint_var`` in the registry fails here too. The
+#: registry-derived tests below cover a provider this table has not heard of.
+CONFIGURING_ENV_VAR = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "local": "LOCAL_LLM_URL",
+}
+
+
+class TestAnyConfiguredProviderDeclinesZeroConfig:
+    """A deployment that configures any provider the router supports is not zero-config.
+
+    ``detect_zero_config_preset`` used to ask a hand-kept list of five API keys,
+    so a ``.env`` configuring only Gemini, OpenRouter, HuggingFace or a local
+    server (``.env.example`` itself suggests ``CHAT_PROVIDER=gemini``) got the
+    ``local`` preset: ``DEBUG=true``, ``LOG_LEVEL=DEBUG``,
+    ``PROTECTION_ENABLED=false``, ``127.0.0.1:8000`` with reload (#1984). The
+    question is now answered from the provider registry. Every environment here
+    is built with ``clear=True``: the box's own ``.env`` and shell must not
+    decide the outcome.
+    """
+
+    @pytest.mark.parametrize(
+        ("provider", "env_var"),
+        sorted(CONFIGURING_ENV_VAR.items()),
+        ids=sorted(CONFIGURING_ENV_VAR),
+    )
+    def test_each_provider_alone_declines_the_preset(self, provider, env_var):
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {env_var: "configured"}, clear=True):
+            assert detect_zero_config_preset() is None, (
+                f"{provider!r} configured through {env_var} alone was still "
+                "treated as zero-config"
+            )
+
+    def test_the_table_agrees_with_the_registry(self):
+        """Every provider in the table is configured by the variable it names."""
+        from faultmaven.infrastructure.llm.providers.registry import (
+            configuration_env_var,
+        )
+
+        for provider, env_var in CONFIGURING_ENV_VAR.items():
+            assert configuration_env_var(provider) == env_var
+
+    def test_every_registered_provider_alone_declines_the_preset(self):
+        """Derived from the registry: a provider added tomorrow is covered today.
+
+        Nothing here names a provider. A new ``PROVIDER_SCHEMA`` entry that
+        declares neither ``api_key_var`` nor ``endpoint_var`` makes
+        ``configuration_env_var`` raise, which fails this test — the provider
+        would be one a deployment can configure without the preset noticing.
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers.registry import (
+            PROVIDER_SCHEMA,
+            configuration_env_var,
+        )
+
+        assert len(PROVIDER_SCHEMA) >= len(CONFIGURING_ENV_VAR)
+        for provider in PROVIDER_SCHEMA:
+            env_var = configuration_env_var(provider)
+            with patch.dict(os.environ, {env_var: "configured"}, clear=True):
+                assert (
+                    detect_zero_config_preset() is None
+                ), f"{provider!r} ({env_var}) did not decline the zero-config preset"
+
+    def test_a_provider_added_to_the_registry_is_recognised_without_a_code_change(
+        self, monkeypatch
+    ):
+        """The check reads the registry; it does not hold a list of its own."""
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers import registry
+
+        monkeypatch.setitem(
+            registry.PROVIDER_SCHEMA,
+            "acme",
+            {"api_key_var": "ACME_API_KEY", "default_model": "acme-1"},
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert detect_zero_config_preset() is not None
+        with patch.dict(os.environ, {"ACME_API_KEY": "configured"}, clear=True):
+            assert detect_zero_config_preset() is None
+
+    def test_a_registry_entry_that_cannot_be_configured_is_refused_not_ignored(
+        self, monkeypatch
+    ):
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers import registry
+
+        monkeypatch.setitem(
+            registry.PROVIDER_SCHEMA, "acme", {"default_model": "acme-1"}
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="acme"):
+                detect_zero_config_preset()
+
+    def test_no_provider_configured_still_applies_the_local_preset(self):
+        """The no-config case is unchanged, and a blank value is not a config."""
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert detect_zero_config_preset() == "local"
+
+        # A ConfigMap key that reads as blank (or ``KEY=`` in a ``.env``) is unset.
+        blank = {env_var: "" for env_var in CONFIGURING_ENV_VAR.values()}
+        with patch.dict(os.environ, blank, clear=True):
+            assert detect_zero_config_preset() == "local"
+        padded = {env_var: "   " for env_var in CONFIGURING_ENV_VAR.values()}
+        with patch.dict(os.environ, padded, clear=True):
+            assert detect_zero_config_preset() == "local"
+
+    def test_a_gemini_only_environment_gets_no_preset_defaults(self):
+        """The reported probe: ``GEMINI_API_KEY`` alone must not turn DEBUG on.
+
+        Through ``ensure_preset_applied``, which is what ``get_settings`` calls:
+        no ``CONFIG_PRESET`` is set and none of the preset's server or
+        protection defaults reach the environment.
+        """
+        from faultmaven.config.presets import ensure_preset_applied
+
+        with patch.dict(
+            os.environ,
+            {"CHAT_PROVIDER": "gemini", "GEMINI_API_KEY": "configured"},
+            clear=True,
+        ):
+            ensure_preset_applied()
+            for leaked in (
+                "CONFIG_PRESET",
+                "HOST",
+                "PORT",
+                "RELOAD",
+                "DEBUG",
+                "LOG_LEVEL",
+                "PROTECTION_ENABLED",
+                "SANITIZE_PII",
+            ):
+                assert leaked not in os.environ, f"{leaked} came from the preset"
+
+
 class TestPresetValidation:
     """Test preset validation."""
 

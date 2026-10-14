@@ -38,8 +38,8 @@ DOCKERFILE = REPO_ROOT / "Dockerfile"
 DEV_SCRIPT = REPO_ROOT / "scripts" / "faultmaven-dev.sh"
 
 #: What a launch must set because ``run_server`` takes host, port and reload
-#: from settings, and a configuration the zero-config check does not recognise
-#: gets the ``local`` preset (127.0.0.1:8000 with reload, #1984).
+#: from settings, and a deployment that configures no LLM provider at all gets
+#: the zero-config ``local`` preset (127.0.0.1:8000 with reload).
 LAUNCH_ENV = ("HOST", "PORT", "RELOAD")
 
 

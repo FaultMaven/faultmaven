@@ -394,20 +394,33 @@ def detect_zero_config_preset() -> Optional[str]:
     Detect the best preset for zero-config startup.
 
     This function checks the environment to determine the most appropriate
-    preset when CONFIG_PRESET is not explicitly set.
+    preset when CONFIG_PRESET is not explicitly set. A deployment is
+    zero-config only when it configures no LLM provider at all: any provider in
+    the provider registry (an API key, or ``LOCAL_LLM_URL`` for the local one),
+    Redis, ChromaDB or a non-development ``ENVIRONMENT`` declines the preset.
 
     Returns:
         Preset name to use, or None if environment should be used as-is.
     """
-    # If any LLM API key is set, don't auto-apply preset
-    llm_keys = [
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "FIREWORKS_API_KEY",
-        "GROQ_API_KEY",
-        "COHERE_API_KEY",
-    ]
-    if any(os.getenv(key) for key in llm_keys):
+    # An operator who configured ANY provider the router supports has chosen
+    # their LLM, so the laptop preset must not be applied over them. "Which
+    # providers exist, and what configures each" is asked of the provider
+    # registry — a hand-kept list here named five of the nine and sent a
+    # Gemini/OpenRouter/HuggingFace/local-only deployment to 127.0.0.1:8000
+    # with DEBUG on and protection off (#1984). Imported at call time because
+    # the registry pulls in every provider adapter, and this runs before
+    # settings exist (the same lazy shape as the other config -> infrastructure
+    # reads).
+    from faultmaven.infrastructure.llm.providers.registry import (
+        configured_provider_names,
+    )
+
+    configured = configured_provider_names(os.environ)
+    if configured:
+        logger.debug(
+            "Zero-config preset declined: LLM provider(s) configured: %s",
+            ", ".join(configured),
+        )
         return None
 
     # If Redis or ChromaDB is configured, don't auto-apply local preset
