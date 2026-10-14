@@ -30,10 +30,10 @@ from faultmaven.infrastructure.llm.router import TELEMETRY_PAYLOAD_MAX_CHARS
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 #: Static head longer than the telemetry cap, with both quote characters — as
-#: the real prompt has (``searchable="true"``, "don't"). That is what makes
+#: the real prompt has (``file_backed="true"``, "don't"). That is what makes
 #: ``repr`` escape the boundary's apostrophe inside a stringified message list.
 _HEAD = (
-    'You are FaultMaven. Tag evidence searchable="true"; don\'t guess.\n'
+    'You are FaultMaven. Tag evidence file_backed="true"; don\'t guess.\n'
     + "STANDING INSTRUCTION LINE\n" * 600
 )
 _TAIL = (

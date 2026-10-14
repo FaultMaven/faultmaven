@@ -24,8 +24,9 @@ recorder a suite's spellings and it cannot fall behind a new test.
 runs ``pytest tests/benchmarks/`` only, so ``tests/performance/``'s
 comparisons are recorded under ``FM_WALLCLOCK_RECORD`` and no job ever
 diffs them. Pointing the A/B at that tree as well is a separate decision
-— it would widen what the median is taken over, which the #1567 null
-experiment measured at 50 benchmarks a side.
+— it would widen what the median is taken over, and the null experiment
+behind the threshold covers only the 19 benchmarks of
+``tests/benchmarks/`` (#1963; #1567 measured the 50 it held then).
 """
 
 from typing import Tuple

@@ -72,6 +72,40 @@ Uvicorn's plaintext access log is **disabled** (`access_log=False` in
 pair emitted by `LoggingMiddleware`, plus a `Request failed` ERROR in place of
 the completion when the route raises.
 
+### Launching the server
+
+`faultmaven.main.run_server(app)` is the one place the API's uvicorn options
+live: host, port, reload, workers (only above 1) and `timeout_keep_alive` from
+`settings.server`, `log_level="info"`, `access_log=False` and `log_config=None`.
+`log_config=None` is what keeps `uvicorn.error` inside the redaction boundary:
+uvicorn's default config gives the `uvicorn` logger its own handler with
+`propagate=False`, so its records, whose tracebacks embed client exception
+messages and request URLs, would stop there and never reach the root logger's
+redacting renderer. The uvicorn CLI can express `--no-access-log` but not this:
+`--log-config` takes a file, and giving it none leaves uvicorn's default config.
+
+So every launch goes through `run_server`: the image runs
+`python -m faultmaven.main`, and `scripts/faultmaven-dev.sh` runs the same
+command with `HOST`, `PORT`, `RELOAD`, `WORKERS` and `TIMEOUT_KEEP_ALIVE` in the
+environment. `run_server` takes host, port and reload from settings, so a launch
+sets `HOST`, `PORT` and `RELOAD` itself: a configuration the zero-config check
+does not recognise (a Gemini-only `.env`, for one) gets the `local` preset,
+`127.0.0.1:8000` with reload (#1984).
+
+`app` is a `module:attr` import string (default `faultmaven.main:app`), never an
+object: uvicorn refuses an object when `workers > 1` or `reload` is set, and
+`run_server` raises `ValueError` for anything that is not an import string.
+
+The Cloud image is to launch through `run_server("faultmaven_cloud.main:app")`
+once faultmaven-cloud#25 bumps its core pin; it does not yet. It serves on 8000,
+so it must set `ENV PORT=8000 HOST=0.0.0.0 RELOAD=false`. It must not use
+`python -m faultmaven_cloud.main`: that module mounts `CLOUD_ROUTERS` at import,
+and a `__main__` run followed by uvicorn importing the string mounts them twice
+(#1985, which also covers `python -m faultmaven.main` executing `main.py`
+twice). A launcher that imports `faultmaven.main` normally, such as
+`python -c "from faultmaven.main import run_server; run_server('faultmaven_cloud.main:app')"`,
+avoids it.
+
 ### Fields
 
 | Field | On | Meaning |

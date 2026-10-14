@@ -1,19 +1,19 @@
 ### Knowledge Base (KB) Persistence Design
 
-This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite is the document inventory — the `knowledge_items` table is the source of truth for published documents — ChromaDB stores vector chunks for RAG search, and markdown files on disk hold built-in runbook source content.
+This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite is the document inventory — the `knowledge_items` table is the source of truth for published documents, and holds each runbook's text — and ChromaDB stores vector chunks for RAG search. No runbook text is kept on disk by the application: built-in runbooks ship in the KB pack (`resources/knowledge/pack`, or `KB_PACK_DIR`) and are ingested at startup.
 
 ### Goals
 
 - Persist KB document metadata across API restarts
 - Support fast list/get/filter/delete operations via SQLite
 - Support semantic retrieval via ChromaDB (vector chunks)
-- Clear separation: SQLite for inventory, ChromaDB for search, disk for content
+- Clear separation: SQLite for inventory and content, ChromaDB for search
 
 ### Architecture Overview
 
 - **SQLite** (`knowledge_items` table) — published document inventory, metadata, status, CRUD (source of truth). `conversion_drafts` + `conversion_jobs` are the review queue for the conversion pipeline only (the Drafts tab), **not** the published inventory.
 - **ChromaDB** (`faultmaven_kb` collection) — chunked vector embeddings for RAG search only
-- **Disk** (`data/knowledge/{scope}/`) — markdown source files
+- **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`) — the shipped built-in runbooks + build-time vectors, ingested at startup. `data/knowledge/{scope}/` is not storage: it is only the standalone import directory `/knowledge/scan` reads
 - **Redis** — not used for KB documents (used only for sessions, rate limiting)
 
 ### SQLite Data Model
@@ -51,10 +51,9 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
 
 - **Upload** (POST `/api/v1/knowledge/documents`)
   1. Validate and read file
-  2. Create `ConversionDraftModel` + `ConversionJobModel` in SQLite (status=verified)
-  3. Write markdown to disk in `data/knowledge/{scope}/`
-  4. Insert `knowledge_items` row + chunk/embed/store in ChromaDB via `ingest_runbook()` (SQL-first dual write)
-  5. Return `{ document_id, status, metadata }`
+  2. Create `ConversionDraftModel` (its `content` column holds the text; nothing is written to disk, #1950) + `ConversionJobModel` in SQLite (status=verified)
+  3. Insert `knowledge_items` row + chunk/embed/store in ChromaDB via `ingest_runbook()` (SQL-first dual write)
+  4. Return `{ document_id, status, metadata }`
 
 - **Activate** (POST `/api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify`)
   1. Update SQLite: status=verified, populate domain/service/severity/tags from frontmatter
@@ -75,7 +74,7 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
   2. Content comes from the stored `knowledge_items.content` row (not disk)
 
 - **Delete** (DELETE `/api/v1/knowledge/documents/{id}`) — provenance-gated:
-  1. **Built-in** (`kb_<12 hex>` id) → unpublish: set `is_published=False` AND delete ChromaDB vectors (retrieval ignores `is_published`, so the vectors must go; the row is kept so the on-disk file doesn't resurrect it)
+  1. **Built-in** (`kb_<12 hex>` id) → unpublish: set `is_published=False` AND delete ChromaDB vectors (retrieval ignores `is_published`, so the vectors must go; the row is kept because the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap)
   2. **Authored** (UUID id) → hard delete the `knowledge_items` row + its ChromaDB vectors
 
 - **Search** (RAG during investigations)
