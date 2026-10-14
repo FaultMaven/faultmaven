@@ -399,6 +399,13 @@ def detect_zero_config_preset() -> Optional[str]:
     the provider registry (an API key, or ``LOCAL_LLM_URL`` for the local one),
     Redis, ChromaDB or a non-development ``ENVIRONMENT`` declines the preset.
 
+    Every one of those is read from the environment the settings are about to
+    read (``environment_settings_read``): names case-insensitively, the process
+    environment over the dotenv file ``FaultMavenSettings`` resolves from the
+    working directory, and no file under ``FAULTMAVEN_SKIP_DOTENV``. A decision
+    taken from fewer channels than the settings read applies the laptop preset
+    over a configuration the settings then honour.
+
     Returns:
         Preset name to use, or None if environment should be used as-is.
     """
@@ -411,11 +418,14 @@ def detect_zero_config_preset() -> Optional[str]:
     # the registry pulls in every provider adapter, and this runs before
     # settings exist (the same lazy shape as the other config -> infrastructure
     # reads).
+    from faultmaven.config.settings import environment_settings_read
     from faultmaven.infrastructure.llm.providers.registry import (
         configured_provider_names,
     )
 
-    configured = configured_provider_names(os.environ)
+    environ = environment_settings_read()
+
+    configured = configured_provider_names(environ)
     if configured:
         logger.debug(
             "Zero-config preset declined: LLM provider(s) configured: %s",
@@ -424,7 +434,7 @@ def detect_zero_config_preset() -> Optional[str]:
         return None
 
     # If Redis or ChromaDB is configured, don't auto-apply local preset
-    if os.getenv("REDIS_HOST") or os.getenv("CHROMADB_URL"):
+    if environ.get("REDIS_HOST") or environ.get("CHROMADB_URL"):
         return None
 
     # A deployed environment must not be silently reclassified as a dev box.
@@ -444,7 +454,7 @@ def detect_zero_config_preset() -> Optional[str]:
     # recognises. An operator who names an environment has classified the box,
     # and "merely under-configured" is not a request for local defaults. Unset
     # still means zero-config, which is the whole point of this path.
-    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    environment = environ.get("ENVIRONMENT", "").strip().lower()
     if environment and environment != "development":
         return None
 

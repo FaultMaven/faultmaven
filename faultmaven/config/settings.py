@@ -31,7 +31,7 @@ from typing import (
 )
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, EnvSettingsSource
+from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
 
@@ -3599,6 +3599,39 @@ class FaultMavenSettings(BaseSettings):
 
 
 # =============================================================================
+# THE ENVIRONMENT THE SETTINGS WILL READ
+# =============================================================================
+
+
+def environment_settings_read() -> Dict[str, str]:
+    """Every variable ``FaultMavenSettings`` is about to read, by UPPER-CASE name.
+
+    One view for a decision taken BEFORE the settings are built (the zero-config
+    preset check). It is built from the two sources the settings are built from,
+    in their precedence: the process environment, over the dotenv file named by
+    ``FaultMavenSettings.model_config["env_file"]``. Both are read by
+    pydantic-settings' own sources, so the rules are the settings' own:
+
+    * names are case-insensitive (``gemini_api_key`` is ``GEMINI_API_KEY``, and
+      the last spelling wins);
+    * the dotenv file is the one the settings resolve: ``env_file`` is relative
+      to the working directory, which is not where ``get_settings``'
+      ``load_dotenv()`` looks (it walks up from this module), so a package
+      installed outside a checkout and run next to its ``.env`` has a file only
+      the settings read;
+    * ``FAULTMAVEN_SKIP_DOTENV`` leaves the file out, exactly as ``get_settings``
+      builds the settings without it.
+
+    A variable the sources hold with no value reads as the empty string.
+    """
+    variables: Dict[str, Optional[str]] = {}
+    if not os.getenv("FAULTMAVEN_SKIP_DOTENV"):
+        variables.update(DotEnvSettingsSource(FaultMavenSettings).env_vars)
+    variables.update(EnvSettingsSource(FaultMavenSettings).env_vars)
+    return {name.upper(): value or "" for name, value in variables.items()}
+
+
+# =============================================================================
 # SINGLETON MANAGEMENT
 # =============================================================================
 
@@ -3620,7 +3653,9 @@ def get_settings() -> FaultMavenSettings:
     4. Validate final configuration
 
     Zero-Config Mode:
-    - If no .env file and no API keys set, auto-applies 'local' preset
+    - If no LLM provider is configured (an API key, or LOCAL_LLM_URL), as the
+      settings read them (``environment_settings_read``), auto-applies the
+      'local' preset
     - Uses in-memory storage and local LLM (Ollama) for quick startup
     - No external dependencies required
 
