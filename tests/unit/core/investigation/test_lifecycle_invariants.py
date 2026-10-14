@@ -1269,7 +1269,8 @@ class TestINV09_TerminalCasesImmutable:
     # turn writes. Harness: test_terminal_qa_tools_1964.py.
 
     @pytest.mark.asyncio
-    async def test_inv09_terminal_qa_is_offered_only_read_only_lookups(self):
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_qa_is_offered_only_read_only_lookups(self, state):
         """The default registry plus both flag-gated families: the turn is
         offered the registered tools in TERMINAL_QA_TOOLS, and its system
         message names exactly those."""
@@ -1294,7 +1295,7 @@ class TestINV09_TerminalCasesImmutable:
         provider = ScriptedProvider(answer())
         engine, _ = terminal_engine(provider, FakeRegistry(*registered))
 
-        await run_terminal_qa(engine, terminal_case())
+        await run_terminal_qa(engine, terminal_case(state))
 
         assert provider.offered() == set(registered) & TERMINAL_QA_TOOLS
         message = provider.system_message()
@@ -1303,7 +1304,8 @@ class TestINV09_TerminalCasesImmutable:
             assert withheld not in message, withheld
 
     @pytest.mark.asyncio
-    async def test_inv09_terminal_turn_runs_no_tool_it_did_not_offer(self):
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_turn_runs_no_tool_it_did_not_offer(self, state):
         """T2: the model names ``deep_analysis``, registered but withheld. It
         is refused at dispatch with the offered set, and never executed."""
         from faultmaven.core.investigation.prompts.templates.tool_text import (
@@ -1328,7 +1330,7 @@ class TestINV09_TerminalCasesImmutable:
         registry = FakeRegistry(*DEFAULT_SIX)
         engine, _ = terminal_engine(provider, registry)
 
-        result = await run_terminal_qa(engine, terminal_case())
+        result = await run_terminal_qa(engine, terminal_case(state))
 
         assert "deep_analysis" in {t.name for t in registry.get_all_tools()}
         assert "deep_analysis" not in provider.offered()
@@ -1340,7 +1342,8 @@ class TestINV09_TerminalCasesImmutable:
         assert result["agent_response"]
 
     @pytest.mark.asyncio
-    async def test_inv09_terminal_qa_turn_writes_nothing(self):
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_qa_turn_writes_nothing(self, state):
         """T9: a terminal turn answers through search_file and
         case_evidence_search, with three empty searches of a file large
         enough to vectorize — the trigger for reactive vectorization on an
@@ -1378,7 +1381,8 @@ class TestINV09_TerminalCasesImmutable:
         )
         registry = FakeRegistry(*DEFAULT_SIX, results=results)
         engine, repo = terminal_engine(provider, registry)
-        case = terminal_case()
+        case = terminal_case(state)
+        assert case.state == state and case.is_terminal
         before = case.model_dump()
 
         with patch.object(

@@ -998,6 +998,94 @@ class TestNonFileBackedEvidenceGuard:
         # there genuinely isn't any
         assert "Available file-backed evidence" not in result.error
 
+    @staticmethod
+    def _upload(file_id, filename, storage_ref):
+        return UploadedFile(
+            file_id=file_id,
+            filename=filename,
+            size_bytes=100,
+            uploaded_at_turn=1,
+            storage_ref=storage_ref,
+            upload_source="file_upload",
+        )
+
+    def _case_with_unrecorded_uploads(self):
+        """One file-backed row, an upload no row records, and an upload with
+        no stored file."""
+        recorded = _make_evidence(
+            evidence_id="ev_actual",
+            content_ref="evidence/case_123/system.log",
+            filename="system.log",
+        )
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [recorded]
+        _wire_case_lookup(case)
+        case.uploaded_files = [
+            *case.uploaded_files,
+            self._upload("file_0000000000aa", "notes.txt", "evidence/case_123/n.txt"),
+            self._upload("file_0000000000bb", "gone.txt", None),
+        ]
+        return case
+
+    @pytest.mark.asyncio
+    async def test_an_upload_no_evidence_row_records_is_listed_by_file_id(self, tool):
+        """#1964 review: the tool reads an upload by its file_id, so a miss
+        lists the uploads no evidence row records too. A terminal prompt
+        renders no ids, and this list is how the model learns them."""
+        case = self._case_with_unrecorded_uploads()
+        ctx = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+        )
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_typo_or_stale", "query": "ERROR"},
+            context=ctx,
+        )
+
+        assert result.error == (
+            "Evidence ev_typo_or_stale not found in this case. "
+            "Available file-backed evidence in this case: ev_actual (system.log). "
+            "Uploaded files with no evidence row (search them by file_id): "
+            "file_0000000000aa (notes.txt)."
+        )
+        # And the listed file_id reads.
+        hit = await tool.execute_with_context(
+            params={"evidence_id": "file_0000000000aa", "query": "ERROR"},
+            context=ctx,
+        )
+        assert hit.success is True and hit.data["label"] == "notes.txt"
+        assert hit.data["results_count"] >= 1
+        tool.storage_service.retrieve_file.assert_awaited_with(
+            "evidence/case_123/n.txt"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_file_id_is_not_offered_back(self, tool):
+        """The id that just failed is not in its own list."""
+        case = self._case_with_unrecorded_uploads()
+        ctx = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+        )
+        tool.storage_service.retrieve_file.side_effect = OSError("blob gone")
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "file_0000000000aa", "query": "ERROR"},
+            context=ctx,
+        )
+
+        assert result.success is False
+        assert "file_0000000000aa" not in result.error.split("in this case.", 1)[1]
+        assert "ev_actual (system.log)" in result.error
+
 
 class TestSyntheticFilenameNotReported:
     """#666: the engine appends citation guidance quoting whatever this tool

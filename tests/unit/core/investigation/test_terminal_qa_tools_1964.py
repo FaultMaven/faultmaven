@@ -74,6 +74,9 @@ DEFAULT_SIX = (
 )
 ENTITY_TOOLS = ("find_entity", "list_top_entities")
 
+#: Both terminal states: every invariant test runs on each.
+TERMINAL_STATES = [CaseState.CLOSED, CaseState.RESOLVED]
+
 EV_ID = "ev_196400000001"
 FILE_ID = "file_196400000001"
 SCHEMA_TOOL = "TerminalResponse"
@@ -150,11 +153,15 @@ class ScriptedProvider:
 
     def tool_results(self) -> dict[str, str]:
         """Each relayed tool result, by tool name (the last one wins)."""
-        return {
-            m["name"]: m["content"]
+        return dict(self.relayed())
+
+    def relayed(self) -> list[tuple[str, str]]:
+        """Every relayed tool result, in order, as (tool name, content)."""
+        return [
+            (m["name"], m["content"])
             for m in self.requests[-1]["messages"]
             if m.get("role") == "tool"
-        }
+        ]
 
 
 class FakeRegistry:
@@ -189,7 +196,7 @@ def terminal_case(state: CaseState = CaseState.CLOSED) -> Case:
     stamp = (
         {"closed_at": now, "closure_reason": "solution_deferred"}
         if state == CaseState.CLOSED
-        else {"resolved_at": now}
+        else {"resolved_at": now, "closed_at": now}
     )
     return Case(
         created_at=now,
@@ -293,17 +300,18 @@ def test_the_search_file_line_says_how_to_find_an_id():
     reach the model through search_file's own miss error."""
     text = _build_da_system_instruction(["search_file"], "Schema", terminal=True)
     assert (
-        "It needs an evidence_id; a call with an id that is not on this case "
-        "returns the list of the case's file-backed evidence."
+        "It needs an evidence_id or a file_id; a call with an id that is not on "
+        "this case returns the list of every file it can read, with its id."
     ) in text
 
 
-async def test_a_terminal_loop_offered_a_withheld_tool_fails_before_any_call():
+@pytest.mark.parametrize("state", TERMINAL_STATES)
+async def test_a_terminal_loop_offered_a_withheld_tool_fails_before_any_call(state):
     """The call-site filter is the first line; the loop refuses an offer
     outside the set loudly rather than sending it."""
     provider = ScriptedProvider(answer())
     engine, _ = terminal_engine(provider, FakeRegistry(*DEFAULT_SIX))
-    case = terminal_case()
+    case = terminal_case(state)
 
     with pytest.raises(MilestoneEngineError, match="deep_analysis"):
         await engine.generator._tool_augmented_generate(
@@ -321,11 +329,12 @@ async def test_a_terminal_loop_offered_a_withheld_tool_fails_before_any_call():
 # ---------------------------------------------------------------------------
 
 
-async def test_t3_the_entity_tools_are_offered_when_registered():
+@pytest.mark.parametrize("state", TERMINAL_STATES)
+async def test_t3_the_entity_tools_are_offered_when_registered(state):
     provider = ScriptedProvider(answer())
     engine, _ = terminal_engine(provider, FakeRegistry(*DEFAULT_SIX, *ENTITY_TOOLS))
 
-    await run_terminal_qa(engine, terminal_case())
+    await run_terminal_qa(engine, terminal_case(state))
 
     expected = {
         "search_file",
@@ -341,14 +350,15 @@ async def test_t3_the_entity_tools_are_offered_when_registered():
         assert _TERMINAL_TOOL_LINES[name] in message
 
 
-async def test_t4_reclassify_evidence_is_not_offered_and_is_refused_if_named():
+@pytest.mark.parametrize("state", TERMINAL_STATES)
+async def test_t4_reclassify_evidence_is_not_offered_and_is_refused_if_named(state):
     provider = ScriptedProvider(
         calls(("reclassify_evidence", {"evidence_id": EV_ID, "data_type": "logs"})),
         answer(),
     )
     registry = FakeRegistry(*DEFAULT_SIX, "reclassify_evidence")
     engine, _ = terminal_engine(provider, registry)
-    case = terminal_case()
+    case = terminal_case(state)
     before = case.model_dump()
 
     result = await run_terminal_qa(engine, case)
@@ -370,7 +380,8 @@ async def test_t4_reclassify_evidence_is_not_offered_and_is_refused_if_named():
 # ---------------------------------------------------------------------------
 
 
-async def test_t6_no_terminal_tool_registered_sends_no_tools():
+@pytest.mark.parametrize("state", TERMINAL_STATES)
+async def test_t6_no_terminal_tool_registered_sends_no_tools(state):
     engine, _ = terminal_engine(
         ScriptedProvider(),
         FakeRegistry("deep_analysis", "web_search", "vectorize_file"),
@@ -381,7 +392,7 @@ async def test_t6_no_terminal_tool_registered_sends_no_tools():
     tool_loop = AsyncMock()
     engine.generator._tool_augmented_generate = tool_loop
 
-    await run_terminal_qa(engine, terminal_case())
+    await run_terminal_qa(engine, terminal_case(state))
 
     call = engine.generator.generate_structured_output.call_args
     # No tools, so the tool loop (the only builder of a DA message) is never
@@ -466,3 +477,59 @@ async def test_t8_an_offered_tool_still_runs():
     )
 
     assert registry.executed == ["search_file"]
+
+
+# ---------------------------------------------------------------------------
+# A file no evidence row records is reachable on a terminal turn (#1964 review)
+# ---------------------------------------------------------------------------
+
+
+class _Storage:
+    """Object storage holding the one uploaded file."""
+
+    async def retrieve_file(self, storage_ref: str) -> bytes:
+        assert storage_ref == f"evidence/case_1964/{FILE_ID}.txt", storage_ref
+        return b"10:01 INFO ok\n10:02 ERROR upstream timeout req=7\n10:03 INFO ok\n"
+
+
+class _RealSearchFile(FakeRegistry):
+    """The fake registry, with the REAL search_file behind its name."""
+
+    def __init__(self, *names: str):
+        super().__init__(*names)
+        from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
+
+        self._search_file = SearchFileTool(storage_service=_Storage())
+
+    async def execute_tool(self, name: str, params: dict, context: Any) -> ToolResult:
+        if name != "search_file":
+            return await super().execute_tool(name, params, context)
+        self.executed.append(name)
+        return await self._search_file.execute_with_context(params, context)
+
+
+@pytest.mark.parametrize("state", TERMINAL_STATES)
+async def test_a_file_no_evidence_row_records_is_listed_and_read(state):
+    """The terminal search_file line promises that a call with an id not on
+    the case lists every file the tool reads. A paste no evidence row named,
+    or every upload of a case closed before any row existed, is read by its
+    file_id, so the list names it by file_id; the model reads it with that."""
+    case = terminal_case(state).model_copy(update={"evidence": []})
+    provider = ScriptedProvider(
+        calls(("search_file", {"evidence_id": "ev_guess", "query": "10:02"})),
+        calls(("search_file", {"evidence_id": FILE_ID, "query": "10:02"})),
+        answer("At 10:02 the upstream timed out (app.log, line 2)."),
+    )
+    registry = _RealSearchFile(*DEFAULT_SIX)
+    engine, _ = terminal_engine(provider, registry)
+    before = case.model_dump()
+
+    result = await run_terminal_qa(engine, case)
+
+    (_, miss), (_, hit) = provider.relayed()
+    assert miss.startswith("Error: Evidence ev_guess not found in this case.")
+    assert f"{FILE_ID} (app.log)" in miss
+    assert '"results_count": 1' in hit and "10:02 ERROR upstream timeout" in hit
+    assert registry.executed == ["search_file", "search_file"]
+    assert result["agent_response"].startswith("At 10:02")
+    assert case.model_dump() == before

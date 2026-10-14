@@ -1593,7 +1593,7 @@ def is_terminal(self) -> bool:
 
 | Tool | Offered | Why |
 |------|---------|-----|
-| `search_file` | yes | Reads one of the case's uploaded files: the read access to evidence above. A file under the vectorization size floor is readable no other way. The terminal prompt renders no evidence block, so the tool's own miss error is what lists the case's file-backed evidence ids. |
+| `search_file` | yes | Reads one of the case's uploaded files: the read access to evidence above. A file under the vectorization size floor is readable no other way. The terminal prompt renders no evidence block and no uploads, so the tool's own miss error is what names the ids: every file it can read, the file-backed evidence rows by `evidence_id` and the uploads no evidence row records by `file_id`. |
 | `case_evidence_search` | yes | Reads the case's vectorized evidence. |
 | `kb_qa` | yes | Reads the knowledge base, the reason terminal Q&A has had tools since 3c6c8c5c8. |
 | `find_entity`, `list_top_entities` | yes, when `FAULTMAVEN_ENTITY_REGISTRY` registers them | Read the case's entity registry. |

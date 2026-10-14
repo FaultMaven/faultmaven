@@ -59,9 +59,9 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
 _TERMINAL_TOOL_LINES = {
     "search_file": (
         "- search_file: keyword search of one of this case's uploaded files, "
-        "for the exact lines it holds. It needs an evidence_id; a call with an "
-        "id that is not on this case returns the list of the case's "
-        "file-backed evidence."
+        "for the exact lines it holds. It needs an evidence_id or a file_id; a "
+        "call with an id that is not on this case returns the list of every "
+        "file it can read, with its id."
     ),
     "case_evidence_search": (
         "- case_evidence_search: ask a question of this case's indexed "
