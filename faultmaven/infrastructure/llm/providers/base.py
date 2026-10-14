@@ -20,38 +20,53 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     create_strategy_for_capability,
 )
 
-# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, split by who
-# consumes them. These two sets are the ONE place the router's call surface is
-# declared; ``generate`` filters its kwargs through their union, a provider's
-# ``_merge_extra_kwargs`` discards the first set, and
+# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, in three
+# groups by what happens to them. Together they are the ONE place the router's
+# call surface is declared: ``generate`` filters its kwargs through the union,
+# a provider's ``_merge_extra_kwargs`` discards ``ROUTER_LEVEL_KWARGS``, and
 # ``tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py``
-# pins that together they are exactly ``route()``'s signature, so a new
-# parameter cannot be added to the router without being classified here.
+# pins that the union is exactly ``route()``'s signature, so a new parameter
+# cannot be added to the router without being classified here.
 #
-# ROUTER-ONLY: steer routing, caching, budgeting or reasoning, and are not
-# fields of any provider's API. A provider that reaches its request body
-# through ``_merge_extra_kwargs`` never sees them. A provider that genuinely
-# TRANSLATES one (Anthropic's ``cache_prompt``, OpenAI's ``reasoning_intent``,
-# llama.cpp's ``cache_prompt``) pops it BEFORE the merge, as before.
-#
-# This matters because the router is not the only caller: ``milestone_engine``
-# binds a concrete provider when ``DA_PROVIDER`` is set and calls
-# ``provider.generate()`` directly, with ``case_id`` and ``provider_override``
-# in its kwargs (#2002). Nothing upstream strips them on that path.
-ROUTER_ONLY_KWARGS: FrozenSet[str] = frozenset(
+# ROUTER-CONSUMED: used by the router layer (``route()``, or the registry's
+# ``route_request`` for ``provider_override``) and never forwarded to a
+# provider on a routed call. Only a caller that reaches ``provider.generate()``
+# directly can hand them to a provider, and ``milestone_engine`` can: with
+# ``DA_PROVIDER`` set it binds a concrete provider (#2002).
+ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     {
-        "data_type",
         "case_id",
-        "provider_override",
-        "cache_prompt",
         "bypass_cache",
+        "provider_override",
+        "data_type",
+    }
+)
+
+# FORWARDED-KNOB: forwarded by the router to the provider's ``generate()``,
+# which translates or pops them (OpenAI/Gemini translate ``reasoning_intent``,
+# Anthropic acts on ``cache_prompt``, llama.cpp sends ``cache_prompt`` under
+# its own name). They are not request fields in general, so a provider that
+# does not translate one must not send it.
+FORWARDED_KNOB_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "cache_prompt",
         "reasoning_intent",
         "min_output_tokens",
     }
 )
 
-# PROVIDER-API: ``route()`` parameters that ARE request fields, forwarded to
-# the provider's ``generate()`` (``prompt`` is positional and not listed).
+# Everything ``_merge_extra_kwargs`` discards. A provider that genuinely
+# consumes one of these pops it BEFORE the merge.
+ROUTER_LEVEL_KWARGS: FrozenSet[str] = ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KWARGS
+
+# PROVIDER-API: the other ``route()`` parameters, forwarded to the provider's
+# ``generate()`` (``prompt`` is positional and not listed). They are the
+# generic request vocabulary, not a promise about any one wire format: they
+# are request fields for the chat/completions-style APIs, while a transport
+# without that field names (llama.cpp ``/completion``, Ollama ``/api/generate``
+# take a prompt and options, not ``messages``/``tools``/``tool_choice``)
+# translates or drops them itself. A key the caller left at ``None`` is
+# "not given", never a value to send.
 PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
     {
         "model",
@@ -737,7 +752,7 @@ class BaseLLMProvider(ABC):
     def _discard_router_kwargs(
         self, kwargs: Dict[str, Any], model: Optional[str] = None
     ) -> None:
-        """Pop every router-level knob (``ROUTER_ONLY_KWARGS``) from *kwargs*.
+        """Pop every router-level knob (``ROUTER_LEVEL_KWARGS``) from *kwargs*.
 
         The reasoning knobs go through ``_discard_reasoning_kwargs`` so an
         intent this provider cannot act on is still logged. A transport that
@@ -745,7 +760,7 @@ class BaseLLMProvider(ABC):
         lifts it out of *kwargs* BEFORE calling this.
         """
         self._discard_reasoning_kwargs(kwargs, model=model)
-        for knob in ROUTER_ONLY_KWARGS:
+        for knob in ROUTER_LEVEL_KWARGS:
             kwargs.pop(knob, None)
 
     def _merge_extra_kwargs(
@@ -769,8 +784,8 @@ class BaseLLMProvider(ABC):
 
         Routing the merge through here makes the discard automatic: a provider
         that consumes a knob pops it before calling this, and one that does not
-        cannot leak it. The set discarded is ``ROUTER_ONLY_KWARGS``, the one
-        list of what the router consumes. ``None`` values are still filtered,
+        cannot leak it. The set discarded is ``ROUTER_LEVEL_KWARGS``, the one
+        list of router-level knobs. ``None`` values are still filtered,
         so a caller passing ``tools=None`` cannot overwrite a constructed
         payload field.
 

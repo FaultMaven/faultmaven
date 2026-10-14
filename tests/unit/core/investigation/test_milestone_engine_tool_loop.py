@@ -2713,7 +2713,8 @@ class TestDirectDaCallCarriesNoRouterKnobs:
     mask a caller regression in a payload-level test.
     """
 
-    ROUTER_KNOBS = ("case_id", "bypass_cache", "provider_override")
+    # Router-consumed knobs (``ROUTER_CONSUMED_KWARGS``), spelled out here.
+    ROUTER_KNOBS = ("case_id", "bypass_cache", "provider_override", "data_type")
     CASE_ID = "case-SENTINEL-2002"
 
     @pytest.fixture(autouse=True)
@@ -2780,6 +2781,45 @@ class TestDirectDaCallCarriesNoRouterKnobs:
                 # No DA model: the structured-output override's model is a
                 # DIFFERENT provider's name and must not be sent either.
                 assert "model" not in sent
+
+    async def test_the_truncation_retry_call_carries_no_router_knobs(self):
+        """The tool loop's SECOND call, the one ``generate_with_truncation_retry``
+        makes after a cut body, is built by the same closure with a bigger cap
+        (and re-bound messages). The router needs no bypass flag for it (a cut
+        response is never cached), and a concrete provider cannot use one, so
+        it must carry none of the router-consumed knobs either."""
+        from faultmaven.infrastructure.llm.providers.base import StopReason
+
+        cut = LLMResponse(
+            content="",
+            confidence=0.9,
+            provider="test",
+            model="test-model",
+            tokens_used=100,
+            response_time_ms=100,
+            stop_reason=StopReason.MAX_TOKENS,
+        )
+        answered = _make_schema_response(
+            {"agent_response": "Found it", "next_action": "done"}
+        )
+        da_prov = AsyncMock()
+        da_prov.generate = AsyncMock(side_effect=[cut, answered])
+
+        await self._call_tool_loop(
+            da_provider=da_prov,
+            da_model="da-model-x",
+            llm_provider=self._answering_provider(),
+        )
+
+        assert da_prov.generate.await_count == 2, "the truncation retry did not run"
+        first, second = (call.kwargs for call in da_prov.generate.call_args_list)
+        assert (
+            second["max_tokens"] > first["max_tokens"]
+        ), "the retry did not raise the cap"
+        for sent in (first, second):
+            assert set(self.ROUTER_KNOBS).isdisjoint(sent), sorted(sent)
+            assert self.CASE_ID not in str(sent)
+            assert sent["model"] == "da-model-x"
 
     async def test_a_real_openai_adapter_as_da_provider_sends_none_in_its_body(self):
         """End to end, the shape Fable reproduced for #1998: the real

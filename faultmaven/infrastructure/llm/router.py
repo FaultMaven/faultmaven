@@ -35,7 +35,11 @@ from faultmaven.utils.token_estimation import estimate_tokens
 from .cache import LLMResponseCache
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
-from .providers.base import PROVIDER_API_KWARGS, ROUTER_ONLY_KWARGS
+from .providers.base import (
+    FORWARDED_KNOB_KWARGS,
+    PROVIDER_API_KWARGS,
+    ROUTER_CONSUMED_KWARGS,
+)
 
 # Opik native tracing for LLM calls.
 #
@@ -999,8 +1003,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                   router-level knobs (see ``route``)
                 - reasoning_intent: Caller-declared reasoning need (#1118, optional)
                 - min_output_tokens: Visible-output floor (#1117, optional)
-                The accepted keys are ``ROUTER_ONLY_KWARGS`` plus
-                ``PROVIDER_API_KWARGS``; any other key is ignored.
+                The accepted keys are ``ROUTER_CONSUMED_KWARGS``,
+                ``FORWARDED_KNOB_KWARGS`` and ``PROVIDER_API_KWARGS``; any
+                other key is ignored.
 
         Returns:
             LLMResponse with generated content
@@ -1010,7 +1015,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             Exception: If all providers fail to generate a response
         """
         # Forward exactly the keywords route() takes, and no others. The key
-        # set is read from the two constants that declare route()'s call
+        # set is read from the three constants that declare route()'s call
         # surface (providers/base.py) rather than spelled out here, so this
         # method cannot gain a knob the providers' discard list lacks (#2002);
         # a test pins that the union equals route()'s signature. Defaults for
@@ -1019,7 +1024,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         route_kwargs = {
             key: value
             for key, value in kwargs.items()
-            if key in ROUTER_ONLY_KWARGS or key in PROVIDER_API_KWARGS
+            if key in ROUTER_CONSUMED_KWARGS
+            or key in FORWARDED_KNOB_KWARGS
+            or key in PROVIDER_API_KWARGS
         }
 
         # Call existing route method with all the robust functionality

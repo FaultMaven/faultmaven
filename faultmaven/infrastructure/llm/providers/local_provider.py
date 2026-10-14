@@ -248,7 +248,7 @@ class LocalProvider(BaseLLMProvider):
         # Router-level reasoning knobs (#1117/#1118) this provider has no
         # mechanism for. Popped HERE, before transport dispatch, so an intent
         # it cannot act on is logged once rather than once per transport
-        # attempt. The rest of ``ROUTER_ONLY_KWARGS`` (``case_id`` and the
+        # attempt. The rest of ``ROUTER_LEVEL_KWARGS`` (``case_id`` and the
         # others, #2002) is discarded by each transport that builds a body:
         # ``_merge_extra_kwargs`` on the two chat/completion transports, and
         # ``_call_ollama_api`` itself, which merges raw kwargs into
@@ -359,15 +359,17 @@ class LocalProvider(BaseLLMProvider):
         # ``options``.
         self._discard_router_kwargs(kwargs, model=model)
 
-        # Add any additional options
-        if kwargs:
-            # Handle structured output (Ollama uses "format": "json")
-            if "response_format" in kwargs:
-                payload["format"] = "json"
-                # Remove it so it doesn't clutter options
-                kwargs.pop("response_format")
+        # /api/generate takes a prompt plus generation options: tools,
+        # tool_choice and messages are /api/chat fields, not options.
+        for not_an_option in ("messages", "tools", "tool_choice"):
+            kwargs.pop(not_an_option, None)
 
-            payload["options"].update(kwargs)
+        # Structured output (Ollama uses "format": "json"): only when one was
+        # asked for -- the router forwards response_format=None on every call.
+        if kwargs.pop("response_format", None):
+            payload["format"] = "json"
+
+        payload["options"].update({k: v for k, v in kwargs.items() if v is not None})
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -442,8 +444,9 @@ class LocalProvider(BaseLLMProvider):
             payload["messages"] = messages
 
         # Add any additional kwargs
-        if "response_format" in kwargs:
-            payload["response_format"] = kwargs.pop("response_format")
+        response_format = kwargs.pop("response_format", None)
+        if response_format:
+            payload["response_format"] = response_format
 
         # Discards the router-level knobs, then merges the rest (see base).
         self._merge_extra_kwargs(payload, kwargs, model=model)
