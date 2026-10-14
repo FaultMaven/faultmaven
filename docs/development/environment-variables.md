@@ -403,6 +403,12 @@ for when that job runs.
 `ServerSettings.timeout_keep_alive` (`settings.server`), passed to `uvicorn.run`
 (which does not read `UVICORN_TIMEOUT_KEEP_ALIVE`).
 
+A downstream image launches through `faultmaven.main.run_server(<import string>)`
+(Cloud: `run_server("faultmaven_cloud.main:app")`) rather than the `uvicorn` CLI,
+so it inherits every option `run_server` sets: host, port, reload, workers and
+keep-alive from `settings.server`, plus `access_log=False` and `log_config=None`,
+which the CLI cannot express. The app is an import string, never an object.
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `TIMEOUT_KEEP_ALIVE` | int (>= 1) | 75 | Seconds uvicorn holds an idle keep-alive connection. Keep it above the fronting proxy's upstream keep-alive (ingress-nginx `upstream-keepalive-timeout`, 60 s) and every client's idle expiry (slack-agent httpx `keepalive_expiry`, 5 s), so a POST is never sent on a connection the API just closed |
