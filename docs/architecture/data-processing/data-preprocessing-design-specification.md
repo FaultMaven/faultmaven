@@ -536,7 +536,7 @@ investigation_service.process_turn(payload: TurnPayload)
   │
   ├─ STEP 2: LLM INFERENCE
   │   Context includes file extracts via Context Sliding Window
-  │   (Tier A: recent data with <file_extract>, <search_map>, and <file_meta> elements, searchable="true")
+  │   (Tier A: recent data with <file_extract>, <search_map>, and <file_meta> elements, file_backed="true")
   │   Tools access raw files via ToolContext.in_memory_case
   │   → LLM responds with evidence_to_add — claim-anchored Evidence rows
   │     (category ∈ symptom/causal/symptom-absence/causal-absence evidence, source_file_id

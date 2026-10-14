@@ -55,7 +55,7 @@ tiny tool-call (~180 output tokens) — carries a ~22K prompt.
    real savings come from goals 2–3, not from lowering this number.
 2. **DA-turn evidence = structural index + addressable stub only.** In
    Directed-Analysis turns the base carries the file's addressable stub (`file_id`,
-   `data_type`, `searchable`) + `search_map`, **not** the ~19K `file_extract`; the
+   `data_type`, `file_backed`) + `search_map`, **not** the ~19K `file_extract`; the
    agent fetches specifics via `search_file`. Target: ~19K → ~3–5K base (§4.2).
 3. **Per-turn total budget — ceiling + alert + cached base.** Introduce a
    per-turn token ceiling that logs at WARNING when exceeded, and make the stable
