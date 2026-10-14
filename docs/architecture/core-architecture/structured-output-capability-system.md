@@ -225,7 +225,8 @@ class NewProvider(BaseLLMProvider):
         else:
             return StructuredOutputCapability.BEST_EFFORT
 
-    async def generate(self, prompt: str, **kwargs):
+    async def _generate(self, prompt, **kwargs):
+        # BaseLLMProvider.generate checks the call's content and calls this.
         # The strategy methods are inherited from BaseLLMProvider
         # and automatically use your overridden capability detection!
 

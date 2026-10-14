@@ -4,7 +4,7 @@ Each test here drives one billed path with a REAL ``LLMRouter`` over a REAL
 ``ProviderRegistry`` — so the call is metered by ``registry.route_request``,
 the chokepoint production meters at — and the shipped ``SqlUsageLedger`` writing
 to a real SQLite database, then reads the rows back. The one double is the
-provider, which is the model boundary: a ``BaseLLMProvider`` whose ``generate``
+provider, which is the model boundary: a ``BaseLLMProvider`` whose ``_generate``
 answers with fixed token counts instead of an HTTP call.
 
 The paths, one test each:
@@ -93,7 +93,7 @@ MODEL = "claude-sonnet-4-6"
 
 
 class _StubProvider(BaseLLMProvider):
-    """A concrete provider whose ``generate`` returns fixed usage, no HTTP."""
+    """A concrete provider whose ``_generate`` returns fixed usage, no HTTP."""
 
     def __init__(
         self,
@@ -118,7 +118,7 @@ class _StubProvider(BaseLLMProvider):
     def provider_name(self) -> str:
         return self._name
 
-    async def generate(self, prompt=None, model=None, max_tokens=1000, **kwargs):
+    async def _generate(self, prompt=None, model=None, max_tokens=1000, **kwargs):
         self.calls += 1
         input_tokens, output_tokens, cache_read, cache_write = self.usage
         return LLMResponse(

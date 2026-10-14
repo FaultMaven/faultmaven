@@ -20,6 +20,13 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   [LLM Cost & Token Observability](./llm-cost-observability.md) for the price
   table, the `LLM_PRICING_OVERRIDES` env override, the structured `llm_call` /
   `turn_token_spend` logs, and a cost-spike diagnosis playbook.
+- `llm_model_content_violations_total{provider,argument,kind,content}` — provider
+  calls whose model-bound content was not minted by the redaction module, or
+  that passed a keyword outside the boundary's closed set (#1998). Recorded at
+  `BaseLLMProvider.generate`, once per (argument, kind) per call, with a
+  WARNING log line naming the same (never the content). `content="raw"`: the
+  call was reported and sent. Non-zero names a send path that has not moved to
+  the minting helpers yet
 - `sla_status{component}` (3=meeting, 2=at_risk, 1=breached, 0=unknown),
   `sla_availability_ratio`, `sla_response_time_p95_seconds`,
   `sla_error_rate_ratio`, `sla_active_breaches` — SLA tracker gauges, recomputed

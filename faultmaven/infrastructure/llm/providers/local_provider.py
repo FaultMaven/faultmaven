@@ -40,7 +40,7 @@ def resolve_local_transport(base_url: Optional[str]) -> tuple[str, str]:
     """Decide which protocol ``base_url`` names, and the root to build URLs from.
 
     THE single source of truth for that decision (#1356 review F1): the
-    capability answer and ``generate()``'s dispatch both call this, so they
+    capability answer and ``_generate()``'s dispatch both call this, so they
     cannot disagree. A capability answer that contradicts the dispatch is worse
     than either being wrong alone — it is what makes a boot gate pass and every
     request then fail.
@@ -110,7 +110,7 @@ class LocalProvider(BaseLLMProvider):
     # properties are knowable from configuration, and this rule uses both:
     #
     # 1. The TRANSPORT, as named by the URL PATH — ``resolve_local_transport``,
-    #    the same function ``generate()`` dispatches on, so the two can never
+    #    the same function ``_generate()`` dispatches on, so the two can never
     #    disagree. Ollama's native ``/api/generate`` has no ``tool_calls`` field
     #    at all, so NO model can do tool calling over it — a protocol-level
     #    fact, not a model-level one, and not a fact about the hostname. Every
@@ -148,7 +148,7 @@ class LocalProvider(BaseLLMProvider):
     #   it read Ollama's own OpenAI-compatible endpoint as toolless because the
     #   service was called "ollama", and renaming the host flipped the verdict
     #   on a byte-identical endpoint. Honouring the declaration on every
-    #   transport is not the repair either — ``generate()`` dispatches on the
+    #   transport is not the repair either — ``_generate()`` dispatches on the
     #   same predicate, so a declaration the dispatch ignores just moves the
     #   failure from boot to every request.
     # * A STARTUP PROBE asks the right question but cannot answer it at boot. A
@@ -230,7 +230,7 @@ class LocalProvider(BaseLLMProvider):
         # Everything else uses BEST_EFFORT (prompt-based JSON generation)
         return StructuredOutputCapability.BEST_EFFORT
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

@@ -600,15 +600,19 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
         """Interface method: Get list of supported models"""
         return self.config.models.copy()
 
-    async def generate(
+    async def _generate(
         self,
-        prompt: str,
+        prompt: Optional[str],
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        """Interface method: Generate response using Cohere API"""
+        """Send one request to the Cohere API.
+
+        Called by ``BaseLLMProvider.generate`` after its model-content check,
+        with plain ``str`` text and plain message dicts.
+        """
 
         self._start_timing()
 
@@ -923,9 +927,11 @@ class CustomProvider(BaseLLMProvider, ILLMProvider):
     # Implement required interface methods
     def is_available(self) -> bool: ...
     def get_supported_models(self) -> List[str]: ...
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse: ...
+    async def _generate(self, prompt: Optional[str], **kwargs) -> LLMResponse: ...
 
     # BaseLLMProvider provides:
+    # - generate(): the model boundary (#1998) — checks model-bound content,
+    #   then calls _generate with plain values. Never override it.
     # - Timing utilities (_start_timing, _get_response_time_ms)
     # - Model selection (get_effective_model)
     # - Response validation (_validate_response_content)
@@ -954,7 +960,7 @@ service = AgentService(
 
 **Required Methods Summary**:
 
-- ✅ `async def generate()` - Core LLM generation (returns `LLMResponse`, with `stop_reason` populated)
+- ✅ `async def _generate()` - Core LLM generation (returns `LLMResponse`, with `stop_reason` populated). Implement `_generate`, never `generate`: `BaseLLMProvider.generate` is the model boundary every call passes (#1998). It checks that the prompt, the messages and the content keywords were minted by `faultmaven/infrastructure/security/model_content.py`, and that every keyword is in its closed set (`GENERATE_KWARGS` — add a keyword your provider reads there), then hands `_generate` plain values
 - ✅ `def is_available()` - Configuration validation (returns `bool`)
 - ✅ `def get_supported_models()` - Model listing (returns `List[str]`)
 - ✅ `property provider_name` - Unique identifier (returns `str`)

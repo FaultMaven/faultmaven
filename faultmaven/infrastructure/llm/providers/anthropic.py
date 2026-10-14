@@ -345,7 +345,7 @@ class AnthropicProvider(BaseLLMProvider):
         # No model-specific logic needed - all Claude models have the same capability
         return StructuredOutputCapability.FUNCTION_CALLING
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,
@@ -843,7 +843,7 @@ class AnthropicProvider(BaseLLMProvider):
             elif role == "assistant":
                 # When the original response carried thinking blocks, the
                 # raw content array was captured verbatim (see
-                # provider_metadata.assistant_content in generate()). Echo it
+                # provider_metadata.assistant_content in _generate()). Echo it
                 # as-is: Anthropic validates thinking/redacted_thinking block
                 # signatures and rejects the request if any block is missing
                 # or altered. Rebuilding from `content` + `tool_calls` would
@@ -925,7 +925,7 @@ def _mark_cache_boundary(messages: list) -> None:
     The investigation prompt reaches this provider as ONE user text block whose
     first part — the standing instructions, up to ``CACHE_BOUNDARY`` — renders
     the same bytes on every turn, and whose rest is this turn's case. The
-    system breakpoint in ``generate()`` caches the tools and the system
+    system breakpoint in ``_generate()`` caches the tools and the system
     instruction only; this one extends the cached prefix through the boundary
     line, so the next turn reads the instructions from the cache too.
 

@@ -84,7 +84,7 @@ class GeminiProvider(BaseLLMProvider):
     def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:
         """False for models measured to reject the engine's large stage schemas.
 
-        Resolves the model the way :meth:`generate` does — ``model or
+        Resolves the model the way :meth:`_generate` does — ``model or
         config.default_model``, verbatim — and deliberately NOT via
         ``get_effective_model``, which collapses anything outside
         ``config.models`` to the default. Using the latter let the gate clear a
@@ -445,7 +445,7 @@ class GeminiProvider(BaseLLMProvider):
         else:
             self.logger.info(message)
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

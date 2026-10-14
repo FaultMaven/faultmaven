@@ -20,6 +20,11 @@ from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import LLMOutputFloorError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
+from faultmaven.infrastructure.security.model_content import (
+    plain_messages,
+    plain_text,
+    sanitizer_pass,
+)
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.infrastructure.shims import (
     llm_latency,
@@ -574,21 +579,29 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     f"leave room for reasoning"
                 )
 
-        # Sanitize before sending to external providers (conditional).
-        # Off the event loop via the sanitizer's async boundary (#654).
-        sanitized_prompt = await self._sanitize_if_needed(prompt) if prompt else None
-        sanitized_messages = (
-            await self._sanitize_if_needed(messages) if messages else None
+        # Sanitize before sending to external providers (conditional on
+        # SANITIZE_PII), off the event loop via the sanitizer's async boundary
+        # (#654). ``sanitizer_pass`` re-mints what came in minted, so the
+        # provider boundary still sees vetted values after this pass (#1998);
+        # the router mints nothing itself. What the router keeps — the cache
+        # key, the telemetry, the fields on the response — is plain text.
+        sanitized_prompt = (
+            await sanitizer_pass(prompt, self.sanitizer) if prompt else None
         )
+        sanitized_messages = (
+            await sanitizer_pass(messages, self.sanitizer) if messages else None
+        )
+        prompt_text = plain_text(sanitized_prompt)
+        messages_view = plain_messages(sanitized_messages)
 
         # Check cache first. The cache is exact-key (#940): it can only answer
         # when the caller named a model, since the model is part of the key.
         # Multi-turn `messages` calls are skipped outright — an identical
         # message list is not a thing that recurs, so there is nothing to hit.
         cache_model = model  # Use the requested model for cache lookup
-        if cache_model and not messages and sanitized_prompt and not bypass_cache:
+        if cache_model and not messages and prompt_text and not bypass_cache:
             cached_response = self.cache.check(
-                sanitized_prompt,
+                prompt_text,
                 cache_model,
                 case_id=case_id,
                 reasoning_intent=reasoning_intent,
@@ -618,11 +631,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                         f"(provider={cached_response.provider} "
                         f"model={cached_response.model})"
                     )
-                cached_response.sanitized_prompt = sanitized_prompt
+                cached_response.sanitized_prompt = prompt_text
                 if self.settings.observability.opik_log_raw_prompts:
-                    cached_response.raw_prompt = prompt
+                    cached_response.raw_prompt = plain_text(prompt)
                 self._update_opik_span(
-                    cached_response, sanitized_prompt=sanitized_prompt, cached=True
+                    cached_response, sanitized_prompt=prompt_text, cached=True
                 )
                 llm_requests.labels(
                     provider=cached_response.provider,
@@ -710,12 +723,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             if (
                 model
                 and not messages
-                and sanitized_prompt
+                and prompt_text
                 and response.confidence >= self.confidence_threshold
                 and not response.is_truncated
             ):
                 self.cache.store(
-                    sanitized_prompt,
+                    prompt_text,
                     model,
                     response,
                     case_id=case_id,
@@ -723,18 +736,18 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 )
 
             # Attach prompt data for telemetry
-            response.sanitized_prompt = sanitized_prompt
+            response.sanitized_prompt = prompt_text
             if self.settings.observability.opik_log_raw_prompts:
-                response.raw_prompt = prompt
-                response.raw_messages = messages
+                response.raw_prompt = plain_text(prompt)
+                response.raw_messages = plain_messages(messages)
 
-            response.sanitized_messages = sanitized_messages
+            response.sanitized_messages = messages_view
 
             # Update the current Opik span with LLM-specific data
             self._update_opik_span(
                 response,
-                sanitized_prompt=sanitized_prompt,
-                sanitized_messages=sanitized_messages,
+                sanitized_prompt=prompt_text,
+                sanitized_messages=messages_view,
             )
 
             # Truncation is a normal-looking success at every other layer: HTTP
@@ -1040,23 +1053,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         # Return the full LLMResponse (milestone_engine expects this)
         return response
-
-    async def _sanitize_if_needed(self, data: Any) -> Any:
-        """
-        Conditionally sanitize data based on SANITIZE_PII setting.
-
-        Runs off the event loop via the sanitizer's async boundary so a large
-        prompt / message history never blocks the loop (#654).
-
-        Returns:
-            Sanitized or original data
-        """
-        if self.settings.protection.sanitize_pii:
-            self.logger.debug("🔒 LLM Router: Applying PII sanitization")
-            return await self.sanitizer.asanitize(data)
-        else:
-            self.logger.debug("🔓 LLM Router: Skipping PII sanitization")
-            return data
 
     def get_provider_status(self):
         """Get status of all providers"""

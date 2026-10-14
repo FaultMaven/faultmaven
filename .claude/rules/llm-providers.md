@@ -384,7 +384,7 @@ reasoning path the caller sizes `max_tokens` above the floor itself.
 
 ## Adding a New LLM Provider
 
-1. Implement the provider in `infrastructure/llm/providers/`, inheriting from `BaseLLMProvider` in `base.py`.
+1. Implement the provider in `infrastructure/llm/providers/`, inheriting from `BaseLLMProvider` in `base.py`. Implement **`_generate`**, never `generate`: `BaseLLMProvider.generate` is the model boundary every call passes, routed or direct (#1998). It checks that model-bound content was minted by `infrastructure/security/model_content.py` (the prompt, the message grammar, the `system`/`preamble` keywords) and that every keyword is in `GENERATE_KWARGS`, reports what is not (a WARNING, `llm_model_content_violations_total{content="raw"}` and a `RawModelContentWarning`, while `REFUSE_RAW_MODEL_CONTENT` is off), then calls `_generate` with plain `str`/`dict` values. A keyword your provider reads goes into `GENERATE_KWARGS`; `tests/unit/infrastructure/llm/providers/test_provider_boundary_1998.py` fails until it is there, and on an adapter that defines `generate`.
 2. Merge leftover kwargs into the request body with **`self._merge_extra_kwargs(payload, kwargs, model=...)`**, never a hand-rolled `payload.update(kwargs)` — routing-level knobs (`reasoning_intent`, `min_output_tokens`, `cache_prompt`) are not API fields, and a provider that merges them raw sends them as body fields on every call and is rejected by any OpenAI-compatible endpoint. Consume a knob (pop it) only if the provider actually translates it.
 3. Populate `stop_reason` via `normalize_stop_reason()` (see "Stop reasons and truncation") — `UNKNOWN` is the honest default, not `STOP`.
 4. Register in `infrastructure/llm/providers/registry.py`.

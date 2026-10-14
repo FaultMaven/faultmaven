@@ -402,6 +402,11 @@ async def case_redacted(text: Optional[str], ctx: Any | None) -> Optional[str]:
     ``None`` (no context) and empty text pass through unchanged.
     ``tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py``
     pins every send site to this module's helpers.
+
+    Superseded by the minting helper of the same name in
+    :mod:`faultmaven.infrastructure.security.model_content`, which requires the
+    context and returns a ``ModelText`` the provider boundary accepts (#1998).
+    Callers move there in #1998 P2, and this helper is then deleted.
     """
     if not ctx or not text:
         return text
@@ -417,6 +422,10 @@ async def case_redacted_messages(
     included (:meth:`CaseRedactionContext.asanitize_messages`, which refuses
     structured content rather than send it in clear). ``None`` returns copies
     unchanged.
+
+    Superseded by the minting helper of the same name in
+    :mod:`faultmaven.infrastructure.security.model_content` (#1998); deleted
+    once its callers have moved (#1998 P2).
     """
     if not ctx:
         return [dict(message) for message in messages]

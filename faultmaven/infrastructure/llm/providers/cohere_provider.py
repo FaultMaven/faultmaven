@@ -67,7 +67,7 @@ class CohereProvider(BaseLLMProvider):
         # All Cohere models use BEST_EFFORT mode
         return StructuredOutputCapability.BEST_EFFORT
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

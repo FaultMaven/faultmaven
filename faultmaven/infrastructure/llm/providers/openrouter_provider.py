@@ -38,7 +38,7 @@ class OpenRouterProvider(OpenAIProvider):
         GPT-5 / o-series models reject ``max_tokens``.
 
         This is the OPENING GUESS for every route, not a guarantee about the
-        gateway (#510): the inherited ``generate()`` still reads a rejection
+        gateway (#510): the inherited ``_generate()`` still reads a rejection
         that names ``max_tokens`` and re-sends once under the other spelling,
         so a route whose normalization does not hold is corrected and
         remembered rather than failing. Returning ``False`` here says "start

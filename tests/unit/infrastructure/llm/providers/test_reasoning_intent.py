@@ -51,6 +51,7 @@ from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvid
 from faultmaven.infrastructure.llm.providers.openrouter_provider import (
     OpenRouterProvider,
 )
+from tests.model_content import vetted
 
 
 def _config(name, model, base_url):
@@ -109,7 +110,7 @@ async def _sent_body(make_session, provider, response_data, **generate_kwargs):
     """
     mock_session = make_session(response_data)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("Test", **generate_kwargs)
+        await provider.generate(vetted("Test"), **generate_kwargs)
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 

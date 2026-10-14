@@ -192,8 +192,18 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ): (1, _PERSISTENCE),
     (
         "faultmaven/infrastructure/llm/providers/anthropic.py",
-        "AnthropicProvider.generate",
+        "AnthropicProvider._generate",
     ): (1, _WIRE),
+    # The provider boundary (#1998): checks the payload's messages against the
+    # model-content grammar, then unwraps them for the adapter.
+    (
+        "faultmaven/infrastructure/llm/providers/base.py",
+        "BaseLLMProvider.generate",
+    ): (1, _WIRE),
+    (
+        "faultmaven/infrastructure/llm/providers/base.py",
+        "BaseLLMProvider._model_content_violations",
+    ): (2, _WIRE),
     ("faultmaven/infrastructure/llm/router.py", "LLMRouter.generate"): (1, _WIRE),
     # #1748: the terminal follow-up counter compares a turn's text with the
     # confirming turn's own message, to keep a resubmission out of a metric.

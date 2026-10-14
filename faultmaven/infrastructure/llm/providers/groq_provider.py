@@ -86,7 +86,7 @@ class GroqProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

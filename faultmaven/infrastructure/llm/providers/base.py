@@ -8,7 +8,9 @@ ensuring consistent behavior and configuration across all provider implementatio
 import json
 import logging
 import time
+import warnings
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -19,6 +21,62 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
     create_strategy_for_capability,
 )
+from faultmaven.infrastructure.security.model_content import (
+    UNKNOWN_KWARG,
+    ContentViolation,
+    message_violations,
+    plain_messages,
+    plain_text,
+    text_violation,
+)
+from faultmaven.infrastructure.shims.metrics import llm_model_content_violations
+
+#: Whether the provider boundary REFUSES model-bound content the redaction
+#: module did not mint (``TypeError`` before any network I/O) instead of
+#: reporting it and sending. Off while callers migrate (#1998 P1/P2); P3 turns
+#: refusal on and deletes this switch with :class:`RawModelContentWarning`.
+#: A module constant on purpose: no deployment can configure it (fm#990).
+REFUSE_RAW_MODEL_CONTENT = False
+
+
+class RawModelContentWarning(UserWarning):
+    """A model call carried content the redaction module did not mint (#1998)."""
+
+
+#: The keywords a provider's ``generate()`` accepts beyond ``prompt``,
+#: ``model``, ``max_tokens`` and ``temperature``: the union of what the
+#: adapters read by name. Anything else is reported at the boundary — the
+#: adapters that merge leftover keywords into the request body
+#: (``_merge_extra_kwargs``) would otherwise send it to the provider's API.
+GENERATE_KWARGS = frozenset(
+    {
+        # content, checked by type
+        "messages",
+        "system",  # Anthropic
+        "preamble",  # Cohere
+        # tool and response schemas, built from code
+        "tools",
+        "tool_choice",
+        "response_format",
+        # router knobs every provider consumes or discards
+        "cache_prompt",
+        "reasoning_intent",
+        "min_output_tokens",
+        # provider options read by name
+        "reasoning_effort",  # OpenAI family
+        "stop_sequences",  # Anthropic, Gemini, HuggingFace
+        "top_p",  # Gemini, HuggingFace
+        "top_k",  # Gemini, HuggingFace
+        "repetition_penalty",  # HuggingFace
+        "safety_settings",  # Gemini
+        "strict_tools",  # Cohere
+        "stream",  # Cohere
+        "timeout",  # Fireworks
+    }
+)
+
+#: The keywords that carry text to the model: minted ``ModelText`` only.
+CONTENT_KWARGS = ("system", "preamble")
 
 
 class StopReason(str, Enum):
@@ -489,31 +547,151 @@ class BaseLLMProvider(ABC):
         """Return the unique name of this provider"""
         pass
 
-    @abstractmethod
     async def generate(
         self,
-        prompt: str,
+        prompt: Optional[str],
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> LLMResponse:
+        """Generate a response: the model boundary every call passes (#1998).
+
+        Every send ends here — through the router's registry, or straight to a
+        concrete provider (the engine's dedicated DA provider, the connection
+        check). So this is where model-bound content is checked, on the value,
+        before any network I/O:
+
+        * ``prompt`` is a minted ``ModelText`` or ``None``;
+        * ``messages`` follows the message grammar
+          (:func:`~faultmaven.infrastructure.security.model_content.message_violations`);
+        * the content keywords (:data:`CONTENT_KWARGS`) are minted text;
+        * every keyword is one an adapter reads (:data:`GENERATE_KWARGS`).
+
+        A violation is reported (:meth:`_report_raw_model_content`) and, while
+        :data:`REFUSE_RAW_MODEL_CONTENT` is off, the call proceeds. The adapter's
+        :meth:`_generate` then receives plain values: exact ``str`` text and
+        plain message dicts.
+
+        Adapters implement :meth:`_generate`, never this method.
+
+        Args:
+            prompt: Input prompt (``None`` when ``messages`` carries the call)
+            model: Specific model to use (optional)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            **kwargs: ``messages``, ``tools``, ``tool_choice`` and the other
+                keywords in :data:`GENERATE_KWARGS`
+
+        Returns:
+            LLMResponse with generated content
         """
-        Generate a response using this provider
+        violations = self._model_content_violations(prompt, kwargs)
+        if violations:
+            self._report_raw_model_content(violations)
+        # ``kwargs`` is this call's own dict: unwrapping in place mutates
+        # nothing the caller holds (plain_messages copies what it changes).
+        if "messages" in kwargs:
+            kwargs["messages"] = plain_messages(kwargs["messages"])
+        for key in CONTENT_KWARGS:
+            if key in kwargs:
+                kwargs[key] = plain_text(kwargs[key])
+        return await self._generate(
+            plain_text(prompt),
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    @abstractmethod
+    async def _generate(
+        self,
+        prompt: Optional[str],
+        model: Optional[str] = None,
+        max_tokens: int = 1000,
+        temperature: float = 0.7,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Send one request to this provider's API.
+
+        Called only by :meth:`generate`, after the boundary check, with plain
+        values: ``prompt`` and every message's text are exact ``str``.
 
         Args:
             prompt: Input prompt
             model: Specific model to use (optional)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
-            **kwargs: Additional provider-specific parameters
+            **kwargs: The keywords in :data:`GENERATE_KWARGS` the caller passed
 
         Returns:
             LLMResponse with generated content
         """
-        pass
+
+    def _model_content_violations(
+        self, prompt: Any, kwargs: Dict[str, Any]
+    ) -> List[ContentViolation]:
+        """Every way this call's content is not what the boundary accepts."""
+        found: List[ContentViolation] = []
+        if prompt is not None:
+            violation = text_violation(prompt, "prompt", "prompt")
+            if violation is not None:
+                found.append(violation)
+        if "messages" in kwargs and kwargs["messages"] is not None:
+            found.extend(message_violations(kwargs["messages"]))
+        for key in CONTENT_KWARGS:
+            if key in kwargs and kwargs[key] is not None:
+                violation = text_violation(kwargs[key], key, key)
+                if violation is not None:
+                    found.append(violation)
+        for key in sorted(k for k in kwargs if k not in GENERATE_KWARGS):
+            found.append(ContentViolation("kwargs", UNKNOWN_KWARG, key))
+        return found
+
+    def _report_raw_model_content(self, violations: List[ContentViolation]) -> None:
+        """Report a call whose content the boundary does not accept.
+
+        One log line, one metric increment per distinct (argument, kind), and
+        one :class:`RawModelContentWarning`, all naming where and what kind —
+        never the content. With :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse
+        instead: ``TypeError`` before any transport call.
+        """
+        counts = Counter((v.argument, v.kind) for v in violations)
+        kwargs_named = sorted(v.where for v in violations if v.kind == UNKNOWN_KWARG)
+        summary = "; ".join(
+            f"{argument} {kind}"
+            + (f" ({','.join(kwargs_named)})" if kind == UNKNOWN_KWARG else "")
+            for argument, kind in sorted(counts)
+        )
+        if REFUSE_RAW_MODEL_CONTENT:
+            raise TypeError(
+                f"{self.provider_name}: model-bound content not minted by the "
+                f"redaction module: {summary}"
+            )
+        for argument, kind in sorted(counts):
+            llm_model_content_violations.labels(
+                provider=self.provider_name,
+                argument=argument,
+                kind=kind,
+                content="raw",
+            ).inc()
+        self.logger.warning(
+            "Model-bound content not minted by the redaction module reached the "
+            "%s provider boundary and was sent (#1998): %s",
+            self.provider_name,
+            "; ".join(
+                f"{argument} {kind} x{count}"
+                for (argument, kind), count in sorted(counts.items())
+            )
+            + (f" [kwargs: {','.join(kwargs_named)}]" if kwargs_named else ""),
+        )
+        # stacklevel 3: this method, generate(), then generate's caller.
+        warnings.warn(
+            f"model-bound content not minted by the redaction module: {summary}",
+            RawModelContentWarning,
+            stacklevel=3,
+        )
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -635,7 +813,7 @@ class BaseLLMProvider(ABC):
         to every provider as ``generate()`` kwargs. Providers with a reasoning
         control (OpenAI ``reasoning_effort``, Gemini ``thinkingLevel``)
         translate the intent themselves; every other provider calls this at
-        the top of ``generate()`` — mirroring the ``cache_prompt`` pattern —
+        the top of ``_generate()`` — mirroring the ``cache_prompt`` pattern —
         so the keys can never leak into a request body, and so an intent that
         cannot be applied is LOGGED rather than silently dropped.
 
