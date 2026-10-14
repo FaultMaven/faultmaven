@@ -678,3 +678,172 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
 
     (request,) = _requests_sent(session)
     assert sorted(request["json"]) == ["max_tokens", "messages", "model", "temperature"]
+
+
+# --- 5. What a routed call hands the provider, and what still reaches the wire
+#
+# Two pins from #2013's delta review, in the seam #1998 unified: the closed
+# keyword set at the provider boundary (``GENERATE_KWARGS``) leaves
+# ``ROUTER_CONSUMED_KWARGS`` out on the claim that a routed call never forwards
+# them, and the discard above would hide a router that started to.
+
+
+class _RecordingProvider:
+    """Built per test: a concrete provider whose transport answers at once."""
+
+    @staticmethod
+    def build():
+        from faultmaven.infrastructure.llm.providers.base import (
+            BaseLLMProvider,
+            LLMResponse,
+            StopReason,
+        )
+
+        class Recording(BaseLLMProvider):
+            @property
+            def provider_name(self):
+                return "recording"
+
+            async def _generate(self, prompt, model=None, **kwargs):
+                return LLMResponse(
+                    content="ok",
+                    confidence=0.99,
+                    provider="recording",
+                    model=model or "m",
+                    tokens_used=1,
+                    response_time_ms=1,
+                    stop_reason=StopReason.STOP,
+                )
+
+            def is_available(self):
+                return True
+
+            def get_supported_models(self):
+                return ["m"]
+
+        return Recording(_config("recording", "m", "http://127.0.0.1:9"))
+
+
+def _every_route_keyword() -> dict:
+    """A value for every keyword ``route()`` takes, read from its signature."""
+    values = {
+        **_KNOB_VALUES,
+        "model": "m",
+        "max_tokens": _FLOOR + 1000,
+        "temperature": 0.3,
+        "tools": _TOOLS,
+        "tool_choice": "auto",
+        "response_format": _JSON_OBJECT,
+        "messages": [{"role": "user", "content": "investigate"}],
+    }
+    assert set(values) == _route_keywords(), "route() gained a keyword: give it a value"
+    return values
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_never_hands_the_provider_a_router_consumed_keyword():
+    """Every ``route()`` keyword in, through a real router and registry: the
+    provider's ``generate`` receives the forwarded groups and nothing the
+    router consumes. The discard sits behind this claim; this pins the claim."""
+    provider = _RecordingProvider.build()
+    received = {}
+    boundary = provider.generate
+
+    async def generate(prompt, **kwargs):
+        received.update(kwargs)
+        return await boundary(prompt, **kwargs)
+
+    provider.generate = generate  # the instance, not the class: the boundary still runs
+    registry = ProviderRegistry(settings=None)
+    registry._providers = {"recording": provider}
+    registry._fallback_chain = ["recording"]
+    registry._provider_states = {"recording": ProviderState(name="recording")}
+    registry._initialized = True
+    with (
+        patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ),
+        patch(
+            "faultmaven.infrastructure.llm.providers.registry.record_provider_call",
+            lambda *a, **k: None,
+        ),
+    ):
+        await LLMRouter().route(prompt="investigate", **_every_route_keyword())
+
+    assert received, "the provider was never reached"
+    assert not set(received) & ROUTER_CONSUMED_KWARGS, (
+        f"route() forwarded router-consumed keywords: "
+        f"{sorted(set(received) & ROUTER_CONSUMED_KWARGS)}"
+    )
+    # The registry passes model/max_tokens/temperature by keyword too.
+    assert set(received) == FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS
+
+
+# The transports whose request carries tools, and how each spells them. A
+# transport that drops ``tools`` or ``tool_choice`` passes every no-leak test
+# above: this is the positive half.
+def _openai_tools(body, required):
+    assert body["tools"][0]["function"]["name"] == "emit"
+    assert body["tool_choice"] == ("required" if required else "auto")
+
+
+def _cohere_tools(body, required):
+    assert body["tools"][0]["function"]["name"] == "emit"
+    assert body["tool_choice"] == ("REQUIRED" if required else "AUTO")
+    assert body["strict_tools"] is True
+
+
+def _gemini_tools(body, required):
+    [declarations] = [t["functionDeclarations"] for t in body["tools"]]
+    assert declarations[0]["name"] == "emit"
+    mode = body["toolConfig"]["functionCallingConfig"]["mode"]
+    assert mode == ("ANY" if required else "AUTO")
+
+
+def _anthropic_tools(body, required):
+    assert body["tools"][0]["name"] == "emit"
+    # A model that refuses forced tool use gets "auto" plus the forcing in a
+    # trailing system block (#1695); either way the choice is on the wire.
+    assert body["tool_choice"]["type"] in ({"any", "auto"} if required else {"auto"})
+
+
+_TOOLS_ON_THE_WIRE = {
+    "openai": _openai_tools,
+    "openrouter": _openai_tools,
+    "groq": _openai_tools,
+    "fireworks": _openai_tools,
+    "local-openai": _openai_tools,
+    "cohere": _cohere_tools,
+    "gemini": _gemini_tools,
+    "anthropic": _anthropic_tools,
+}
+
+
+def test_every_tool_carrying_target_is_checked():
+    carriers = {"huggingface", "local-ollama", "local-llamacpp"}
+    assert (
+        set(_TOOLS_ON_THE_WIRE) == set(_LABELS) - carriers
+    ), "a target that sends tools needs an entry in _TOOLS_ON_THE_WIRE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True], ids=["auto", "required"])
+@pytest.mark.parametrize("path", ["direct", "routed"])
+@pytest.mark.parametrize("label", sorted(_TOOLS_ON_THE_WIRE))
+async def test_tools_and_tool_choice_reach_the_body(
+    mock_aiohttp_session, label, path, required
+):
+    target = _BY_LABEL[label]
+    kwargs = {
+        "messages": [{"role": "user", "content": "investigate"}],
+        "tools": _TOOLS,
+        "tool_choice": "required" if required else "auto",
+        "max_tokens": 64,
+    }
+    if path == "direct":
+        if label == "cohere":
+            kwargs["strict_tools"] = True
+        requests = await _direct(target, mock_aiohttp_session, "", kwargs)
+    else:
+        requests = await _routed(target, mock_aiohttp_session, {"prompt": "", **kwargs})
+    _TOOLS_ON_THE_WIRE[label](requests[-1]["json"], required)
