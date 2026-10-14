@@ -611,7 +611,7 @@ tail -f logs/faultmaven.log | grep MCP
 
 ```python
 # Enable debug logging
-LOG_LEVEL=DEBUG python -m faultmaven.main
+LOG_LEVEL=DEBUG python -m faultmaven.server
 
 # Check available tools
 await mcp_tool.list_available_tools()
