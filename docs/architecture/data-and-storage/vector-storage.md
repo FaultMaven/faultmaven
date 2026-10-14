@@ -258,7 +258,7 @@ Redis is not used for KB document storage. Document metadata persists in SQLite 
 # 3. Prune built-in rows no longer present in the pack.
 ```
 
-On first startup, FaultMaven ingests the 59 built-in runbooks from the **KB pack**
+On first startup, FaultMaven ingests the 91 built-in runbooks from the **KB pack**
 in seconds (no model load on the readiness path). The pack is built by
 `faultmaven-kb-toolkit` (`kb-build-pack`). See
 [`kb-pack-architecture.md`](../knowledge-and-ai/kb-pack-architecture.md).
@@ -357,7 +357,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 **Creation**:
 
 ```bash
-# Automatic at deployment. On first startup, FaultMaven ingests the 59 built-in
+# Automatic at deployment. On first startup, FaultMaven ingests the 91 built-in
 # runbooks from the KB pack (resources/knowledge/pack, or KB_PACK_DIR) — pre-
 # chunked + pre-embedded, no model load. See kb-pack-architecture.md.
 ```
@@ -565,8 +565,9 @@ chromadb-backup.sh --collection faultmaven_kb --destination s3://faultmaven-back
 # Restore from snapshot
 chromadb-restore.sh --collection faultmaven_kb --source s3://faultmaven-backups/chromadb/2025-01-22/
 
-# Verify integrity
-python scripts/verify_vector_storage.py --collection faultmaven_kb
+# Verify integrity: start the API and read the bootstrap summary,
+# `KB bootstrap complete: ... N orphaned rows` (rows with no vectors) and the
+# `orphaned vectors cleaned` count (`kb_seed` Job log under multi)
 ```
 
 ### 7.3 Index Maintenance
@@ -581,7 +582,9 @@ python scripts/verify_vector_storage.py --collection faultmaven_kb
 fm-reset-kb --yes --rebuild
 ```
 
-`scripts/verify_vector_storage.py` has no `--rebuild` option (it verifies one case's evidence vectors). The bootstrap's sources are the KB pack (`resources/knowledge/pack`, or `KB_PACK_DIR`) for built-ins and the stored runbook text (`knowledge_items.content`) for authored runbooks; no file under `data/knowledge/` is a source, since that directory is only the standalone scan import directory. Case-evidence vectors are rebuilt from the raw uploads in `data/evidence/`. Note that `fm-reset-kb` deletes every `knowledge_items` row, so an authored runbook is not re-created by the rebuild; back up `data/faultmaven.db` first (see [data-storage-management.md](../../operations/data-storage-management.md#reset--hot-rebuild)).
+On Docker Compose this runs from the host (in the checkout's venv, against the bind-mounted `data/`) with the API stopped, so it ingests the pack the host process resolves — the checkout's `resources/knowledge/pack`, or a `KB_PACK_DIR` in `.env` read as a host path — not the pack inside the image. The next `./faultmaven.sh start` ingests the image's pack (or the mounted `KB_PACK_DIR`) and reconciles the KB back to it, re-ingesting the runbooks that differ and pruning those it lacks.
+
+`scripts/verify_vector_storage.py` has no `--rebuild` option (it verifies one case's evidence vectors). The bootstrap's sources are the KB pack (`resources/knowledge/pack`, or `KB_PACK_DIR`) for built-ins and the stored runbook text (`knowledge_items.content`) for authored runbooks; no file under `data/knowledge/` is a source, since that directory is only the standalone scan import directory. Case-evidence vectors are rebuilt from the raw uploads in `data/evidence/`. Note that `fm-reset-kb` deletes every `knowledge_items` row, so an authored runbook is not re-created by the rebuild (its `conversion_drafts` row, and so its text, is kept unless `--all-drafts` is passed); back up `data/faultmaven.db` first (see [data-storage-management.md](../../operations/data-storage-management.md#reset--hot-rebuild)).
 
 **Scheduled Maintenance**:
 

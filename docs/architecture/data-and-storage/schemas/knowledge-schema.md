@@ -241,7 +241,7 @@ Global runbooks and methodologies live in the unified `faultmaven_kb` collection
 #   NO embedding model runs at startup.
 ```
 
-On first startup FaultMaven ingests the 59 built-in runbooks from the **KB pack**
+On first startup FaultMaven ingests the 91 built-in runbooks from the **KB pack**
 into `faultmaven_kb` (`scope="global"`) in seconds — no model load. See
 [`kb-pack-architecture.md`](../../knowledge-and-ai/kb-pack-architecture.md).
 

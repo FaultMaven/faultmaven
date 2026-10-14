@@ -5,7 +5,10 @@ Handles first-run initialization tasks:
    and data/knowledge/, the standalone import directory ``POST /knowledge/scan``
    reads)
 2. Run Alembic migrations to ensure schema is up-to-date
-3. Create default local admin user if database is empty
+
+The default local admin user is not created here: ``bootstrap/startup.py`` calls
+:func:`ensure_default_admin_exists` on every startup (skipped under
+multi-tenancy), after the default enterprise exists.
 
 This runs at application startup to ensure a smooth out-of-the-box experience
 for local deployments without requiring manual setup steps.
@@ -629,10 +632,12 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
 async def initialize_data_layer(container: Any) -> None:
     """Initialize the data layer on application startup.
 
-    Orchestrates all initialization tasks:
+    Orchestrates the initialization tasks:
     1. Create data directories
     2. Run database migrations
-    3. Create default admin user
+
+    (The default admin user is created by ``bootstrap/startup.py``, which calls
+    :func:`ensure_default_admin_exists` after the default enterprise exists.)
 
     Args:
         container: DI container with initialized services

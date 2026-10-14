@@ -119,20 +119,23 @@ bootstrap prunes built-in rows (`kb_<12 hex>` ids) that the pack lacks, so build
 pack from the complete source tree. Authored runbooks (UUID or `kb_<16 hex>` ids) are never pruned.
 
 **Step 3: Deliver it and make it live.** A pack goes live only where the process
-that ingests it can read it, and the stock stack bakes `resources/` into the image
-(`Dockerfile`: `COPY resources/ ./resources/`) while `docker-compose.yml` mounts only
-`./data` — so copying a pack into a checkout and restarting the stock image changes
-nothing. Pick the row that matches the deployment:
+that ingests it can read it. The stock stack bakes `resources/` into the image
+(`Dockerfile`: `COPY resources/ ./resources/`) and `docker-compose.yml` mounts only
+`./data` and `.env` into the API, so copying a pack into a checkout and restarting
+the stock image changes nothing. Also, `KB_PACK_DIR` wins whenever it is set
+(`resolve_pack_dir` has no fallback to the baseline): a deployment that once used a
+`KB_PACK_DIR` row below and later moves to an image row keeps ingesting the old
+directory until `KB_PACK_DIR` is unset. Pick the row that matches the deployment:
 
 | Deployment | Deliver | Make it live |
 | --- | --- | --- |
-| Docker Compose, built from source | `cp -r dist/kb-pack/* resources/knowledge/pack/` in the checkout | `./faultmaven.sh stop && ./faultmaven.sh start --build` — the build copies the vendored pack into the image. (`./faultmaven.sh restart` alone recreates the container from the image already present, which still holds the old pack; `start --build` on a running stack only reports "already running".) |
-| Docker Compose, default GHCR image | `mkdir -p kb-pack && tar xzf kb-pack-<v>.tar.gz -C kb-pack --strip-components=1` (the tarball root is `kb-pack/`); in `docker-compose.yml` uncomment `KB_PACK_DIR=/kb-pack` and the `./kb-pack:/kb-pack:ro` mount | `./faultmaven.sh restart` (it recreates the container, so the compose edit applies) |
-| Docker Compose, a newer published image | an image that was built with the pack vendored | `./faultmaven.sh stop && ./faultmaven.sh start --pull`, or pin `FM_IMAGE_TAG` to the new tag |
-| Kubernetes, `TENANT_PROVIDER=single` | A new API image, **or** upload the tarball to MinIO `kb-packs`, set `KB_PACK_VERSION` in the ConfigMap and enable the opt-in `overlays/onprem/kb-pack-from-minio.yaml` patch in `faultmaven-enterprise-infra` | Roll the API pod |
-| Kubernetes, `TENANT_PROVIDER=multi` | A new image: the pack must be baked into the image the `kb_seed` Job runs | The API skips its startup bootstrap here, so `KB_PACK_DIR` and the MinIO patch have no effect. Run the `kb_seed` Job (`python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance`); CD does so after each deploy. See `docs/operations/onprem-app-deployment.md` § "Deploying an updated pack" in `faultmaven-enterprise-infra` |
+| Docker Compose, built from source | In `faultmaven-kb-toolkit/` (where Step 2 wrote `dist/`): `cp -r dist/kb-pack/* /path/to/faultmaven/resources/knowledge/pack/` | With `KB_PACK_DIR` unset (re-comment the two compose lines below if you set them): `./faultmaven.sh stop && ./faultmaven.sh start --build` — the build copies the vendored pack into the image. `./faultmaven.sh restart` alone recreates the container from the image already present, which still holds the old pack, and `start --build` on a running stack only reports "already running". **Tag caveat:** the build is tagged `ghcr.io/faultmaven/faultmaven:latest`, and a later plain `start` (or a `restart` issued while the stack is stopped, which runs `start`) pulls `:latest` over it, reverting changed runbooks and pruning added ones. Keep starting with `--build`, or set `FM_IMAGE_TAG=local` and pin `FM_DASHBOARD_IMAGE_TAG` to a published tag in `.env` before building: `start` skips the pull only when neither tag is `latest`. |
+| Docker Compose, default GHCR image | In the directory that holds `docker-compose.yml`: `mkdir -p kb-pack && tar xzf /path/to/kb-pack-<v>.tar.gz -C kb-pack --strip-components=1` (the tarball root is `kb-pack/`); in `docker-compose.yml` uncomment `KB_PACK_DIR=/kb-pack` and the `./kb-pack:/kb-pack:ro` mount | `./faultmaven.sh restart` (it recreates the container, so the compose edit applies) |
+| Docker Compose, a newer published image | An image that was built with the pack vendored | With `KB_PACK_DIR` unset (re-comment the two compose lines): `./faultmaven.sh stop && ./faultmaven.sh start --pull`, or pin `FM_IMAGE_TAG` to the new tag |
+| Kubernetes, `TENANT_PROVIDER=single` | A new API image **with `KB_PACK_DIR` unset** (remove the `kb-pack-from-minio.yaml` patch from the overlay, since it sets `KB_PACK_DIR=/kb-pack`), **or** upload the tarball to MinIO `kb-packs`, set `KB_PACK_VERSION` in the ConfigMap and enable the opt-in `overlays/onprem/kb-pack-from-minio.yaml` patch in `faultmaven-enterprise-infra` | Roll the API pod |
+| Kubernetes, `TENANT_PROVIDER=multi` | A new image: the pack must be baked into the image the `kb_seed` Job runs | The API skips its startup bootstrap here, so `KB_PACK_DIR` has no effect, and the MinIO patch only adds a failure: its initContainer exits non-zero while `KB_PACK_VERSION` is empty, so the API pod does not start (with a version set it downloads a pack nothing reads). Run the `kb_seed` Job (`python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance`) **with the image the API runs** — the manifest's pinned image is stale — and CD does so after each deploy. See `docs/operations/onprem-app-deployment.md` § "Deploying an updated pack" in `faultmaven-enterprise-infra` |
 
-Confirm it landed in the API log (`./faultmaven.sh logs api`): `KB bootstrap: ingesting N runbook(s) from pack <dir> (version=...)`, then the `KB bootstrap: BootstrapResult(...)` summary with the `ingested` / `pruned` counts you expect. A `KB bootstrap: no pack loaded from <dir>` warning means the pack was not loaded (missing, corrupt, or refused by a load guard); for a hand-extracted pack the usual cause is an extract that kept the `kb-pack/` root instead of leaving `pack.json` + `vectors.npz` + `runbooks/` directly in `KB_PACK_DIR`.
+**Confirm it landed.** On Compose and Kubernetes `single`, read the API log (`./faultmaven.sh logs api`): `KB bootstrap: ingesting N runbook(s) from pack <dir> (version=...)`, then the `KB bootstrap: BootstrapResult(ingested=..., skipped_unchanged=..., failed=..., pruned=..., ...)` summary with the counts you expect. A `KB bootstrap: no pack loaded from <dir>` warning means the pack was not loaded (missing, corrupt, or refused by a load guard); for a hand-extracted pack the usual cause is an extract that kept the `kb-pack/` root instead of leaving `pack.json` + `vectors.npz` + `runbooks/` directly in `KB_PACK_DIR`. Under `multi` the API log only says `KB bootstrap skipped under multi-tenancy: seed the platform KB pack via the kb_seed maintenance job (#770).`; the evidence is in the Job's log: `KB seed completed: BootstrapResult(...)` and the `KB bootstrap complete: N ingested, N unchanged, N failed, N pruned, ...` line. `ingested=0` with every runbook unchanged means the Job's image carries the pack the database already holds: check it is the image you built, not a stale tag.
 
 The bootstrap is **idempotent**: it compares the pack's `content_hash` against the
 existing `knowledge_items.content` row and skips unchanged runbooks. Changed
@@ -280,10 +283,11 @@ Add runbooks through the paths that keep the invariant below: a new KB pack for 
 ### Removing a runbook
 
 Delete it via the API or the Dashboard, so both SQL and ChromaDB are updated.
-An authored runbook has no file to remove. A built-in comes back on the next
-startup while the pack still carries it; remove it from the pack to retire it.
+An authored runbook has no file to remove. A built-in is **unpublished**: its row is
+kept and its vectors are removed. To retire a built-in for good, remove it from the
+pack (the bootstrap then prunes the row).
 
-For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart re-ingests the KB pack and nothing else (no startup step reads `data/knowledge/`). A runbook authored through the Dashboard exists only as database rows, so the wipe removes it along with the built-ins; back up `data/faultmaven.db` first (see [Backup Strategy](#backup-strategy)).
+For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart re-ingests the KB pack and nothing else (no startup step reads `data/knowledge/`). A runbook authored through the Dashboard exists only as database rows, so the wipe removes its `knowledge_items` row and vectors along with the built-ins. It keeps the `conversion_drafts` rows (and so the draft text) unless `--all-drafts` is passed; back up `data/faultmaven.db` first (see [Backup Strategy](#backup-strategy)).
 
 ---
 

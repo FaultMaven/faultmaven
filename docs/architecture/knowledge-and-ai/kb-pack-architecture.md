@@ -198,6 +198,11 @@ The app reads the pack from a single configurable filesystem path
 | **unset (default)** | Use the **baseline pack bundled in the image** at `resources/knowledge/pack`. Zero-config; works on every deployment. |
 | **set** | Load the pack from that directory instead — an external, **replaceable** pack. |
 
+A set `KB_PACK_DIR` always wins and there is no fallback to the baseline
+(`resolve_pack_dir`): a directory that is empty, missing or invalid ingests nothing
+(a `KB bootstrap: no pack loaded` warning), and a deployment that once used it keeps
+reading that directory after moving to an image-borne pack until it is unset.
+
 This one abstraction is the whole "same core, different configuration" story: the
 app only ever reads a path; *how the pack arrives there* is a per-deployment
 concern (see [Delivery](#delivery)). Loader: `faultmaven/bootstrap/kb_pack.py`
@@ -261,15 +266,22 @@ one baked into its image.
 Three ways to get a new pack live, all ending in the startup bootstrap ingesting it:
 
 - **A pack in an image, from source:** vendor the pack into `resources/knowledge/pack/`
-  of the checkout, then `./faultmaven.sh stop && ./faultmaven.sh start --build`.
+  of the checkout, then, with `KB_PACK_DIR` unset (re-comment the two compose lines
+  if you set them), `./faultmaven.sh stop && ./faultmaven.sh start --build`.
   `./faultmaven.sh restart` alone recreates the container from the image already
-  present, which still holds the old pack.
-- **A newer published image:** `./faultmaven.sh stop && ./faultmaven.sh start --pull`
-  (or pin `FM_IMAGE_TAG`).
+  present, which still holds the old pack. The build is tagged
+  `ghcr.io/faultmaven/faultmaven:latest`, so a later plain `start` (or a `restart`
+  issued while the stack is stopped) pulls `:latest` over it and reverts to the
+  published pack; keep starting with `--build`, or set `FM_IMAGE_TAG=local` and pin
+  `FM_DASHBOARD_IMAGE_TAG` in `.env` (`start` pulls only while one of the two tags
+  is `latest`).
+- **A newer published image:** with `KB_PACK_DIR` unset,
+  `./faultmaven.sh stop && ./faultmaven.sh start --pull` (or pin `FM_IMAGE_TAG`).
 - **No rebuild (`KB_PACK_DIR`):** a commented `KB_PACK_DIR=/kb-pack` env and a
-  `./kb-pack:/kb-pack:ro` bind-mount on the `api` service. Extract the tarball so
-  `pack.json` + `vectors.npz` + `runbooks/` sit directly in `./kb-pack`
-  (`mkdir -p kb-pack && tar xzf kb-pack-<version>.tar.gz -C kb-pack --strip-components=1`
+  `./kb-pack:/kb-pack:ro` bind-mount on the `api` service. In the directory that
+  holds `docker-compose.yml`, extract the tarball so `pack.json` + `vectors.npz` +
+  `runbooks/` sit directly in `./kb-pack`
+  (`mkdir -p kb-pack && tar xzf /path/to/kb-pack-<version>.tar.gz -C kb-pack --strip-components=1`
   — the tarball root is `kb-pack/`), uncomment both lines, and run
   `./faultmaven.sh restart` (it recreates the container, so the compose edit applies).
   Unset → bundled baseline.
@@ -283,18 +295,23 @@ An opt-in strategic-merge patch
 at `KB_PACK_DIR=/kb-pack`. `KB_PACK_VERSION` is a (default-empty) ConfigMap key.
 Operator workflow + verification: `docs/operations/onprem-app-deployment.md` in
 that repo, § "Deploying an updated pack". A new API image carrying a vendored
-baseline is the other route.
+baseline is the other route, but only with the patch removed from the overlay: the
+patch sets `KB_PACK_DIR=/kb-pack`, which keeps winning over the image's pack.
 
 ### Cloud / Kubernetes, `TENANT_PROVIDER=multi`
 
 The API **skips its startup KB bootstrap** (the tenant-bound app role cannot write
-the org-free global rows), so `KB_PACK_DIR` and the MinIO patch have no effect. The
-pack is ingested by the `kb_seed` Job
+the org-free global rows; it logs `KB bootstrap skipped under multi-tenancy`), so
+`KB_PACK_DIR` has no effect, and the MinIO patch only adds a failure: its
+initContainer exits non-zero while `KB_PACK_VERSION` is empty, so the API pod does
+not start. The pack is ingested by the `kb_seed` Job
 (`python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance`; manifest
 `kubernetes/apps/faultmaven/jobs/kb-seed.yaml` in `faultmaven-enterprise-infra`,
 also run by CD after each deploy), which runs the same `bootstrap_kb` against the
-pack baked into **its own image**. A new pack therefore reaches a multi deployment
-only in a new image.
+pack baked into **its own image**; run it with the image the API runs, because the
+manifest's pinned image is stale. Its log carries `KB seed completed:
+BootstrapResult(...)`. A new pack therefore reaches a multi deployment only in a
+new image.
 
 ### Update workflow
 
@@ -305,7 +322,8 @@ only in a new image.
    **Kubernetes `single`, no image rebuild:** upload the tarball to MinIO
    `kb-packs`, set `KB_PACK_VERSION=<v>`, roll out.
    **Anywhere the pack is vendored** (and always under `multi`): build and deploy a
-   new image.
+   new image, with `KB_PACK_DIR` unset (and the MinIO patch removed) so the
+   image's pack is the one read.
 3. The bootstrap's idempotent content-hash ingest + orphan prune add new
    runbooks, re-embed changed ones (from the pack), and remove deleted ones. The
    prune is keyed on the built-in `kb_<12 hex>` id: a pack replaces the built-in

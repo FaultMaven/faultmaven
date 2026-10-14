@@ -148,7 +148,7 @@ The KB Toolkit and FaultMaven runtime use different directories:
 To add/update a built-in runbook: edit the source in this repo, rebuild the **KB
 pack** with the toolkit, and deliver it. Whether that needs a new app image depends
 on how the pack reaches the API (the default GHCR image bakes `resources/` in and
-the default compose mounts none):
+the default compose mounts no `resources/` directory):
 
 ```bash
 # 1. Edit the authoritative source (public, PR-able):
@@ -159,11 +159,13 @@ kb-build-pack --version 2026-07-08 --tar
 
 # 3. Vendor it as the committed baseline (a baseline is live only in an image
 #    built with it), or deliver it to a running deployment's KB_PACK_DIR — see
-#    kb-pack-architecture.md §Delivery for every deployment:
-cp -r dist/kb-pack/* faultmaven/resources/knowledge/pack/
+#    kb-pack-architecture.md §Delivery for every deployment. Run from the
+#    directory that holds faultmaven/ and faultmaven-kb-toolkit/:
+cp -r faultmaven-kb-toolkit/dist/kb-pack/* faultmaven/resources/knowledge/pack/
 
-# 4. Make it live. From source: build an image that carries the pack, then start
-#    it (`./faultmaven.sh restart` alone re-creates the OLD image):
+# 4. Make it live. From source, in the faultmaven/ checkout, with KB_PACK_DIR
+#    unset: build an image that carries the pack, then start it
+#    (`./faultmaven.sh restart` alone re-creates the OLD image):
 ./faultmaven.sh stop && ./faultmaven.sh start --build
 #    The startup bootstrap then ingests the pack idempotently (no model;
 #    unchanged runbooks skipped, removed ones pruned).
@@ -499,7 +501,7 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 **Delete path**: `delete_document()` is provenance-gated by id shape:
 
-- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row.
+- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap).
 - **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
