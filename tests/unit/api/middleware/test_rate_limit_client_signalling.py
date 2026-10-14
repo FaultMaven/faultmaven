@@ -12,7 +12,6 @@ The headers now come from the ``RateLimitResult``s the checks already produced,
 so nothing here costs an extra Redis round trip.
 """
 
-import asyncio
 import itertools
 import json
 from datetime import datetime, timedelta, timezone
@@ -780,7 +779,7 @@ async def test_a_checked_request_still_moves_the_check_metrics():
     assert mw.metrics["requests_checked"] == 1, mw.metrics
 
 
-async def test_the_check_duration_excludes_the_route():
+async def test_the_check_duration_excludes_the_route(monkeypatch):
     """``avg_check_duration`` is the cost of checking, not of serving.
 
     Sampled after ``call_next``, a five-second LLM turn recorded a five-second
@@ -788,23 +787,55 @@ async def test_the_check_duration_excludes_the_route():
     the check alone. One counter cannot mean two things, and the slow-route case
     is the one an operator would actually look at the number during.
 
-    The route here sleeps far longer than any check against FakeRedis takes, so
-    the assertion separates the two without depending on a wall-clock threshold
-    that a loaded machine could trip.
+    No real time enters the assertion. The middleware's ``time`` is replaced,
+    for that one module, by a clock this test owns, and only two things move
+    it: the check, by ``check_seconds``, and the route, by ``route_seconds``.
+    The metric must then equal ``check_seconds`` exactly. That pins both
+    directions at once: a sample taken after the route reads
+    ``check_seconds + route_seconds``, and a sample whose window misses the
+    check — both reads after the route, or the start read below the check —
+    reads zero. A bound of "less than the route" would have passed the second
+    kind, which records no check at all.
+
+    The previous version let a real route sleep and bounded the check by that
+    sleep, which a runner that stalled the check for longer than the sleep
+    could trip (fm#1974).
     """
+    from faultmaven.api.middleware import rate_limiting
+
     mw = _middleware(_settings(global_requests=1000))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
-    route_seconds = 0.25
+    clock = _HandCrankedClock(_FROZEN)
+    check_seconds, route_seconds = 3.0, 1000.0
+
+    # Only the middleware's ``time`` is swapped, so nothing else that reads the
+    # wall clock — the limiter, Redis, the event loop — sees the fake. Both
+    # names are the fake, so measuring the duration on ``monotonic`` instead of
+    # ``time`` stays green while it still has to sit around the check alone.
+    # Nothing here compares ``monotonic`` against the init-retry cooldown: the
+    # first request has no earlier attempt to be inside the window of.
+    monkeypatch.setattr(
+        rate_limiting, "time", SimpleNamespace(time=clock, monotonic=clock)
+    )
+
+    delegate = mw.rate_limiter.check_rate_limits
+
+    async def _timed_check(specs):
+        clock.advance(check_seconds)
+        return await delegate(specs)
+
+    monkeypatch.setattr(mw.rate_limiter, "check_rate_limits", _timed_check)
 
     async def _slow_call_next(request):
-        await asyncio.sleep(route_seconds)
+        clock.advance(route_seconds)
         return PlainTextResponse("ok")
 
     response = await mw.dispatch(_request(app, _unique_client()), _slow_call_next)
 
     assert response.status_code == 200
     assert mw.metrics["requests_checked"] == 1
-    assert mw.metrics["avg_check_duration"] < route_seconds, (
-        "the route's latency was folded into the check duration: "
-        f"{mw.metrics['avg_check_duration']:.3f}s against a {route_seconds}s route"
+    assert mw.metrics["avg_check_duration"] == check_seconds, (
+        "the check duration is not the check alone: "
+        f"{mw.metrics['avg_check_duration']}s against a {check_seconds}s check "
+        f"and a {route_seconds}s route"
     )
