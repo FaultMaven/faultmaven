@@ -624,7 +624,7 @@ async def _one_answer_attempt(
     llm_router: Any,
     prompt: str,
     model: Optional[str],
-    route_kwargs: dict[str, Any],
+    pinned: bool,
     *,
     redaction_ctx: Any,
 ) -> Optional[str]:
@@ -633,7 +633,14 @@ async def _one_answer_attempt(
     The prompt passes the turn's case redaction here, at the send, so each
     attempt sends what it was handed only once it is redacted. A redaction
     failure fails the attempt, and nothing is sent.
+
+    ``pinned``: send to the synthesis role's own provider. The override is
+    built here, at the send, from the settings — not handed in as a dict —
+    so the send-site guard can see it carries routing only (#1971).
     """
+    from faultmaven.config.settings import get_settings
+
+    settings = get_settings()
     messages = await case_redacted_messages(
         [{"role": "user", "content": prompt}], redaction_ctx
     )
@@ -648,7 +655,7 @@ async def _one_answer_attempt(
         # thinking uncapped against this small budget (the document_qa_tool
         # precedent).
         reasoning_intent=ReasoningIntent.EXTRACTION,
-        **route_kwargs,
+        **(_role_route_kwargs(settings, "synthesis") if pinned else {}),
     )
     text = (response.content or "").strip()
     if not text:
@@ -686,21 +693,21 @@ async def answer_out_of_band(
         from faultmaven.config.settings import get_settings
 
         settings = get_settings()
-        attempts: list[tuple[Optional[str], dict[str, Any]]] = [
-            (
-                settings.llm.get_synthesis_model(),
-                _role_route_kwargs(settings, "synthesis"),
-            ),
+        pinned = bool(_role_route_kwargs(settings, "synthesis"))
+        attempts: list[tuple[Optional[str], bool]] = [
+            (settings.llm.get_synthesis_model(), pinned),
         ]
-        if attempts[0][1]:
-            attempts.append((None, {}))  # the chat chain, only when synthesis is pinned
-        for model, route_kwargs in attempts:
+        if pinned:
+            attempts.append(
+                (None, False)
+            )  # the chat chain, only when synthesis is pinned
+        for model, on_synthesis_pin in attempts:
             try:
                 text = await _one_answer_attempt(
                     llm_router,
                     prompt,
                     model,
-                    route_kwargs,
+                    on_synthesis_pin,
                     redaction_ctx=redaction_ctx,
                 )
             except Exception:

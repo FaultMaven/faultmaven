@@ -701,3 +701,74 @@ class TestAnswer:
         )
         assert "not told which model" in text
         assert "Nightly OOM kills" in text
+
+
+class _RoleSettings:
+    """``get_settings()`` for the answer path: the synthesis model, and the
+    synthesis role pinned to ``pinned_to`` (``None``: it follows chat)."""
+
+    def __init__(self, pinned_to):
+        self.roles = []
+        self.llm = SimpleNamespace(
+            get_synthesis_model=lambda: "synthesis-model",
+            explicit_role_provider=self._explicit_role_provider,
+        )
+        self._pinned_to = pinned_to
+
+    def _explicit_role_provider(self, role):
+        self.roles.append(role)
+        return self._pinned_to
+
+
+class TestAnswerAttempts:
+    """#1971: the synthesis attempt lands on the pinned synthesis provider and
+    the chat chain gets one attempt after it; with no pin there is one
+    attempt and no ``provider_override``."""
+
+    @pytest.fixture
+    def settings(self, monkeypatch, request):
+        fake = _RoleSettings(request.param)
+        monkeypatch.setattr("faultmaven.config.settings.get_settings", lambda: fake)
+        return fake
+
+    @pytest.mark.parametrize("settings", ["gemini"], indirect=True)
+    async def test_a_pinned_synthesis_role_falls_back_to_the_chat_chain(self, settings):
+        router = MagicMock()
+        router.route = AsyncMock(
+            side_effect=[
+                RuntimeError("pinned provider down"),
+                SimpleNamespace(content="ok"),
+            ]
+        )
+        text = await answer_out_of_band(
+            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+        )
+        assert text == "ok"
+        first, second = (call.kwargs for call in router.route.call_args_list)
+        assert first["model"] == "synthesis-model"
+        assert first["provider_override"] == "gemini"
+        assert second["model"] is None
+        assert "provider_override" not in second
+        assert set(settings.roles) == {"synthesis"}
+
+    @pytest.mark.parametrize("settings", ["gemini"], indirect=True)
+    async def test_a_pinned_synthesis_answer_is_one_call(self, settings):
+        router = MagicMock()
+        router.route = AsyncMock(return_value=SimpleNamespace(content="ok"))
+        await answer_out_of_band(
+            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+        )
+        [call] = router.route.call_args_list
+        assert call.kwargs["provider_override"] == "gemini"
+
+    @pytest.mark.parametrize("settings", [None], indirect=True)
+    async def test_an_unpinned_synthesis_role_is_one_attempt_on_chat(self, settings):
+        router = MagicMock()
+        router.route = AsyncMock(side_effect=RuntimeError("chat down"))
+        text = await answer_out_of_band(
+            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+        )
+        assert text == fallback_answer(_case(), OutOfBandKind.OFF_TOPIC)
+        [call] = router.route.call_args_list
+        assert call.kwargs["model"] == "synthesis-model"
+        assert "provider_override" not in call.kwargs
