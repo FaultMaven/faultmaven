@@ -1896,6 +1896,13 @@ class ConversionService:
         post = frontmatter.loads(read_content)
         post.metadata["status"] = "verified"
         post.metadata["verified_by"] = verifier_name
+        # ``scope`` in the frontmatter is the tier the knowledge item is
+        # published at (``taxonomy.KnowledgeScope``), and that tier is the
+        # job's, not the file's: a scan infers it from the directory, and a
+        # ``team_*`` file is published personal. The stored text says what the
+        # row says, so a reader of the runbook is not told a tier it is not at
+        # (#1986). A draft whose frontmatter already agrees is unchanged.
+        post.metadata["scope"] = scope
         content = frontmatter.dumps(post)
 
         fm_meta = extract_frontmatter_metadata(content)
@@ -2251,11 +2258,16 @@ status: draft
                 organization) is
                 SKIPPED when the caller is not a platform operator (any tenant
                 session under multi, or a non-admin single-tenant) — minting a
-                global draft is platform-tier authoring (#770, R4). Personal/team
-                discovery is unaffected. Defaults ``False`` (fail-closed).
+                global draft is platform-tier authoring (#770, R4). Personal
+                (``personal_*`` / ``user_*``) and ``team_*`` discovery is
+                unaffected. Defaults ``False`` (fail-closed).
 
         Returns:
-            {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
+            {"discovered": N, "skipped": N, "errors": [...], "notes": [...],
+            "drafts": [...]}. ``errors`` names the files that were NOT imported;
+            ``notes`` names imported files whose draft is not what their
+            directory asked for — a ``team_*`` file is imported as ``personal``,
+            because the deployments this runs on have no teams (#1986).
 
         Raises:
             ValidationException: the deployment is multi-tenant (422 at the

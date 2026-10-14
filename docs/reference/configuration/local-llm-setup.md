@@ -258,7 +258,7 @@ curl http://localhost:8080/engines/llama.cpp/v1/chat/completions \
 ```bash
 # Start FaultMaven
 cd /path/to/FaultMaven
-python -m faultmaven.main
+python -m faultmaven.server
 
 # Test provider registration
 curl http://localhost:8090/api/v1/health/providers

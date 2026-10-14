@@ -10,6 +10,10 @@ from faultmaven.modules.case.api.title_generation import (
     _has_problem_statement,
     _titleable_substance,
 )
+from tests.utils import regex_only_sanitizer
+
+# A real sanitizer, regex half only: every title source passes it (#1967).
+SANITIZER = regex_only_sanitizer()
 
 
 class TestExtractUserSignals:
@@ -17,12 +21,12 @@ class TestExtractUserSignals:
 
     def test_empty_context_returns_empty_string(self):
         """Empty context should return empty string"""
-        result = _extract_user_signals_from_context("")
+        result = _extract_user_signals_from_context("", SANITIZER)
         assert result == ""
 
     def test_none_context_returns_empty_string(self):
         """None context should return empty string"""
-        result = _extract_user_signals_from_context(None)
+        result = _extract_user_signals_from_context(None, SANITIZER)
         assert result == ""
 
     def test_single_user_message_extracted(self):
@@ -31,7 +35,7 @@ class TestExtractUserSignals:
 1. [14:20] User: I'm having database connection issues with PostgreSQL timeout errors
 2. [14:21] Assistant: Let me help you troubleshoot this issue"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
         assert "database connection issues" in result
         assert "PostgreSQL timeout errors" in result
         # Should not include assistant response
@@ -46,7 +50,7 @@ class TestExtractUserSignals:
 4. [14:23] Assistant: Check your credentials
 5. [14:24] User: Password is verified correct"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should contain all three user messages
         assert "Database connection timeout error" in result
@@ -68,7 +72,7 @@ class TestExtractUserSignals:
 2. [14:21] Assistant: Let me investigate this issue for you
 3. [14:22] User: Thank you so much"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should include the long first message
         assert "critical production issue" in result
@@ -88,7 +92,7 @@ class TestExtractUserSignals:
 2. [14:21] User: Database connection timeout
 3. [14:22] System: Agent processing started"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should only include user message
         assert "Database connection timeout" in result
@@ -104,7 +108,7 @@ Message count: 5
 1. [14:20] User: Database connection timeout error
 Current query:"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should only include user message
         assert "Database connection timeout error" in result
@@ -120,7 +124,7 @@ Current query:"""
         context = """Case: Database Issue
 Description: PostgreSQL connection pooling exhausted under high load"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should extract description
         assert "PostgreSQL connection pooling" in result
@@ -132,7 +136,7 @@ Description: PostgreSQL connection pooling exhausted under high load"""
 Description: No description
 1. [14:20] User: Connection timeout error"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should not include "No description"
         assert "No description" not in result
@@ -148,7 +152,7 @@ Description: No description
 3. [14:22] User: Help me
 4. [14:23] User: Database connection timeout error occurring"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should not include messages with <3 words
         assert "Hi" not in result
@@ -165,7 +169,7 @@ Description: No description
 3. [14:22] User: Database connection timeout error
 4. [14:23] User: Still getting database connection timeout error"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should only include unique messages
         # Count occurrences of the exact phrase
@@ -186,7 +190,7 @@ Description: No description
 
         context = "Previous conversation:\n" + "\n".join(messages)
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should only include messages 4-15 (last 12 messages)
         assert "Msg01 unique" not in result
@@ -200,7 +204,7 @@ Description: No description
         context = """Previous conversation:
 1. [14:20] User: My email is test@example.com and phone is 555-123-4567 with IP 192.168.1.1"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should replace PII with placeholders
         assert "test@example.com" not in result
@@ -225,7 +229,7 @@ Description: No description
 10. [14:29] Assistant: That explains the timeouts. Increase it to at least 150 for your workload.
 11. [14:30] User: Done thank you very much"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should include content from ALL user messages
         assert "database connection timeout errors" in result
@@ -253,7 +257,7 @@ User: Database connection timeout error occurring
 Assistant: Let me investigate
 User: Error persists after restart"""
 
-        result = _extract_user_signals_from_context(context)
+        result = _extract_user_signals_from_context(context, SANITIZER)
 
         # Should extract both user messages
         assert "Database connection timeout error occurring" in result
@@ -295,8 +299,8 @@ class TestTitleableSubstance:
                 "the associated migration job did not complete."
             )
         )
-        assert _has_problem_statement(case) is True
-        substance = _titleable_substance(case, "how")
+        assert _has_problem_statement(case, SANITIZER) is True
+        substance = _titleable_substance(case, "how", SANITIZER)
         assert "Deploy to on-prem" in substance
 
     def test_evidence_and_file_summaries_contribute(self):
@@ -309,7 +313,7 @@ class TestTitleableSubstance:
             ],
             files=["GitHub Actions run log for the failed on-prem deployment."],
         )
-        substance = _titleable_substance(case, "what is it?")
+        substance = _titleable_substance(case, "what is it?", SANITIZER)
         assert "password authentication" in substance
         assert "no secrets configured" in substance
 
@@ -318,8 +322,8 @@ class TestTitleableSubstance:
         one-word message stays below threshold AND has no statement — the
         guard is preserved (gate would raise)."""
         case = self._case()
-        assert _has_problem_statement(case) is False
-        substance = _titleable_substance(case, "hi")
+        assert _has_problem_statement(case, SANITIZER) is False
+        substance = _titleable_substance(case, "hi", SANITIZER)
         assert len(substance) < MIN_CONTENT_LENGTH_FOR_TITLE
 
     def test_proposed_statement_used_when_no_confirmed(self):
@@ -331,6 +335,6 @@ class TestTitleableSubstance:
                 "after the latest deployment."
             )
         )
-        assert _has_problem_statement(case) is True
-        substance = _titleable_substance(case, "")
+        assert _has_problem_statement(case, SANITIZER) is True
+        substance = _titleable_substance(case, "", SANITIZER)
         assert "checkout API" in substance

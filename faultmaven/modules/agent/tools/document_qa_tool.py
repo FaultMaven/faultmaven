@@ -165,6 +165,7 @@ class DocumentQATool:
         filters: Optional[Dict[str, Any]] = None,
         *,
         redaction_ctx: Any,
+        empty_result: Optional[str] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -176,6 +177,10 @@ class DocumentQATool:
             filters: Optional ChromaDB metadata filters
             redaction_ctx: The turn's case redaction context, which the
                 synthesis call sends through (#1956)
+            empty_result: What to answer when the search ran and matched
+                nothing, for a caller that knows more than the KB config (the
+                tools this turn offers, the case's files, #1977). ``None``
+                answers with the config's own ``empty_result_message``.
 
         Returns:
             Formatted answer with citations
@@ -183,7 +188,12 @@ class DocumentQATool:
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
         result = await self.answer_question(
-            question, scope_id, k, filters, redaction_ctx=redaction_ctx
+            question,
+            scope_id,
+            k,
+            filters,
+            redaction_ctx=redaction_ctx,
+            empty_result=empty_result,
         )
 
         # Delegate response formatting to KB config
@@ -202,6 +212,7 @@ class DocumentQATool:
         filters: Optional[Dict[str, Any]] = None,
         *,
         redaction_ctx: Any,
+        empty_result: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -248,7 +259,11 @@ class DocumentQATool:
             # store states its own truth; this class does not know what
             # collection it just queried and must not guess at a cause.
             return {
-                "answer": self._kb_config.empty_result_message,
+                "answer": (
+                    empty_result
+                    if empty_result is not None
+                    else self._kb_config.empty_result_message
+                ),
                 "sources": [],
                 "chunk_count": 0,
                 "confidence": 0.0,

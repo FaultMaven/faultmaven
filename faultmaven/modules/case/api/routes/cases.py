@@ -62,6 +62,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
 from faultmaven.modules.case.api.title_generation import (
     MAX_TITLE_WORDS_DEFAULT,
     _generate_and_persist_title,
+    _TitleDisclosureGateUnavailable,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
@@ -1001,6 +1002,10 @@ async def generate_case_title(
       a title (pre-LLM length gate, or LLM + fallback both fail).
       Clients SHOULD keep the existing title unchanged and may retry
       later.
+    - 503: the check that keeps sensitive data out of titles could not run
+      (a server-side dependency is unavailable), so no title was written.
+      The detail is generic. Clients SHOULD keep the existing title and may
+      retry later.
     """
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
@@ -1076,20 +1081,30 @@ async def generate_case_title(
         # Previous: Blocked regeneration if title was "meaningful"
         # Now: Always regenerate (respects the substance gate + duplicate protection)
 
-        generated_title, title_source, substance_length = (
-            await _generate_and_persist_title(
-                case=case,
-                case_id=case_id,
-                user_id=current_user.user_id,
-                case_service=case_service,
-                llm_provider=getattr(request.app.state, "llm_provider", None),
-                max_words=max_words,
-                hint=hint,
-                correlation_id=correlation_id,
-                sanitizer=getattr(request.app.state, "sanitizer", None),
-                redis_client=getattr(request.app.state, "redis_client", None),
+        try:
+            generated_title, title_source, substance_length = (
+                await _generate_and_persist_title(
+                    case=case,
+                    case_id=case_id,
+                    user_id=current_user.user_id,
+                    case_service=case_service,
+                    llm_provider=getattr(request.app.state, "llm_provider", None),
+                    max_words=max_words,
+                    hint=hint,
+                    correlation_id=correlation_id,
+                    sanitizer=getattr(request.app.state, "sanitizer", None),
+                    redis_client=getattr(request.app.state, "redis_client", None),
+                )
             )
-        )
+        except _TitleDisclosureGateUnavailable:
+            # The title's disclosure gate (#1967) could not run: a server-side
+            # dependency is unavailable, not a fault in the request. Nothing
+            # was written; the detail stays generic.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Title generation is temporarily unavailable",
+                headers={"x-correlation-id": correlation_id},
+            )
 
         # Persist success atomically and return X-Correlation-ID on all responses
         response.headers["x-correlation-id"] = correlation_id

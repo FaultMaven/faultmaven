@@ -183,8 +183,10 @@ repos' vocabularies are equal.
 - `item_id` = `kb_<sha256(frontmatter id)[:12]>` — must match
   `faultmaven.utils.runbook_id.item_id_from_runbook_id` so the app recognises
   these as built-ins (for the orphan-prune and delete semantics).
-- `content_hash` = SHA-256 of the full markdown — the app's idempotency key
-  (unchanged content → skip on re-ingest).
+- `content_hash` = SHA-256 of the full markdown — the app's idempotency key.
+  Ingest stamps it on the row (`metadata.pack_content_hash`), and a later
+  bootstrap skips the runbook while the pack's hash still equals the stamp, so
+  an operator's edit of the row is never read as a new pack version (#1966).
 
 ---
 
@@ -324,8 +326,10 @@ new image.
    **Anywhere the pack is vendored** (and always under `multi`): build and deploy a
    new image, with `KB_PACK_DIR` unset (and the MinIO patch removed) so the
    image's pack is the one read.
-3. The bootstrap's idempotent content-hash ingest + orphan prune add new
-   runbooks, re-embed changed ones (from the pack), and remove deleted ones. The
+3. The bootstrap's idempotent pack-hash ingest + orphan prune add new
+   runbooks, re-ingest the ones whose pack version changed (republishing one an
+   operator had unpublished — a shipped update is a new document), and remove
+   deleted ones. The
    prune is keyed on the built-in `kb_<12 hex>` id: a pack replaces the built-in
    set rather than adding to it, and authored runbooks are never touched.
 

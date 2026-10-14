@@ -1808,7 +1808,7 @@ SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'symptom_eviden
 
 ```bash
 # Start API with database config
-CASE_STORAGE_TYPE=database python -m faultmaven.main
+CASE_STORAGE_TYPE=database python -m faultmaven.server
 
 # Create case via API
 curl -X POST http://localhost:8090/api/v1/cases \

@@ -27,6 +27,7 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
 
@@ -894,7 +895,7 @@ class TestBuildToolContext:
         mock_case.enterprise_id = "ent_123"
 
         result = await engine.generator.build_tool_context(
-            mock_case, user_id="user_abc", redaction_ctx=None
+            mock_case, user_id="user_abc", redaction_ctx=None, given_tools=NO_TOOLS
         )
 
         assert result.session_id == "case_001"
@@ -912,7 +913,7 @@ class TestBuildToolContext:
         mock_case.enterprise_id = "ent_456"
 
         result = await engine.generator.build_tool_context(
-            mock_case, user_id=None, redaction_ctx=None
+            mock_case, user_id=None, redaction_ctx=None, given_tools=NO_TOOLS
         )
 
         assert result.user_id == "system"

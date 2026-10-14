@@ -51,8 +51,13 @@ from faultmaven.modules.case.api.title_generation import (
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.utils import regex_only_sanitizer
 
 TENANT_ORG = "org_tenant_alpha"
+
+# The DI sanitizer production always has (#1967): every title source and
+# candidate passes it, and a missing one titles nothing (fail closed).
+SANITIZER = regex_only_sanitizer()
 
 
 def _make_case(**overrides) -> Case:
@@ -155,7 +160,7 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
-            sanitizer=None,
+            sanitizer=SANITIZER,
             redis_client=None,
         )
 
@@ -179,7 +184,7 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
-            sanitizer=None,
+            sanitizer=SANITIZER,
             redis_client=None,
         )
 
@@ -206,7 +211,7 @@ class TestAutoTitleTask:
                 user_id="user_123",
                 case_service=service,
                 llm_provider=None,
-                sanitizer=None,
+                sanitizer=SANITIZER,
                 redis_client=None,
             )
 
@@ -246,7 +251,7 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
-                    sanitizer=None,
+                    sanitizer=SANITIZER,
                     redis_client=None,
                 ),
                 timeout=5,
@@ -264,7 +269,7 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
-            sanitizer=None,
+            sanitizer=SANITIZER,
             redis_client=None,
         )
 
@@ -289,7 +294,7 @@ class TestAutoTitleTask:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
-            sanitizer=None,
+            sanitizer=SANITIZER,
             redis_client=None,
         )
 
@@ -307,7 +312,7 @@ class TestAutoTitleTask:
                 user_id="user_123",
                 case_service=service,
                 llm_provider=None,
-                sanitizer=None,
+                sanitizer=SANITIZER,
                 redis_client=None,
             )
 
@@ -335,7 +340,7 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
-                    sanitizer=None,
+                    sanitizer=SANITIZER,
                     redis_client=None,
                 )
         assert caplog.records == []
@@ -356,7 +361,7 @@ class TestAutoTitleTask:
                     user_id="user_123",
                     case_service=service,
                     llm_provider=None,
-                    sanitizer=None,
+                    sanitizer=SANITIZER,
                     redis_client=None,
                 )
         assert any("Auto-titling failed" in r.message for r in caplog.records)
@@ -396,6 +401,7 @@ class TestTurnEndpointNamesTheCase:
         service = _service_for(case)
         app.state.case_service = service
         app.state.llm_provider = None
+        app.state.sanitizer = SANITIZER
 
         investigation_service = MagicMock()
         # The route prepares under its deadline and commits after (#1882);
@@ -555,6 +561,8 @@ class TestTitlingOrdering:
 
         request = MagicMock()
         request.app.state.llm_provider = None
+        request.app.state.sanitizer = SANITIZER
+        request.app.state.redis_client = None
         user = UserDTO(
             user_id="user_123",
             username="testuser",
@@ -617,7 +625,7 @@ class TestTitlingOrdering:
             user_id="user_123",
             case_service=service,
             llm_provider=None,
-            sanitizer=None,
+            sanitizer=SANITIZER,
             redis_client=None,
         )
 
@@ -647,7 +655,7 @@ async def test_the_auto_title_asks_for_the_driver():
         user_id="user_123",
         case_service=service,
         llm_provider=None,
-        sanitizer=None,
+        sanitizer=SANITIZER,
         redis_client=None,
     )
 

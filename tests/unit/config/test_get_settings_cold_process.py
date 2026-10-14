@@ -8,7 +8,7 @@ time: ``get_settings()`` would then re-enter itself with ``_settings_instance``
 still unset. The unit tests cannot see that, because their process has long
 since imported all of it, so each case here is a fresh interpreter that imports
 ``faultmaven.config.settings`` first and calls ``get_settings()`` second, as
-``python -m faultmaven.main`` does (#1984).
+``python -m faultmaven.server`` does (#1984, #1985).
 
 The child gets no environment of the parent's, so a CI profile's ``REDIS_HOST``
 or a provider key on a developer's box cannot decide the outcome, and it runs in

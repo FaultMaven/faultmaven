@@ -271,7 +271,8 @@ start_app() {
     local keepalive=$(grep -E '^TIMEOUT_KEEP_ALIVE=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
     keepalive=${keepalive:-75}
 
-    # Start the API through core's run_server (python -m faultmaven.main), the
+    # Start the API through core's run_server (python -m faultmaven.server, which
+    # executes main.py once, not twice as -m faultmaven.main would), the
     # one place the uvicorn options live (access_log=False, log_config=None,
     # keep-alive, log level), so a local process logs like the image does.
     # run_server reads host/port/reload/workers from settings, so they are set
@@ -280,7 +281,7 @@ start_app() {
     # provider at all, which applies the zero-config "local" preset
     # (127.0.0.1:8000 with reload); WORKERS=1 overrides a WORKERS in .env,
     # which would fork workers the PID file cannot track.
-    HOST=0.0.0.0 PORT="$port" RELOAD=false WORKERS=1 TIMEOUT_KEEP_ALIVE="$keepalive" python -m faultmaven.main > "$LOG_FILE" 2>&1 &
+    HOST=0.0.0.0 PORT="$port" RELOAD=false WORKERS=1 TIMEOUT_KEEP_ALIVE="$keepalive" python -m faultmaven.server > "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
