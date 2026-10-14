@@ -225,7 +225,9 @@ import os
 import re
 import shutil
 import uuid
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -1365,10 +1367,11 @@ async def _seed_case_with_content(
         # the transcript line is one word and the substance extractor drops it).
         # ``POST /cases/{case_id}/title`` refuses a thinner case AFTER loading it
         # and passing the tenant check, with a 422, and the case-addressed
-        # battery's control reads a 422 as "the body never reached the
-        # boundary". Without this the parametrisation measures the substance
-        # gate instead of the wall. The marker stays a PREFIX, so every
-        # assertion that scans for it is unaffected.
+        # battery's title control pins a 200. Without this the parametrisation
+        # measures the substance gate instead of the wall (the battery's revert
+        # check thins this very summary to prove the control notices). The
+        # marker stays a PREFIX, so every assertion that scans for it is
+        # unaffected.
         summary=(
             f"{secret_prefix}-payroll-dsn: the connection pool saturates under "
             "sustained load and the service begins timing out; a restart clears "
@@ -3252,131 +3255,539 @@ async def test_a_token_without_an_enterprise_claim_is_refused(world):
 # Surface 6 — the rest of the case-addressed operations, as one battery
 # =============================================================================
 #
-# These are the operations whose only handle is ``{case_id}`` in the path. They
-# are driven with bodies valid enough to get PAST request validation: a 422 for a
-# missing field is not a refusal, it is an assertion that never ran.
+# These are the operations whose only handle is ``{case_id}`` in the path. Each
+# is run twice, differing only in WHO calls: A at B's case (the refusal), and B
+# at B's own case (the control).
+#
+# The invariant this battery holds: **every case has an owner control that
+# proves the request reached the operation's own logic**, so its refusal says
+# something about the tenancy boundary. A refusal alone says nothing. ``REFUSED``
+# admits 403, 404, 409 and 422, so a request that dies at validation, at a
+# missing collaborator, or at a domain precondition looks exactly like one the
+# case gate turned away. The control is what separates the two, and it can only
+# do that if it pins the status its operation really returns in this world
+# (a 2xx here, except the turn-cap case, whose owner turn ends at an unwired
+# engine and is pinned by the ledger row it was charged) and an effect that only
+# the operation's own logic produces. ``!= 422`` did not: a 500, a 503 and a 404 all satisfied it, and the
+# session-resume owner was getting a 404 — the attacker's own answer.
+#
+# Each case therefore ARRANGES the world its operation needs (an engine double, a
+# terminal case, a session the owner holds), then states what the owner's
+# answer and the attacker's non-effect are. ``broken=True`` undoes exactly that
+# arrangement, and :func:`test_a_battery_control_fails_when_its_fixture_is_broken`
+# runs every case that way and requires its control to go red: the revert check.
 
-CASE_ADDRESSED_OPERATIONS = [
-    # ``turns`` is a multipart form, not JSON. Sent as ``data=`` so the query
-    # field actually binds and the request reaches the case check instead of
-    # failing its own validation.
-    pytest.param(
-        "POST",
-        "/api/v1/cases/{case_id}/turns",
-        {"__form__": {"query": "probe"}},
-        id="turns",
-    ),
-    pytest.param("POST", "/api/v1/cases/{case_id}/title", {}, id="title"),
-    pytest.param(
-        "POST",
-        "/api/v1/cases/{case_id}/reports",
-        {"report_type": "closure_summary"},
-        id="reports-generate",
-    ),
-    pytest.param(
-        "POST",
-        "/api/v1/cases/sessions/sess_probe_0001/resume/{case_id}",
-        {},
-        id="session-resume-case",
-    ),
+
+@dataclass
+class _Arranged:
+    """One battery case, arranged for one world.
+
+    ``path_a`` and ``path_b`` differ only for the session-resume case, where each
+    party names a session of their own (so the session half of that route passes
+    for the attacker and only the case gate can refuse). The two ``check_*``
+    callables hold what the case pins; both raise ``AssertionError``, and every
+    control message begins ``control:``.
+    """
+
+    method: str
+    path_a: str
+    path_b: str
+    kwargs: dict[str, Any]
+    check_refusal: Callable[[Any], Awaitable[None]]
+    check_control: Callable[[Any], Awaitable[None]]
+
+
+#: A case's arrangement: ``(world, stack, broken)``. Anything it installs is
+#: registered on ``stack``, so it is put back however the test exits (the app
+#: is module-scoped).
+_Arrange = Callable[[Any, AsyncExitStack, bool], Awaitable[_Arranged]]
+
+
+class _RecordingEngine:
+    """The investigation service as the turn route sees it: scripted, and recording.
+
+    Replaces the module's ``_Tripwire`` for the one case that needs the owner's
+    turn to complete. The route's own work (the case gate, the form, the
+    idempotency step, the response gate) is real; everything behind
+    ``prepare_turn``/``commit_turn`` is this double, so no model is ever called.
+    ``turns`` is the observable: the attacker's refusal must leave it empty, and
+    the owner's turn must be the one entry in it.
+    """
+
+    ANSWER = "probe: the engine handled this turn"
+
+    def __init__(self) -> None:
+        self.turns: list[tuple[str, str]] = []
+
+    async def prepare_turn(self, case_id: str, user_id: str, payload: Any):
+        self.turns.append((case_id, user_id))
+        return SimpleNamespace(case_id=case_id)
+
+    async def commit_turn(self, prepared: Any, receipt_key: Any = None):
+        from faultmaven.models.api_models import TurnResponse
+        from faultmaven.modules.case.contracts import CaseState
+
+        return TurnResponse(
+            agent_response=self.ANSWER,
+            turn_number=1,
+            milestones_completed=[],
+            case_state=CaseState.INVESTIGATING,
+            progress_made=False,
+        )
+
+
+async def _report_count(world, case_id: str) -> int:
+    async with world.superuser_engine.connect() as conn:
+        return (
+            await conn.execute(
+                text("SELECT count(*) FROM reports WHERE case_id = :c"),
+                {"c": case_id},
+            )
+        ).scalar()
+
+
+async def _arrange_turns(world, stack: AsyncExitStack, broken: bool) -> _Arranged:
+    """``POST /cases/{id}/turns`` — the owner's turn is answered by the engine double.
+
+    ``multipart`` form, sent as ``data=`` so the query field binds. Broken:
+    the double is not installed, the module's tripwire stays the engine, and the
+    owner's turn is a 500 — which is what this control used to be satisfied by.
+    """
+    engine = _RecordingEngine()
+    if not broken:
+        await stack.enter_async_context(
+            _app_state(world.app, investigation_service=engine)
+        )
+    case_id = world.b.case.case_id
+    path = f"/api/v1/cases/{case_id}/turns"
+
+    async def check_refusal(response) -> None:
+        assert engine.turns == [], (
+            "the refused cross-wall turn reached the investigation engine — the "
+            f"case gate did not stop it first: {engine.turns}"
+        )
+
+    async def check_control(response) -> None:
+        assert response.status_code == 200, (
+            f"control: B's turn on B's OWN case answered {response.status_code}, "
+            "so it never completed and A's refusal is not attributable to the "
+            f"boundary: {response.text[:300]}"
+        )
+        assert response.json()["agent_response"] == engine.ANSWER
+        assert engine.turns == [(case_id, world.b.user_id)], (
+            "control: the owner's turn did not reach the engine as the owner's "
+            f"turn on the owner's case: {engine.turns}"
+        )
+
+    return _Arranged(
+        method="POST",
+        path_a=path,
+        path_b=path,
+        kwargs={"data": {"query": "probe"}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+async def _arrange_title(world, stack: AsyncExitStack, broken: bool) -> _Arranged:
+    """``POST /cases/{id}/title`` — generated, and persisted on the owner's row.
+
+    No model: the app has no ``llm_provider``, so the title is the extractive
+    one, built from the case's evidence summary. That summary is padded past
+    ``MIN_CONTENT_LENGTH_FOR_TITLE`` by the seeder for exactly this reason.
+    Broken: the summary is thinned below the substance gate, and the owner's
+    request is refused by the operation's own precondition (422) — a status
+    ``REFUSED`` also admits.
+    """
+    case_id = world.b.case.case_id
+    if broken:
+        async with world.superuser_engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE evidence SET summary = 'thin' WHERE case_id = :c"),
+                {"c": case_id},
+            )
+    before = await _case_row(world, case_id)
+
+    async def check_refusal(response) -> None:
+        assert (
+            await _case_row(world, case_id)
+        ).title == before.title, (
+            "the refused cross-wall title request renamed the owner's case"
+        )
+
+    async def check_control(response) -> None:
+        assert response.status_code == 200, (
+            f"control: B's title request on B's OWN case answered "
+            f"{response.status_code}, so it never generated a title and A's "
+            f"refusal is not attributable to the boundary: {response.text[:300]}"
+        )
+        title = response.json()["title"]
+        assert (
+            title and title != before.title
+        ), f"control: the owner's request returned no new title: {title!r}"
+        assert (
+            await _case_row(world, case_id)
+        ).title == title, (
+            "control: the generated title was not persisted on the owner's case"
+        )
+
+    path = f"/api/v1/cases/{case_id}/title"
+    return _Arranged(
+        method="POST",
+        path_a=path,
+        path_b=path,
+        kwargs={"json": {}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+async def _arrange_report_service(
+    world, stack: AsyncExitStack, broken: bool
+) -> tuple[str, int]:
+    """What both report-generation routes need before the owner can succeed.
+
+    Reports exist only for a TERMINAL case, so B's case is closed (a state flip
+    on the seeded row: the arrangement, not what is under test), and the report
+    service is the real one over the real repository: closure summaries are
+    rendered from case fields, not by a model. Returns the case id and the
+    number of reports it holds. The seeder wrote one closure summary, so one
+    regeneration is within the cap. Broken: the case is left open and the owner
+    is told 400.
+    """
+    from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+        SessionlessCaseRepository,
+    )
+    from faultmaven.modules.report.domain.services.report_generation_service import (
+        ReportGenerationService,
+    )
+
+    case_id = world.b.case.case_id
+    if not broken:
+        async with world.superuser_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE cases SET state = 'closed', "
+                    "closure_reason = 'closed_insufficient_evidence', "
+                    "closed_at = now() WHERE case_id = :c"
+                ),
+                {"c": case_id},
+            )
+    await stack.enter_async_context(
+        _app_state(
+            world.app,
+            report_generation_service=ReportGenerationService(
+                case_repository=SessionlessCaseRepository()
+            ),
+        )
+    )
+    before = await _report_count(world, case_id)
+    assert before == 1, f"the seeded case holds {before} reports, not its one"
+    return case_id, before
+
+
+def _report_checks(world, case_id: str, before: int, owner_status: int):
+    """The refusal and control both report-generation routes pin.
+
+    The routes differ in the status they answer a successful generation with
+    (``owner_status``) and nothing else that is asserted here.
+    """
+
+    async def check_refusal(response) -> None:
+        assert response.status_code == 404, (
+            "the cross-wall report request was not answered as an absent case "
+            f"({response.status_code}): {response.text[:300]}"
+        )
+        assert (
+            await _report_count(world, case_id) == before
+        ), "the refused cross-wall request generated a report on the owner's case"
+
+    async def check_control(response) -> None:
+        assert response.status_code == owner_status, (
+            f"control: B's report request on B's OWN case answered "
+            f"{response.status_code}, not {owner_status}, so nothing was "
+            f"generated and A's refusal is not attributable to the boundary: "
+            f"{response.text[:300]}"
+        )
+        body = response.json()
+        assert body["case_id"] == case_id
+        assert [r["report_type"] for r in body["reports"]] == [
+            "closure_summary"
+        ], f"control: the owner's request rendered the wrong reports: {body}"
+        assert (
+            await _report_count(world, case_id) == before + 1
+        ), "control: the owner's regenerated report was not stored"
+
+    return check_refusal, check_control
+
+
+async def _arrange_reports(world, stack: AsyncExitStack, broken: bool) -> _Arranged:
+    """``POST /cases/{id}/reports`` — a regenerated closure summary, by the real service.
+
+    The body names ``report_types``: the route reads
+    ``request_body["report_types"]``, so the old ``{"report_type": ...}`` was a
+    ``KeyError`` waiting behind the terminal check, and would have answered
+    500 to a terminal owner.
+    """
+    case_id, before = await _arrange_report_service(world, stack, broken)
+    check_refusal, check_control = _report_checks(world, case_id, before, 200)
+    path = f"/api/v1/cases/{case_id}/reports"
+    return _Arranged(
+        method="POST",
+        path_a=path,
+        path_b=path,
+        kwargs={"json": {"report_types": ["closure_summary"]}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+async def _arrange_report_generation(
+    world, stack: AsyncExitStack, broken: bool
+) -> _Arranged:
+    """``POST /reports/generate?case_id=...`` — the case id rides in the query.
+
+    The same generation as ``POST /cases/{id}/reports``, behind a second route
+    and a ``201``. Its control used to be ``!= 404``: the owner reached the
+    handler, found no report service wired and answered 503, so the
+    attacker's 404 was set against a request that never generated anything.
+    """
+    case_id, before = await _arrange_report_service(world, stack, broken)
+    check_refusal, check_control = _report_checks(world, case_id, before, 201)
+    path = f"/api/v1/reports/generate?case_id={case_id}"
+    return _Arranged(
+        method="POST",
+        path_a=path,
+        path_b=path,
+        kwargs={"json": {"report_types": ["closure_summary"]}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+async def _arrange_resume(world, stack: AsyncExitStack, broken: bool) -> _Arranged:
+    """``POST /cases/sessions/{sid}/resume/{case_id}`` — the owner's own session.
+
+    The case answered 404 to its owner because the path named
+    ``sess_probe_0001``, a session nobody holds: the route's SESSION gate
+    refused, with the same status the case gate gives the attacker. Each party
+    now mints a session through the API (ownership is the server's, not the
+    fixture's), and the case service gets a store the pointer can be read back
+    from. The attacker names their own session, so the session gate passes for
+    them and the case gate is the only thing left to refuse — told apart by its
+    ``detail``, which differs from the session gate's. Broken: both parties name
+    the unowned session again.
+    """
+    a_session, b_session = await stack.enter_async_context(_auth_sessions(world))
+    if broken:
+        a_session = b_session = "sess_probe_0001"
+
+    store = _DictSessionStore()
+    case_service = world.app.state.case_service
+    saved_store = case_service.session_store
+    case_service.session_store = store
+    stack.callback(setattr, case_service, "session_store", saved_store)
+
+    case_id = world.b.case.case_id
+    before = await _case_row(world, case_id)
+
+    async def check_refusal(response) -> None:
+        assert response.json().get("detail") == (
+            "Case not found or resume not permitted"
+        ), (
+            "the refusal did not come from the route's own CASE gate (A's session "
+            f"is A's, so the session gate cannot be what refused): {response.text[:300]}"
+        )
+        assert store.data == {}, "a refused resume moved a session pointer"
+        assert (
+            await _case_row(world, case_id) == before
+        ), "a refused resume wrote the owner's case (last_activity_at)"
+
+    async def check_control(response) -> None:
+        assert response.status_code == 200, (
+            f"control: B's resume of B's OWN case in B's OWN session answered "
+            f"{response.status_code}, so it never linked and A's refusal is not "
+            f"attributable to the boundary: {response.text[:300]}"
+        )
+        assert response.json()["success"] is True
+        assert store.data == {f"session:{b_session}:current_case_id": case_id}, (
+            "control: the owner's resume did not point their session at the "
+            f"case: {store.data}"
+        )
+        assert (await _case_row(world, case_id)).last_activity_at != (
+            before.last_activity_at
+        ), (
+            "control: the owner's resume did not touch the case's last_activity_at, "
+            "so the refused resume's unchanged row proves nothing"
+        )
+
+    prefix = "/api/v1/cases/sessions"
+    return _Arranged(
+        method="POST",
+        path_a=f"{prefix}/{a_session}/resume/{case_id}",
+        path_b=f"{prefix}/{b_session}/resume/{case_id}",
+        kwargs={"json": {}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+async def _arrange_turn_cap(world, stack: AsyncExitStack, broken: bool) -> _Arranged:
+    """``POST /cases/{id}/turns`` and the per-tenant daily cap (ADR-016 D5.3).
+
+    The cap must not be spendable by probing. A's turn at B's case is refused by
+    the case check; the cap is charged inside ``InvestigationService``'s reserve
+    step, *after* it, so nothing is written for either party. That was a bare
+    "no row" until the owner got a control: with the tripwire as the engine the
+    owner's own turn never reached the reserve step either, so the ledger was
+    empty whoever called, and a cap charged BEFORE the case check (the way it
+    was when it was a route dependency) would have gone unseen.
+
+    The real service is installed as ``test_a_teammates_turn_is_refused_by_the_
+    service_and_costs_nothing`` installs it, over the real repository and the
+    turn cap as the composition root builds it (the SQL ledger). Its engine is a
+    namespace whose model is a tripwire, so no model is called: the owner's
+    turn passes the reserve step, is charged one unit, and ends at the unwired
+    engine (a 500 that is deliberately not pinned, as there). Read back as the
+    superuser, so "no row" cannot be RLS hiding one. Under ADR-017 the ledger is
+    keyed on a **billing subject** (D5), and in these arms neither party is in
+    an organization, so the subject is the account. Broken: the tripwire stays
+    the engine, the owner's turn never reserves, and the ledger is empty.
+    """
+    from faultmaven.container.providers.services import _build_turn_cap_service
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (  # noqa: E501
+        InvestigationService,
+    )
+    from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+        SessionlessCaseRepository,
+    )
+
+    if not broken:
+        service = InvestigationService(
+            milestone_engine=SimpleNamespace(
+                deps=SimpleNamespace(
+                    llm_provider=_Tripwire("llm_provider"),
+                    sanitizer=None,
+                    redis_client=None,
+                )
+            ),
+            case_repository=SessionlessCaseRepository(),
+            preprocessing_service=_Tripwire("preprocessing_service"),
+            file_storage_service=_Tripwire("file_storage_service"),
+            turn_cap=_build_turn_cap_service(),
+        )
+        await stack.enter_async_context(
+            _app_state(world.app, investigation_service=service)
+        )
+
+    async def ledger() -> list[tuple[str, str, int]]:
+        async with world.superuser_engine.connect() as conn:
+            return [
+                tuple(row)
+                for row in (
+                    await conn.execute(
+                        text(
+                            "SELECT billing_subject_kind, billing_subject_id, "
+                            "turn_count FROM turn_usage "
+                            "WHERE billing_subject_id IN (:a, :b)"
+                        ),
+                        {"a": world.a.user_id, "b": world.b.user_id},
+                    )
+                ).all()
+            ]
+
+    assert await ledger() == [], "the world started with a charged allowance"
+
+    async def check_refusal(response) -> None:
+        assert await ledger() == [], (
+            "a refused cross-wall turn wrote a usage row — the cap is being "
+            f"charged before the case check: {await ledger()}"
+        )
+
+    async def check_control(response) -> None:
+        assert response.status_code not in (403, 404), (
+            "control: B's turn on B's OWN case was refused as a stranger's "
+            f"({response.status_code}): {response.text[:300]}"
+        )
+        assert await ledger() == [("account", world.b.user_id, 1)], (
+            "control: the owner's turn was not charged one unit to the owner's "
+            "account, so the empty ledger after A's refused turn proves nothing: "
+            f"{await ledger()}"
+        )
+
+    path = f"/api/v1/cases/{world.b.case.case_id}/turns"
+    return _Arranged(
+        method="POST",
+        path_a=path,
+        path_b=path,
+        kwargs={"data": {"query": "probe"}},
+        check_refusal=check_refusal,
+        check_control=check_control,
+    )
+
+
+BATTERY = [
+    pytest.param(_arrange_turns, id="turns"),
+    pytest.param(_arrange_title, id="title"),
+    pytest.param(_arrange_reports, id="reports-generate"),
+    pytest.param(_arrange_resume, id="session-resume-case"),
+    pytest.param(_arrange_turn_cap, id="turn-cap"),
+    pytest.param(_arrange_report_generation, id="report-generation-by-query"),
 ]
 
 
-@pytest.mark.parametrize("method,template,body", CASE_ADDRESSED_OPERATIONS)
+@pytest.mark.parametrize("arrange", BATTERY)
 async def test_every_case_addressed_operation_refuses_the_other_party(
-    world, method, template, body
+    world, arrange: _Arrange
 ):
     """One battery over the remaining ``{case_id}`` operations.
 
-    ``app.state.investigation_service`` is a tripwire (see :class:`_Tripwire`), so
-    a route that resolved the engine before checking the case would answer 500
-    rather than a refusal — which this assertion rejects. That is what keeps the
-    battery honest for the write paths whose collaborators are not wired here:
-    they cannot pass by being unavailable.
+    The refusal: A's call at B's case is turned away by the case gate, leaves no
+    effect, and echoes nothing of B's. The control: B's identical call at B's own
+    case completes with the status and effect the case pins (see the section
+    comment for why that, and nothing weaker, is what the refusal needs beside
+    it).
 
-    The control is deliberately weak, and weak is what it can be: B's identical
-    call on B's OWN case must not be 422. Nothing stronger is assertable — most
-    of these operations need collaborators this module does not wire, so their
-    owner-side status is unpredictable (200, 400, 404, 500 are all legitimate
-    here) and pinning one would make the battery a test of the engine. But 422 is
-    different: it means the BODY never validated, so the request died before the
-    tenant check and A's refusal above measured request parsing rather than the
-    boundary. That is the exact way a battery like this rots — a response model
-    gains a required field and every parametrisation quietly starts asserting
-    nothing.
+    ``app.state.investigation_service`` is the module's tripwire everywhere
+    except the two turn cases: one installs a recording double that fails the
+    refusal if A's call reaches it, the other the real service over the real
+    turn cap, whose ledger must stay empty for A and hold one unit for B — so a
+    route that resolved the engine, or charged the cap, before checking the
+    case is still caught.
     """
-    # One path: B's case is both the attacker's target and the control's own
-    # case, so the two calls differ ONLY in who makes them.
-    path = template.format(case_id=world.b.case.case_id)
-    if body is not None and "__form__" in body:
-        response = await as_a(world, method, path, data=body["__form__"])
-        control = await as_b(world, method, path, data=body["__form__"])
-    else:
-        response = await as_a(world, method, path, json=body)
-        control = await as_b(world, method, path, json=body)
+    async with AsyncExitStack() as stack:
+        arranged = await arrange(world, stack, False)
+        surface = f"{arranged.method} {arranged.path_a}"
 
-    assert control.status_code != 422, (
-        f"control: {method} {path} answered 422 to its OWN case's owner, so the "
-        f"body never reached the tenant check and the refusal below is a "
-        f"validation error rather than the boundary: {control.text[:300]}"
-    )
-    assert_refused(response, f"{method} {path}")
+        attack = await as_a(world, arranged.method, arranged.path_a, **arranged.kwargs)
+        assert_refused(attack, surface)
+        await arranged.check_refusal(attack)
+
+        control = await as_b(world, arranged.method, arranged.path_b, **arranged.kwargs)
+        await arranged.check_control(control)
 
 
-async def test_a_refused_cross_wall_turn_charges_nobodys_daily_allowance(world):
-    """The per-tenant turn cap must not be spendable by probing (ADR-016 D5.3).
+@pytest.mark.parametrize("arrange", BATTERY)
+async def test_a_battery_control_fails_when_its_fixture_is_broken(
+    world, arrange: _Arrange
+):
+    """The revert check: undo each case's arrangement and its control goes red.
 
-    A's turn at B's case is refused by the case check. The cap is charged inside
-    ``InvestigationService.process_turn``, *after* that check, so nothing should
-    be written for either party — and this is the case that says so, because when
-    the cap was a route dependency it ran BEFORE the check and the battery above
-    silently spent a unit of A's day on every parametrisation.
-
-    Read back as the OWNER, so "no row" cannot be RLS hiding one. Under ADR-017
-    the ledger is keyed on a **billing subject** rather than an organization
-    (D5), and in these arms neither party is in an organization at all, so the
-    subject is the account.
+    The attacker's refusal is asserted too, and stays green. That is the point
+    of the test, not a side effect: with the arrangement gone the refusal is as
+    clean as ever, and says nothing — it is the owner's control that notices.
+    ``match="control:"`` so only the control's own assertion counts: a fixture
+    that raises something else, or an arrangement that fails before the call,
+    must not pass as a caught revert.
     """
-    path = f"/api/v1/cases/{world.b.case.case_id}/turns"
-    response = await as_a(world, "POST", path, data={"query": "probe"})
-    assert_refused(response, f"POST {path}")
+    async with AsyncExitStack() as stack:
+        arranged = await arrange(world, stack, True)
+        attack = await as_a(world, arranged.method, arranged.path_a, **arranged.kwargs)
+        assert_refused(attack, f"{arranged.method} {arranged.path_a}")
 
-    async with world.superuser_engine.connect() as conn:
-        rows = (
-            await conn.execute(
-                text(
-                    "SELECT billing_subject_kind, billing_subject_id, turn_count "
-                    "FROM turn_usage WHERE billing_subject_id IN (:a, :b)"
-                ),
-                {"a": world.a.user_id, "b": world.b.user_id},
-            )
-        ).fetchall()
-
-    assert rows == [], (
-        "a refused cross-wall turn wrote a usage row — the cap is being charged "
-        f"before the case check: {rows}"
-    )
-
-
-async def test_report_generation_by_case_id_refuses_the_other_party(world):
-    """``POST /reports/generate?case_id=...`` — the case id rides in the query.
-
-    The control is the *difference*: B's call reaches the generation service (and
-    fails there, unwired), A's never resolves the case at all. Two different
-    failures, and only one of them is the boundary.
-    """
-    path = f"/api/v1/reports/generate?case_id={world.b.case.case_id}"
-    body = {"report_types": ["closure_summary"]}
-
-    control = await as_b(world, "POST", path, json=body)
-    attack = await as_a(world, "POST", path, json=body)
-
-    assert control.status_code != 404, (
-        "control: B's own generate request now 404s too, so A's 404 no longer "
-        "distinguishes the boundary from a broken route"
-    )
-    assert attack.status_code == 404
-    assert_no_b_content(attack, f"POST {path}")
+        control = await as_b(world, arranged.method, arranged.path_b, **arranged.kwargs)
+        with pytest.raises(AssertionError, match="control:"):
+            await arranged.check_control(control)
 
 
 async def test_the_debug_causal_graph_answers_content_to_one_party_only(world):
