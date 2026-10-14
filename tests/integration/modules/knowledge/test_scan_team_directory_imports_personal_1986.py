@@ -20,11 +20,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import frontmatter
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -32,6 +34,9 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     KnowledgeItemModel,
     ResourceShareModel,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    runbook_scan,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -108,11 +113,17 @@ def conversion(session_factory, knowledge, knowledge_dir):
         yield service
 
 
-def _place(root: Path, relative: str, runbook_id: str) -> Path:
+def _place(
+    root: Path, relative: str, runbook_id: str, frontmatter_scope: str = "global"
+) -> Path:
+    """A valid runbook at ``relative``. Its own frontmatter ``scope`` is
+    independent of the directory it is placed in: the sample says ``global``."""
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
+    text = valid_runbook().replace("id: sample-runbook", f"id: {runbook_id}")
+    assert "scope: global\n" in text
     path.write_text(
-        valid_runbook().replace("id: sample-runbook", f"id: {runbook_id}"),
+        text.replace("scope: global\n", f"scope: {frontmatter_scope}\n", 1),
         encoding="utf-8",
     )
     return path
@@ -222,6 +233,24 @@ class TestTeamDirectoryFileIsImportedAsPersonal:
         assert len(result["errors"]) == 1
         assert result["errors"][0].startswith("short.md: too short")
 
+    async def test_a_team_file_whose_id_is_taken_is_an_error_not_a_note(
+        self, conversion, knowledge_dir
+    ):
+        """The id is claimed between the walk's read and the mint: the file is
+        not imported, so there is no imported-as-personal to tell the caller."""
+        _place(knowledge_dir, "team_x/foo.md", "team-foo")
+        taken = AsyncMock(side_effect=ConflictError("the id is taken"))
+
+        with patch.object(runbook_scan, "_persist_job", taken):
+            result = await _scan(conversion)
+
+        taken.assert_awaited_once()
+        assert result["discovered"] == 0
+        assert result["drafts"] == []
+        assert result["notes"] == []
+        assert len(result["errors"]) == 1
+        assert result["errors"][0].startswith("foo.md: runbook id 'team-foo'")
+
     async def test_several_files_each_get_their_own_note(
         self, conversion, knowledge_dir
     ):
@@ -233,6 +262,91 @@ class TestTeamDirectoryFileIsImportedAsPersonal:
         assert result["discovered"] == 2
         assert sorted(result["notes"]) == [_note("team_x/a.md"), _note("team_y/b.md")]
         assert {d["scope"] for d in result["drafts"]} == {"personal"}
+
+
+async def _published(
+    conversion: ConversionService, session_factory, relative: str, **verify_kwargs
+):
+    """Scan the one file placed at ``relative``, verify its draft, and return
+    ``(published item row, verified draft row)``."""
+    result = await _scan(
+        conversion, admin=verify_kwargs.get("is_platform_admin", False)
+    )
+    [draft] = result["drafts"]
+    job = await _job_of(session_factory, draft["draft_id"])
+    verified = await conversion.verify_draft(
+        job.id, draft["draft_id"], user_id=OWNER, **verify_kwargs
+    )
+    assert verified.status == "verified"
+    async with session_factory() as session:
+        item = (
+            await session.execute(
+                select(KnowledgeItemModel).where(
+                    KnowledgeItemModel.item_id == verified.knowledge_item_id
+                )
+            )
+        ).scalar_one()
+        row = await session.get(ConversionDraftModel, draft["draft_id"])
+    return item, row
+
+
+class TestThePublishedTextNamesTheTierItWasPublishedAt:
+    """``scope`` in a runbook's frontmatter is the tier its knowledge item is
+    published at (``taxonomy.KnowledgeScope``). The tier is the job's, so verify
+    writes it into the stored text; a file's own claim does not survive."""
+
+    @pytest.mark.parametrize(
+        ("relative", "file_says", "published_at", "admin"),
+        [
+            ("team_x/foo.md", "team", "personal", False),
+            ("personal_u1/foo.md", "global", "personal", False),
+            ("user_u1/foo.md", "team", "personal", False),
+            ("global/foo.md", "personal", "global", True),
+        ],
+        ids=["team-dir", "personal-dir-claims-global", "user-dir", "global-dir"],
+    )
+    async def test_verify_writes_the_published_tier_into_the_text(
+        self,
+        relative,
+        file_says,
+        published_at,
+        admin,
+        conversion,
+        session_factory,
+        knowledge_dir,
+    ):
+        _place(knowledge_dir, relative, "scoped-foo", frontmatter_scope=file_says)
+
+        item, row = await _published(
+            conversion, session_factory, relative, is_platform_admin=admin
+        )
+
+        assert item.scope == published_at
+        assert frontmatter.loads(item.content).metadata["scope"] == published_at
+        # The draft row holds the same text as its item (#1950).
+        assert row.content == item.content
+
+    async def test_a_draft_whose_frontmatter_already_agrees_verifies_as_before(
+        self, conversion, session_factory, knowledge_dir
+    ):
+        """Verify's text is the draft's, re-read with ``status`` and
+        ``verified_by`` set. A draft that already names its tier gains nothing
+        else: the expected text is computed here without any ``scope`` write."""
+        path = _place(
+            knowledge_dir,
+            "personal_u1/foo.md",
+            "agree-foo",
+            frontmatter_scope="personal",
+        )
+        post = frontmatter.loads(path.read_text(encoding="utf-8"))
+        post.metadata["status"] = "verified"
+        post.metadata["verified_by"] = ""
+        expected = frontmatter.dumps(post)
+
+        item, row = await _published(conversion, session_factory, "personal_u1/foo.md")
+
+        assert item.content == expected
+        assert row.content == expected
 
 
 class TestOtherDirectoriesAreUnchanged:

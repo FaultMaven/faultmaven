@@ -1896,6 +1896,13 @@ class ConversionService:
         post = frontmatter.loads(read_content)
         post.metadata["status"] = "verified"
         post.metadata["verified_by"] = verifier_name
+        # ``scope`` in the frontmatter is the tier the knowledge item is
+        # published at (``taxonomy.KnowledgeScope``), and that tier is the
+        # job's, not the file's: a scan infers it from the directory, and a
+        # ``team_*`` file is published personal. The stored text says what the
+        # row says, so a reader of the runbook is not told a tier it is not at
+        # (#1986). A draft whose frontmatter already agrees is unchanged.
+        post.metadata["scope"] = scope
         content = frontmatter.dumps(post)
 
         fm_meta = extract_frontmatter_metadata(content)

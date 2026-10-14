@@ -299,8 +299,9 @@ async def _scan_for_runbooks_impl(
         # into the platform corpus (verified → readable by every tenant,
         # retrieved for every tenant). A caller who may not author global scope (any
         # tenant session under multi, or a non-admin single-tenant) skips it
-        # rather than minting an ungated global draft; personal/team files
-        # discovered in the same scan still proceed (#770, R4).
+        # rather than minting an ungated global draft; the personal files
+        # discovered in the same scan (a ``team_*`` directory's among them)
+        # still proceed (#770, R4).
         if scope == "global" and not global_authoring_allowed:
             logger.info(
                 "Scan skipped global-scope file %s: caller not permitted to "
