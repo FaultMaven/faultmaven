@@ -376,18 +376,20 @@ jobs:
       # So the count rule is in SHADOW: the Compare step computes it and
       # the report prints, on every gated comparison, how many benchmarks
       # are at least R slower and whether it would fail. It does NOT fail
-      # the job; the verdict is the median's alone. 33 clean run-sets (12
-      # runners, 21 real runs) cannot bound its false-red rate below about
-      # 9%, and a loaded box reddens it on 328 of 552 clean pairs, so it
-      # waits for the same kind of evidence the median's step-down does:
-      # the promotion criterion (20 more pull-request runs with
-      # `count_would_fail` false on pull requests that touch no benchmarked
-      # code, recorded on #1989) and the scoring command are in
-      # `docs/development/testing/performance.md`. Promotion is a small,
-      # separate change (`ab.compare` adds the rule to its failures); the
-      # two numbers live here and are pinned against the null in
-      # `tests/unit/ci/test_benchmark_ab.py`. `tests/wallclock/ab.py`'s
-      # docstring carries the rest.
+      # the job; the verdict is the median rule's alone. 23 clean run-sets
+      # (12 runners, and the 11 pull requests behind the 21 real runs)
+      # cannot bound its false-red rate below about 12%, and a loaded box
+      # reddens it on 328 of 552 clean pairs, so it waits for the same kind
+      # of evidence the median's step-down does: the promotion criterion
+      # (20 more pull requests, one run each, with `count_would_fail` false
+      # on pull requests that touch no benchmarked code, recorded on #1989)
+      # and the scoring command (`scripts/score_ab_shadow_rule.sh`) are in
+      # `docs/development/testing/performance.md`. R=1.25 and K=3 were
+      # measured at 19 benchmarks: re-run the null if the suite's size
+      # changes. Promotion is a small, separate change (`ab.compare` adds
+      # the rule to its failures); the two numbers live here and are
+      # pinned against the null in `tests/unit/ci/test_benchmark_ab.py`.
+      # `tests/wallclock/ab.py`'s docstring carries the rest.
       FM_AB_COUNT_RATIO: '1.25'
       FM_AB_COUNT_MIN: '3'
       BASE_SHA: ${{ github.event.pull_request.base.sha }}

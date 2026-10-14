@@ -63,14 +63,17 @@ real reports of this job). They come out differently:
   case module in 94% and a uniform +30% in 100% — where the median gate sees
   0%, 0.8%, 0% and 50%. One or two slowed rows are invisible to it by
   construction. It is red on 0 of the 144 pairs, 0 of the 24 and 0 of the
-  21 real reports, but that is 33 independent clean run-sets (12 runners,
-  21 real ones): too few to bound its false-red rate below about 9%, and a
-  loaded box (the stress case, not the gate's environment) reddens it on 328
-  of 552 clean pairs. So it is **computed and reported on every gated
-  comparison and does not fail the job** until the evidence says it should,
-  the same evidence-first policy ``THRESHOLD_FLOOR`` (in
-  ``tests/unit/ci/test_benchmark_ab.py``) pins for the median. The promotion
-  criterion, and the numbers behind all of this, are in
+  21 real reports, but that is 23 independent clean run-sets (12 runners,
+  and the 11 pull requests behind the 21 real reports): too few to bound its
+  false-red rate below about 12%, and a loaded box (the stress case, not the
+  gate's environment) reddens it on 328 of 552 clean pairs. So it is
+  **computed and reported on every gated comparison and does not fail the
+  job** until the evidence says it should, the same evidence-first policy
+  ``THRESHOLD_FLOOR`` (in ``tests/unit/ci/test_benchmark_ab.py``) pins for the
+  median. R = 1.25 and K = 3 were measured at 19 benchmarks: re-run the null
+  before trusting them if the suite's size changes (the note on
+  ``COVERAGE_FLOOR`` has the same condition). The promotion criterion, and
+  the numbers behind all of this, are in
   ``docs/development/testing/performance.md``.
 
 What the median cannot see is stated rather than hidden: a regression
@@ -585,8 +588,8 @@ def _shadow_lines(verdict: Verdict) -> List[str]:
     lines = [
         f"Shadow rule (not gating yet, #1989): {len(verdict.over)} of "
         f"{len(verdict.compared)} benchmarks ≥ {verdict.count_ratio:.2f}x "
-        f"slower; would fail at {verdict.count_min}, {outcome}. The verdict "
-        f"above is the median's alone and is unchanged."
+        f"slower; would fail at {verdict.count_min}, {outcome}. The job's "
+        f"verdict is the median rule's alone; this line does not change it."
     ]
     if verdict.over:
         lines.append("")

@@ -116,6 +116,23 @@ REAL_GATE_MAX_COUNT = {1.15: 2, 1.20: 2, 1.25: 1, 1.30: 1}
 #: floor is why it cannot be thinned further without new evidence.
 COUNT_RATIO_MARGIN = 1.05
 
+#: The shadow count rule exactly as measured and decided (#1989): the ratio
+#: and K. ‼ Pinned EXACTLY, because every other check on it is a floor and a
+#: floor is one-sided. 1.30 with K=3 and 1.25 with K=4 both clear the null,
+#: and both are strictly worse detectors: 1.30 cuts a random quarter of the
+#: suite 30% slower from 91% to 50%, and the fourth-largest ratio at 1.25
+#: sees the same quarter in 71% against the third-largest's 92% (the margin
+#: sweep in `performance.md`). A looser pair passes every floor and narrows
+#: what the rule can see without anyone deciding it. Changing this pair
+#: requires re-running the #1989 measurement; move it here, in
+#: `benchmarks.yml` and in `performance.md` together.
+DECLARED_COUNT_RULE = (1.25, 3)
+
+#: How many benchmark rows the count rule's null was measured at. R = 1.25 and
+#: K = 3 are numbers about THIS many rows: K=3 of 19 is a different statement
+#: from K=3 of 30.
+RUNNER_NULL_SUITE_ROWS = 19
+
 #: The step-down floor for `FM_AB_SUITE`: the threshold the owner decided on
 #: (#1963). The docs say a step below it is taken on evidence from the gate's
 #: own medians, not on an argument, so a lower value fails here until that
@@ -796,7 +813,10 @@ class TestTheShadowCountRule:
             "≥ 1.25x slower; would fail at 3" in rendered
         )
         assert "would fail this pull request if it gated" in rendered
-        assert "unchanged" in rendered
+        assert (
+            "The job's verdict is the median rule's alone; this line does not "
+            "change it" in rendered
+        )
         # It names the rows, and it is not dressed as a failure.
         assert all(f"b{i:02d}" in rendered for i in range(12))
         assert "#### Regression" not in rendered
@@ -827,6 +847,35 @@ class TestTheShadowCountRule:
             "b09",
             "b31",
         ], "b40 at 1.24x is under the ratio and must not be counted"
+
+    @pytest.mark.parametrize(("over", "more"), [(15, None), (16, 1), (20, 5), (40, 25)])
+    def test_a_long_list_of_rows_is_cut_at_the_table_size_and_says_so(self, over, more):
+        """The `…N more` branch: the list stops at `TABLE_ROWS` and counts
+        the rest, so a 40-row regression cannot print 40 lines into a
+        pull-request comment and cannot hide that it was cut.
+
+        ‼ N is `over - TABLE_ROWS` (20 over rows are `…5 more`, 40 are
+        `…25 more`); at exactly `TABLE_ROWS` there is no suffix at all.
+        """
+        base = _suite(lambda i: 1.0)
+        head = _suite(lambda i: 1.3 if i < over else 1.0)
+        verdict = ab.compare(base, head, suite_threshold=1.40, **self.RULE)
+        assert len(verdict.over) == over
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.40
+        )
+        listed = [line for line in rendered.splitlines() if line.startswith("- b")]
+        assert (
+            len(listed)
+            == min(over, ab.TABLE_ROWS)
+            == len([line for line in listed if "1.30x" in line])
+        )
+        suffix = [line for line in rendered.splitlines() if line.startswith("- …")]
+        if more is None:
+            assert suffix == []
+        else:
+            assert suffix == [f"- …{more} more"]
+        assert f"{over} of 50 benchmarks ≥ 1.25x slower" in rendered
 
     @pytest.mark.parametrize(
         ("scale", "label"),
@@ -867,6 +916,15 @@ class TestTheShadowCountRule:
         assert not verdict.ok
         assert len(verdict.failures) == 1 and "whole suite" in verdict.failures[0]
         assert len(verdict.over) == 50 and verdict.count_would_fail is True
+        # ‼ The line sits above a `#### Regression` section when the median
+        # fails, so it must not claim the verdict is "above" or unchanged in
+        # a way that reads as clean: it says whose rule decides the job.
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.30
+        )
+        assert "#### Regression" in rendered
+        assert "The job's verdict is the median rule's alone" in rendered
+        assert "verdict above" not in rendered
 
     def test_it_is_inert_when_it_is_not_configured(self):
         """No arguments, no shadow line, no shadow state: the comparator is
@@ -1406,6 +1464,37 @@ class TestWorkflowWiring:
         ]
         assert "--suite-threshold" in step["run"]
         assert "FM_AB_SUITE" in step["run"]
+
+    def test_the_count_rule_is_exactly_the_pair_that_was_measured(self):
+        """‼ One-sided floors let a worse pair through; this one does not.
+
+        `DECLARED_COUNT_RULE` says why 1.30/3 and 1.25/4 are not "also fine".
+        """
+        env = self._job()["env"]
+        declared = (float(env["FM_AB_COUNT_RATIO"]), int(env["FM_AB_COUNT_MIN"]))
+        assert declared == DECLARED_COUNT_RULE, (
+            f"the shadow count rule is {declared}, not the measured "
+            f"{DECLARED_COUNT_RULE}: a different pair needs the #1989 "
+            f"measurement re-run, and this constant, benchmarks.yml and "
+            f"performance.md moved together"
+        )
+
+    def test_the_count_rule_was_measured_at_this_suite_size(self):
+        """‼ R=1.25 and K=3 are statements about 19 rows.
+
+        The null count (at most 1 of 19 at 1.25) and the third-largest
+        ratio's null maximum (1.190) are both functions of how many rows
+        there are, so a suite that gained or lost rows has not been
+        measured. When this fails, re-run the null on the new suite
+        (`docs/development/testing/performance.md`) before moving
+        `RUNNER_NULL_SUITE_ROWS` and the numbers it stands behind.
+        """
+        _, by_module = _the_real_suite()
+        rows = sum(len(tests) for tests in by_module.values())
+        assert rows == RUNNER_NULL_SUITE_ROWS, (
+            f"the suite has {rows} benchmarks; the count rule's ratio and K "
+            f"were measured at {RUNNER_NULL_SUITE_ROWS}"
+        )
 
     def test_the_count_rule_is_declared_once_and_is_clear_of_the_null(self):
         """‼ The shadow rule's two numbers, held to the null they came from.

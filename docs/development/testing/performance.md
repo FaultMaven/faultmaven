@@ -722,83 +722,111 @@ is why the evidence below matters more than the detection table.
 
 **What the evidence cannot yet say.** Zero false reds in 144 pairs is
 zero in 12 independent runners, not in 144 (pairs from one runner share its
-state); with the 21 real reports that is 33 independent clean run-sets, and
-zero in 33 bounds the false-red rate below only about 9% (95% upper bound,
-1 - 0.05^(1/33)). A model that treats the rows as independent puts the
-per-run chance of three rows over 1.25x at 6e-5 (from 11 of 2736
-row-observations over 1.25x), but the rows of one run share its contention,
-so they are not independent and the model is a reason for hope, not a
-bound. The loaded box is not the gate's environment, but it shows what the
-rule depends on: it is red on 328 of 552 clean pairs there, so under load
-three rows are over 1.25x more often than not. On the runners the rule is as
-good as the runners are quiet, and 33 run-sets cannot yet say that is good
-enough for a gate.
+state). The 21 real reports are not 21 independent samples either: they come
+from 11 pull requests (one pull request has four runs, another three), and a
+rerun or a push of one pull request shares its code. So the clean sets are 12
+runners and 11 pull requests, **23**, and zero in 23 bounds the false-red
+rate below only about 12% (95% upper bound, 1 - 0.05^(1/23)); the 33 that
+counting the runs would give is an overstatement. A model that treats the
+rows as independent puts the per-run chance of three rows over 1.25x at 6e-5
+(from 11 of 2736 row-observations over 1.25x), but the rows of one run share
+its contention, so they are not independent and the model is a reason for
+hope, not a bound. The loaded box is not the gate's environment, but it shows
+what the rule depends on: it is red on 328 of 552 clean pairs there, so under
+load three rows are over 1.25x more often than not. On the runners the rule
+is as good as the runners are quiet, and 23 clean sets cannot yet say that is
+good enough for a gate.
 
 **The decision: shadow.** The count rule is computed and reported on every
-gated comparison, and it does not fail the job. The report carries one line
-in the median's paragraph:
+gated comparison, and it does not fail the job. The report carries a
+paragraph of its own, after the median's:
 
 > Shadow rule (not gating yet, #1989): 5 of 19 benchmarks ≥ 1.25x slower;
-> would fail at 3, so it would fail this pull request if it gated. The verdict
-> above is the median's alone and is unchanged.
+> would fail at 3, so it would fail this pull request if it gated. The job's
+> verdict is the median rule's alone; this line does not change it.
 
-followed by the rows and their ratios, worst first. `ab_report.json` carries
-`count_ratio`, `count_min`, `count_would_fail`, `over_count` and `over` (the
-rows, as `nodeid|label|occurrence` and ratio). `count_would_fail` is `true`
+followed by the rows and their ratios, worst first (the first 15, then
+`…N more`). When the median does fail, the `#### Regression` section below
+says so and the shadow paragraph still describes only itself.
+`ab_report.json` carries `count_ratio`, `count_min`, `count_would_fail`,
+`over_count` and `over` (the rows, as `nodeid|label|occurrence` and ratio).
+`count_would_fail` is `true`
 (the rule would fail the comparison), `false` (it ran and would not) or
 `null` (it did **not** run: the comparison was not gated, or the rule was not
 configured); a scorer reads `null` as nothing measured, never as clean. The
 two numbers live in the job's `env:` block
-(`FM_AB_COUNT_RATIO`, `FM_AB_COUNT_MIN`) and
-`tests/unit/ci/test_benchmark_ab.py` holds them to the null above: a ratio
-the runner null measured, K at least two over the null's maximum count and
-over what a real green pull request reached, and a 5% margin over the K-th
-largest ratio's null maximum.
+(`FM_AB_COUNT_RATIO`, `FM_AB_COUNT_MIN`), and
+`tests/unit/ci/test_benchmark_ab.py` holds them two ways: the pair is pinned
+**exactly** (1.25, 3), because every other check is a floor and a floor lets a
+worse pair through (1.30 with K=3 passes the null and cuts a random quarter
+at +30% from 91% to 50%; K=4 at 1.25 sees it in 71% against 92%), and the
+pair is checked against the null (a ratio the runner null measured, K at
+least two over the null's maximum count and over what a real green pull
+request reached, and a 5% margin over the K-th largest ratio's null maximum).
+‼ **R=1.25 and K=3 are statements about 19 benchmarks.** If the suite's size
+changes the null has to be re-measured before they are trusted; a test fails
+when the row count moves.
 
 **Promotion criterion.** The same evidence-first policy that keeps
 `FM_AB_SUITE` at 1.30 until the gate's own medians say otherwise: the rule
-fails a pull request when **20 more A/B runs** (counted from the merge of
-the change that added the shadow rule) on pull requests that touch **no benchmarked code** have been scored
+fails a pull request when **20 more pull requests** (counted from the merge
+of the change that added the shadow rule), **one run each** (the latest that
+evaluated the rule), which touch **no benchmarked code**, have been scored
 with `count_would_fail` false, none true, and the scorer's output is recorded
-in the #1989 thread. Benchmarked code is the suite and what its 19 rows
-import: `tests/benchmarks/`, `tests/wallclock/`, `faultmaven/modules/case/`,
-`faultmaven/modules/knowledge/`, `faultmaven/infrastructure/persistence/`,
-`requirements/` and `pyproject.toml`. A `true` on a pull request that touches
-none is a false red: it is recorded with its `over` rows, it restarts the
-count and it is a reason to re-measure the rule, not to promote it. A `true`
-on a pull request that does touch benchmarked code is evidence of nothing
-until someone has read the rows. With the 33 existing sets, 20 more clean
-ones make 53 and bound the false-red rate below about 5.5%. Promotion is then
-a separate, small change (`ab.compare` adds the rule to its failures).
+in the #1989 thread.
 
-The scoring command, from the `benchmark-ab` artifacts' `ab_report.json`
-(set `SINCE` to the day the shadow rule merged; runs from before it have no
-`count_would_fail` and drop out of the filter anyway):
+*Benchmarked code* is whatever can move a recorded number or the rule that
+scores it, and it is read off the interpreter, not written by hand:
+`python -m tests.wallclock.benchmarked_files` prints it. It is every
+`faultmaven` and `tests` file the benchmark modules import (112 `faultmaven`
+files, mostly reached through imports: a hand-written list of the suite's
+directories covered 58 of them, and missed
+`faultmaven/utils/serialization.py`, which both repositories' hot paths run),
+plus the inputs no import names (`tests/conftest.py`, `pytest.ini`,
+`pyproject.toml`, `requirements/*.txt`) and the instrument itself (the
+comparator, `tests/wallclock/ab.py`, and `.github/workflows/benchmarks.yml`),
+because a pull request that edits the rule is not a clean sample of its
+false-red rate. It takes about 4 seconds in a fresh interpreter. What it
+leaves out: the modules only `tests/conftest.py` imports (44 more
+`faultmaven` files: the LLM providers, health and protection modules, none of
+which the SQLite CRUD benchmarks execute). The direction of that error is the
+safe one: a pull request that touches only those is read as touching no
+benchmarked code, so if it did move a benchmark the rule fires on a "clean"
+pull request, that is recorded as a false red and the count restarts.
+
+A `true` on a pull request that touches none is a false red: it is recorded
+with its `over` rows, it restarts the count and it is a reason to re-measure
+the rule, not to promote it. A `true` on a pull request that does touch
+benchmarked code is evidence of nothing until someone has read the rows. The
+bounds are per pull request: the 23 existing clean sets plus 20 make 43, and
+zero false reds in 43 bounds the rate below about 6.7% (from about 12%).
+Promotion is then a separate, small change (`ab.compare` adds the rule to its
+failures).
+
+The scoring command is `scripts/score_ab_shadow_rule.sh`, run from a clone
+with the dev environment installed and an authenticated `gh`
+(`SINCE` is the day the shadow rule merged; `PYTHON=` picks the interpreter):
 
 ```bash
-SINCE=YYYY-MM-DD
-for id in $(gh run list --workflow benchmarks.yml --event pull_request \
-              --created ">=${SINCE}" --limit 500 --json databaseId \
-              --jq '.[].databaseId'); do
-  dir=$(mktemp -d)
-  if gh run download "$id" --name benchmark-ab --dir "$dir" >/dev/null 2>&1; then
-    pr=$(gh api "repos/FaultMaven/faultmaven/actions/runs/${id}" \
-           --jq '.pull_requests[0].number')
-    touches=$(gh pr diff "$pr" --name-only | grep -Ec \
-      '^(tests/benchmarks/|tests/wallclock/|faultmaven/modules/(case|knowledge)/|faultmaven/infrastructure/persistence/|requirements/|pyproject\.toml$)' || true)
-    jq -r --arg id "$id" --arg pr "$pr" --arg touches "$touches" \
-      'select(.gated == true and .count_would_fail != null)
-       | [$id, $pr, $touches, .count_would_fail, .over_count, .median] | @tsv' \
-      "$dir/ab_report.json"
-  fi
-  rm -rf "$dir"
-done
+scripts/score_ab_shadow_rule.sh YYYY-MM-DD
 ```
 
-Each line is run id, pull request, how many of its files are benchmarked code
-(0 means it counts toward the 20), `count_would_fail`, `over_count` and the
-suite median. The count is the lines with `touches` 0 and `false`; any with 0
-and `true` are the false reds to record.
+It reads the `benchmark-ab` artifacts' `ab_report.json`, finds each run's
+pull request from the run's commit (`gh api .../commits/<sha>/pulls`, which
+still names the pull request after it has merged, where the run's own
+`pull_requests` is `[]`) and the pull request's changed files from
+`.../pulls/<n>/files`, and prints one row per pull request: run id, pull
+request, how many of its files are benchmarked code (0 counts toward the 20),
+`count_would_fail`, `over_count` and the suite median. The count is the rows
+with `touches` 0 and `false`; any with 0 and `true` are the false reds to
+record. A summary goes to stderr, so no runs yet is a sentence. It fails
+loudly instead of printing a clean-looking nothing: a lookup or listing that
+fails is an `ERROR` row (never a 0) and exit status 1; outside a clone, on a
+failed `gh run list`, or with a helper that fails or prints nothing it exits
+2. Runs from before the shadow rule and runs that were not gated have no
+`count_would_fail` and are skipped, never scored as clean.
+`tests/unit/ci/test_score_ab_shadow_rule.py` runs it against a stub `gh`,
+including the merged-pull-request lookup.
 
 **Best of two runs per side: measured, not adopted.** Running each side
 twice and taking the better observation per row (what `load` already does
