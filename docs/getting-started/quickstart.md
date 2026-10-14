@@ -102,12 +102,12 @@ three variables, or put them in `.env`, to bind where the URLs below expect.
 - Creates a default admin account (`admin` / `admin@local.faultmaven`)
 - Ingests the 59 built-in runbooks from the **KB pack** — they ship pre-chunked and pre-embedded, so this is just vector writes (seconds), **not** an embedding run
 
-Subsequent startups skip already-ingested runbooks (content-hash). Logs are
+Subsequent startups skip already-ingested runbooks (by the pack content hash stamped on each row), so a shipped runbook you edit or unpublish stays that way until a new pack version of it arrives. Logs are
 structured JSON, one object per line (uvicorn's own lines included); you'll see,
 abridged:
 
 ```
-{"event": "KB bootstrap complete: 0 ingested, 59 unchanged, 0 failed, 0 pruned, 0 orphaned vectors cleaned, 0 rows repaired, 0 orphaned rows", "logger": "faultmaven.bootstrap.kb_init", "level": "info", ...}
+{"event": "KB bootstrap complete: 0 ingested, 59 unchanged, 0 failed, 0 pruned, 0 orphaned vectors cleaned, 0 unpublished built-ins' vectors cleaned, 0 rows repaired, 0 orphaned rows", "logger": "faultmaven.bootstrap.kb_init", "level": "info", ...}
 {"event": "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!", "logger": "faultmaven.bootstrap.lifespan", "level": "info", ...}
 {"event": "Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)", "logger": "uvicorn.error", "level": "info", ...}
 ```
