@@ -582,10 +582,7 @@ class KnowledgeService:
           ``is_published=False`` is NOT sufficient — investigation retrieval
           does not honor the flag (``kb_qa`` filters ChromaDB by scope only),
           so the vectors must be removed or the runbook stays queryable.
-          Deleting the vectors survives restart: the bootstrap content-hash
-          skip won't re-vectorize an unchanged row. (A later content change to
-          the on-disk file re-ingests it — an intentional new version.) The
-          row is kept because the file would resurrect a hard delete anyway.
+          The row is kept because the pack would resurrect a hard delete anyway.
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
           ``knowledge_items`` row and its vectors.
 
