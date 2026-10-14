@@ -243,7 +243,7 @@ async def _generate_turn_response(
     elif investigation_tools:
         da_tools = generator.build_da_tool_schemas()
         da_context = await generator.build_tool_context(
-            case, user_id=user_id, redaction_ctx=redaction_ctx
+            case, user_id=user_id, redaction_ctx=redaction_ctx, given_tools=given
         )
         response_obj = await generator.generate_structured_output(
             prompt,

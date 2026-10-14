@@ -49,6 +49,7 @@ from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetc
 from faultmaven.core.investigation.milestone_engine.runbook_creation import (
     RunbookCreator,
 )
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
@@ -389,7 +390,9 @@ async def _pull(kb_client, world: _World, case: Case) -> Set[str]:
     user: keyed on the case, their own personal and team runbooks stay out."""
     context = await StructuredOutputGenerator(
         deps=_deps(world), vectorizer=None
-    ).build_tool_context(case, user_id=TEAMMATE, redaction_ctx=None)
+    ).build_tool_context(
+        case, user_id=TEAMMATE, redaction_ctx=None, given_tools=NO_TOOLS
+    )
     router = _CapturingRouter()
     adapter = KBToolAdapter(
         AnswerFromKB(vector_store=KnowledgeVectorStore(kb_client), llm_router=router)
