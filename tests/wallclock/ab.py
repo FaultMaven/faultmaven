@@ -5,8 +5,10 @@ What this exists to do that a budget cannot
 
 ``tests/benchmarks/budgets.py`` holds **absolute** per-test thresholds.
 #1556 pulled them from ~38x measured cost down to 2.6x, which was real
-work, and #1567 measured what that buys: of 50 budgets, **none** fails on
-a 30% regression, and the smallest regression any of them catches is about
+work, and #1567 measured what that buys: of the 50 budgets it then held
+(19 remain since #1935; the figures here are that measurement's, not
+re-measured), **none** fails on a 30% regression, and the smallest
+regression any of them catches is about
 115% — that figure is against each budget's anchoring p95, and against
 the MEDIAN of eight green ``main`` runs the same budgets need 2.46x-3.57x
 (+146% to +257%). Two statistics of one fact; neither is near 30%.
@@ -31,9 +33,12 @@ those ratios. That is the whole-suite factor — "did the data layer get
 slower overall" — and it is #908's uniform scaling measured directly
 instead of corrected for.
 
-Two more sensitive-looking rules were measured on a 12-run null
+Two more sensitive-looking rules were measured on #1567's 12-run null
 experiment (identical code on both sides, 132 ordered pairs, 50
-benchmarks each) and both were rejected by their own numbers:
+benchmarks each, on a loaded development box) and both were rejected by
+their own numbers. That is the history of the 50-benchmark suite;
+#1963 re-measured the MEDIAN rule at 19 benchmarks (the note on
+``COVERAGE_FLOOR``) and did not re-adjudicate these two:
 
 * **A per-test rule** on ``ratio / median`` — "did THIS path get slower
   relative to the rest of the suite". Its statistic is the maximum over
@@ -53,9 +58,10 @@ confined to a minority of the suite. Slowing a quarter of these
 benchmarks by 30% moves the median to about 1.05, well under any usable
 threshold. That class stays with the absolute budgets.
 
-The threshold is supplied by the caller and is chosen from the same null
+The threshold is supplied by the caller and is chosen from a null
 experiment; the number and its margin are in the workflow's ``env:``
-block and in #1567.
+block, in #1567 (at 50 benchmarks) and in #1963 (re-measured at 19, the
+note on ``COVERAGE_FLOOR``).
 
 Reading a red
 -------------
@@ -105,22 +111,51 @@ SUPPORTED_RECORD_VERSIONS = frozenset({1, 2})
 #: its median means anything.
 #:
 #: ‼ Without a floor the gate narrows in silence. Both benchmark steps
-#: are ``continue-on-error``, so a head-side crash that kills 49 of 50
+#: are ``continue-on-error``, so a head-side crash that kills 18 of 19
 #: benchmarks leaves ONE matched row, a "suite median" that is that row's
 #: noise, and a green job. The empty case was already refused for exactly
-#: this reason; 1-of-50 is the same argument one step in.
+#: this reason; 1-of-19 is the same argument one step in.
 #:
 #: 0.5 rather than something tighter because a pull request may legitimately
-#: delete a whole benchmark module. Measured on the current tree, the five
-#: modules hold 15, 13, 9, 7 and 6 of the 50 rows, so deleting the largest
-#: leaves 0.70 of the base and deleting the two largest leaves 0.44. The
-#: floor separates "the head measured the suite" from "the head measured a
-#: fragment"; it is deliberately not sized to catch a small deletion, which
-#: the budget table's own guards already refuse to let pass silently.
+#: delete a whole benchmark module. Measured on the current tree (#1963),
+#: the two benchmark modules hold 13 (``test_knowledge_item_operations``)
+#: and 6 (``test_case_operations``) of the 19 rows, so deleting the smaller
+#: leaves 0.68 of the base and is still gated, while deleting the larger
+#: leaves 0.32 and FAILS here as "the head measured a fragment". That is
+#: the intended reading, not a gap: a 6-row median is not the suite the
+#: threshold was measured on. The floor separates "the head measured the
+#: suite" from "the head measured a fragment"; it is deliberately not sized
+#: to catch a small deletion, which the budget table's own guards already
+#: refuse to let pass silently.
 #:
-#: ‼ The 1.30 threshold's noise was measured with 50 benchmarks a side. If
-#: the suite ever shrinks materially, re-run the null experiment before
-#: trusting the number.
+#: ‼ The 1.30 threshold is backed by a null experiment on the suite as it
+#: is. Measured 2026-10-14 at 19 benchmarks a side (#1963; the original,
+#: #1567 / #1592, was at 50, on a loaded development box):
+#:
+#: * **The gate's own environment** — run 38538085168 of a throwaway
+#:   branch: 12 GitHub runners, each running the 19-row suite four times
+#:   with the A/B job's own commands (installs between the runs), base ==
+#:   head. The suite median over the 144 same-runner ordered pairs ranged
+#:   **0.950-1.053** (p99 1.043), and over the 24 faithful base-then-head
+#:   pairs **0.950-1.040**: 0 red at every threshold from 1.15 up.
+#:   Across runners the in-process calibration spanned 737-1132 us/rep
+#:   (1.53x) and within one runner at most 1.09x, which is what a
+#:   same-job comparison cancels.
+#: * **The stress case** — 24 runs alternating two byte-identical trees on
+#:   one 48-core development box at load average 22-50 (the original ran
+#:   at 8-19): 552 ordered pairs, suite median **0.700-1.428** (p99 1.345),
+#:   red at 1.30 on **12 of 552**, at 1.40 on 1. That is the suite under
+#:   contention the runner does not see, not the gate's environment, but it
+#:   is where the cause shows: one module holds 13 of the 19 rows, so a
+#:   burst that lands inside that module's window alone moves the median
+#:   (in the worst pairs 7-9 of its 13 rows were 1.3x or more slower while
+#:   the other module mostly sat at 1.0-1.1). At 50 rows in five modules none held
+#:   more than 30%, so one module's burst could not do that.
+#:
+#: If the suite changes materially again (rows added or removed, or the
+#: modules rebalanced), re-run the null experiment before trusting the
+#: number; the method and both data sets are in
+#: ``docs/development/testing/performance.md``.
 COVERAGE_FLOOR = 0.5
 
 #: How many rows the worst-first table prints before it is truncated.
@@ -381,7 +416,7 @@ def compare(
             f"arrives here rather than as a red step) or this pull request "
             f"removed most of the suite. Either way the median would be a "
             f"fragment's noise: if the removal is deliberate, the 1.30 "
-            f"threshold was measured at 50 benchmarks a side and has to be "
+            f"threshold was measured at 19 benchmarks a side and has to be "
             f"re-measured for the smaller suite"
         )
     elif matched < needed:

@@ -289,44 +289,58 @@ jobs:
     env:
       # ‼ The threshold, and the one place it lives.
       #
-      # The gate is the MEDIAN of ~50 head/base ratios: "did the data
-      # layer get slower overall". The number is not 1.30 because the
-      # issue asks for 30%; it is 1.30 because of a null experiment — 12
-      # full runs of this suite on one box with IDENTICAL code on both
-      # sides, 132 ordered pairs, so every ratio measured was pure noise.
-      # That median ranged 0.822x-1.216x, and 1.30 clears the worst of it
-      # by 7% and was red on 0 of the 132.
+      # The gate is the MEDIAN of the 19 head/base ratios this suite
+      # records: "did the data layer get slower overall". The number is
+      # not 1.30 because the issue asks for 30%; it is 1.30 because of
+      # null experiments — IDENTICAL code on both sides, so every ratio
+      # measured is pure noise:
+      #
+      #   * this job's own environment (#1963, 2026-10-14, run
+      #     38538085168 of a throwaway branch): 12 GitHub runners, each
+      #     running the suite four times with this job's commands and an
+      #     install between runs. The median over 144 same-runner ordered
+      #     pairs ranged 0.950x-1.053x and was red on 0 at every threshold
+      #     from 1.15 up; 1.30 clears the worst of it by 23%.
+      #   * a stress case (#1963): 24 runs on one development box at load
+      #     average 22-50, 552 ordered pairs, 0.700x-1.428x, red at 1.30
+      #     on 12 of 552 (one module holds 13 of the 19 rows, so a burst
+      #     inside it alone moves the median).
+      #   * the original (#1567, 50 benchmarks, loaded box, 132 pairs):
+      #     0.822x-1.216x, red on 0.
       #
       # Detection is probabilistic and is stated as such, because the
       # noise is on the same scale as the signal. Injecting a uniform
-      # regression into all 132 real pairs at this threshold:
+      # regression into the 144 real same-runner pairs at this threshold:
       #
-      #     +30% -> caught on  50%      +50% -> caught on  97%
-      #     +40% -> caught on  83%      +60% -> caught on 100%
+      #     +25% -> caught on   3%      +30% -> caught on  50%
+      #     +40% -> caught on 100%
       #
-      # The absolute budgets next door need +146% for the same call, on
-      # every runner, so this is where a uniform slowdown became
-      # detectable at all rather than where it became certain. 1.25 is
-      # the next step down (also 0/132 red, +30% caught on 69%) and is
-      # worth taking on evidence, not now: every run prints its own
-      # median, so re-anchor from ~20 green `main` runs the way
+      # (the same injection into the stress case: +30% on 50%, +40% on
+      # 76%, +50% on 87%, +60% on 94%). The absolute budgets next door
+      # need +146% for the same call, on every runner, so this is where a
+      # uniform slowdown became detectable at all rather than where it
+      # became certain. 1.25 and 1.20 are also red on 0 of the 144, but
+      # 1.25 is red on 22 of the stress case's 552; a step down is worth
+      # taking on evidence, not now: every run prints its own median, so
+      # re-anchor from ~20 green `main` runs the way
       # `tests/benchmarks/budgets.py` was anchored.
       #
       # The job always runs base first, so an earlier-versus-later
-      # offset does not cancel. Measured on the same null, forward
-      # pairs only: the later run is 1.038x slower by geometric mean.
-      # That is already inside the distribution above — the worst
-      # observation, 1.216x, IS a forward pair, and forward-only is 0
-      # red of 66 — and it biases toward false positives, not misses.
+      # offset does not cancel. Measured on the runner null, with the
+      # install between the runs: the later run is no slower (geometric
+      # mean of the median 0.9989 forward, 1.0011 reverse). Two batches
+      # on the loaded box disagreed with each other (forward 0.999 and
+      # 1.072), so what #1567 saw as an order offset was load.
       #
-      # Two more sensitive-looking rules were measured on the same data
+      # Two more sensitive-looking rules were measured on #1567's null
       # and rejected by their own numbers — a per-test residual rule
       # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
       # every absolute budget already beats at 2.46x-3.57x) and a count
       # rule (at 1.30x the null count reached 19 of 50 while slowing HALF
-      # the suite by 30% produced 15). `tests/wallclock/ab.py`'s
-      # docstring carries both. #1567 has the method and how contended
-      # the box was.
+      # the suite by 30% produced 15). That was the 50-benchmark suite;
+      # #1963 re-measured the median rule only. `tests/wallclock/ab.py`'s
+      # docstring carries both, and `docs/development/testing/performance.md`
+      # carries the method and how contended each box was.
       FM_AB_SUITE: '1.30'
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
 

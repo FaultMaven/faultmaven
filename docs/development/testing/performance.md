@@ -40,8 +40,8 @@ answer different questions (#1556):
 
 Both are in **`tests/benchmarks/budgets.py`**, one row per benchmark, each
 recording the p95 it was anchored from. That file is the source of truth —
-this guide deliberately does not restate 50 numbers, because the copy is
-what goes stale.
+this guide deliberately does not restate the budgets' numbers, because the
+copy is what goes stale.
 
 The A/B gate's single threshold (below) is the third and last place a
 number lives: `FM_AB_SUITE` in the `ab-regression` job's `env:` block in
@@ -447,7 +447,8 @@ Results are:
 ### The A/B against the merge base (#1567)
 
 The three absolute jobs above share a ceiling, and #1567 measured it:
-against the 50 re-anchored budgets, **none** fails on a 30% regression.
+against the 50 re-anchored budgets it then held (19 remain since #1935;
+this figure is #1567's, not re-measured), **none** fails on a 30% regression.
 The smallest regression any of them catches is about **115%** measured
 against each budget's anchoring p95, or **+146% to +257%** measured
 against the median of eight green `main` runs — two statistics of one
@@ -467,10 +468,11 @@ runner minutes apart, and compares. Machine speed, co-tenant load and
 thermal state are shared by both sides and cancel; what is left is the
 code.
 
-**Both sides in one job is the load-bearing part**, and it is measured.
-Across eight green `main` runs of this workflow — different runners, same
-question — the whole-suite factor between two runs spans **0.442x to
-2.261x**, and their in-process CPU calibration spans **528-1064 us/rep
+**Both sides in one job is the load-bearing part**, and it is measured
+(this paragraph is #1567's, at 50 benchmarks; #1963 repeats it at 19
+further down, with the same conclusion). Across eight green `main` runs of this workflow — different
+runners, same question — the whole-suite factor between two runs spans
+**0.442x to 2.261x**, and their in-process CPU calibration spans **528-1064 us/rep
 (2.01x)**, which is the same term seen twice. Same box, one job, that
 factor spans **1.48x** even on a contended development machine. Two jobs
 on two runners would reintroduce exactly what the comparison exists to
@@ -495,11 +497,16 @@ lives. That answers one question — *did the data layer get slower
 overall* — which is #908's uniform scaling measured directly instead of
 corrected for.
 
-**The threshold comes from a null experiment**, not from the number in the
-issue title: 12 full runs of the suite on one box with identical code on
-both sides, 132 ordered pairs, so every ratio measured was pure noise.
-That median ranged **0.822x to 1.216x**. The shipped 1.30 clears the worst
-of that by 7% and was red on 0 of the 132.
+**The threshold comes from null experiments**, not from the number in the
+issue title: the same suite run with identical code on both sides, so
+every ratio measured is pure noise. There are two, and the second
+re-checked the first when the suite shrank from 50 benchmarks to 19
+(#1963): the original is kept below as history, and the 19-benchmark
+re-measurement follows it.
+
+**The original null (#1567, 50 benchmarks).** 12 full runs of the suite on one box with identical code on both sides,
+132 ordered pairs. That median ranged **0.822x to 1.216x**. The shipped
+1.30 cleared the worst of that by 7% and was red on 0 of the 132.
 
 **Detection is probabilistic**, because the noise is on the same scale as
 the signal. Injecting a uniform regression into all 132 real pairs:
@@ -537,6 +544,96 @@ of these benchmarks 30% slower moves the median to about 1.05. That class
 stays with the absolute budgets, exactly as it was before this job
 existed.
 
+**Re-measured at 19 benchmarks (#1963, 2026-10-14).** #1935 retired two
+benchmark modules, and the suite went from 50 benchmarks to 19: `test_knowledge_item_operations.py` holds 13 and
+`test_case_operations.py` holds 6. The original null was measured at 50,
+so it was re-run rather than assumed. Identical code on both sides, scored
+through `ab.compare`, two ways:
+
+**1. The gate's own environment.** The A/B job's commands, base == head,
+on GitHub runners: run 38538085168 of a throwaway branch, 12 shards on 12
+`ubuntu-latest` runners, each running the 19-row suite four times (A1, B1,
+A2, B2) with an install between the runs, as the job does between base and
+head. Across the 12 runners the in-process calibration spanned
+**737-1132 us/rep (1.53x)**; within one runner it moved at most **1.09x**,
+which is the term a same-job comparison cancels.
+
+| pairs | n | suite median min / p50 / p90 / p99 / max | red at 1.15 / 1.20 / 1.25 / 1.30 |
+|---|---|---|---|
+| faithful (A1 as base, B1 as head; A2, B2) | 24 | 0.950 / 1.004 / 1.025 / 1.040 / 1.040 | 0 / 0 / 0 / 0 |
+| every same-runner ordered pair | 144 | 0.950 / 1.000 / 1.025 / 1.043 / **1.053** | 0 / 0 / 0 / 0 |
+| best of two runs per side | 24 | 0.967 / 1.001 / 1.014 / 1.034 / 1.034 | 0 / 0 / 0 / 0 |
+
+1.30 clears the worst of the 144 by 23%. Injecting a uniform regression
+into the head side of those 144 pairs:
+
+| threshold | red on a clean pair | +20% | +25% | +30% | +40% |
+|---|---|---|---|---|---|
+| 1.20 | 0/144 | 50% | 99% | 100% | 100% |
+| 1.25 | 0/144 | 1% | 50% | 97% | 100% |
+| **1.30 (shipped)** | **0/144** | **0%** | **3%** | **50%** | **100%** |
+| 1.40 | 0/144 | 0% | 0% | 0% | 50% |
+
+The runner null is far quieter than the loaded box the original ran on,
+so the detection curve at 1.30 is steep and sits just above 30%: blind at
++25%, a coin flip at +30%, certain at +40%. The order the sides run in is
+not an offset here: over the 144 pairs the later run was no slower
+(geometric mean of the median **0.9989** forward, **1.0011** reverse), and
+the pairs include an install between the runs, which the original could
+not measure.
+
+**2. A stress case.** 24 runs alternating two byte-identical trees on one
+48-core development box at load average **22-50** (the original ran at
+8-19), in two independent 12-run batches, 552 ordered pairs. This is not
+the gate's environment; it is the same suite under contention the runner
+does not see.
+
+| set | pairs | suite median min / p50 / p90 / max | red at 1.30 |
+|---|---|---|---|
+| batch A | 132 | 0.721 / 1.000 / 1.167 / 1.386 | 3 |
+| batch B | 132 | 0.720 / 1.000 / 1.192 / 1.390 | 4 |
+| both, plus the cross-batch pairs | 552 | 0.700 / 1.000 / 1.183 / 1.428 (p99 1.345) | 12 |
+
+| threshold | red on a clean pair | +25% | +30% | +40% | +50% | +60% |
+|---|---|---|---|---|---|---|
+| 1.20 | 45/552 | 66% | 77% | 89% | 96% | 98% |
+| 1.25 | 22/552 | 50% | 65% | 83% | 92% | 97% |
+| **1.30 (shipped)** | **12/552** | **35%** | **50%** | **76%** | **87%** | **94%** |
+| 1.40 | 1/552 | 17% | 24% | 50% | 75% | 86% |
+
+**Why the stress case is noisier than the original's null, and what it
+means.** In the worst pairs the slow rows are all in one module: 7 to 9 of
+the 13 rows in `test_knowledge_item_operations.py` were 1.3x or more slower
+while `test_case_operations.py` mostly sat at 1.0-1.1 (that module's own
+median reached 1.30 on 47 of the 552 pairs, the other's on 31). A burst of
+contention that lands inside one module's window moves the suite median
+alone, because that module holds 13 of the 19 rows (68%). At 50 rows in
+five modules none held more than 30%, so a one-module burst could not do
+it. Runners running the job's own procedure did not show it in 144
+pairs, and 1.30 is kept on that evidence; if a green PR ever reports a median
+near it, that module concentration is the first thing to look at. The
+gate prints its median on every run, which is how it accumulates.
+
+**The two rejected rules, at 19 benchmarks.** #1963 re-measured the
+median rule only and adopted or re-examined neither of the other two. For
+the record, the numbers they would be judged on now: on the runner null
+the per-test residual (max of `ratio / median`) has p50 1.16, p90 1.23 and
+max **1.74**, and the count rule's null count at R=1.30 reached **1** of
+19 while slowing a random half of the suite by 30% gave a median of **5**
+(range 0-9). On the stress case they are 6.27 and 11 of 19 against 6
+(0-13). The original rejection of both rested on the loaded 50-benchmark
+null above; it has not been repeated on the runners.
+
+**Against CI history.** Six green `main` runs of this suite since #1960
+(four `benchmark-results` artifacts, two nightly `wallclock-rows-nightly`
+artifacts; the push runs' numbers are parsed from the printed `min`, which
+is rounded to 0.1 ms, against full precision in the nightly rows) give 30
+cross-runner ordered pairs with a suite median of **0.691x to 1.447x** and
+a calibration spread of 717-1023 us/rep (1.43x). Cross-runner pairs are
+what the A/B does not do, so they are not a null for the gate; they are
+the same contrast #1567 drew (there 0.442x-2.261x over eight runs), and it
+shows the whole-suite factor still moves with the runner.
+
 **The comparison has to cover the suite before its median means
 anything.** Both benchmark steps are `continue-on-error` — a benchmark
 over its absolute budget is the other job's verdict, not this one's — so
@@ -559,12 +656,18 @@ benchmark is: failing it would leave the pull request no exit. That is an
 **acknowledged escape** — a pull request that renames the whole benchmark
 suite is not gated by this job — and the report says `NOT GATED` in so
 many words rather than showing a green tick. The 50% floor is not sized
-to catch an ordinary deletion: the five modules hold 15, 13, 9, 7 and 6
-of the 50 rows, so deleting the largest leaves 0.70 and is still gated.
+to catch a small deletion: the two modules hold 13 and 6 of the 19 rows, so
+deleting the smaller leaves 0.68 and is still gated. Deleting the larger
+leaves 0.32 and **fails** as "the head measured a fragment" — the intended
+reading, because a 6-row median is not the suite the threshold was
+measured on. (Before #1935 the five modules held 15, 13, 9, 7 and 6 of 50
+rows and deleting the largest still gated at 0.70.)
 
 **The order the two sides run in is measured, not assumed.** The job
 always runs base first and head second, so any systematic earlier-versus-
-later offset does not cancel. From the same null data, restricted to
+later offset does not cancel. #1963 measured it on the runners with the
+install in between and found none (above). The original, from #1567's null
+data at 50 benchmarks, restricted to
 forward pairs only (the shipped direction): the later run is
 **1.038x slower** by geometric mean (forward 1.0379, reverse 0.9636).
 That offset is already inside the distribution the threshold was chosen
