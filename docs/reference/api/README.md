@@ -3296,8 +3296,15 @@ replicas share no disk — so the service refuses with a
 ``ValidationException``, which the global handler answers as 422.
 
 Global-scope files (the platform corpus) are minted into drafts only for a
-platform operator (#770). Non-global (personal/team) discovery is
-unaffected.
+platform operator (#770). Non-global discovery is unaffected.
+
+A file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal
+draft. A file under ``team_<id>/`` is imported as a **personal** draft too
+(#1986): the scan runs only where there are no teams, so no team exists to
+share it with, and a team-scope runbook with no team would be visible to
+its owner alone. The response's ``notes`` list names each such file
+("team_x/foo.md imported as personal: ..."); ``errors`` names the files
+that were not imported.
 
 **Tags:** `knowledge-conversion`
 

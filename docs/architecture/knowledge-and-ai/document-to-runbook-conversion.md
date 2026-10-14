@@ -1296,7 +1296,7 @@ reads (§9.5):
 ```
 data/knowledge/
     global/                          # imported as global-scope drafts (operator only)
-    team_{team_id}/                  # imported as team-scope drafts
+    team_{team_id}/                  # imported as PERSONAL drafts: no teams here (§9.5)
     user_{user_id}/                  # imported as personal drafts
 ```
 
@@ -1376,6 +1376,17 @@ bound (§9.1) is reported as an error,
 and a global-scope file is imported only for a platform operator. What is on
 disk decides nothing about an existing draft: a draft whose file is gone keeps
 its row and its text.
+
+**A `team_*` directory imports as personal (#1986).** A team's visibility is a
+share row tied to a real team (ADR-013 §D4), and a directory name is not one.
+The scan runs only on a single-tenant deployment, which builds no team service
+and has no teams, so a `team_{id}/` file has no team to be shared with. It is
+imported with `scope="personal"` — what it can be — rather than as a team-scope
+draft with no team, which would publish a row labelled team that only its
+owner sees. The response says so per file, in its `notes` list
+(`"team_x/foo.md imported as personal: this deployment has no teams to share it
+with"`); `errors` stays the list of files that were not imported. Verify then
+publishes a personal row, because the job's scope is the one a publish reads.
 
 Under `TENANT_PROVIDER=multi` the service refuses the scan with a
 `ValidationException` — `422`, detail "This deployment has no runbook

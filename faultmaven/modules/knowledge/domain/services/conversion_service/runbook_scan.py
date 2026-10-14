@@ -5,7 +5,13 @@ its text.
 An import, never a reconciliation (#1950). A draft's text is its row's
 ``content`` column, so what is or is not on this process's disk decides
 nothing about any draft; the service refuses the scan outright under
-``TENANT_PROVIDER=multi``, where replicas share no disk."""
+``TENANT_PROVIDER=multi``, where replicas share no disk.
+
+The scan runs only where there are no teams (single-tenant builds no team
+service), so a ``team_*`` directory names no team a draft could be shared with.
+Its files are imported as ``personal`` and the result's ``notes`` say so, file
+by file (#1986): a ``team`` scope with no team behind it would publish a row
+that is labelled team-visible and is seen by its owner alone."""
 
 import logging
 from datetime import datetime, timezone
@@ -73,6 +79,9 @@ async def _scan_for_runbooks_impl(
     discovered = []
     skipped = 0
     errors = []
+    # What the caller should know about files that WERE imported, as opposed to
+    # ``errors``, which names files that were not.
+    notes: list[str] = []
 
     from faultmaven.utils.runbook_id import item_id_from_runbook_id
 
@@ -186,6 +195,7 @@ async def _scan_for_runbooks_impl(
             "discovered": 0,
             "skipped": 0,
             "errors": [],
+            "notes": [],
             "drafts": [],
         }
 
@@ -268,10 +278,22 @@ async def _scan_for_runbooks_impl(
         scope = "global"
         relative = md_file.relative_to(knowledge_dir)
         scope_dir_name = relative.parts[0] if len(relative.parts) > 1 else ""
+        imported_as_personal_note: Optional[str] = None
         if scope_dir_name.startswith("personal_") or scope_dir_name.startswith("user_"):
             scope = "personal"
         elif scope_dir_name.startswith("team_"):
-            scope = "team"
+            # A team's visibility is a share row tied to a real team (ADR-013
+            # §D4), and a directory name is not one. This scan runs only on a
+            # single-tenant deployment, which has no teams, so there is no team
+            # to share the draft with: the file is what it can be, a personal
+            # runbook, and the caller is told below (#1986). Minting
+            # ``scope="team"`` with ``team_id=None`` published a row labelled
+            # team that no team could see.
+            scope = "personal"
+            imported_as_personal_note = (
+                f"{relative.as_posix()} imported as personal: this deployment "
+                f"has no teams to share it with"
+            )
 
         # Global-tier authoring gate: a global-inferred file mints a draft
         # into the platform corpus (verified → readable by every tenant,
@@ -401,6 +423,8 @@ async def _scan_for_runbooks_impl(
                     await session.commit()
 
         live_runbook_ids.add(runbook_id)
+        if imported_as_personal_note:
+            notes.append(imported_as_personal_note)
         discovered.append(
             {
                 "conversion_id": conversion_id,
@@ -417,6 +441,7 @@ async def _scan_for_runbooks_impl(
         "discovered": len(discovered),
         "skipped": skipped,
         "errors": errors,
+        "notes": notes,
         "drafts": discovered,
     }
 
