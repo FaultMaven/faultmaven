@@ -1112,6 +1112,9 @@ def _wire_services(app, chroma) -> None:
 
     auth_service = AuthService(revocation_store=InMemoryRevocationStore())
     app.state.auth_service = auth_service
+    # As ``bootstrap/composition.py`` does: the case title's disclosure gate
+    # runs with it, and titles nothing without one (#1967).
+    app.state.sanitizer = sanitizer
     app.state.user_service = UserService(
         user_repo=SessionlessUserRepository(), auth_service=auth_service
     )

@@ -653,6 +653,11 @@ class TestOutsideATurn:
         app = FastAPI()
         app.include_router(cases.router, prefix="/api/v1")
         app.state.llm_provider = router
+        # The DI sanitizer the title's disclosure gate runs (#1967); without
+        # one no title is made (fail closed).
+        from tests.utils import regex_only_sanitizer
+
+        app.state.sanitizer = regex_only_sanitizer()
         user = DevUser(
             user_id=USER,
             username=USER,
