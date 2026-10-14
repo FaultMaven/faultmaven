@@ -584,8 +584,8 @@ class KnowledgeService:
           so the vectors must be removed or the runbook stays queryable.
           Deleting the vectors survives restart: the bootstrap content-hash
           skip won't re-vectorize an unchanged row. (A later content change to
-          the on-disk file re-ingests it — an intentional new version.) The
-          row is kept because the file would resurrect a hard delete anyway.
+          the pack's copy re-ingests it — an intentional new version.) The
+          row is kept because the pack would resurrect a hard delete anyway.
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
           ``knowledge_items`` row and its vectors.
 

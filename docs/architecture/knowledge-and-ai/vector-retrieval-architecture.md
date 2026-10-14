@@ -512,7 +512,7 @@ ChromaDB is used **only for vector search** during investigations. All document 
 |-------|---------|
 | SQLite | Document inventory, metadata, status, CRUD, dashboard filters |
 | ChromaDB | Chunked vector embeddings for RAG search |
-| Disk | Markdown source files in `data/knowledge/{scope}/` |
+| Disk | None for runbook text: built-ins ship in the KB pack, authored text lives in the database. `data/knowledge/{scope}/` is only the standalone `/knowledge/scan` import directory |
 
 ### Embedding Consistency
 

@@ -576,11 +576,12 @@ python scripts/verify_vector_storage.py --collection faultmaven_kb
 **If a rebuild is needed** (performance degraded, corruption suspected):
 
 ```bash
-# Re-ingest from source files (the canonical path)
-python scripts/verify_vector_storage.py --rebuild --collection faultmaven_kb
+# Standalone: wipe the KB, then re-ingest the KB pack in-process
+# (stop the API first; refuses under TENANT_PROVIDER=multi)
+fm-reset-kb --yes --rebuild
 ```
 
-Source files live in `data/knowledge/` (markdown) and `data/evidence/` (raw uploads), so a full rebuild is always reconstructable.
+`scripts/verify_vector_storage.py` has no `--rebuild` option (it verifies one case's evidence vectors). The bootstrap's sources are the KB pack (`resources/knowledge/pack`, or `KB_PACK_DIR`) for built-ins and the stored runbook text (`knowledge_items.content`) for authored runbooks; no file under `data/knowledge/` is a source, since that directory is only the standalone scan import directory. Case-evidence vectors are rebuilt from the raw uploads in `data/evidence/`. Note that `fm-reset-kb` deletes every `knowledge_items` row, so an authored runbook is not re-created by the rebuild; back up `data/faultmaven.db` first (see [data-storage-management.md](../../operations/data-storage-management.md#reset--hot-rebuild)).
 
 **Scheduled Maintenance**:
 

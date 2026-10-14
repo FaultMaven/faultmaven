@@ -112,31 +112,27 @@ All tiers are **permanent** — knowledge persists until explicitly deleted by t
 
 ## Document Storage
 
-Runbook source files are stored on disk alongside the vector database. The source files are the authoritative record of what's in ChromaDB — they enable re-ingestion, auditing, and editing.
+Runbook text is stored in the database, not on disk. A built-in runbook's text ships in the KB pack and, once ingested, is `knowledge_items.content`; an authored runbook's text is `conversion_drafts.content` while it is a draft and `knowledge_items.content` once verified. ChromaDB holds the derived vectors, which can be regenerated from those rows (and, for built-ins, from the pack).
 
 ### Runtime Storage Layout
 
 ```text
 data/
-├── knowledge/                          # Runbook source files (by scope)
-│   ├── global/                         # Global KB — platform admin content
-│   │   ├── k8s-crashloopbackoff.md
-│   │   ├── pg-connection-pool-exhaustion.md
-│   │   └── ...
-│   ├── team_{team_id}/                 # Team KB — team-specific runbooks
-│   │   └── our-payment-failover.md
-│   └── user_{user_id}/                 # Personal KB — private runbooks
-│       └── my-redis-notes.md
-├── chroma/                             # ChromaDB vector database (derived from knowledge/)
+├── knowledge/                          # Standalone scan import directory (hand-placed .md files only)
+│   ├── global/                         # Imported as global-scope drafts (platform operator only)
+│   ├── team_{team_id}/                 # Imported as team-scope drafts
+│   └── user_{user_id}/                 # Imported as personal drafts (`personal_{user_id}/` works too)
+├── chroma-kb/                          # ChromaDB KB vectors (derived from knowledge_items / the pack)
+├── chroma-evidence/                    # ChromaDB case-evidence vectors
 ├── evidence/                           # Uploaded evidence files (per-case)
-└── faultmaven.db                       # SQLite database
+└── faultmaven.db                       # SQLite database (knowledge_items, conversion_drafts, ...)
 ```
 
 **Design decisions:**
 
-- **Flat by scope.** Each scope folder (`global/`, `team_{id}/`, `user_{id}/`) contains runbook files directly — no subdirectories by domain. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
-- **Sources are retained.** Vectors are derived artifacts. If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the sources are re-ingested: the KB pack for built-ins, `knowledge_items.content` for published runbooks. Without them, vectors cannot be regenerated.
-- **Authored text lives in the database, not in this tree.** A runbook made by the Dashboard upload, the template create or the document-to-runbook conversion is a draft row holding its text (`conversion_drafts.content`) and, once verified, a `knowledge_items` row; nothing is written under `data/knowledge/` (#1950). The tree is the standalone scan's import source.
+- **Scope comes from the first directory.** A file under `team_{id}/` imports as a team draft, under `user_{id}/` or `personal_{id}/` as a personal draft; anything else (including `global/`) as a global draft, which only a platform operator's scan imports. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
+- **Vectors are derived artifacts.** If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the vectors are regenerated from their sources: the KB pack for built-ins, `knowledge_items.content` for published runbooks. Without those rows, vectors cannot be regenerated.
+- **Authored text lives in the database, not in this tree.** A runbook made by the Dashboard upload, the template create or the document-to-runbook conversion is a draft row holding its text (`conversion_drafts.content`) and, once verified, a `knowledge_items` row; nothing is written under `data/knowledge/` (#1950). The tree is the standalone scan's import source and no startup step reads it.
 
 ### Authoring vs Runtime
 
@@ -150,7 +146,9 @@ The KB Toolkit and FaultMaven runtime use different directories:
 | `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
 
 To add/update a built-in runbook: edit the source in this repo, rebuild the **KB
-pack** with the toolkit, and deliver it — no app-image rebuild needed:
+pack** with the toolkit, and deliver it. Whether that needs a new app image depends
+on how the pack reaches the API (the default GHCR image bakes `resources/` in and
+the default compose mounts none):
 
 ```bash
 # 1. Edit the authoritative source (public, PR-able):
@@ -159,13 +157,16 @@ pack** with the toolkit, and deliver it — no app-image rebuild needed:
 # 2. Rebuild the pack in faultmaven-kb-toolkit (it reads the public sources):
 kb-build-pack --version 2026-07-08 --tar
 
-# 3. Vendor it as the committed baseline (or deliver to a running deployment's
-#    KB_PACK_DIR — see kb-pack-architecture.md for local/cloud delivery):
+# 3. Vendor it as the committed baseline (a baseline is live only in an image
+#    built with it), or deliver it to a running deployment's KB_PACK_DIR — see
+#    kb-pack-architecture.md §Delivery for every deployment:
 cp -r dist/kb-pack/* faultmaven/resources/knowledge/pack/
 
-# 4. Restart the API — the startup bootstrap ingests the pack idempotently
-#    (no model; unchanged runbooks skipped, removed ones pruned).
-./faultmaven.sh restart
+# 4. Make it live. From source: build an image that carries the pack, then start
+#    it (`./faultmaven.sh restart` alone re-creates the OLD image):
+./faultmaven.sh stop && ./faultmaven.sh start --build
+#    The startup bootstrap then ingests the pack idempotently (no model;
+#    unchanged runbooks skipped, removed ones pruned).
 ```
 
 Pre-deployed runbooks bypass the `conversion_drafts` table entirely. See [`kb-pack-architecture.md`](./kb-pack-architecture.md) for the pack format, `KB_PACK_DIR`, build and delivery, and [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the two-path ingestion model and atomicity guarantees.
@@ -498,7 +499,7 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 **Delete path**: `delete_document()` is provenance-gated by id shape:
 
-- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (a hard delete would be resurrected by the next bootstrap from the on-disk file); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row.
+- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row.
 - **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
