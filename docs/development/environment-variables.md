@@ -189,7 +189,7 @@ PATTERN_CONFIDENCE_THRESHOLD=0.8
 
 # Load appropriate file
 export ENV_FILE=.env.production
-python -m faultmaven.main
+python -m faultmaven.server
 ```
 
 Or use **environment variables directly** (Docker/K8s):
@@ -261,7 +261,7 @@ vim .env
 Set `RELOAD=true` (the `local` preset and a zero-config start already do):
 
 ```bash
-RELOAD=true python -m faultmaven.main
+RELOAD=true python -m faultmaven.server
 # Changes to .env require manual restart even with reload
 ```
 

@@ -141,6 +141,22 @@ class TestToolContext:
         assert new_context.case_id == sample_context.case_id
         assert sample_context.execution_id is None  # Original unchanged
 
+    def test_tool_context_gives_no_tools_unless_a_turn_states_them(
+        self, sample_context
+    ):
+        """The default is the tool-less set (#1977): a context nobody stated a
+        turn for cannot point the model at a tool. Copying keeps the set."""
+        assert sample_context.given_tools == frozenset()
+
+        stated = ToolContext(
+            session_id="s",
+            case_id="c",
+            enterprise_id="e",
+            user_id="u",
+            given_tools=frozenset({"search_file"}),
+        )
+        assert stated.with_execution_id("exec_1").given_tools == {"search_file"}
+
 
 # =============================================================================
 # Test: AgentTool Base Class

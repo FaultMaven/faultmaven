@@ -12,6 +12,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from chromadb.errors import NotFoundError
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
@@ -70,6 +72,27 @@ class CaseVectorStore(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to get/create collection {collection_name}: {e}")
             raise
+
+    def _get_existing_collection(self, case_id: str):
+        """A case's collection, or ``None`` when it has never been written.
+
+        The READ path's accessor (#1994): it never creates. A collection comes
+        into being on the write path only (``add_documents``), so a case that
+        was never vectorized has none, and reading it must leave it that way:
+        ``_get_or_create_collection`` here made every search of such a case
+        create an empty collection, and a terminal case keeps its collections
+        until it is hard-deleted.
+
+        Only "the collection is absent" is flattened to ``None``. Any other
+        error (transport, corruption) propagates to ``call_external`` rather
+        than being read as an empty case (#943).
+        """
+        collection_name = self._get_collection_name(case_id)
+        try:
+            return self.client.get_collection(name=collection_name)
+        except NotFoundError:
+            self.logger.debug(f"No collection for case {case_id}: {collection_name}")
+            return None
 
     async def add_documents(
         self,
@@ -157,6 +180,9 @@ class CaseVectorStore(BaseExternalClient):
         ``collection_name`` is provided, the "case_" prefix is stripped to recover
         ``case_id``.
 
+        A case that was never vectorized has no collection, and searching it
+        returns ``[]`` without creating one: a read creates no state (#1994).
+
         Raises:
             KnowledgeBaseError: If the embedding model is unavailable. The
                 caller must NOT render this as "no evidence found for this
@@ -188,7 +214,10 @@ class CaseVectorStore(BaseExternalClient):
         )
 
         async def _search_wrapper():
-            collection = self._get_or_create_collection(case_id)
+            collection = self._get_existing_collection(case_id)
+            if collection is None:
+                # Never vectorized: nothing to search, and nothing to create.
+                return []
 
             query_params = {
                 "query_embeddings": [query_embedding],

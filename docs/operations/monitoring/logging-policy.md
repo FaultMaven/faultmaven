@@ -68,13 +68,13 @@ except Exception as e:
 ## Access logs
 
 Uvicorn's plaintext access log is **disabled** (`access_log=False` in
-`main.py`). The single access log is the structured request start/completion
+`server.py`). The single access log is the structured request start/completion
 pair emitted by `LoggingMiddleware`, plus a `Request failed` ERROR in place of
 the completion when the route raises.
 
 ### Launching the server
 
-`faultmaven.main.run_server(app)` is the one place the API's uvicorn options
+`faultmaven.server.run_server(app)` is the one place the API's uvicorn options
 live: host, port, reload, workers (only above 1) and `timeout_keep_alive` from
 `settings.server`, `log_level="info"`, `access_log=False` and `log_config=None`.
 `log_config=None` is what keeps `uvicorn.error` inside the redaction boundary:
@@ -85,7 +85,7 @@ redacting renderer. The uvicorn CLI can express `--no-access-log` but not this:
 `--log-config` takes a file, and giving it none leaves uvicorn's default config.
 
 So every launch goes through `run_server`: the image runs
-`python -m faultmaven.main`, and `scripts/faultmaven-dev.sh` runs the same
+`python -m faultmaven.server`, and `scripts/faultmaven-dev.sh` runs the same
 command with `HOST`, `PORT`, `RELOAD`, `WORKERS` and `TIMEOUT_KEEP_ALIVE` in the
 environment. `run_server` takes host, port and reload from settings, so a launch
 sets `HOST`, `PORT` and `RELOAD` itself: a configuration the zero-config check
@@ -96,15 +96,32 @@ does not recognise (a Gemini-only `.env`, for one) gets the `local` preset,
 object: uvicorn refuses an object when `workers > 1` or `reload` is set, and
 `run_server` raises `ValueError` for anything that is not an import string.
 
+Every launch executes `faultmaven/main.py` exactly once (#1985). The launcher is
+its own module, `faultmaven/server.py`, and imports neither `faultmaven.main` nor
+anything that does: uvicorn imports the `"faultmaven.main:app"` string, once, in
+the process that serves requests. `python -m faultmaven.main` is not a launch
+path: it ran `main.py` as `__main__` and then again for uvicorn's import, so every
+import-time side effect ran twice (duplicate import-time logs,
+`starlette.requests.Request.form` wrapped twice, Prometheus scrape hooks
+registered twice) and the served app was not the `__main__` one. It now refuses:
+`main.py` opens with a `__main__` guard, above `load_dotenv()` and every import,
+that raises `SystemExit` naming `faultmaven.server`, so the command exits 1 with
+one line and no import-time work (a stale `command:` fails loudly instead of
+exiting 0 without serving).
+`tests/unit/test_run_server_launch_paths.py` runs the launcher in a child process
+with `uvicorn.run` replaced by a stub that imports the app string, as uvicorn
+does, and asserts `main.py` executed once.
+
 The Cloud image is to launch through `run_server("faultmaven_cloud.main:app")`
 once faultmaven-cloud#25 bumps its core pin; it does not yet. It serves on 8000,
-so it must set `ENV PORT=8000 HOST=0.0.0.0 RELOAD=false`. It must not use
+so it must set `ENV PORT=8000 HOST=0.0.0.0 RELOAD=false`. `python -m
+faultmaven.server` always serves the core app, so the Cloud image calls the
+function instead:
+`python -c "from faultmaven.server import run_server; run_server('faultmaven_cloud.main:app')"`.
+That command imports `faultmaven.server`, not `faultmaven_cloud.main`, so the
+Cloud module executes once, when uvicorn imports the string. It must not use
 `python -m faultmaven_cloud.main`: that module mounts `CLOUD_ROUTERS` at import,
-and a `__main__` run followed by uvicorn importing the string mounts them twice
-(#1985, which also covers `python -m faultmaven.main` executing `main.py`
-twice). A launcher that imports `faultmaven.main` normally, such as
-`python -c "from faultmaven.main import run_server; run_server('faultmaven_cloud.main:app')"`,
-avoids it.
+and a `__main__` run followed by uvicorn importing the string mounts them twice.
 
 ### Fields
 

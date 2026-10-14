@@ -24,6 +24,7 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     cancel_pending_transition,
@@ -1445,7 +1446,9 @@ class TestINV09_TerminalCasesImmutable:
             "p",
             TerminalResponse,
             engine.generator.build_da_tool_schemas(allowed=TERMINAL_QA_TOOLS),
-            await engine.generator.build_tool_context(case, redaction_ctx=redaction),
+            await engine.generator.build_tool_context(
+                case, redaction_ctx=redaction, given_tools=NO_TOOLS
+            ),
             case=case,
             redaction_ctx=redaction,
         )

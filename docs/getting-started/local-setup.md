@@ -43,7 +43,7 @@ cp .env.example .env
 
 # Start the server
 ./scripts/faultmaven-dev.sh start
-# Or: python -m faultmaven.main
+# Or: python -m faultmaven.server
 ```
 
 The API will be available at http://localhost:8090
