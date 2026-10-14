@@ -17,9 +17,11 @@ the process that serves requests, when uvicorn imports the app string.
 
 So ``__main__`` must be a module that is not an app module: this one, which
 imports no app module at module level (a launcher for another app does not load
-the core app as a side effect), and ``main.py`` carries no ``__main__`` guard.
-``python -m faultmaven.server`` only imports this module; ``faultmaven.main`` is
-imported once, by uvicorn.
+the core app as a side effect). ``main.py`` has one ``__main__`` guard, at the
+top, that refuses: ``python -m faultmaven.main`` exits 1 with a message naming
+this launcher, before any import-time work, instead of running the app module
+as a script. ``python -m faultmaven.server`` only imports this module;
+``faultmaven.main`` is imported once, by uvicorn.
 
 A launcher for another app (the Cloud image's ``faultmaven_cloud.main:app``)
 cannot use ``-m faultmaven.server``, which always serves the core app. It calls

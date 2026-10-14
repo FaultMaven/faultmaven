@@ -28,6 +28,16 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+# This module is the application, never a launcher: ``python -m faultmaven.main``
+# would execute it here as ``__main__`` and again when uvicorn imports the app
+# string, running every import-time side effect twice (#1985). Refuse before
+# anything else runs.
+if __name__ == "__main__":
+    raise SystemExit(
+        "faultmaven.main is the application module, not a launcher; "
+        "start the server with: python -m faultmaven.server"
+    )
+
 # Load environment variables FIRST - before any other imports
 from dotenv import load_dotenv
 

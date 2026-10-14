@@ -8,7 +8,9 @@ is only the invariant if every launch path reaches it, so these pin the paths:
   from settings;
 * the no-Docker dev launcher, ``scripts/faultmaven-dev.sh``, which launches the
   same module;
-* the launcher module itself: its ``__main__`` guard calls ``run_server()``.
+* the launcher module itself: its ``__main__`` guard calls ``run_server()``;
+* ``main.py``, which refuses to be a launcher: a ``__main__`` guard at the top
+  raises ``SystemExit`` naming ``faultmaven.server`` before any import-time work.
 
 A launch that bypasses ``run_server`` (the ``uvicorn`` CLI) cannot set
 ``log_config=None``, so ``uvicorn.error`` records stop at uvicorn's own handler,
@@ -21,8 +23,10 @@ import-time side effect (duplicate logs, ``Request.form`` wrapped twice,
 Prometheus scrape hooks registered twice) ran twice. These tests take the launch
 module from the Dockerfile and the dev script, run it the way ``python -m`` does
 in a child process with ``uvicorn.run`` replaced by a stub that imports the app
-string as uvicorn does, and count the executions of ``main.py``'s code object.
-A positive control proves the counter sees a second execution.
+string as uvicorn does, and count the executions of ``main.py``'s code object
+(an audit hook on the ``exec`` event, which sees ``runpy`` and the import system
+alike and leaves the caller's frame alone). A positive control proves the counter
+sees a second execution.
 
 The shell-script check is a **text pin**: it reads the launch line and asserts
 its shape, it does not run the script (that needs ``ss``, ``curl`` and a free
@@ -38,6 +42,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -169,56 +174,65 @@ def test_dev_script_never_starts_the_uvicorn_cli():
 #: (``runpy`` with ``__main__`` as the run name), with two instruments in place
 #: before anything is imported:
 #:
-#: * ``builtins.exec`` is wrapped to count every execution of ``main.py``'s
+#: * an audit hook on the ``exec`` event counts every execution of ``main.py``'s
 #:   module code, however it arrives: ``runpy`` running it as ``__main__`` and
-#:   the import system both reach ``exec`` through the builtins;
+#:   the import system both ``exec`` the code object. An audit hook, not a
+#:   wrapper around ``exec``: a wrapper changes what code that calls ``exec`` on
+#:   a string sees (it broke ``scipy.stats`` and alembic's ``register_operation``
+#:   in a real boot), the hook leaves the caller's frame alone. A hook cannot be
+#:   removed, so this runs only in the child process;
 #: * ``uvicorn.run`` is replaced by a stub that records the call and then
 #:   imports the app string with uvicorn's own importer, as ``uvicorn.run`` does
 #:   in-process (``reload=False``, one worker) before it serves. Without that
 #:   import a second execution would never happen and the count would prove
 #:   nothing.
 #:
-#: ``control`` is not a launch: it executes ``main.py`` as ``__main__`` and then
-#: imports the string, the old launch, to show the counter sees both.
+#: A ``SystemExit`` from the launch is recorded, not propagated: it is what
+#: ``python -m faultmaven.main`` is meant to raise.
+#:
+#: ``control`` is not a launch: it executes ``main.py`` under a run name that is
+#: not ``__main__`` (so the refusal guard stays quiet) and then imports the
+#: string, the old launch, to show the counter sees both.
 _CHILD = r"""
-import builtins, json, os, runpy, sys
+import importlib.util, json, os, runpy, sys, types
 from unittest.mock import patch
 
-import importlib.util
 from uvicorn.importer import import_from_string
 
 launch, out = sys.argv[1], sys.argv[2]
 main_py = os.path.realpath(importlib.util.find_spec("faultmaven.main").origin)
 
 executions = []
-real_exec = builtins.exec
 
 
-def counting_exec(source, *args, **kwargs):
-    filename = getattr(source, "co_filename", None)
-    if filename and os.path.realpath(filename) == main_py:
-        executions.append(source.co_name)
-    return real_exec(source, *args, **kwargs)
+def count_main_py_executions(event, args):
+    if event == "exec" and args and isinstance(args[0], types.CodeType):
+        if os.path.realpath(args[0].co_filename) == main_py:
+            executions.append(args[0].co_name)
+
+
+sys.addaudithook(count_main_py_executions)
 
 
 def import_the_app(app, **kwargs):
     import_from_string(app)
 
 
-builtins.exec = counting_exec
-try:
-    with patch("uvicorn.run", autospec=True, side_effect=import_the_app) as run:
-        if launch == "control":
-            runpy.run_module("faultmaven.main", run_name="__main__", alter_sys=True)
-            import_from_string("faultmaven.main:app")
-        else:
+system_exit = None
+with patch("uvicorn.run", autospec=True, side_effect=import_the_app) as run:
+    if launch == "control":
+        runpy.run_module("faultmaven.main", run_name="__control__", alter_sys=True)
+        import_from_string("faultmaven.main:app")
+    else:
+        try:
             runpy.run_module(launch, run_name="__main__", alter_sys=True)
-finally:
-    builtins.exec = real_exec
+        except SystemExit as exc:
+            system_exit = {"code": exc.code}
 
 json.dump(
     {
         "main_py_executions": executions,
+        "system_exit": system_exit,
         "uvicorn_calls": run.call_count,
         "args": list(run.call_args.args) if run.call_args else None,
         "kwargs": dict(run.call_args.kwargs) if run.call_args else None,
@@ -288,7 +302,7 @@ def test_launch_path_reaches_uvicorn_run_with_every_option(path):
 
     assert record["uvicorn_calls"] == 1, (
         f"`python -m {launch}` ({path}) never reached uvicorn.run "
-        "(is the __main__ guard gone?)"
+        "(is the __main__ guard in faultmaven/server.py gone?)"
     )
     assert record["args"] == ["faultmaven.main:app"]
     assert record["kwargs"] == EXPECTED_UVICORN_KWARGS
@@ -316,26 +330,154 @@ def test_launch_path_executes_main_py_exactly_once(path):
 
 
 def test_the_execution_counter_sees_a_second_execution():
-    """Positive control: the old launch (``main.py`` as ``__main__``, then
-    uvicorn's import of the string) counts two, so a count of one means one."""
+    """Positive control: the old launch (``main.py`` executed, then uvicorn's
+    import of the string) counts two, so a count of one means one."""
     assert _launched("control")["main_py_executions"] == ["<module>", "<module>"]
 
 
-def test_main_py_has_no_main_guard():
-    """``main.py`` is only ever imported: a ``__main__`` guard in it would make
-    ``python -m faultmaven.main`` a launch path that executes it twice."""
+def test_running_main_py_as_main_refuses_and_serves_nothing():
+    """``python -m faultmaven.main`` raises ``SystemExit`` naming the launcher.
+
+    Without the refusal it would execute ``main.py`` as ``__main__`` and, if a
+    runner were added to it, execute it again for uvicorn (#1985). Exiting
+    silently, with status 0 and nothing served, would hide a stale ``command:``.
+    """
+    record = _launched("faultmaven.main")
+
+    assert record["system_exit"] is not None, "main.py ran to completion as __main__"
+    code = record["system_exit"]["code"]
+    # A string code is printed to stderr and exits 1; a non-zero int exits so.
+    assert isinstance(code, str) or code not in (0, None), code
+    assert "faultmaven.server" in str(code)
+    assert record["uvicorn_calls"] == 0
+    assert record["main_py_executions"] == ["<module>"]
+
+
+def test_python_dash_m_main_exits_one_before_any_import_time_work():
+    """The real process: status 1, the one-line message, and nothing else.
+
+    The refusal sits above ``load_dotenv()`` and every import, so no log line is
+    produced. At the bottom of the file the status is the same, but only after
+    every import-time side effect has run.
+    """
+    # Were the refusal ever lost, this would be a real launch. Keep it harmless:
+    # loopback, a port that was free a moment ago, no reloader (whose child a
+    # timeout kill would orphan), and a short timeout.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        free_port = str(probe.getsockname()[1])
+    result = subprocess.run(
+        [sys.executable, "-m", "faultmaven.main"],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "HOST": "127.0.0.1",
+            "PORT": free_port,
+            "RELOAD": "false",
+            "WORKERS": "1",
+            "PYTHONPATH": str(REPO_ROOT),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    lines = result.stderr.strip().splitlines()
+    assert len(lines) == 1 and "faultmaven.server" in lines[0], result.stderr[-2000:]
+
+
+def _compares_name(node: ast.Compare) -> bool:
+    """True when any operand of the comparison, however nested, reads ``__name__``."""
+    return any(
+        isinstance(sub, ast.Name) and sub.id == "__name__"
+        for operand in (node.left, *node.comparators)
+        for sub in ast.walk(operand)
+    )
+
+
+def _is_name_equals_main(test: ast.expr) -> bool:
+    """``__name__ == "__main__"``, with the operands in either order."""
+    if not (
+        isinstance(test, ast.Compare)
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+    ):
+        return False
+    operands = [test.left, *test.comparators]
+    return any(
+        isinstance(a, ast.Name)
+        and a.id == "__name__"
+        and isinstance(b, ast.Constant)
+        and b.value == "__main__"
+        for a, b in (operands, operands[::-1])
+    )
+
+
+def _bound_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.alias):
+            names.add((node.asname or node.name).split(".")[0])
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+    return names
+
+
+def test_main_py_opens_with_the_one_refusal_guard():
+    """``main.py`` carries exactly one ``__main__`` guard, and it refuses.
+
+    A guard that launched would make ``python -m faultmaven.main`` a launch path
+    that executes ``main.py`` twice; one placed after the import-time work would
+    refuse only once that work (49 log lines) had run. So: the one comparison of
+    ``__name__`` in the module is the first statement after the docstring, its
+    whole body is ``raise SystemExit("<message naming faultmaven.server>")`` and
+    it has no ``else``. Every operand of every comparison is read, in either
+    order, so ``"__main__" == __name__`` does not slip past.
+    """
     tree = ast.parse((REPO_ROOT / "faultmaven" / "main.py").read_text())
 
-    guards = [
+    docstring, guard = tree.body[0], tree.body[1]
+    assert (
+        isinstance(docstring, ast.Expr)
+        and isinstance(docstring.value, ast.Constant)
+        and isinstance(docstring.value.value, str)
+    ), "main.py must open with its docstring"
+    assert isinstance(guard, ast.If) and _is_name_equals_main(
+        guard.test
+    ), "the first statement after the docstring must be `if __name__ == '__main__':`"
+
+    assert guard.orelse == []
+    assert len(guard.body) == 1 and isinstance(guard.body[0], ast.Raise)
+    raised = guard.body[0].exc
+    assert (
+        isinstance(raised, ast.Call)
+        and isinstance(raised.func, ast.Name)
+        and raised.func.id == "SystemExit"
+        and not raised.keywords
+        and len(raised.args) == 1
+        and isinstance(raised.args[0], ast.Constant)
+        and isinstance(raised.args[0].value, str)
+        and "faultmaven.server" in raised.args[0].value
+    ), "the guard must raise SystemExit('<message naming faultmaven.server>')"
+    assert guard.body[0].cause is None
+
+    top_level_guards = [
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Compare)
-        and isinstance(node.left, ast.Name)
-        and node.left.id == "__name__"
+        for node in tree.body
+        if isinstance(node, ast.If) and _is_name_equals_main(node.test)
     ]
-    assert guards == []
-    assert not [
+    assert top_level_guards == [guard]
+    comparisons = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "run_server"
-    ], "run_server lives in faultmaven/server.py, the one launcher"
+        if isinstance(node, ast.Compare) and _compares_name(node)
+    ]
+    assert comparisons == [guard.test], "no other comparison may involve __name__"
+
+    assert "run_server" not in _bound_names(
+        tree
+    ), "run_server lives in faultmaven/server.py, the one launcher"

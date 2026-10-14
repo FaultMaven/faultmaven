@@ -100,10 +100,14 @@ Every launch executes `faultmaven/main.py` exactly once (#1985). The launcher is
 its own module, `faultmaven/server.py`, and imports neither `faultmaven.main` nor
 anything that does: uvicorn imports the `"faultmaven.main:app"` string, once, in
 the process that serves requests. `python -m faultmaven.main` is not a launch
-path (it has no `__main__` guard): it ran `main.py` as `__main__` and then again
-for uvicorn's import, so every import-time side effect ran twice (duplicate
-import-time logs, `starlette.requests.Request.form` wrapped twice, Prometheus
-scrape hooks registered twice) and the served app was not the `__main__` one.
+path: it ran `main.py` as `__main__` and then again for uvicorn's import, so every
+import-time side effect ran twice (duplicate import-time logs,
+`starlette.requests.Request.form` wrapped twice, Prometheus scrape hooks
+registered twice) and the served app was not the `__main__` one. It now refuses:
+`main.py` opens with a `__main__` guard, above `load_dotenv()` and every import,
+that raises `SystemExit` naming `faultmaven.server`, so the command exits 1 with
+one line and no import-time work (a stale `command:` fails loudly instead of
+exiting 0 without serving).
 `tests/unit/test_run_server_launch_paths.py` runs the launcher in a child process
 with `uvicorn.run` replaced by a stub that imports the app string, as uvicorn
 does, and asserts `main.py` executed once.
