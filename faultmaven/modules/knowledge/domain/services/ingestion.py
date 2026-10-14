@@ -327,7 +327,7 @@ class KnowledgeIngester:
             document_id = str(uuid.uuid4())
 
         try:
-            self.logger.info(f"Starting ingestion of document: {title}")
+            self.logger.info(f"Starting ingestion of document {document_id}")
 
             # Extract text content
             content = await self._extract_text(file_path)
@@ -357,11 +357,11 @@ class KnowledgeIngester:
             # Process and store in chunks
             await self._process_and_store(document)
 
-            self.logger.info(f"Successfully ingested document: {title}")
+            self.logger.info(f"Successfully ingested document {document_id}")
             return document_id
 
         except Exception as e:
-            self.logger.error(f"Failed to ingest document {title}: {e}")
+            self.logger.error(f"Failed to ingest document {document_id}: {e}")
             raise
 
     async def _extract_text(self, file_path: str) -> str:
@@ -804,7 +804,7 @@ class KnowledgeIngester:
             Job ID for tracking the ingestion process
         """
         try:
-            self.logger.info(f"Starting ingestion of document: {document.title}")
+            self.logger.info(f"Starting ingestion of document {document.document_id}")
 
             # Sanitize content (already done in API, but double-check)
             sanitized_content = await self.sanitizer.asanitize(document.content)
@@ -817,14 +817,14 @@ class KnowledgeIngester:
             # Process and store in chunks
             await self._process_and_store(document)
 
-            self.logger.info(f"Successfully ingested document: {document.title}")
+            self.logger.info(f"Successfully ingested document {document.document_id}")
 
             # Generate job ID for tracking (in a real system, this would be stored)
             job_id = f"job_{document.document_id}"
             return job_id
 
         except Exception as e:
-            self.logger.error(f"Failed to ingest document {document.title}: {e}")
+            self.logger.error(f"Failed to ingest document {document.document_id}: {e}")
             raise
 
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:

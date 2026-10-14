@@ -43,6 +43,10 @@ from faultmaven.modules.knowledge.domain.case_authoring import (
 from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
 )
+from faultmaven.modules.knowledge.domain.item_title import (
+    fit_to_column,
+    sanitize_item_title,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     CaseConversionRequest,
@@ -414,6 +418,7 @@ class ConversionService:
             drafts=drafts,
             created_at=created_at,
             warnings=warnings,
+            sanitizer=self._sanitizer,
         )
 
         logger.info(
@@ -696,6 +701,7 @@ class ConversionService:
                 source_type="case",
                 case_id=request.case_id,
                 warnings=warnings,
+                sanitizer=self._sanitizer,
             )
         except (IntegrityError, ConflictError):
             logger.warning(
@@ -1945,6 +1951,13 @@ class ConversionService:
 
         from faultmaven.utils.runbook_id import authored_item_id
 
+        # The published title, and the draft's own to match it. A draft written
+        # before titles were scrubbed (or one a path other than conversion's
+        # persistence wrote) still holds its raw title, and the draft row is
+        # listed (``GET /knowledge/drafts``) after publication as before
+        # (#1981). Nothing is written yet, so a refusal leaves nothing behind.
+        title = await sanitize_item_title(self._sanitizer, title)
+
         # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
         # the bootstrap orphan-prune would delete this user runbook on redeploy.
         knowledge_item_id = authored_item_id()
@@ -2010,6 +2023,7 @@ class ConversionService:
                     ConversionDraftModel.content == read_content,
                 )
                 .values(
+                    title=fit_to_column(title, ConversionDraftModel.title),
                     content=content,
                     status=DraftStatus.VERIFIED.value,
                     verified_at=now,
@@ -2095,6 +2109,14 @@ class ConversionService:
         loop_break), plus a ### Cause Z: Unidentified fallback with [Default] indicator.
         """
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
+
+        # The title the user typed, redacted once, ahead of everything derived
+        # from it (#1981): the runbook's id slug (``password=hunter2`` would
+        # become ``...-password-hunter2``, listed with the draft), the
+        # frontmatter ``title:`` and ``# Runbook:`` heading in its text, the
+        # draft row's title and the source file's name. Scrubbing only at the
+        # draft row would leave the rest carrying it.
+        title = await sanitize_item_title(self._sanitizer, title)
 
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -2218,6 +2240,7 @@ status: draft
             ),
             drafts=[draft],
             created_at=datetime.now(timezone.utc),
+            sanitizer=self._sanitizer,
         )
 
         return {"conversion_id": conversion_id, "draft": draft}
@@ -2283,6 +2306,7 @@ status: draft
                 user_id,
                 enterprise_id,
                 is_platform_admin,
+                sanitizer=self._sanitizer,
             )
 
     async def discard_by_knowledge_item_id(self, knowledge_item_id: str) -> bool:

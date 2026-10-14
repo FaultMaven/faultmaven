@@ -68,6 +68,8 @@ async def _scan_for_runbooks_impl(
     user_id: str,
     enterprise_id: Optional[str] = None,
     is_platform_admin: bool = False,
+    *,
+    sanitizer,
 ) -> dict:
     import yaml
 
@@ -387,6 +389,7 @@ async def _scan_for_runbooks_impl(
                 ),
                 drafts=[draft],
                 created_at=datetime.now(timezone.utc),
+                sanitizer=sanitizer,
             )
         except ConflictError as exc:
             logger.warning(

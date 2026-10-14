@@ -140,6 +140,7 @@ def conversion_service(session_factory, kb_root):
     settings.llm.get_knowledge_model.return_value = "test-model"
     settings.llm.explicit_role_provider.return_value = None
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,

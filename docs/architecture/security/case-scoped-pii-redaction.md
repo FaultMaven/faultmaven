@@ -205,13 +205,23 @@ No registry is loaded or saved, and nothing is reversed. The investigation path 
 
 ### Knowledge Item Titles
 
-**Files:** `modules/knowledge/domain/item_title.py`, `knowledge_service.py` (`ingest_runbook`, `upload_document`, `update_document_metadata`), `ingestion.py`
+**Files:** `modules/knowledge/domain/item_title.py`, `knowledge_service.py` (`ingest_runbook`, `upload_document`, `update_document_metadata`), `conversion_service/` (`job_persistence.py`, `service.py`), `ingestion.py`
 
-A knowledge item's title is shown to every reader of the tier it lives in (team and global included) and is never reversed, so it is redacted with the DI sanitizer before any row or vector carries it, on create exactly as on update (#1981). One helper, `sanitize_item_title`, is called by every writer: `ingest_runbook` (the one place a `knowledge_items` row is created: uploads, published conversion drafts and the KB pack all reach it), `upload_document` (which scrubs first, because it writes the upload and draft rows from the title before `ingest_runbook` runs), `update_document_metadata`, and the dormant `KnowledgeIngester` entry points. The sanitizer's regex patterns always apply; Presidio's entities apply when its analyzer answers. A title that cannot be redacted (`RedactionUnavailableError` under a fail-closed posture) is not written, and nothing has been written before the call.
+A knowledge item's title is shown to every reader of the tier it lives in (team and global included) and is never reversed, so it is redacted with the DI sanitizer before any row or vector carries it, on create exactly as on update (#1981). One helper, `sanitize_item_title`, is called by every writer:
 
-The KB pack is the one exemption: `kb_init` passes `shipped=True`, and `ingest_runbook` stores that title as written. A pack title is vendored, reviewed source, not user or model text, and the seed must not depend on a redaction service. The default is the scrub.
+- `ingest_runbook`, the one place a `knowledge_items` row is created (uploads, published conversion drafts and the KB pack all reach it);
+- `upload_document`, which scrubs first because it writes the upload and draft rows from the title before `ingest_runbook` runs;
+- `update_document_metadata`;
+- `ConversionService`: `create_runbook_from_template` (the title the user typed, which also becomes the draft's id slug and the runbook's frontmatter), `_persist_job_rows` (the one place a `conversion_drafts` row is written, so a model-written title is covered too) and `verify_draft`;
+- the dormant `KnowledgeIngester` entry points.
 
-A draft's own title (`conversion_drafts.title`) is the author's private review queue and is not scrubbed when the draft is created. It reaches readers only by publishing, which scrubs. The runbook body is not redacted on create: the quality gate refuses hardcoded credentials in it (`runbook_validator`), and `update_document_metadata` redacts it on edit.
+A draft is not author-only. `GET /knowledge/drafts` lists every global-scope draft to every user, and a case's drafts are listed to its readers (`GET /cases/{id}/reports`), so a draft's title is disclosed as soon as its row exists, well before it is published.
+
+The helper runs the sanitizer to a fixed point (at most four passes). The sanitizer's patterns run in a fixed order, and an earlier one can be blocked by text a later one removes: `password=` needs a word boundary, and in `10.0.0.5password=hunter2` the digit before the `p` is none until the IP pattern has replaced the address. One pass is then not stable, and the copies of a title that were scrubbed a different number of times differed. A sanitizer that has not settled after four passes, that raises (`RedactionUnavailableError` under a fail-closed posture, `PseudonymKeyUnavailableError` in a cloud deployment with no key), that answers with something that is not text, or that is not wired, makes the helper raise `ItemTitleScrubUnavailable`. Every caller runs it before its first write, so nothing is left behind, and the API answers **503** with a generic detail (`POST /knowledge/documents`, `PUT /knowledge/documents/{id}` and the conversion routes), as `POST /cases/{id}/title` does for the case title gate (#1967). The stored upload filename and draft title are cut to their `String(255)` columns after the scrub, because redaction can lengthen a title.
+
+The KB pack is the one exemption: `kb_init` passes `shipped=True`, and `ingest_runbook` stores that title as written. A pack title is vendored, reviewed source, not user or model text. A redaction outage that begins after a healthy start (Presidio answering, then failing under a fail-closed posture) would otherwise raise out of the scrub and stop the platform corpus from seeding; a seed that starts with the analyzer already down runs regex-only and does not raise either way. The default is the scrub, and a test pins that no other call site passes `shipped`.
+
+The runbook body is not redacted on create: the quality gate refuses hardcoded credentials in it (`runbook_validator`), and `update_document_metadata` redacts it on edit. Draft rows written before this change are not rewritten; `verify_draft` scrubs the one it publishes.
 
 ## Configuration
 

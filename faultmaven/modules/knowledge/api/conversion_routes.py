@@ -120,7 +120,13 @@ async def convert_document(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Upload a document and convert it to one or more runbook drafts."""
+    """Upload a document and convert it to one or more runbook drafts.
+
+    A draft's title is redacted before the draft is stored (#1981). If that
+    check cannot run (the sanitizer or its pseudonym key is unavailable) the
+    request answers **503**, a retryable server-side condition, with a generic
+    detail, and nothing is saved.
+    """
     # Validate scope. A 400, not the 422 a typed Form field would answer:
     # this form field predates the taxonomy enums and its status is part of
     # the published contract. The allowed set is the enum's.
@@ -456,6 +462,11 @@ async def verify_draft(
     api/exception_handlers.py for canonical translation to 403 / 404 / 409 /
     422 respectively. The route no longer catches ValueError; see
     docs/architecture/specifications/exception-contract.md.
+
+    The published title is redacted before anything is written (#1981). If that
+    check cannot run (the sanitizer or its pseudonym key is unavailable) the
+    request answers **503**, a retryable server-side condition, with a generic
+    detail, and the draft stays a draft.
     """
     result = await service.verify_draft(
         conversion_id=conversion_id,
@@ -547,7 +558,13 @@ async def create_runbook_manually(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Create a runbook manually from template fields. Returns a draft for review."""
+    """Create a runbook manually from template fields. Returns a draft for review.
+
+    The title is redacted before the draft, its id and its text are made
+    (#1981). If that check cannot run (the sanitizer or its pseudonym key is
+    unavailable) the request answers **503**, a retryable server-side condition,
+    with a generic detail, and nothing is saved.
+    """
     # Access control: global scope is the platform tier — never authorable
     # from a tenant session under multi (#770), admin-only in single-tenant.
     if body.scope == KnowledgeScope.GLOBAL:

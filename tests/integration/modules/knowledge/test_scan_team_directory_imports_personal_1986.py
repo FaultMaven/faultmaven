@@ -103,6 +103,7 @@ def conversion(session_factory, knowledge, knowledge_dir):
     """The real service over the real schema; no team service, as on the only
     deployments the scan runs on."""
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=session_factory,

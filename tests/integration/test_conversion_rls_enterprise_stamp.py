@@ -77,7 +77,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from tests.utils import seed_enterprises
+from tests.utils import regex_only_sanitizer, seed_enterprises
 
 pytestmark = [
     pytest.mark.integration,
@@ -264,7 +264,8 @@ async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None
         ],
         created_at=datetime.now(timezone.utc),
         source_type="case",
-        case_id=None,  # no case row is seeded; the FK would not resolve
+        case_id=None,  # no case row is seeded; the FK would not resolve,
+        sanitizer=regex_only_sanitizer(),
     )
 
 

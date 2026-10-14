@@ -106,6 +106,7 @@ class _Replica:
         settings = MagicMock()
         settings.llm.get_knowledge_model.return_value = "test-model"
         self.service = ConversionService(
+            sanitizer=regex_only_sanitizer(),
             llm_router=MagicMock(),
             settings=settings,
             db_session_factory=session_factory,

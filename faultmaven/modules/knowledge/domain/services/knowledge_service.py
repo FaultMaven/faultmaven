@@ -55,7 +55,10 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
+from faultmaven.modules.knowledge.domain.item_title import (
+    fit_to_column,
+    sanitize_item_title,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_quality,
@@ -1333,8 +1336,11 @@ class KnowledgeService:
                 the row or the vectors carry it (#1981) — the rule
                 :meth:`update_document` already applies. A shipped title is
                 vendored, reviewed source: it is stored as written, so that a
-                redaction outage cannot stop the platform corpus from seeding
-                and the pack's own titles are never rewritten. Defaults to
+                redaction outage that begins after a healthy start (Presidio
+                going down mid-seed under a fail-closed posture) cannot stop
+                the platform corpus from seeding, and the pack's own titles
+                are never rewritten. A seed that STARTS with the analyzer down
+                runs regex-only and does not raise either way. Defaults to
                 False: a caller that says nothing gets the scrub.
 
         Returns:
@@ -1827,8 +1833,9 @@ class KnowledgeService:
                     case_id=None,  # KB-bound, not case-bound
                     uploaded_by=owner_id,
                     # The title, which is what this upload has for a name:
-                    # nothing is written to a file (#1950).
-                    filename=title,
+                    # nothing is written to a file (#1950). Cut to the column
+                    # AFTER the scrub, which can make it longer (#1981).
+                    filename=fit_to_column(title, UploadedFileModel.filename),
                     size_bytes=len(content.encode()),
                     content_type="text/markdown",
                     # A storage-backend key or NULL, never a path: the text is
@@ -1861,7 +1868,7 @@ class KnowledgeService:
                     enterprise_id=enterprise_id,
                     conversion_id=conversion_id,
                     runbook_id=document_id,
-                    title=title,
+                    title=fit_to_column(title, ConversionDraftModel.title),
                     content=content,
                     status="verified",
                     source_type="document",

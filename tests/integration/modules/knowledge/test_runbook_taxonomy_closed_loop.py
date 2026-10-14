@@ -252,6 +252,7 @@ def service(session_factory, tmp_path):
     )
     knowledge._index_document_in_vector_store = AsyncMock(return_value=3)
     conversion = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=session_factory,

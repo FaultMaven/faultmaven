@@ -17,6 +17,10 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     UploadedFileModel,
 )
+from faultmaven.modules.knowledge.domain.item_title import (
+    fit_to_column,
+    sanitize_item_title,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionDraft,
@@ -45,8 +49,16 @@ async def _persist_job(
     source_type: str = "document",
     case_id: str = None,
     warnings: Optional[List[str]] = None,
+    *,
+    sanitizer,
 ) -> None:
-    """Persist conversion job and drafts to database."""
+    """Persist conversion job and drafts to database.
+
+    ``sanitizer`` is required, with no default, because a draft's title is
+    disclosed and this is the one place a ``conversion_drafts`` row is written:
+    a caller that could leave it out would be a path that stores the title raw
+    (#1981). See :func:`_persist_job_rows`.
+    """
     if not db_session_factory:
         return
 
@@ -67,6 +79,7 @@ async def _persist_job(
             source_type=source_type,
             case_id=case_id,
             warnings=warnings,
+            sanitizer=sanitizer,
         )
     except IntegrityError:
         # Classified AFTER the session block has exited, never inside it:
@@ -107,12 +120,31 @@ async def _persist_job_rows(
     source_type: str,
     case_id: Optional[str],
     warnings: Optional[List[str]] = None,
+    sanitizer,
 ) -> None:
     """The upload + job + drafts write, as ONE transaction and one session.
 
     Split out of ``_persist_job`` only so its caller can classify an
     ``IntegrityError`` after this session has been returned to the pool.
+
+    Every draft's title is redacted here, before the session opens (#1981). A
+    draft is NOT author-only: ``GET /knowledge/drafts`` lists every global-scope
+    draft to every user, and a case's drafts are listed to its readers
+    (``GET /cases/{id}/reports``), so a title the author typed or a model wrote
+    is disclosed from the moment this row exists, well before the draft is
+    published. It is the one ``ConversionDraftModel`` written by conversion, so
+    one call covers the LLM conversions, the manual template and the disk scan.
+    The scrub fails closed (``ItemTitleScrubUnavailable``) and runs ahead of the
+    first write, so a refusal leaves nothing behind.
     """
+    draft_titles = {
+        draft.draft_id: fit_to_column(
+            await sanitize_item_title(sanitizer, draft.title),
+            ConversionDraftModel.title,
+        )
+        for draft in drafts
+    }
+
     async with db_session_factory() as session:
         # Billing attribution for every row this writes (ADR-017 D2), read
         # from the request binding exactly as ``CaseService.create_case``
@@ -188,7 +220,7 @@ async def _persist_job_rows(
                 organization_id=organization_id,
                 conversion_id=conversion_id,
                 runbook_id=draft.runbook_id,
-                title=draft.title,
+                title=draft_titles[draft.draft_id],
                 # The draft's text, in the same transaction as its row (#1950):
                 # there is no draft whose text a replica cannot read.
                 content=draft.content,
