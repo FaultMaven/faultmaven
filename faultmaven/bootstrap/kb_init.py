@@ -48,12 +48,13 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable, NamedTuple, Optional
+from typing import Any, Awaitable, Callable, Collection, NamedTuple, Optional
 
 from sqlalchemy import select
 
 from faultmaven.bootstrap.kb_orphan_sweep import (
     AuthoredSweepResult,
+    resolve_sweep_mode,
     sweep_authored_orphans,
 )
 
@@ -72,13 +73,20 @@ class BootstrapResult:
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
         # built-in parent_ids whose row is unpublished (#1966)
         self.unpublished_vectors_cleaned: list[str] = []
-        # Authored parents with vectors and no row (#1982): what was swept,
-        # and per enterprise what was left and why.
+        # Authored parents with vectors and no row (#1982): what an armed run
+        # deletes (report-only by default), what was deleted, and per
+        # enterprise what was left and why.
         self.authored_orphans: AuthoredSweepResult = AuthoredSweepResult()
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
 
     def __repr__(self) -> str:
+        # The authored-orphan counts ride on THIS line because it is the one the
+        # CD pipeline keeps (`grep -o "BootstrapResult([^)]*)"`). Its gate reads
+        # the LAST `failed=` on the line, so no key after the first may end in
+        # `failed` (delete failures are `authored_orphans_unremoved`), and no
+        # value may contain a closing parenthesis.
+        sweep = self.authored_orphans.totals()
         return (
             f"BootstrapResult(ingested={len(self.ingested)}, "
             f"skipped_unchanged={len(self.skipped_unchanged)}, "
@@ -86,7 +94,14 @@ class BootstrapResult:
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
             f"unpublished_vectors_cleaned={len(self.unpublished_vectors_cleaned)}, "
-            f"authored_orphans_swept={len(self.authored_orphans.deleted)}, "
+            f"authored_orphans_mode={self.authored_orphans.mode}, "
+            f"authored_orphans_would_delete={sweep['would_delete']}, "
+            f"authored_orphans_deleted={sweep['deleted']}, "
+            f"authored_orphans_capped={sweep['capped']}, "
+            f"authored_orphans_disjoint={sweep['disjoint']}, "
+            f"authored_orphans_unproven={sweep['unproven']}, "
+            f"authored_orphans_misstamped={sweep['misstamped']}, "
+            f"authored_orphans_unremoved={sweep['unremoved']}, "
             f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
@@ -98,7 +113,8 @@ async def bootstrap_kb(
     enterprise_id: str,
     project_root: Optional[Path] = None,
     pack_dir: Optional[Path] = None,
-    allow_disjoint_reference_set: bool = False,
+    sweep_dry_run: Optional[bool] = None,
+    allow_disjoint_enterprises: Collection[str] = (),
 ) -> BootstrapResult:
     """Run the KB ingestion bootstrap from the shipped pack.
 
@@ -111,11 +127,16 @@ async def bootstrap_kb(
         project_root: Override the project root (test injection).
         pack_dir: Explicit pack directory (test injection). When None, resolves
             from ``KB_PACK_DIR`` settings, falling back to the bundled baseline.
-        allow_disjoint_reference_set: The operator's assertion (``kb_seed
-            --allow-disjoint-reference-set``) that an enterprise whose authored
-            vectors match NONE of its rows really has only orphans. Off by
-            default: the authored-orphan sweep then skips that enterprise
-            (see :mod:`faultmaven.bootstrap.kb_orphan_sweep`).
+        sweep_dry_run: The authored-orphan sweep's dry-run override
+            (``kb_seed --dry-run`` / ``--no-dry-run``); None defers to
+            ``KB_ORPHAN_SWEEP_DRY_RUN``. Report-only unless
+            ``KB_ORPHAN_SWEEP_ENABLED`` is set and this is not a dry run (see
+            :mod:`faultmaven.bootstrap.kb_orphan_sweep`).
+        allow_disjoint_enterprises: The buckets (enterprise ids, or
+            ``unattributed``) the operator acknowledged (``kb_seed
+            --allow-disjoint-enterprise``) as genuinely holding only orphans.
+            Every other bucket none of whose authored vectors has a row is
+            skipped.
 
     Returns:
         BootstrapResult — per-runbook outcomes (counts + failure reasons).
@@ -210,15 +231,16 @@ async def bootstrap_kb(
 
     # The authored half of the same drift (#1982): an authored chunk whose row
     # is gone (a vector delete that failed before #1966) is retrievable for
-    # good. Deleted only where the row read is proven unfiltered by RLS, per
-    # enterprise stamp, behind the reference-set check, and within the same
-    # cap repair heals — see kb_orphan_sweep.
+    # good. Report-only unless an operator arms it; deleted only where the row
+    # read is proven unfiltered by RLS, per enterprise stamp, behind the
+    # reference-set check and the cap — see kb_orphan_sweep.
     max_rows, max_chunks = _resolve_repair_bounds()
     result.authored_orphans = await sweep_authored_orphans(
         knowledge_service,
         db_session_factory,
         max_parents=max_rows,
-        allow_disjoint_reference_set=allow_disjoint_reference_set,
+        mode=resolve_sweep_mode(sweep_dry_run),
+        allow_disjoint=allow_disjoint_enterprises,
     )
 
     # Cross-store repair: an orphaned row (SQL row with no vectors — the
@@ -244,7 +266,9 @@ async def bootstrap_kb(
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
         f"{len(result.unpublished_vectors_cleaned)} unpublished built-ins' vectors "
         "cleaned, "
-        f"{len(result.authored_orphans.deleted)} authored orphans swept, "
+        f"{len(result.authored_orphans.deleted)} authored orphans swept "
+        f"({result.authored_orphans.mode}: "
+        f"{len(result.authored_orphans.would_delete)} would be), "
         f"{len(result.repaired_rows)} rows repaired, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )

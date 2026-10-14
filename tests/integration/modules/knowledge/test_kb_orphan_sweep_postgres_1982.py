@@ -1,8 +1,10 @@
 """The authored-orphan sweep under each PostgreSQL posture (#1982).
 
-The sweep deletes an authored chunk only when its row read is proven complete:
-``NOT row_security_active('knowledge_items')`` in the same transaction as the
-read. This module runs it, through the production engine (whose ``begin``
+The sweep deletes an authored chunk only when its row read is proven complete,
+by two independent guards in the same transaction as the read:
+``NOT row_security_active('knowledge_items')``, and the read itself issued under
+``SET LOCAL row_security = off`` — which makes PostgreSQL refuse a read any
+policy would filter instead of filtering it. This module runs it (armed), through the production engine (whose ``begin``
 listener binds ``app.current_enterprise_id``), under every role that can run
 the KB bootstrap, in a database migrated to head by a NON-superuser owner —
 Cloud's shape:
@@ -17,12 +19,16 @@ maintenance         03-create-maintenance-     yes      every enterprise
                     knowledge_items)
 app role, bound     02-create-rls-app-role.sql no       nothing; every enterprise
 to one enterprise   (RLS applies)                       reported unproven
+owner, table        FORCE ROW LEVEL SECURITY   no       nothing
+FORCEd
 ==================  =========================  =======  ==========================
 
 The owner is the posture that tells the right proof from the tempting one: it
-reads every row with ``rolbypassrls = false``. The app role is the hazard: a
-negative control with the proof switched off shows it losing LIVE chunks under
-either binding, which is what the proof exists to prevent.
+reads every row with ``rolbypassrls = false``. The app role is the hazard. With
+the first guard forced to answer "unfiltered", the second still refuses the
+read and nothing is lost; only with BOTH guards switched off does the app role
+lose LIVE chunks, under either binding — which shows the tests can see the
+hazard the guards exist to prevent.
 
 Roles carry the grants of faultmaven-enterprise-infra's ``02`` / ``03`` init
 scripts for the ``public`` schema, under names of this module's own (roles are
@@ -230,7 +236,7 @@ async def _sweep(tmp_path, url: str, bind: str = sc.ST):
                 )
             ).one()
         result = await kb_orphan_sweep.sweep_authored_orphans(
-            svc, factory, max_parents=25
+            svc, factory, max_parents=25, mode=kb_orphan_sweep.SWEEP_ARMED
         )
     return result, sc.chunk_ids_present(client), posture
 
@@ -273,6 +279,7 @@ async def test_the_app_role_proves_nothing_and_sweeps_nothing(pg, tmp_path, bind
     # The hazard first: a live chunk lost is what an unproven sweep costs.
     assert sc.live_chunk_ids() <= present, sc.live_chunk_ids() - present
     assert result.proven is False
+    assert result.unproven_reason == kb_orphan_sweep.UNPROVEN_FILTERED
     assert result.deleted == []
     assert {e: c.unproven for e, c in result.enterprises.items()} == {
         sc.ST: 3,
@@ -283,34 +290,100 @@ async def test_the_app_role_proves_nothing_and_sweeps_nothing(pg, tmp_path, bind
     assert {c for d in ALL_AUTHORED_ORPHANS for c in d.chunk_ids()} <= present
 
 
-#: What the app role loses when the proof is switched off. Bound to the
+#: Guard 1 forced to answer "unfiltered".
+_PROOF_FORCED = "SELECT false WHERE CAST(:table AS text) IS NOT NULL"
+
+
+@pytest.mark.parametrize("bind", [sc.ST, sc.E1], ids=["bound-standalone", "bound-e1"])
+async def test_with_the_proof_forced_the_second_guard_refuses_the_read(
+    pg, tmp_path, monkeypatch, bind
+):
+    """#2018 review R1: the proof was the only thing between the app role and
+    a loss. With it forced, ``row_security = off`` makes the partial read an
+    error, the run is unproven, and no live chunk goes."""
+    monkeypatch.setattr(kb_orphan_sweep, "_ROW_SECURITY_ACTIVE", _PROOF_FORCED)
+
+    result, present, _posture = await _sweep(tmp_path, pg.app_url, bind)
+
+    assert sc.live_chunk_ids() <= present, sc.live_chunk_ids() - present
+    assert result.proven is False
+    assert result.unproven_reason == kb_orphan_sweep.UNPROVEN_READ_REFUSED
+    assert result.deleted == []
+
+
+@pytest.mark.parametrize("bind", [sc.ST, sc.E1], ids=["bound-standalone", "bound-e1"])
+async def test_the_app_roles_read_under_row_security_off_raises(pg, bind):
+    """F4, pinned: what the second guard rests on. The app role's read of
+    knowledge_items with row security off is an ERROR, not a filtered answer —
+    and the same role's read with row security on succeeds (the control)."""
+    from sqlalchemy.exc import DBAPIError
+
+    async with production_sessions(pg.app_url, bind) as factory:
+        async with factory() as session:
+            visible = (
+                await session.execute(text("SELECT count(*) FROM knowledge_items"))
+            ).scalar()
+        assert 0 < visible < len([d for d in sc.DOCS if d.row])
+        async with factory() as session:
+            await session.execute(text("SET LOCAL row_security = off"))
+            with pytest.raises(DBAPIError, match="row-level security policy"):
+                await session.execute(text("SELECT item_id FROM knowledge_items"))
+            await session.rollback()
+
+
+#: What the app role loses with BOTH guards switched off. Bound to the
 #: Standalone enterprise it cannot see E1's rows, and the reference-set check
 #: does not save E1's unstamped legacy chunks: that bucket overlaps through the
 #: Standalone document it CAN see. Bound to E1 it cannot see the Standalone
 #: enterprise's personal rows, and the Standalone bucket overlaps through the
 #: global document every session sees.
-_LOST_WITHOUT_THE_PROOF = {
+_LOST_WITHOUT_EITHER_GUARD = {
     sc.ST: {sc.UNSTAMPED_LIVE_E1},
     sc.E1: {sc.ST_LIVE_PERSONAL, sc.UNSTAMPED_LIVE_ST},
 }
 
 
 @pytest.mark.parametrize("bind", [sc.ST, sc.E1], ids=["bound-standalone", "bound-e1"])
-async def test_negative_control_without_the_proof_the_app_role_loses_live_chunks(
+async def test_negative_control_without_either_guard_the_app_role_loses_live_chunks(
     pg, tmp_path, monkeypatch, bind
 ):
-    """The test can see the hazard: with the proof answering "unfiltered" the
-    app role's partial read deletes live documents' chunks."""
-    monkeypatch.setattr(
-        kb_orphan_sweep,
-        "_ROW_SECURITY_ACTIVE",
-        "SELECT false WHERE CAST(:table AS text) IS NOT NULL",
-    )
+    """The tests can see the hazard: with the proof forced AND row security
+    left on (so the read is filtered rather than refused), the app role's
+    partial read deletes live documents' chunks."""
+    monkeypatch.setattr(kb_orphan_sweep, "_ROW_SECURITY_ACTIVE", _PROOF_FORCED)
+    monkeypatch.setattr(kb_orphan_sweep, "_ROW_SECURITY_OFF", "SELECT 1")
 
     result, present, _posture = await _sweep(tmp_path, pg.app_url, bind)
 
     lost = sc.live_chunk_ids() - present
-    assert lost == sc.live_chunk_ids(_LOST_WITHOUT_THE_PROOF[bind])
+    assert lost == sc.live_chunk_ids(_LOST_WITHOUT_EITHER_GUARD[bind])
+
+
+@pytest.mark.parametrize("proof_forced", [False, True], ids=["proof", "proof-forced"])
+async def test_an_owner_on_a_forced_table_is_unproven(
+    pg, tmp_path, monkeypatch, proof_forced
+):
+    """FORCE ROW LEVEL SECURITY subjects the owner to the policies: the first
+    guard sees it, and with that guard forced the second still refuses."""
+    if proof_forced:
+        monkeypatch.setattr(kb_orphan_sweep, "_ROW_SECURITY_ACTIVE", _PROOF_FORCED)
+    await _execute(pg.owner_url, "ALTER TABLE knowledge_items FORCE ROW LEVEL SECURITY")
+    try:
+        result, present, posture = await _sweep(tmp_path, pg.owner_url)
+    finally:
+        await _execute(
+            pg.owner_url, "ALTER TABLE knowledge_items NO FORCE ROW LEVEL SECURITY"
+        )
+
+    assert posture[1] is True, posture
+    assert result.proven is False
+    assert result.unproven_reason == (
+        kb_orphan_sweep.UNPROVEN_READ_REFUSED
+        if proof_forced
+        else kb_orphan_sweep.UNPROVEN_FILTERED
+    )
+    assert sc.live_chunk_ids() <= present
+    assert result.deleted == []
 
 
 async def test_a_proof_that_cannot_be_asked_is_unproven(pg, tmp_path, monkeypatch):
@@ -324,17 +397,25 @@ async def test_a_proof_that_cannot_be_asked_is_unproven(pg, tmp_path, monkeypatc
     result, present, _posture = await _sweep(tmp_path, pg.owner_url)
 
     assert result.proven is False
+    assert result.unproven_reason == kb_orphan_sweep.UNPROVEN_CHECK_FAILED
     assert result.skipped is None
     assert result.deleted == []
     assert {c for d in ALL_AUTHORED_ORPHANS for c in d.chunk_ids()} <= present
 
 
-def test_kb_seeds_pass_under_the_maintenance_role_sweeps_and_reports(tmp_path, caplog):
+def test_kb_seed_under_the_maintenance_role_reports_then_sweeps_once_armed(
+    tmp_path, caplog, monkeypatch
+):
     """The whole bootstrap pass as ``kb_seed`` runs it under multi, in a
     database of its own (the pass writes: it seeds the pack and prunes
-    built-ins). Every enterprise's authored orphans go, nothing the role is
-    refused is issued, and the job result carries the counts."""
+    built-ins). On the shipped settings it REPORTS every enterprise's authored
+    orphans and deletes none; armed (``KB_ORPHAN_SWEEP_ENABLED`` and
+    ``--no-dry-run``) it deletes exactly what the report listed. Nothing the
+    role is refused is issued, and the counts reach the job result and the
+    ``BootstrapResult(...)`` line."""
     from faultmaven.bootstrap import kb_init
+    from faultmaven.config import settings as settings_module
+    from faultmaven.config.settings import reset_settings
     from faultmaven.jobs.kb_seed import run as kb_seed_run
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
@@ -345,8 +426,9 @@ def test_kb_seeds_pass_under_the_maintenance_role_sweeps_and_reports(tmp_path, c
     sc.add_chunks(client, sc.DOCS)
     store = KnowledgeVectorStore(client)
     pack_dir = _write_pack(tmp_path)
+    orphan_chunks = {c for d in ALL_AUTHORED_ORPHANS for c in d.chunk_ids()}
 
-    async def seed_as_kb_seed_does(postgres: Postgres) -> dict:
+    async def seed_as_kb_seed_does(postgres: Postgres, **job_kwargs) -> dict:
         async with production_sessions(postgres.maintenance_url) as factory:
             svc = KnowledgeService.__new__(KnowledgeService)
             svc._db_session_factory = factory
@@ -365,26 +447,70 @@ def test_kb_seeds_pass_under_the_maintenance_role_sweeps_and_reports(tmp_path, c
             # production_sessions has pointed at the maintenance role.
             with (
                 patch.object(kb_init, "bootstrap_kb", bootstrap_this_pack),
-                caplog.at_level(logging.WARNING),
+                caplog.at_level(logging.INFO),
             ):
                 return await kb_seed_run(
                     settings=MagicMock(),
                     container=SimpleNamespace(get_knowledge_service=lambda: svc),
+                    **job_kwargs,
                 )
 
-    # Synchronous, so the database outlives the event loop the pass runs in.
-    with provisioned_database() as postgres:
-        job = asyncio.run(seed_as_kb_seed_does(postgres))
+    def noise():
+        return [
+            f"{r.levelname} {r.name}: {r.getMessage()}"
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and r.name.startswith("faultmaven")
+            # Rebuilding settings (the arming below) re-runs their own
+            # coherence warnings, which are about the environment, not the pass.
+            and r.name != "faultmaven.config.settings"
+            and "[report-only]" not in r.getMessage()
+        ]
 
-    assert job["status"] == "completed", job
-    assert job["ingested"] == 1
-    sweep = job["authored_orphans"]
-    assert sweep["proven"] is True
-    assert sweep["deleted"] == 4
+    saved_settings = settings_module._settings_instance
+    reset_settings()
+    try:
+        # Synchronous, so the database outlives the event loops the passes
+        # run in.
+        with provisioned_database() as postgres:
+            reported = asyncio.run(seed_as_kb_seed_does(postgres))
+            assert orphan_chunks <= sc.chunk_ids_present(client)
+            report_lines = [
+                r.getMessage()
+                for r in caplog.records
+                if r.getMessage().startswith("KB seed completed: BootstrapResult(")
+            ]
+            assert noise() == [], noise()
+            caplog.clear()
+
+            monkeypatch.setenv("KB_ORPHAN_SWEEP_ENABLED", "true")
+            reset_settings()
+            armed = asyncio.run(seed_as_kb_seed_does(postgres, dry_run=False))
+    finally:
+        monkeypatch.delenv("KB_ORPHAN_SWEEP_ENABLED", raising=False)
+        # Restore, not reset: a later test must not rebuild settings (and
+        # re-log their warnings) inside its own log window because of this one.
+        settings_module._settings_instance = saved_settings
+
+    assert reported["status"] == "completed", reported
+    assert reported["ingested"] == 1
+    report = reported["authored_orphans"]
+    assert (report["mode"], report["proven"]) == ("report_only", True)
+    assert (report["would_delete"], report["deleted"]) == (4, 0)
+    assert report["would_delete_documents"] == {
+        **{e: [d.item_id] for e, d in sc.AUTHORED_ORPHANS.items()},
+        "unattributed": [sc.UNSTAMPED_ORPHAN.item_id],
+    }
+    assert len(report_lines) == 1
+    assert "authored_orphans_mode=report_only, " in report_lines[0]
+    assert "authored_orphans_would_delete=4, authored_orphans_deleted=0," in (
+        report_lines[0]
+    )
+
+    assert armed["status"] == "completed", armed
+    sweep = armed["authored_orphans"]
+    assert (sweep["mode"], sweep["deleted"]) == ("armed", 4)
     assert {e: c["deleted"] for e, c in sweep["enterprises"].items()} == {
-        sc.ST: 1,
-        sc.E1: 1,
-        sc.E2: 1,
+        e: 1 for e in sc.AUTHORED_ORPHANS
     }
     assert sweep["unattributed"]["deleted"] == 1
     present = sc.chunk_ids_present(client)
@@ -392,10 +518,5 @@ def test_kb_seeds_pass_under_the_maintenance_role_sweeps_and_reports(tmp_path, c
     # built-in path); every live AUTHORED chunk stays.
     authored_live = [d for d in sc.LIVE if not is_builtin_item_id(d.item_id)]
     assert sc.live_chunk_ids(authored_live) <= present
-    assert not {c for d in ALL_AUTHORED_ORPHANS for c in d.chunk_ids()} & present
-    noise = [
-        f"{r.levelname} {r.name}: {r.getMessage()}"
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and r.name.startswith("faultmaven")
-    ]
-    assert noise == [], noise
+    assert not orphan_chunks & present
+    assert noise() == [], noise()
