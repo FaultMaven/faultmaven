@@ -72,11 +72,20 @@ AB_MODULE = REPO_ROOT / "tests" / "wallclock" / "ab.py"
 BENCHMARK_DIR = REPO_ROOT / "tests" / "benchmarks"
 AB_JOB = "ab-regression"
 
-#: The worst suite median measured with IDENTICAL code on both sides, in the
-#: gate's own environment: 144 same-runner ordered pairs of the 19-benchmark
-#: suite on 12 GitHub runners, run 38538085168 of a throwaway branch (#1963,
-#: 2026-10-14). The distribution is in `docs/development/testing/performance.md`.
+#: The worst suite median measured with IDENTICAL code on both sides, on the
+#: gate's own kind of runner: 144 same-runner ordered pairs of the
+#: 19-benchmark suite on 12 GitHub runners, run 38538085168 of a throwaway
+#: branch (#1963, 2026-10-14). The one executable copy of that number: the
+#: notes in `ab.py` and `benchmarks.yml` name this constant, and
+#: `docs/development/testing/performance.md` carries the distribution it is
+#: the maximum of. Update them together.
 RUNNER_NULL_MAX_MEDIAN = 1.053
+
+#: The step-down floor for `FM_AB_SUITE`: the threshold the owner decided on
+#: (#1963). The docs say a step below it is taken on evidence from the gate's
+#: own medians, not on an argument, so a lower value fails here until that
+#: evidence exists and this number moves with it.
+THRESHOLD_FLOOR = 1.25
 
 #: A producer piped into a short-circuiting reader. ``grep -q`` exits on
 #: its first match and closes the pipe; the producer then dies with
@@ -414,7 +423,9 @@ class TestTheDecisionRule:
 
         One benchmark 40% slower moves no median, so this gate stays
         green. That is deliberate: #1567 measured the per-test residual
-        on identical code at 1.18x-3.38x, so a rule on it would need a
+        on identical code at 1.18x-3.38x (at 50 benchmarks on a loaded
+        box; #1963 saw 1.03x-1.74x at 19 on runners and did not
+        re-adjudicate the rule), so a rule on it would need a
         ~3.5x threshold, and every absolute budget in
         `tests/benchmarks/budgets.py` already fails between 2.46x and
         3.57x. The single-path class belongs to those budgets. What this
@@ -428,9 +439,17 @@ class TestTheDecisionRule:
         assert verdict.median == pytest.approx(1.0)
         assert verdict.worst.row.label == "b07"
         assert verdict.worst_residual == pytest.approx(1.4)
-        assert "b07" in ab.render(
+        rendered = ab.render(
             verdict, base_label="b", head_label="h", suite_threshold=1.30
         )
+        assert "b07" in rendered
+        # The residual's null range is posted on every pull request, so it
+        # names where each figure comes from and at how many benchmarks,
+        # rather than saying "measured on identical code" in the present
+        # tense about a suite that has since changed size.
+        assert "1.18x-3.38x at 50 benchmarks" in rendered and "(#1567)" in rendered
+        assert "1.03x-1.74x" in rendered and "19 benchmarks" in rendered
+        assert "(#1963)" in rendered
 
     def test_a_minority_regression_does_not_fail_either(self):
         """The same gap, at the scale it is most likely to be met.
@@ -600,9 +619,10 @@ class TestTheDecisionRule:
         holding 13 of the 19 rows is the reason a contention burst can move
         it. When this fails, the suite changed shape: re-run the null
         experiment if the change is material (the method is in
-        `docs/development/testing/performance.md`), then update the note on
-        `COVERAGE_FLOOR`, the `FM_AB_SUITE` comment in benchmarks.yml, and
-        these numbers together.
+        `docs/development/testing/performance.md`), then update together the
+        note on `COVERAGE_FLOOR`, the `FM_AB_SUITE` comment in
+        benchmarks.yml, `RUNNER_NULL_MAX_MEDIAN` above, the re-measurement
+        in `docs/development/testing/performance.md`, and these numbers.
         """
         _, by_module = _the_real_suite()
         assert sorted(len(tests) for tests in by_module.values()) == [6, 13]
@@ -912,21 +932,31 @@ class TestWorkflowWiring:
     def test_the_threshold_is_declared_once_and_is_clear_of_the_noise(self):
         """‼ The gate's whole credibility is this number.
 
-        The null experiment in the gate's own environment (#1963, run
+        Two floors, and they answer different questions. `THRESHOLD_FLOOR`
+        (1.25) is the decided threshold: lowering `FM_AB_SUITE` below it is
+        a re-anchoring that waits for evidence from the gate's own medians,
+        not a tweak. `RUNNER_NULL_MAX_MEDIAN` is the noise: the null
+        experiment on the gate's own kind of runner (#1963, run
         38538085168: identical code on both sides, 144 same-runner ordered
         pairs of the 19-benchmark suite on 12 GitHub runners) put the suite
-        median between 0.950x and 1.053x. #1567's, at 50 benchmarks on a
-        loaded box, was 0.822x-1.216x. Anything near the worst observation
-        is a gate that goes red on a clean pull request, and a flaky
-        performance gate gets muted, which is how #908 began.
+        median anywhere up to it, and #1567's, at 50 benchmarks on a loaded
+        box, up to 1.216. A threshold near the worst observation is a gate
+        that goes red on a clean pull request, and a flaky performance gate
+        gets muted, which is how #908 began.
         """
         env = self._job()["env"]
         assert "FM_AB_SUITE" in env, env
+        threshold = float(env["FM_AB_SUITE"])
+        assert threshold >= THRESHOLD_FLOOR, (
+            f"FM_AB_SUITE is {threshold}, below the decided {THRESHOLD_FLOOR}: "
+            f"a step down is a re-anchoring taken on evidence from the gate's "
+            f"own medians (the note in benchmarks.yml), not a tweak"
+        )
         margin = 1.15
-        assert float(env["FM_AB_SUITE"]) >= RUNNER_NULL_MAX_MEDIAN * margin, (
+        assert threshold >= RUNNER_NULL_MAX_MEDIAN * margin, (
             f"the suite median reached {RUNNER_NULL_MAX_MEDIAN}x on identical "
-            f"code on the gate's own runners (#1963); a threshold within "
-            f"{margin - 1:.0%} of it will flake"
+            f"code on the gate's own kind of runner (#1963); a threshold "
+            f"within {margin - 1:.0%} of it will flake"
         )
 
     def test_the_comparison_step_passes_the_threshold(self):
