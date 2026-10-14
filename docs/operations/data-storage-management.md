@@ -33,26 +33,25 @@ data/
 │           └── <YYYY-MM-DD>/  #       then by upload date
 │               └── <uuid>_<filename>  # UUID-prefixed to prevent collisions
 │
-└── knowledge/                 # Runbook source files (markdown, pre-ingestion)
-    ├── global/                #   System-wide runbooks (admin-curated)
-    │   ├── k8s-crashloopbackoff.md
-    │   └── pg-slow-queries.md
-    ├── team_<team_id>/        #   Team-scoped runbooks
-    └── personal_<user_id>/    #   Personal runbooks (from case conversions)
+└── knowledge/                 # Standalone scan import directory: hand-placed .md files only.
+    │                          #   Nothing writes here and no startup step reads it.
+    ├── global/                #   Imported as global-scope drafts (platform operator only)
+    ├── team_<team_id>/        #   Imported as team-scope drafts
+    └── personal_<user_id>/    #   Imported as personal drafts (`user_<user_id>/` works too)
 ```
+
+The runbooks themselves are not on disk. The built-ins ship in the KB pack (`resources/knowledge/pack/` or `KB_PACK_DIR`, not under `data/`); authored, uploaded and converted runbooks live in the database, as draft rows (`conversion_drafts.content`) and, once verified, `knowledge_items` rows (#1950).
 
 ### What stores what
 
 | Physical Path | Storage Technology | Logical Data | Lifecycle |
 | --- | --- | --- | --- |
-| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts, knowledge items | Application-managed |
+| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts (with the draft text), knowledge items (with the published runbook text) | Application-managed |
 | `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up, never wiped. | Permanent |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
 | `evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. | 90-day retention |
 | `resources/knowledge/pack/` | Image / `KB_PACK_DIR` | The **KB pack** — pre-deployed runbooks + build-time vectors. Ingested at startup with no embedding model; built by `faultmaven-kb-toolkit`. See [kb-pack-architecture.md](../architecture/knowledge-and-ai/kb-pack-architecture.md). | Shipped |
-| `knowledge/global/` | Filesystem | Authored/converted global runbook markdown (draft → verify flow). **No longer seeded from built-ins** — those ship in the pack. | Permanent |
-| `knowledge/personal_*/` | Filesystem | Runbook markdown from case-to-runbook conversion | User-controlled |
-| `knowledge/team_*/` | Filesystem | Team-scoped runbook files | Team-controlled |
+| `knowledge/` | Filesystem (standalone only) | The **import directory** for `POST /api/v1/knowledge/scan`: each hand-placed `.md` file becomes a draft whose text is stored in `conversion_drafts.content`. Not runtime storage: nothing writes here, no startup step reads it, and the scan refuses (422) under `TENANT_PROVIDER=multi`. | Manual file drop |
 
 ### Why two ChromaDB instances
 
@@ -67,10 +66,13 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 - Either instance can be rebuilt independently without affecting the other
 - The corruption blast radius of either instance is contained
 
-### Relationship between knowledge/, evidence/, and the two ChromaDB instances
+### Relationship between the KB pack, knowledge/, evidence/, and the two ChromaDB instances
 
 ```text
-knowledge/*.md  →  startup bootstrap (atomic, idempotent)  →  chroma-kb/ (faultmaven_kb collection)
+KB pack (resources/knowledge/pack/ or KB_PACK_DIR)  →  startup bootstrap (atomic, idempotent)  →  knowledge_items + chroma-kb/ (faultmaven_kb collection)
+Dashboard / API conversion  →  draft row  →  verify  →  knowledge_items + chroma-kb/
+Dashboard / API upload  →  draft row verified on the spot  →  knowledge_items + chroma-kb/
+knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  →  verify  →  knowledge_items + chroma-kb/
 
 evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
@@ -80,7 +82,7 @@ evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vecto
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
-Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `fm-reset-kb` to remove KB entries.
+Nothing reads `knowledge/` after a scan, so deleting a file there changes nothing already imported: the draft the scan made from it keeps its row and its text. Use the Dashboard or API to remove a runbook (see "Removing a runbook" below) and `fm-reset-kb` to wipe the KB.
 
 ---
 
@@ -91,14 +93,15 @@ Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. 
 Pre-deployed runbooks ship in the **KB pack** (pre-chunked + pre-embedded), built
 and owned by `faultmaven-kb-toolkit`. The startup bootstrap ingests the pack with
 **no embedding model** — it does **not** walk `data/knowledge/{scope}/`. To add or
-update a pre-deployed runbook you rebuild the pack and deliver it (no app-image
-rebuild). This bypasses the Dashboard Drafts UI entirely — that UI is reserved for
-case-generated and document-converted drafts that need human review.
+update a pre-deployed runbook you rebuild the pack and deliver it; whether that
+needs a new app image depends on how the pack reaches the process (Step 3). This
+bypasses the Dashboard Drafts UI entirely — that UI is reserved for case-generated
+and document-converted drafts that need human review.
 
 **Step 1: Author / edit the runbook (public source)**
 
-Add or edit `.md` files under `faultmaven/resources/knowledge/runbooks/<domain>/`
-— the authoritative, public, PR-able source. (The toolkit's authoring/validation
+Add or edit `.md` files under `resources/knowledge/runbooks/<domain>/` in this
+repo — the authoritative, public, PR-able source. (The toolkit's authoring/validation
 tools — `kb-validate`, `kb-quality`, `kb-init`, `kb-researcher` — operate on these
 files; the toolkit's `data/runbooks/` is a symlink to this directory.) Runbooks
 require YAML frontmatter — `id` and `title` are mandatory; the deterministic
@@ -111,20 +114,28 @@ require YAML frontmatter — `id` and `title` are mandatory; the deterministic
 kb-build-pack --version 2026-06-09 --tar   # → dist/kb-pack + dist/kb-pack-2026-06-09.tar.gz
 ```
 
-**Step 3: Deliver it** (pick one) and restart:
+The pack **replaces** the built-in set, it does not add to it: on every startup the
+bootstrap prunes built-in rows (`kb_<12 hex>` ids) that the pack lacks, so build the
+pack from the complete source tree. Authored runbooks (UUID or `kb_<16 hex>` ids) are never pruned.
 
-```bash
-# A) Vendor as the committed baseline (rebuilds the image's default pack)
-cp -r dist/kb-pack/* faultmaven/resources/knowledge/pack/
+**Step 3: Deliver it and make it live.** A pack goes live only where the process
+that ingests it can read it. The stock stack bakes `resources/` into the image
+(`Dockerfile`: `COPY resources/ ./resources/`) and `docker-compose.yml` mounts only
+`./data` and `.env` into the API, so copying a pack into a checkout and restarting
+the stock image changes nothing. Also, `KB_PACK_DIR` wins whenever it is set
+(`resolve_pack_dir` has no fallback to the baseline): a deployment that once used a
+`KB_PACK_DIR` row below and later moves to an image row keeps ingesting the old
+directory until `KB_PACK_DIR` is unset. Pick the row that matches the deployment:
 
-# B) Local self-hosted, no rebuild: extract into the deployment's KB_PACK_DIR dir
-#    (see docker-compose.yml), then restart.
+| Deployment | Deliver | Make it live |
+| --- | --- | --- |
+| Docker Compose, built from source | In `faultmaven-kb-toolkit/` (where Step 2 wrote `dist/`): `cp -r dist/kb-pack/* /path/to/faultmaven/resources/knowledge/pack/` | With `KB_PACK_DIR` unset (re-comment the two compose lines below if you set them): `./faultmaven.sh stop && ./faultmaven.sh start --build` — the build copies the vendored pack into the image. `./faultmaven.sh restart` alone recreates the container from the image already present, which still holds the old pack, and `start --build` on a running stack only reports "already running". **Tag caveat:** the build is tagged `ghcr.io/faultmaven/faultmaven:latest`, and a later plain `start` (or a `restart` issued while the stack is stopped, which runs `start`) pulls `:latest` over it, reverting changed runbooks and pruning added ones. Keep starting with `--build`, or set `FM_IMAGE_TAG=local` and pin `FM_DASHBOARD_IMAGE_TAG` to a published tag in `.env` before building: `start` skips the pull only when neither tag is `latest`. |
+| Docker Compose, default GHCR image | In the directory that holds `docker-compose.yml`: `mkdir -p kb-pack && tar xzf /path/to/kb-pack-<v>.tar.gz -C kb-pack --strip-components=1` (the tarball root is `kb-pack/`); in `docker-compose.yml` uncomment `KB_PACK_DIR=/kb-pack` and the `./kb-pack:/kb-pack:ro` mount | `./faultmaven.sh restart` (it recreates the container, so the compose edit applies) |
+| Docker Compose, a newer published image | An image that was built with the pack vendored | With `KB_PACK_DIR` unset (re-comment the two compose lines): `./faultmaven.sh stop && ./faultmaven.sh start --pull`, or pin `FM_IMAGE_TAG` to the new tag |
+| Kubernetes, `TENANT_PROVIDER=single` | A new API image **with `KB_PACK_DIR` unset** (remove the `kb-pack-from-minio.yaml` patch from the overlay, since it sets `KB_PACK_DIR=/kb-pack`), **or** upload the tarball to MinIO `kb-packs`, set `KB_PACK_VERSION` in the ConfigMap and enable the opt-in `overlays/onprem/kb-pack-from-minio.yaml` patch in `faultmaven-enterprise-infra` | Roll the API pod |
+| Kubernetes, `TENANT_PROVIDER=multi` | A new image: the pack must be baked into the image the `kb_seed` Job runs | The API skips its startup bootstrap here, so `KB_PACK_DIR` has no effect, and the MinIO patch only adds a failure: its initContainer exits non-zero while `KB_PACK_VERSION` is empty, so the API pod does not start (with a version set it downloads a pack nothing reads). Run the `kb_seed` Job (`python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance`) **with the image the API runs** — the manifest's pinned image is stale — and CD does so after each deploy. See `docs/operations/onprem-app-deployment.md` § "Deploying an updated pack" in `faultmaven-enterprise-infra` |
 
-# C) Cloud, no rebuild: upload kb-pack-<version>.tar.gz to MinIO `kb-packs`,
-#    set KB_PACK_VERSION, roll out (opt-in init container).
-
-./faultmaven.sh restart
-```
+**Confirm it landed.** On Compose and Kubernetes `single`, read the API log (`./faultmaven.sh logs api`): `KB bootstrap: ingesting N runbook(s) from pack <dir> (version=...)`, then the `KB bootstrap: BootstrapResult(ingested=..., skipped_unchanged=..., failed=..., pruned=..., ...)` summary with the counts you expect. A `KB bootstrap: no pack loaded from <dir>` warning means the pack was not loaded (missing, corrupt, or refused by a load guard); for a hand-extracted pack the usual cause is an extract that kept the `kb-pack/` root instead of leaving `pack.json` + `vectors.npz` + `runbooks/` directly in `KB_PACK_DIR`. Under `multi` the API log only says `KB bootstrap skipped under multi-tenancy: seed the platform KB pack via the kb_seed maintenance job (#770).`; the evidence is in the Job's log: `KB seed completed: BootstrapResult(...)` and the `KB bootstrap complete: N ingested, N unchanged, N failed, N pruned, ...` line. `ingested=0` with every runbook unchanged means the Job's image carries the pack the database already holds: check it is the image you built, not a stale tag.
 
 The bootstrap is **idempotent**: it compares the pack's `content_hash` against the
 existing `knowledge_items.content` row and skips unchanged runbooks. Changed
@@ -249,25 +260,16 @@ It refuses to run under `TENANT_PROVIDER=multi` — a multi-tenant database hold
 
 ### Updating built-in global runbooks
 
-The 59 built-in runbooks ship in the **KB pack** (`resources/knowledge/pack/`),
-built by the KB Toolkit (the authoritative source). They are **no longer** copied
-to `data/knowledge/global/`. To update them, rebuild the pack and re-vendor the
-baseline:
+The built-in runbooks ship in the **KB pack** (`resources/knowledge/pack/`), built by
+the KB Toolkit (the authoritative source). They are **not** copied to
+`data/knowledge/`, and the bootstrap reads nothing from there. Updating them is the
+three steps above: rebuild the pack, then deliver it with the Step 3 row for your
+deployment. Re-vendoring the pack in a checkout and running `./faultmaven.sh restart`
+is **not** one of those rows: on the default GHCR image it re-ingests the pack baked
+into that image, unchanged.
 
-```bash
-# In faultmaven-kb-toolkit (owns data/runbooks):
-kb-build-pack --version 2026-06-09
-
-# Re-vendor the committed baseline in the app repo:
-cp -r dist/kb-pack/* /path/to/faultmaven/resources/knowledge/pack/
-
-# Restart the API — the bootstrap detects content-hash changes and re-ingests
-# (and prunes any runbooks removed from the pack).
-./faultmaven.sh restart
-```
-
-To update a **running** instance without rebuilding the image, deliver the pack
-via `KB_PACK_DIR` (local bind-mount) or MinIO (cloud) instead of re-vendoring —
+To update a **running** instance without an image rebuild, deliver the pack via
+`KB_PACK_DIR` (local bind-mount) or MinIO (Kubernetes `single`) instead of re-vendoring —
 see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md) §Delivery.
 
 ### Important: do not ingest runbooks directly into ChromaDB
@@ -281,10 +283,11 @@ Add runbooks through the paths that keep the invariant below: a new KB pack for 
 ### Removing a runbook
 
 Delete it via the API or the Dashboard, so both SQL and ChromaDB are updated.
-An authored runbook has no file to remove. A built-in comes back on the next
-startup while the pack still carries it; remove it from the pack to retire it.
+An authored runbook has no file to remove. A built-in is **unpublished**: its row is
+kept and its vectors are removed. To retire a built-in for good, remove it from the
+pack (the bootstrap then prunes the row).
 
-For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
+For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart re-ingests the KB pack and nothing else (no startup step reads `data/knowledge/`). A runbook authored through the Dashboard exists only as database rows, so the wipe removes its `knowledge_items` row and vectors along with the built-ins. It keeps the `conversion_drafts` rows (and so the draft text) unless `--all-drafts` is passed; back up `data/faultmaven.db` first (see [Backup Strategy](#backup-strategy)).
 
 ---
 
@@ -550,7 +553,7 @@ rm -rf data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/
 | --- | --- | --- |
 | `data/faultmaven.db` | SQLite `.backup` command (WAL-aware; see "SQLite Database Management → Backup" for the file-copy caveat) | Daily |
 | `data/chroma-kb/` | Directory snapshot | Daily |
-| `data/knowledge/` | Directory copy | On change |
+| `data/knowledge/` | Directory copy (standalone scan import files only; runbook text is already in `faultmaven.db`) | On change |
 | `data/evidence/` | Directory copy or rsync | Daily (large) |
 | `data/chroma-evidence/` | **Not backed up** — ephemeral, reconstructable from raw evidence files | N/A |
 
@@ -567,7 +570,7 @@ sqlite3 data/faultmaven.db ".backup $BACKUP_DIR/faultmaven.db"
 # ChromaDB KB only (permanent — evidence instance is ephemeral, skip it)
 cp -r data/chroma-kb/ "$BACKUP_DIR/chroma-kb/"
 
-# Knowledge source files
+# Standalone scan import files (runbook text itself is in faultmaven.db)
 cp -r data/knowledge/ "$BACKUP_DIR/knowledge/"
 
 # Evidence raw files (rsync for incremental)

@@ -582,9 +582,8 @@ class KnowledgeService:
           ``is_published=False`` AND delete its ChromaDB vectors. A bare
           ``is_published=False`` is NOT sufficient — investigation retrieval
           does not honor the flag (``kb_qa`` filters ChromaDB by scope only),
-          so the vectors must be removed or the runbook stays queryable. The
-          row is kept because the pack still carries the runbook, and a hard
-          delete would simply be re-ingested from it at the next boot.
+          so the vectors must be removed or the runbook stays queryable.
+          The row is kept because the pack would resurrect a hard delete anyway.
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
           ``knowledge_items`` row and its vectors.
 

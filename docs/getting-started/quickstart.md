@@ -87,22 +87,32 @@ FIREWORKS_API_KEY=fw-your-fireworks-key-here
 # Start FaultMaven
 python -m faultmaven.main
 
-# Or use uvicorn directly (recommended for development)
-uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
+# Or choose the bind yourself (development, with the reloader on)
+HOST=0.0.0.0 PORT=8090 RELOAD=true python -m faultmaven.main
 ```
+
+The server takes host, port and reload from settings (`HOST`, `PORT`,
+`RELOAD`). A bare `python -m faultmaven.main` with no OpenAI, Anthropic,
+Fireworks, Groq or Cohere API key configured applies the zero-config `local`
+preset: it serves `127.0.0.1:8000` with the reloader on, not `:8090`. Set the
+three variables, or put them in `.env`, to bind where the URLs below expect.
 
 **First startup** is fast. FaultMaven automatically:
 - Creates data directories and runs database migrations
 - Creates a default admin account (`admin` / `admin@local.faultmaven`)
 - Ingests the 59 built-in runbooks from the **KB pack** — they ship pre-chunked and pre-embedded, so this is just vector writes (seconds), **not** an embedding run
 
-Subsequent startups skip already-ingested runbooks (content-hash). You'll see:
+Subsequent startups skip already-ingested runbooks (by the pack content hash stamped on each row). Logs are
+structured JSON, one object per line (uvicorn's own lines included); you'll see,
+abridged:
 
 ```
-INFO:     ✅ Auto-ingested 59 built-in runbooks into knowledge base
-INFO:     🚀 FaultMaven API server startup COMPLETE
-INFO:     Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)
+{"event": "KB bootstrap complete: 0 ingested, 59 unchanged, 0 failed, 0 pruned, 0 orphaned vectors cleaned, 0 rows repaired, 0 orphaned rows", "logger": "faultmaven.bootstrap.kb_init", "level": "info", ...}
+{"event": "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!", "logger": "faultmaven.bootstrap.lifespan", "level": "info", ...}
+{"event": "Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)", "logger": "uvicorn.error", "level": "info", ...}
 ```
+
+Set `LOG_FORMAT=console` for human-readable lines.
 
 **Access the API**:
 - **API Base**: http://localhost:8090
@@ -271,7 +281,7 @@ echo "OPENAI_API_KEY=sk-your-key-here" >> .env
 **Solution**:
 ```bash
 # Use a different port
-uvicorn faultmaven.main:app --port 8080
+PORT=8080 python -m faultmaven.main
 
 # Or find and kill the process using port 8000
 lsof -ti:8090 | xargs kill -9  # Linux/macOS
@@ -348,9 +358,12 @@ For active development:
 # Install dev dependencies
 pip install -e .[dev,test]
 
-# Run with auto-reload
-uvicorn faultmaven.main:app --reload --log-level debug
+# Run with auto-reload and debug logging
+RELOAD=true LOG_LEVEL=DEBUG python -m faultmaven.main
 ```
+
+There is no `--log-level` flag: the server fixes uvicorn's own level at `info`
+and the application's logging follows `LOG_LEVEL`.
 
 ### Option 4: Custom Configuration
 

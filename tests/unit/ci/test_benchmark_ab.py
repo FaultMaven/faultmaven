@@ -58,6 +58,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.benchmarks import budgets as benchmark_budgets
 from tests.wallclock import ab, calibration, record
 from tests.wallclock.assertions import (
     assert_latency_within,
@@ -68,7 +69,23 @@ from tests.wallclock.budgets import LatencyBudget, ThroughputBudget
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "benchmarks.yml"
 AB_MODULE = REPO_ROOT / "tests" / "wallclock" / "ab.py"
+BENCHMARK_DIR = REPO_ROOT / "tests" / "benchmarks"
 AB_JOB = "ab-regression"
+
+#: The worst suite median measured with IDENTICAL code on both sides, on the
+#: gate's own kind of runner: 144 same-runner ordered pairs of the
+#: 19-benchmark suite on 12 GitHub runners, run 38538085168 of a throwaway
+#: branch (#1963, 2026-10-14). The one executable copy of that number: the
+#: notes in `ab.py` and `benchmarks.yml` name this constant, and
+#: `docs/development/testing/performance.md` carries the distribution it is
+#: the maximum of. Update them together.
+RUNNER_NULL_MAX_MEDIAN = 1.053
+
+#: The step-down floor for `FM_AB_SUITE`: the threshold the owner decided on
+#: (#1963). The docs say a step below it is taken on evidence from the gate's
+#: own medians, not on an argument, so a lower value fails here until that
+#: evidence exists and this number moves with it.
+THRESHOLD_FLOOR = 1.25
 
 #: A producer piped into a short-circuiting reader. ``grep -q`` exits on
 #: its first match and closes the pipe; the producer then dies with
@@ -332,10 +349,65 @@ def _rows(*specs):
 
 
 def _suite(scale_by_name):
-    """A 50-benchmark side, each at 10ms times its named scale factor."""
+    """A 50-benchmark side, each at 10ms times its named scale factor.
+
+    ‼ Synthetic, and fifty on purpose. These tests exercise `ab.py`'s
+    LOGIC (the median rule, the floor, the classification) at a size chosen
+    so that "one benchmark" and "the largest module" are round fractions
+    of it; they make no claim about how many benchmarks the real suite has,
+    and must not be edited when it changes. The real suite's shape is read
+    from the real budget table, where a test needs it
+    (`_the_real_suite`, below).
+    """
     return _rows(
         *[(f"b{i:02d}", ab.LATENCY_METRIC, 0.010 * scale_by_name(i)) for i in range(50)]
     )
+
+
+def _the_real_suite():
+    """The real benchmark suite's rows, grouped by module, from its budget table.
+
+    A budget records its test's function name and nothing else, and the
+    recorder writes one row per comparison, one per test here, so the real
+    suite's shape is: for every `ALL_BUDGETS` entry, the module under
+    `tests/benchmarks/` that defines `.test`. Read from the table and the
+    source, never copied, so it follows the suite when the suite changes.
+    Returns `(rows, {module file: [test names]})`.
+    """
+    defined = {}
+    for path in sorted(BENCHMARK_DIR.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.setdefault(node.name, []).append(path.name)
+    by_module = {}
+    for budget in benchmark_budgets.ALL_BUDGETS.values():
+        modules = defined.get(budget.test, [])
+        assert len(modules) == 1, (budget.test, modules)
+        by_module.setdefault(modules[0], []).append(budget.test)
+    assert sum(len(tests) for tests in by_module.values()) == len(
+        benchmark_budgets.ALL_BUDGETS
+    )
+    rows = {}
+    for module, tests in by_module.items():
+        for name in tests:
+            nodeid = f"tests/benchmarks/{module}::{name}"
+            key = (nodeid, name, 0)
+            rows[key] = ab.Row(
+                key=key,
+                nodeid=nodeid,
+                label=name,
+                metric=ab.LATENCY_METRIC,
+                observed=0.010,
+                budget=1.0,
+            )
+    return rows, by_module
+
+
+def _without_module(rows, module):
+    """`rows` with every row of one benchmark module removed."""
+    prefix = f"tests/benchmarks/{module}::"
+    return {key: row for key, row in rows.items() if not row.nodeid.startswith(prefix)}
 
 
 class TestTheDecisionRule:
@@ -351,7 +423,9 @@ class TestTheDecisionRule:
 
         One benchmark 40% slower moves no median, so this gate stays
         green. That is deliberate: #1567 measured the per-test residual
-        on identical code at 1.18x-3.38x, so a rule on it would need a
+        on identical code at 1.18x-3.38x (at 50 benchmarks on a loaded
+        box; #1963 saw 1.03x-1.74x at 19 on runners and did not
+        re-adjudicate the rule), so a rule on it would need a
         ~3.5x threshold, and every absolute budget in
         `tests/benchmarks/budgets.py` already fails between 2.46x and
         3.57x. The single-path class belongs to those budgets. What this
@@ -365,17 +439,26 @@ class TestTheDecisionRule:
         assert verdict.median == pytest.approx(1.0)
         assert verdict.worst.row.label == "b07"
         assert verdict.worst_residual == pytest.approx(1.4)
-        assert "b07" in ab.render(
+        rendered = ab.render(
             verdict, base_label="b", head_label="h", suite_threshold=1.30
         )
+        assert "b07" in rendered
+        # The residual's null range is posted on every pull request, so it
+        # names where each figure comes from and at how many benchmarks,
+        # rather than saying "measured on identical code" in the present
+        # tense about a suite that has since changed size.
+        assert "1.18x-3.38x at 50 benchmarks" in rendered and "(#1567)" in rendered
+        assert "1.03x-1.74x" in rendered and "19 benchmarks" in rendered
+        assert "(#1963)" in rendered
 
     def test_a_minority_regression_does_not_fail_either(self):
         """The same gap, at the scale it is most likely to be met.
 
         A quarter of the suite 30% slower leaves the median at 1.0. #1567
         measured a count rule for exactly this case and rejected it: on
-        the null the count at 1.30x reached 19 of 50, while slowing HALF
-        the suite by 30% produced 15 — the signal sits below the noise.
+        its null (50 benchmarks, a loaded box) the count at 1.30x reached
+        19 of 50, while slowing HALF the suite by 30% produced 15 — the
+        signal sat below the noise.
         """
         base = _suite(lambda i: 1.0)
         head = _suite(lambda i: 1.3 if i < 12 else 1.0)
@@ -475,18 +558,74 @@ class TestTheDecisionRule:
         )
         assert "not gated" in rendered and "NOT GATED" in rendered
 
-    def test_deleting_one_module_still_gates(self):
+    def test_deleting_the_smaller_module_still_gates(self):
         """The floor is not sized to catch an ordinary deletion.
 
-        The five benchmark modules hold 15, 13, 9, 7 and 6 of the 50
-        rows, so deleting the largest leaves 0.70 of the base — well
-        above the floor, and still gated.
+        The real suite's modules and their row counts come from the real
+        budget table, so this cannot describe a suite that no longer
+        exists. Deleting the smaller module leaves most of the base, well
+        above the floor, and the pull request is still gated.
         """
-        base = _suite(lambda i: 1.0)
-        head = dict(list(base.items())[:35])
+        base, by_module = _the_real_suite()
+        smaller = min(by_module, key=lambda module: len(by_module[module]))
+        head = _without_module(base, smaller)
+        kept = len(head) / len(base)
+        assert kept >= ab.COVERAGE_FLOOR, (
+            f"deleting {smaller} would leave {kept:.2f} of the base, under "
+            f"the {ab.COVERAGE_FLOOR:.0%} floor: no module of the real suite "
+            f"can be deleted and still gated, so the COVERAGE_FLOOR note in "
+            f"ab.py and this test describe a suite that no longer exists"
+        )
         verdict = ab.compare(base, head, suite_threshold=1.30)
         assert verdict.gated and verdict.ok
-        assert verdict.coverage == pytest.approx(0.70)
+        assert verdict.coverage == pytest.approx(kept)
+
+    def test_deleting_the_larger_module_fails_the_floor(self):
+        """‼ The intended reading, not a gap.
+
+        The larger module holds most of the real suite, so deleting it
+        leaves a fragment: its median is not the suite the threshold was
+        measured on, and the head recorded fewer than half of the base's
+        rows. That is a FAILURE ("the head measured a fragment"), not a
+        gate on the remainder and not a pass. A pull request that really
+        does retire the module re-measures the null first, which is what
+        the message says.
+        """
+        base, by_module = _the_real_suite()
+        larger = max(by_module, key=lambda module: len(by_module[module]))
+        head = _without_module(base, larger)
+        left = len(head) / len(base)
+        assert left < ab.COVERAGE_FLOOR, (
+            f"deleting {larger} would leave {left:.2f} of the base, at or "
+            f"above the {ab.COVERAGE_FLOOR:.0%} floor: the real suite no "
+            f"longer has a module holding most of its rows, so the "
+            f"COVERAGE_FLOOR note in ab.py (13 and 6 of 19) is stale"
+        )
+        verdict = ab.compare(base, head, suite_threshold=1.30)
+        assert not verdict.ok
+        assert not verdict.gated
+        assert (
+            f"the head recorded {len(head)} benchmarks against the base's "
+            f"{len(base)}" in verdict.failures[0]
+        )
+        assert "fragment" in verdict.failures[0]
+
+    def test_the_floor_note_states_the_real_suite(self):
+        """The `COVERAGE_FLOOR` note in ab.py, and the null experiment behind
+        the threshold, are about this many benchmarks in this many modules.
+
+        ‼ A tripwire, deliberately. The null measured how noisy a median of
+        THIS suite is (#1963: 13 and 6 rows, 19 in all), and one module
+        holding 13 of the 19 rows is the reason a contention burst can move
+        it. When this fails, the suite changed shape: re-run the null
+        experiment if the change is material (the method is in
+        `docs/development/testing/performance.md`), then update together the
+        note on `COVERAGE_FLOOR`, the `FM_AB_SUITE` comment in
+        benchmarks.yml, `RUNNER_NULL_MAX_MEDIAN` above, the re-measurement
+        in `docs/development/testing/performance.md`, and these numbers.
+        """
+        _, by_module = _the_real_suite()
+        assert sorted(len(tests) for tests in by_module.values()) == [6, 13]
 
     def test_an_empty_base_is_a_failure_not_a_pass(self):
         verdict = ab.compare(
@@ -793,17 +932,31 @@ class TestWorkflowWiring:
     def test_the_threshold_is_declared_once_and_is_clear_of_the_noise(self):
         """‼ The gate's whole credibility is this number.
 
-        #1567's null experiment — identical code on both sides, 132
-        ordered pairs — put the suite median between 0.822x and 1.216x.
-        Anything at or below that worst observation is a gate that goes
-        red on a clean pull request, and a flaky performance gate gets
-        muted, which is how #908 began.
+        Two floors, and they answer different questions. `THRESHOLD_FLOOR`
+        (1.25) is the decided threshold: lowering `FM_AB_SUITE` below it is
+        a re-anchoring that waits for evidence from the gate's own medians,
+        not a tweak. `RUNNER_NULL_MAX_MEDIAN` is the noise: the null
+        experiment on the gate's own kind of runner (#1963, run
+        38538085168: identical code on both sides, 144 same-runner ordered
+        pairs of the 19-benchmark suite on 12 GitHub runners) put the suite
+        median anywhere up to it, and #1567's, at 50 benchmarks on a loaded
+        box, up to 1.216. A threshold near the worst observation is a gate
+        that goes red on a clean pull request, and a flaky performance gate
+        gets muted, which is how #908 began.
         """
         env = self._job()["env"]
         assert "FM_AB_SUITE" in env, env
-        assert float(env["FM_AB_SUITE"]) >= 1.25, (
-            "the suite median reached 1.216x on identical code (#1567); a "
-            "threshold this close to the measured noise floor will flake"
+        threshold = float(env["FM_AB_SUITE"])
+        assert threshold >= THRESHOLD_FLOOR, (
+            f"FM_AB_SUITE is {threshold}, below the decided {THRESHOLD_FLOOR}: "
+            f"a step down is a re-anchoring taken on evidence from the gate's "
+            f"own medians (the note in benchmarks.yml), not a tweak"
+        )
+        margin = 1.15
+        assert threshold >= RUNNER_NULL_MAX_MEDIAN * margin, (
+            f"the suite median reached {RUNNER_NULL_MAX_MEDIAN}x on identical "
+            f"code on the gate's own kind of runner (#1963); a threshold "
+            f"within {margin - 1:.0%} of it will flake"
         )
 
     def test_the_comparison_step_passes_the_threshold(self):
