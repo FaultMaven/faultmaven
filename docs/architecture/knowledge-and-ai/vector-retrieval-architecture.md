@@ -409,7 +409,7 @@ Vectorization of evidence files is triggered by two paths:
 - Tool execution timeout
 - Low confidence score (< 0.2) from `deep_analysis`
 
-The `searchable="true"` attribute on evidence XML in the context builder signals to the agent that a file has been indexed and `answer_from_case_evidence` can be called against it.
+The `file_backed="true"` attribute on evidence XML in the context builder marks a row whose raw file the case holds (`source_file_id` set and the `UploadedFile` row found on the case). It is provenance only: it does not signal that the file has been indexed, and it renders whether or not the turn is given a search tool. Indexing is reported separately — `store_in_vector_db_background` returns a `VectorIndexOutcome`, and the model is told a file is indexed only after an `INDEXED` outcome, through the advisory `append_vectorization_advisory` appends to the tool result.
 
 ### Evidence vs. KB — Why Different Strategies
 
@@ -512,7 +512,7 @@ ChromaDB is used **only for vector search** during investigations. All document 
 |-------|---------|
 | SQLite | Document inventory, metadata, status, CRUD, dashboard filters |
 | ChromaDB | Chunked vector embeddings for RAG search |
-| Disk | Markdown source files in `data/knowledge/{scope}/` |
+| Disk | None for runbook text: built-ins ship in the KB pack, authored text lives in the database. `data/knowledge/{scope}/` is only the standalone `/knowledge/scan` import directory |
 
 ### Embedding Consistency
 

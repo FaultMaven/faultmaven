@@ -431,6 +431,14 @@ class TestTheBudgetTable:
         # (#1935). The memory assertions are deliberately NOT among them:
         # megabytes do not scale with machine throughput and #1556
         # re-anchored nothing there.
+        #
+        # ‼ This count is also the size of the A/B gate's suite. The 1.30
+        # threshold (`FM_AB_SUITE`) is backed by a null experiment at 19
+        # benchmarks a side (#1963); a change that moves this number
+        # materially, or that rebalances the two modules (13 and 6 rows),
+        # means re-running that experiment first — the note on
+        # `COVERAGE_FLOOR` in `tests/wallclock/ab.py` and
+        # `docs/development/testing/performance.md` carry the method.
         assert len(budget_table.ALL_BUDGETS) == 19
 
     def test_every_budget_in_the_performance_suite_is_in_its_table(self):

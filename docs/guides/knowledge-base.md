@@ -21,7 +21,7 @@ There are two ingestion paths, by source. **Pre-deployed runbooks** ship in the 
 
 ## Built-in runbooks (the KB pack)
 
-The 91 built-in runbooks ship pre-chunked and pre-embedded in the KB pack and are ingested automatically on startup — no Dashboard step is required. To add or update pre-deployed runbooks, rebuild the pack in the [KB Toolkit](../architecture/knowledge-and-ai/kb-pack-architecture.md) (`kb-build-pack`) and deliver it — vendor the committed baseline, or update a running deployment's `KB_PACK_DIR` (local bind-mount / cloud MinIO) with no app-image rebuild. See [KB Pack Architecture](../architecture/knowledge-and-ai/kb-pack-architecture.md).
+The 91 built-in runbooks ship pre-chunked and pre-embedded in the KB pack and are ingested automatically on startup — no Dashboard step is required. To add or update pre-deployed runbooks, rebuild the pack in the [KB Toolkit](../architecture/knowledge-and-ai/kb-pack-architecture.md) (`kb-build-pack`) and deliver it — either vendor it as the committed baseline (live only in an image built with it: `./faultmaven.sh stop && ./faultmaven.sh start --build` with `KB_PACK_DIR` unset, not a restart of the published image) or point a running deployment's `KB_PACK_DIR` at it (local bind-mount / Kubernetes MinIO) with no app-image rebuild. Under `TENANT_PROVIDER=multi` only the `kb_seed` Job ingests the pack, from its own image. See [KB Pack Architecture](../architecture/knowledge-and-ai/kb-pack-architecture.md) §Delivery.
 
 ## Tools the agent uses during investigation
 

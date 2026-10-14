@@ -57,7 +57,7 @@ For the full policy, see [deployment-schema-strategy.md](https://github.com/Faul
 
 ### 1.3 Document Structure
 
-> **Conceptual schema** — what a KB document logically contains at ingest. The on-disk representation is a markdown file under `data/knowledge/{scope}/`; the on-vector-store representation is per-chunk metadata in ChromaDB (see [vector-retrieval-architecture.md §4 "Metadata Per Chunk"](../../knowledge-and-ai/vector-retrieval-architecture.md#4-knowledge-base-retrieval) for the canonical chunk-level schema). The closest in-process Pydantic types are `KnowledgeBaseDocument` (`faultmaven/models/api.py`) and `KBDocument` (`faultmaven/models/interfaces_kb.py`).
+> **Conceptual schema** — what a KB document logically contains at ingest. A runbook's markdown is stored as text in the database (`knowledge_items.content`, and `conversion_drafts.content` while it is a draft; built-ins also ship in the KB pack) — no file holds it. `data/knowledge/{scope}/` is only the standalone `/knowledge/scan` import directory; the on-vector-store representation is per-chunk metadata in ChromaDB (see [vector-retrieval-architecture.md §4 "Metadata Per Chunk"](../../knowledge-and-ai/vector-retrieval-architecture.md#4-knowledge-base-retrieval) for the canonical chunk-level schema). The closest in-process Pydantic types are `KnowledgeBaseDocument` (`faultmaven/models/api.py`) and `KBDocument` (`faultmaven/models/interfaces_kb.py`).
 
 ```python
 # Conceptual ingest-time document — not a single canonical Pydantic class.
@@ -241,7 +241,7 @@ Global runbooks and methodologies live in the unified `faultmaven_kb` collection
 #   NO embedding model runs at startup.
 ```
 
-On first startup FaultMaven ingests the 59 built-in runbooks from the **KB pack**
+On first startup FaultMaven ingests the 91 built-in runbooks from the **KB pack**
 into `faultmaven_kb` (`scope="global"`) in seconds — no model load. See
 [`kb-pack-architecture.md`](../../knowledge-and-ai/kb-pack-architecture.md).
 
@@ -374,7 +374,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 **Purpose**: The relational KB entry — one row per published or draft knowledge item. Stores full content, verification state, usage counters, and a stub for future pgvector embeddings. This table is the source of truth for item lifecycle; ChromaDB holds the chunked embeddings derived from `content`.
 
-**When written**: Populated three ways, all landing here as the source of truth for the published inventory: (1) the startup KB **bootstrap**, which ingests built-in runbook files directly (`verified_by=NULL`, `verification_level=COMMUNITY`, deterministic `kb_<12 hex>` id); (2) the conversion pipeline (`conversion_drafts` → `verify_draft` → `knowledge_items`, random-UUID id); (3) direct admin/API ingestion. The dashboard inventory surface (`list_documents` / `get_document` / `delete_document`) reads this table — **not** `conversion_drafts`. The `knowledge_item_id` FK on `conversion_drafts` links forward to the promoted item.
+**When written**: Populated three ways, all landing here as the source of truth for the published inventory: (1) the startup KB **bootstrap**, which ingests the KB pack's built-in runbooks directly (`verified_by=NULL`, `verification_level=COMMUNITY`, deterministic `kb_<12 hex>` id); (2) the conversion pipeline (`conversion_drafts` → `verify_draft` → `knowledge_items`, random-UUID id); (3) direct admin/API ingestion. The dashboard inventory surface (`list_documents` / `get_document` / `delete_document`) reads this table — **not** `conversion_drafts`. The `knowledge_item_id` FK on `conversion_drafts` links forward to the promoted item.
 
 > **`verified_by` contract**: FK to `users.user_id` — a real user or `NULL`, **never a sentinel string**. Platform/built-in trust is carried by `verification_level` (COMMUNITY), not a fake verifier.
 

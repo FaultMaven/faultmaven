@@ -8,10 +8,15 @@ records, and its p50 tripled.
 
 ``tests/conftest.py`` now pins ``LOG_LEVEL`` and configures the singleton at
 import, and gives each test the root logger's level and handlers back as it
-found them. This runs a child session against that real conftest, in the
-environment the leak needed (no Redis, no LLM key, no ``ENVIRONMENT``: the
-zero-config preset applies, whichever CI profile runs this), and checks the
-state between tests:
+found them. It does the same for structlog's configuration and for the
+singleton itself (#1972): ``tests/infrastructure/logging/test_config.py``'s
+teardowns call ``structlog.reset_defaults()`` and drop the singleton, and every
+logger the app bound at import (the middleware's) then wrote to structlog's
+default ``PrintLogger`` on stdout for the rest of that xdist worker, so a later
+test's ``caplog`` assertion saw nothing. This runs a child session against that
+real conftest, in the environment the leak needed (no Redis, no LLM key, no
+``ENVIRONMENT``: the zero-config preset applies, whichever CI profile runs
+this), and checks the state between tests:
 
 * after the sanitizer runs, the root level and handlers are unchanged and
   ``aiosqlite`` is not enabled for DEBUG;
@@ -19,7 +24,12 @@ state between tests:
   either, the next test still finds the session's level and handlers.
 * a singleton rebuilt mid-session from freshly read settings, as the
   logging config tests leave it to be, still lands on the session's level:
-  ``clean_test_environment`` keeps ``LOG_LEVEL`` pinned past session start.
+  ``clean_test_environment`` keeps ``LOG_LEVEL`` pinned past session start;
+* after a test that resets structlog and drops the singleton, a logger bound
+  at import reaches ``caplog`` and not stdout, structlog's configuration is
+  the session's, and the singleton is the one the session built;
+* after a test that resets structlog under a live singleton, the real
+  middleware logger still reaches ``caplog`` and not stdout.
 """
 
 from __future__ import annotations
@@ -52,6 +62,16 @@ from tests.conftest import (  # noqa: F401
 _CHILD_TESTS = """
 import logging
 
+import structlog
+
+import faultmaven.infrastructure.logging.config as logging_config
+
+# The loggers under test are kept in here, never as module-level names of this
+# file: pytest's collection probes every attribute of a test module for
+# ``__test__``, which resolves a lazy structlog proxy and, under the session's
+# ``cache_logger_on_first_use``, caches it for good, so a proxy held in a test
+# module could never see a reset and the guard would pass on a conftest that
+# does not restore anything.
 STATE = {}
 
 
@@ -65,9 +85,33 @@ def _assert_as_the_session_set_it():
     assert not logging.getLogger("aiosqlite").isEnabledFor(logging.DEBUG)
 
 
+def _reaches_caplog_and_not_stdout(logger, event, caplog, capsys):
+    caplog.set_level(logging.INFO)
+    logger.info(event)
+    assert [r for r in caplog.records if event in r.getMessage()], (
+        "the line did not go through stdlib logging"
+    )
+    assert event not in capsys.readouterr().out, (
+        "the line went to structlog's default PrintLogger on stdout"
+    )
+
+
 def test_0_the_session_runs_at_info():
     STATE["session"] = _root_state()
+    STATE["structlog"] = structlog.get_config()
+    STATE["singleton"] = logging_config._logger_config
     assert STATE["session"][0] == "INFO"
+    assert STATE["singleton"] is not None
+
+
+def test_0b_the_loggers_are_bound_as_the_app_binds_them():
+    # Bound now and not called until the test that reads each. A lazy proxy
+    # resolves structlog's configuration when it is first called, so it is the
+    # test that follows a reset that decides where its lines go.
+    from faultmaven.api.middleware.logging import logger as middleware_logger
+
+    STATE["module_level"] = logging_config.get_logger("child.module_level_logger")
+    STATE["middleware"] = middleware_logger
 
 
 def test_1_the_sanitizer_runs():
@@ -105,6 +149,43 @@ def test_5_a_rebuilt_singleton_lands_on_the_session_level():
         assert logging.getLevelName(logging.getLogger().level) == STATE["session"][0]
     finally:
         reset_settings()
+
+
+def test_6_a_test_resets_structlog_and_drops_the_singleton():
+    # What TestGetLogger.setup_method/teardown_method in
+    # tests/infrastructure/logging/test_config.py leave behind.
+    structlog.reset_defaults()
+    logging_config._logger_config = None
+
+
+def test_7_a_logger_bound_at_import_still_reaches_caplog(caplog, capsys):
+    _reaches_caplog_and_not_stdout(
+        STATE["module_level"], "child module level event", caplog, capsys
+    )
+
+
+def test_8_structlog_is_configured_as_the_session_configured_it():
+    assert structlog.get_config() == STATE["structlog"]
+
+
+def test_9_the_singleton_is_the_one_the_session_built():
+    assert logging_config._logger_config is STATE["singleton"]
+
+
+def test_10_a_test_resets_structlog_under_a_live_singleton():
+    # What TestFaultMavenLogger.setup_method/teardown_method leave behind:
+    # get_logger rebuilds the configuration only while the singleton is None,
+    # so nothing ever reconfigures structlog after this.
+    assert logging_config._logger_config is not None
+    structlog.reset_defaults()
+
+
+def test_11_the_middleware_logger_still_reaches_caplog(caplog, capsys):
+    # The logger the #1972 failures used: faultmaven.api.middleware.logging
+    # binds it at import, so it resolves structlog's configuration here.
+    _reaches_caplog_and_not_stdout(
+        STATE["middleware"], "Request completed: child -> 200", caplog, capsys
+    )
 """
 
 #: Removed from the child's environment so the zero-config ``local`` preset
@@ -150,4 +231,4 @@ def test_no_test_changes_the_logging_the_next_one_runs_under(pytester, monkeypat
 
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", timeout=600)
 
-    result.assert_outcomes(passed=6)
+    result.assert_outcomes(passed=13)
