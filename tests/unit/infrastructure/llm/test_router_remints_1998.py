@@ -15,6 +15,7 @@ regression in what reaches a provider), and is still reported raw.
 
 from __future__ import annotations
 
+import sys
 import warnings
 from typing import Any, Dict, List
 from unittest.mock import patch
@@ -242,3 +243,50 @@ async def test_what_the_router_keeps_is_plain_text(router, provider):
         assert type(again.sanitized_prompt) is str
         response = await router.route(messages=_minted_messages(), max_tokens=50)
     assert all(type(m["content"]) is str for m in response.sanitized_messages)
+
+
+async def test_raw_telemetry_fields_are_plain_text(router, monkeypatch):
+    """With raw-prompt logging on, ``raw_prompt``/``raw_messages`` are plain ``str``."""
+    monkeypatch.setattr(router.settings.observability, "opik_log_raw_prompts", True)
+    with sanitize_pii_pinned(False):
+        first = await router.route(
+            prompt=vetted("cache me"), model=MODEL, max_tokens=50
+        )
+        cached = await router.route(
+            prompt=vetted("cache me"), model=MODEL, max_tokens=50
+        )
+        routed = await router.route(messages=_minted_messages(), max_tokens=50)
+    assert type(first.raw_prompt) is str
+    assert type(cached.raw_prompt) is str
+    assert all(type(m["content"]) is str for m in routed.raw_messages)
+    arguments = routed.raw_messages[2]["tool_calls"][0]["function"]["arguments"]
+    assert type(arguments) is str
+
+
+async def test_a_routed_call_names_the_line_that_called_the_router(router):
+    """The registry reaches the boundary in a task of its own; the warning
+    still names the caller of ``route``, from what the router recorded."""
+    import inspect
+
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as recorded:
+        line = inspect.currentframe().f_lineno + 1
+        await router.route(prompt="raw text", max_tokens=50)
+    [warning] = _raw_warnings(recorded)
+    assert (warning.filename, warning.lineno) == (__file__, line)
+
+
+async def test_a_send_its_caller_put_in_a_task_falls_back_to_the_dispatch(router):
+    """The stated limit: ``asyncio.wait_for(router.route(...))`` on 3.11 runs
+    ``route`` as a task's root, so no frame reaches the caller; the warning
+    names the registry's dispatch, ``generate``'s direct caller."""
+    import asyncio
+
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as recorded:
+        await asyncio.wait_for(router.route(prompt="raw text", max_tokens=50), 5)
+    [warning] = _raw_warnings(recorded)
+    if sys.version_info >= (3, 12):  # wait_for creates no task from 3.12
+        assert warning.filename == __file__
+    else:
+        assert warning.filename.endswith(
+            "faultmaven/infrastructure/llm/providers/registry.py"
+        )

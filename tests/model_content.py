@@ -35,15 +35,17 @@ def vetted(text: str, source: str = SOURCE_CASE) -> ModelText:
     """``text`` minted as if through a disabled case context (``redacted`` False)."""
     if not isinstance(text, str):
         raise TypeError(f"vetted takes a str, not {type(text).__name__}")
-    return _mint(text, source, False)
+    return _mint(str.__str__(text), source, False)
 
 
 def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Copies of ``messages`` with every content channel minted.
 
     ``content`` is minted as case content, or as model output on an assistant
-    message; tool-call ``arguments`` as model output. Every other key is copied
-    as it is, so a test can still hand the boundary a grammar violation.
+    message; tool-call ``arguments`` and every ``str`` leaf of
+    ``provider_metadata`` (on a message or a tool call) as model output, as
+    ``model_output`` mints them. Every other key is copied as it is, so a test
+    can still hand the boundary a grammar violation.
     """
     out = []
     for message in messages:
@@ -54,6 +56,8 @@ def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 SOURCE_MODEL_OUTPUT if new.get("role") == "assistant" else SOURCE_CASE
             )
             new["content"] = vetted(content, source)
+        if "provider_metadata" in new:
+            new["provider_metadata"] = _vetted_leaves(new["provider_metadata"])
         calls = new.get("tool_calls")
         if isinstance(calls, list):
             new["tool_calls"] = [_vetted_call(call) for call in calls]
@@ -61,7 +65,19 @@ def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _vetted_leaves(value: Any) -> Any:
+    if isinstance(value, str):
+        return vetted(value, SOURCE_MODEL_OUTPUT)
+    if isinstance(value, dict):
+        return {key: _vetted_leaves(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_vetted_leaves(item) for item in value)
+    return value
+
+
 def _vetted_call(call: Any) -> Any:
+    if isinstance(call, dict) and "provider_metadata" in call:
+        call = {**call, "provider_metadata": _vetted_leaves(call["provider_metadata"])}
     if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
         return call
     function = dict(call["function"])

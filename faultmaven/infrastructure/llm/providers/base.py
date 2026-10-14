@@ -5,15 +5,20 @@ This module defines the abstract base class that all LLM providers must implemen
 ensuring consistent behavior and configuration across all provider implementations.
 """
 
+import asyncio
 import json
 import logging
+import os
+import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
 from collections import Counter
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from types import FrameType
+from typing import Any, Dict, List, NamedTuple, Optional
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -24,6 +29,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.infrastructure.security.model_content import (
     UNKNOWN_KWARG,
     ContentViolation,
+    key_names,
     message_violations,
     plain_messages,
     plain_text,
@@ -77,6 +83,64 @@ GENERATE_KWARGS = frozenset(
 
 #: The keywords that carry text to the model: minted ``ModelText`` only.
 CONTENT_KWARGS = ("system", "preamble")
+
+
+class SendSite(NamedTuple):
+    """The line a model call was made from, for the boundary's warning."""
+
+    filename: str
+    lineno: int
+    module: str
+    module_globals: Dict[str, Any]
+
+
+#: ``faultmaven/infrastructure/llm/`` and asyncio, as path prefixes.
+_LLM_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+_ASYNCIO_DIR = os.path.dirname(os.path.abspath(asyncio.__file__)) + os.sep
+
+#: The send site of the routed call in progress, recorded by ``LLMRouter.route``
+#: before ``call_external`` runs the registry in a task of its own (on 3.11,
+#: ``asyncio.wait_for`` wraps it in one), across which no frame reaches the
+#: caller. A task copies the context it is created in, so the boundary reads it.
+SEND_SITE: ContextVar[Optional[SendSite]] = ContextVar("llm_send_site", default=None)
+
+
+def _site_of(frame: FrameType) -> SendSite:
+    return SendSite(
+        frame.f_code.co_filename,
+        frame.f_lineno,
+        frame.f_globals.get("__name__", "?"),
+        frame.f_globals,
+    )
+
+
+def _walk_to_caller(
+    frame: FrameType,
+) -> "tuple[Optional[SendSite], FrameType]":
+    """The nearest frame from ``frame`` up outside ``infrastructure/llm/``, and
+    the outermost frame inside it that the walk passed.
+
+    The first is ``None`` when an asyncio frame comes first: the stack ends at
+    a task boundary, and whatever lies beyond it (the event loop's driver) is
+    not the caller.
+    """
+    outermost = frame
+    cursor: Optional[FrameType] = frame
+    while cursor is not None:
+        filename = os.path.abspath(cursor.f_code.co_filename)
+        if filename.startswith(_ASYNCIO_DIR):
+            return None, outermost
+        if not filename.startswith(_LLM_PACKAGE_DIR):
+            return _site_of(cursor), outermost
+        outermost = cursor
+        cursor = cursor.f_back
+    return None, outermost
+
+
+def find_send_site(frame: FrameType) -> Optional[SendSite]:
+    """The nearest frame from ``frame`` up outside ``infrastructure/llm/``,
+    or ``None`` when a task boundary comes first."""
+    return _walk_to_caller(frame)[0]
 
 
 class StopReason(str, Enum):
@@ -536,6 +600,17 @@ class ProviderConfig:
 class BaseLLMProvider(ABC):
     """Abstract base class for all LLM providers"""
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # generate() is the model boundary (#1998): a subclass anywhere — an
+        # adapter, a deployment's own provider, a test double — that defined
+        # its own would step around it.
+        if "generate" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} defines generate(): implement _generate. "
+                "generate() is the model boundary every call passes (#1998)"
+            )
+
     def __init__(self, config: ProviderConfig):
         self.config = config
         self.start_time = None
@@ -645,8 +720,11 @@ class BaseLLMProvider(ABC):
                 violation = text_violation(kwargs[key], key, key)
                 if violation is not None:
                     found.append(violation)
-        for key in sorted(k for k in kwargs if k not in GENERATE_KWARGS):
-            found.append(ContentViolation("kwargs", UNKNOWN_KWARG, key))
+        for key in sorted(kwargs):
+            if key not in GENERATE_KWARGS:
+                found.append(
+                    ContentViolation("kwargs", UNKNOWN_KWARG, key_names([key]))
+                )
         return found
 
     def _report_raw_model_content(self, violations: List[ContentViolation]) -> None:
@@ -654,8 +732,11 @@ class BaseLLMProvider(ABC):
 
         One log line, one metric increment per distinct (argument, kind), and
         one :class:`RawModelContentWarning`, all naming where and what kind —
-        never the content. With :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse
-        instead: ``TypeError`` before any transport call.
+        never the content; a keyword's name only as an identifier
+        (:func:`~faultmaven.infrastructure.security.model_content.key_names`).
+        Both name the call's send site (:meth:`_send_site`). With
+        :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse instead: ``TypeError``
+        before any transport call.
         """
         counts = Counter((v.argument, v.kind) for v in violations)
         kwargs_named = sorted(v.where for v in violations if v.kind == UNKNOWN_KWARG)
@@ -676,22 +757,44 @@ class BaseLLMProvider(ABC):
                 kind=kind,
                 content="raw",
             ).inc()
+        site = self._send_site()
         self.logger.warning(
             "Model-bound content not minted by the redaction module reached the "
-            "%s provider boundary and was sent (#1998): %s",
+            "%s provider boundary and was sent (#1998), from %s:%d: %s",
             self.provider_name,
+            site.module,
+            site.lineno,
             "; ".join(
                 f"{argument} {kind} x{count}"
                 for (argument, kind), count in sorted(counts.items())
             )
             + (f" [kwargs: {','.join(kwargs_named)}]" if kwargs_named else ""),
         )
-        # stacklevel 3: this method, generate(), then generate's caller.
-        warnings.warn(
+        warnings.warn_explicit(
             f"model-bound content not minted by the redaction module: {summary}",
             RawModelContentWarning,
-            stacklevel=3,
+            site.filename,
+            site.lineno,
+            module=site.module,
+            registry=site.module_globals.setdefault("__warningregistry__", {}),
+            module_globals=site.module_globals,
         )
+
+    @staticmethod
+    def _send_site() -> SendSite:
+        """Where the reported call was made: the line a reader can act on.
+
+        The nearest frame above ``generate`` outside ``infrastructure/llm/``
+        and asyncio. A routed call reaches the boundary in a task of its own,
+        whose stack holds only the registry; it gets the site the router
+        recorded on entry (:data:`SEND_SITE`). Failing both — a send its
+        caller made the root of a task (``asyncio.wait_for(router.route(...))``
+        on 3.11), so no frame reaches it — it names the outermost
+        ``infrastructure/llm/`` frame of that task (the registry's dispatch),
+        never the event loop.
+        """
+        site, outermost = _walk_to_caller(sys._getframe(2))  # from generate()
+        return site or SEND_SITE.get() or _site_of(outermost)
 
     @abstractmethod
     def is_available(self) -> bool:

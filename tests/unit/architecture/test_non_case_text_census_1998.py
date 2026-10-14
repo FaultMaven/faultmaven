@@ -22,6 +22,7 @@ What this does NOT see: a call through a name computed at runtime, and tests
 from __future__ import annotations
 
 import ast
+import sys
 import warnings
 from collections import Counter
 from functools import lru_cache
@@ -165,3 +166,13 @@ def test_a_planted_site_fails_the_census(tmp_path):
     found, files = scan(tmp_path)
     assert files == 1
     assert undeclared(found) == {("faultmaven/planted.py", "send"): 1}
+
+
+def test_a_recounted_site_fails_the_census(monkeypatch):
+    """A positive control on the recount path: a declared site whose count moved."""
+    site = ("faultmaven/planted.py", "send")
+    this = sys.modules[__name__]
+    monkeypatch.setattr(this, "SITES", {site: (1, "fixed text")})
+    monkeypatch.setattr(this, "_scan", lambda: (Counter({site: 2}), 500))
+    with pytest.raises(AssertionError, match="number of sites changed"):
+        test_every_site_is_declared()

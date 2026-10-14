@@ -49,6 +49,7 @@ callers until those callers move here, one area at a time (#1998 P2).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from faultmaven.infrastructure.security.case_redaction import (
@@ -196,7 +197,7 @@ def _concat(left: ModelText, right: ModelText) -> ModelText:
     """
     left_source, left_redacted = _require_provenance(left)
     right_source, right_redacted = _require_provenance(right)
-    text = str.__add__(str(left), str(right))
+    text = str.__add__(str.__str__(left), str.__str__(right))
     if left_source == right_source:
         return _mint(text, left_source, left_redacted and right_redacted)
     if _SOURCE_RANK[left_source] > _SOURCE_RANK[right_source]:
@@ -230,7 +231,7 @@ def _require_case_context(ctx: Any, helper: str) -> CaseRedactionContext:
 def _require_text(text: Any, helper: str) -> str:
     if not isinstance(text, str):
         raise TypeError(f"{helper} takes a str, not {type(text).__name__}")
-    return str(text)
+    return str.__str__(text)
 
 
 def _require_chat_messages(messages: Any, helper: str) -> List[Dict[str, Any]]:
@@ -248,11 +249,11 @@ def _require_chat_messages(messages: Any, helper: str) -> List[Dict[str, Any]]:
             raise TypeError(
                 f"{helper}: message {index} is {type(message).__name__}, not dict"
             )
-        extra = sorted(str(key) for key in message if key not in ("role", "content"))
+        extra = [key for key in message if key not in ("role", "content")]
         if extra:
             raise TypeError(
-                f"{helper}: message {index} carries {extra}; only role and "
-                "content are minted here"
+                f"{helper}: message {index} carries {key_names(extra)}; only role "
+                "and content are minted here"
             )
         if message.get("role") not in _CHAT_ROLES:
             raise TypeError(f"{helper}: message {index} has no chat role")
@@ -271,7 +272,9 @@ async def _redact_messages(
         {
             "role": message["role"],
             "content": _mint(
-                await ctx.asanitize(str(message["content"])), source, ctx.enabled
+                await ctx.asanitize(str.__str__(message["content"])),
+                source,
+                ctx.enabled,
             ),
         }
         for message in messages
@@ -314,7 +317,7 @@ async def model_boundary_redacted(value: Any, sanitizer: Any) -> Any:
     ctx = model_boundary_redaction(sanitizer)
     if isinstance(value, str):
         return _mint(
-            await ctx.asanitize(str(value)), SOURCE_MODEL_BOUNDARY, ctx.enabled
+            await ctx.asanitize(str.__str__(value)), SOURCE_MODEL_BOUNDARY, ctx.enabled
         )
     messages = _require_chat_messages(value, "model_boundary_redacted")
     return await _redact_messages(messages, ctx, SOURCE_MODEL_BOUNDARY)
@@ -323,10 +326,14 @@ async def model_boundary_redacted(value: Any, sanitizer: Any) -> Any:
 def model_output(response: Any) -> Dict[str, Any]:
     """The model's own reply as an assistant message to echo back to it.
 
-    ``content`` and every tool call's ``arguments`` are minted with source
-    ``model_output``: the model wrote them from text it was already sent. The
-    reasoning artifacts ride through untouched (``provider_metadata`` on the
-    message and on each tool call), as ``_build_assistant_message`` does.
+    ``content``, every tool call's ``arguments`` and every ``str`` leaf of the
+    reasoning artifacts (``provider_metadata`` on the message and on each tool
+    call: Anthropic's ``assistant_content``, Gemini's ``assistant_parts`` and
+    ``thought_signature``) are minted with source ``model_output``: the model
+    wrote them from text it was already sent. An adapter echoes those
+    artifacts IN PLACE of the content when they are present, so they are a
+    content channel like any other. Their structure, and every non-``str``
+    leaf, are copied as they are, so the echo reaches the wire unchanged.
     Arguments that are not a ``str`` are JSON-encoded, the form every adapter
     reads.
 
@@ -351,17 +358,28 @@ def model_output(response: Any) -> Dict[str, Any]:
             "type": call.type,
             "function": {
                 "name": function.get("name", ""),
-                "arguments": _mint(str(arguments), SOURCE_MODEL_OUTPUT, False),
+                "arguments": _mint(str.__str__(arguments), SOURCE_MODEL_OUTPUT, False),
             },
         }
         if getattr(call, "provider_metadata", None):
-            entry["provider_metadata"] = call.provider_metadata
+            entry["provider_metadata"] = _mint_leaves(call.provider_metadata)
         tool_calls.append(entry)
     if tool_calls:
         message["tool_calls"] = tool_calls
     if getattr(response, "provider_metadata", None):
-        message["provider_metadata"] = response.provider_metadata
+        message["provider_metadata"] = _mint_leaves(response.provider_metadata)
     return message
+
+
+def _mint_leaves(value: Any) -> Any:
+    """A copy of ``value`` with every ``str`` leaf minted as model output."""
+    if isinstance(value, str):
+        return _mint(str.__str__(value), SOURCE_MODEL_OUTPUT, False)
+    if isinstance(value, dict):
+        return {key: _mint_leaves(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_mint_leaves(item) for item in value)
+    return value
 
 
 def non_case_text(text: str) -> ModelText:
@@ -454,15 +472,20 @@ def _remint_call(before: Any, after: Any) -> Any:
 
 
 def plain_text(value: Any) -> Any:
-    """``value`` as an exact ``str`` when it is any ``str``, else unchanged."""
-    return str(value) if isinstance(value, str) else value
+    """``value`` as an exact ``str`` when it is any ``str``, else unchanged.
+
+    ``str.__str__``, never ``str()``: ``str()`` of a ``(str, Enum)`` member is
+    ``"Class.MEMBER"``, not its value, and would change what reaches the wire.
+    """
+    return str.__str__(value) if isinstance(value, str) else value
 
 
 def plain_messages(messages: Any) -> Any:
     """``messages`` with every ``str`` subclass in the content channels unwrapped.
 
-    The channels are ``content`` and ``tool_calls[].function.arguments``. A list
-    with nothing to unwrap is returned as the same object; otherwise the
+    The channels are ``content``, ``tool_calls[].function.arguments`` and the
+    ``str`` leaves of ``provider_metadata`` (on a message and on a tool call).
+    A list with nothing to unwrap is returned as the same object; otherwise the
     messages that change are copied and the input is never mutated.
     """
     if not isinstance(messages, list):
@@ -487,7 +510,11 @@ def _plain_message(message: Any) -> Any:
     new = message
     content = message.get("content")
     if isinstance(content, str) and type(content) is not str:
-        new = {**message, "content": str(content)}
+        new = {**message, "content": str.__str__(content)}
+    if "provider_metadata" in message:
+        metadata = _plain_leaves(message["provider_metadata"])
+        if metadata is not message["provider_metadata"]:
+            new = {**new, "provider_metadata": metadata}
     calls = message.get("tool_calls")
     if isinstance(calls, list):
         plain_calls = [_plain_call(call) for call in calls]
@@ -497,12 +524,35 @@ def _plain_message(message: Any) -> Any:
 
 
 def _plain_call(call: Any) -> Any:
-    if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+    if not isinstance(call, dict):
+        return call
+    if "provider_metadata" in call:
+        metadata = _plain_leaves(call["provider_metadata"])
+        if metadata is not call["provider_metadata"]:
+            call = {**call, "provider_metadata": metadata}
+    if not isinstance(call.get("function"), dict):
         return call
     arguments = call["function"].get("arguments")
     if isinstance(arguments, str) and type(arguments) is not str:
-        return {**call, "function": {**call["function"], "arguments": str(arguments)}}
+        return {
+            **call,
+            "function": {**call["function"], "arguments": str.__str__(arguments)},
+        }
     return call
+
+
+def _plain_leaves(value: Any) -> Any:
+    """``value`` with every ``str``-subclass leaf unwrapped; the same object if none."""
+    if isinstance(value, str):
+        return value if type(value) is str else str.__str__(value)
+    if isinstance(value, dict):
+        items = {key: _plain_leaves(item) for key, item in value.items()}
+        return items if any(items[key] is not value[key] for key in value) else value
+    if isinstance(value, (list, tuple)):
+        items = [_plain_leaves(item) for item in value]
+        changed = any(a is not b for a, b in zip(items, value))
+        return type(value)(items) if changed else value
+    return value
 
 
 class ContentViolation(NamedTuple):
@@ -521,15 +571,17 @@ class ContentViolation(NamedTuple):
 RAW = "raw"  # a plain str where a minted value is required
 FORGED = "forged"  # a ModelText this module never minted
 NOT_TEXT = "not_text"  # neither str nor None where a minted value is required
-BAD_SHAPE = "bad_shape"  # a container, id or name of the wrong type
+BAD_SHAPE = "bad_shape"  # a container of the wrong type, or a tool call's type
+BAD_ID = "bad_id"  # an identifier channel outside IDENTIFIER_RE
 BAD_ROLE = "bad_role"  # a message role outside the grammar
 UNKNOWN_KEY = "unknown_key"  # a key the grammar does not allow for that role
-NOT_MODEL_OUTPUT = "not_model_output"  # tool-call arguments not minted by model_output
+NOT_MODEL_OUTPUT = "not_model_output"  # arguments or metadata not from model_output
 UNKNOWN_KWARG = "unknown_kwarg"  # a generate() keyword outside the closed set
 
 #: The message grammar: the keys each role may carry. ``content`` is minted
 #: text or ``None`` on every role. An assistant message may carry the model's
-#: tool calls and its opaque reasoning artifacts; a tool result names its call
+#: tool calls and its reasoning artifacts (``provider_metadata``, whose every
+#: ``str`` leaf is minted model output); a tool result names its call
 #: (``tool_call_id``) and the function that produced it (``name``, which the
 #: Gemini adapter needs for ``functionResponse.name``).
 MESSAGE_KEYS = {
@@ -541,6 +593,12 @@ MESSAGE_KEYS = {
 #: A tool call on an assistant message, and its function.
 TOOL_CALL_KEYS = frozenset({"id", "type", "function", "provider_metadata"})
 FUNCTION_KEYS = frozenset({"name", "arguments"})
+
+#: The identifier channels — ``tool_call_id``, a tool result's ``name``, a tool
+#: call's ``id`` and its ``function.name`` — are plain ``str`` that carry no
+#: text: provider-issued call ids (``call_…``, ``toolu_…``, ``chatcmpl-tool-…``)
+#: and tool names the code defines. This pattern keeps text out of them.
+IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
 def text_violation(value: Any, argument: str, where: str) -> Optional[ContentViolation]:
@@ -556,8 +614,8 @@ def text_violation(value: Any, argument: str, where: str) -> Optional[ContentVio
     return ContentViolation(argument, kind, where)
 
 
-def _key_names(keys: Any) -> str:
-    """Key names for a log line: identifiers only, never a value."""
+def key_names(keys: Any) -> str:
+    """Key or keyword names for a log line: identifiers only, never a value."""
     names = sorted(
         key if isinstance(key, str) and key.isidentifier() and len(key) <= 40 else "?"
         for key in keys
@@ -583,7 +641,7 @@ def message_violations(messages: Any) -> List[ContentViolation]:
         extra = [key for key in message if key not in allowed]
         if extra:
             found.append(
-                ContentViolation("messages", UNKNOWN_KEY, f"{at}:{_key_names(extra)}")
+                ContentViolation("messages", UNKNOWN_KEY, f"{at}:{key_names(extra)}")
             )
         content = message.get("content")
         if content is not None:
@@ -592,11 +650,50 @@ def message_violations(messages: Any) -> List[ContentViolation]:
                 found.append(violation)
         if "tool_calls" in message and "tool_calls" in allowed:
             found.extend(_tool_call_violations(message["tool_calls"], at))
-        for key in ("tool_call_id", "name"):
-            if key in message and key in allowed and type(message[key]) is not str:
-                found.append(
-                    ContentViolation(f"messages.{key}", BAD_SHAPE, f"{at}.{key}")
+        if "provider_metadata" in message and "provider_metadata" in allowed:
+            found.extend(
+                _metadata_violations(
+                    message["provider_metadata"],
+                    "messages.provider_metadata",
+                    f"{at}.provider_metadata",
                 )
+            )
+        for key in ("tool_call_id", "name"):
+            if key in message and key in allowed:
+                violation = _identifier_violation(
+                    message[key], f"messages.{key}", f"{at}.{key}"
+                )
+                if violation is not None:
+                    found.append(violation)
+    return found
+
+
+def _identifier_violation(
+    value: Any, argument: str, where: str
+) -> Optional[ContentViolation]:
+    if type(value) is str and IDENTIFIER_RE.fullmatch(value):
+        return None
+    return ContentViolation(argument, BAD_ID, where)
+
+
+def _metadata_violations(
+    value: Any, argument: str, where: str
+) -> List[ContentViolation]:
+    """Every ``str`` leaf of a reasoning artifact must be minted model output."""
+    found: List[ContentViolation] = []
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+        elif isinstance(item, str):
+            violation = text_violation(item, argument, where)
+            if violation is not None:
+                found.append(violation)
+            elif provenance(item)[0] != SOURCE_MODEL_OUTPUT:
+                found.append(ContentViolation(argument, NOT_MODEL_OUTPUT, where))
     return found
 
 
@@ -613,11 +710,24 @@ def _tool_call_violations(calls: Any, at: str) -> List[ContentViolation]:
         if extra:
             found.append(
                 ContentViolation(
-                    "messages.tool_calls", UNKNOWN_KEY, f"{where}:{_key_names(extra)}"
+                    "messages.tool_calls", UNKNOWN_KEY, f"{where}:{key_names(extra)}"
                 )
             )
-        if type(call.get("id")) is not str or call.get("type") != "function":
+        if call.get("type") != "function":
             found.append(ContentViolation("messages.tool_calls", BAD_SHAPE, where))
+        violation = _identifier_violation(
+            call.get("id"), "messages.tool_calls.id", f"{where}.id"
+        )
+        if violation is not None:
+            found.append(violation)
+        if "provider_metadata" in call:
+            found.extend(
+                _metadata_violations(
+                    call["provider_metadata"],
+                    "messages.tool_calls.provider_metadata",
+                    f"{where}.provider_metadata",
+                )
+            )
         function = call.get("function")
         if not isinstance(function, dict):
             found.append(
@@ -630,15 +740,16 @@ def _tool_call_violations(calls: Any, at: str) -> List[ContentViolation]:
                 ContentViolation(
                     "messages.tool_calls",
                     UNKNOWN_KEY,
-                    f"{where}.function:{_key_names(extra)}",
+                    f"{where}.function:{key_names(extra)}",
                 )
             )
-        if type(function.get("name")) is not str:
-            found.append(
-                ContentViolation(
-                    "messages.tool_calls", BAD_SHAPE, f"{where}.function.name"
-                )
-            )
+        violation = _identifier_violation(
+            function.get("name"),
+            "messages.tool_calls.function.name",
+            f"{where}.function.name",
+        )
+        if violation is not None:
+            found.append(violation)
         arguments = function.get("arguments")
         argument = "messages.tool_calls.function.arguments"
         violation = text_violation(arguments, argument, f"{where}.function.arguments")

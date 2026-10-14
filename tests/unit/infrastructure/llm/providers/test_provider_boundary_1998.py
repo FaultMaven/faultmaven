@@ -222,6 +222,114 @@ VIOLATIONS: Dict[str, tuple] = {
     "raw_system": ({"system": SECRET}, ("system", "raw")),
     "raw_preamble": ({"preamble": SECRET}, ("preamble", "raw")),
     "unknown_kwarg": ({"case_id": "case-123"}, ("kwargs", "unknown_kwarg")),
+    # F1: the reasoning artifacts an adapter echoes in place of the content.
+    "raw_anthropic_assistant_content": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {
+                        "assistant_content": [{"type": "text", "text": SECRET}]
+                    },
+                }
+            ]
+        },
+        ("messages.provider_metadata", "raw"),
+    ),
+    "raw_gemini_assistant_parts": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {"assistant_parts": [{"text": SECRET}]},
+                }
+            ]
+        },
+        ("messages.provider_metadata", "raw"),
+    ),
+    "raw_thought_signature": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "tool_calls": [
+                        {
+                            **_tool_call(vetted("{}", "model_output")),
+                            "provider_metadata": {"thought_signature": SECRET},
+                        }
+                    ],
+                }
+            ]
+        },
+        ("messages.tool_calls.provider_metadata", "raw"),
+    ),
+    "case_minted_metadata": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {"assistant_parts": [{"text": vetted("x")}]},
+                }
+            ]
+        },
+        ("messages.provider_metadata", "not_model_output"),
+    ),
+    # Identifier channels carry no text.
+    "text_in_tool_call_id": (
+        {
+            "messages": [
+                {"role": "tool", "tool_call_id": SECRET, "content": vetted("x")}
+            ]
+        },
+        ("messages.tool_call_id", "bad_id"),
+    ),
+    "text_in_tool_name": (
+        {"messages": [{"role": "tool", "name": SECRET, "content": vetted("x")}]},
+        ("messages.name", "bad_id"),
+    ),
+    "text_in_call_id": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "tool_calls": [
+                        {**_tool_call(vetted("{}", "model_output")), "id": SECRET}
+                    ],
+                }
+            ]
+        },
+        ("messages.tool_calls.id", "bad_id"),
+    ),
+    "text_in_function_name": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": SECRET,
+                                "arguments": vetted("{}", "model_output"),
+                            },
+                        }
+                    ],
+                }
+            ]
+        },
+        ("messages.tool_calls.function.name", "bad_id"),
+    ),
+    "empty_tool_call_id": (
+        {"messages": [{"role": "tool", "tool_call_id": "", "content": vetted("x")}]},
+        ("messages.tool_call_id", "bad_id"),
+    ),
 }
 
 
@@ -313,7 +421,6 @@ def _str_values(value: Any, path: str = "") -> List[tuple]:
         return [
             item
             for key, inner in value.items()
-            if key != "provider_metadata"
             for item in _str_values(inner, f"{path}.{key}")
         ]
     if isinstance(value, list):
@@ -498,3 +605,129 @@ async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
         },
     )
     assert sample == 1.0
+
+
+# ---------------------------------------------------------------------------
+# #2015 review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_a_subclass_that_defines_generate_is_refused():
+    """F3: the boundary cannot be stepped around by a subclass, anywhere."""
+    with pytest.raises(TypeError, match="defines generate"):
+
+        class _Around(ADAPTER_CLASSES[0]):
+            async def generate(self, prompt, **kwargs):
+                return await self._generate(prompt, **kwargs)
+
+    with pytest.raises(TypeError, match="defines generate"):
+        type("_AroundToo", (BaseLLMProvider,), {"generate": lambda *a, **k: None})
+
+    class _Fine(ADAPTER_CLASSES[0]):  # only _generate: accepted
+        async def _generate(self, prompt, **kwargs):
+            return _response()
+
+    assert _Fine.generate is BaseLLMProvider.generate
+
+
+class _Role(str, __import__("enum").Enum):
+    """A ``(str, Enum)``: ``str()`` of a member is not its value."""
+
+    USER = "the enum's value"
+
+
+@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
+async def test_unwrapping_keeps_a_str_subclass_value(cls, metric):
+    """F4: unwrap with ``str.__str__``: ``str(_Role.USER)`` is ``"_Role.USER"``."""
+    transport = AsyncMock(return_value=_response())
+    with patch.object(cls, "_generate", transport), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RawModelContentWarning)
+        await _adapter(cls).generate(
+            _Role.USER, messages=[{"role": "user", "content": _Role.USER}]
+        )
+    args, kwargs = transport.await_args
+    assert args[0] == "the enum's value" and type(args[0]) is str
+    assert kwargs["messages"][0]["content"] == "the enum's value"
+    assert type(kwargs["messages"][0]["content"]) is str
+
+
+async def test_an_unknown_kwarg_name_is_reported_only_as_an_identifier(metric, caplog):
+    cls = ADAPTER_CLASSES[0]
+    with (
+        patch.object(cls, "_generate", AsyncMock(return_value=_response())),
+        caplog.at_level(logging.WARNING),
+        pytest.warns(RawModelContentWarning) as recorded,
+    ):
+        await _adapter(cls).generate(vetted("x"), **{SECRET: 1, "case_id": "c"})
+    texts = [r.getMessage() for r in caplog.records] + [
+        str(w.message) for w in recorded
+    ]
+    assert any("case_id" in text for text in texts)
+    assert any("?" in text for text in texts)
+    for text in texts:
+        assert SECRET not in text and "alice@example.com" not in text
+
+
+@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
+async def test_minted_reasoning_artifacts_reach_the_adapter_as_they_came(cls, metric):
+    """F1: ``model_output`` mints the artifacts' leaves, the boundary accepts
+    them, and the adapter receives the original structure and values, plain."""
+    from faultmaven.infrastructure.llm.providers.base import ToolCall
+    from faultmaven.infrastructure.security.model_content import model_output
+
+    metadata = {
+        "assistant_content": [
+            {"type": "thinking", "thinking": "the disk is full", "signature": "EqQB"},
+            {"type": "tool_use", "id": "toolu_1", "input": {"q": "disk", "n": 3}},
+        ],
+        "assistant_parts": [{"text": "checking", "thoughtSignature": "CiwB"}],
+    }
+    echo = model_output(
+        LLMResponse(
+            content="checking",
+            confidence=1.0,
+            provider="p",
+            model="m",
+            tokens_used=1,
+            response_time_ms=1,
+            tool_calls=[
+                ToolCall(
+                    id="toolu_1",
+                    type="function",
+                    function={"name": "search_file", "arguments": '{"q": "disk"}'},
+                    provider_metadata={"thought_signature": "CikB"},
+                )
+            ],
+            provider_metadata=metadata,
+        )
+    )
+    transport = AsyncMock(return_value=_response())
+    with (
+        patch.object(cls, "_generate", transport),
+        warnings.catch_warnings(record=True) as recorded,
+    ):
+        warnings.simplefilter("always")
+        await _adapter(cls).generate(None, messages=[echo])
+    assert not [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
+    [sent] = transport.await_args.kwargs["messages"]
+    assert sent["provider_metadata"] == metadata
+    assert sent["tool_calls"][0]["provider_metadata"] == {"thought_signature": "CikB"}
+    strings = _str_values(
+        {
+            "m": sent["provider_metadata"],
+            "c": sent["tool_calls"][0]["provider_metadata"],
+        }
+    )
+    assert strings and all(type(value) is str for _, value in strings)
+    assert sent["provider_metadata"]["assistant_content"][1]["input"]["n"] == 3
+
+
+async def test_a_direct_call_names_its_caller(metric):
+    cls = ADAPTER_CLASSES[0]
+    with (
+        patch.object(cls, "_generate", AsyncMock(return_value=_response())),
+        pytest.warns(RawModelContentWarning) as recorded,
+    ):
+        line = inspect.currentframe().f_lineno + 1
+        await _adapter(cls).generate("raw")
+    assert (recorded[0].filename, recorded[0].lineno) == (__file__, line)

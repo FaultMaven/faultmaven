@@ -12,6 +12,7 @@ circuit breaker patterns for external LLM provider calls.
 import functools
 import logging
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,7 @@ from faultmaven.utils.token_estimation import estimate_tokens
 from .cache import LLMResponseCache
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
+from .providers.base import SEND_SITE, find_send_site
 
 # Opik native tracing for LLM calls.
 #
@@ -657,26 +659,35 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 )
                 self._router_initialized = True
 
-            response = await self.call_external(
-                operation_name="route_llm_request",
-                call_func=self.registry.route_request,
-                prompt=sanitized_prompt,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=tools,
-                tool_choice=tool_choice,
-                response_format=response_format,
-                messages=sanitized_messages,
-                confidence_threshold=self.confidence_threshold,
-                provider_override=provider_override,
-                cache_prompt=cache_prompt,
-                reasoning_intent=reasoning_intent,
-                min_output_tokens=min_output_tokens,
-                timeout=self._resolve_timeout(),  # Provider-aware ceiling
-                retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
-                retry_delay=1.0,
+            # Record where this call came from before call_external runs the
+            # registry in a task of its own (#1998): the provider boundary
+            # names it in its report, and no frame there reaches the caller.
+            site_token = SEND_SITE.set(
+                find_send_site(sys._getframe()) or SEND_SITE.get()
             )
+            try:
+                response = await self.call_external(
+                    operation_name="route_llm_request",
+                    call_func=self.registry.route_request,
+                    prompt=sanitized_prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    response_format=response_format,
+                    messages=sanitized_messages,
+                    confidence_threshold=self.confidence_threshold,
+                    provider_override=provider_override,
+                    cache_prompt=cache_prompt,
+                    reasoning_intent=reasoning_intent,
+                    min_output_tokens=min_output_tokens,
+                    timeout=self._resolve_timeout(),  # Provider-aware ceiling
+                    retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
+                    retry_delay=1.0,
+                )
+            finally:
+                SEND_SITE.reset(site_token)
 
             # Store successful response in cache. Pure dict write plus a sha256
             # — no embedding, so this is safe to do inline on the event loop.

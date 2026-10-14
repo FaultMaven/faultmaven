@@ -589,8 +589,8 @@ llm_model_content_violations = Counter(
     "llm_model_content_violations_total",
     "Provider calls carrying model-bound content the redaction module did not "
     "mint, by argument (prompt|messages.content|...|kwargs) and kind "
-    "(raw|forged|not_text|bad_shape|bad_role|unknown_key|not_model_output|"
-    "unknown_kwarg). content=raw: reported and sent.",
+    "(raw|forged|not_text|bad_shape|bad_id|bad_role|unknown_key|"
+    "not_model_output|unknown_kwarg). content=raw: reported and sent.",
     labelnames=["provider", "argument", "kind", "content"],
 )
 

@@ -33,10 +33,12 @@ from faultmaven.infrastructure.security.model_content import (
     ModelText,
     case_redacted,
     case_redacted_messages,
+    message_violations,
     model_boundary_redacted,
     model_output,
     non_case_text,
     plain_messages,
+    plain_text,
     provenance,
     sanitizer_pass,
 )
@@ -435,3 +437,113 @@ class TestPlainMessages:
         assert type(out[1]["tool_calls"][0]["function"]["arguments"]) is str
         assert type(messages[0]["content"]) is ModelText
         assert type(messages[1]["tool_calls"][0]["function"]["arguments"]) is ModelText
+
+
+class TestReasoningArtifacts:
+    """F1 (#2015): ``provider_metadata`` is a content channel — an adapter
+    echoes it in place of the content — so its ``str`` leaves are minted."""
+
+    def _response(self):
+        return LLMResponse(
+            content="checking",
+            confidence=1.0,
+            provider="p",
+            model="m",
+            tokens_used=1,
+            response_time_ms=1,
+            tool_calls=[
+                ToolCall(
+                    id="toolu_1",
+                    type="function",
+                    function={"name": "f", "arguments": "{}"},
+                    provider_metadata={"thought_signature": "CikB"},
+                )
+            ],
+            provider_metadata={
+                "assistant_content": [
+                    {"type": "thinking", "thinking": "full", "signature": "EqQB"},
+                    {"type": "tool_use", "id": "toolu_1", "input": {"n": 3}},
+                ],
+                "assistant_parts": ({"text": "checking"},),
+            },
+        )
+
+    def test_model_output_mints_every_str_leaf_and_keeps_the_rest(self):
+        message = model_output(self._response())
+        metadata = message["provider_metadata"]
+        thinking, tool_use = metadata["assistant_content"]
+        for leaf in (thinking["thinking"], thinking["signature"], tool_use["id"]):
+            assert provenance(leaf) == (SOURCE_MODEL_OUTPUT, False)
+        assert tool_use["input"]["n"] == 3
+        assert type(metadata["assistant_parts"]) is tuple
+        signature = message["tool_calls"][0]["provider_metadata"]["thought_signature"]
+        assert provenance(signature) == (SOURCE_MODEL_OUTPUT, False)
+        assert not message_violations([message])
+
+    def test_plain_messages_unwraps_the_leaves_to_the_original(self):
+        response = self._response()
+        [plain] = plain_messages([model_output(response)])
+        assert plain["provider_metadata"] == response.provider_metadata
+        assert type(plain["provider_metadata"]["assistant_parts"]) is tuple
+        leaf = plain["provider_metadata"]["assistant_content"][0]["thinking"]
+        assert type(leaf) is str
+        call_meta = plain["tool_calls"][0]["provider_metadata"]
+        assert type(call_meta["thought_signature"]) is str
+
+    @pytest.mark.parametrize(
+        "metadata,kind",
+        [
+            ({"assistant_parts": [{"text": "raw"}]}, "raw"),
+            ({"assistant_parts": [{"text": forged("x")}]}, "forged"),
+            ({"assistant_parts": [{"text": vetted("x")}]}, "not_model_output"),
+        ],
+        ids=["raw", "forged", "case_minted"],
+    )
+    def test_the_grammar_checks_every_leaf(self, metadata, kind):
+        message = {
+            "role": "assistant",
+            "content": vetted("", SOURCE_MODEL_OUTPUT),
+            "provider_metadata": metadata,
+        }
+        [violation] = message_violations([message])
+        assert (violation.argument, violation.kind) == (
+            "messages.provider_metadata",
+            kind,
+        )
+
+    def test_the_test_minter_mints_the_leaves_as_model_output(self):
+        [message] = vetted_messages(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "provider_metadata": {"assistant_parts": [{"text": "x"}]},
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                            "provider_metadata": {"thought_signature": "s"},
+                        }
+                    ],
+                }
+            ]
+        )
+        assert not message_violations([message])
+
+
+class TestUnwrapKeepsTheValue:
+    """F4: ``str()`` of a ``(str, Enum)`` member is ``"Class.MEMBER"``."""
+
+    def test_plain_text_and_plain_messages_keep_a_str_subclass_value(self):
+        import enum
+
+        class Kind(str, enum.Enum):
+            X = "the value"
+
+        assert str(Kind.X) != "the value"  # the trap
+        assert plain_text(Kind.X) == "the value" and type(plain_text(Kind.X)) is str
+        [message] = plain_messages([{"role": "user", "content": Kind.X}])
+        assert message["content"] == "the value"
+        assert type(message["content"]) is str
+        assert vetted(Kind.X) == "the value"

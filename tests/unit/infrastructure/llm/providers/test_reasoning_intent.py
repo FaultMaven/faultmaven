@@ -801,15 +801,18 @@ class TestEveryRegisteredProviderHandlesTheKnobs:
         """
         import inspect
 
+        from faultmaven.infrastructure.llm.providers.base import BaseLLMProvider
         from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
         missing = []
         for name, schema in PROVIDER_SCHEMA.items():
             cls = schema["provider_class"]
-            source = inspect.getsource(cls)
-            # Subclasses inherit the parent's generate() (OpenRouter/OpenAI).
-            if "async def generate" not in source:
-                source += inspect.getsource(cls.__mro__[1])
+            # The class whose _generate this provider runs (OpenRouter inherits
+            # OpenAI's), never the base: the base DEFINES both discard helpers,
+            # so reading its source would pass every provider (#2015).
+            definer = next(k for k in cls.__mro__ if "_generate" in vars(k))
+            assert definer is not BaseLLMProvider, f"{name} implements no _generate"
+            source = inspect.getsource(definer)
             handles_knobs = (
                 # Discards them via the shared mechanism…
                 "_merge_extra_kwargs" in source
