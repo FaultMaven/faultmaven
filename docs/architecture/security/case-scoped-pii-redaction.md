@@ -141,10 +141,11 @@ Both values are read from `ProtectionSettings` in the constructor. The construct
 Every send site redacts what it sends through the turn's context, at the send: `messages = await case_redacted_messages(..., redaction_ctx)`, then `route(messages=messages)`. A repo-wide AST guard (`tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py`) classifies every send as redacted at the site or allowlisted with a reason, and fails on anything else. A send is a `.route(`/`.generate(` call, an uncalled reference to one, or a lookup of either by name. The guard calls a site redacted only when it can model everything the verdict rests on (#1971):
 
 - every binding of the sent name that can reach the send is an awaited case-redaction helper, whose context is a parameter with no default or a name bound only to such;
-- nothing that holds the sent value or a part of it changes it afterwards: an alias, an element, a copy, a default argument, or the parts of the redaction's input that its output shares;
+- what a messages redaction is handed is plain displays: a list of message dicts written out at the call, passed positionally, whose every value but `content` is a constant (the redaction replaces `content` and passes every other value through as given);
+- nothing that holds the sent value or a part of it changes it afterwards: an alias, an element, a copy, a default argument;
 - routing keywords and `**` splats are built only from configuration: constants, module-level configuration, the settings object, and same-module helpers that return routing keys.
 
-Any other construct that touches those names refuses the site as `unmodeled`: a `try` or `with` that can swallow an exception before the redaction completes, a binding inside the send's own statement, a send from a lambda or comprehension, `match`, `yield`, `global`, a frame read, or a method the guard does not know.
+Any other construct that touches those names refuses the site as `unmodeled`: a `try` or `with` that can swallow an exception before the redaction completes, a binding inside the send's own statement, a send from a lambda or comprehension, `match`, `yield`, `global`, or a method the guard does not know. So does a frame read by a spelling the guard knows, anywhere in the function: `locals()`, `exec`, `eval`, `compile` or `inspect.stack` and the other frame helpers (by the last part of the name); the attributes `__closure__`, `cell_contents`, `f_locals`, `f_back`, `tb_frame`, `cr_frame`, `gi_frame`, `ag_frame`; or any use of `ctypes` or `gc`. Reflection through any other spelling (an attribute named by a computed string, `inspect.getclosurevars`, a C extension) is out of scope.
 
 Some things the guard trusts by name instead of proving them:
 
@@ -154,7 +155,7 @@ Some things the guard trusts by name instead of proving them:
 - the redaction helpers and `asanitize_messages`;
 - the send's receiver expression.
 
-An allowlist entry pins the exact refusals of each of its sites, so any further defect in an allowlisted function fails.
+An allowlist entry pins the exact refusals of each of its sites, every reason with its source text, and counts its sites, so any further defect in an allowlisted function fails, and so does a duplicated site.
 
 | Call | Carries | Reversed |
 | --- | --- | --- |

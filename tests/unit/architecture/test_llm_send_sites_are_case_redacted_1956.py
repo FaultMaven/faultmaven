@@ -35,6 +35,11 @@ to ``getattr(x, name)`` and called with anything). Each one must be ONE of:
       default, or a name every binding of which is such. A literal, a call, an
       attribute or an unreadable binding (an unpacking, a ``with`` target) is
       refused.
+    - What a messages redaction is handed is plain displays: a list display of
+      message dict displays, passed positionally, whose every value but
+      ``content`` is a constant. The redaction replaces each ``content`` and
+      keeps every other value as given — unredacted, and shared with the
+      input — so anything else is refused (``redaction-input``).
     - Nothing changes the sent value afterwards. Every name that holds it or a
       part of it is followed — an alias, an element, a loop or comprehension
       variable, a container, a shallow copy (whose own list is new, whose
@@ -45,9 +50,14 @@ to ``getattr(x, name)`` and called with anything). Each one must be ONE of:
       that is not a known reader, copy, redaction or send (a reader handed a
       ``key=`` or a lambda is not one); storing one on another object. A method
       outside ``_MUTATORS`` and ``_READ_METHODS``, a ``return``/``yield``, a
-      ``match``, a ``del``, a ``global``/``nonlocal``, a ``with`` item, a frame
-      read (``locals()``, ``vars()``, ``exec``), a lambda parameter of the same
-      name: ``unmodeled``.
+      ``match``, a ``del``, a ``global``/``nonlocal``, a ``with`` item, a lambda
+      parameter of the same name: ``unmodeled``. So is, anywhere in the binding
+      function, a frame read by the spellings the guard knows: a call whose
+      last name is in ``_FRAME_ACCESS`` (``locals``, ``exec``, ``eval``,
+      ``compile``, ``inspect.stack``, ...); an attribute in
+      ``_REFLECTION_ATTRIBUTES`` (``__closure__``, ``cell_contents``,
+      ``f_locals``, ``f_back``, ``tb_frame``, ``cr_frame``, ``gi_frame``,
+      ``ag_frame``); any use of ``ctypes`` or ``gc``.
     - Every other keyword is a routing parameter (``model``, ``max_tokens``,
       ...) whose value is configuration: a constant; a module-level name the
       module binds only to configuration (an import is trusted; a ``def`` or
@@ -64,17 +74,20 @@ to ``getattr(x, name)`` and called with anything). Each one must be ONE of:
       once in the same module, handed configuration, every return of which is
       such. Its name proves nothing, and a parameter cannot be proven.
 (A) allowlisted below, with the reason it needs no case pass of its own and the
-    exact refusals of each of its sites (``Allowed.sites``: the multiset of
-    ``(kind, detail)``, line numbers stripped; details carry the source text).
-    A site in an allowlisted function refused for anything else fails, so a
-    second defect — of another kind or the same — cannot hide behind an entry.
+    exact refusals of each of its sites (``Allowed.sites``: for each site, the
+    multiset of ``(kind, detail)``, line numbers stripped, counted per site).
+    Every check lists every reason, not the first, and details carry the
+    source text, so a second defect at a site — of another kind or the same —
+    changes its verdict and fails, and so does a second site.
 
 Anything else fails, with its location and refusals. Trusted by name, outside
 the invariant, by ruling: the settings object (``get_settings()``, a
 ``settings`` parameter, ``self._settings``) and what it returns; a parameter
 used only as a routing value (its caller is not checked); imported names and
 their attributes; the redaction helpers and ``asanitize_messages`` on any
-receiver; the receiver expression of the send. The #1952 guard
+receiver; the receiver expression of the send. Out of scope: reflection
+through any spelling the guard does not know (an attribute named by a computed
+string, ``inspect.getclosurevars``, a C extension). The #1952 guard
 (``test_rebuilt_prompts_are_redacted_1949.py``) still pins the engine's own
 prompt assembly; the two engine splat sites are allowlisted here on its
 strength. The same idiom as ``test_openapi_documents_auth.py``: a classifier
@@ -118,6 +131,7 @@ PARAMETER = "content-parameter"
 UNREDACTED = "unredacted-binding"
 NONE_CONTEXT = "none-context"
 CHANGED = "changed-after-redaction"
+REDACTION_INPUT = "redaction-input"
 UNMODELED = "unmodeled"
 
 
@@ -131,58 +145,91 @@ def _verdict(problems) -> tuple:
 
 
 class Allowed(NamedTuple):
-    sites: frozenset
+    sites: Counter  # each site's verdict, as many times as it has sites
     reason: str
 
 
 def _allowed(reason: str, *sites) -> Allowed:
-    return Allowed(frozenset(_verdict(site) for site in sites), reason)
+    return Allowed(Counter(_verdict(site) for site in sites), reason)
 
 
 #: (path relative to the repo, innermost enclosing function) -> why its sites
 #: need no case pass, and the exact refusals each of them is admitted with.
 _STARLETTE = "a Starlette routing context's `route` attribute, not an LLM"
-_STARLETTE_SITE = [
-    (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
-]
 _LOGGER = "a logger's method chosen by level; the receiver is a logger, not an LLM"
 
 ALLOWLIST: dict[tuple[str, str], Allowed] = {
     ("faultmaven/api/routes/admin_config.py", "check_llm_connection"): _allowed(
         "a constant connection-test prompt; no case content",
-        [(EXPRESSION, "sends an expression ('Say hello'), not a redacted name")],
+        [
+            (EXPRESSION, "sends an expression ('Say hello'), not a redacted name"),
+        ],
     ),
     ("faultmaven/infrastructure/llm/router.py", "generate"): _allowed(
         "router internals: ILLMProvider.generate delegating to route",
         [
-            (TWO_CONTENTS, "sends content in both messages= and prompt="),
-            *(
-                (OTHER_CHANNEL, f"passes {kw}=, a channel the guard does not follow")
-                for kw in (
-                    "bypass_cache",
-                    "cache_prompt",
-                    "case_id",
-                    "data_type",
-                    "tool_choice",
-                    "tools",
-                )
-            ),
-            *(
+            (
+                ROUTING_VALUE,
                 (
-                    ROUTING_VALUE,
-                    f"{kw}= is not configuration: {kw!r}, bound at line _ to "
-                    f"computed (kwargs.get({kw!r}{default}))",
-                )
-                for kw, default in (
-                    ("max_tokens", ", 1000"),
-                    ("min_output_tokens", ""),
-                    ("model", ""),
-                    ("provider_override", ""),
-                    ("reasoning_intent", ""),
-                    ("response_format", ""),
-                    ("temperature", ", 0.7"),
-                )
+                    "max_tokens= is not configuration: 'max_tokens', bound at line _ "
+                    "to computed (kwargs.get('max_tokens', 1000))"
+                ),
             ),
+            (
+                ROUTING_VALUE,
+                (
+                    "min_output_tokens= is not configuration: 'min_output_tokens', "
+                    "bound at line _ to computed (kwargs.get('min_output_tokens'))"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "model= is not configuration: 'model', bound at line _ to "
+                    "computed (kwargs.get('model'))"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "provider_override= is not configuration: 'provider_override', "
+                    "bound at line _ to computed (kwargs.get('provider_override'))"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "reasoning_intent= is not configuration: 'reasoning_intent', "
+                    "bound at line _ to computed (kwargs.get('reasoning_intent'))"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "response_format= is not configuration: 'response_format', bound "
+                    "at line _ to computed (kwargs.get('response_format'))"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "temperature= is not configuration: 'temperature', bound at line "
+                    "_ to computed (kwargs.get('temperature', 0.7))"
+                ),
+            ),
+            (TWO_CONTENTS, "sends content in both messages= and prompt="),
+            (
+                OTHER_CHANNEL,
+                "passes bypass_cache=, a channel the guard does not follow",
+            ),
+            (
+                OTHER_CHANNEL,
+                "passes cache_prompt=, a channel the guard does not follow",
+            ),
+            (OTHER_CHANNEL, "passes case_id=, a channel the guard does not follow"),
+            (OTHER_CHANNEL, "passes data_type=, a channel the guard does not follow"),
+            (OTHER_CHANNEL, "passes tool_choice=, a channel the guard does not follow"),
+            (OTHER_CHANNEL, "passes tools=, a channel the guard does not follow"),
         ],
     ),
     ("faultmaven/infrastructure/llm/providers/registry.py", "route_request"): _allowed(
@@ -194,13 +241,27 @@ ALLOWLIST: dict[tuple[str, str], Allowed] = {
             ),
             (
                 ROUTING_VALUE,
-                "model= is not configuration: parameter 'model', also used as "
-                "something else",
+                (
+                    "model= is not configuration: 'model', which is handed to "
+                    "record_provider_call(), which may change it at line _: "
+                    "`record_provider_call(provider_name, model or getattr(response, "
+                    "'model', None) or 'unknown', response, latency_ms, "
+                    "outcome='kept' if _kept else 'low_confidence')`"
+                ),
+            ),
+            (
+                ROUTING_VALUE,
+                (
+                    "model= is not configuration: parameter 'model', also used as "
+                    "something else"
+                ),
             ),
             (
                 SPLAT,
-                "splats **kwargs, which can carry content: 'kwargs' is a parameter: "
-                "the guard cannot see what the caller puts in",
+                (
+                    "splats **kwargs, which can carry content: 'kwargs' is a "
+                    "parameter: the guard cannot see what the caller puts in"
+                ),
             ),
         ],
     ),
@@ -208,26 +269,36 @@ ALLOWLIST: dict[tuple[str, str], Allowed] = {
         "faultmaven/modules/knowledge/domain/services/conversion_service/service.py",
         "_convert",
     ): _allowed(
-        "sends prepared.redacted_messages, redacted once in _prepare_conversion "
-        "(pinned by test_conversion_model_boundary_redaction_1901.py); the model "
-        "is prepared.knowledge_model (settings.llm.get_knowledge_model() there) "
-        "and the splat pipeline's _knowledge_route_kwargs, which the guard does "
-        "not follow across the dataclass and the import",
+        (
+            "sends prepared.redacted_messages, redacted once in _prepare_conversion "
+            "(pinned by test_conversion_model_boundary_redaction_1901.py); the model "
+            "is prepared.knowledge_model (settings.llm.get_knowledge_model() there) "
+            "and the splat pipeline's _knowledge_route_kwargs, which the guard does "
+            "not follow across the dataclass and the import"
+        ),
         [
             (
-                UNREDACTED,
-                "'messages' is bound at line _ to prepared.redacted_messages, not "
-                "by a redaction",
-            ),
-            (
                 ROUTING_VALUE,
-                "model= is not configuration: 'knowledge_model', bound at line _ to "
-                "an attribute of a local or parameter (prepared.knowledge_model)",
+                (
+                    "model= is not configuration: 'knowledge_model', bound at line _ "
+                    "to an attribute of a local or parameter "
+                    "(prepared.knowledge_model)"
+                ),
             ),
             (
                 SPLAT,
-                "splats **_knowledge_route_kwargs(self._settings), which can carry "
-                "content: a call to _knowledge_route_kwargs() the guard cannot follow",
+                (
+                    "splats **_knowledge_route_kwargs(self._settings), which can "
+                    "carry content: a call to _knowledge_route_kwargs() the guard "
+                    "cannot follow"
+                ),
+            ),
+            (
+                UNREDACTED,
+                (
+                    "'messages' is bound at line _ to prepared.redacted_messages, not"
+                    " by a redaction"
+                ),
             ),
         ],
     ),
@@ -235,15 +306,203 @@ ALLOWLIST: dict[tuple[str, str], Allowed] = {
         "faultmaven/core/investigation/milestone_engine/generation.py",
         "_tool_loop_call",
     ): _allowed(
-        "the engine's tool-loop splat; every message it carries is built through "
-        "case_redacted (pinned by test_rebuilt_prompts_are_redacted_1949.py)",
+        (
+            "the engine's tool-loop splat; every message it carries is built "
+            "through case_redacted (pinned by test_rebuilt_prompts_are_redacted_1949.py)"
+        ),
         [
             (NO_CONTENT, "no messages=/prompt= argument the guard can follow"),
             (
                 SPLAT,
-                "splats **call_kwargs, which can carry content: 'call_kwargs' is "
-                "bound at line _ to 'generate_kwargs' is bound at line _ to key "
-                "'prompt' is not a routing parameter",
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to "
+                    "'max_tokens' is 'max_tokens', which is handed to "
+                    "generate_with_truncation_retry(), which may change it at line _:"
+                    " `generate_with_truncation_retry(_tool_loop_call, "
+                    "max_tokens=max_tokens, "
+                    "ceiling=STRUCTURED_OUTPUT_MAX_TOKENS_CEILING, label=f'tool loop "
+                    "iteration {iteration}')`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to "
+                    "'max_tokens' is 'max_tokens', which is handed to "
+                    "record_provider_call(), which may change it at line _: "
+                    "`record_provider_call(getattr(provider, 'provider_name', "
+                    "'unknown'), call_kwargs.get('model') or getattr(result, 'model',"
+                    " None) or 'unknown', result, getattr(result, 'response_time_ms',"
+                    " 0))`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to "
+                    "'max_tokens' is 'max_tokens', which is handed to "
+                    "self._fit_tool_loop_base(), which may change it at line _: "
+                    "`self._fit_tool_loop_base([{'role': 'system', 'content': "
+                    "da_system_instruction}, {'role': 'user', 'content': prompt}], "
+                    "all_tools, tool_loop_budget, provider_name, max_tokens, "
+                    "base_prompt_builder=base_prompt_builder, "
+                    "redaction_ctx=redaction_ctx, token_cache=_msg_token_cache)`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to "
+                    "'max_tokens' is 'max_tokens', which is handed to "
+                    "tool_loop_budget.hard(), which may change it at line _: "
+                    "`tool_loop_budget.hard(max_tokens)`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to "
+                    "'max_tokens' is parameter 'max_tokens' built into a larger value"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'cache_prompt' is not a routing parameter (`'cache_prompt': "
+                    "True`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'case_id' is not a routing parameter (`'case_id': case.case_id "
+                    "if case is not None else None`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'messages' is not a routing parameter (`'messages': "
+                    "bounded_messages`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'prompt' is not a routing parameter (`'prompt': ''`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'tool_choice' is not a routing parameter (`'tool_choice': "
+                    "choice`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is bound at line _ to key "
+                    "'tools' is not a routing parameter (`'tools': tools_for_call`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is handed to "
+                    "record_provider_call(), which may change it at line _: "
+                    "`record_provider_call(getattr(provider, 'provider_name', "
+                    "'unknown'), call_kwargs.get('model') or getattr(result, 'model',"
+                    " None) or 'unknown', result, getattr(result, 'response_time_ms',"
+                    " 0))`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is written through "
+                    "generate_kwargs['model'] at line _: `generate_kwargs['model'] = "
+                    "self.deps.da_model`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'generate_kwargs' is written through "
+                    "generate_kwargs['provider_override'] at line _: "
+                    "`generate_kwargs['provider_override'] = "
+                    "_override_provider.value`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'max_tokens' is 'cap', which is handed to "
+                    "record_provider_call(), which may change it at line _: "
+                    "`record_provider_call(getattr(provider, 'provider_name', "
+                    "'unknown'), call_kwargs.get('model') or getattr(result, 'model',"
+                    " None) or 'unknown', result, getattr(result, 'response_time_ms',"
+                    " 0))`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'max_tokens' is 'cap', which is handed to "
+                    "tool_loop_budget.hard(), which may change it at line _: "
+                    "`tool_loop_budget.hard(cap)`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "bound at line _ to 'max_tokens' is parameter 'cap' built into a "
+                    "larger value"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "handed to record_provider_call(), which may change it at line _:"
+                    " `record_provider_call(getattr(provider, 'provider_name', "
+                    "'unknown'), call_kwargs.get('model') or getattr(result, 'model',"
+                    " None) or 'unknown', result, getattr(result, 'response_time_ms',"
+                    " 0))`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **call_kwargs, which can carry content: 'call_kwargs' is "
+                    "written through call_kwargs['messages'] at line _: "
+                    "`call_kwargs['messages'] = "
+                    "self._bound_tool_loop_messages(messages, tool_loop_budget.soft, "
+                    "provider_name, token_cache=_msg_token_cache, "
+                    "tools=tools_for_call, window_tokens=tool_loop_budget.hard(cap))`"
+                ),
             ),
         ],
     ),
@@ -251,32 +510,166 @@ ALLOWLIST: dict[tuple[str, str], Allowed] = {
         "faultmaven/core/investigation/milestone_engine/generation.py",
         "llm_operation",
     ): _allowed(
-        "the engine's single-shot splat; its prompt is case_redacted at the top "
-        "of _generate_structured_output_inner (pinned by #1952's guard)",
+        (
+            "the engine's single-shot splat; its prompt is case_redacted at the top "
+            "of _generate_structured_output_inner (pinned by #1952's guard)"
+        ),
         [
             (NO_CONTENT, "no messages=/prompt= argument the guard can follow"),
             (
                 SPLAT,
-                "splats **generate_params, which can carry content: "
-                "'generate_params' is bound at line _ to key 'prompt' is not a "
-                "routing parameter",
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is bound at line _ to 'max_tokens' is "
+                    "'current_max_tokens', bound at line _ to computed "
+                    "(max_tokens_state['value'])"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is bound at line _ to key 'bypass_cache' is "
+                    "not a routing parameter (`'bypass_cache': "
+                    "max_tokens_state['bumped']`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is bound at line _ to key 'case_id' is not a "
+                    "routing parameter (`'case_id': case.case_id if case is not None "
+                    "else None`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is bound at line _ to key 'prompt' is not a "
+                    "routing parameter (`'prompt': final_prompt`)"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through "
+                    "generate_params['min_output_tokens'] at line _: "
+                    "`generate_params['min_output_tokens'] = min_output_tokens`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through "
+                    "generate_params['provider_override'] at line _: "
+                    "`generate_params['provider_override'] = "
+                    "_override_provider.value`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through "
+                    "generate_params['reasoning_intent'] at line _: "
+                    "`generate_params['reasoning_intent'] = reasoning_intent`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through "
+                    "generate_params['response_format'] at line _: "
+                    "`generate_params['response_format'] = strategy.response_format`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through "
+                    "generate_params['tool_choice'] at line _: "
+                    "`generate_params['tool_choice'] = 'required'`"
+                ),
+            ),
+            (
+                SPLAT,
+                (
+                    "splats **generate_params, which can carry content: "
+                    "'generate_params' is written through generate_params['tools'] at"
+                    " line _: `generate_params['tools'] = "
+                    "pydantic_to_openai_tools(schema_model)`"
+                ),
+            ),
+        ],
+    ),
+    (
+        "faultmaven/infrastructure/persistence/user_repository.py",
+        "_account_filters",
+    ): _allowed(
+        "a SQLAlchemy `func` case-folding function chosen by dialect",
+        [
+            (
+                GETATTR_COMPUTED,
+                (
+                    "calls fold = `getattr(func, SQLITE_CASEFOLD if self._on_sqlite()"
+                    " else 'lower')`"
+                ),
+            ),
+        ],
+        [
+            (
+                GETATTR_COMPUTED,
+                (
+                    "calls fold = `getattr(func, SQLITE_CASEFOLD if self._on_sqlite()"
+                    " else 'lower')`"
+                ),
+            ),
+        ],
+        [
+            (
+                GETATTR_COMPUTED,
+                (
+                    "calls fold = `getattr(func, SQLITE_CASEFOLD if self._on_sqlite()"
+                    " else 'lower')`"
+                ),
             ),
         ],
     ),
     ("faultmaven/api/route_enumeration.py", "iter_served_routes"): _allowed(
-        _STARLETTE, _STARLETTE_SITE
+        _STARLETTE,
+        [
+            (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
+        ],
     ),
     ("faultmaven/api/route_enumeration.py", "iter_documented_routes"): _allowed(
-        _STARLETTE, _STARLETTE_SITE
+        _STARLETTE,
+        [
+            (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
+        ],
     ),
     ("faultmaven/api/route_enumeration.py", "iter_served_endpoints"): _allowed(
-        _STARLETTE, _STARLETTE_SITE
+        _STARLETTE,
+        [
+            (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
+        ],
     ),
     ("faultmaven/api/route_enumeration.py", "iter_unresolved_routes"): _allowed(
-        _STARLETTE, _STARLETTE_SITE
+        _STARLETTE,
+        [
+            (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
+        ],
     ),
     ("faultmaven/api/middleware/route_policy.py", "_flattened_post_paths"): _allowed(
-        _STARLETTE, _STARLETTE_SITE
+        _STARLETTE,
+        [
+            (GETATTR, "reaches .route through `getattr(context, 'route', None)`"),
+        ],
     ),
     ("faultmaven/infrastructure/logging/coordinator.py", "log_once"): _allowed(
         _LOGGER,
@@ -284,38 +677,38 @@ ALLOWLIST: dict[tuple[str, str], Allowed] = {
             (
                 GETATTR_COMPUTED,
                 "calls log_method = `getattr(logger, level.lower(), logger.info)`",
-            )
+            ),
         ],
     ),
     ("faultmaven/infrastructure/logging/unified.py", "operation"): _allowed(
         _LOGGER,
-        [(GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`")],
+        [
+            (GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`"),
+        ],
+        [
+            (GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`"),
+        ],
     ),
     ("faultmaven/infrastructure/logging/unified.py", "operation_sync"): _allowed(
         _LOGGER,
-        [(GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`")],
+        [
+            (GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`"),
+        ],
+        [
+            (GETATTR_COMPUTED, "calls log_method = `getattr(self.logger, log_level)`"),
+        ],
     ),
     ("faultmaven/infrastructure/logging/unified.py", "log_event"): _allowed(
         _LOGGER,
         [
             (
                 GETATTR_COMPUTED,
-                "calls log_method = `getattr(self.logger, severity, "
-                "self.logger.info)`",
-            )
-        ],
-    ),
-    ("faultmaven/infrastructure/persistence/user_repository.py", "_account_filters"): (
-        _allowed(
-            "a SQLAlchemy `func` case-folding function chosen by dialect",
-            [
                 (
-                    GETATTR_COMPUTED,
-                    "calls fold = `getattr(func, SQLITE_CASEFOLD if "
-                    "self._on_sqlite() else 'lower')`",
-                )
-            ],
-        )
+                    "calls log_method = `getattr(self.logger, severity, "
+                    "self.logger.info)`"
+                ),
+            ),
+        ],
     ),
 }
 
@@ -417,16 +810,35 @@ _SHALLOW_COPIES = {"list", "tuple", "dict", "sorted", "copy.copy"}
 _DEEP_COPIES = {"copy.deepcopy"}
 #: Calls a loop iterates through to reach the elements they are handed.
 _ITERATORS = {"enumerate", "reversed", "iter", "zip"}
-#: Calls that can read or rebind any name of the frame they run in.
+#: Calls that can read or rebind any name of the frame they run in, matched on
+#: the last component of the callee (``builtins.exec``, ``inspect.stack``).
 _FRAME_ACCESS = {
     "locals",
     "globals",
     "vars",
     "exec",
     "eval",
-    "sys._getframe",
-    "inspect.currentframe",
+    "compile",
+    "_getframe",
+    "currentframe",
+    "stack",
+    "trace",
+    "getouterframes",
+    "getinnerframes",
 }
+#: Attributes that reach a frame's or a closure's names, and modules that
+#: reach any object. Reflection through any other spelling is out of scope.
+_REFLECTION_ATTRIBUTES = {
+    "__closure__",
+    "cell_contents",
+    "f_locals",
+    "f_back",
+    "tb_frame",
+    "cr_frame",
+    "gi_frame",
+    "ag_frame",
+}
+_REFLECTION_MODULES = {"ctypes", "gc"}
 
 
 # --------------------------------------------------------------------------
@@ -829,54 +1241,10 @@ def _derivations(node, depth: dict):
                 yield t.id, max(d - 1, 0) if unpacked else d
 
 
-def _redaction_input(value):
-    """What an awaited redaction redacts, or ``None``."""
-    call = value.value if isinstance(value, ast.Await) else None
-    if not isinstance(call, ast.Call) or not call.args:
-        return None
-    if isinstance(call.func, ast.Name) and call.func.id in _REDACTING_HELPERS:
-        return call.args[0]
-    if isinstance(call.func, ast.Attribute) and call.func.attr in _REDACTING_METHODS:
-        return call.args[0]
-    return None
-
-
-def _shared_with_output(expr, level: int = 0):
-    """(name, depth) for the parts of a redaction's input its output shares.
-    The redaction copies the list and each message, and replaces each
-    ``content``: what a message holds under any other key is the same object
-    on both sides, so a name at ``level`` in the input reaches the sent value
-    from depth ``2 - level``."""
-    if isinstance(expr, ast.Name):
-        yield expr.id, max(2 - level, 0)
-    elif isinstance(expr, (ast.List, ast.Tuple)):
-        for elt in expr.elts:
-            if isinstance(elt, ast.Starred):
-                yield from _shared_with_output(elt.value, level)
-            else:
-                yield from _shared_with_output(elt, level + 1)
-    elif isinstance(expr, ast.Dict):
-        for key, value in zip(expr.keys, expr.values):
-            if level == 1 and isinstance(key, ast.Constant) and key.value == "content":
-                continue
-            yield from _shared_with_output(key if value is None else value, level + 1)
-    else:
-        for node in ast.walk(expr):
-            if isinstance(node, ast.Name):
-                yield node.id, 0
-
-
 def _holders(func, name: str) -> dict:
     """Every name in ``func`` and the functions nested in it that can hold the
-    value ``name`` holds, or a part of it, with its depth (see ``_reach``) —
-    the parts of a redaction's input its output shares included."""
+    value ``name`` holds, or a part of it, with its depth (see ``_reach``)."""
     depth = {name: 0}
-    for node in _binding_nodes(func, name):
-        value = _bound_value(node, name)
-        source = None if value is None else _redaction_input(value)
-        for held, d in _shared_with_output(source) if source is not None else ():
-            if held != name and d < depth.get(held, d + 1):
-                depth[held] = d
     grown = True
     while grown:
         grown = False
@@ -1094,14 +1462,19 @@ def _unmodeled(func, name: str, returns: bool = False) -> list:
             out.append((node, f"a lambda parameter shadows it: `{_text(node)}`"))
         elif isinstance(node, ast.Call) and _reads_the_frame(node):
             out.append((node, f"`{_text(node)}` reads every name of the frame"))
+        elif isinstance(node, ast.Attribute) and node.attr in _REFLECTION_ATTRIBUTES:
+            out.append((node, f"`{_text(node)}` reaches a frame's or closure's names"))
+        elif isinstance(node, ast.Name) and node.id in _REFLECTION_MODULES:
+            out.append((node, f"`{node.id}` can reach any object"))
     return out
 
 
 def _reads_the_frame(call) -> bool:
-    func = ast.unparse(call.func)
-    if func == "vars":
+    func = call.func
+    last = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if last == "vars":
         return not call.args
-    return func in _FRAME_ACCESS
+    return last in _FRAME_ACCESS
 
 
 def _unmodeled_problems(func, name: str, what: str, returns=False) -> list:
@@ -1173,52 +1546,49 @@ def _used_only_for_routing(func, name: str) -> bool:
     return True
 
 
-def _routing_problem(
+def _routing_problems(
     value, chain: list, module, *, top=True, trusted=frozenset(), seen=frozenset()
-) -> str | None:
-    """``None`` when ``value`` is configuration, else what it is. ``top``: the
-    whole value of the keyword (where a routing-only parameter is accepted);
-    ``trusted``: a helper's parameters, checked at its call site."""
-    nested = functools.partial(
-        _routing_problem,
-        chain=chain,
-        module=module,
-        top=False,
-        trusted=trusted,
-        seen=seen,
-    )
+) -> list:
+    """Every reason ``value`` is not configuration; empty when it is. ``top``:
+    the whole value of the keyword (where a routing-only parameter is
+    accepted); ``trusted``: a helper's parameters, checked at its call site.
+    Every reason is listed, not the first, so an allowlist pin names them
+    all."""
+
+    def nested(v):
+        return _routing_problems(
+            v, chain, module, top=False, trusted=trusted, seen=seen
+        )
+
     if isinstance(value, ast.Constant) or _settings_object(value, chain):
-        return None
+        return []
     if isinstance(value, ast.UnaryOp):
         return nested(value.operand)
     if isinstance(value, ast.JoinedStr):
         if any(isinstance(v, ast.FormattedValue) for v in value.values):
-            return f"an f-string ({ast.unparse(value)})"
-        return None
+            return [f"an f-string ({ast.unparse(value)})"]
+        return []
     if isinstance(value, (ast.List, ast.Tuple)):
-        return next(filter(None, map(nested, value.elts)), None)
+        return [why for elt in value.elts for why in nested(elt)]
     if isinstance(value, ast.Dict):
-        if not all(isinstance(k, ast.Constant) for k in value.keys):
-            return f"a dict with a computed key ({ast.unparse(value)})"
-        return next(filter(None, map(nested, value.values)), None)
+        out = [
+            f"a dict with a computed key ({ast.unparse(value)})"
+            for key in value.keys
+            if not isinstance(key, ast.Constant)
+        ]
+        return out + [why for item in value.values for why in nested(item)]
     if isinstance(value, ast.IfExp):
         # The test selects and is not sent; a walrus in it is a binding, which
         # the binding checks (and the send's-own-statement rule) see.
-        arms = (value.body, value.orelse)
-        return next(
-            filter(
-                None,
-                (
-                    _routing_problem(
-                        arm, chain, module, top=top, trusted=trusted, seen=seen
-                    )
-                    for arm in arms
-                ),
-            ),
-            None,
-        )
+        return [
+            why
+            for arm in (value.body, value.orelse)
+            for why in _routing_problems(
+                arm, chain, module, top=top, trusted=trusted, seen=seen
+            )
+        ]
     if isinstance(value, ast.Name):
-        return _routing_name_problem(value.id, chain, module, top, trusted, seen)
+        return _routing_name_problems(value.id, chain, module, top, trusted, seen)
     if isinstance(value, ast.Attribute):
         base = value
         while isinstance(base, ast.Attribute):
@@ -1229,74 +1599,91 @@ def _routing_problem(
             and _resolve(base.id, chain).func is None
         ):
             # An attribute of a module-level name: an enum member, a constant.
-            return _module_name_problem(base.id, module, seen)
-        return f"an attribute of a local or parameter ({ast.unparse(value)})"
+            return _module_name_problems(base.id, module, seen)
+        return [f"an attribute of a local or parameter ({ast.unparse(value)})"]
     if (
         isinstance(value, ast.Call)
         and isinstance(value.func, ast.Attribute)
         and _settings_object(value.func.value, chain)
     ):
         args = [*value.args, *(k.value for k in value.keywords)]
-        return next(filter(None, map(nested, args)), None)
-    return f"computed ({ast.unparse(value)})"
+        return [why for arg in args for why in nested(arg)]
+    return [f"computed ({ast.unparse(value)})"]
 
 
-def _routing_name_problem(name, chain, module, top, trusted, seen) -> str | None:
+def _change_text(node, how: str) -> str:
+    return f"{how} at line {_line(node)}: `{_text(node)}`"
+
+
+def _routing_name_problems(name, chain, module, top, trusted, seen) -> list:
     if name in trusted:
-        return None
+        return []
     binding = _resolve(name, chain)
     if binding.func is None:
-        return _module_name_problem(name, module, seen)
+        return _module_name_problems(name, module, seen)
     key = (name, id(binding.func))
     if key in seen:
-        return None
+        return []
     seen = seen | {key}
-    if binding.is_param:
-        if not top:
-            return f"parameter {name!r} built into a larger value"
-        if not _used_only_for_routing(binding.func, name):
-            return f"parameter {name!r}, also used as something else"
+    out = []
+    if binding.is_param and not top:
+        out.append(f"parameter {name!r} built into a larger value")
+    elif binding.is_param and not _used_only_for_routing(binding.func, name):
+        out.append(f"parameter {name!r}, also used as something else")
     for node in binding.nodes:
         value = _bound_value(node, name)
+        where = f"{name!r}, bound at line {_line(node)}"
         if value is None:
-            return f"{name!r}, bound at line {_line(node)} {_binding_text(node, name)}"
-        why = _routing_problem(
-            value, binding.chain, module, top=top, trusted=trusted, seen=seen
-        )
-        if why:
-            return f"{name!r}, bound at line {_line(node)} to {why}"
-    for node, how in _changes(binding.func, name):
-        # Storing it under a routing key of a dict is how a routing-only splat
-        # is built; that dict's own changes are checked where it is splatted.
-        if not _routing_key_assignment(node, binding.chain, module, trusted, seen):
-            return f"{name!r}, which {how} at line {_line(node)}"
-    return None
+            out.append(f"{where} {_binding_text(node, name)}")
+            continue
+        out += [
+            f"{where} to {why}"
+            for why in _routing_problems(
+                value, binding.chain, module, top=top, trusted=trusted, seen=seen
+            )
+        ]
+    # Storing it under a routing key of a dict is how a routing-only splat is
+    # built; that dict's own changes are checked where it is splatted.
+    out += [
+        f"{name!r}, which {_change_text(node, how)}"
+        for node, how in _changes(binding.func, name)
+        if not _routing_key_assignment(node, binding.chain, module, trusted, seen)
+    ]
+    return out
 
 
-def _module_name_problem(name, module, seen) -> str | None:
+def _module_name_problems(name, module, seen) -> list:
     """A module-level (or imported, or builtin) name is configuration when the
     module binds it only to configuration (an import is trusted; a ``def`` or
     ``class`` is not configuration), no function rebinds it (``global``), and
     — when it is a dict, list or set — nothing changes it."""
-    if any(isinstance(n, ast.Global) and name in n.names for n in ast.walk(module)):
-        return f"{name!r}, a module global a function rebinds"
+    out = [
+        f"{name!r}, a module global a function rebinds: `{_text(node)}`"
+        for node in ast.walk(module)
+        if isinstance(node, ast.Global) and name in node.names
+    ]
     key = (name, id(module))
     if key in seen:
-        return None
+        return out
     seen = seen | {key}
     nodes = [n for n in _binding_nodes(module, name) if not isinstance(n, ast.alias)]
     for node in nodes:
         value = _bound_value(node, name)
+        where = f"{name!r}, bound at line {_line(node)}"
         if value is None:
-            return f"{name!r}, bound at line {_line(node)} {_binding_text(node, name)}"
-        why = _routing_problem(value, [], module, top=False, seen=seen)
-        if why:
-            return f"{name!r}, bound at line {_line(node)} to {why}"
+            out.append(f"{where} {_binding_text(node, name)}")
+            continue
+        out += [
+            f"{where} to {why}"
+            for why in _routing_problems(value, [], module, top=False, seen=seen)
+        ]
     mutable = (ast.Dict, ast.List, ast.Set)
     if any(isinstance(_bound_value(node, name), mutable) for node in nodes):
-        for node, how in _changes(module, name):
-            return f"{name!r}, which {how} at line {_line(node)}"
-    return None
+        out += [
+            f"{name!r}, which {_change_text(node, how)}"
+            for node, how in _changes(module, name)
+        ]
+    return out
 
 
 def _module_function(module, name: str):
@@ -1313,94 +1700,107 @@ def _module_function(module, name: str):
     return defs[0]
 
 
-def _splat_problem(
+def _splat_problems(
     value, chain: list, module, *, trusted=frozenset(), seen=frozenset()
-) -> str | None:
-    """``None`` when a ``**`` splat provably carries routing parameters only,
-    with configuration values; else what it is. Its name proves nothing."""
-    splat = functools.partial(
-        _splat_problem, chain=chain, module=module, trusted=trusted, seen=seen
-    )
+) -> list:
+    """Every reason a ``**`` splat may carry more than routing parameters with
+    configuration values; empty when it cannot. Its name proves nothing."""
+
+    def splat(v):
+        return _splat_problems(v, chain, module, trusted=trusted, seen=seen)
+
     if isinstance(value, ast.Dict):
-        for key, item in zip(value.keys, value.values):
-            why = _routing_item_problem(key, item, chain, module, trusted, splat)
-            if why:
-                return why
-        return None
+        return [
+            why
+            for key, item in zip(value.keys, value.values)
+            for why in _routing_item_problems(key, item, chain, module, trusted, splat)
+        ]
     if isinstance(value, ast.IfExp):
-        return splat(value.body) or splat(value.orelse)
+        return splat(value.body) + splat(value.orelse)
     if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
         if value.func.id == "dict" and _resolve("dict", chain).func is None:
-            for arg in value.args:
-                if why := splat(arg):
-                    return why
+            out = [why for arg in value.args for why in splat(arg)]
             for k in value.keywords:
                 key = None if k.arg is None else ast.Constant(k.arg)
-                why = _routing_item_problem(key, k.value, chain, module, trusted, splat)
-                if why:
-                    return why
-            return None
+                out += _routing_item_problems(
+                    key, k.value, chain, module, trusted, splat
+                )
+            return out
         helper = _module_function(module, value.func.id)
         if helper is not None and _resolve(value.func.id, chain).func is None:
-            return _helper_problem(value, helper, chain, module, trusted, seen)
-        return f"a call to {value.func.id}() the guard cannot follow"
+            return _helper_problems(value, helper, chain, module, trusted, seen)
+        return [f"a call to {value.func.id}() the guard cannot follow"]
     if isinstance(value, ast.Name):
-        return _splat_name_problem(value.id, chain, module, trusted, seen)
-    return f"{ast.unparse(value)}"
+        return _splat_name_problems(value.id, chain, module, trusted, seen)
+    return [f"{ast.unparse(value)}"]
 
 
-def _routing_item_problem(key, item, chain, module, trusted, splat) -> str | None:
+def _routing_item_problems(key, item, chain, module, trusted, splat) -> list:
     if key is None:
         return splat(item)
     if not (isinstance(key, ast.Constant) and key.value in _ROUTING_KWARGS):
-        return f"key {ast.unparse(key)} is not a routing parameter"
-    why = _routing_problem(item, chain, module, top=False, trusted=trusted)
-    return f"{key.value!r} is {why}" if why else None
+        pair = f"{ast.unparse(key)}: {ast.unparse(item)}"
+        return [f"key {ast.unparse(key)} is not a routing parameter (`{pair}`)"]
+    return [
+        f"{key.value!r} is {why}"
+        for why in _routing_problems(item, chain, module, top=False, trusted=trusted)
+    ]
 
 
-def _helper_problem(call, helper, chain, module, trusted, seen) -> str | None:
+def _helper_problems(call, helper, chain, module, trusted, seen) -> list:
     if helper in seen:
-        return f"{helper.name}() is recursive"
-    for arg in [*call.args, *(k.value for k in call.keywords)]:
-        why = _routing_problem(arg, chain, module, top=False, trusted=trusted)
-        if why:
-            return f"{helper.name}() is handed {why}"
+        return [f"{helper.name}() is recursive"]
+    out = [
+        f"{helper.name}() is handed {why}"
+        for arg in [*call.args, *(k.value for k in call.keywords)]
+        for why in _routing_problems(arg, chain, module, top=False, trusted=trusted)
+    ]
     returns = [n for n in _own_nodes(helper) if isinstance(n, ast.Return)]
     if not returns or any(r.value is None for r in returns):
-        return f"{helper.name}() can return what the guard cannot follow"
+        out.append(f"{helper.name}() can return what the guard cannot follow")
     params = frozenset(_parameters(helper))
-    for ret in returns:
-        why = _splat_problem(
+    out += [
+        f"{helper.name}() returns {why}"
+        for ret in returns
+        if ret.value is not None
+        for why in _splat_problems(
             ret.value, [helper], module, trusted=params, seen=seen | {helper}
         )
-        if why:
-            return f"{helper.name}() returns {why}"
-    return None
+    ]
+    return out
 
 
-def _splat_name_problem(name, chain, module, trusted, seen) -> str | None:
+def _splat_name_problems(name, chain, module, trusted, seen) -> list:
     binding = _resolve(name, chain)
-    if name in trusted or binding.is_param:
-        return f"{name!r} is a parameter: the guard cannot see what the caller puts in"
     if binding.func is None:
-        return f"{name!r} is not a local the guard can follow"
+        return [f"{name!r} is not a local the guard can follow"]
     key = (name, id(binding.func))
     if key in seen:
-        return None
+        return []
     seen = seen | {key}
+    out = []
+    if name in trusted or binding.is_param:
+        out.append(
+            f"{name!r} is a parameter: the guard cannot see what the caller puts in"
+        )
     for node in binding.nodes:
         value = _bound_value(node, name)
+        where = f"{name!r} is bound at line {_line(node)}"
         if value is None:
-            return (
-                f"{name!r} is bound at line {_line(node)} {_binding_text(node, name)}"
+            out.append(f"{where} {_binding_text(node, name)}")
+            continue
+        out += [
+            f"{where} to {why}"
+            for why in _splat_problems(
+                value, binding.chain, module, trusted=trusted, seen=seen
             )
-        why = _splat_problem(value, binding.chain, module, trusted=trusted, seen=seen)
-        if why:
-            return f"{name!r} is bound at line {_line(node)} to {why}"
-    for node, how in _changes(binding.func, name):
-        if not _routing_key_assignment(node, binding.chain, module, trusted, seen):
-            return f"{name!r} {how} at line {_line(node)}"
-    return None
+        ]
+    out += [
+        f"{name!r} {_change_text(node, how)}"
+        for node, how in _changes(binding.func, name)
+        if not _routing_key_assignment(node, binding.chain, module, trusted, seen)
+    ]
+    return out
 
 
 def _routing_key_assignment(node, chain, module, trusted, seen) -> bool:
@@ -1414,10 +1814,9 @@ def _routing_key_assignment(node, chain, module, trusted, seen) -> bool:
         and isinstance(target.value, ast.Name)
         and isinstance(target.slice, ast.Constant)
         and target.slice.value in _ROUTING_KWARGS
-        and _routing_problem(
+        and not _routing_problems(
             node.value, chain, module, top=False, trusted=trusted, seen=seen
         )
-        is None
     )
 
 
@@ -1551,11 +1950,14 @@ def _redaction_problems(node, name: str, chain: list) -> list:
         and isinstance(call.func, ast.Attribute)
         and (call.func.attr in _REDACTING_METHODS)
     ):
-        return []  # the receiver is the context: a None one raises, sends nothing
+        # The receiver is the context: a None one raises and sends nothing.
+        return _input_problems(call, name, node)
     else:
         detail = f"{name!r} is bound at line {_line(node)} {_binding_text(node, name)}"
         return [(UNREDACTED, f"{detail}, not by a redaction")]
     problems = []
+    if call.func.id == "case_redacted_messages":
+        problems += _input_problems(call, name, node)
     why = _context_problem(ctx, chain)
     if why:
         problems.append(
@@ -1577,6 +1979,34 @@ def _redaction_problems(node, name: str, chain: list) -> list:
                 for at, how in _changes(binding.func, ctx_name)
             ]
     return problems
+
+
+def _input_problems(call, name: str, node) -> list:
+    """Every way the messages a redaction is handed are not plain displays.
+    The redaction copies each message and replaces its ``content``; every
+    other value goes to the provider as given, and stays shared with the
+    input. So the input must be a list display of message dict displays,
+    passed positionally, whose every value but ``content`` is a constant."""
+    at = f"{name!r} is redacted at line {_line(node)} from"
+    if not call.args:
+        return [(REDACTION_INPUT, f"{at} an input passed by keyword: `{_text(call)}`")]
+    messages = call.args[0]
+    if not isinstance(messages, ast.List):
+        return [(REDACTION_INPUT, f"{at} `{_text(messages)}`, not a list display")]
+    out = []
+    for message in messages.elts:
+        if not isinstance(message, ast.Dict):
+            out.append(f"`{_text(message)}`, not a dict display")
+            continue
+        for key, value in zip(message.keys, message.values):
+            if key is None:
+                out.append(f"`**{_text(value)}`, an unpacked message")
+            elif not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                out.append(f"`{_text(key)}`, a computed message key")
+            elif key.value != "content" and not isinstance(value, ast.Constant):
+                pair = f"{_text(key)}: {_text(value)}"
+                out.append(f"`{pair}`, neither content nor a constant")
+    return [(REDACTION_INPUT, f"{at} {why}") for why in out]
 
 
 # --------------------------------------------------------------------------
@@ -1668,26 +2098,24 @@ def _call_problems(call, parents) -> list:
     configuration = []  # the routing values and splats judged configuration
     for k in call.keywords:
         if k.arg is None:
-            why = _splat_problem(k.value, chain, module)
-            if why:
-                splat = ast.unparse(k.value)
-                problems.append(
-                    (SPLAT, f"splats **{splat}, which can carry content: {why}")
-                )
-            else:
-                configuration.append(k.value)
+            whys = _splat_problems(k.value, chain, module)
+            splat = ast.unparse(k.value)
+            problems += [
+                (SPLAT, f"splats **{splat}, which can carry content: {why}")
+                for why in whys
+            ]
         elif k.arg in _ROUTING_KWARGS:
-            why = _routing_problem(k.value, chain, module)
-            if why:
-                problems.append(
-                    (ROUTING_VALUE, f"{k.arg}= is not configuration: {why}")
-                )
-            else:
-                configuration.append(k.value)
-        elif k.arg not in _CONTENT_KWARGS:
-            problems.append(
-                (OTHER_CHANNEL, f"passes {k.arg}=, a channel the guard does not follow")
-            )
+            whys = _routing_problems(k.value, chain, module)
+            problems += [
+                (ROUTING_VALUE, f"{k.arg}= is not configuration: {why}") for why in whys
+            ]
+        else:
+            if k.arg not in _CONTENT_KWARGS:
+                detail = f"passes {k.arg}=, a channel the guard does not follow"
+                problems.append((OTHER_CHANNEL, detail))
+            continue
+        if not whys:
+            configuration.append(k.value)
     tracked, helpers = _routing_locals(configuration, chain, module)
     for func, name in sorted(tracked, key=lambda fn: (_pos(fn[0]), fn[1])):
         what = f"the routing value {name!r}"
@@ -1855,17 +2283,21 @@ def _kinds(problems) -> frozenset:
 
 
 def _unadmitted(rows) -> list:
-    """The refused sites no allowlist entry admits: not listed, or refused
-    with anything other than one of the entry's pinned verdicts."""
+    """The refused sites no allowlist entry admits: in a function that is not
+    listed, or beyond its entry's pins — each pinned verdict admits as many
+    sites as it is pinned for, so a duplicated site fails too."""
+    left = {key: Counter(entry.sites) for key, entry in ALLOWLIST.items()}
     out = []
     for rel, where, line, problems in rows:
         if not problems:
             continue
-        entry = ALLOWLIST.get((rel, where))
-        if entry is not None and _verdict(problems) in entry.sites:
+        verdict = _verdict(problems)
+        pins = left.get((rel, where))
+        if pins is not None and pins[verdict] > 0:
+            pins[verdict] -= 1
             continue
-        pinned = "allowlisted with other refusals" if entry else "not allowlisted"
-        details = "\n    ".join(f"({k}, {d!r})" for k, d in _verdict(problems))
+        pinned = "beyond its entry's pins" if pins is not None else "not allowlisted"
+        details = "\n    ".join(f"({k}, {d!r})" for k, d in verdict)
         out.append(f"{rel}:{line} in {where} [{pinned}]:\n    {details}")
     return out
 
@@ -1886,16 +2318,16 @@ def test_the_redacted_sites_are_the_ones_expected():
 
 
 def test_every_allowlist_entry_still_names_an_unredacted_site():
-    """A stale entry, or a stale pinned verdict, would silently admit a new
+    """A stale entry, or a pin with no site left, would silently admit a new
     site that reuses its function name or its refusals."""
     observed: dict = {}
     for rel, where, _, problems in _scan():
         if problems:
-            observed.setdefault((rel, where), set()).add(_verdict(problems))
+            observed.setdefault((rel, where), Counter())[_verdict(problems)] += 1
     stale = {
-        key: sorted(entry.sites - observed.get(key, set()))
+        key: sorted(entry.sites - observed.get(key, Counter()))
         for key, entry in ALLOWLIST.items()
-        if entry.sites - observed.get(key, set())
+        if entry.sites - observed.get(key, Counter())
     }
     assert stale == {}
 
@@ -2767,7 +3199,7 @@ _FAIL_CLOSED = {
             """),
     ),
     "redaction-input-shares-a-non-content-key": (
-        CHANGED,
+        REDACTION_INPUT,
         """
         async def f(router, prompt, ctx, raw):
             src = [{"content": prompt, "name": []}]
@@ -3007,6 +3439,174 @@ _FAIL_CLOSED = {
             )
             """),
     ),
+    # second review round: a redaction's input must be plain displays
+    "W1-input-built-from-an-earlier-name": (
+        REDACTION_INPUT,
+        """
+        async def f(router, prompt, ctx, raw):
+            meta = {"tags": []}
+            src = [{"role": "user", "content": prompt, "meta": meta}]
+            messages = await case_redacted_messages(src, ctx)
+            meta["tags"].append(raw)
+            return await router.route(messages=messages)
+        """,
+    ),
+    "W2-message-dict-built-earlier": (
+        REDACTION_INPUT,
+        """
+        async def f(router, prompt, ctx, raw):
+            calls = []
+            m = {"role": "user", "content": prompt, "tool_calls": calls}
+            messages = await case_redacted_messages([m], ctx)
+            calls.append(raw)
+            return await router.route(messages=messages)
+        """,
+    ),
+    "W3-input-passed-by-keyword": (
+        REDACTION_INPUT,
+        """
+        async def f(router, prompt, ctx, raw):
+            meta = []
+            messages = await case_redacted_messages(
+                messages=[{"role": "user", "content": prompt, "meta": meta}], ctx=ctx
+            )
+            meta.append(raw)
+            return await router.route(messages=messages)
+        """,
+    ),
+    "W4-raw-text-in-a-non-content-key": (
+        REDACTION_INPUT,
+        """
+        async def f(router, prompt, ctx, raw):
+            messages = await case_redacted_messages(
+                [{"role": "user", "content": prompt, "name": raw}], ctx
+            )
+            return await router.route(messages=messages)
+        """,
+    ),
+    "W5-module-template-changed-by-a-helper": (
+        REDACTION_INPUT,
+        """
+        _TEMPLATE = [{"role": "system", "content": "x", "meta": {}}]
+
+        def _poison(raw):
+            _TEMPLATE[0]["meta"]["note"] = raw
+
+        async def f(router, ctx, raw):
+            messages = await case_redacted_messages(_TEMPLATE, ctx)
+            _poison(raw)
+            return await router.route(messages=messages)
+        """,
+    ),
+    # second review round: frame helpers by any spelling, and reflection
+    "W6-closure-cell-of-a-lambda": (
+        UNMODELED,
+        _then("""
+            probe = lambda: len(messages)
+            probe.__closure__[0].cell_contents.append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W7-closure-cell-of-a-def-made-before": (
+        UNMODELED,
+        """
+        async def f(router, prompt, ctx, raw):
+            def probe():
+                return len(messages)
+
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            probe.__closure__[0].cell_contents.append({"content": raw})
+            return await router.route(messages=messages)
+        """,
+    ),
+    "W8-inspect-stack-frame-locals": (
+        UNMODELED,
+        _then("""
+            inspect.stack()[0].frame.f_locals["messages"].append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W9-traceback-frame-locals": (
+        UNMODELED,
+        _then("""
+            try:
+                raise RuntimeError
+            except RuntimeError:
+                frame = sys.exc_info()[2].tb_frame
+                frame.f_locals["messages"].append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W10-builtins-exec": (
+        UNMODELED,
+        _then("""
+            builtins.exec("messages.append({'content': raw})")
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W11-ctypes-through-id": (
+        UNMODELED,
+        _then("""
+            ctypes.cast(id(messages), ctypes.py_object).value.append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W12-gc-objects": (
+        UNMODELED,
+        _then("""
+            [o for o in gc.get_objects() if o is messages][0].append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    "W13-coroutine-frame": (
+        UNMODELED,
+        _then("""
+            coro = asyncio.current_task().get_coro()
+            coro.cr_frame.f_locals["messages"].append({"content": raw})
+            return await router.route(messages=messages)
+            """),
+    ),
+    # a walrus in a conditional's test is a binding like any other
+    "Q5-test-rebinds-a-routing-name": (
+        ROUTING_VALUE,
+        _then("""
+            model = "m"
+            return await router.route(
+                max_tokens=5 if (model := raw) else 5,
+                model=model,
+                messages=messages,
+            )
+            """),
+    ),
+    "Q5-test-rebinds-a-splat-name": (
+        SPLAT,
+        _then("""
+            kw = {}
+            return await router.route(
+                max_tokens=5 if (kw := {"system": raw}) else 5,
+                messages=messages,
+                **kw,
+            )
+            """),
+    ),
+    "Q5-test-makes-an-alias": (
+        CHANGED,
+        _then("""
+            cap = 5 if (alias := messages) else 5
+            alias.append({"content": raw})
+            return await router.route(messages=messages, max_tokens=cap)
+            """),
+    ),
+    "Q5-test-rebinds-the-context": (
+        NONE_CONTEXT,
+        """
+        async def f(router, prompt, ctx):
+            messages = await case_redacted_messages(
+                [{"content": prompt}], ctx if (ctx := None) is None else ctx
+            )
+            return await router.route(messages=messages)
+        """,
+    ),
 }
 
 
@@ -3096,15 +3696,6 @@ _ADMITTED_FOR_ITS_KIND = {
         """,
         True,
     ),
-    "own-shape-splat": (
-        _LLMOP,
-        """
-        async def llm_operation(provider, prompt):
-            generate_params = {"prompt": prompt, "max_tokens": 10}
-            return await provider.generate(**generate_params)
-        """,
-        True,
-    ),
     "other-kind": (
         _CHECK,
         """
@@ -3171,6 +3762,83 @@ _ADMITTED_FOR_ITS_KIND = {
         False,
     ),
 }
+
+
+_TOOL = (
+    "faultmaven/core/investigation/milestone_engine/generation.py",
+    "_tool_loop_call",
+)
+_REGISTRY = ("faultmaven/infrastructure/llm/providers/registry.py", "route_request")
+
+
+def _real_rows_with(rel: str, where: str, line: str) -> list:
+    """The sites of the real function ``where`` in ``rel``, classified after
+    ``line`` is inserted just before the statement of its send."""
+    path = _ROOT.parent / rel
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    parents = _parents(tree)
+    site = next(
+        s
+        for s in _send_sites(tree)
+        if [f.name for f in _scopes(s, parents)][:1] == [where]
+    )
+    stmt = _stmt(site, parents)
+    lines = source.splitlines(keepends=True)
+    lines.insert(stmt.lineno - 1, " " * stmt.col_offset + line + "\n")
+    tree = ast.parse("".join(lines))
+    parents = _parents(tree)
+    return [
+        (rel, where, _line(s), classify(s, parents))
+        for s in _send_sites(tree)
+        if [f.name for f in _scopes(s, parents)][:1] == [where]
+    ]
+
+
+#: #1971 second review round: one line added to a real allowlisted function.
+#: Its pins name every defect at the site, and count its sites, so each fails.
+_REAL_ADDITIONS = {
+    "llm_operation-unchanged": (_LLMOP, "pass", True),
+    "llm_operation-prompt-rebound": (
+        _LLMOP,
+        'generate_params["prompt"] = raw_prompt',
+        False,
+    ),
+    "llm_operation-system-key": (
+        _LLMOP,
+        'generate_params["system"] = raw_prompt',
+        False,
+    ),
+    "llm_operation-update-messages": (
+        _LLMOP,
+        'generate_params.update(messages=[{"content": raw_prompt}])',
+        False,
+    ),
+    "tool_loop_call-unchanged": (_TOOL, "pass", True),
+    "tool_loop_call-messages-replaced": (
+        _TOOL,
+        'call_kwargs["messages"] = [{"content": raw}]',
+        False,
+    ),
+    "tool_loop_call-system-key": (_TOOL, 'call_kwargs["system"] = raw', False),
+    "route_request-unchanged": (_REGISTRY, "pass", True),
+    "route_request-system-key": (_REGISTRY, 'kwargs["system"] = raw', False),
+    "check_llm_connection-unchanged": (_CHECK, "pass", True),
+    "check_llm_connection-a-second-site": (
+        _CHECK,
+        'await provider.generate(prompt="Say hello", max_tokens=50)',
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "entry, line, admitted", list(_REAL_ADDITIONS.values()), ids=list(_REAL_ADDITIONS)
+)
+def test_a_defect_added_to_an_allowlisted_function_fails_1971(entry, line, admitted):
+    rows = _real_rows_with(*entry, line)
+    assert rows
+    assert (_unadmitted(rows) == []) is admitted
 
 
 @pytest.mark.parametrize(
