@@ -7,7 +7,7 @@ attribute names are **load-bearing** — see
 file's own content, ``ev.extract``, ``ev.summary``, ``search_map``,
 ``file_meta`` — could still forge a complete, well-formed element, which is a
 strictly larger hole: a log LINE could assert to the model that a fabricated
-item was evidence, verbatim-quoted and searchable.
+item was evidence, verbatim-quoted and backed by a file.
 
 **Why a fence and not sanitising or escaping.** Two constraints hold at once:
 

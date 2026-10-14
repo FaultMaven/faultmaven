@@ -579,7 +579,6 @@ TOOL_IMPLYING = (
     "zone 2 change event search",
     "tools for",
     "tool call",
-    'searchable="true"',
     "stay searchable",
 )
 MISSING_TOOL_IMPLYING = {
@@ -588,17 +587,25 @@ MISSING_TOOL_IMPLYING = {
     "no_deep_analysis": ("deep analysis", "llm-interpreted"),
 }
 
-#: ``<evidence_collected>`` is case data with its own attribute vocabulary: a
-#: file-backed row is tagged ``searchable="true"`` whatever the turn's tools,
-#: and its bodies quote file content. The probes read the prompt's own text.
+#: ``<evidence_collected>`` is case data: its bodies quote file content, which
+#: may say anything. The probes read the prompt's own text, so they skip the
+#: bodies. The opening tags are the renderer's own words (their attributes
+#: mark provenance, ``file_backed="true"``, whatever the turn's tools — #1969),
+#: so those are still read.
 _EVIDENCE_BLOCK = re.compile(
     r'<evidence_collected fence="[0-9a-f]+">.*?</evidence_collected fence="[0-9a-f]+">',
     re.S,
 )
+_OPENING_TAG = re.compile(r"<[a-z_]+(?:\s[^<>]*)?>")
 
 
 def synonym_hits(text: str, phrases) -> list[str]:
-    own = _EVIDENCE_BLOCK.sub("", text).lower()
+    tags = " ".join(
+        tag
+        for block in _EVIDENCE_BLOCK.findall(text)
+        for tag in _OPENING_TAG.findall(block)
+    )
+    own = (_EVIDENCE_BLOCK.sub("", text) + "\n" + tags).lower()
     return [p for p in phrases if p in own]
 
 
@@ -620,6 +627,20 @@ def test_a_missing_tool_is_not_implied_by_a_synonym(row: str) -> None:
         if synonym_hits(text, phrases)
     }
     assert not hits, hits
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_no_render_calls_a_row_searchable(row: str) -> None:
+    """The row attribute marks provenance, never a capability (#1969): no
+    column of any turn renders ``searchable="`` — in the evidence block or out
+    of it, whatever the tools — while the file-backed rows it replaced still
+    carry ``file_backed="true"``."""
+    rendered = renders(ROWS[row])
+    hits = [column for column, text in rendered.items() if 'searchable="' in text]
+    assert not hits, hits
+    assert any(
+        'file_backed="true"' in text for text in rendered.values()
+    ), "no column rendered a file-backed row — the probe is vacuous"
 
 
 def test_the_synonym_probes_bite() -> None:

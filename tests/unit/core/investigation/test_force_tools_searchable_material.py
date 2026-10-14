@@ -7,7 +7,7 @@ index. Post-010, an evidence-*delivering* turn has only an ``UploadedFile``
 (no Evidence row yet), so ``bool(case.evidence)`` alone left that turn on
 ``tool_choice=auto`` and let the agent skip analysis. ``_has_searchable_material``
 closes that gap while guaranteeing a real search target (mirroring the
-context builder's ``searchable="true"`` threshold) so forcing tools cannot
+context builder's ``file_backed="true"`` threshold) so forcing tools cannot
 crash the tool loop.
 
 Pure predicate over case state — no LLM, no model variance.

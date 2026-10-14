@@ -184,7 +184,7 @@ class DeepAnalysisTool(AgentTool):
                             f"Evidence {evidence_id} has no stored file behind it "
                             f"(it's an inference the engine recorded) "
                             f"and cannot be analyzed. Use a file-backed evidence_id "
-                            f'(searchable="true") for deep_analysis.{alts}'
+                            f'(file_backed="true") for deep_analysis.{alts}'
                         ),
                     )
 

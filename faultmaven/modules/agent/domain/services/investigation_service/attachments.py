@@ -330,7 +330,7 @@ def _turn_delivers_evidence_bearing_attachment(
     empty/unanalyzable placeholders (no structural content to search); the
     searchability test is the context builder's own
     ``structural_index_is_searchable`` so this stays in lockstep with the
-    ``searchable="true"`` render.
+    ``file_backed="true"`` render.
     """
     for r in preprocess_results:
         if r.classification_failed:

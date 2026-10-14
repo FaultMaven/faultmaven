@@ -142,7 +142,7 @@ def _has_searchable_material(case: Case) -> bool:
     would be False and wrongly leave ``tool_choice=auto`` (#708). The
     searchability test is the context builder's own
     ``structural_index_is_searchable`` (single source of truth for the
-    ``searchable="true"`` threshold), so a forced-DA turn is guaranteed a
+    ``file_backed="true"`` threshold), so a forced-DA turn is guaranteed a
     real search target and the tool loop cannot crash for lack of one.
     """
     if getattr(case, "evidence", None):
