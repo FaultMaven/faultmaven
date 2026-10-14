@@ -614,42 +614,48 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
 
 
 class TestATerminalCaseIsNotMutable:
-    """B1 — the terminal short-circuit does not protect the service.
+    """B1 — the terminal short-circuit does not protect the service by itself.
 
     ``_process_terminal_turn`` routes a closed case to ``_process_terminal_qa``,
-    which runs a TOOL LOOP: it passes ``_build_da_tool_schemas()`` — every
-    registered tool, with no name filter — hands the model a ``ToolContext``
-    carrying ``in_memory_case=case``, and returns that same object as
-    ``case_updated`` for ``process_turn`` to save.
+    which runs a TOOL LOOP: it hands the model a ``ToolContext`` carrying
+    ``in_memory_case=case``, and returns that same object as ``case_updated``
+    for ``process_turn`` to save. That loop used to offer every registered
+    tool, so ``reclassify_evidence`` reached closed cases whenever its flag was
+    on.
 
     Before the in-flight write model this was accidentally harmless: the tool
     wrote a freshly-loaded copy and the terminal turn's aggregate save
     overwrote it — the #1465 lost update was protecting closed cases.
     Measured on ``origin/main``, the row came back unchanged; measured on the
     first draft of this branch, it came back reclassified and committed. So
-    the guard is not tidy-up, it is the replacement for an accident this
-    branch removed.
+    the service guard is not tidy-up, it is the replacement for an accident
+    this branch removed.
+
+    Since #1964 the terminal loop offers only ``TERMINAL_QA_TOOLS`` and runs
+    no tool it did not offer, so the tool no longer reaches a closed case
+    through the turn; the service guard stays as the second line, and the
+    tests below drive it directly.
     """
 
-    def test_the_tool_is_offered_on_the_terminal_path(self):
-        """The premise, asserted rather than assumed.
-
-        If ``reclassify_evidence`` were filtered out of the terminal tool
-        menu the guard below would be unreachable and this suite would be
-        proving nothing — which is exactly the shape of the claim this
-        branch got wrong the first time.
-        """
+    def test_the_tool_is_not_offered_on_the_terminal_path(self):
+        """The terminal Q&A turn's schemas leave the tool out (#1964), and a
+        call naming it is refused at dispatch:
+        ``test_terminal_qa_tools_1964.py::test_t4_*``."""
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TERMINAL_QA_TOOLS,
+        )
         from faultmaven.modules.agent.tools.base import AgentToolRegistry
 
         registry = AgentToolRegistry()
         registry.register(ReclassifyEvidenceTool(reclassifier=MagicMock()))
-        schemas = StructuredOutputGenerator.build_da_tool_schemas(
-            SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
+        generator = SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
+        everything = StructuredOutputGenerator.build_da_tool_schemas(generator)
+        terminal = StructuredOutputGenerator.build_da_tool_schemas(
+            generator, allowed=TERMINAL_QA_TOOLS
         )
-        assert "reclassify_evidence" in [s["function"]["name"] for s in schemas], (
-            "_build_da_tool_schemas applies no name filter, so every "
-            "registered tool reaches the terminal Q&A turn"
-        )
+        # Positive control: the registry really holds it.
+        assert [s["function"]["name"] for s in everything] == ["reclassify_evidence"]
+        assert terminal == []
 
     @staticmethod
     def _closed(rig):

@@ -1132,13 +1132,14 @@ class TestINV07_NoEvidenceDuringInquiry:
 # INV-09: Terminal cases are immutable
 # =============================================================================
 #
-# Source: §1.7 *Terminal Mode* (lines 1039-1080)
+# Source: §1.7.2 *Terminal Mode*
 # Statement: Terminal cases (RESOLVED/CLOSED) are immutable. No new evidence,
 #   no transitions, no milestone updates. Only text Q&A, report regeneration,
 #   and runbook creation are permitted.
 # Enforcement: API-level (``require_case_not_terminal()`` rejects mutating
 #   endpoints) + Code-guarded (``process_terminal_turn`` short-circuits the
-#   milestone engine).
+#   milestone engine; its Q&A tool loop is offered only ``TERMINAL_QA_TOOLS``,
+#   runs no tool it did not offer and no reactive vectorization, #1964).
 #
 # Drift surfaced during verification:
 #
@@ -1258,6 +1259,200 @@ class TestINV09_TerminalCasesImmutable:
             "INV-09 violation: _process_turn_impl no longer routes to "
             "process_terminal_turn. Terminal cases must short-circuit "
             "to the Q&A handler instead of running the full pipeline."
+        )
+
+    # -- #1964: the terminal Q&A turn's tool loop ---------------------------
+    #
+    # The short-circuit routes INTO a tool loop. A terminal Q&A turn is
+    # offered only read-only lookups of the case's record and the knowledge
+    # base, runs only what it offered, and writes nothing beyond what every
+    # turn writes. Harness: test_terminal_qa_tools_1964.py.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_qa_is_offered_only_read_only_lookups(self, state):
+        """The default registry plus both flag-gated families: the turn is
+        offered the registered tools in TERMINAL_QA_TOOLS, and its system
+        message names exactly those."""
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TERMINAL_QA_TOOLS,
+        )
+        from faultmaven.core.investigation.prompts.templates.tool_text import (
+            tools_line,
+        )
+        from tests.unit.core.investigation.test_terminal_qa_tools_1964 import (
+            DEFAULT_SIX,
+            ENTITY_TOOLS,
+            FakeRegistry,
+            ScriptedProvider,
+            answer,
+            run_terminal_qa,
+            terminal_case,
+            terminal_engine,
+        )
+
+        registered = (*DEFAULT_SIX, *ENTITY_TOOLS, "reclassify_evidence")
+        provider = ScriptedProvider(answer())
+        engine, _ = terminal_engine(provider, FakeRegistry(*registered))
+
+        await run_terminal_qa(engine, terminal_case(state))
+
+        assert provider.offered() == set(registered) & TERMINAL_QA_TOOLS
+        message = provider.system_message()
+        assert tools_line(frozenset(provider.offered())) in message
+        for withheld in set(registered) - TERMINAL_QA_TOOLS:
+            assert withheld not in message, withheld
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_turn_runs_no_tool_it_did_not_offer(self, state):
+        """T2: the model names ``deep_analysis``, registered but withheld. It
+        is refused at dispatch with the offered set, and never executed."""
+        from faultmaven.core.investigation.prompts.templates.tool_text import (
+            tools_line,
+        )
+        from tests.unit.core.investigation.test_terminal_qa_tools_1964 import (
+            DEFAULT_SIX,
+            EV_ID,
+            FakeRegistry,
+            ScriptedProvider,
+            answer,
+            calls,
+            run_terminal_qa,
+            terminal_case,
+            terminal_engine,
+        )
+
+        provider = ScriptedProvider(
+            calls(("deep_analysis", {"evidence_id": EV_ID, "question": "why?"})),
+            answer(),
+        )
+        registry = FakeRegistry(*DEFAULT_SIX)
+        engine, _ = terminal_engine(provider, registry)
+
+        result = await run_terminal_qa(engine, terminal_case(state))
+
+        assert "deep_analysis" in {t.name for t in registry.get_all_tools()}
+        assert "deep_analysis" not in provider.offered()
+        assert registry.executed == []
+        assert provider.tool_results()["deep_analysis"] == (
+            "Error: Tool 'deep_analysis' is not available on this turn. "
+            + tools_line(frozenset(provider.offered()))
+        )
+        assert result["agent_response"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [CaseState.CLOSED, CaseState.RESOLVED])
+    async def test_inv09_terminal_qa_turn_writes_nothing(self, state):
+        """T9: a terminal turn answers through search_file and
+        case_evidence_search, with three empty searches of a file large
+        enough to vectorize — the trigger for reactive vectorization on an
+        investigating turn. Nothing is written: no vectorize_file run, no
+        Evidence.vectorized flag, no case change."""
+        from unittest.mock import patch
+
+        from faultmaven.models.interfaces import ToolResult
+        from tests.unit.core.investigation.test_terminal_qa_tools_1964 import (
+            DEFAULT_SIX,
+            EV_ID,
+            FakeRegistry,
+            ScriptedProvider,
+            answer,
+            calls,
+            run_terminal_qa,
+            terminal_case,
+            terminal_engine,
+        )
+
+        search = ("search_file", {"evidence_id": EV_ID, "query": "10:02"})
+        results = {
+            "search_file": ToolResult(
+                success=True, data={"results_count": 0, "results": []}
+            ),
+            "case_evidence_search": ToolResult(
+                success=True, data="Upstream timed out at 10:02 (app.log:42)."
+            ),
+            "vectorize_file": ToolResult(success=True, data={"indexed": True}),
+        }
+        provider = ScriptedProvider(
+            calls(search, search, search),
+            calls(("case_evidence_search", {"question": "what failed at 10:02?"})),
+            answer("At 10:02 the upstream timed out (app.log, line 42)."),
+        )
+        registry = FakeRegistry(*DEFAULT_SIX, results=results)
+        engine, repo = terminal_engine(provider, registry)
+        case = terminal_case(state)
+        assert case.state == state and case.is_terminal
+        before = case.model_dump()
+
+        with patch.object(
+            engine.vectorizer,
+            "track_da_result",
+            wraps=engine.vectorizer.track_da_result,
+        ) as track:
+            result = await run_terminal_qa(engine, case)
+
+        assert result["agent_response"] == (
+            "At 10:02 the upstream timed out (app.log, line 42)."
+        )
+        assert registry.executed == ["search_file"] * 3 + ["case_evidence_search"]
+        track.assert_not_awaited()
+        engine.vectorizer.start_proactive_vectorization.assert_not_awaited()
+        repo.update_evidence_vectorized.assert_not_awaited()
+        repo.save.assert_not_awaited()
+        assert case.model_dump() == before
+        assert case.evidence[0].vectorized is False
+
+    @pytest.mark.asyncio
+    async def test_inv09_the_same_searches_vectorize_on_an_open_case(self):
+        """Positive control for the test above: the same three empty searches
+        on an investigating case do start reactive vectorization, so the
+        terminal turn's silence is the skip, not an unreached trigger."""
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TERMINAL_QA_TOOLS,
+        )
+        from faultmaven.core.investigation.schemas import TerminalResponse
+        from faultmaven.infrastructure.security.case_redaction import (
+            CaseRedactionContext,
+        )
+        from faultmaven.models.interfaces import ToolResult
+        from tests.unit.core.investigation.test_terminal_qa_tools_1964 import (
+            DEFAULT_SIX,
+            EV_ID,
+            FakeRegistry,
+            ScriptedProvider,
+            answer,
+            calls,
+            terminal_case,
+            terminal_engine,
+        )
+
+        search = ("search_file", {"evidence_id": EV_ID, "query": "10:02"})
+        results = {
+            "search_file": ToolResult(
+                success=True, data={"results_count": 0, "results": []}
+            ),
+            "vectorize_file": ToolResult(success=True, data={"indexed": True}),
+        }
+        provider = ScriptedProvider(calls(search, search, search), answer())
+        registry = FakeRegistry(*DEFAULT_SIX, results=results)
+        engine, repo = terminal_engine(provider, registry)
+        case = terminal_case().model_copy(update={"state": CaseState.INVESTIGATING})
+        assert case.is_terminal is False
+        redaction = CaseRedactionContext(case.case_id, None, enabled=False)
+
+        await engine.generator._tool_augmented_generate(
+            "p",
+            TerminalResponse,
+            engine.generator.build_da_tool_schemas(allowed=TERMINAL_QA_TOOLS),
+            await engine.generator.build_tool_context(case, redaction_ctx=redaction),
+            case=case,
+            redaction_ctx=redaction,
+        )
+
+        assert "vectorize_file" in registry.executed
+        repo.update_evidence_vectorized.assert_awaited_once_with(
+            case.case_id, EV_ID, True
         )
 
 

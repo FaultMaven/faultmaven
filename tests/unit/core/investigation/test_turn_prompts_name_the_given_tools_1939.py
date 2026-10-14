@@ -9,7 +9,8 @@ the renderers the RIGHT set:
 - a single-shot turn, or a provider that cannot call tools: no tools;
 - the ``ToolCallingUnsupportedError`` fallback and the #662 minimal retry: no
   tools, since neither sends any;
-- a terminal Q&A turn: its tools, and the suggestion list its reply is given
+- a terminal Q&A turn: the registry's tools in ``TERMINAL_QA_TOOLS`` (#1964),
+  which are the tools it sends, and the suggestion list its reply is given
   (#1955) — the prompt points at exactly the suggestions on screen.
 """
 
@@ -27,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    TERMINAL_QA_TOOLS,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.prompts.templates.tool_text import (
@@ -144,6 +148,9 @@ def _prefix(prompt: str) -> str:
 
 
 _TOOLS = ("search_file", "kb_qa", "case_evidence_search")
+#: Every tool the registry can hold: the default six and both flag-gated
+#: families.
+_EVERY_TOOL = tuple(sorted(_TOOL_NAMES))
 
 
 async def test_a_tool_loop_turn_names_the_tools_the_loop_sends():
@@ -237,7 +244,7 @@ async def test_the_terminal_prompt_points_at_the_suggestions_its_reply_gets(
     renders and the suggestions the reply is given."""
     monkeypatch.setattr(terminal_replies, "runbook_conversion_ready", lambda c: True)
     engine = _engine(
-        *_TOOLS, response=TerminalResponse(agent_response="ok", state_updates={})
+        *_EVERY_TOOL, response=TerminalResponse(agent_response="ok", state_updates={})
     )
     engine.runbooks.case_has_runbook_draft = AsyncMock(return_value=draft_exists)
     case = _case()
@@ -262,7 +269,16 @@ async def test_the_terminal_prompt_points_at_the_suggestions_its_reply_gets(
         offered
     )
     assert ("already exists in the case creator's" in prompt) is draft_exists
-    assert tools_line(frozenset(_TOOLS)) in prompt
+    # #1964: the call site offers the registry's read-only lookups, and the
+    # prompt names exactly what it sends.
+    sent = {t["function"]["name"] for t in call.kwargs["investigation_tools"]}
+    assert sent == set(_EVERY_TOOL) & TERMINAL_QA_TOOLS
+    assert tools_line(frozenset(sent)) in prompt
+    assert _named(prompt) == sent
+    resized = call.kwargs["base_prompt_builder"](
+        target_tokens=10**6, provider_name=None, model_name=None
+    )
+    assert tools_line(frozenset(sent)) in resized
     fallback = call.kwargs["fallback_prompt_builder"]()
     assert tools_line(NO_TOOLS) in fallback and _named(fallback) == set()
 
