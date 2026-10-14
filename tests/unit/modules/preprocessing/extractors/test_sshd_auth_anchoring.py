@@ -31,7 +31,12 @@ pinned at the bottom.
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +49,7 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
     split_syslog_line,
 )
 from tests.wallclock import assert_linear_growth
+from tests.wallclock.growth import DEFAULT_STEP, MAX_ESCALATIONS
 
 # RFC 5737 documentation ranges.
 SRC = "203.0.113.5"  # the connection's real source address
@@ -1019,6 +1025,63 @@ def adversarial_line(name: str, repetitions: int) -> str:
     return prefix + unit * repetitions + suffix
 
 
+def _first_window_repetitions(name: str) -> int:
+    """The smallest size the reader's growth check tries for ``name``."""
+    return max(1, ADVERSARIAL_SHAPES[name][3] // 512)
+
+
+def _longest_repetitions(name: str) -> int:
+    """The top size of the last window the helper can escalate to for ``name``."""
+    return _first_window_repetitions(name) * DEFAULT_STEP ** (2 + MAX_ESCALATIONS)
+
+
+def _longest_line(name: str) -> int:
+    """Characters in the longest line the growth check can build for ``name``,
+    worked out from the shape rather than by building the line."""
+    prefix, unit, suffix, _ = ADVERSARIAL_SHAPES[name]
+    return len(prefix) + len(unit) * _longest_repetitions(name) + len(suffix)
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
+#: glibc moves its mmap threshold only to the size of a block it has freed, and
+#: never above 32 MiB, so a block this size or less is one it can learn from.
+_ALLOCATOR_BLOCK_LIMIT = 24 << 20
+
+
+def _settle_allocator(longest_line: int) -> None:
+    """Make the allocator keep the copies the reader makes of a long line.
+
+    ``read_sshd_auth_line`` copies the whole line twice per call (``lower()``
+    and the slice behind the syslog header). In a process that has not freed a
+    block that large, glibc serves such a copy with a fresh mapping above its
+    128 KiB mmap threshold, or trims it off the heap when it is freed, so
+    EVERY call faults ~2 * len/4 KiB pages in and the kernel zeroes each one.
+    At 4 MB that is ~2000 faults and 3-7 ms of system time on top of the
+    reader's own 3 ms, per call (#1991); at 256 KB it is none.
+
+    That is the allocator's cost, not the cache's: once settled, the reader
+    costs 0.72-0.89 ns a byte from 128 KB to 8 MB. And it lands on one size of
+    a window only, the top, so it reads as a super-linear step (t(64n)/t(8n)
+    19 where linear is 8) and the call is refused, at about 1 run in 10 on a
+    fresh process whatever the load.
+
+    Allocating and freeing one block four times the longest line the growth
+    check can reach raises both thresholds past every copy the reader makes,
+    so a call faults nothing, whatever the process has done before. A no-op
+    on an allocator without such thresholds.
+    """
+    block_bytes = 4 * longest_line
+    if block_bytes > _ALLOCATOR_BLOCK_LIMIT:
+        raise ValueError(
+            f"a {longest_line}-character line needs a {block_bytes}-byte block to"
+            f" settle the allocator, over the {_ALLOCATOR_BLOCK_LIMIT} glibc can"
+            " learn from: cap the window or raise the limit with a measurement"
+        )
+    block = bytearray(block_bytes)
+    del block
+
+
 ADVERSARIAL_LINES = {
     name: adversarial_line(name, shape[3]) for name, shape in ADVERSARIAL_SHAPES.items()
 }
@@ -1036,15 +1099,22 @@ class TestAdversarialLines:
         would sit for minutes before failing. Several shapes cost the reader
         almost nothing until they are long, and for those the helper moves the
         window up until the work shows. Mutation-checked — a host pattern of
-        ``\\S*\\S*[^\\s:]`` reads at least 47 on the three shapes it makes
-        quadratic; fixed, every shape reads between 6 and 10 at the window
-        it decides on (linear reads ~8), idle or on a 2x oversubscribed box
-        (bound ~22.6).
+        ``\\S*\\S*[^\\s:]`` reads at least 44 on the three shapes it makes
+        quadratic (30 of 30 runs red); fixed, every shape reads between 4 and
+        12 at the window it decides on (linear reads ~8), 200 runs of each,
+        idle and under 8-way CPU load (bound ~22.6).
+
+        The windows are the ones it always had. What made a window's top size
+        2-3x dearer than its neighbours (and the slot-lookalikes call "could
+        not decide" at its 4 MB window, 7-11 runs in 100) was not memory but
+        the allocator, so the test settles it first (``_settle_allocator``,
+        #1991).
         """
+        _settle_allocator(_longest_line(name))
         assert_linear_growth(
             read_sshd_auth_line,
             lambda repetitions: adversarial_line(name, repetitions),
-            small=max(1, ADVERSARIAL_SHAPES[name][3] // 512),
+            small=_first_window_repetitions(name),
             label=f"read_sshd_auth_line on {name}",
         )
 
@@ -1065,6 +1135,72 @@ class TestAdversarialLines:
         """The line that raised RecursionError in the round-2 review."""
         line = "Sep 20 10:00:00 web1 bob: " + "a sshd " * 340 + "password"
         assert read_sshd_auth_line(line).read is False
+
+
+# What a call costs in page faults on the longest line a growth window can reach,
+# measured in a process of its own so that no earlier test has taught the
+# allocator anything. ``RUSAGE_THREAD`` counts this thread only.
+_FAULTS_PER_CALL_PROBE = """
+import json, resource, sys
+from tests.unit.modules.preprocessing.extractors import test_sshd_auth_anchoring as t
+
+def faults_per_call(line, calls=3):
+    t.read_sshd_auth_line(line)  # the heap grows once, on the first call
+    before = resource.getrusage(resource.RUSAGE_THREAD).ru_minflt
+    for _ in range(calls):
+        t.read_sshd_auth_line(line)
+    return (resource.getrusage(resource.RUSAGE_THREAD).ru_minflt - before) / calls
+
+name = sys.argv[1]
+line = t.adversarial_line(name, t._longest_repetitions(name))
+cold = faults_per_call(line)
+t._settle_allocator(t._longest_line(name))
+print(json.dumps({"cold": cold, "settled": faults_per_call(line)}))
+"""
+
+
+@pytest.mark.unit
+class TestTheGrowthCheckSettlesTheAllocator:
+    """#1991: a window's top size must not be a different speed regime."""
+
+    @pytest.mark.parametrize("name", sorted(ADVERSARIAL_SHAPES))
+    def test_the_longest_line_is_the_one_the_helper_can_build(self, name):
+        assert _longest_line(name) == len(
+            adversarial_line(name, _longest_repetitions(name))
+        )
+
+    def test_a_block_past_what_the_allocator_can_learn_from_is_refused(self):
+        with pytest.raises(ValueError, match="settle the allocator"):
+            _settle_allocator(_ALLOCATOR_BLOCK_LIMIT)
+
+    @pytest.mark.skipif(
+        platform.system() != "Linux" or platform.libc_ver()[0] != "glibc",
+        reason="the thresholds and per-thread fault counts are glibc on Linux",
+    )
+    def test_settling_stops_the_page_faults_a_cold_process_pays_on_every_call(self):
+        """Cold, a call on the longest line faults ~2000 pages in; settled, none.
+
+        The cold figure is the positive control: where it is small (a
+        different allocator, transparent huge pages, ``MALLOC_*`` set in the
+        environment) there is nothing to settle and the test skips rather than
+        passes. With the block removed from ``_settle_allocator`` the settled
+        figure equals the cold one and the last assertion fails.
+        """
+        name = "slot-lookalikes"
+        result = subprocess.run(
+            [sys.executable, "-W", "ignore", "-c", _FAULTS_PER_CALL_PROBE, name],
+            cwd=_REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        measured = json.loads(result.stdout.strip().splitlines()[-1])
+        pages = _longest_line(name) // 4096
+        if measured["cold"] < pages:
+            pytest.skip(f"this allocator does not fault on large copies: {measured}")
+        assert measured["settled"] < pages / 10, measured
 
 
 @pytest.mark.unit
