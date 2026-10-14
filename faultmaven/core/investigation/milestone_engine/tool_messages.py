@@ -52,9 +52,81 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
     return pydantic_to_strict_openai_tools(schema_model)
 
 
+#: What a terminal Q&A turn's system message says about each tool it may be
+#: offered (#1964): one line per tool of ``TERMINAL_QA_TOOLS``
+#: (``terminal_turns.py``, where the set and its reasons live), and only the
+#: offered ones render.
+_TERMINAL_TOOL_LINES = {
+    "search_file": (
+        "- search_file: keyword search of one of this case's uploaded files, "
+        "for the exact lines it holds. It needs an evidence_id or a file_id; a "
+        "call with an id that is not on this case returns the list of every "
+        "file it can read, with its id."
+    ),
+    "case_evidence_search": (
+        "- case_evidence_search: ask a question of this case's indexed "
+        "evidence files and get an answer cited from them."
+    ),
+    "kb_qa": (
+        "- kb_qa: look up runbooks and documented solutions in the knowledge "
+        "base that explain what this case found."
+    ),
+    "find_entity": (
+        "- find_entity: where one value (an IP, host, user, port, path) "
+        "appears in this case's evidence, and how often."
+    ),
+    "list_top_entities": (
+        "- list_top_entities: the values of one type (IPs, users, hosts) this "
+        "case's evidence mentions most."
+    ),
+}
+
+
+def _build_terminal_da_instruction(given: frozenset[str], schema_tool_name: str) -> str:
+    """The tool-loop system message of a terminal Q&A turn (#1964).
+
+    A resolved or closed case's record is final: the turn answers questions
+    about it with read-only lookups and starts nothing new, as the terminal
+    template's CANNOT list says. So this names the offered tools and what each
+    reads, and none of the investigating message's routing, evidence-search
+    mandates or evidence-row rules. Raises ``ValueError`` for an offered tool
+    it has no line for: a terminal turn is offered only ``TERMINAL_QA_TOOLS``.
+    """
+    unknown = given - _TERMINAL_TOOL_LINES.keys()
+    if unknown:
+        raise ValueError(
+            "a terminal Q&A turn is offered only read-only lookups; no terminal "
+            "guidance for: " + ", ".join(sorted(unknown))
+        )
+    if not given:
+        raise ValueError("a terminal Q&A turn with no tools sends no tool message")
+    reads = []
+    if given - {"kb_qa"}:
+        reads.append("what this case recorded")
+    if "kb_qa" in given:
+        reads.append("the knowledge base")
+    return (
+        "This case is resolved or closed, and its record is final. You are "
+        "answering the user's question about it: accept no new evidence, start "
+        "no new analysis, and propose no change to the case.\n\n"
+        + tools_line(given)
+        + "\nRead-only lookups of "
+        + " and ".join(reads)
+        + ":\n"
+        + "\n".join(_TERMINAL_TOOL_LINES[name] for name in sorted(given))
+        + "\n\nUse one when the answer needs a detail the prompt does not "
+        "hold. Ground what you say about this incident in what this case "
+        "recorded; general technical knowledge may explain a concept but adds "
+        "no fact about the incident. Then call "
+        f"{schema_tool_name} with your answer."
+    )
+
+
 def _build_da_system_instruction(
     tool_names: list[str],
     schema_tool_name: str,
+    *,
+    terminal: bool = False,
 ) -> str:
     """Build the system instruction that tells the LLM how to use DA tools.
 
@@ -65,8 +137,13 @@ def _build_da_system_instruction(
     ``tool_names`` is the turn's given set (#1939): every tool this text
     names is in it, and what it says about the set is derived from the names
     present, never counted from the guidance lines.
+
+    ``terminal``: the turn is a terminal case's Q&A, and the message is the
+    read-only one (``_build_terminal_da_instruction``, #1964).
     """
     given = frozenset(tool_names)
+    if terminal:
+        return _build_terminal_da_instruction(given, schema_tool_name)
     has_search = "search_file" in tool_names
     has_da = "deep_analysis" in tool_names
     has_web = "web_search" in tool_names

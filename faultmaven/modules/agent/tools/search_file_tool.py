@@ -66,16 +66,20 @@ class SearchFileTool(AgentTool):
 
     @property
     def description(self) -> str:
+        # True on every turn (#1964): a terminal turn's prompt renders no
+        # evidence rows and no uploads, so the description promises neither;
+        # the ids reach the model through a miss's list of readable files.
         return (
-            "Search a previously uploaded evidence file for specific information. "
-            "Use the evidence_id from an <evidence> or <uploaded_file> element "
-            "shown in the context. "
+            "Search one of this case's uploaded files for specific information. "
+            "Pass the evidence_id of a file-backed evidence row, or the file_id "
+            "of an upload; a call with an id that is not on this case returns "
+            "the list of the files this tool can read, with their ids. "
             "Two output formats: 'excerpts' (default) returns context windows for "
             "detailed investigation; 'count' returns compact matched lines for "
             "counting and aggregation queries (e.g. 'how many unique IPs?'). "
-            "Results carry a 'label' — the item's name, matching the label "
-            "attribute in the context. Cite it verbatim; not every item is a "
-            "file the user named."
+            "Results carry a 'label' — the file's name, the same label the "
+            "context gives it where it lists the file. Cite it verbatim; not "
+            "every item is a file the user named."
         )
 
     @property
@@ -85,7 +89,10 @@ class SearchFileTool(AgentTool):
             "properties": {
                 "evidence_id": {
                     "type": "string",
-                    "description": "The ID of the evidence artifact to search",
+                    "description": (
+                        "The evidence_id of a file-backed evidence row, or the "
+                        "file_id of an uploaded file"
+                    ),
                 },
                 "query": {
                     "type": "string",
@@ -561,33 +568,66 @@ class SearchFileTool(AgentTool):
         excluded_evidence_id: str,
         case: Any,
     ) -> str:
-        """Build a redirect hint listing file-backed evidence_ids in this case.
+        """Build a redirect hint naming every file in this case this tool reads.
 
         ISS-025: when the LLM picks a non-file-backed evidence_id (an
         ENGINE_INFERENCE row), the tool error should
         point it at the actual searchable upload(s) so the next
-        iteration succeeds.
+        iteration succeeds. File-backed evidence rows are listed by
+        evidence_id.
+
+        #1964: then the uploads no evidence row records, by file_id, which
+        ``_resolve_evidence_content`` resolves too: a file uploaded during
+        INQUIRY, a paste no row named, every upload of a case closed before
+        any row existed. A terminal turn's prompt renders no ids, so this list
+        is how it learns them, and a file under the vectorization size floor
+        is readable no other way. An upload with no stored file is left out:
+        there is nothing to read.
         """
         alternatives = []
+        recorded_files = set()
         for ev in all_evidence:
+            source_file_id = getattr(ev, "source_file_id", None)
+            if source_file_id is not None:
+                recorded_files.add(source_file_id)
             ev_id = getattr(ev, "evidence_id", None)
             if not ev_id or ev_id == excluded_evidence_id:
                 continue
-            if getattr(ev, "source_file_id", None) is None:
+            if source_file_id is None:
                 continue
-            file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+            file_meta = case.find_uploaded_file(source_file_id)
             if file_meta is None:
                 continue
             filename = file_meta.display_name or "(unnamed)"
             alternatives.append(f"{ev_id} ({filename})")
 
-        if not alternatives:
-            return ""
-        return (
-            " Available file-backed evidence in this case: "
-            + ", ".join(alternatives)
-            + "."
-        )
+        unrecorded = []
+        for upload in getattr(case, "uploaded_files", None) or []:
+            file_id = getattr(upload, "file_id", None)
+            if (
+                not file_id
+                or file_id == excluded_evidence_id
+                or file_id in recorded_files
+                or not getattr(upload, "storage_ref", None)
+            ):
+                continue
+            filename = upload.display_name or "(unnamed)"
+            unrecorded.append(f"{file_id} ({filename})")
+
+        hint = ""
+        if alternatives:
+            hint += (
+                " Available file-backed evidence in this case: "
+                + ", ".join(alternatives)
+                + "."
+            )
+        if unrecorded:
+            hint += (
+                " Uploaded files with no evidence row (search them by file_id): "
+                + ", ".join(unrecorded)
+                + "."
+            )
+        return hint
 
     def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
         """Keyword search: tokenize query, find matching lines, return context windows.

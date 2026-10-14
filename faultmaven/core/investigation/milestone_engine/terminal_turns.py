@@ -13,7 +13,10 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
-from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from faultmaven.core.investigation.prompts.templates.tool_text import (
+    NO_TOOLS,
+    GivenTools,
+)
 from faultmaven.core.investigation.schemas import (
     TerminalResponse,
 )
@@ -59,6 +62,36 @@ _RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
 # the user has already seen the similar-runbook candidate and chosen —
 # the similar-match stop is waived, nothing else is.
 _RUNBOOK_CONFIRM_PATTERNS = (GENERATE_RUNBOOK_ANYWAY_PAYLOAD.lower(),)
+
+#: The tools a terminal Q&A turn may be offered (#1964): read-only lookups of
+#: this case's record and of the knowledge base. The turn is offered the
+#: registered tools in this set, its prompt and system message name exactly
+#: those, and the tool loop runs no tool it did not offer. Kept:
+#:   - search_file: reads one of this case's uploaded files. §1.7.2 gives
+#:     terminal Q&A read access to the evidence ("clarify evidence"), and a
+#:     file under the vectorization size floor is readable no other way. The
+#:     reactive vectorization its results drive elsewhere is skipped on a
+#:     terminal turn (``StructuredOutputGenerator._tool_augmented_generate``).
+#:   - case_evidence_search: reads this case's vectorized evidence.
+#:   - kb_qa: reads the knowledge base, the reason a terminal turn has tools
+#:     at all (3c6c8c5c8).
+#:   - find_entity, list_top_entities: read this case's entity registry, and
+#:     are registered only under FAULTMAVEN_ENTITY_REGISTRY.
+#: Left out:
+#:   - deep_analysis: a new model analysis of a raw file is new investigation,
+#:     which the terminal template forbids.
+#:   - web_search: brings in material that is neither this case's record nor
+#:     the knowledge base, and sends case text outside the deployment.
+#:   - vectorize_file, reclassify_evidence: they write.
+TERMINAL_QA_TOOLS: GivenTools = frozenset(
+    {
+        "search_file",
+        "case_evidence_search",
+        "kb_qa",
+        "find_entity",
+        "list_top_entities",
+    }
+)
 
 
 class TerminalCardAction(str, Enum):
@@ -391,10 +424,17 @@ class TerminalTurnHandler:
 
         Uses TERMINAL_TEMPLATE and TerminalResponse schema. No state mutations.
 
-        ``user_id`` is the authenticated principal for the turn; it keys the KB
-        read allowlist the ``kb_qa`` tool builds (owner + team arms). A terminal
-        case still answers questions, so its Q&A turn must read the same KB the
-        user's non-terminal turns do.
+        The model is offered the registered tools in ``TERMINAL_QA_TOOLS``
+        (#1964), read-only lookups of the case's record and the knowledge base.
+        Terminal Q&A has had tools since 3c6c8c5c8 so that it reads the KB the
+        user's non-terminal turns read.
+
+        ``user_id`` is the authenticated principal for the turn; it becomes the
+        ``ToolContext.user_id``. #1000 threaded it here when it keyed the KB
+        allowlist ``kb_qa`` builds; that scope is keyed on the case now
+        (``case_retrieval_scope``, #1919), and the one tool that reads the
+        principal (``reclassify_evidence``, to record who acted) is not in the
+        terminal set, so on this path it keys nothing.
 
         ``redaction_ctx`` is the turn's case redaction context (#1956), loaded
         once by the investigation service (or by the engine on a direct call).
@@ -439,10 +479,12 @@ class TerminalTurnHandler:
             offered = _closed_suggestions(case, remaining)
         offers = terminal_affordances(offered, runbook_draft_exists=runbook_exists)
 
-        # The tools this turn gives the model (#1939), the same set the tool
-        # loop below sends.
+        # The tools this turn gives the model (#1939): the registered ones in
+        # TERMINAL_QA_TOOLS (#1964), the same set the tool loop below sends.
         given = (
-            self.generator.given_tools() if self.deps.investigation_tools else NO_TOOLS
+            self.generator.given_tools(allowed=TERMINAL_QA_TOOLS)
+            if self.deps.investigation_tools
+            else NO_TOOLS
         )
 
         def _build_prompt(given_tools, **sizing) -> str:
@@ -473,11 +515,14 @@ class TerminalTurnHandler:
                 target_tokens=target_tokens,
             )
 
-        # Pass tools with auto tool_choice — LLM decides whether to invoke
-        # kb_qa, web_search, etc. based on the user's question.
+        # Pass the terminal tools with auto tool_choice: the model decides
+        # whether a lookup is needed to answer. None registered (T6): no tools
+        # are sent, so the turn takes the non-tool path and no DA system
+        # message is built.
         tools_kwargs: dict[str, Any] = {}
-        if self.deps.investigation_tools:
-            tools_kwargs["investigation_tools"] = self.generator.build_da_tool_schemas()
+        terminal_tools = self.generator.build_da_tool_schemas(allowed=TERMINAL_QA_TOOLS)
+        if terminal_tools:
+            tools_kwargs["investigation_tools"] = terminal_tools
             tools_kwargs["tool_context"] = await self.generator.build_tool_context(
                 case, user_id=user_id, redaction_ctx=redaction_ctx
             )

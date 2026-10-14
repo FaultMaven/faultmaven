@@ -760,14 +760,15 @@ class EvidenceReclassifier:
         # asymmetry between the two paths is closed here because THIS change
         # is what made it bite.
         #
-        # The terminal short-circuit does not protect this method; it
-        # short-circuits INTO a tool loop. ``_process_terminal_qa`` builds
-        # ``_build_da_tool_schemas()`` — every registered tool, no name
-        # filter, so ``reclassify_evidence`` is in the menu whenever the flag
-        # is on — hands it a ``ToolContext`` carrying ``in_memory_case=case``,
-        # and returns that same object as ``case_updated`` for ``process_turn``
-        # to save. So on a CLOSED case the model can call the tool and the
-        # terminal turn's own save commits the write.
+        # The terminal short-circuit does not protect this method by itself;
+        # it short-circuits INTO a tool loop, which hands its tools a
+        # ``ToolContext`` carrying ``in_memory_case=case`` and returns that
+        # same object as ``case_updated`` for ``process_turn`` to save. That
+        # loop used to offer every registered tool, ``reclassify_evidence``
+        # included whenever the flag is on. Since #1964 it offers only
+        # ``TERMINAL_QA_TOOLS`` and runs no tool it did not offer, so this
+        # guard is the second line: a refusal for any path that still reaches
+        # the service with a terminal case.
         #
         # Before the in-flight write model above, that was accidentally
         # harmless: the tool wrote its own freshly-loaded copy and the
