@@ -289,44 +289,74 @@ jobs:
     env:
       # ‼ The threshold, and the one place it lives.
       #
-      # The gate is the MEDIAN of ~50 head/base ratios: "did the data
-      # layer get slower overall". The number is not 1.30 because the
-      # issue asks for 30%; it is 1.30 because of a null experiment — 12
-      # full runs of this suite on one box with IDENTICAL code on both
-      # sides, 132 ordered pairs, so every ratio measured was pure noise.
-      # That median ranged 0.822x-1.216x, and 1.30 clears the worst of it
-      # by 7% and was red on 0 of the 132.
+      # The gate is the MEDIAN of the 19 head/base ratios this suite
+      # records: "did the data layer get slower overall". The number is
+      # not 1.30 because the issue asks for 30%; it is 1.30 because of
+      # null experiments — IDENTICAL code on both sides, so every ratio
+      # measured is pure noise:
+      #
+      #   * a probe of this job's procedure on its own kind of runner
+      #     (#1963, 2026-10-14, run 38538085168 of a throwaway branch):
+      #     12 GitHub runners, each running the suite four times, base ==
+      #     head. It is not this job: one checkout, no PYTHONPATH /
+      #     AB_EXPECTED_ROOT, `-p no:cacheprovider`, and one install
+      #     between the first two runs only. The median over 144
+      #     same-runner ordered pairs ranged 0.950x up to the worst, which
+      #     is `RUNNER_NULL_MAX_MEDIAN` in
+      #     `tests/unit/ci/test_benchmark_ab.py`, and was red on 0 at every
+      #     threshold from 1.15 up.
+      #   * the 21 real runs of this job on pull requests since #1960
+      #     (2026-10-12 to 2026-10-14): 0.956x-1.034x, inside the probe's
+      #     range but off-centre (geometric mean 0.984, 18 of 21 below
+      #     1.0), an offset toward head-faster that the probe did not
+      #     reproduce.
+      #   * a stress case (#1963): 24 runs on one development box at load
+      #     average 22-50, 552 ordered pairs, 0.700x-1.428x, red at 1.30
+      #     on 12 of 552 (most of the red pairs have one module, the 13-row
+      #     one, slow while the other is not: a burst inside it alone moves
+      #     the median; the load is a confound).
+      #   * the original (#1567, 50 benchmarks, loaded box, 132 pairs):
+      #     0.822x-1.216x, red on 0.
       #
       # Detection is probabilistic and is stated as such, because the
-      # noise is on the same scale as the signal. Injecting a uniform
-      # regression into all 132 real pairs at this threshold:
+      # noise is on the same scale as the signal. Where the real gate sits
+      # (those 21 medians, scaled as a uniform slowdown would scale them):
       #
-      #     +30% -> caught on  50%      +50% -> caught on  97%
-      #     +40% -> caught on  83%      +60% -> caught on 100%
+      #     +30% -> red on  3 of 21     +35% -> red on 19 of 21
+      #     +33% -> red on 12 of 21     +40% -> red on 21 of 21
       #
+      # (the same injection into the stress case: +40% on 76%, +50% on
+      # 87%, +60% on 94%. A cell where the injection equals the threshold
+      # is 50% by construction — every pair is in the data in both
+      # directions — so it says nothing.)
       # The absolute budgets next door need +146% for the same call, on
       # every runner, so this is where a uniform slowdown became
-      # detectable at all rather than where it became certain. 1.25 is
-      # the next step down (also 0/132 red, +30% caught on 69%) and is
-      # worth taking on evidence, not now: every run prints its own
-      # median, so re-anchor from ~20 green `main` runs the way
-      # `tests/benchmarks/budgets.py` was anchored.
+      # detectable at all rather than where it became certain. 1.25 and
+      # 1.20 are also red on 0 of the probe's 144, but 1.25 is red on 22
+      # of the stress case's 552; a step down is worth taking on
+      # evidence, not now. The A/B job runs only on pull requests, so
+      # `main` has no medians: every run prints its own, and the
+      # `benchmark-ab` artifact keeps ab_report.json — re-anchor from ~20
+      # green pull-request medians the way `tests/benchmarks/budgets.py`
+      # was anchored from green `main` runs.
       #
       # The job always runs base first, so an earlier-versus-later
-      # offset does not cancel. Measured on the same null, forward
-      # pairs only: the later run is 1.038x slower by geometric mean.
-      # That is already inside the distribution above — the worst
-      # observation, 1.216x, IS a forward pair, and forward-only is 0
-      # red of 66 — and it biases toward false positives, not misses.
+      # offset does not cancel. The probe measured none (geometric mean
+      # of the median 0.9989 forward, 1.0011 reverse — one number and its
+      # reciprocal); the real gate's head-faster offset above is not an
+      # order effect the probe could confirm. Two batches on the loaded
+      # box disagreed with each other (forward 0.999 and 1.072), so what
+      # #1567 saw as an order offset was load.
       #
-      # Two more sensitive-looking rules were measured on the same data
+      # Two more sensitive-looking rules were measured on #1567's null
       # and rejected by their own numbers — a per-test residual rule
       # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
       # every absolute budget already beats at 2.46x-3.57x) and a count
       # rule (at 1.30x the null count reached 19 of 50 while slowing HALF
-      # the suite by 30% produced 15). `tests/wallclock/ab.py`'s
-      # docstring carries both. #1567 has the method and how contended
-      # the box was.
+      # the suite by 30% produced 15). That was the 50-benchmark suite;
+      # #1963 re-measured the median rule only. `tests/wallclock/ab.py`'s
+      # docstring carries both, and `docs/development/testing/performance.md`
+      # carries the method and how contended each box was.
       FM_AB_SUITE: '1.30'
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
