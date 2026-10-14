@@ -6,6 +6,9 @@ import pytest
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
+from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
+    CaseEvidenceConfig,
+)
 from faultmaven.modules.agent.tools.kb_tool_adapter import (
     CaseEvidenceQAAdapter,
     KBToolAdapter,
@@ -142,6 +145,8 @@ class TestCaseEvidenceQAAdapter:
             question="Any OOM errors?",
             k=5,
             redaction_ctx=context.redaction_ctx,
+            # A context that gives no tools gets the text that names none (#1977).
+            empty_result=CaseEvidenceConfig().empty_result_message,
         )
 
     @pytest.mark.asyncio

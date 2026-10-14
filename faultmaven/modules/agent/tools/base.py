@@ -82,6 +82,12 @@ class ToolContext:
             through this context, so the values enter the case registry and
             the placeholders in its answer can be reversed in the reply the
             user reads. ``None`` outside a turn.
+        given_tools: The tool names this turn gives the model (#1939): the
+            same set every prompt of the turn names tools from. A tool that
+            points the model at another tool in its RESULT (``case_evidence_search``
+            on an empty search points at ``search_file``) names it only when it
+            is in this set. Empty (a tool-less turn, or a context built without
+            a turn) means name none.
 
     No KB context metadata (#1880). The reranker's metadata signal reads a
     runbook's ``service``, which is the technology; the case records no
@@ -105,6 +111,7 @@ class ToolContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
     redaction_ctx: Any = None
+    given_tools: frozenset[str] = frozenset()
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -119,6 +126,7 @@ class ToolContext:
             metadata=self.metadata,
             in_memory_case=self.in_memory_case,
             redaction_ctx=self.redaction_ctx,
+            given_tools=self.given_tools,
         )
 
 
