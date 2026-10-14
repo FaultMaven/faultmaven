@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = pytest.mark.integration
 
@@ -244,7 +245,7 @@ async def session_factory(request, tmp_path, migrated_template):
 def service(session_factory, tmp_path):
     knowledge = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
         db_session_factory=session_factory,

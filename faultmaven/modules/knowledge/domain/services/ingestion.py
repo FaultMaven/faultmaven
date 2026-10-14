@@ -53,6 +53,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.services.content_chunker import (
     HR_SPLIT_BOUNDARY_RE,
 )
@@ -335,12 +336,14 @@ class KnowledgeIngester:
 
             # Sanitize content
             sanitized_content = await self.sanitizer.asanitize(content)
+            # And the title, which every reader of the tier sees (#1981)
+            sanitized_title = await sanitize_item_title(self.sanitizer, title)
 
             # Create document object
             now = datetime.now(timezone.utc).isoformat()
             document = KnowledgeBaseDocument(
                 document_id=document_id,
-                title=title,
+                title=sanitized_title,
                 content=sanitized_content,
                 document_type=document_type,
                 tags=tags or [],
@@ -808,6 +811,8 @@ class KnowledgeIngester:
 
             # Update document with sanitized content
             document.content = sanitized_content
+            # And its title, which every reader of the tier sees (#1981)
+            document.title = await sanitize_item_title(self.sanitizer, document.title)
 
             # Process and store in chunks
             await self._process_and_store(document)

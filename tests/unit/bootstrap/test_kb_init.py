@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.bootstrap import kb_init
+from tests.utils import regex_only_sanitizer
 
 RUNBOOK_MD = """---
 id: example-runbook
@@ -157,6 +158,10 @@ async def test_bootstrap_ingests_new_runbook(tmp_path: Path):
 
     assert kw["verified_by"] is None
     assert kw["verification_level"] == VerificationLevel.COMMUNITY
+    # The pack's titles are vendored, reviewed source, not user or model text:
+    # stored as shipped, so a redaction outage cannot stop the platform corpus
+    # from seeding. Every other publish path scrubs its title (#1981).
+    assert kw["shipped"] is True
 
 
 @pytest.mark.asyncio
@@ -534,6 +539,7 @@ async def fk_on_ingest_service():
 
     svc = KnowledgeService.__new__(KnowledgeService)
     svc._db_session_factory = factory
+    svc._sanitizer = regex_only_sanitizer()
     svc._index_document_in_vector_store = AsyncMock(return_value=3)
     svc._delete_knowledge_item_row = AsyncMock()
 

@@ -45,6 +45,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -276,7 +277,7 @@ class TestUploadWritesNoFile:
         monkeypatch.chdir(workdir)
         knowledge = KnowledgeService(
             knowledge_ingester=MagicMock(),
-            sanitizer=MagicMock(),
+            sanitizer=regex_only_sanitizer(),
             tracer=MagicMock(),
             vector_store=MagicMock(),
             db_session_factory=session_factory,
@@ -326,7 +327,7 @@ def _knowledge(session_factory) -> KnowledgeService:
     vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=vector_store,
         db_session_factory=session_factory,

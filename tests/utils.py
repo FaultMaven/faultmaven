@@ -473,6 +473,37 @@ def sanitize_pii_pinned(value: bool) -> Iterator[None]:
         reset_settings_singleton()
 
 
+#: The pseudonym key :func:`regex_only_sanitizer` pins, so building one never
+#: reads or writes a key file and never depends on the deployment mode.
+TEST_PSEUDONYM_KEY = "title-test-pseudonym-key-0123456789abcdef"
+
+
+def regex_only_sanitizer(**env: str):
+    """A real ``DataSanitizer`` that runs its regex patterns and never Presidio.
+
+    Built from its own settings object — ``SKIP_SERVICE_CHECKS`` on (no health
+    probe, so the analyzer is never available) and the pseudonym key pinned —
+    under a scoped environment, so nothing leaks into the job's settings and
+    the result is the same under both CI profiles. ``env`` adds variables for
+    the build (``SANITIZE_PII``, ``PROTECTION_FAIL_OPEN``, ...): the sanitizer
+    reads its posture from the settings it was built with.
+    """
+    import pytest
+
+    from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SKIP_SERVICE_CHECKS", "true")
+        mp.setenv("REDACTION_PSEUDONYM_KEY", TEST_PSEUDONYM_KEY)
+        for name, value in env.items():
+            mp.setenv(name, value)
+        settings = FaultMavenSettings()
+    sanitizer = DataSanitizer(settings=settings)
+    assert sanitizer.analyzer_available is False
+    return sanitizer
+
+
 def make_org_knowledge_item(
     item_id: Optional[str] = None,
     enterprise_id: Optional[str] = None,

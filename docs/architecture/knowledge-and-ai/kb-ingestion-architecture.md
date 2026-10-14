@@ -62,6 +62,7 @@ is only the standalone import source `/knowledge/scan` reads; authored and conve
         - **Mismatch** → delete old SQL row + ChromaDB chunks for this `item_id`, then re-ingest.
         - **No existing row** → ingest fresh.
 3. Call `KnowledgeService.ingest_runbook(prechunked=[(text, vector), ...], verified_by=None, verification_level=COMMUNITY, ...)`. With `prechunked` supplied, the SQL row is written and the pack's chunk texts + vectors are written to ChromaDB directly — **no `ContentChunker`, no `model.encode`**. `verified_by` is an FK to `users.user_id` and must be a real user or `NULL` — **never a sentinel string**. Platform-shipped trust is expressed through `verification_level=COMMUNITY`, not a fake `verified_by` (a previous `verified_by="system"` violated the FK once `foreign_keys=ON` was enabled and failed every shipped-runbook ingest). Tags are coerced to strings on the way in — a bare numeric YAML tag such as `503` parses as `int`, and both the relational `KnowledgeItem` and the ChromaDB `KnowledgeBaseDocument` require `str` tags.
+   The call passes `shipped=True`: a pack title is vendored, reviewed source, so it is stored as shipped. Every other caller of `ingest_runbook` leaves `shipped` at its default `False`, and the title is redacted with the sanitizer before any row or vector carries it (#1981; see [Case-Scoped PII Redaction](../security/case-scoped-pii-redaction.md) §Knowledge-Authoring Paths). A redaction outage therefore cannot stop the platform corpus from seeding.
 4. If `chunks_created <= 0` or the call raised, the failure is recorded in `BootstrapResult.failed` and the next runbook is processed (single-runbook failures must not block the others).
 5. **Prune orphaned built-ins.** After the loop, delete any built-in `knowledge_items` row (deterministic `kb_<12 hex>` id) not present in the current pack — typically because a runbook was removed from the pack or its frontmatter `id` changed, leaving the old deterministic row behind. Recorded in `BootstrapResult.pruned`.
 6. **Reconcile the two stores + repair orphans** (`_reconcile_vectors` → `_repair_orphaned_rows`). The prune is keyed off SQL rows, so it is structurally blind to drift where the two stores disagree. This pass compares both sides:
@@ -107,7 +108,7 @@ User uploads a document via the Dashboard. `ConversionService.convert_document()
 
 1. Validate the draft is in `DRAFT` state and has passed validation.
 2. Update frontmatter on disk (`status: draft` → `status: verified`).
-3. **Attempt ingestion** via `KnowledgeService.ingest_runbook(verified_by=<user_id>, ...)`.
+3. **Attempt ingestion** via `KnowledgeService.ingest_runbook(verified_by=<user_id>, ...)`. The published item's title is redacted here, once, even when the draft's own title was not (#1981).
     - On exception → re-raise. Draft stays in `DRAFT` state. SQL row from a partial ingest (if any) was already cleaned up by `ingest_runbook` itself.
     - On `chunks_created <= 0` (now turned into an exception by `ingest_runbook`) → same handling.
 4. **Only after ingestion succeeds**: set `status = VERIFIED`, `verified_at = now`, `verified_by = <user_id>`, `knowledge_item_id = <id>`. Commit.

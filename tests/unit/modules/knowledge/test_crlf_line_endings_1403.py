@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 from faultmaven.utils.line_endings import decode_text, normalize_line_endings
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [
     pytest.mark.unit,
@@ -359,7 +360,7 @@ async def _session_factory(_engine):
 def _service(session_factory) -> KnowledgeService:
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
         db_session_factory=session_factory,

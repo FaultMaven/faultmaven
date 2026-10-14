@@ -196,6 +196,16 @@ It matters independently of the router. `LLMRouter._sanitize_if_needed()` runs i
 
 No registry is loaded or saved, and nothing is reversed. The investigation path reverses placeholders in the reply it shows the user; a runbook is de-identified knowledge, so the placeholders the model writes are what is persisted — the same text the default router's own pass produced before this layer existed.
 
+### Knowledge Item Titles
+
+**Files:** `modules/knowledge/domain/item_title.py`, `knowledge_service.py` (`ingest_runbook`, `upload_document`, `update_document_metadata`), `ingestion.py`
+
+A knowledge item's title is shown to every reader of the tier it lives in (team and global included) and is never reversed, so it is redacted with the DI sanitizer before any row or vector carries it, on create exactly as on update (#1981). One helper, `sanitize_item_title`, is called by every writer: `ingest_runbook` (the one place a `knowledge_items` row is created: uploads, published conversion drafts and the KB pack all reach it), `upload_document` (which scrubs first, because it writes the upload and draft rows from the title before `ingest_runbook` runs), `update_document_metadata`, and the dormant `KnowledgeIngester` entry points. The sanitizer's regex patterns always apply; Presidio's entities apply when its analyzer answers. A title that cannot be redacted (`RedactionUnavailableError` under a fail-closed posture) is not written, and nothing has been written before the call.
+
+The KB pack is the one exemption: `kb_init` passes `shipped=True`, and `ingest_runbook` stores that title as written. A pack title is vendored, reviewed source, not user or model text, and the seed must not depend on a redaction service. The default is the scrub.
+
+A draft's own title (`conversion_drafts.title`) is the author's private review queue and is not scrubbed when the draft is created. It reaches readers only by publishing, which scrubs. The runbook body is not redacted on create: the quality gate refuses hardcoded credentials in it (`runbook_validator`), and `update_document_metadata` redacts it on edit.
+
 ## Configuration
 
 Two settings control whether redaction is active:
