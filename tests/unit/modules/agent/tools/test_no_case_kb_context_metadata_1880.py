@@ -21,6 +21,7 @@ import pytest
 
 import faultmaven.modules.agent.tools.base as tools_base
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
@@ -67,7 +68,10 @@ def test_the_derivation_is_gone():
 
 async def test_build_tool_context_carries_no_kb_context_metadata():
     context = await _generator().build_tool_context(
-        _a_case_that_names_its_service(), user_id="u_1", redaction_ctx=None
+        _a_case_that_names_its_service(),
+        user_id="u_1",
+        redaction_ctx=None,
+        given_tools=NO_TOOLS,
     )
 
     assert isinstance(context, ToolContext)

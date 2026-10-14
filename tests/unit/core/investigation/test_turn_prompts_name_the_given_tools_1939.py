@@ -165,6 +165,10 @@ async def test_a_tool_loop_turn_names_the_tools_the_loop_sends():
     assert sent == set(_TOOLS)
     assert tools_line(frozenset(sent)) in prompt
     assert _named(prompt) == sent
+    # The tools run with the set the prompt was built for (#1977): a result
+    # that points at another tool (an empty ``case_evidence_search`` at
+    # ``search_file``) names only what this turn gives.
+    assert call.kwargs["tool_context"].given_tools == frozenset(sent)
     # The #614 resize builds for the same set: the cached prefix is the
     # first build's, byte for byte.
     resized = call.kwargs["base_prompt_builder"](
@@ -206,8 +210,10 @@ async def test_a_provider_that_cannot_call_tools_gets_a_prompt_naming_none():
     prompt = call.args[0]
     assert tools_line(NO_TOOLS) in prompt
     assert _named(prompt) == set()
-    # Nothing was given, so there is no tool-named prompt to rebuild.
+    # Nothing was given, so there is no tool-named prompt to rebuild, and the
+    # tool context states the same (#1977).
     assert call.kwargs["fallback_prompt_builder"] is None
+    assert call.kwargs["tool_context"].given_tools == NO_TOOLS
 
 
 async def test_the_minimal_retry_is_built_for_no_tools():
@@ -275,6 +281,8 @@ async def test_the_terminal_prompt_points_at_the_suggestions_its_reply_gets(
     assert sent == set(_EVERY_TOOL) & TERMINAL_QA_TOOLS
     assert tools_line(frozenset(sent)) in prompt
     assert _named(prompt) == sent
+    # The tools run with the set the prompt names, not the registry's (#1977).
+    assert call.kwargs["tool_context"].given_tools == frozenset(sent)
     resized = call.kwargs["base_prompt_builder"](
         target_tokens=10**6, provider_name=None, model_name=None
     )

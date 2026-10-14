@@ -76,6 +76,9 @@ def _collection(matches: bool = False) -> MagicMock:
 def _client(collection: MagicMock) -> MagicMock:
     client = MagicMock()
     client.get_or_create_collection.return_value = collection
+    # The case store's read path gets an existing collection and never creates
+    # one (#1994); the KB stores still get-or-create.
+    client.get_collection.return_value = collection
     return client
 
 
@@ -296,7 +299,7 @@ async def test_a_genuinely_empty_case_still_reads_as_a_successful_empty_answer()
 
     assert result.success is True
     assert result.data, "an empty-but-working case store should still render an answer"
-    assert "no vectorized evidence" in result.data.lower()
+    assert "no file of this case has been indexed" in result.data.lower()
 
 
 # ---------------------------------------------------------------------------

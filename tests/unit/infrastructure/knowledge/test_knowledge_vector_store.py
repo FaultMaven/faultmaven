@@ -929,6 +929,31 @@ class TestDeleteDocumentsByParentId:
         store = KnowledgeVectorStore(_FakeClient(coll))
         assert await store.delete_documents_by_parent_id("kb_missing") == 0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "attempts"), [({}, 3), ({"retries": 0}, 1)], ids=["default", "0"]
+    )
+    async def test_retries_bounds_the_attempts(self, kwargs, attempts):
+        """``KnowledgeService.delete_document`` holds its row change open across
+        this call and passes ``retries=0`` (#1966): one attempt, no backoff
+        sleeps inside the hold. Other callers keep the default."""
+
+        class _Failing(_FakeCollection):
+            calls = 0
+
+            def get(self, where=None, include=None):
+                type(self).calls += 1
+                raise RuntimeError("chroma unavailable")
+
+        store = KnowledgeVectorStore(_FakeClient(_Failing([])))
+        with (
+            patch("faultmaven.infrastructure.base_client.asyncio.sleep", AsyncMock()),
+            pytest.raises(RuntimeError),
+        ):
+            await store.delete_documents_by_parent_id("kb_a", **kwargs)
+
+        assert _Failing.calls == attempts
+
 
 class TestDeleteDocumentsByParents:
     """Batch delete — one round-trip for many orphaned parents (reconcile path)."""

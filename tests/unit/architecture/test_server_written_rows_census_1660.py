@@ -194,7 +194,6 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/infrastructure/llm/providers/anthropic.py",
         "AnthropicProvider.generate",
     ): (1, _WIRE),
-    ("faultmaven/infrastructure/llm/router.py", "LLMRouter.generate"): (1, _WIRE),
     # #1748: the terminal follow-up counter compares a turn's text with the
     # confirming turn's own message, to keep a resubmission out of a metric.
     (

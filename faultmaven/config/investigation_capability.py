@@ -478,7 +478,7 @@ def resolve_enforcement_classes(
     Compensation (``STRUCTURED_OUTPUT_PROVIDER`` carrying the schema-bound
     calls) is decided PER ROLE, because the engine does not apply that override
     uniformly: ``milestone_engine._tool_augmented_generate`` gates it on
-    ``not (self.da_model and self.da_provider)`` — a dedicated DA provider gets
+    ``self.deps.da_provider is None`` — a dedicated DA provider gets
     first dibs on the tool path and the override is skipped there. Treating
     compensation as a deployment-wide fact would report a best-effort
     ``DA_PROVIDER`` alongside a strict ``STRUCTURED_OUTPUT_PROVIDER`` as
