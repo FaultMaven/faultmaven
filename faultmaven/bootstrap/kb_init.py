@@ -52,6 +52,11 @@ from typing import Any, Awaitable, Callable, NamedTuple, Optional
 
 from sqlalchemy import select
 
+from faultmaven.bootstrap.kb_orphan_sweep import (
+    AuthoredSweepResult,
+    sweep_authored_orphans,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +72,9 @@ class BootstrapResult:
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
         # built-in parent_ids whose row is unpublished (#1966)
         self.unpublished_vectors_cleaned: list[str] = []
+        # Authored parents with vectors and no row (#1982): what was swept,
+        # and per enterprise what was left and why.
+        self.authored_orphans: AuthoredSweepResult = AuthoredSweepResult()
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
 
@@ -78,6 +86,7 @@ class BootstrapResult:
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
             f"unpublished_vectors_cleaned={len(self.unpublished_vectors_cleaned)}, "
+            f"authored_orphans_swept={len(self.authored_orphans.deleted)}, "
             f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
@@ -89,6 +98,7 @@ async def bootstrap_kb(
     enterprise_id: str,
     project_root: Optional[Path] = None,
     pack_dir: Optional[Path] = None,
+    allow_disjoint_reference_set: bool = False,
 ) -> BootstrapResult:
     """Run the KB ingestion bootstrap from the shipped pack.
 
@@ -101,6 +111,11 @@ async def bootstrap_kb(
         project_root: Override the project root (test injection).
         pack_dir: Explicit pack directory (test injection). When None, resolves
             from ``KB_PACK_DIR`` settings, falling back to the bundled baseline.
+        allow_disjoint_reference_set: The operator's assertion (``kb_seed
+            --allow-disjoint-reference-set``) that an enterprise whose authored
+            vectors match NONE of its rows really has only orphans. Off by
+            default: the authored-orphan sweep then skips that enterprise
+            (see :mod:`faultmaven.bootstrap.kb_orphan_sweep`).
 
     Returns:
         BootstrapResult — per-runbook outcomes (counts + failure reasons).
@@ -193,6 +208,19 @@ async def bootstrap_kb(
         orphaned_rows,
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
 
+    # The authored half of the same drift (#1982): an authored chunk whose row
+    # is gone (a vector delete that failed before #1966) is retrievable for
+    # good. Deleted only where the row read is proven unfiltered by RLS, per
+    # enterprise stamp, behind the reference-set check, and within the same
+    # cap repair heals — see kb_orphan_sweep.
+    max_rows, max_chunks = _resolve_repair_bounds()
+    result.authored_orphans = await sweep_authored_orphans(
+        knowledge_service,
+        db_session_factory,
+        max_parents=max_rows,
+        allow_disjoint_reference_set=allow_disjoint_reference_set,
+    )
+
     # Cross-store repair: an orphaned row (SQL row with no vectors — the
     # half-state a crash between the SQL commit and the Chroma write leaves) is
     # silently non-retrievable. Reconcile can only warn; here we re-chunk +
@@ -200,7 +228,6 @@ async def bootstrap_kb(
     # boot. Bounded because repair loads the embedding model the pack path
     # deliberately skips — re-embedding the whole KB reintroduces the on-pod
     # timeout the pack exists to avoid.
-    max_rows, max_chunks = _resolve_repair_bounds()
     result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
         orphaned_rows,
         knowledge_service,
@@ -217,6 +244,7 @@ async def bootstrap_kb(
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
         f"{len(result.unpublished_vectors_cleaned)} unpublished built-ins' vectors "
         "cleaned, "
+        f"{len(result.authored_orphans.deleted)} authored orphans swept, "
         f"{len(result.repaired_rows)} rows repaired, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )
@@ -500,16 +528,19 @@ async def _reconcile_vectors(
         it to repair, which would re-embed it and silently undo the unpublish
         at the next boot (#1966).
 
-    **Scope — only deletes built-in ``kb_<12 hex>`` vectors.** The bootstrap DB
-    session is RLS-scoped (``app.current_enterprise_id`` is set per-transaction; see
-    ``database.py``), so ``db_ids`` is a SINGLE org's rows, while the shared
-    ``faultmaven_kb`` collection holds every org's vectors. Diffing the full
-    collection against a per-org row set would mark every OTHER tenant's runbooks
-    as orphans and delete them — cross-tenant KB data loss. Restricting deletion
-    to the built-in id class (the same discriminator the orphan-prune uses) bounds
-    the blast radius to platform-shipped runbooks, which is exactly the drift this
-    pass exists to clean; authored/personal/team vectors (uuid or ``kb_<16 hex>``)
-    are never touched, unpublished or not. The pattern can't match them.
+    **Scope — only deletes built-in ``kb_<12 hex>`` vectors.** Whether ``db_ids``
+    is every enterprise's rows depends on who runs the pass, and this read does
+    not ask: complete on SQLite, under ``kb_seed``'s BYPASSRLS maintenance role
+    and as the table owner, but only the bound enterprise's rows (plus the
+    global tier) under the RLS-enforced app role on PostgreSQL. The shared
+    ``faultmaven_kb`` collection holds every enterprise's vectors, so diffing it
+    against a partial row set would mark other tenants' runbooks as orphans and
+    delete them. Restricting this pass to the built-in id class (the platform
+    tier's deterministic ids, whose global rows every session reads) bounds it
+    to platform-shipped runbooks; authored vectors (uuid or ``kb_<16 hex>``) are
+    never touched here, unpublished or not. Their orphans are
+    :mod:`faultmaven.bootstrap.kb_orphan_sweep`'s, which first proves its row
+    read unfiltered and deletes per enterprise stamp (#1982).
 
     Safety: if the DB yields ZERO knowledge_items (a pathological all-rows-missing
     state, e.g. ingest fully failed this boot) we do NOT delete any vectors — that
@@ -668,7 +699,8 @@ async def _repair_orphaned_rows(
     both entry paths (the single-tenant web-startup bootstrap and the
     cross-tenant ``kb_seed`` job seeding the org-free global tier). Contrast
     reconcile's DELETE side, restricted to built-in ids precisely because
-    deletion CAN cross tenants; addition cannot, so every orphaned PUBLISHED
+    deletion CAN cross tenants (the authored sweep deletes only behind a proof
+    that its row read is unfiltered); addition cannot, so every orphaned PUBLISHED
     row is eligible — a lost authored runbook is repaired the same as a
     shipped one. An unpublished row is not an orphan (it has no vectors by
     design, #1966): reconcile does not list it, and

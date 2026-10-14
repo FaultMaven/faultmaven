@@ -364,6 +364,47 @@ class TestKbSeedJob:
         assert result["status"] == "failed"
         assert "pack unreadable" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_kb_seed_forwards_the_disjoint_acknowledgment_and_reports_the_sweep(
+        self, mock_container, mock_settings
+    ):
+        """#1982: ``--allow-disjoint-reference-set`` reaches the bootstrap's
+        authored-orphan sweep, and its counts are part of the job result."""
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        bootstrapped = _bootstrap_result()
+        bootstrapped.authored_orphans.proven = True
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=bootstrapped),
+        ) as bootstrap:
+            result = await run(
+                settings=mock_settings,
+                container=mock_container,
+                allow_disjoint_reference_set=True,
+            )
+
+        assert bootstrap.await_args.kwargs["allow_disjoint_reference_set"] is True
+        assert result["authored_orphans"]["proven"] is True
+        assert result["authored_orphans"]["deleted"] == 0
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_defaults_to_no_acknowledgment(
+        self, mock_container, mock_settings
+    ):
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=_bootstrap_result()),
+        ) as bootstrap:
+            await run(settings=mock_settings, container=mock_container)
+
+        assert bootstrap.await_args.kwargs["allow_disjoint_reference_set"] is False
+
     def test_kb_seed_is_cross_tenant(self):
         """kb_seed writes the org-free global platform tier served to ALL
         tenants — under multi it must only run on the audited maintenance
@@ -1300,6 +1341,16 @@ class TestJobSpecificFlagWiring:
             _reject_unsupported_job_flags(
                 case_cleanup, "case_cleanup", {"dry_run": True}
             )
+
+    def test_kb_seed_accepts_the_disjoint_acknowledgment(self):
+        """#1982: kb_seed's authored-orphan sweep takes the same acknowledgment
+        the other reference-set sweeps do, so the guard must not refuse it."""
+        from faultmaven.jobs import kb_seed
+        from faultmaven.jobs.run import _reject_unsupported_job_flags
+
+        _reject_unsupported_job_flags(
+            kb_seed, "kb_seed", {"allow_disjoint_reference_set": True}
+        )
 
     def test_storage_cleanup_declares_both_flags(self):
         """The guard must not refuse the job the flags were added for."""

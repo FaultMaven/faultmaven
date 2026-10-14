@@ -1196,7 +1196,9 @@ class DatabaseSettings(BaseSettings):
         description=(
             "Max orphaned KB rows to repair per boot before treating the set as a "
             "bulk-loss anomaly (repair nothing + warn; recover via a full pack "
-            "re-ingest). Must be >= 1 — 0/negative would silently disable repair, "
+            "re-ingest). Also caps, all or nothing, how many authored documents "
+            "the authored-orphan sweep may delete vectors for per run (#1982). "
+            "Must be >= 1 — 0/negative would silently disable repair, "
             "so it is rejected at startup."
         ),
     )

@@ -86,7 +86,15 @@ reads the same scoped repository and would answer "no" too. Both jobs now call
 `faultmaven.jobs.reference_set.assess_reference_set`, report the same
 `reference_set_disjoint` reason, and take the same
 `--allow-disjoint-reference-set` acknowledgment. `case_cleanup` has no
-dry-run mode, so for it every run is a live one. Its missing-dependency exits
+dry-run mode, so for it every run is a live one.
+
+**`kb_seed` applies the check per enterprise** (#1982). Its authored-orphan
+sweep deletes authored KB vectors whose `knowledge_items` row is gone, and an
+enterprise none of whose authored vectors has a row is skipped (counted under
+`authored_orphans.disjoint`) rather than refusing the run: the seeding itself
+completed, and the other enterprises are still swept. The same
+`--allow-disjoint-reference-set` acknowledges it for one run, after you have
+confirmed that enterprise's documents really were all deleted. Its missing-dependency exits
 were also `skipped` (exit 0) and are now `failed`, for the same reason the
 storage sweep's are.
 
@@ -284,7 +292,7 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 |-------|---------|-------------------------------|
 | `tenant_neutral` | No tenanted DB access | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
+| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770, and deletes every enterprise's authored KB vectors whose row is gone, #1982) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a
@@ -303,7 +311,10 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
    (`faultmaven_maintenance`, provisioned by `faultmaven-enterprise-infra`):
    `BYPASSRLS` + non-superuser + non-owner, SELECT-only grants plus a single
    explicit write surface — `INSERT, DELETE ON knowledge_items` for `kb_seed`
-   (#770). The runner probe-verifies the role and refuses anything else —
+   (#770). `kb_seed`'s authored-orphan sweep (#1982) writes no SQL: it reads
+   `enterprises` and `knowledge_items` and deletes only ChromaDB vectors, and
+   only because this role's read is proven unfiltered
+   (`NOT row_security_active('knowledge_items')`). The runner probe-verifies the role and refuses anything else —
    including the regular app role, whose RLS-scoped *partial* view is exactly
    the delete-other-tenants hazard.
 

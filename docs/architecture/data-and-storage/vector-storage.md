@@ -567,7 +567,10 @@ chromadb-restore.sh --collection faultmaven_kb --source s3://faultmaven-backups/
 
 # Verify integrity: start the API and read the bootstrap summary,
 # `KB bootstrap complete: ... N orphaned rows` (rows with no vectors) and the
-# `orphaned vectors cleaned` count (`kb_seed` Job log under multi)
+# `orphaned vectors cleaned` / `authored orphans swept` counts (`kb_seed` Job
+# log under multi). A snapshot older than the database leaves vectors whose
+# rows are gone: the authored sweep deletes at most KB_REPAIR_MAX_ROWS of
+# them per run and NONE above it (see kb-ingestion-architecture.md step 6)
 ```
 
 ### 7.3 Index Maintenance

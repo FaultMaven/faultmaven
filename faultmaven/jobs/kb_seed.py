@@ -9,6 +9,13 @@ Usage:
     python -m faultmaven.jobs.run kb_seed                            # single-tenant
     python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance # multi-tenant
 
+The same pass sweeps AUTHORED vectors whose ``knowledge_items`` row is gone
+(#1982), in every enterprise, when this role's row read is proven unfiltered by
+row-level security — the maintenance role's is. An enterprise whose authored
+vectors match none of its rows is skipped unless the run passes
+``--allow-disjoint-reference-set``; the sweep's counts are the result's
+``authored_orphans``. See ``faultmaven/bootstrap/kb_orphan_sweep.py``.
+
 Tenant scope: **cross_tenant**. Global-scope pack rows are the org-free
 platform tier (#770): they are readable by EVERY tenant (RLS read exemption +
 org-free vector path), and the RLS write policies bar the tenant-bound app
@@ -32,6 +39,7 @@ logger = logging.getLogger(__name__)
 async def run(
     settings: FaultMavenSettings,
     container: Any,
+    allow_disjoint_reference_set: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Seed the platform KB pack into knowledge_items + ChromaDB.
@@ -39,6 +47,10 @@ async def run(
     Args:
         settings: FaultMaven settings instance
         container: DI container with initialized services
+        allow_disjoint_reference_set: The operator's explicit assertion that an
+            enterprise whose authored vectors match NONE of its rows really
+            holds only orphans, so the authored-orphan sweep may delete them.
+            Off by default — see ``faultmaven.jobs.reference_set``.
         **kwargs: Additional job parameters (unused)
 
     Returns:
@@ -48,6 +60,10 @@ async def run(
           unpublished_vectors_cleaned / repaired_rows / orphaned_rows: counts
           from the bootstrap pass (orphaned_rows is the residual AFTER the
           cross-store repair)
+        - authored_orphans: the authored-orphan sweep (#1982) — whether the
+          row read was proven unfiltered, the cap, totals and per-enterprise
+          counts of documents deleted / unproven / disjoint / capped / failed,
+          and the count of chunks no listed enterprise's stamp attributes
         - failures: list of (runbook relpath, reason) for failed runbooks
         - error: Error message if the whole pass failed
     """
@@ -85,6 +101,7 @@ async def run(
             knowledge_service=knowledge_service,
             db_session_factory=get_db_session,
             enterprise_id=STANDALONE_ENTERPRISE_ID,
+            allow_disjoint_reference_set=allow_disjoint_reference_set,
         )
 
         result["ingested"] = len(bootstrap_result.ingested)
@@ -96,6 +113,7 @@ async def run(
         result["unpublished_vectors_cleaned"] = len(
             bootstrap_result.unpublished_vectors_cleaned
         )
+        result["authored_orphans"] = bootstrap_result.authored_orphans.summary()
         result["repaired_rows"] = len(bootstrap_result.repaired_rows)
         result["orphaned_rows"] = len(bootstrap_result.orphaned_rows)
         result["failures"] = list(bootstrap_result.failed)

@@ -620,8 +620,10 @@ Examples:
         "--allow-disjoint-reference-set",
         action="store_true",
         help=(
-            "storage_cleanup / case_cleanup. Proceed with deletion even when "
-            "NOT ONE candidate is referenced by the authority. Off by "
+            "storage_cleanup / case_cleanup / kb_seed. Proceed with deletion "
+            "even when NOT ONE candidate is referenced by the authority (for "
+            "kb_seed: an enterprise none of whose authored KB vectors has a "
+            "row, #1982). Off by "
             "default, because that shape is also what an RLS-scoped session "
             "and a changed keyspace produce - and deleting on it destroys "
             "every candidate. Pass it only after a --dry-run has shown you "
