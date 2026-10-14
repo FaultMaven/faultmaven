@@ -205,6 +205,45 @@ def test_every_env_var_key_names_a_variable_settings_consumes(monkeypatch) -> No
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("provider", list(PROVIDER_SCHEMA))
+def test_every_provider_declares_how_it_is_configured(provider: str) -> None:
+    """A provider is configured by an API key or, for the local one, an endpoint.
+
+    ``configured_provider_names`` answers "did the operator configure any
+    provider?" from these two keys — the question the zero-config preset asks
+    (#1984). An entry declaring neither, or both, leaves that answer undefined,
+    so a new provider cannot be registered without saying which it is.
+    """
+    from faultmaven.infrastructure.llm.providers.registry import configuration_env_var
+
+    schema = PROVIDER_SCHEMA[provider]
+    declared = [k for k in ("api_key_var", "endpoint_var") if schema.get(k)]
+    assert len(declared) == 1, (
+        f"{provider!r} declares {declared or 'neither api_key_var nor endpoint_var'}; "
+        "it needs exactly one, which is how an operator is seen to have configured it"
+    )
+    assert configuration_env_var(provider) == schema[declared[0]]
+
+
+@pytest.mark.unit
+def test_configured_provider_names_reads_the_registry_in_order() -> None:
+    from faultmaven.infrastructure.llm.providers.registry import (
+        configuration_env_var,
+        configured_provider_names,
+    )
+
+    everything = {configuration_env_var(p): "x" for p in PROVIDER_SCHEMA}
+    assert configured_provider_names(everything) == list(PROVIDER_SCHEMA)
+    assert configured_provider_names({}) == []
+
+    only_local = {configuration_env_var("local"): "http://ollama:11434/v1"}
+    assert configured_provider_names(only_local) == ["local"]
+
+    blank = {configuration_env_var(p): " " for p in PROVIDER_SCHEMA}
+    assert configured_provider_names(blank) == []
+
+
+@pytest.mark.unit
 def test_base_url_var_is_not_reintroduced() -> None:
     """Regression pin for #1358.
 

@@ -88,9 +88,11 @@ So every launch goes through `run_server`: the image runs
 `python -m faultmaven.server`, and `scripts/faultmaven-dev.sh` runs the same
 command with `HOST`, `PORT`, `RELOAD`, `WORKERS` and `TIMEOUT_KEEP_ALIVE` in the
 environment. `run_server` takes host, port and reload from settings, so a launch
-sets `HOST`, `PORT` and `RELOAD` itself: a configuration the zero-config check
-does not recognise (a Gemini-only `.env`, for one) gets the `local` preset,
-`127.0.0.1:8000` with reload (#1984).
+sets `HOST`, `PORT` and `RELOAD` itself: a deployment that configures no LLM
+provider at all gets the zero-config `local` preset, `127.0.0.1:8000` with
+reload. "Configures a provider" is answered from the provider registry (any
+registered provider's API key, or `LOCAL_LLM_URL` for the local one), so a
+Gemini-only `.env` is not zero-config (#1984).
 
 `app` is a `module:attr` import string (default `faultmaven.main:app`), never an
 object: uvicorn refuses an object when `workers > 1` or `reload` is set, and

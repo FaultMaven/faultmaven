@@ -326,6 +326,348 @@ class TestZeroConfigDetection:
         assert result.value == "local"
 
 
+#: What configures each provider the router supports, written out literally (not
+#: through the registry helper the code under test uses) so a wrong or dropped
+#: ``api_key_var`` / ``endpoint_var`` in the registry fails here too. The
+#: registry-derived tests below cover a provider this table has not heard of.
+CONFIGURING_ENV_VAR = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "local": "LOCAL_LLM_URL",
+}
+
+
+class TestAnyConfiguredProviderDeclinesZeroConfig:
+    """A deployment that configures any provider the router supports is not zero-config.
+
+    ``detect_zero_config_preset`` used to ask a hand-kept list of five API keys,
+    so a ``.env`` configuring only Gemini, OpenRouter, HuggingFace or a local
+    server (``.env.example`` itself suggests ``CHAT_PROVIDER=gemini``) got the
+    ``local`` preset: ``DEBUG=true``, ``LOG_LEVEL=DEBUG``,
+    ``PROTECTION_ENABLED=false``, ``127.0.0.1:8000`` with reload (#1984). The
+    question is now answered from the provider registry. Every environment here
+    is built with ``clear=True``: the box's own shell must not decide the
+    outcome (``tests/conftest.py`` already keeps its ``.env`` out of an
+    in-process run).
+    """
+
+    @pytest.mark.parametrize(
+        ("provider", "env_var"),
+        sorted(CONFIGURING_ENV_VAR.items()),
+        ids=sorted(CONFIGURING_ENV_VAR),
+    )
+    def test_each_provider_alone_declines_the_preset(self, provider, env_var):
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {env_var: "configured"}, clear=True):
+            assert detect_zero_config_preset() is None, (
+                f"{provider!r} configured through {env_var} alone was still "
+                "treated as zero-config"
+            )
+
+    def test_the_table_agrees_with_the_registry(self):
+        """Every provider in the table is configured by the variable it names."""
+        from faultmaven.infrastructure.llm.providers.registry import (
+            configuration_env_var,
+        )
+
+        for provider, env_var in CONFIGURING_ENV_VAR.items():
+            assert configuration_env_var(provider) == env_var
+
+    def test_every_registered_provider_alone_declines_the_preset(self):
+        """Derived from the registry: a provider added tomorrow is covered today.
+
+        Nothing here names a provider. A new ``PROVIDER_SCHEMA`` entry that
+        declares neither ``api_key_var`` nor ``endpoint_var`` makes
+        ``configuration_env_var`` raise, which fails this test — the provider
+        would be one a deployment can configure without the preset noticing.
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers.registry import (
+            PROVIDER_SCHEMA,
+            configuration_env_var,
+        )
+
+        assert len(PROVIDER_SCHEMA) >= len(CONFIGURING_ENV_VAR)
+        for provider in PROVIDER_SCHEMA:
+            env_var = configuration_env_var(provider)
+            with patch.dict(os.environ, {env_var: "configured"}, clear=True):
+                assert (
+                    detect_zero_config_preset() is None
+                ), f"{provider!r} ({env_var}) did not decline the zero-config preset"
+
+    def test_a_provider_added_to_the_registry_is_recognised_without_a_code_change(
+        self, monkeypatch
+    ):
+        """The check reads the registry; it does not hold a list of its own."""
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers import registry
+
+        monkeypatch.setitem(
+            registry.PROVIDER_SCHEMA,
+            "acme",
+            {"api_key_var": "ACME_API_KEY", "default_model": "acme-1"},
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert detect_zero_config_preset() is not None
+        with patch.dict(os.environ, {"ACME_API_KEY": "configured"}, clear=True):
+            assert detect_zero_config_preset() is None
+
+    def test_a_registry_entry_that_cannot_be_configured_is_refused_not_ignored(
+        self, monkeypatch
+    ):
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.infrastructure.llm.providers import registry
+
+        monkeypatch.setitem(
+            registry.PROVIDER_SCHEMA, "acme", {"default_model": "acme-1"}
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="acme"):
+                detect_zero_config_preset()
+
+    def test_no_provider_configured_still_applies_the_local_preset(self):
+        """The no-config case is unchanged, and a blank value is not a config."""
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert detect_zero_config_preset() == "local"
+
+        # A ConfigMap key that reads as blank (or ``KEY=`` in a ``.env``) is unset.
+        blank = {env_var: "" for env_var in CONFIGURING_ENV_VAR.values()}
+        with patch.dict(os.environ, blank, clear=True):
+            assert detect_zero_config_preset() == "local"
+        padded = {env_var: "   " for env_var in CONFIGURING_ENV_VAR.values()}
+        with patch.dict(os.environ, padded, clear=True):
+            assert detect_zero_config_preset() == "local"
+
+    def test_a_gemini_only_environment_gets_no_preset_defaults(self):
+        """The reported probe: ``GEMINI_API_KEY`` alone must not turn DEBUG on.
+
+        Through ``ensure_preset_applied``, which is what ``get_settings`` calls:
+        no ``CONFIG_PRESET`` is set and none of the preset's server or
+        protection defaults reach the environment.
+        """
+        from faultmaven.config.presets import ensure_preset_applied
+
+        with patch.dict(
+            os.environ,
+            {"CHAT_PROVIDER": "gemini", "GEMINI_API_KEY": "configured"},
+            clear=True,
+        ):
+            ensure_preset_applied()
+            for leaked in (
+                "CONFIG_PRESET",
+                "HOST",
+                "PORT",
+                "RELOAD",
+                "DEBUG",
+                "LOG_LEVEL",
+                "PROTECTION_ENABLED",
+                "SANITIZE_PII",
+            ):
+                assert leaked not in os.environ, f"{leaked} came from the preset"
+
+
+# Scenarios for the dotenv channel. ``tests/conftest.py`` makes every in-process
+# run blind to a ``.env`` (it replaces ``DotEnvSettingsSource._read_env_files``),
+# so a test of what the settings read from the working directory's file has to
+# run where that is not true: a child interpreter. One child runs every scenario
+# (each in its own empty directory and cleared environment) and the tests below
+# read its answers, so the cost is one interpreter start, not one per case.
+_DOTENV_SCENARIOS = """
+import json, os, sys, tempfile
+from pathlib import Path
+
+import faultmaven
+
+assert faultmaven.__file__.startswith(sys.argv[1]), faultmaven.__file__
+from faultmaven.config.presets import ensure_preset_applied
+
+scenarios = json.loads(sys.argv[2])
+answers = {}
+for name, (environ, dotenv) in scenarios.items():
+    os.chdir(tempfile.mkdtemp())
+    if dotenv is not None:
+        Path(".env").write_text(dotenv)
+    os.environ.clear()
+    os.environ.update(environ)
+    ensure_preset_applied()
+    answers[name] = {
+        "preset": os.environ.get("CONFIG_PRESET"),
+        "chat_provider": os.environ.get("CHAT_PROVIDER"),
+    }
+print(json.dumps(answers))
+"""
+
+_NOTHING = ({}, None)
+
+DOTENV_SCENARIOS = {
+    # (a) and (b): a provider named only in the working directory's file.
+    "gemini_in_dotenv": ({}, "GEMINI_API_KEY=x\nCHAT_PROVIDER=gemini\n"),
+    "openai_in_dotenv": ({}, "OPENAI_API_KEY=sk-test\n"),
+    "local_url_in_dotenv": ({}, "LOCAL_LLM_URL=http://ollama:11434/v1\n"),
+    # The other reads go through the same view, in any letter case.
+    "redis_in_dotenv": ({}, "REDIS_HOST=redis\n"),
+    "chromadb_lowercase_in_dotenv": ({}, "chromadb_url=http://chroma:8000\n"),
+    "production_in_dotenv": ({}, "ENVIRONMENT=production\n"),
+    "staging_lowercase_in_dotenv": ({}, "environment=staging\n"),
+    # The checkout shape: load_dotenv put the file in the environment already.
+    "dotenv_agrees_with_environment": (
+        {"GEMINI_API_KEY": "x"},
+        "GEMINI_API_KEY=x\n",
+    ),
+    # Still zero-config.
+    "nothing_anywhere": _NOTHING,
+    "dotenv_without_a_provider": ({}, "# nothing configured\nLOG_LEVEL=INFO\n"),
+    # The environment outranks the file, so the settings see a blank key.
+    "blank_environment_beats_the_dotenv": (
+        {"GEMINI_API_KEY": ""},
+        "GEMINI_API_KEY=x\n",
+    ),
+    # FAULTMAVEN_SKIP_DOTENV: the settings are built without the file.
+    "skip_dotenv_ignores_the_file": (
+        {"FAULTMAVEN_SKIP_DOTENV": "1"},
+        "GEMINI_API_KEY=x\n",
+    ),
+    "skip_dotenv_still_reads_the_environment": (
+        {"FAULTMAVEN_SKIP_DOTENV": "1", "gemini_api_key": "x"},
+        "OPENAI_API_KEY=x\n",
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def dotenv_answers(tmp_path_factory):
+    """What the preset check did, per scenario, in a child with a real ``.env`` read."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import faultmaven
+
+    root = str(Path(faultmaven.__file__).resolve().parents[1])
+    result = subprocess.run(
+        [sys.executable, "-c", _DOTENV_SCENARIOS, root, json.dumps(DOTENV_SCENARIOS)],
+        cwd=tmp_path_factory.mktemp("cwd"),
+        # Nothing of the parent's: no PYTHONPATH either, so the child imports
+        # the checkout this test file sits in (the editable install may point
+        # elsewhere), and the assertion in the child says so if it did not.
+        env={
+            "PATH": os.defpath,
+            "HOME": str(tmp_path_factory.mktemp("home")),
+            "PYTHONPATH": root,
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+class TestDetectionReadsWhatTheSettingsRead:
+    """One view of the environment: the one ``FaultMavenSettings`` will read.
+
+    ``detect_zero_config_preset`` read exact-case ``os.environ`` alone, while the
+    settings read names case-insensitively AND a ``.env`` resolved from the
+    working directory (``env_file=".env"``). ``get_settings``' own
+    ``load_dotenv()`` walks up from ``settings.py`` instead, so an installed
+    package run next to its ``.env`` had a configuration the settings honoured
+    and the preset check never saw: the laptop preset was applied over it, and
+    its ``CHAT_PROVIDER=local`` beat the user's own selection (#1984 review).
+    """
+
+    # --- the environment channel (in process) ------------------------------
+
+    @staticmethod
+    def _detect(environ):
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, environ, clear=True):
+            return detect_zero_config_preset()
+
+    def test_a_lowercase_environment_variable_declines_the_preset(self):
+        """Probe (c): pydantic-settings binds ``gemini_api_key`` to the field."""
+        assert self._detect({"gemini_api_key": "x"}) is None
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("REDIS_HOST", "x"),
+            ("redis_host", "x"),
+            ("ChromaDB_Url", "x"),
+            ("environment", "production"),
+            ("Environment", "staging"),
+        ],
+    )
+    def test_every_other_read_is_case_insensitive_in_the_environment(self, name, value):
+        assert self._detect({name: value}) is None
+
+    def test_the_last_spelling_of_a_variable_wins_as_it_does_for_the_settings(self):
+        """Two spellings of one variable: the settings take the last, so must the view."""
+        assert self._detect({"GEMINI_API_KEY": "x", "gemini_api_key": ""}) == "local"
+        assert self._detect({"gemini_api_key": "", "GEMINI_API_KEY": "x"}) is None
+
+    # --- the dotenv channel (a child process that really reads the file) ----
+
+    def test_a_gemini_key_in_the_working_directory_dotenv_declines_the_preset(
+        self, dotenv_answers
+    ):
+        """Probe (a): the preset must not overwrite the user's own selection."""
+        answer = dotenv_answers["gemini_in_dotenv"]
+        assert answer == {"preset": None, "chat_provider": None}
+
+    def test_an_openai_key_in_the_working_directory_dotenv_declines_the_preset(
+        self, dotenv_answers
+    ):
+        """Probe (b): the five-key list missed this one too (a cwd file)."""
+        assert dotenv_answers["openai_in_dotenv"]["preset"] is None
+
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            "local_url_in_dotenv",
+            "redis_in_dotenv",
+            "chromadb_lowercase_in_dotenv",
+            "production_in_dotenv",
+            "staging_lowercase_in_dotenv",
+            "dotenv_agrees_with_environment",
+            "skip_dotenv_still_reads_the_environment",
+        ],
+    )
+    def test_every_read_goes_through_the_same_view(self, dotenv_answers, scenario):
+        assert dotenv_answers[scenario]["preset"] is None
+
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            "nothing_anywhere",
+            "dotenv_without_a_provider",
+            "blank_environment_beats_the_dotenv",
+            "skip_dotenv_ignores_the_file",
+        ],
+    )
+    def test_without_a_configured_provider_the_local_preset_still_applies(
+        self, dotenv_answers, scenario
+    ):
+        assert dotenv_answers[scenario]["preset"] == "local"
+        assert dotenv_answers[scenario]["chat_provider"] == "local"
+
+    def test_the_scenarios_are_all_answered(self, dotenv_answers):
+        """A scenario added to the table must reach a test above."""
+        assert set(dotenv_answers) == set(DOTENV_SCENARIOS)
+
+
 class TestPresetValidation:
     """Test preset validation."""
 
