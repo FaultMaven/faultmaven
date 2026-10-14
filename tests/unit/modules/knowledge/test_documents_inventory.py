@@ -409,8 +409,9 @@ class TestInventoryServiceDB:
         assert item.is_published is False
 
         # Gotcha lock: vectors MUST be deleted (retrieval ignores is_published).
+        # One attempt: the row change is held open across this call (#1966).
         svc._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-            BUILTIN_ID
+            BUILTIN_ID, retries=0
         )
 
     async def test_delete_refused_rows_never_touch_vectors(self, inventory_service):
@@ -452,7 +453,7 @@ class TestInventoryServiceDB:
             assert await repo.get_by_id(AUTHORED_ID) is None
 
         svc._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-            AUTHORED_ID
+            AUTHORED_ID, retries=0
         )
 
     async def test_delete_missing_document_returns_failure(self, inventory_service):

@@ -27,15 +27,18 @@ Why a separate flow from ``conversion_drafts``?
 Atomicity
     Each runbook's ingestion is all-or-nothing:
       1. Compute the deterministic ``item_id`` (carried by the pack).
-      2. Check ``knowledge_items`` — if present AND content hash matches, skip.
+      2. Check ``knowledge_items`` — if present AND it was ingested from this
+         pack version (the pack hash stamped on the row), skip.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...)`` — SQL row
          first, ChromaDB chunks (pack vectors) second.
       4. Validate ``chunks_created > 0``; on failure, surface loudly and clean
          up — never leave half-state.
 
 Idempotency
-    Re-running is safe. Unchanged runbooks (content-hash match) are skipped;
-    changed ones are re-ingested (delete + re-create). Runbooks removed from the
+    Re-running is safe. Runbooks whose pack version is unchanged (the pack's
+    content hash equals the one stamped on the row at ingest, NOT a hash of the
+    row's current content, which an operator may have edited) are skipped;
+    a new pack version is re-ingested (delete + re-create). Runbooks removed from the
     pack are pruned from ``knowledge_items`` + ChromaDB (orphan prune below).
 """
 
@@ -45,7 +48,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, NamedTuple, Optional
 
 from sqlalchemy import select
 
@@ -62,6 +65,8 @@ class BootstrapResult:
         self.pruned: list[str] = []  # orphaned built-in item_ids removed
         # Reconcile pass (SQL <-> ChromaDB consistency):
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
+        # built-in parent_ids whose row is unpublished (#1966)
+        self.unpublished_vectors_cleaned: list[str] = []
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
 
@@ -72,6 +77,7 @@ class BootstrapResult:
             f"failed={len(self.failed)}, "
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
+            f"unpublished_vectors_cleaned={len(self.unpublished_vectors_cleaned)}, "
             f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
@@ -135,6 +141,18 @@ async def bootstrap_kb(
         pack.version,
     )
 
+    # ONE capability answer for the whole pass (#1966). Under multi, kb_seed
+    # runs as the maintenance role: INSERT and DELETE on knowledge_items,
+    # deliberately no UPDATE. What this pass issues is shaped by the answer,
+    # rather than issuing statements the role is refused: the pack-hash stamp
+    # is skipped, and repair re-reads plainly instead of FOR SHARE.
+    role_may_update = await _role_may_update(db_session_factory)
+    if not role_may_update:
+        logger.debug(
+            "KB bootstrap: this role may not UPDATE knowledge_items — pack-hash "
+            "stamps are skipped and repair re-reads are unlocked this pass."
+        )
+
     for runbook in pack.runbooks:
         try:
             outcome = await _ingest_pack_runbook(
@@ -142,6 +160,7 @@ async def bootstrap_kb(
                 knowledge_service=knowledge_service,
                 db_session_factory=db_session_factory,
                 enterprise_id=enterprise_id,
+                role_may_update=role_may_update,
             )
             if outcome == "ingested":
                 result.ingested.append(runbook.relpath)
@@ -163,11 +182,14 @@ async def bootstrap_kb(
 
     # Reconcile the vector index against knowledge_items (the source of truth).
     # Catches drift that the row-keyed prune above is structurally blind to:
-    # ChromaDB chunks whose parent has no row (orphaned vectors — deleted) and
-    # rows with no chunks (orphaned rows — warned). This is the safety net that
-    # keeps retrieval from landing on a ghost vector with no row behind it.
+    # ChromaDB chunks whose built-in parent has no row (orphaned vectors) or an
+    # unpublished row (#1966) — both deleted — and published rows with no
+    # chunks (orphaned rows — warned; an unpublished row has none by design).
+    # This is the safety net that keeps retrieval from landing on a ghost
+    # vector with no row behind it, or on a runbook that was retired.
     (
         result.orphaned_vectors_cleaned,
+        result.unpublished_vectors_cleaned,
         orphaned_rows,
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
 
@@ -180,7 +202,11 @@ async def bootstrap_kb(
     # timeout the pack exists to avoid.
     max_rows, max_chunks = _resolve_repair_bounds()
     result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
-        orphaned_rows, knowledge_service, max_rows=max_rows, max_chunks=max_chunks
+        orphaned_rows,
+        knowledge_service,
+        role_may_update=role_may_update,
+        max_rows=max_rows,
+        max_chunks=max_chunks,
     )
 
     logger.info(
@@ -189,6 +215,8 @@ async def bootstrap_kb(
         f"{len(result.failed)} failed, "
         f"{len(result.pruned)} pruned, "
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
+        f"{len(result.unpublished_vectors_cleaned)} unpublished built-ins' vectors "
+        "cleaned, "
         f"{len(result.repaired_rows)} rows repaired, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )
@@ -200,17 +228,34 @@ async def _ingest_pack_runbook(
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
     enterprise_id: str,
+    *,
+    role_may_update: bool,
 ) -> str:
     """Ingest one pack runbook. Returns ``"ingested"`` or ``"skipped"``.
 
-    Idempotent: skips when an existing row's content hashes equal to the pack's
-    ``content_hash``. Writes the SQL row + the pack's pre-embedded chunks; never
-    loads the embedding model.
+    Idempotent: skips when the row was last ingested from this pack version —
+    the pack's ``content_hash`` equals the hash stamped on the row at ingest
+    (``metadata.pack_content_hash``). The row's CURRENT content is not the
+    comparison (#1966): an operator may have edited it, and an edit read as a
+    pack change would delete and re-ingest the row, republishing a runbook
+    that was unpublished. A row ingested before the stamp existed is compared
+    by content once and, if unchanged, stamped — unless it is UNPUBLISHED,
+    which is a retirement whatever its content says: it is taken as this pack
+    version, stamped and skipped, so a runbook an operator edited and retired
+    before the stamp existed is not republished by the first boot after the
+    upgrade. The stamp is written only when the pass's role may UPDATE the
+    table (``role_may_update``); under the ``kb_seed`` maintenance role it is
+    skipped, and the content comparison stays exact there because a platform
+    row cannot be edited or unpublished by a tenant session (RLS refuses).
+    Writes the SQL row + the pack's pre-embedded chunks; never loads the
+    embedding model.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        PACK_CONTENT_HASH_KEY,
         VerificationLevel,
     )
+    from faultmaven.utils.serialization import decode_json_blob
 
     # Chunk-integrity guard — validated FIRST, before any lookup/delete. Rejecting
     # before the re-ingest ``_delete_existing`` below is deliberate: a malformed
@@ -252,13 +297,35 @@ async def _ingest_pack_runbook(
         existing_row = existing.scalar_one_or_none()
 
     if existing_row is not None:
-        existing_hash = hashlib.sha256(existing_row.content.encode("utf-8")).hexdigest()
-        content_unchanged = existing_hash == runbook.content_hash
-        if content_unchanged:
+        metadata = decode_json_blob(existing_row.knowledge_metadata) or {}
+        stamped_hash = metadata.get(PACK_CONTENT_HASH_KEY)
+        if stamped_hash is not None:
+            pack_unchanged = stamped_hash == runbook.content_hash
+        else:
+            # Ingested before the stamp existed: the content is the only
+            # evidence of which pack version it came from — except for an
+            # unpublished row, whose retirement is the operator's decision and
+            # outranks it (its content may be an edit). Compared once: the
+            # stamp makes every later boot compare hashes.
+            if not existing_row.is_published:
+                pack_unchanged = True
+            else:
+                existing_hash = hashlib.sha256(
+                    existing_row.content.encode("utf-8")
+                ).hexdigest()
+                pack_unchanged = existing_hash == runbook.content_hash
+            if pack_unchanged and role_may_update:
+                await _stamp_pack_hash(
+                    runbook.item_id,
+                    {**metadata, PACK_CONTENT_HASH_KEY: runbook.content_hash},
+                    db_session_factory,
+                )
+        if pack_unchanged:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             return "skipped"
         logger.info(
-            f"{runbook.relpath}: content changed since last ingest — re-ingesting"
+            f"{runbook.relpath}: the pack carries a new version since the last "
+            "ingest — re-ingesting"
         )
         await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
 
@@ -281,9 +348,10 @@ async def _ingest_pack_runbook(
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
         prechunked=prechunked,
+        pack_content_hash=runbook.content_hash,
         # Vendored, reviewed pack source, not user or model text: its title is
-        # stored as shipped, so a redaction outage cannot stop the platform
-        # corpus from seeding (#1981).
+        # stored as shipped, so a redaction outage that begins after a healthy
+        # start cannot stop the platform corpus from seeding (#1981).
         shipped=True,
     )
 
@@ -298,6 +366,53 @@ async def _ingest_pack_runbook(
         f"Ingested {runbook.relpath} ({chunks_created} chunks, scope={runbook.scope})"
     )
     return "ingested"
+
+
+async def _role_may_update(db_session_factory: Callable[[], Awaitable[Any]]) -> bool:
+    """Whether this pass's role may UPDATE ``knowledge_items`` (asked once).
+
+    A failed check answers False: the pass then issues no UPDATE and no
+    locked read, which the role would be refused if it really lacked the
+    privilege; the cost of a wrong False is only the plain re-read.
+    """
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    try:
+        async with db_session_factory() as session:
+            return await DatabaseKnowledgeItemRepository(session).may_update()
+    except Exception as exc:
+        logger.warning(
+            "KB bootstrap: could not read this role's privileges on "
+            f"knowledge_items ({exc}); treating it as unable to UPDATE this pass."
+        )
+        return False
+
+
+async def _stamp_pack_hash(
+    item_id: str,
+    metadata: dict,
+    db_session_factory: Callable[[], Awaitable[Any]],
+) -> None:
+    """Record which pack version a legacy row came from (best effort).
+
+    A targeted write of the metadata blob alone, leaving ``updated_at`` as it
+    is: it must not revert a concurrent unpublish or edit, and it is
+    bookkeeping, not an edit. A failure is logged; the next boot compares by
+    content again, as it did before the stamp existed.
+    """
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    try:
+        async with db_session_factory() as session:
+            await DatabaseKnowledgeItemRepository(session).update_fields(
+                item_id, {"metadata": metadata}, touch=False
+            )
+    except Exception as exc:
+        logger.warning(f"Could not stamp the pack content hash on {item_id}: {exc}")
 
 
 # Built-in rows carry a deterministic ``kb_<12 hex>`` item_id (see
@@ -347,10 +462,22 @@ async def _prune_orphan_builtins(
     return pruned
 
 
+class ReconcileResult(NamedTuple):
+    """What :func:`_reconcile_vectors` deleted and what it found unrepaired."""
+
+    #: Built-in parents whose vectors were deleted because no row exists.
+    orphaned_vectors_cleaned: list[str]
+    #: Built-in parents whose vectors were deleted because the row is
+    #: unpublished (#1966) — kept apart so the field above keeps its meaning.
+    unpublished_vectors_cleaned: list[str]
+    #: Published rows with no vectors, for :func:`_repair_orphaned_rows`.
+    orphaned_rows: list[str]
+
+
 async def _reconcile_vectors(
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
-) -> tuple[list[str], list[str]]:
+) -> ReconcileResult:
     """Reconcile the KB vector index against ``knowledge_items`` (source of truth).
 
     The prune above is keyed off DB rows, so it can only ever delete a row plus
@@ -364,10 +491,18 @@ async def _reconcile_vectors(
         of truth for a shipped runbook, so a vector with no row can never be
         retrieved-then-resolved — and a single such ghost landing as the top KB
         hit silently kills a runbook-cause match.
-      * **orphaned rows** — a row with no vectors. Can't be repaired here (no
-        embedding model at startup), so it is WARNED, not touched.
-
-    Returns ``(deleted_parent_ids, orphaned_row_ids)``.
+      * **unpublished vectors** — a built-in parent whose row exists but is
+        UNPUBLISHED (#1966). Deleted: an unpublished runbook must not be
+        retrievable, and retrieval does not honour ``is_published``.
+        ``delete_document`` drops the vectors when it unpublishes, so these
+        are what an older version's repair re-embedded (it listed unpublished
+        rows as orphaned) or a write that raced the unpublish left behind.
+      * **orphaned rows** — a PUBLISHED row with no vectors. Can't be repaired
+        here (no embedding model at startup), so it is WARNED, not touched, and
+        returned for :func:`_repair_orphaned_rows`. An unpublished row is never
+        listed: having no vectors is its intended state. Listing it would hand
+        it to repair, which would re-embed it and silently undo the unpublish
+        at the next boot (#1966).
 
     **Scope — only deletes built-in ``kb_<12 hex>`` vectors.** The bootstrap DB
     session is RLS-scoped (``app.current_enterprise_id`` is set per-transaction; see
@@ -378,7 +513,7 @@ async def _reconcile_vectors(
     to the built-in id class (the same discriminator the orphan-prune uses) bounds
     the blast radius to platform-shipped runbooks, which is exactly the drift this
     pass exists to clean; authored/personal/team vectors (uuid or ``kb_<16 hex>``)
-    are never touched. The pattern can't match them.
+    are never touched, unpublished or not. The pattern can't match them.
 
     Safety: if the DB yields ZERO knowledge_items (a pathological all-rows-missing
     state, e.g. ingest fully failed this boot) we do NOT delete any vectors — that
@@ -387,10 +522,11 @@ async def _reconcile_vectors(
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
+    nothing = ReconcileResult([], [], [])
     vector_store = getattr(knowledge_service, "_vector_store", None)
     if vector_store is None:
         logger.debug("Reconcile skipped: no vector store wired.")
-        return [], []
+        return nothing
     if not hasattr(vector_store, "list_parent_document_ids"):
         # A store that can't enumerate (e.g. the generic ChromaDBVectorStore
         # fallback when the KB client failed to init) silently leaves drift in
@@ -400,17 +536,22 @@ async def _reconcile_vectors(
             "KB SQL<->vector drift will NOT be cleaned this boot.",
             type(vector_store).__name__,
         )
-        return [], []
+        return nothing
 
     try:
         chroma_parents = await vector_store.list_parent_document_ids()
     except Exception as exc:
         logger.warning(f"Reconcile skipped: could not list vector parents: {exc}")
-        return [], []
+        return nothing
 
     async with db_session_factory() as session:
-        rows = await session.execute(select(KnowledgeItemModel.item_id))
-        db_ids = {r[0] for r in rows.all()}
+        rows = (
+            await session.execute(
+                select(KnowledgeItemModel.item_id, KnowledgeItemModel.is_published)
+            )
+        ).all()
+    db_ids = {item_id for item_id, _published in rows}
+    published_ids = {item_id for item_id, published in rows if published}
 
     # Empty source of truth = anomaly, not a wipe signal. Guard FIRST, before any
     # delete or per-row warning (with no rows there is nothing meaningful to say).
@@ -422,33 +563,48 @@ async def _reconcile_vectors(
                 "row-write failure, not a 'remove everything' signal).",
                 len(chroma_parents),
             )
-        return [], []
+        return nothing
 
-    orphaned_rows = sorted(db_ids - chroma_parents)
+    orphaned_rows = sorted(published_ids - chroma_parents)
     for item_id in orphaned_rows:
         logger.warning(
             f"KB consistency: knowledge_item {item_id} has no vectors — it cannot "
             f"be retrieved. Re-ingest required (no embedding model at startup)."
         )
 
-    # Delete only BUILT-IN orphans (see scope note) — never authored/other-tenant
-    # vectors. One batched delete instead of a round-trip per parent.
+    # Delete only BUILT-IN parents (see scope note) — never authored/other-tenant
+    # vectors: those with no row, and those whose row is unpublished. One
+    # batched delete instead of a round-trip per parent.
     orphaned_vectors = sorted(
         p for p in (chroma_parents - db_ids) if _BUILTIN_ITEM_ID_RE.match(p)
     )
-    if not orphaned_vectors:
-        return [], orphaned_rows
+    unpublished_with_vectors = sorted(
+        p
+        for p in (chroma_parents & (db_ids - published_ids))
+        if _BUILTIN_ITEM_ID_RE.match(p)
+    )
+    if not orphaned_vectors and not unpublished_with_vectors:
+        return ReconcileResult([], [], orphaned_rows)
 
     try:
-        deleted = await vector_store.delete_documents_by_parents(orphaned_vectors)
-        logger.info(
-            f"Reconcile: deleted {deleted} orphaned vector chunk(s) across "
-            f"{len(orphaned_vectors)} built-in parent(s) with no knowledge_items row."
+        deleted = await vector_store.delete_documents_by_parents(
+            orphaned_vectors + unpublished_with_vectors
         )
-        return orphaned_vectors, orphaned_rows
     except Exception as exc:
         logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
-        return [], orphaned_rows
+        return ReconcileResult([], [], orphaned_rows)
+
+    logger.info(
+        f"Reconcile: deleted {deleted} vector chunk(s) across "
+        f"{len(orphaned_vectors)} built-in parent(s) with no knowledge_items row "
+        f"and {len(unpublished_with_vectors)} unpublished built-in parent(s)."
+    )
+    for item_id in unpublished_with_vectors:
+        logger.warning(
+            f"KB consistency: unpublished built-in {item_id} still had vectors — "
+            "deleted, so the retired runbook is no longer retrievable."
+        )
+    return ReconcileResult(orphaned_vectors, unpublished_with_vectors, orphaned_rows)
 
 
 # Default bounds on the cross-store repair. Overridable per deployment via
@@ -498,6 +654,7 @@ async def _repair_orphaned_rows(
     orphaned_rows: list[str],
     knowledge_service: Any,
     *,
+    role_may_update: bool,
     max_rows: int = KB_REPAIR_MAX_ROWS,
     max_chunks: int = KB_REPAIR_MAX_CHUNKS,
 ) -> tuple[list[str], list[str]]:
@@ -515,8 +672,15 @@ async def _repair_orphaned_rows(
     both entry paths (the single-tenant web-startup bootstrap and the
     cross-tenant ``kb_seed`` job seeding the org-free global tier). Contrast
     reconcile's DELETE side, restricted to built-in ids precisely because
-    deletion CAN cross tenants; addition cannot, so ALL orphaned rows are
-    eligible — a lost authored runbook is repaired the same as a shipped one.
+    deletion CAN cross tenants; addition cannot, so every orphaned PUBLISHED
+    row is eligible — a lost authored runbook is repaired the same as a
+    shipped one. An unpublished row is not an orphan (it has no vectors by
+    design, #1966): reconcile does not list it, and
+    ``reindex_missing_vectors`` refuses it if handed one anyway.
+
+    ``role_may_update`` is the pass's one capability answer: it decides whether
+    each repair's re-read after writing is locked (see
+    ``KnowledgeService.reindex_missing_vectors``).
 
     Bounded twice (``max_rows`` / ``max_chunks``, deployment-configurable):
     ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the
@@ -569,7 +733,9 @@ async def _repair_orphaned_rows(
             )
             break
         try:
-            chunks = await knowledge_service.reindex_missing_vectors(item_id)
+            chunks = await knowledge_service.reindex_missing_vectors(
+                item_id, role_may_update=role_may_update
+            )
         except Exception as exc:
             logger.warning(f"KB repair failed for {item_id}: {exc}")
             still_orphaned.append(item_id)
@@ -587,7 +753,9 @@ async def _repair_orphaned_rows(
             still_orphaned.append(item_id)
             logger.warning(
                 f"KB repair produced 0 chunks for {item_id} (embedding model "
-                "unavailable?) — row remains unretrievable, will retry next boot."
+                "unavailable, or the row was deleted or unpublished during the "
+                "repair — see the line before) — if the row is still live it "
+                "stays unretrievable until a later boot retries it."
             )
     return repaired, still_orphaned
 
