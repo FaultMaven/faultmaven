@@ -1,32 +1,46 @@
-"""Every way core launches the API goes through ``run_server``.
+"""Every way core launches the API goes through ``run_server``, and runs ``main.py`` once.
 
 ``test_run_server_options.py`` pins what ``run_server`` passes to uvicorn. That
 is only the invariant if every launch path reaches it, so these pin the paths:
 
-* the image: the Dockerfile's ``CMD`` is ``python -m faultmaven.main``, and its
+* the image: the Dockerfile's ``CMD`` is ``python -m faultmaven.server``, and its
   ``ENV`` sets the ``HOST`` / ``PORT`` / ``RELOAD`` that ``run_server`` reads
   from settings;
-* ``python -m faultmaven.main`` itself: the ``__main__`` guard calls
-  ``run_server()``;
-* the no-Docker dev launcher, ``scripts/faultmaven-dev.sh``.
+* the no-Docker dev launcher, ``scripts/faultmaven-dev.sh``, which launches the
+  same module;
+* the launcher module itself: its ``__main__`` guard calls ``run_server()``.
 
 A launch that bypasses ``run_server`` (the ``uvicorn`` CLI) cannot set
 ``log_config=None``, so ``uvicorn.error`` records stop at uvicorn's own handler,
 outside the redacting renderer.
 
+The second invariant is that a launch executes ``faultmaven/main.py`` exactly
+once (#1985). ``python -m faultmaven.main`` executed it as ``__main__`` and then
+again when uvicorn imported the ``"faultmaven.main:app"`` string, so every
+import-time side effect (duplicate logs, ``Request.form`` wrapped twice,
+Prometheus scrape hooks registered twice) ran twice. These tests take the launch
+module from the Dockerfile and the dev script, run it the way ``python -m`` does
+in a child process with ``uvicorn.run`` replaced by a stub that imports the app
+string as uvicorn does, and count the executions of ``main.py``'s code object.
+A positive control proves the counter sees a second execution.
+
 The shell-script check is a **text pin**: it reads the launch line and asserts
 its shape, it does not run the script (that needs ``ss``, ``curl`` and a free
 port). The script's behaviour was checked by hand with a stub ``python`` on a
 free port; this keeps the line from drifting back to the CLI or losing an
-override.
+override. Its launch module is also exercised for real, by the child-process
+tests.
 """
 
+import ast
+import functools
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -64,12 +78,33 @@ def _dockerfile_instructions() -> list[tuple[str, str]]:
     ]
 
 
-def test_dockerfile_cmd_is_run_server_through_python_dash_m():
+#: The one module the image and the dev script launch. It is not the app's
+#: module, so ``__main__`` is never ``main.py`` (#1985).
+LAUNCHER = "faultmaven.server"
+
+#: What ``run_server`` hands uvicorn, for the env ``_run_launcher`` sets.
+EXPECTED_UVICORN_KWARGS = {
+    "host": "127.0.0.9",
+    "port": 18999,
+    "reload": False,
+    "log_level": "info",
+    "access_log": False,
+    "timeout_keep_alive": 33,
+    "log_config": None,
+}
+
+
+def _dockerfile_cmd() -> list[str]:
     cmds = [args for ins, args in _dockerfile_instructions() if ins == "CMD"]
     entrypoints = [ins for ins, _ in _dockerfile_instructions() if ins == "ENTRYPOINT"]
 
     assert entrypoints == [], "an ENTRYPOINT would wrap the CMD this test pins"
-    assert [json.loads(c) for c in cmds] == [["python", "-m", "faultmaven.main"]]
+    assert len(cmds) == 1, f"expected one CMD, found {cmds!r}"
+    return json.loads(cmds[0])
+
+
+def test_dockerfile_cmd_is_run_server_through_the_launcher_module():
+    assert _dockerfile_cmd() == ["python", "-m", LAUNCHER]
 
 
 def test_dockerfile_sets_the_bind_run_server_reads_from_settings():
@@ -83,80 +118,33 @@ def test_dockerfile_sets_the_bind_run_server_reads_from_settings():
     assert env.get("RELOAD") == "false"
 
 
-def test_running_the_module_calls_run_server_with_every_uvicorn_option(tmp_path):
-    """``python -m faultmaven.main`` reaches ``uvicorn.run`` with the options.
-
-    Run in a child process: executing ``main.py`` again as ``__main__`` wraps
-    ``starlette.requests.Request.form`` a second time, a process-global change
-    that must not leak into the rest of this worker's tests.
-    """
-    child = (
-        "import json, runpy, sys\n"
-        "from unittest.mock import patch\n"
-        "with patch('uvicorn.run', autospec=True) as run:\n"
-        "    runpy.run_module('faultmaven.main', run_name='__main__')\n"
-        "json.dump({'count': run.call_count, 'args': list(run.call_args.args),\n"
-        "           'kwargs': run.call_args.kwargs}, open(sys.argv[1], 'w'))\n"
-    )
-    env = {
-        **os.environ,
-        # Pinned: run_server reads these from settings, and env beats .env.
-        "HOST": "127.0.0.9",
-        "PORT": "18999",
-        "RELOAD": "false",
-        "WORKERS": "1",
-        "TIMEOUT_KEEP_ALIVE": "33",
-        "PYTHONPATH": str(REPO_ROOT),
-    }
-
-    out = tmp_path / "call.json"
-    result = subprocess.run(
-        [sys.executable, "-c", child, str(out)],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    assert result.returncode == 0, (
-        "python -m faultmaven.main never reached uvicorn.run "
-        f"(is the __main__ guard gone?):\n{result.stderr[-2000:]}"
-    )
-    call = json.loads(out.read_text())
-
-    assert call["count"] == 1
-    assert call["args"] == ["faultmaven.main:app"]
-    assert call["kwargs"] == {
-        "host": "127.0.0.9",
-        "port": 18999,
-        "reload": False,
-        "log_level": "info",
-        "access_log": False,
-        "timeout_keep_alive": 33,
-        "log_config": None,
-    }
-
-
 def _dev_script_launch_tokens() -> list[str]:
     """The tokens of the dev script's one line that launches the API."""
     lines = [
         line
         for line in DEV_SCRIPT.read_text().splitlines()
-        if "faultmaven.main" in line and not line.lstrip().startswith("#")
+        if re.search(r"\bpython -m [\w.]+ > ", line)  # the log redirect: a launch
+        and not line.lstrip().startswith("#")
     ]
     assert len(lines) == 1, f"expected one launch line, found {lines!r}"
     return shlex.split(lines[0])
 
 
-def test_dev_script_launches_through_run_server_with_its_overrides():
-    """Text pin (see the module docstring): the launch line's shape."""
+def _dev_script_launch() -> tuple[dict[str, str], list[str]]:
+    """``(environment assignments, command)`` of the dev script's launch line."""
     tokens = _dev_script_launch_tokens()
     assignments = {}
     while tokens and re.fullmatch(r"[A-Z_]+=.*", tokens[0]):
         name, value = tokens.pop(0).split("=", 1)
         assignments[name] = value
+    return assignments, tokens
 
-    assert tokens[:3] == ["python", "-m", "faultmaven.main"]
+
+def test_dev_script_launches_through_the_launcher_with_its_overrides():
+    """Text pin (see the module docstring): the launch line's shape."""
+    assignments, tokens = _dev_script_launch()
+
+    assert tokens[:3] == ["python", "-m", LAUNCHER]
     for name in LAUNCH_ENV:
         assert name in assignments, f"{name} must be set on the launch line"
     assert assignments["HOST"] == "0.0.0.0"
@@ -175,3 +163,179 @@ def test_dev_script_never_starts_the_uvicorn_cli():
     ]
     # A command, not prose: echo lines may still say "stale uvicorn".
     assert not [line for line in code if re.search(r"\buvicorn\s+[\w.]+:\w+", line)]
+
+
+#: The child process. It runs a launch the way ``python -m <module>`` does
+#: (``runpy`` with ``__main__`` as the run name), with two instruments in place
+#: before anything is imported:
+#:
+#: * ``builtins.exec`` is wrapped to count every execution of ``main.py``'s
+#:   module code, however it arrives: ``runpy`` running it as ``__main__`` and
+#:   the import system both reach ``exec`` through the builtins;
+#: * ``uvicorn.run`` is replaced by a stub that records the call and then
+#:   imports the app string with uvicorn's own importer, as ``uvicorn.run`` does
+#:   in-process (``reload=False``, one worker) before it serves. Without that
+#:   import a second execution would never happen and the count would prove
+#:   nothing.
+#:
+#: ``control`` is not a launch: it executes ``main.py`` as ``__main__`` and then
+#: imports the string, the old launch, to show the counter sees both.
+_CHILD = r"""
+import builtins, json, os, runpy, sys
+from unittest.mock import patch
+
+import importlib.util
+from uvicorn.importer import import_from_string
+
+launch, out = sys.argv[1], sys.argv[2]
+main_py = os.path.realpath(importlib.util.find_spec("faultmaven.main").origin)
+
+executions = []
+real_exec = builtins.exec
+
+
+def counting_exec(source, *args, **kwargs):
+    filename = getattr(source, "co_filename", None)
+    if filename and os.path.realpath(filename) == main_py:
+        executions.append(source.co_name)
+    return real_exec(source, *args, **kwargs)
+
+
+def import_the_app(app, **kwargs):
+    import_from_string(app)
+
+
+builtins.exec = counting_exec
+try:
+    with patch("uvicorn.run", autospec=True, side_effect=import_the_app) as run:
+        if launch == "control":
+            runpy.run_module("faultmaven.main", run_name="__main__", alter_sys=True)
+            import_from_string("faultmaven.main:app")
+        else:
+            runpy.run_module(launch, run_name="__main__", alter_sys=True)
+finally:
+    builtins.exec = real_exec
+
+json.dump(
+    {
+        "main_py_executions": executions,
+        "uvicorn_calls": run.call_count,
+        "args": list(run.call_args.args) if run.call_args else None,
+        "kwargs": dict(run.call_args.kwargs) if run.call_args else None,
+    },
+    open(out, "w"),
+)
+"""
+
+
+@functools.cache
+def _run_launcher(launch: str) -> tuple[subprocess.CompletedProcess, dict | None]:
+    """Run ``launch`` (a module name, or ``control``) in a child process.
+
+    A child process, because executing ``main.py`` wraps
+    ``starlette.requests.Request.form`` and registers Prometheus scrape hooks,
+    process-global changes that must not leak into the rest of this worker's
+    tests. Cached by launch, so the Dockerfile and the dev script, which launch
+    the same module, share one child.
+    """
+    env = {
+        **os.environ,
+        # Pinned: run_server reads these from settings, and env beats .env.
+        "HOST": "127.0.0.9",
+        "PORT": "18999",
+        "RELOAD": "false",
+        "WORKERS": "1",
+        "TIMEOUT_KEEP_ALIVE": "33",
+        "PYTHONPATH": str(REPO_ROOT),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "launch.json"
+        result = subprocess.run(
+            [sys.executable, "-c", _CHILD, launch, str(out)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result, json.loads(out.read_text()) if out.exists() else None
+
+
+def _launched(launch: str) -> dict:
+    result, record = _run_launcher(launch)
+    assert record is not None, (
+        f"`python -m {launch}` failed before the child could report "
+        f"(rc={result.returncode}):\n{result.stderr[-2000:]}"
+    )
+    return record
+
+
+def _launch_modules() -> dict[str, str]:
+    """The module each launch path runs, read from the launch path itself."""
+    cmd = _dockerfile_cmd()
+    assert cmd[:2] == ["python", "-m"] and len(cmd) == 3, cmd
+    _, dev = _dev_script_launch()
+    assert dev[:2] == ["python", "-m"], dev
+    return {"Dockerfile CMD": cmd[2], "dev script": dev[2]}
+
+
+@pytest.mark.parametrize("path", ["Dockerfile CMD", "dev script"])
+def test_launch_path_reaches_uvicorn_run_with_every_option(path):
+    """Each launch path's module calls ``run_server`` -> ``uvicorn.run``, once."""
+    launch = _launch_modules()[path]
+
+    record = _launched(launch)
+
+    assert record["uvicorn_calls"] == 1, (
+        f"`python -m {launch}` ({path}) never reached uvicorn.run "
+        "(is the __main__ guard gone?)"
+    )
+    assert record["args"] == ["faultmaven.main:app"]
+    assert record["kwargs"] == EXPECTED_UVICORN_KWARGS
+
+
+@pytest.mark.parametrize("path", ["Dockerfile CMD", "dev script"])
+def test_launch_path_executes_main_py_exactly_once(path):
+    """#1985: a launch executes ``main.py`` once, when uvicorn imports the app.
+
+    ``python -m faultmaven.main`` executed it twice: as ``__main__``, then again
+    for uvicorn's import of ``faultmaven.main:app``.
+    """
+    launch = _launch_modules()[path]
+
+    record = _launched(launch)
+
+    # A launch that executes main.py once but never serves is not a launch.
+    assert (
+        record["uvicorn_calls"] == 1
+    ), f"`python -m {launch}` ({path}) never reached uvicorn.run"
+    assert record["main_py_executions"] == ["<module>"], (
+        f"`python -m {launch}` ({path}) executed main.py "
+        f"{len(record['main_py_executions'])} times, expected exactly 1"
+    )
+
+
+def test_the_execution_counter_sees_a_second_execution():
+    """Positive control: the old launch (``main.py`` as ``__main__``, then
+    uvicorn's import of the string) counts two, so a count of one means one."""
+    assert _launched("control")["main_py_executions"] == ["<module>", "<module>"]
+
+
+def test_main_py_has_no_main_guard():
+    """``main.py`` is only ever imported: a ``__main__`` guard in it would make
+    ``python -m faultmaven.main`` a launch path that executes it twice."""
+    tree = ast.parse((REPO_ROOT / "faultmaven" / "main.py").read_text())
+
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "__name__"
+    ]
+    assert guards == []
+    assert not [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "run_server"
+    ], "run_server lives in faultmaven/server.py, the one launcher"

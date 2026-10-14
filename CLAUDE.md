@@ -44,6 +44,8 @@ Version floors: `pyproject.toml`. The pins CI installs: `requirements/dev.txt` (
 faultmaven/
 ├── main.py                 # FastAPI entry point: the app object, router inclusion, exception handlers,
 │                           # app-bound routes (health/metrics/meta/debug), import-time side effects
+├── server.py               # The launcher (`python -m faultmaven.server`) and `run_server`, the one home of the uvicorn options;
+│                           # imports nothing that imports main.py, so every launch executes main.py exactly once (#1985)
 ├── api/                    # Shared middleware (middleware/), v1/auth_dependencies.py (require_authentication), exception handlers, admin routes (routes/)
 ├── modules/                # Feature modules — the primary code organisation
 │   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/

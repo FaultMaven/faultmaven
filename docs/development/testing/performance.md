@@ -174,7 +174,7 @@ question. None of them is a raw threshold.
 
 ```bash
 # Start FaultMaven locally first
-HOST=0.0.0.0 PORT=8000 RELOAD=false python -m faultmaven.main
+HOST=0.0.0.0 PORT=8000 RELOAD=false python -m faultmaven.server
 
 # Run load test (separate terminal)
 ./scripts/run_load_tests.sh local
@@ -828,7 +828,7 @@ Test process overhead may contribute. Check:
 
 Ensure the FaultMaven API is running:
 ```bash
-HOST=0.0.0.0 PORT=8000 RELOAD=false python -m faultmaven.main
+HOST=0.0.0.0 PORT=8000 RELOAD=false python -m faultmaven.server
 ```
 
 ## Questions?

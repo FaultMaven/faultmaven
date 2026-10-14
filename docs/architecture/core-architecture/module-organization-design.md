@@ -1164,6 +1164,7 @@ faultmaven/
 │
 ├── exceptions.py                     # ⚠️ Shared base exceptions
 │
+├── server.py                         # Launcher + run_server (uvicorn options); never imports main.py
 └── main.py                           # Composition root
 ```
 

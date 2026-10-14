@@ -85,14 +85,14 @@ FIREWORKS_API_KEY=fw-your-fireworks-key-here
 
 ```bash
 # Start FaultMaven
-python -m faultmaven.main
+python -m faultmaven.server
 
 # Or choose the bind yourself (development, with the reloader on)
-HOST=0.0.0.0 PORT=8090 RELOAD=true python -m faultmaven.main
+HOST=0.0.0.0 PORT=8090 RELOAD=true python -m faultmaven.server
 ```
 
 The server takes host, port and reload from settings (`HOST`, `PORT`,
-`RELOAD`). A bare `python -m faultmaven.main` with no OpenAI, Anthropic,
+`RELOAD`). A bare `python -m faultmaven.server` with no OpenAI, Anthropic,
 Fireworks, Groq or Cohere API key configured applies the zero-config `local`
 preset: it serves `127.0.0.1:8000` with the reloader on, not `:8090`. Set the
 three variables, or put them in `.env`, to bind where the URLs below expect.
@@ -281,7 +281,7 @@ echo "OPENAI_API_KEY=sk-your-key-here" >> .env
 **Solution**:
 ```bash
 # Use a different port
-PORT=8080 python -m faultmaven.main
+PORT=8080 python -m faultmaven.server
 
 # Or find and kill the process using port 8000
 lsof -ti:8090 | xargs kill -9  # Linux/macOS
@@ -307,7 +307,7 @@ pip install --upgrade 'pydantic>=2.10,<3'
 pkill -f "python -m faultmaven"
 
 # Restart with single process
-python -m faultmaven
+python -m faultmaven.server
 ```
 
 ---
@@ -331,7 +331,7 @@ echo "LOCAL_LLM_URL=http://localhost:11434" >> .env
 echo "LOCAL_LLM_MODEL=llama2" >> .env
 
 # Start FaultMaven
-python -m faultmaven
+python -m faultmaven.server
 ```
 
 ### Option 2: Docker Deployment
@@ -359,7 +359,7 @@ For active development:
 pip install -e .[dev,test]
 
 # Run with auto-reload and debug logging
-RELOAD=true LOG_LEVEL=DEBUG python -m faultmaven.main
+RELOAD=true LOG_LEVEL=DEBUG python -m faultmaven.server
 ```
 
 There is no `--log-level` flag: the server fixes uvicorn's own level at `info`
