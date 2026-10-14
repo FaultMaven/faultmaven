@@ -30,7 +30,17 @@ import hashlib
 import hmac
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 import requests
 
@@ -65,17 +75,23 @@ class RedactionPattern:
     compiled expression. ``secret``, when the expression names that group, is
     the span replaced; otherwise the whole match is.
 
-    ``triggers`` are lower-case literals, at least one of which every match
-    contains (case-insensitively); empty means none is known. ``keyed`` says
-    more: no match crosses a newline, and every match starts at the start of
-    its line or where a trigger starts. Both only let ``find_redaction_spans``
-    skip positions where no match can start.
+    The rest only lets ``find_redaction_spans`` skip text where no match can
+    be, and never changes what it finds:
+
+    - ``triggers`` are lower-case literals, and ``hint`` a pattern over the
+      lower-cased text; every match contains a trigger or a hint match. With
+      neither, nothing is known and the whole text is scanned.
+    - ``scope`` says where a match can lie. ``"token"``: inside one run of
+      non-whitespace, which is scanned whole. ``"keyed"``: on one line,
+      starting where a trigger starts or at the line's start. ``"text"``:
+      anywhere, across lines too.
     """
 
     entity_type: str
     regex: "re.Pattern[str]"
     triggers: Tuple[str, ...] = ()
-    keyed: bool = False
+    scope: str = "text"
+    hint: Optional["re.Pattern[str]"] = None
 
     @property
     def span_group(self) -> int | str:
@@ -140,13 +156,11 @@ _ASSIGN = r"(?:=>?|[ \t]+=>?(?!=))[ \t]*"
 _QUOTED_KEY_SEPARATOR = r"""["'][ \t]*[:=][ \t]*"""
 
 
-def _keyed_secret(keywords: str, cased: str, value_guard: str = "") -> str:
+def _keyed_secret(keywords: str, value_guard: str = "") -> str:
     """``key <separator> value``, for one family of secret-naming keys.
 
-    ``keywords`` match in any case; ``cased`` are the spellings that mark a
-    keyword inside a longer name with no separator (``clientSecret``,
-    ``PGPASSWORD``). The match runs from the keyword to the end of the value
-    (the key is part of what is replaced, as it always was). The spellings:
+    The match runs from the keyword to the end of the value (the key is part
+    of what is replaced, as it always was). The spellings:
 
     1. ``key: value`` as a whole line (YAML, ``.env``, a header block), under
        optional indentation, a list dash and a dotted key path: any value.
@@ -156,10 +170,11 @@ def _keyed_secret(keywords: str, cased: str, value_guard: str = "") -> str:
     3. A bare key as ``key: value`` in running text, or as a command-line
        flag (``--password value``): any value not shaped like a word (see
        ``_MIDLINE_VALUE``).
-    4. A compound key — ``db_password``, ``clientSecret``, ``PGPASSWORD`` —
-       with ``=``/``=>`` or as a quoted key, and a value that is not a count
-       or a flag. A compound ``key: value`` is not read as a secret: that is
-       how event counts print (``failed_password: 520``, #654).
+    4. A compound key — ``db_password``, ``clientSecret``, ``PGPASSWORD``,
+       ``xpassword``, a keyword glued to whatever precedes it — with
+       ``=``/``=>`` or as a quoted key, and a value that is not a count or a
+       flag. A compound ``key: value`` is not read as a secret: that is how
+       event counts print (``failed_password: 520``, #654).
 
     "Bare" means not preceded by a letter, digit or underscore, so
     ``X-Auth-Token`` and ``spring.datasource.password`` are bare keys and
@@ -167,7 +182,7 @@ def _keyed_secret(keywords: str, cased: str, value_guard: str = "") -> str:
     """
     key = rf"(?:{keywords})"
     bare = rf"(?<![A-Za-z0-9_]){key}"
-    compound = rf"(?:(?<=[A-Za-z0-9]_){key}|(?<=[A-Za-z0-9])(?-i:{cased}))"
+    compound = rf"(?<=[A-Za-z0-9_]){key}"
     return (
         rf"(?:^|(?<=\n))[ \t]*(?:-[ \t]+)?(?:[\w-]+\.)*"
         rf"(?P<secret>{key}[ \t]*:[ \t]+{value_guard}{_LINE_VALUE})"
@@ -206,28 +221,34 @@ def _pattern(
     expression: str,
     flags: int,
     triggers: Tuple[str, ...],
-    keyed: bool = False,
+    scope: str = "token",
+    hint: Optional[str] = None,
 ) -> RedactionPattern:
-    return RedactionPattern(entity_type, re.compile(expression, flags), triggers, keyed)
+    return RedactionPattern(
+        entity_type,
+        re.compile(expression, flags),
+        triggers,
+        scope,
+        re.compile(hint) if hint else None,
+    )
 
 
 def _keyed(
     entity_type: str,
     keywords: str,
-    cased: str,
     triggers: Tuple[str, ...],
     value_guard: str = "",
 ) -> RedactionPattern:
     """A ``_keyed_secret`` family, case-insensitive. ``triggers`` must each
-    be the start of a keyword (every keyword and cased spelling starts with
-    one), so a match starts at a trigger or, as a whole-line spelling, at the
-    start of its line."""
+    be the start of a keyword (every keyword starts with one), so a match
+    starts at a trigger or, as a whole-line spelling, at the start of its
+    line."""
     return _pattern(
         entity_type,
-        _keyed_secret(keywords, cased, value_guard),
+        _keyed_secret(keywords, value_guard),
         _I,
         triggers,
-        keyed=True,
+        scope="keyed",
     )
 
 
@@ -241,8 +262,15 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         _PEM_BEGIN + r".*?-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
         _I | re.DOTALL,
         ("private key",),
+        scope="text",
     ),
-    _pattern("PRIVATE_KEY", _PEM_BEGIN + _PEM_TRUNCATED_BODY, _I, ("private key",)),
+    _pattern(
+        "PRIVATE_KEY",
+        _PEM_BEGIN + _PEM_TRUNCATED_BODY,
+        _I,
+        ("private key",),
+        scope="text",
+    ),
     # Connection URLs with a user (and password) before the host. The user
     # part never crosses whitespace — the former `[^@]+` ran on to the next
     # `@` anywhere later in the text (an email, an @mention, `user@service`)
@@ -309,6 +337,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[=:]\s*['\"]?[0-9a-zA-Z/+]{40}",
         _I,
         ("secret",),
+        scope="text",
     ),
     # JWTs. (The former `[A-Za-z0-9-_=]` was a `9-_` RANGE, which also took
     # `:;<=>?@[\]^`.)
@@ -331,6 +360,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"[A-Za-z0-9._~+/-]{8,}=*)",
         _I,
         ("bearer",),
+        scope="keyed",
     ),
     # `Authorization: Basic <base64 user:password>`: the credential is the
     # span.
@@ -341,28 +371,19 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"(?=[A-Za-z0-9+/]*(?:[0-9+/]|(?-i:[a-z][A-Z])))"
         r"[A-Za-z0-9+/]{8,}={0,2})",
         _I,
-        ("basic",),
+        ("authorization", "proxy-authorization"),
+        scope="keyed",
     ),
     _pattern("K8S_SECRET", r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", _I, ("k8s",)),
     # `apikey<hex>` with no separator, then the keyed spellings.
     _pattern("API_KEY", r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", _I, ("api",)),
-    _keyed("API_KEY", r"api[_-]?key", r"Api[_-]?Key|API[_-]?K(?:ey|EY)", ("api",)),
-    _keyed(
-        "PASSWORD",
-        r"password|passwd|passphrase",
-        r"Pass(?:word|wd|phrase)|PASS(?:WORD|WD|PHRASE)",
-        ("pass",),
-    ),
+    _keyed("API_KEY", r"api[_-]?key", ("api",)),
+    _keyed("PASSWORD", r"password|passwd|passphrase", ("pass",)),
     # `pwd` is also the working directory (`PWD=/home/app` in every env
     # dump): a path is not its password.
-    _keyed("PASSWORD", r"pwd", r"Pwd|PWD", ("pwd",), value_guard=r"""(?!["']?[/~])"""),
-    _keyed(
-        "SECRET",
-        r"secret(?:[_-]?key)?",
-        r"Secret(?:Key)?|SECRET(?:KEY)?",
-        ("secret",),
-    ),
-    _keyed("TOKEN", r"token", r"Token|TOKEN", ("token",)),
+    _keyed("PASSWORD", r"pwd", ("pwd",), value_guard=r"""(?!["']?[/~])"""),
+    _keyed("SECRET", r"secret(?:[_-]?key)?", ("secret",)),
+    _keyed("TOKEN", r"token", ("token",)),
 )
 
 #: Network identifiers the sanitizer also redacts: internal addresses and
@@ -408,6 +429,7 @@ NETWORK_ADDRESS_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"(?<![0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2})",
         _I,
         (),
+        hint=r"[:-][0-9a-f]{2}[:-]",
     ),
 )
 
@@ -426,32 +448,49 @@ def _trigger_view(text: str) -> Optional[str]:
     """``text`` lower-cased for the trigger checks, index for index — or
     None when lower-casing changes its length (``İ``), when no index maps
     and every pattern runs on the whole text."""
-    view = text.lower().translate(_IGNORECASE_ASCII_FOLDS)
+    view = text.lower()
+    if "\u0131" in view or "\u017f" in view:
+        view = view.translate(_IGNORECASE_ASCII_FOLDS)
     return view if len(view) == len(text) else None
 
 
-def _keyed_starts(text: str, view: str, triggers: Tuple[str, ...]) -> List[int]:
-    """Where a keyed pattern's match can start: each trigger, and the start
-    of each line that holds one. Sorted."""
-    starts = set()
-    for trigger in triggers:
+def _present(pattern: RedactionPattern, view: str) -> bool:
+    """Whether any of ``pattern``'s triggers, or its hint, occurs in ``view``."""
+    if any(map(view.__contains__, pattern.triggers)):
+        return True
+    return pattern.hint is not None and pattern.hint.search(view) is not None
+
+
+def _hits(pattern: RedactionPattern, view: str) -> List[int]:
+    """Where ``pattern``'s triggers and hint occur in ``view``, sorted."""
+    hits = []
+    for trigger in pattern.triggers:
         hit = view.find(trigger)
         while hit != -1:
-            starts.add(hit)
-            starts.add(text.rfind("\n", 0, hit) + 1)
+            hits.append(hit)
             hit = view.find(trigger, hit + 1)
-    return sorted(starts)
+    if pattern.hint is not None:
+        hits.extend(match.start() for match in pattern.hint.finditer(view))
+    return sorted(hits)
+
+
+def _within(hits: List[int], lines: Optional[List[Tuple[int, int]]]) -> List[int]:
+    """``hits`` that lie on ``lines``, or all of them when there are none."""
+    if lines is None:
+        return hits
+    return [hit for hit in hits if any(start <= hit < end for start, end in lines)]
 
 
 def _keyed_matches(
-    pattern: RedactionPattern, text: str, view: str
+    pattern: RedactionPattern, text: str, hits: List[int]
 ) -> List["re.Match[str]"]:
-    """``pattern.regex.finditer(text)`` for a keyed pattern, trying only the
-    positions where its match can start: leftmost first, and the next try
-    from where the last match ended, as ``finditer`` does."""
+    """``finditer`` for a keyed pattern, trying only where its match can
+    start — each hit, and the start of its line: leftmost first, and the
+    next try from where the last match ended, as ``finditer`` does."""
+    starts = sorted(set(hits) | {text.rfind("\n", 0, hit) + 1 for hit in hits})
     matches = []
     resume = 0
-    for start in _keyed_starts(text, view, pattern.triggers):
+    for start in starts:
         if start >= resume:
             match = pattern.regex.match(text, start)
             if match:
@@ -460,45 +499,91 @@ def _keyed_matches(
     return matches
 
 
-def find_redaction_spans(
-    text: str, patterns: Sequence[RedactionPattern]
-) -> List[RedactionSpan]:
-    """Every span of ``text`` that ``patterns`` detect, in order, never
-    overlapping.
+_NON_WHITESPACE = re.compile(r"\S*")
 
-    Each pattern runs on the raw text. Matches are taken leftmost first, the
-    longer first at one start, the earlier pattern first at one span; a match
-    that overlaps the span before it extends that span instead of starting
-    its own, so no character any pattern detected is left in clear and no
-    placeholder ever wraps another.
 
-    A pattern whose triggers are all absent cannot match, and is skipped; a
-    keyed one is tried only where a match can start (``match`` at a position
-    of the whole text, so its lookarounds read what a scan's would). Neither
-    changes what is found — only what it costs.
-    """
-    if not text:
-        return []
-    view = _trigger_view(text)
-    candidates = []
-    for priority, pattern in enumerate(patterns):
-        if view is None or not pattern.triggers:
-            matches: Iterable["re.Match[str]"] = pattern.regex.finditer(text)
-        elif not any(trigger in view for trigger in pattern.triggers):
+def _token_matches(
+    pattern: RedactionPattern, text: str, hits: List[int]
+) -> List["re.Match[str]"]:
+    """``finditer`` for a token pattern, over only the non-whitespace runs
+    holding a hit: each scanned from its start to just past its end, with
+    ``pos``/``endpos`` on the whole text so lookarounds read the real
+    neighbours. Each run is walked once."""
+    matches: List["re.Match[str]"] = []
+    scanned_to = -1
+    for hit in hits:
+        if hit < scanned_to:
             continue
-        elif pattern.keyed:
-            matches = _keyed_matches(pattern, text, view)
+        start = hit
+        while start > scanned_to and start and not text[start - 1].isspace():
+            start -= 1
+        end = min(_NON_WHITESPACE.match(text, hit).end() + 1, len(text))
+        matches.extend(pattern.regex.finditer(text, start, end))
+        scanned_to = end
+    return matches
+
+
+def _detect(
+    text: str,
+    patterns: Sequence[RedactionPattern],
+    lines: Optional[List[Tuple[int, int]]] = None,
+    candidates: Optional[List[Tuple[int, int, int, str]]] = None,
+    only: Optional[Set[int]] = None,
+) -> Set[int]:
+    """Add every match of every pattern on ``text`` to ``candidates``, as
+    sortable ``(start, -end, priority, entity_type)`` — or, given ``lines``
+    (``(start, end)`` of whole lines, newline included), every match that can
+    lie on them: a pattern that does not cross lines is scanned only there.
+    ``only`` limits the run to those priorities. Returns the priorities that
+    were scanned: the patterns that can match ``text`` at all.
+
+    Each pattern is scanned only where its ``triggers``/``hint`` and
+    ``scope`` say a match can be (see ``RedactionPattern``), always with
+    ``pos``/``endpos`` or ``match`` at a position of the whole text, so
+    lookarounds read what a whole-text scan's would. None of this changes
+    what is found — only what it costs.
+    """
+    view = _trigger_view(text)
+    if candidates is None:
+        candidates = []
+    scanned = set()
+    for priority, pattern in enumerate(patterns):
+        if only is not None and priority not in only:
+            continue
+        located = view is not None and (pattern.triggers or pattern.hint)
+        if located and not _present(pattern, view):
+            continue
+        scanned.add(priority)
+        if not located or pattern.scope == "text":
+            if lines is not None and pattern.scope != "text":
+                matches: Iterable["re.Match[str]"] = [
+                    match
+                    for start, end in lines
+                    for match in pattern.regex.finditer(text, start, end)
+                ]
+            else:
+                matches = pattern.regex.finditer(text)
         else:
-            matches = pattern.regex.finditer(text)
+            hits = _within(_hits(pattern, view), lines)
+            if pattern.scope == "keyed":
+                matches = _keyed_matches(pattern, text, hits)
+            else:
+                matches = _token_matches(pattern, text, hits)
         for match in matches:
             start, end = match.span(pattern.span_group)
             if start == -1:  # the span group did not take part
                 start, end = match.span()
             if end > start:
                 candidates.append((start, -end, priority, pattern.entity_type))
-    candidates.sort()
+    return scanned
+
+
+def _merge(candidates: List[Tuple[int, int, int, str]]) -> List[RedactionSpan]:
+    """Leftmost first, the longer first at one start, the earlier pattern
+    first at one span; a candidate that overlaps the span before it extends
+    that span instead of starting its own."""
     spans: List[RedactionSpan] = []
-    for start, negative_end, _priority, entity_type in candidates:
+    for start, negative_end, _priority, entity_type in sorted(candidates):
         end = -negative_end
         if spans and start < spans[-1].end:
             if end > spans[-1].end:
@@ -506,6 +591,78 @@ def find_redaction_spans(
                 spans[-1] = RedactionSpan(last.start, end, last.entity_type)
             continue
         spans.append(RedactionSpan(start, end, entity_type))
+    return spans
+
+
+def _masked(text: str, spans: List[RedactionSpan]) -> str:
+    """``text`` with each span replaced by a stand-in of the same length,
+    shaped as a placeholder is at its edges: ``<XXXX>``."""
+    pieces = []
+    position = 0
+    for span in spans:
+        width = span.end - span.start
+        pieces.append(text[position : span.start])
+        pieces.append("<" + "X" * (width - 2) + ">" if width >= 2 else "X")
+        position = span.end
+    pieces.append(text[position:])
+    return "".join(pieces)
+
+
+def _lines_of(text: str, spans: List[RedactionSpan]) -> List[Tuple[int, int]]:
+    """The whole lines ``spans`` touch, newline included, merged, in order."""
+    lines: List[Tuple[int, int]] = []
+    for span in spans:
+        start = text.rfind("\n", 0, span.start) + 1
+        newline = text.find("\n", span.end)
+        end = len(text) if newline == -1 else newline + 1
+        if lines and start <= lines[-1][1]:
+            lines[-1] = (lines[-1][0], max(end, lines[-1][1]))
+        else:
+            lines.append((start, end))
+    return lines
+
+
+def find_redaction_spans(
+    text: str, patterns: Sequence[RedactionPattern]
+) -> List[RedactionSpan]:
+    """Every span of ``text`` that ``patterns`` detect, in order, never
+    overlapping.
+
+    Each pattern runs on the raw text, and overlapping matches merge into one
+    span, so no character any pattern detected is left in clear and no
+    placeholder ever wraps another.
+
+    Then again on the text with every span masked — the same text a second
+    redaction pass would read, a placeholder's edges included — until the
+    spans stop growing. A match can need its neighbour gone: in
+    ``10.0.0.5password=hunter2`` the keyword is glued to the address and is no
+    key, but once the address is a ``<placeholder>`` it is one. Without this
+    the first pass left ``password=hunter2`` in clear and a second pass took
+    it, so redaction was not idempotent (#1980, from the review of #2011).
+    The stand-in is placeholder-shaped where a lookaround can read it (``<``
+    and ``>``) and nothing can match inside it, as nothing can match inside a
+    placeholder. The coverage grows strictly each round, so the loop ends.
+    """
+    if not text:
+        return []
+    candidates: List[Tuple[int, int, int, str]] = []
+    scanned = _detect(text, patterns, candidates=candidates)
+    spans = _merge(candidates)
+    while spans:
+        # A stand-in only removes text, so no pattern absent from the text
+        # can match the masked text; and it changes what a scan reads only on
+        # the lines it sits on.
+        _detect(
+            _masked(text, spans),
+            patterns,
+            _lines_of(text, spans),
+            candidates=candidates,
+            only=scanned,
+        )
+        grown = _merge(candidates)
+        if [(s.start, s.end) for s in grown] == [(s.start, s.end) for s in spans]:
+            return grown
+        spans = grown
     return spans
 
 

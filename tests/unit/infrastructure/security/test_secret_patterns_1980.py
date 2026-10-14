@@ -867,7 +867,8 @@ def test_no_fragment_of_a_random_secret_survives(sanitizer, name):
 # ---------------------------------------------------------------------------
 
 _UNGATED = tuple(
-    dataclasses.replace(p, triggers=(), keyed=False) for p in SANITIZER_PATTERNS
+    dataclasses.replace(p, triggers=(), scope="text", hint=None)
+    for p in SANITIZER_PATTERNS
 )
 
 _UNICODE = [
@@ -898,7 +899,7 @@ def test_every_keyed_trigger_starts_its_keyword():
     """`keyed` tries only line starts and trigger positions: each keyword and
     cased spelling must start with a trigger."""
     for pattern in SECRET_PATTERNS:
-        if pattern.keyed:
+        if pattern.scope == "keyed":
             assert pattern.triggers, pattern.entity_type
             for start in (
                 "password",
@@ -917,3 +918,146 @@ def test_every_keyed_trigger_starts_its_keyword():
                         pattern.entity_type,
                         start,
                     )
+
+
+# ---------------------------------------------------------------------------
+# 6. One pass is idempotent (from the review of #2011)
+# ---------------------------------------------------------------------------
+
+_ATOMS = [
+    "10.0.0.5",
+    "192.168.1.20",
+    "172.16.0.9",
+    "00:1A:2B:3C:4D:5E",
+    "aa-bb-cc-dd-ee-ff",
+    "password=hunter2",
+    "password: hunter2",
+    "password = hunter2",
+    "passwd: Tr0ub4dor&3",
+    "pwd=hunter2",
+    "secret=hunter2",
+    "token=abc123def",
+    "api_key=my-secret-value",
+    "apikey: k3y-value-1",
+    "DB_PASSWORD=hunter2",
+    "PGPASSWORD=hunter2",
+    "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",
+    "sk-proj-Ab3dEf_gh1JkLmn0PqRsTuvWxYz-1234",
+    "pk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",
+    "AKIAIOSFODNN7EXAMPLE",
+    "ASIAIOSFODNN7EXAMPLE",
+    "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+    "Bearer abc.def.ghi",
+    "Authorization: Basic dXNlcjpwYXNz",
+    "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+    _SLACK_SHORT,
+    "postgresql://app:pw4321@db:5432",
+    "redis://user:pass99@cache:6379",
+    "https://oauth2:glpatAbCd1234@gitlab.example.com",
+    "k8s_secret_0123456789abcdef0123456789abcdef",
+    "api_key0123456789abcdef0123456789abcdef",
+    "-----BEGIN PRIVATE KEY-----MIIEowIBAAKCAQEA7bq98EXAMPLE-----END PRIVATE KEY-----",
+    "--password Hunter2pw",
+    "X-Auth-Token: 9f8e7d6c5b4a",
+]
+#: Glue between atoms: nothing, separators, and a letter, a digit, a hex
+#: letter — what makes one span's edge another's context.
+_GLUE = ["", "", "", " ", "_", "-", ".", ":", "=", "/", "@", ",", "x", "5", "E"]
+
+
+def _glued(rng: random.Random, atoms=_ATOMS) -> str:
+    parts = [rng.choice(atoms) for _ in range(rng.choice([2, 2, 3]))]
+    text = parts[0]
+    for part in parts[1:]:
+        text += rng.choice(_GLUE) + part
+    return text
+
+
+def test_one_pass_of_the_sanitizer_is_idempotent(sanitizer):
+    """``apply(apply(x)) == apply(x)``. Main failed 133 of 30,000 of these
+    (sequential passes: `10.0.0.5password=hunter2` kept `password=hunter2`
+    until a second pass); spans on the raw text without the masked rounds
+    failed 1,397 — every lookbehind reads a neighbour that a placeholder
+    then replaces."""
+    rng = random.Random("1980-idempotent")
+    changed = []
+    for _ in range(4000):
+        text = _glued(rng)
+        once = sanitizer.apply_regex_redaction(text, {})
+        if sanitizer.apply_regex_redaction(once, {}) != once:
+            changed.append(text)
+    assert changed == [], changed[:3]
+
+
+def test_one_pass_of_the_document_preprocessor_is_idempotent():
+    rng = random.Random("1980-idempotent-markers")
+    changed = []
+    for _ in range(2000):
+        text = _glued(rng)
+        once, _ = redact_sensitive_content(text)
+        if redact_sensitive_content(once)[0] != once:
+            changed.append(text)
+    assert changed == [], changed[:3]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "10.0.0.5password=hunter2",
+        "00:1A:2B:3C:4D:5Epassword=hunter2",
+        "10.0.0.5password: hunter2",
+        "00:1A:2B:3C:4D:5Epassword: hunter2",
+        "xpassword=hunter2",
+        "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdpassword=hunter2",
+    ],
+)
+def test_a_secret_glued_to_another_is_gone_after_one_pass(sanitizer, text):
+    assert "hunter2" not in sanitizer.apply_regex_redaction(text, {})
+
+
+#: `=` spellings with the value that must not survive, glued after anything.
+_ASSIGNED = [
+    ("password=hunter2", "hunter2"),
+    ("passwd=Tr0ub4dor", "Tr0ub4dor"),
+    ("pwd=pw0rd99", "pw0rd99"),
+    ("secret=s3cr3tval", "s3cr3tval"),
+    ("token=abc123def", "abc123def"),
+    ("api_key=my-secret-value", "my-secret-value"),
+    ('"password": "hunter3x"', "hunter3x"),
+]
+
+
+#: The atoms that end in a fixed shape, not an unquoted ``key: value`` (a
+#: value runs to whitespace, so one glued to a following key takes the key
+#: with it — the limitation the PR lists).
+_FIXED_ATOMS = [
+    atom
+    for atom in _ATOMS
+    if not any(
+        key in atom.lower()
+        for key in (
+            "password",
+            "passwd",
+            "pwd=",
+            "secret=",
+            "token",
+            "apikey:",
+            "api_key=",
+        )
+    )
+]
+
+
+def test_an_assignment_glued_after_anything_is_gone_after_one_pass(sanitizer):
+    """A keyword glued to what precedes it (`xpassword=`, `5password=`,
+    `…abcdpassword=` inside an `sk-` run) is still a key with `=`: the
+    compound boundary is "after any letter, digit or underscore"."""
+    rng = random.Random("1980-one-pass")
+    leaked = []
+    for _ in range(3000):
+        assignment, value = rng.choice(_ASSIGNED)
+        text = rng.choice(_FIXED_ATOMS) + rng.choice(_GLUE) + assignment
+        if value in sanitizer.apply_regex_redaction(text, {}):
+            leaked.append(text)
+    assert leaked == [], leaked[:3]
