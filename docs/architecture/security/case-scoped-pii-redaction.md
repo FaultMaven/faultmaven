@@ -150,7 +150,14 @@ Every send site redacts what it sends through the turn's context, at the send: `
 
 These all reach the model through the router (`llm_provider`); none goes to the dedicated `DA_PROVIDER`. What skipping the case pass costs is the registry, not the text: the router's own pass under `SANITIZE_PII` produces the same text, but a value it alone redacts never enters the case registry, so its placeholder in an answer cannot be reversed for the user — and protection would rest on whichever router `LLM_ROUTER_CLASS` configures.
 
-**Titles are never reversed.** A title is shown to every reader of the case, in every list, so a real value restored into it would be a disclosure. The title builds its own context through the loader, after the turn's save (it runs once the turn has committed), and sends its prompt through it; `is_title_valid` refuses a title carrying a placeholder anywhere, which sends it to the extractive fallback. `_sanitize_title_content` remains as the readability scrub on the extracted text.
+**Titles are never reversed.** A title is shown to every reader of the case, in every list, so a real value restored into it would be a disclosure. The title builds its own context through the loader, after the turn's save (it runs once the turn has committed), and sends its prompt through it; `is_title_valid` refuses a title carrying a placeholder anywhere, in any letter case, which sends it to the extractive fallback.
+
+**No title carries what the sanitizer detects (#1967).** This holds on every title path (smart-extractive, LLM, fallback) and whatever `SANITIZE_PII` says. Two steps in `modules/case/api/title_generation.py` enforce it:
+
+- **Sources.** Every title source (problem statement, evidence and file summaries, chat, description, the regenerate route's `hint`) passes `_scrub_title_source` first. That runs the sanitizer's in-process regex half on the raw text. The raw text comes first because a credential is detectable only whole: when `_sanitize_title_content` ran first, its email and path patterns cut credentials into fragments that nothing then matched. Each placeholder then becomes a type marker (`[password]`), and `_sanitize_title_content` runs last.
+- **Candidates.** Every candidate then passes `_passes_disclosure_gate`, the sanitizer's full detection, with Presidio when the analyzer answers. This happens where a candidate is validated, so the fallback still runs, and once more right before the write. One generation shares a verdict memo, so each distinct candidate costs one detection.
+
+A deployment whose posture is fail-open (`SANITIZE_PII=false` or `PROTECTION_FAIL_OPEN=true`) accepts regex-only detection while the analyzer errors, as every other redaction path does. Otherwise the gate fails closed. If the sanitizer is missing, raises, or answers with something that is not text, no title is written, and `POST /cases/{id}/title` answers 503.
 
 ### MilestoneEngine Integration
 

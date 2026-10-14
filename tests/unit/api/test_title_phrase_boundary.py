@@ -31,6 +31,10 @@ from faultmaven.modules.case.api.title_generation import (
     is_title_valid,
     truncate_title_at_phrase_boundary,
 )
+from tests.utils import regex_only_sanitizer
+
+# Every title source and candidate passes the real sanitizer (#1967).
+SANITIZER = regex_only_sanitizer()
 
 pytestmark = pytest.mark.unit
 
@@ -207,7 +211,9 @@ def test_a_complete_short_title_is_untouched():
 
 def test_the_extractive_fallback_path_uses_the_same_rule():
     """The second extractive path had its own copy of the single-word check."""
-    title = get_extractive_fallback_title(_RUN_1, "", None, MAX_TITLE_WORDS_DEFAULT)
+    title = get_extractive_fallback_title(
+        _RUN_1, "", None, MAX_TITLE_WORDS_DEFAULT, sanitizer=SANITIZER
+    )
 
     assert title == "The Checkout-api Deployment in Checkout-staging"
 
@@ -244,6 +250,7 @@ async def test_the_llm_path_does_not_persist_a_mid_phrase_clip():
         user_signals=long_signals,
         llm_provider=provider,
         redaction_ctx=None,
+        sanitizer=SANITIZER,
     )
 
     assert source == "llm", "this test must exercise the LLM path, not a fallback"
@@ -299,7 +306,9 @@ def test_the_two_minimums_are_wired_to_their_own_paths():
     assert _generate_smart_extractive_title(text, MAX_TITLE_WORDS_DEFAULT) is None
     # The fallback requires two — it must produce the title.
     assert (
-        get_extractive_fallback_title(text, "", None, MAX_TITLE_WORDS_DEFAULT)
+        get_extractive_fallback_title(
+            text, "", None, MAX_TITLE_WORDS_DEFAULT, sanitizer=SANITIZER
+        )
         == "Checkout Degraded"
     )
 
@@ -335,6 +344,7 @@ async def test_the_llm_over_cap_refusal_is_observable(caplog):
             user_signals=long_signals,
             llm_provider=provider,
             redaction_ctx=None,
+            sanitizer=SANITIZER,
         )
 
     assert source != "llm"
