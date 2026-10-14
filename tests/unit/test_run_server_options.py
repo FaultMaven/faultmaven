@@ -1,10 +1,12 @@
 """Every uvicorn option ``run_server`` owns is pinned, for every app it launches.
 
 ``run_server(app)`` is the one place the API's uvicorn options live, so an
-image that launches through it (the Cloud image launches
-``run_server("faultmaven_cloud.main:app")``, faultmaven-cloud#42) inherits all
-of them. The uvicorn CLI cannot stand in: ``--log-config`` must name a file,
-so it cannot express ``log_config=None``.
+image that launches through it inherits all of them. The Cloud image is to
+launch ``run_server("faultmaven_cloud.main:app")`` once faultmaven-cloud#25
+bumps its core pin (faultmaven-cloud#42); it does not yet. The uvicorn CLI
+cannot stand in: ``--log-config`` must name a file, so it cannot express
+``log_config=None``. (``--no-access-log`` exists, so ``access_log=False`` alone
+is expressible there; ``log_config=None`` is the option that is not.)
 
 Pinned here, each with the consequence of losing it:
 
@@ -101,6 +103,18 @@ def test_default_app_is_the_faultmaven_app():
     """The default import string resolves to the real app object."""
     assert _launch().call_args.args == (DEFAULT_APP,)
     assert import_from_string(DEFAULT_APP) is faultmaven.main.app
+
+
+@pytest.mark.parametrize(
+    "app",
+    [
+        "pkg.mod:attr.sub",  # a dotted attribute, which uvicorn resolves
+        "main:app",  # a top-level module, no dot
+        "_pkg.mod_2:_app",
+    ],
+)
+def test_well_formed_import_strings_are_accepted(app):
+    assert _launch(app).call_args.args == (app,)
 
 
 @pytest.mark.parametrize(

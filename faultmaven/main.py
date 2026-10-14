@@ -1609,9 +1609,14 @@ def run_server(app: str = "faultmaven.main:app") -> None:
     never an app object: uvicorn refuses an object when ``workers > 1`` or
     ``reload`` is set, so a string is the only form that works for every
     setting. Every uvicorn option below is owned here, once, so any image
-    that launches through this function inherits all of them -- the Cloud
-    image launches ``run_server("faultmaven_cloud.main:app")`` rather than
-    the ``uvicorn`` CLI, which cannot express ``log_config=None``.
+    that launches through this function inherits all of them. The Cloud image
+    is to launch ``run_server("faultmaven_cloud.main:app")`` once
+    faultmaven-cloud#25 bumps its core pin, rather than the ``uvicorn`` CLI,
+    which cannot express ``log_config=None`` (it also must set
+    ``PORT=8000 HOST=0.0.0.0 RELOAD=false``, since host, port and reload come
+    from settings, and must not launch as ``python -m faultmaven_cloud.main``:
+    that module mounts its routers at import, so a ``__main__`` run followed by
+    uvicorn's import of the string mounts them twice, #1985).
 
     Raises:
         ValueError: ``app`` is not a ``module:attr`` import string.
