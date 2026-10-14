@@ -22,13 +22,19 @@ What it holds down, and why each one:
   #908's docstring warns about for the calibration divisor.
 * **An empty comparison is not a pass.** The single most dangerous
   outcome for a relative gate is measuring nothing and saying nothing.
-* **There is one rule, and it is the median.** A per-test residual rule
-  and a count rule were both measured on #1567's null experiment and
-  rejected by their own numbers (`ab.py`'s docstring carries them), so
-  the gate fires on the suite median alone. What that costs is asserted
-  too: a regression confined to a minority of the suite does NOT fail
-  here, and a test says so, because a gap nobody wrote down is a gap
-  somebody will later mistake for coverage.
+* **One rule gates, and it is the median; a second one only reports.** A
+  per-test residual rule and a count rule were both measured on #1567's
+  null experiment and rejected by their own numbers. #1989 re-adjudicated
+  them on the runner null (#1963): the residual stays rejected, and the
+  count rule is computed on every gated comparison and printed, in SHADOW,
+  until the evidence says it can fail a pull request. What that costs is
+  asserted: a regression confined to a minority of the suite still does NOT
+  fail here, and a test says so, because a gap nobody wrote down is a gap
+  somebody will later mistake for coverage. And the shadow rule's own
+  invariant is asserted from both sides: the report states, on every gated
+  comparison, how many benchmarks are at least the count ratio slower and
+  whether the rule would fail, and the verdict is the same with the rule
+  configured as without it.
 * **The comparator imports no application code.** Two editable installs
   of `faultmaven` are made and unmade around it in the A/B job, so a
   comparison of two JSON files must not depend on which is current — and
@@ -80,6 +86,35 @@ AB_JOB = "ab-regression"
 #: `docs/development/testing/performance.md` carries the distribution it is
 #: the maximum of. Update them together.
 RUNNER_NULL_MAX_MEDIAN = 1.053
+
+#: The shadow count rule's null (#1989), from the same 144 pairs of run
+#: 38538085168: for each candidate ratio R, the most benchmarks of the 19
+#: that were at least R times slower on any clean pair. The one executable
+#: copy; `FM_AB_COUNT_RATIO` has to be a ratio listed here, so a number that
+#: was never measured cannot be declared, and `FM_AB_COUNT_MIN` has to clear
+#: the maximum by two. (At 1.25 the count is 0 on 133 pairs and 1 on 11.)
+RUNNER_NULL_MAX_COUNT = {1.15: 3, 1.20: 2, 1.25: 1, 1.30: 1}
+
+#: The same null, the other way round: the largest value the K-th largest
+#: ratio reached on any clean pair, for K = 1..4. "At least K rows at least
+#: R slower" is the statement "the K-th largest ratio is at least R", so
+#: `FM_AB_COUNT_RATIO` is a margin over `RUNNER_NULL_MAX_KTH_LARGEST[K]`.
+RUNNER_NULL_MAX_KTH_LARGEST = {1: 1.749, 2: 1.231, 3: 1.190, 4: 1.149}
+
+#: The most rows at least R slower in any of the 21 real reports of this job
+#: (2026-10-12 to 2026-10-14; geometric mean of the median 0.984). At 1.25 it
+#: was 1 in 2 of the 21 (0 in 19), and the third-largest ratio's maximum was
+#: 1.133. A threshold a real clean pull request has already reached is a
+#: gate that is red on a green one.
+REAL_GATE_MAX_COUNT = {1.15: 2, 1.20: 2, 1.25: 1, 1.30: 1}
+
+#: The margin the shadow rule's ratio keeps over the null's K-th largest
+#: ratio: 1.25 / 1.190 = 1.050. Much thinner than the median's (1.30 / 1.053
+#: = 1.23) and deliberately so: at the median gate's own 15% a random
+#: quarter of the suite 30% slower is seen in 5% of cases, at 5% in 91%
+#: (#1989). What that margin costs is why the rule only reports, and this
+#: floor is why it cannot be thinned further without new evidence.
+COUNT_RATIO_MARGIN = 1.05
 
 #: The step-down floor for `FM_AB_SUITE`: the threshold the owner decided on
 #: (#1963). The docs say a step below it is taken on evidence from the gate's
@@ -422,23 +457,30 @@ class TestTheDecisionRule:
         """‼ A declared gap, asserted so nobody mistakes it for coverage.
 
         One benchmark 40% slower moves no median, so this gate stays
-        green. That is deliberate: #1567 measured the per-test residual
-        on identical code at 1.18x-3.38x (at 50 benchmarks on a loaded
-        box; #1963 saw 1.03x-1.74x at 19 on runners and did not
-        re-adjudicate the rule), so a rule on it would need a
-        ~3.5x threshold, and every absolute budget in
-        `tests/benchmarks/budgets.py` already fails between 2.46x and
-        3.57x. The single-path class belongs to those budgets. What this
-        gate owes it is visibility, so the benchmark must still come out
-        top of the table.
+        green. That is deliberate: the per-test residual was rejected on
+        #1567's null (1.18x-3.38x at 50 benchmarks on a loaded box) and
+        again on the runner null (#1989: 1.03x-1.74x at 19, a tail of
+        single-row bursts, so a 15%-margin threshold of 2.0 sees a
+        minority regression in under 3% of cases and a one-row +100% in
+        46%), and every absolute budget in `tests/benchmarks/budgets.py`
+        already fails between 2.46x and 3.57x. The count rule cannot see
+        one or two rows either, by construction (asserted below). The
+        single-path class belongs to those budgets. What this gate owes it
+        is visibility, so the benchmark must still come out top of the
+        table.
         """
         base = _suite(lambda i: 1.0)
         head = _suite(lambda i: 1.4 if i == 7 else 1.0)
-        verdict = ab.compare(base, head, suite_threshold=1.30)
+        verdict = ab.compare(
+            base, head, suite_threshold=1.30, count_ratio=1.25, count_min=3
+        )
         assert verdict.ok
         assert verdict.median == pytest.approx(1.0)
         assert verdict.worst.row.label == "b07"
         assert verdict.worst_residual == pytest.approx(1.4)
+        # ‼ Counted, and still not enough: one row over is below K = 3.
+        assert [entry.row.label for entry in verdict.over] == ["b07"]
+        assert verdict.count_would_fail is False
         rendered = ab.render(
             verdict, base_label="b", head_label="h", suite_threshold=1.30
         )
@@ -450,15 +492,17 @@ class TestTheDecisionRule:
         assert "1.18x-3.38x at 50 benchmarks" in rendered and "(#1567)" in rendered
         assert "1.03x-1.74x" in rendered and "19 benchmarks" in rendered
         assert "(#1963)" in rendered
+        assert "single-row bursts" in rendered
 
     def test_a_minority_regression_does_not_fail_either(self):
         """The same gap, at the scale it is most likely to be met.
 
-        A quarter of the suite 30% slower leaves the median at 1.0. #1567
-        measured a count rule for exactly this case and rejected it: on
-        its null (50 benchmarks, a loaded box) the count at 1.30x reached
-        19 of 50, while slowing HALF the suite by 30% produced 15 — the
-        signal sat below the noise.
+        A quarter of the suite 30% slower leaves the median at 1.0, and the
+        verdict stays green. #1567 measured a count rule for exactly this
+        case and rejected it on a loaded 50-benchmark box (the null count
+        at 1.30x reached 19 of 50, half the suite 30% slower gave 15); the
+        runner null (#1989) separates them, so the rule now REPORTS this
+        case (`TestTheShadowCountRule`) and still does not fail it.
         """
         base = _suite(lambda i: 1.0)
         head = _suite(lambda i: 1.3 if i < 12 else 1.0)
@@ -620,9 +664,12 @@ class TestTheDecisionRule:
         it. When this fails, the suite changed shape: re-run the null
         experiment if the change is material (the method is in
         `docs/development/testing/performance.md`), then update together the
-        note on `COVERAGE_FLOOR`, the `FM_AB_SUITE` comment in
-        benchmarks.yml, `RUNNER_NULL_MAX_MEDIAN` above, the re-measurement
-        in `docs/development/testing/performance.md`, and these numbers.
+        note on `COVERAGE_FLOOR`, the `FM_AB_SUITE` and shadow-rule comment
+        in benchmarks.yml, `RUNNER_NULL_MAX_MEDIAN` and the count-rule
+        constants above (`RUNNER_NULL_MAX_COUNT`,
+        `RUNNER_NULL_MAX_KTH_LARGEST`, `REAL_GATE_MAX_COUNT`: the count rule
+        was measured on the same 19 rows), the re-measurement in
+        `docs/development/testing/performance.md`, and these numbers.
         """
         _, by_module = _the_real_suite()
         assert sorted(len(tests) for tests in by_module.values()) == [6, 13]
@@ -685,6 +732,398 @@ class TestTheDecisionRule:
             suite_threshold=1.2,
         )
         assert "metric changed" in verdict.unusable[0][1]
+
+
+def _write_side(path, scale_by_index, *, rows=19):
+    """One side as a recorder file: `rows` latencies at 10 ms times a scale.
+
+    Nineteen, the real suite's size, because `main` is what the job runs
+    and its output is what a scorer reads.
+    """
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "v": record.RECORD_FORMAT_VERSION,
+                    "nodeid": f"tests/benchmarks/test_x.py::test_{i:02d}",
+                    "label": f"row {i:02d}",
+                    "occurrence": 0,
+                    "metric": ab.LATENCY_METRIC,
+                    "observed": 0.010 * scale_by_index(i),
+                    "budget": 1.0,
+                    "kind": "regression budget",
+                    "scale": 1.0,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+            for i in range(rows)
+        )
+    )
+
+
+class TestTheShadowCountRule:
+    """The count rule (#1989): reported on every gated comparison, never gating.
+
+    The invariant has two halves and both are asserted: the report states
+    how many benchmarks are at least the count ratio slower and whether the
+    rule would fail, and the job's verdict is the one it would have had
+    without the rule.
+    """
+
+    RULE = {"count_ratio": 1.25, "count_min": 3}
+
+    def test_a_minority_regression_is_counted_and_does_not_fail(self):
+        """‼ The class the median cannot see, seen, and the job still green.
+
+        A quarter of the suite (12 of 50) 30% slower: the median is 1.0 and
+        the verdict ok, while the shadow rule counts 12 rows over 1.25 and
+        says it would fail at 3.
+        """
+        base = _suite(lambda i: 1.0)
+        head = _suite(lambda i: 1.3 if i < 12 else 1.0)
+        verdict = ab.compare(base, head, suite_threshold=1.30, **self.RULE)
+        assert verdict.gated and verdict.ok and verdict.failures == []
+        assert verdict.median == pytest.approx(1.0)
+        assert len(verdict.over) == 12
+        assert verdict.count_would_fail is True
+        assert (verdict.count_ratio, verdict.count_min) == (1.25, 3)
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.30
+        )
+        assert (
+            "Shadow rule (not gating yet, #1989): 12 of 50 benchmarks "
+            "≥ 1.25x slower; would fail at 3" in rendered
+        )
+        assert "would fail this pull request if it gated" in rendered
+        assert "unchanged" in rendered
+        # It names the rows, and it is not dressed as a failure.
+        assert all(f"b{i:02d}" in rendered for i in range(12))
+        assert "#### Regression" not in rendered
+
+    def test_the_rule_reports_when_it_would_not_fail(self):
+        """The same line says so when it is clean: a silent clean report
+        and a missing rule would look the same."""
+        base = _suite(lambda i: 1.0)
+        verdict = ab.compare(base, dict(base), suite_threshold=1.30, **self.RULE)
+        assert verdict.count_would_fail is False and verdict.over == []
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.30
+        )
+        assert (
+            "Shadow rule (not gating yet, #1989): 0 of 50 benchmarks "
+            "≥ 1.25x slower; would fail at 3, so it would not fail this "
+            "pull request" in rendered
+        )
+
+    def test_the_rows_come_worst_first(self):
+        base = _suite(lambda i: 1.0)
+        slowdown = {3: 1.6, 9: 1.3, 20: 1.45, 31: 1.26, 40: 1.24}
+        head = _suite(lambda i: slowdown.get(i, 1.0))
+        verdict = ab.compare(base, head, suite_threshold=1.30, **self.RULE)
+        assert [entry.row.label for entry in verdict.over] == [
+            "b03",
+            "b20",
+            "b09",
+            "b31",
+        ], "b40 at 1.24x is under the ratio and must not be counted"
+
+    @pytest.mark.parametrize(
+        ("scale", "label"),
+        [
+            (lambda i: 1.3 if i < 12 else 1.0, "a quarter 30% slower"),
+            (lambda i: 1.3, "the whole suite 30% slower"),
+            (lambda i: 1.0, "identical sides"),
+            (lambda i: 1.4 if i == 7 else 1.0, "one row 40% slower"),
+            (lambda i: 0.7, "the whole suite faster"),
+        ],
+    )
+    def test_the_verdict_is_the_one_it_would_have_had_without_the_rule(
+        self, scale, label
+    ):
+        """‼ The invariant's second half, probed against the unconfigured run.
+
+        Everything the job decides on, and everything the reader is shown
+        as a failure or a coverage note, is identical with and without the
+        rule; only the shadow fields differ.
+        """
+        base = _suite(lambda i: 1.0)
+        head = _suite(scale)
+        plain = ab.compare(base, head, suite_threshold=1.30)
+        shadow = ab.compare(base, head, suite_threshold=1.30, **self.RULE)
+        assert shadow.ok is plain.ok, label
+        assert shadow.failures == plain.failures, label
+        assert shadow.notes == plain.notes, label
+        assert shadow.gated is plain.gated, label
+        assert shadow.median == plain.median, label
+        assert shadow.compared == plain.compared, label
+
+    def test_a_uniform_regression_fails_by_the_median_alone(self):
+        """The rule is not a second reason to fail: the one failure is the
+        median's, even though every row is over the count ratio."""
+        base = _suite(lambda i: 1.0)
+        head = _suite(lambda i: 1.3)
+        verdict = ab.compare(base, head, suite_threshold=1.30, **self.RULE)
+        assert not verdict.ok
+        assert len(verdict.failures) == 1 and "whole suite" in verdict.failures[0]
+        assert len(verdict.over) == 50 and verdict.count_would_fail is True
+
+    def test_it_is_inert_when_it_is_not_configured(self):
+        """No arguments, no shadow line, no shadow state: the comparator is
+        what it was before #1989 for any caller that does not ask."""
+        base = _suite(lambda i: 1.0)
+        head = _suite(lambda i: 1.3 if i < 12 else 1.0)
+        verdict = ab.compare(base, head, suite_threshold=1.30)
+        assert verdict.count_ratio is None and verdict.count_min is None
+        assert verdict.count_would_fail is None and verdict.over == []
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.30
+        )
+        assert "Shadow rule" not in rendered
+
+    def test_it_is_inert_when_the_comparison_is_not_gated(self):
+        """‼ Not evaluated is not clean.
+
+        A reorganised suite and a fragment are not what the count was
+        measured on. The rule does not run, the report does not claim it
+        did, and `count_would_fail` is None rather than False so a scorer
+        cannot count the run as clean.
+        """
+        base = _suite(lambda i: 1.0)
+        moved = {
+            (f"moved/{k[0]}", k[1], k[2]): r._replace(
+                key=(f"moved/{k[0]}", k[1], k[2]), observed=r.observed * 1.5
+            )
+            for k, r in base.items()
+        }
+        fragment = dict(list(base.items())[:1])
+        for head in (moved, fragment):
+            verdict = ab.compare(base, head, suite_threshold=1.30, **self.RULE)
+            assert not verdict.gated
+            assert verdict.count_would_fail is None and verdict.over == []
+            rendered = ab.render(
+                verdict, base_label="b", head_label="h", suite_threshold=1.30
+            )
+            assert "Shadow rule" not in rendered
+
+    def test_a_ratio_exactly_at_the_threshold_is_counted(self):
+        """`at least`, not `more than`: both boundaries (the ratio and K).
+
+        The values are binary fractions so the ratio is exactly 1.25 rather
+        than 1.2500000000000002 or 1.2499999999999998.
+        """
+
+        def side(heads):
+            base = {}
+            head = {}
+            for index, observed in enumerate(heads):
+                key = (f"t.py::t{index}", f"t{index}", 0)
+                for target, value in ((base, 0.5), (head, observed)):
+                    target[key] = ab.Row(
+                        key=key,
+                        nodeid=key[0],
+                        label=key[1],
+                        metric=ab.LATENCY_METRIC,
+                        observed=value,
+                        budget=1.0,
+                    )
+            return base, head
+
+        on = 0.625  # exactly 1.25x
+        just_under = 0.62499
+        three_on, six = side([on, on, on, 0.5, 0.5, 0.5])
+        verdict = ab.compare(three_on, six, suite_threshold=1.30, **self.RULE)
+        assert len(verdict.over) == 3 and verdict.count_would_fail is True
+        two_on, six = side([on, on, just_under, 0.5, 0.5, 0.5])
+        verdict = ab.compare(two_on, six, suite_threshold=1.30, **self.RULE)
+        assert len(verdict.over) == 2 and verdict.count_would_fail is False
+
+    def test_a_throughput_drop_is_counted_and_a_rise_is_not(self):
+        """The count reads the ratio, which is oriented so above 1.0 is
+        worse, so a rate that fell is a slower row and a rate that rose is
+        not. Getting this backwards would count every improvement."""
+        base = _rows(*[(f"rate{i}", ab.THROUGHPUT_METRIC, 100.0) for i in range(6)])
+        head = _rows(
+            *[
+                (f"rate{i}", ab.THROUGHPUT_METRIC, 70.0 if i < 3 else 140.0)
+                for i in range(6)
+            ]
+        )
+        verdict = ab.compare(base, head, suite_threshold=1.60, **self.RULE)
+        assert [entry.row.label for entry in verdict.over] == [
+            "rate0",
+            "rate1",
+            "rate2",
+        ]
+        assert verdict.count_would_fail is True
+
+    def test_a_row_that_could_not_be_compared_is_not_counted(self):
+        base = _suite(lambda i: 1.0)
+        base = dict(base)
+        victim = list(base)[0]
+        base[victim] = base[victim]._replace(observed=float("nan"))
+        head = _suite(lambda i: 1.3)
+        verdict = ab.compare(base, head, suite_threshold=1.40, **self.RULE)
+        assert len(verdict.over) == 49 and len(verdict.compared) == 49
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"count_ratio": 1.25},
+            {"count_min": 3},
+            {"count_ratio": 1.0, "count_min": 3},
+            {"count_ratio": 0.8, "count_min": 3},
+            {"count_ratio": float("nan"), "count_min": 3},
+            {"count_ratio": 1.25, "count_min": 0},
+        ],
+    )
+    def test_a_half_configured_or_meaningless_rule_is_refused(self, kwargs):
+        """A rule that silently never ran, or ran on a number nobody chose,
+        would look exactly like a clean report."""
+        base = _suite(lambda i: 1.0)
+        with pytest.raises(ValueError):
+            ab.compare(base, dict(base), suite_threshold=1.30, **kwargs)
+
+    def test_the_command_line_takes_both_or_neither(self, tmp_path, capsys):
+        base, head = tmp_path / "base.jsonl", tmp_path / "head.jsonl"
+        _write_side(base, lambda i: 1.0)
+        _write_side(head, lambda i: 1.0)
+        common = [
+            "--base",
+            str(base),
+            "--head",
+            str(head),
+            "--suite-threshold",
+            "1.30",
+        ]
+        for extra in (["--count-ratio", "1.25"], ["--count-min", "3"]):
+            with pytest.raises(SystemExit) as exit_:
+                ab.main(common + extra)
+            assert exit_.value.code == 2
+            assert "together or not at all" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exit_:
+            ab.main(common + ["--count-ratio", "0.9", "--count-min", "3"])
+        assert exit_.value.code == 2
+
+    def test_the_job_exit_status_and_report_through_main(self, tmp_path, capsys):
+        """The whole path the workflow takes: a quarter of 19 rows 30% slower.
+
+        Exit status 0 (the Verdict step turns anything else into a red job),
+        and the markdown and the JSON both carry the rule.
+        """
+        base, head = tmp_path / "base.jsonl", tmp_path / "head.jsonl"
+        _write_side(base, lambda i: 1.0)
+        _write_side(head, lambda i: 1.3 if i < 5 else 1.0)
+        markdown, report = tmp_path / "ab_report.md", tmp_path / "ab_report.json"
+        status = ab.main(
+            [
+                "--base",
+                str(base),
+                "--head",
+                str(head),
+                "--suite-threshold",
+                "1.30",
+                "--count-ratio",
+                "1.25",
+                "--count-min",
+                "3",
+                "--markdown-out",
+                str(markdown),
+                "--json-out",
+                str(report),
+            ]
+        )
+        assert status == 0
+        assert capsys.readouterr().out == markdown.read_text(encoding="utf-8")
+        assert (
+            "Shadow rule (not gating yet, #1989): 5 of 19 benchmarks "
+            "≥ 1.25x slower; would fail at 3" in markdown.read_text(encoding="utf-8")
+        )
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert data["ok"] is True and data["failures"] == []
+        assert data["gated"] is True
+        assert data["count_ratio"] == 1.25 and data["count_min"] == 3
+        assert data["count_would_fail"] is True
+        assert data["over_count"] == 5 and len(data["over"]) == 5
+        assert {entry["benchmark"] for entry in data["over"]} == {
+            f"tests/benchmarks/test_x.py::test_{i:02d}|row {i:02d}|0" for i in range(5)
+        }
+        assert all(entry["ratio"] == pytest.approx(1.3) for entry in data["over"])
+        # The `over` keys are the `ratios` keys, so a scorer can join them.
+        assert {entry["benchmark"] for entry in data["over"]} <= set(data["ratios"])
+
+    def test_the_json_says_not_evaluated_rather_than_clean(self, tmp_path):
+        """‼ What a scorer reads. `null` is "the rule did not run", and only
+        `false` is a run it passed: scoring null as false would count a run
+        that measured nothing toward promotion."""
+        base, head = tmp_path / "base.jsonl", tmp_path / "head.jsonl"
+        _write_side(base, lambda i: 1.0)
+        _write_side(head, lambda i: 1.3 if i < 5 else 1.0)
+        unconfigured = tmp_path / "unconfigured.json"
+        ab.main(
+            [
+                "--base",
+                str(base),
+                "--head",
+                str(head),
+                "--suite-threshold",
+                "1.30",
+                "--json-out",
+                str(unconfigured),
+            ]
+        )
+        data = json.loads(unconfigured.read_text(encoding="utf-8"))
+        assert data["count_ratio"] is None and data["count_min"] is None
+        assert data["count_would_fail"] is None and data["over_count"] is None
+        assert data["over"] == []
+
+        # Configured but not gated: the head measured one row of 19.
+        _write_side(head, lambda i: 1.3, rows=1)
+        fragment = tmp_path / "fragment.json"
+        status = ab.main(
+            [
+                "--base",
+                str(base),
+                "--head",
+                str(head),
+                "--suite-threshold",
+                "1.30",
+                "--count-ratio",
+                "1.25",
+                "--count-min",
+                "3",
+                "--json-out",
+                str(fragment),
+            ]
+        )
+        data = json.loads(fragment.read_text(encoding="utf-8"))
+        assert status == 1 and data["gated"] is False
+        assert data["count_would_fail"] is None and data["over_count"] is None
+        assert data["count_ratio"] == 1.25 and data["count_min"] == 3
+
+    def test_a_clean_gated_run_is_false_and_zero(self, tmp_path):
+        base, head = tmp_path / "base.jsonl", tmp_path / "head.jsonl"
+        _write_side(base, lambda i: 1.0)
+        _write_side(head, lambda i: 1.0 if i != 3 else 1.3)
+        report = tmp_path / "ab_report.json"
+        ab.main(
+            [
+                "--base",
+                str(base),
+                "--head",
+                str(head),
+                "--suite-threshold",
+                "1.30",
+                "--count-ratio",
+                "1.25",
+                "--count-min",
+                "3",
+                "--json-out",
+                str(report),
+            ]
+        )
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert data["count_would_fail"] is False and data["over_count"] == 1
 
 
 class TestLoading:
@@ -967,6 +1406,97 @@ class TestWorkflowWiring:
         ]
         assert "--suite-threshold" in step["run"]
         assert "FM_AB_SUITE" in step["run"]
+
+    def test_the_count_rule_is_declared_once_and_is_clear_of_the_null(self):
+        """‼ The shadow rule's two numbers, held to the null they came from.
+
+        The rule reports instead of gating, so a number that flaps costs a
+        misleading line rather than a red job; that is not a reason to
+        declare one the null never measured, because promotion (#1989) will
+        copy these two numbers into a gate. Held to: a ratio the runner
+        null measured (`RUNNER_NULL_MAX_COUNT`, run 38538085168), a K at
+        least two clear of the most rows that ever reached that ratio on a
+        clean pair, a K clear of what a real green pull request reached
+        (`REAL_GATE_MAX_COUNT`, the 21 real reports), and a ratio at least
+        `COUNT_RATIO_MARGIN` over the K-th largest ratio the null reached
+        (1.190 for K = 3). Declared in the job's `env:` block and nowhere
+        else, so there is one place to change it and this test reads it.
+        """
+        job = self._job()
+        env = job["env"]
+        assert {"FM_AB_COUNT_RATIO", "FM_AB_COUNT_MIN"} <= set(env), env
+        ratio = float(env["FM_AB_COUNT_RATIO"])
+        minimum = int(env["FM_AB_COUNT_MIN"])
+        for step in job["steps"]:
+            assert not {"FM_AB_COUNT_RATIO", "FM_AB_COUNT_MIN"} & set(
+                step.get("env") or {}
+            ), f"{step.get('name')} redeclares the count rule's numbers"
+        assert ratio in RUNNER_NULL_MAX_COUNT, (
+            f"FM_AB_COUNT_RATIO is {ratio}, a ratio the runner null never "
+            f"measured ({sorted(RUNNER_NULL_MAX_COUNT)}): measure it first"
+        )
+        assert minimum >= RUNNER_NULL_MAX_COUNT[ratio] + 2, (
+            f"at {ratio}x up to {RUNNER_NULL_MAX_COUNT[ratio]} of 19 rows were "
+            f"over on identical code (#1989), so K={minimum} is within one "
+            f"row of the noise"
+        )
+        assert minimum >= REAL_GATE_MAX_COUNT[ratio] + 2, (
+            f"a real green pull request had {REAL_GATE_MAX_COUNT[ratio]} rows "
+            f"at {ratio}x or more; K={minimum} is within one row of that"
+        )
+        assert minimum in RUNNER_NULL_MAX_KTH_LARGEST, (
+            f"no null maximum is recorded for the K={minimum}-th largest "
+            f"ratio ({sorted(RUNNER_NULL_MAX_KTH_LARGEST)})"
+        )
+        floor = RUNNER_NULL_MAX_KTH_LARGEST[minimum] * COUNT_RATIO_MARGIN
+        assert ratio >= floor, (
+            f"the {minimum}-th largest ratio reached "
+            f"{RUNNER_NULL_MAX_KTH_LARGEST[minimum]} on identical code; "
+            f"{ratio} is under a {COUNT_RATIO_MARGIN - 1:.0%} margin over it"
+        )
+
+    def test_the_comparison_step_passes_the_count_rule(self):
+        """‼ A rule that is declared and never passed reports nothing and
+        looks like a rule that found nothing. Both numbers reach the
+        comparator from the env, so the line in the report is the same
+        numbers this file pins."""
+        (step,) = [
+            step
+            for step in self._job()["steps"]
+            if "python -m tests.wallclock.ab" in (step.get("run") or "")
+        ]
+        run = _shell_code(step["run"])
+        assert '--count-ratio "${FM_AB_COUNT_RATIO}"' in run
+        assert '--count-min "${FM_AB_COUNT_MIN}"' in run
+
+    def test_the_count_rule_does_not_gate_the_job(self):
+        """‼ The invariant's second half, at the workflow.
+
+        The job's verdict is the comparator's exit status, carried by one
+        output to the Verdict step, and the comparator's status is `ok`,
+        which is the median's failures. So the count rule has no path to a
+        red job: nothing in the workflow reads its fields, and the Verdict
+        step reads the status alone.
+        """
+        steps = self._job()["steps"]
+        verdict = next(s for s in steps if s.get("name") == "Verdict")
+        assert set(verdict["env"]) == {"COMPARE_STATUS"}, verdict["env"]
+        for step in steps:
+            code = _shell_code(step.get("run") or "")
+            assert "count_would_fail" not in code, step.get("name")
+            assert "over_count" not in code, step.get("name")
+
+    def test_the_artifact_that_scores_the_rule_is_uploaded(self):
+        """The promotion criterion is scored from `benchmark-ab`'s
+        `ab_report.json` (`docs/development/testing/performance.md`), so the
+        artifact has to keep carrying it."""
+        (upload,) = [
+            step
+            for step in self._job()["steps"]
+            if step.get("name") == "Upload A/B results"
+        ]
+        assert upload["with"]["name"] == "benchmark-ab"
+        assert "ab_report.json" in upload["with"]["path"]
 
     def test_no_step_pipes_into_a_quiet_grep(self):
         """‼ `set -o pipefail` plus `| grep -q` can turn a gate off and

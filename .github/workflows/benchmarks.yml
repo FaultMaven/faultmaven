@@ -347,17 +347,49 @@ jobs:
       # order effect the probe could confirm. Two batches on the loaded
       # box disagreed with each other (forward 0.999 and 1.072), so what
       # #1567 saw as an order offset was load.
-      #
-      # Two more sensitive-looking rules were measured on #1567's null
-      # and rejected by their own numbers — a per-test residual rule
-      # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
-      # every absolute budget already beats at 2.46x-3.57x) and a count
-      # rule (at 1.30x the null count reached 19 of 50 while slowing HALF
-      # the suite by 30% produced 15). That was the 50-benchmark suite;
-      # #1963 re-measured the median rule only. `tests/wallclock/ab.py`'s
-      # docstring carries both, and `docs/development/testing/performance.md`
-      # carries the method and how contended each box was.
       FM_AB_SUITE: '1.30'
+
+      # ‼ `FM_AB_COUNT_RATIO` / `FM_AB_COUNT_MIN` are the SHADOW count rule
+      # (#1989), reported on every gated comparison and not gating.
+      #
+      # Two more sensitive-looking rules were measured on #1567's null and
+      # rejected by their own numbers (50 benchmarks, a loaded box): a
+      # per-test residual and a count rule. #1989 re-adjudicated both on
+      # the runner null above, plus the 24 A1-to-B1 / A2-to-B2 pairs and
+      # the 21 real reports:
+      #
+      #   * the per-test residual (max of ratio / median) stays rejected,
+      #     for a new reason. Its null tail is single-row bursts (max
+      #     1.742; a +57% one-row burst in 1 of the 21 real runs), so a
+      #     threshold with the median gate's 15% margin is 2.0, and there
+      #     it sees a quarter of the suite 30% slower in 0.5% of cases.
+      #   * the count rule ("K rows at least R times slower") is red on 0
+      #     of the 144 pairs, 0 of the 24 and 0 of the 21 real reports at
+      #     R=1.25, K=3: the null count there is at most 1 of 19 and the
+      #     third-largest ratio's null maximum is 1.190, so R clears it by
+      #     5% and K is the null maximum plus two. It detects a random
+      #     quarter of the suite 30% slower in 91% of cases, a random half
+      #     in 99.9%, the 6-row module in 94% and a uniform +30% in 100%,
+      #     where the median gate sees 0%, 0.8%, 0% and 50%. One or two
+      #     slowed rows stay invisible to it by construction.
+      #
+      # So the count rule is in SHADOW: the Compare step computes it and
+      # the report prints, on every gated comparison, how many benchmarks
+      # are at least R slower and whether it would fail. It does NOT fail
+      # the job; the verdict is the median's alone. 33 clean run-sets (12
+      # runners, 21 real runs) cannot bound its false-red rate below about
+      # 9%, and a loaded box reddens it on 328 of 552 clean pairs, so it
+      # waits for the same kind of evidence the median's step-down does:
+      # the promotion criterion (20 more pull-request runs with
+      # `count_would_fail` false on pull requests that touch no benchmarked
+      # code, recorded on #1989) and the scoring command are in
+      # `docs/development/testing/performance.md`. Promotion is a small,
+      # separate change (`ab.compare` adds the rule to its failures); the
+      # two numbers live here and are pinned against the null in
+      # `tests/unit/ci/test_benchmark_ab.py`. `tests/wallclock/ab.py`'s
+      # docstring carries the rest.
+      FM_AB_COUNT_RATIO: '1.25'
+      FM_AB_COUNT_MIN: '3'
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
     steps:
@@ -511,6 +543,8 @@ jobs:
             --base-label "${BASE_SHA}" \
             --head-label "${GITHUB_SHA}" \
             --suite-threshold "${FM_AB_SUITE}" \
+            --count-ratio "${FM_AB_COUNT_RATIO}" \
+            --count-min "${FM_AB_COUNT_MIN}" \
             --markdown-out ab_report.md \
             --json-out ab_report.json || status=$?
           echo "status=${status}" >> "$GITHUB_OUTPUT"
