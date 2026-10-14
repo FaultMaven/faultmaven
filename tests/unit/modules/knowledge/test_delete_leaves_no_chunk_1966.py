@@ -235,7 +235,9 @@ async def kb():
         _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
             svc, factory
         )
-        repaired, _still = await kb_init._repair_orphaned_rows(orphaned, svc)
+        repaired, _still = await kb_init._repair_orphaned_rows(
+            orphaned, svc, role_may_update=True
+        )
         return orphaned, repaired
 
     async def boot(tmp_path, pack_dir):
@@ -427,7 +429,9 @@ async def test_t10_reindex_missing_vectors_refuses_an_unpublished_row(kb, caplog
     await kb.seed(_builtin(published=False), chunks=0)
 
     with caplog.at_level(logging.WARNING):
-        assert await kb.svc.reindex_missing_vectors(BUILTIN_ID) == 0
+        assert (
+            await kb.svc.reindex_missing_vectors(BUILTIN_ID, role_may_update=True) == 0
+        )
 
     assert kb.indexed == []
     assert BUILTIN_ID not in kb.store.parents
@@ -668,6 +672,32 @@ async def test_a_row_from_before_the_stamp_is_compared_by_content_once(kb, tmp_p
     await kb.svc.delete_document(shipped)
     await kb.boot(tmp_path, pack_dir)
     assert (await kb.row(shipped)).is_published is False
+    assert shipped not in kb.store.parents
+
+
+async def test_a_pre_stamp_row_edited_and_unpublished_is_not_republished(kb, tmp_path):
+    """A built-in edited and retired BEFORE the stamp existed: its content no
+    longer matches the pack, which the content comparison reads as a new pack
+    version — delete + re-ingest, republished with vectors at the first boot
+    after the upgrade. An unpublished row's retirement outranks its content,
+    so it is taken as this pack version, stamped and skipped."""
+    pack_dir = _write_pack(tmp_path)
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, pack_dir)
+    await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    await kb.svc.delete_document(shipped)
+    async with kb.factory() as session:  # what an older version left behind
+        await DatabaseKnowledgeItemRepository(session).update_fields(
+            shipped, {"metadata": {}}, touch=False
+        )
+
+    second = await kb.boot(tmp_path, pack_dir)
+
+    assert second.skipped_unchanged == ["global/example.md"], second
+    row = await kb.row(shipped)
+    assert row.is_published is False, "the first boot after the upgrade republished it"
+    assert row.content == "# Edited\nfix"
+    assert row.metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
     assert shipped not in kb.store.parents
 
 

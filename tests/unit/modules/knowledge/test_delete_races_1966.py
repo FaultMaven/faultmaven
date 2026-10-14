@@ -245,7 +245,9 @@ async def test_a_delete_during_the_repair_embed_leaves_no_chunk(race, item_id, s
         return 3
 
     race.svc._index_document_in_vector_store = gated_index
-    repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
+    repairing = asyncio.create_task(
+        race.svc.reindex_missing_vectors(item_id, role_may_update=True)
+    )
     await asyncio.wait_for(entered.wait(), 10)
 
     removed = await race.svc.delete_document(item_id)
@@ -271,7 +273,9 @@ async def test_a_repair_during_the_delete_hold_waits_for_it(race, item_id, scope
     """
     await race.seed(item_id, scope)
     async with _HeldDelete(race.svc, item_id) as held:
-        repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
+        repairing = asyncio.create_task(
+            race.svc.reindex_missing_vectors(item_id, role_may_update=True)
+        )
         await asyncio.sleep(0.5)
         assert not repairing.done(), "the re-read did not wait for the held delete"
     chunks = await asyncio.wait_for(repairing, 10)

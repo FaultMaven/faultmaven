@@ -152,7 +152,8 @@ class TestInMemoryRepositoryGetById:
 
 
 class TestInMemoryRepositoryUpdate:
-    """Tests for update operation."""
+    """Tests for the targeted update — the repository's only write after
+    creation (there is no full-row update, #1966)."""
 
     @pytest.fixture
     def repository(self):
@@ -165,11 +166,11 @@ class TestInMemoryRepositoryUpdate:
         item = create_sample_item()
         await repository.create(item)
 
-        item.title = "Updated Title"
-        item.content = "Updated content"
+        assert await repository.update_fields(
+            item.item_id, {"title": "Updated Title", "content": "Updated content"}
+        )
 
-        result = await repository.update(item)
-
+        result = await repository.get_by_id(item.item_id)
         assert result.title == "Updated Title"
         assert result.content == "Updated content"
 
@@ -185,18 +186,16 @@ class TestInMemoryRepositoryUpdate:
 
         time.sleep(0.001)
 
-        item.title = "New Title"
-        result = await repository.update(item)
+        await repository.update_fields(item.item_id, {"title": "New Title"})
 
-        assert result.updated_at > original_updated
+        assert (await repository.get_by_id(item.item_id)).updated_at > original_updated
 
     @pytest.mark.asyncio
-    async def test_update_not_found_fails(self, repository):
-        """Test updating non-existent item fails."""
+    async def test_update_not_found_reports_false(self, repository):
+        """Updating a non-existent item matches no row: reported, not raised."""
         item = create_sample_item()
 
-        with pytest.raises(ValueError, match="not found"):
-            await repository.update(item)
+        assert await repository.update_fields(item.item_id, {"title": "x"}) is False
 
     @pytest.mark.asyncio
     async def test_update_all_fields(self, repository):
@@ -205,18 +204,22 @@ class TestInMemoryRepositoryUpdate:
         await repository.create(item)
 
         embedding = create_valid_embedding(0.5)
-        item.title = "New Title"
-        item.content = "New Content"
-        item.category = "database"
-        item.tags = ["sql", "query"]
-        item.embedding_vector = embedding
-        item.is_published = False
-        item.view_count = 100
-        item.helpful_count = 80
-        item.not_helpful_count = 20
+        await repository.update_fields(
+            item.item_id,
+            {
+                "title": "New Title",
+                "content": "New Content",
+                "category": "database",
+                "tags": ["sql", "query"],
+                "embedding_vector": embedding,
+                "is_published": False,
+                "view_count": 100,
+                "helpful_count": 80,
+                "not_helpful_count": 20,
+            },
+        )
 
-        result = await repository.update(item)
-
+        result = await repository.get_by_id(item.item_id)
         assert result.title == "New Title"
         assert result.content == "New Content"
         assert result.category == "database"
@@ -415,18 +418,21 @@ class TestTargetedWrite:
     async def test_the_locked_read_reports_publication_and_writes_nothing(
         self, deferring_repository
     ):
-        """``is_published_locked``: None for no row, the flag otherwise. On
-        SQLite it takes the writer lock with a no-op write, which must leave
-        the row exactly as it was once the caller rolls back."""
+        """``read_is_published``: None for no row, the flag otherwise, locked
+        or not. Locked on SQLite it takes the writer lock with a no-op write,
+        which must leave the row exactly as it was once the caller rolls
+        back. SQLite has no roles, so ``may_update`` is always true."""
         repo = deferring_repository
         item = await repo.create(create_sample_item())
         before = await repo.get_by_id(item.item_id)
 
-        assert await repo.is_published_locked("ki_absent") is None
-        assert await repo.is_published_locked(item.item_id) is True
-        await repo.rollback()
+        assert await repo.may_update() is True
+        for lock in (True, False):
+            assert await repo.read_is_published("ki_absent", lock=lock) is None
+            assert await repo.read_is_published(item.item_id, lock=lock) is True
+            await repo.rollback()
         await repo.update_fields(item.item_id, {"is_published": False})
-        assert await repo.is_published_locked(item.item_id) is False
+        assert await repo.read_is_published(item.item_id, lock=True) is False
         await repo.rollback()
 
         after = await repo.get_by_id(item.item_id)
@@ -887,9 +893,11 @@ class TestInMemoryRepositoryMetadata:
         item = create_sample_item(metadata={"key": "value"})
         await repository.create(item)
 
-        item.metadata = {"new_key": "new_value", "another": 123}
-        result = await repository.update(item)
+        await repository.update_fields(
+            item.item_id, {"metadata": {"new_key": "new_value", "another": 123}}
+        )
 
+        result = await repository.get_by_id(item.item_id)
         assert result.metadata == {"new_key": "new_value", "another": 123}
 
     @pytest.mark.asyncio

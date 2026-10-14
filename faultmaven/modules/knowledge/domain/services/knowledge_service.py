@@ -606,9 +606,16 @@ class KnowledgeService:
           pack version of that runbook republishes it: a shipped update is a
           new document.
         - A deleted authored document has no row, so nothing re-indexes it:
-          repair works from rows, and it re-checks the row after embedding
-          (a locked read that waits for a delete still holding the row),
+          repair works from rows, and it re-checks the row after embedding,
           discarding what it wrote if a delete or unpublish landed meanwhile.
+          That re-check is a locked read, which also waits for a delete still
+          holding the row — for every repair pass whose role may UPDATE
+          ``knowledge_items``: the web-startup bootstrap and SQLite. The one
+          exception is ``kb_seed`` under ``TENANT_PROVIDER=multi``, whose
+          maintenance role holds no UPDATE: its re-check is a plain read, so a
+          delete or unpublish inside the milliseconds between its vector delete
+          and its commit, while that job's repair embeds the same row, is not
+          waited for.
 
         Two stores cannot commit atomically, so the order decides which
         failure is possible:
@@ -1134,7 +1141,7 @@ class KnowledgeService:
         attempted_content: str,
         commit_error: Exception,
     ) -> None:
-        """Realign the vectors after ``repo.update`` failed, by OBSERVING the row.
+        """Realign the vectors after the update's row write failed, by OBSERVING it.
 
         The vectors already describe the attempted update. The obvious response
         — put the previous content back — is right only if the write actually
@@ -1455,7 +1462,9 @@ class KnowledgeService:
 
         return chunks_created
 
-    async def reindex_missing_vectors(self, item_id: str) -> int:
+    async def reindex_missing_vectors(
+        self, item_id: str, *, role_may_update: bool
+    ) -> int:
         """Re-chunk + re-embed an existing row's chunks into the vector store.
 
         Cross-store repair for an ORPHANED row — a ``knowledge_items`` row whose
@@ -1489,9 +1498,17 @@ class KnowledgeService:
         already lists published rows only; this refusal (logged, nothing
         written) is the second line, for any caller that does not. The row is
         read again AFTER the vectors are written, and if it was deleted or
-        unpublished meanwhile they are discarded and 0 is returned. That read
-        is locked (``is_published_locked``), so it waits for a delete or
-        unpublish still holding the row; a read that fails discards too.
+        unpublished meanwhile they are discarded and 0 is returned; a read
+        that fails discards too.
+
+        ``role_may_update`` is the repair pass's one capability answer
+        (``KnowledgeItemRepository.may_update``). When the role may UPDATE the
+        re-read is LOCKED, so it also waits for a delete or unpublish still
+        holding the row. The ``kb_seed`` maintenance role (multi-tenant) holds
+        no UPDATE, and a locked read would be refused — so it reads plainly:
+        it still sees a delete or unpublish that committed during the embed,
+        but not one inside the milliseconds between that writer's vector
+        delete and its commit.
 
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
         row is absent or unpublished (before or after the embed), no vector
@@ -1597,15 +1614,18 @@ class KnowledgeService:
         # worker, or the user's retry of a delete that left the split state —
         # has already removed whatever vectors it found. Keeping ours would
         # leave a chunk with no row (permanent for an authored id) or a retired
-        # runbook retrievable. The read is LOCKED: it waits for a delete or
-        # unpublish still holding the row, so it sees that writer's outcome
-        # whichever order the two ran in (FOR SHARE on PostgreSQL, the writer
-        # lock on SQLite — see ``is_published_locked``).
+        # runbook retrievable. Where the role may UPDATE the read is LOCKED: it
+        # waits for a delete or unpublish still holding the row, so it sees
+        # that writer's outcome whichever order the two ran in (FOR SHARE on
+        # PostgreSQL, the writer lock on SQLite — see ``read_is_published``).
+        # The maintenance role reads plainly (see the docstring).
         if chunks > 0:
             try:
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
-                    published = await repo.is_published_locked(item_id)
+                    published = await repo.read_is_published(
+                        item_id, lock=role_may_update
+                    )
                     await repo.rollback()  # releases the lock; nothing to keep
             except Exception as reread_error:
                 # Unverified means discarded: the worst outcome is then the
@@ -2698,8 +2718,9 @@ class KnowledgeService:
           the delete, the row keeps its previous content and the vectors are
           missing or partial — the recoverable class above, not a mispairing,
           but not "unchanged" either.
-        * If the vector swap succeeds and ``repo.update`` then fails, the
-          vectors are ahead of the row. That is compensated by
+        * If the vector swap succeeds and the row write
+          (``repo.update_fields``) then fails, the vectors are ahead of the
+          row. That is compensated by
           :meth:`_resynchronise_after_failed_commit`, which re-reads the row
           and decides from what it OBSERVES — a raised commit does not prove
           the write failed, and restoring on that assumption alone would
@@ -2803,7 +2824,7 @@ class KnowledgeService:
             #
             # The chunk metadata is stamped with this timestamp so it does not
             # carry the PREVIOUS one. The row's own `updated_at` is set by
-            # `repo.update` at commit time and will be LATER than this by
+            # the row write at commit time and will be LATER than this by
             # however long the embed takes — seconds, or a cold load's minutes.
             # Nothing compares the two; retrieval reads the chunk value only as
             # a recency signal.

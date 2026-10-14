@@ -141,6 +141,18 @@ async def bootstrap_kb(
         pack.version,
     )
 
+    # ONE capability answer for the whole pass (#1966). Under multi, kb_seed
+    # runs as the maintenance role: INSERT and DELETE on knowledge_items,
+    # deliberately no UPDATE. What this pass issues is shaped by the answer,
+    # rather than issuing statements the role is refused: the pack-hash stamp
+    # is skipped, and repair re-reads plainly instead of FOR SHARE.
+    role_may_update = await _role_may_update(db_session_factory)
+    if not role_may_update:
+        logger.debug(
+            "KB bootstrap: this role may not UPDATE knowledge_items — pack-hash "
+            "stamps are skipped and repair re-reads are unlocked this pass."
+        )
+
     for runbook in pack.runbooks:
         try:
             outcome = await _ingest_pack_runbook(
@@ -148,6 +160,7 @@ async def bootstrap_kb(
                 knowledge_service=knowledge_service,
                 db_session_factory=db_session_factory,
                 enterprise_id=enterprise_id,
+                role_may_update=role_may_update,
             )
             if outcome == "ingested":
                 result.ingested.append(runbook.relpath)
@@ -189,7 +202,11 @@ async def bootstrap_kb(
     # timeout the pack exists to avoid.
     max_rows, max_chunks = _resolve_repair_bounds()
     result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
-        orphaned_rows, knowledge_service, max_rows=max_rows, max_chunks=max_chunks
+        orphaned_rows,
+        knowledge_service,
+        role_may_update=role_may_update,
+        max_rows=max_rows,
+        max_chunks=max_chunks,
     )
 
     logger.info(
@@ -211,6 +228,8 @@ async def _ingest_pack_runbook(
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
     enterprise_id: str,
+    *,
+    role_may_update: bool,
 ) -> str:
     """Ingest one pack runbook. Returns ``"ingested"`` or ``"skipped"``.
 
@@ -220,8 +239,16 @@ async def _ingest_pack_runbook(
     comparison (#1966): an operator may have edited it, and an edit read as a
     pack change would delete and re-ingest the row, republishing a runbook
     that was unpublished. A row ingested before the stamp existed is compared
-    by content once and, if unchanged, stamped. Writes the SQL row + the pack's
-    pre-embedded chunks; never loads the embedding model.
+    by content once and, if unchanged, stamped — unless it is UNPUBLISHED,
+    which is a retirement whatever its content says: it is taken as this pack
+    version, stamped and skipped, so a runbook an operator edited and retired
+    before the stamp existed is not republished by the first boot after the
+    upgrade. The stamp is written only when the pass's role may UPDATE the
+    table (``role_may_update``); under the ``kb_seed`` maintenance role it is
+    skipped, and the content comparison stays exact there because a platform
+    row cannot be edited or unpublished by a tenant session (RLS refuses).
+    Writes the SQL row + the pack's pre-embedded chunks; never loads the
+    embedding model.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -276,13 +303,18 @@ async def _ingest_pack_runbook(
             pack_unchanged = stamped_hash == runbook.content_hash
         else:
             # Ingested before the stamp existed: the content is the only
-            # evidence of which pack version it came from. Compared once —
-            # when it matches, the stamp makes every later boot compare hashes.
-            existing_hash = hashlib.sha256(
-                existing_row.content.encode("utf-8")
-            ).hexdigest()
-            pack_unchanged = existing_hash == runbook.content_hash
-            if pack_unchanged:
+            # evidence of which pack version it came from — except for an
+            # unpublished row, whose retirement is the operator's decision and
+            # outranks it (its content may be an edit). Compared once: the
+            # stamp makes every later boot compare hashes.
+            if not existing_row.is_published:
+                pack_unchanged = True
+            else:
+                existing_hash = hashlib.sha256(
+                    existing_row.content.encode("utf-8")
+                ).hexdigest()
+                pack_unchanged = existing_hash == runbook.content_hash
+            if pack_unchanged and role_may_update:
                 await _stamp_pack_hash(
                     runbook.item_id,
                     {**metadata, PACK_CONTENT_HASH_KEY: runbook.content_hash},
@@ -330,6 +362,28 @@ async def _ingest_pack_runbook(
         f"Ingested {runbook.relpath} ({chunks_created} chunks, scope={runbook.scope})"
     )
     return "ingested"
+
+
+async def _role_may_update(db_session_factory: Callable[[], Awaitable[Any]]) -> bool:
+    """Whether this pass's role may UPDATE ``knowledge_items`` (asked once).
+
+    A failed check answers False: the pass then issues no UPDATE and no
+    locked read, which the role would be refused if it really lacked the
+    privilege; the cost of a wrong False is only the plain re-read.
+    """
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    try:
+        async with db_session_factory() as session:
+            return await DatabaseKnowledgeItemRepository(session).may_update()
+    except Exception as exc:
+        logger.warning(
+            "KB bootstrap: could not read this role's privileges on "
+            f"knowledge_items ({exc}); treating it as unable to UPDATE this pass."
+        )
+        return False
 
 
 async def _stamp_pack_hash(
@@ -596,6 +650,7 @@ async def _repair_orphaned_rows(
     orphaned_rows: list[str],
     knowledge_service: Any,
     *,
+    role_may_update: bool,
     max_rows: int = KB_REPAIR_MAX_ROWS,
     max_chunks: int = KB_REPAIR_MAX_CHUNKS,
 ) -> tuple[list[str], list[str]]:
@@ -618,6 +673,10 @@ async def _repair_orphaned_rows(
     shipped one. An unpublished row is not an orphan (it has no vectors by
     design, #1966): reconcile does not list it, and
     ``reindex_missing_vectors`` refuses it if handed one anyway.
+
+    ``role_may_update`` is the pass's one capability answer: it decides whether
+    each repair's re-read after writing is locked (see
+    ``KnowledgeService.reindex_missing_vectors``).
 
     Bounded twice (``max_rows`` / ``max_chunks``, deployment-configurable):
     ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the
@@ -670,7 +729,9 @@ async def _repair_orphaned_rows(
             )
             break
         try:
-            chunks = await knowledge_service.reindex_missing_vectors(item_id)
+            chunks = await knowledge_service.reindex_missing_vectors(
+                item_id, role_may_update=role_may_update
+            )
         except Exception as exc:
             logger.warning(f"KB repair failed for {item_id}: {exc}")
             still_orphaned.append(item_id)

@@ -251,7 +251,9 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod():
     with patch(_EMBED_TEXTS, new=_hang_but_record):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
             with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
-                chunks = await service.reindex_missing_vectors("doc-1")
+                chunks = await service.reindex_missing_vectors(
+                    "doc-1", role_may_update=True
+                )
 
     # `chunks == 0` alone is ambiguous — a repair that silently did NOTHING
     # returns 0 too, so that assertion would bless gutting boot repair

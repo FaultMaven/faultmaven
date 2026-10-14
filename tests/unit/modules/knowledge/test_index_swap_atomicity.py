@@ -236,7 +236,7 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     service._db_session_factory = MagicMock(return_value=session)
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
-        chunks = await service.reindex_missing_vectors("doc-1")
+        chunks = await service.reindex_missing_vectors("doc-1", role_may_update=True)
 
     assert chunks == 0, "boot repair must degrade, not raise"
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
@@ -280,7 +280,9 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     embed = AsyncMock(return_value=[[0.1] * 1024])
 
     with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
-        chunks = await service.reindex_missing_vectors("doc-no-tenant")
+        chunks = await service.reindex_missing_vectors(
+            "doc-no-tenant", role_may_update=True
+        )
 
     assert chunks == 0, "a refused repair must degrade to 0, not raise"
     errors = [r for r in caplog.records if r.levelname == "ERROR"]

@@ -32,7 +32,7 @@ maintenance path (``jobs/run.py kb_seed``), never tenant sessions. Methods
 below that take only an ``enterprise_id`` (counts / org listings /
 text+tag search) are org-scoped queries that exclude the org-free platform
 tier; note they currently have NO production callers (the service uses only
-get/create/update/delete/list_for_inventory) — wire the global arm in
+get/create/update_fields/delete/list_for_inventory) — wire the global arm in
 explicitly if one is ever made live, or remove them.
 
 Usage:
@@ -59,7 +59,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,9 +83,12 @@ class KnowledgeItemRepositoryException(Exception):
     pass
 
 
-#: Domain field → column value, serialised exactly as ``update`` writes it, for
-#: the fields a targeted write may set. ``is_published`` is here so a retirement
-#: can be written on its own; a content edit simply does not name it.
+#: Domain field → column value, serialised exactly as ``create`` writes it, for
+#: every field a write after creation may set. Identity and tenancy
+#: (``item_id``, ``enterprise_id``, ``organization_id``, ``scope``,
+#: ``owner_id``, ``created_at``) are not here: no write changes them.
+#: ``is_published`` is here so a retirement can be written on its own; a
+#: content edit simply does not name it.
 _TARGETED_FIELDS = {
     "title": lambda v: ("title", v),
     "content": lambda v: ("content", v),
@@ -94,6 +97,13 @@ _TARGETED_FIELDS = {
     "item_type": lambda v: ("item_type", KnowledgeItemType(v).value),
     "is_published": lambda v: ("is_published", bool(v)),
     "metadata": lambda v: ("knowledge_metadata", json.dumps(v) if v else "{}"),
+    "embedding_vector": lambda v: ("embedding_vector", json.dumps(v) if v else None),
+    "embedding_model": lambda v: ("embedding_model", v),
+    "embedding_version": lambda v: ("embedding_version", v),
+    "view_count": lambda v: ("view_count", int(v)),
+    "helpful_count": lambda v: ("helpful_count", int(v)),
+    "not_helpful_count": lambda v: ("not_helpful_count", int(v)),
+    "last_retrieved_at": lambda v: ("last_retrieved_at", v),
 }
 
 
@@ -143,26 +153,6 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Update existing knowledge item — EVERY column, from ``item``.
-
-        A full-row write: whatever another writer committed since ``item`` was
-        read is overwritten. A writer that changes some fields of a row other
-        writers also change uses :meth:`update_fields` instead.
-
-        Args:
-            item: Item with updated fields
-
-        Returns:
-            Updated item
-
-        Raises:
-            ValueError: If item not found
-            KnowledgeItemRepositoryException: If update fails
-        """
-        pass
-
-    @abstractmethod
     async def update_fields(
         self,
         item_id: str,
@@ -172,10 +162,11 @@ class KnowledgeItemRepository(ABC):
         touch: bool = True,
     ) -> bool:
         """Write ONLY ``fields`` on one row; every other column is left as the
-        database holds it (#1966).
+        database holds it (#1966). The only write after creation.
 
-        Unlike :meth:`update`, this cannot revert a concurrent writer's change
-        to a column it does not name — ``is_published`` above all, which is how
+        There is deliberately no full-row write: one would put back whatever
+        it read for every column it did not mean to change, reverting a
+        concurrent writer's change — ``is_published`` above all, which is how
         a built-in runbook is retired. The statement is a single targeted
         ``UPDATE``, so on PostgreSQL it waits for a concurrent writer's row
         lock and applies to the row as that writer left it, and on SQLite it
@@ -183,10 +174,10 @@ class KnowledgeItemRepository(ABC):
 
         Args:
             item_id: Item identifier
-            fields: Domain field name → new value. Accepted: ``title``,
-                ``content``, ``category``, ``tags``, ``item_type``,
-                ``is_published`` and ``metadata``, serialised exactly as
-                :meth:`update` serialises them.
+            fields: Domain field name → new value: the content and
+                classification fields, ``is_published``, ``metadata``, the
+                embedding fields and the usage counters (``_TARGETED_FIELDS``),
+                serialised exactly as :meth:`create` writes them.
             commit: ``False`` leaves the write uncommitted in the open
                 transaction, for :meth:`commit` or :meth:`rollback` to settle.
             touch: Stamp ``updated_at`` with the current time. ``False`` keeps
@@ -237,14 +228,28 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def is_published_locked(self, item_id: str) -> Optional[bool]:
-        """Whether ``item_id`` is published (``None``: no such row), read AFTER
-        any writer still holding the row has finished (#1966).
+    async def may_update(self) -> bool:
+        """Whether the session's role may UPDATE ``knowledge_items``.
+
+        Not every role that runs the KB bootstrap can: under
+        ``TENANT_PROVIDER=multi`` the ``kb_seed`` job connects as the
+        maintenance role, which holds INSERT and DELETE on this table and
+        deliberately no UPDATE. A pass asks ONCE and shapes what it issues by
+        the answer, instead of issuing statements the role is refused (#1966).
+        """
+        pass
+
+    @abstractmethod
+    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
+        """Whether ``item_id`` is published (``None``: no such row) (#1966).
 
         For a caller that has just written vectors for a row read earlier and
-        must know whether a delete or unpublish landed meanwhile — including
-        one whose row change is issued but not yet committed. The caller rolls
-        its session back afterwards, which releases the lock.
+        must know whether a delete or unpublish landed meanwhile. ``lock=True``
+        reads AFTER any writer still holding the row has finished — including
+        one whose row change is issued but not yet committed — and needs a
+        role that :meth:`may_update`; the caller rolls its session back
+        afterwards, which releases the lock. ``lock=False`` is a plain read of
+        the last committed state.
         """
         pass
 
@@ -502,72 +507,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get knowledge item {item_id}: {e}"
             ) from e
 
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Update knowledge item fields."""
-        try:
-            item.updated_at = datetime.now(timezone.utc)
-
-            stmt = (
-                update(KnowledgeItemModel)
-                .where(KnowledgeItemModel.item_id == item.item_id)
-                .values(
-                    # Carried on the update too: an UPDATE that omitted it
-                    # would leave the row's attribution frozen at whatever the
-                    # first write happened to stamp.
-                    organization_id=item.organization_id,
-                    scope=item.scope.value,
-                    owner_id=item.owner_id,
-                    title=item.title,
-                    content=item.content,
-                    item_type=item.item_type.value,
-                    category=item.category,
-                    tags=list(item.tags) if item.tags else None,
-                    embedding_model=item.embedding_model,
-                    embedding_vector=(
-                        json.dumps(item.embedding_vector)
-                        if item.embedding_vector
-                        else None
-                    ),
-                    embedding_version=item.embedding_version,
-                    source_url=item.source_url,
-                    author=item.author,
-                    language=item.language,
-                    view_count=item.view_count,
-                    helpful_count=item.helpful_count,
-                    not_helpful_count=item.not_helpful_count,
-                    last_retrieved_at=item.last_retrieved_at,
-                    is_published=item.is_published,
-                    verification_level=int(item.verification_level),
-                    verification_reason=item.verification_reason,
-                    verified_by=item.verified_by,
-                    verified_at=item.verified_at,
-                    updated_at=item.updated_at,
-                    knowledge_metadata=(
-                        json.dumps(item.metadata) if item.metadata else "{}"
-                    ),
-                )
-                .execution_options(synchronize_session=False)
-            )
-
-            result = await self.db.execute(stmt)
-
-            if result.rowcount == 0:
-                raise ValueError(f"Knowledge item {item.item_id} not found")
-
-            await self.db.commit()
-            logger.debug(f"Updated knowledge item {item.item_id}")
-            return item
-
-        except ValueError:
-            raise
-
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Failed to update knowledge item: {e}")
-            raise KnowledgeItemRepositoryException(
-                f"Failed to update knowledge item: {e}"
-            ) from e
-
     async def update_fields(
         self,
         item_id: str,
@@ -636,36 +575,46 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         """Roll back the session's open transaction."""
         await self.db.rollback()
 
-    async def is_published_locked(self, item_id: str) -> Optional[bool]:
-        """Locked read of ``is_published`` (see the base class).
+    async def may_update(self) -> bool:
+        """``has_table_privilege`` on PostgreSQL; SQLite has no roles."""
+        if self.db.get_bind().dialect.name == "sqlite":
+            return True
+        return bool(
+            (
+                await self.db.execute(
+                    text("SELECT has_table_privilege(current_user, :t, 'UPDATE')"),
+                    {"t": KnowledgeItemModel.__table__.fullname},
+                )
+            ).scalar()
+        )
 
-        PostgreSQL: ``SELECT ... FOR SHARE`` waits for an uncommitted
-        ``UPDATE``/``DELETE`` of the row, then reads its outcome. SQLite
-        ignores that clause, and under WAL a reader sees the last committed
-        state while a writer still holds its lock, so the read is preceded by
-        a no-op write of the row: it must take the database's writer lock
-        first, which waits (``busy_timeout``) for the held change to commit.
-        The no-op write changes nothing (``updated_at`` included) and is
-        discarded by the caller's rollback.
+    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
+        """Read of ``is_published`` (see the base class).
+
+        With ``lock``: PostgreSQL ``SELECT ... FOR SHARE`` waits for an
+        uncommitted ``UPDATE``/``DELETE`` of the row, then reads its outcome
+        (it needs UPDATE privilege). SQLite ignores that clause, and under WAL
+        a reader sees the last committed state while a writer still holds its
+        lock, so the read is preceded by a no-op write of the row: it must take
+        the database's writer lock first, which waits (``busy_timeout``) for
+        the held change to commit. The no-op write changes nothing
+        (``updated_at`` included) and is discarded by the caller's rollback.
         """
         where = KnowledgeItemModel.item_id == item_id
-        if self.db.get_bind().dialect.name == "sqlite":
-            await self.db.execute(
-                update(KnowledgeItemModel)
-                .where(where)
-                .values(
-                    is_published=KnowledgeItemModel.is_published,
-                    updated_at=KnowledgeItemModel.updated_at,
+        query = select(KnowledgeItemModel.is_published).where(where)
+        if lock:
+            if self.db.get_bind().dialect.name == "sqlite":
+                await self.db.execute(
+                    update(KnowledgeItemModel)
+                    .where(where)
+                    .values(
+                        is_published=KnowledgeItemModel.is_published,
+                        updated_at=KnowledgeItemModel.updated_at,
+                    )
+                    .execution_options(synchronize_session=False)
                 )
-                .execution_options(synchronize_session=False)
-            )
-        found = (
-            await self.db.execute(
-                select(KnowledgeItemModel.is_published)
-                .where(where)
-                .with_for_update(read=True)
-            )
-        ).first()
+            query = query.with_for_update(read=True)
+        found = (await self.db.execute(query)).first()
         return None if found is None else bool(found[0])
 
     # =========================================================================
@@ -1090,15 +1039,6 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             return None
         return deepcopy(item)
 
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Update knowledge item fields."""
-        if item.item_id not in self._items:
-            raise ValueError(f"Knowledge item {item.item_id} not found")
-
-        item.updated_at = datetime.now(timezone.utc)
-        self._items[item.item_id] = deepcopy(item)
-        return deepcopy(item)
-
     async def update_fields(
         self,
         item_id: str,
@@ -1148,7 +1088,11 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         """Discard the writes issued with ``commit=False``."""
         self._pending.clear()
 
-    async def is_published_locked(self, item_id: str) -> Optional[bool]:
+    async def may_update(self) -> bool:
+        """No roles in memory."""
+        return True
+
+    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
         """Committed ``is_published`` (no concurrent writers to wait for)."""
         item = self._items.get(item_id)
         return None if item is None else bool(item.is_published)
