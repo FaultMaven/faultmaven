@@ -1438,11 +1438,11 @@ _default_to_the_test_data_root()
 # again, as ``_default_to_the_test_data_root`` does, so no test inherits one
 # built before the session's environment was cleaned.
 #
-# ``pytest_runtest_protocol`` below then gives every test the root logger's
-# level and handlers back as it found them, and structlog's configuration and
-# the singleton with them. A test that wants DEBUG records asks for them
-# (``caplog.set_level``) or sets the level itself; either way it does not
-# change the level the next test runs at.
+# ``pytest_runtest_protocol`` below then puts the root logger's level and
+# handlers, structlog's configuration and the singleton back after every test
+# (its docstring says what that does not undo). A test that wants DEBUG
+# records asks for them (``caplog.set_level``) or sets the level itself;
+# either way it does not change the level the next test runs at.
 # ``tests/unit/test_test_logging_is_set_once.py`` pins all three, in a child run.
 TEST_LOG_LEVEL = "INFO"
 
@@ -1463,18 +1463,29 @@ _configure_test_logging()
 def pytest_runtest_protocol(item, nextitem):
     """Give each test the logging state as the session configured it.
 
-    Three pieces of process-global state, each restored whole:
+    Three pieces of process-global state are put back after every test:
 
     * the root logger's level and handlers (#1944);
-    * structlog's configuration (``structlog.get_config()``), which
-      ``structlog.reset_defaults()`` in a test's teardown clears (#1972): the
-      loggers the app bound at import (the middleware's ``logger``) then
-      write to structlog's default ``PrintLogger`` on stdout, not through
-      stdlib logging, so a later test's ``caplog`` sees nothing;
+    * structlog's configuration: the five values ``structlog.get_config()``
+      returns, handed back to ``structlog.configure`` with the processors LIST
+      object kept as it was (a copy would break ``capture_logs`` for loggers
+      cached earlier). ``structlog.reset_defaults()`` in a test's teardown
+      clears it (#1972): the loggers the app bound at import (the
+      middleware's ``logger``) then write to structlog's default
+      ``PrintLogger`` on stdout, not through stdlib logging, so a later
+      test's ``caplog`` sees nothing;
     * the faultmaven singleton (``logging.config._logger_config``), because
       ``get_logger`` rebuilds the configuration only while it is ``None``: a
       live singleton over a reset structlog is never rebuilt, and a ``None``
       one is rebuilt from settings read afresh, not as the session set it.
+
+    It does not undo a logger proxy that a test first used while its OWN
+    ``structlog.configure(..., cache_logger_on_first_use=True)`` was active
+    (that proxy stays bound to that configuration), nor an in-place mutation
+    of the processors list. No test does either today: every test-installed
+    configuration comes from ``FaultMavenLogger``, whose structlog-side chain
+    does not depend on the configuration, and ``capture_logs`` restores its
+    own list.
 
     A hook rather than an autouse fixture: pytest installs a fresh capture
     handler on the root for each of setup, call and teardown, so a fixture's
