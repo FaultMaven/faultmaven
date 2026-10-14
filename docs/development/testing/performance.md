@@ -44,8 +44,10 @@ this guide deliberately does not restate the budgets' numbers, because the
 copy is what goes stale.
 
 The A/B gate's single threshold (below) is the third and last place a
-number lives: `FM_AB_SUITE` in the `ab-regression` job's `env:` block in
-`.github/workflows/benchmarks.yml`. There is no separate baseline file —
+gating number lives: `FM_AB_SUITE` in the `ab-regression` job's `env:` block in
+`.github/workflows/benchmarks.yml`. The shadow count rule's two numbers
+(`FM_AB_COUNT_RATIO`, `FM_AB_COUNT_MIN`, #1989) sit beside it in the same
+block and gate nothing. There is no separate baseline file —
 `.github/benchmark_baselines/baseline_v1.json` and the "Baseline
 Management" recipe that pointed at it were deleted by #1567. Nothing had
 ever read the file, its numbers had drifted out of agreement with
@@ -529,22 +531,22 @@ an argument. (The A/B job runs only on pull requests, so `main` has no
 medians; the `benchmark-ab` artifact of each run keeps `ab_report.json`.)
 
 **Two more sensitive-looking rules were measured on the same data and
-rejected by their own numbers**, and that is worth knowing before anyone
-proposes them again:
+rejected by their own numbers** at 50 benchmarks: a per-test residual (the max
+of `ratio / median`; its null ranged 1.18x-3.38x, so a clean threshold is
+~3.5x, which every absolute budget already beats at 2.46x-3.57x) and a count
+rule ("K of 50 at least R times slower"; at R=1.30 the null count reached
+**19** of 50 while slowing **half** the suite by 30% gave **15**). That
+rejection rested on a loaded 50-benchmark box. #1989 re-adjudicated both on
+the runner null (further down, after the stress case): the residual stays
+rejected for a new reason, and the count rule is adopted in **shadow**. The
+per-test residual is printed and the table is ranked by it, because that is
+how you read a red median; it gates nothing.
 
-| rejected rule | its null noise | its signal | verdict |
-|---|---|---|---|
-| per-test: max of `ratio / median` | 1.18x-3.38x | a clean threshold is ~3.5x | every absolute budget already fails between 2.46x and 3.57x, so it is dominated |
-| count: "K of 50 at least R times slower" | at R=1.30, up to **19** of 50 | slowing **half** the suite by 30% gives **15** | signal below noise; no K separates them |
-
-So the per-test residual is printed and the table is ranked by it — that
-is how you read a red median — but it gates nothing.
-
-**What the median cannot see**, stated rather than left to be
-rediscovered: a regression confined to a minority of the suite. A quarter
-of these benchmarks 30% slower moves the median to about 1.05. That class
-stays with the absolute budgets, exactly as it was before this job
-existed.
+**What the median cannot see**, stated rather than left to be rediscovered: a
+regression confined to a minority of the suite. A quarter of these
+benchmarks 30% slower moves the median to about 1.05. Until the shadow count
+rule is promoted that class stays with the absolute budgets, and the report
+says how many rows the shadow rule counted.
 
 **Re-measured at 19 benchmarks (#1963, 2026-10-14).** The suite shrank in
 two steps from the 50 rows #1567 measured: #1890 removed the 7-row
@@ -640,15 +642,206 @@ ever reports a median near it, module concentration is the first thing to
 look at. The gate prints its median on every run, which is how that
 accumulates.
 
-**The two rejected rules, at 19 benchmarks.** #1963 re-measured the
-median rule only and adopted or re-examined neither of the other two. For
-the record, the numbers they would be judged on now: on the probe the
-per-test residual (max of `ratio / median`) has p50 1.16, p90 1.23 and
-max **1.74**, and the count rule's null count at R=1.30 reached **1** of
-19 while slowing a random half of the suite by 30% gave a median of **5**
-(range 0-9). On the stress case they are 6.27 and 11 of 19 against 6
-(0-13). The original rejection of both rested on the loaded 50-benchmark
-null above; it has not been repeated on the runners.
+#### The per-test and count rules, re-adjudicated on the runner null (#1989)
+
+The two rules #1567 rejected are the candidates for the class the median
+cannot see. They were rejected on a 50-benchmark null on a loaded box, and
+#1963 re-measured only the median, so #1989 scored both on the runner null:
+the 144 same-runner ordered pairs of run 38538085168, the 24 of them in the
+job's own direction (A1 as base, B1 as head; A2 as base, B2 as head), and the
+21 real reports of this job. Detection is measured by injecting a slowdown
+into the head-side rows of the 144 clean pairs and scoring the result with
+`ab.compare` itself: random rows are 100 fresh draws per pair (14,400 trials a
+cell), the two modules are fixed rows (144 trials, from 12 runners).
+
+**False reds: identical code on both sides.**
+
+| rule | threshold, and its margin over the null's worst | 144 runner pairs | the 24 | the 21 real | 552 stress-box pairs |
+|---|---|---|---|---|---|
+| median (the gate) | 1.30; 23% over 1.053 | 0 | 0 | 0 | 12 |
+| per-test: max of `ratio / median` | 2.0; 15% over 1.742 | 0 | 0 | 0 | 92 |
+| count: at least 3 rows at 1.25x or more | 1.25; 5% over the third-largest ratio's worst, 1.190 | 0 | 0 | 0 | 328 |
+
+**Detection: a slowdown injected into some of the 19 rows**, percent of trials
+in which the rule is red.
+
+| rule | quarter (5 rows) +30% | quarter +50% | half (10) +30% | 6-row case module +30% | 13-row knowledge module +30% | uniform +30% | one row +100% |
+|---|---|---|---|---|---|---|---|
+| median >= 1.30 | 0.0 | 0.0 | 0.8 | 0.0 | 15.3 | 50.0 (by construction) | 0.0 |
+| max `ratio / median` >= 2.0 | 0.5 | 0.6 | 0.2 | 1.4 | 0.0 | 0.0 | 45.8 |
+| count >= 3 at 1.25x | **91.0** | 100.0 | **99.9** | **94.4** | 99.3 | 100.0 | 0.0 |
+
+At the real gate's offset (the head side scaled by the real reports'
+geometric mean, 0.984, the head-faster offset described above) the count
+rule's cells are 80.9 / 99.1 / 81.9 / 99.3 / 100 for quarter, half, case,
+knowledge and uniform at +30%, and the median's uniform +30% is 20.1: the
+rule keeps most of what it detects when the gate's own bias works against it.
+
+**The per-test residual stays rejected, for a new reason.** On the runner its
+null is not the 3.38x of the loaded box, it is single-row bursts: the worst
+`ratio / median` over the 144 pairs is **1.742** (p50 1.16, p90 1.23), and one
+of the 21 real reports shows the same shape, one row at +57%. A threshold with
+the 15% margin the median gate keeps over its null is therefore 2.0, and
+there the rule sees a regression confined to part of the suite in at most 2.1%
+of cases (a quarter at +30% in 0.5%, the 6-row module at +50% in 2.1%). What
+it does fire on is a lone row at +100%, 45.8% of the time: the single-path
+class this gate has always left to the absolute budgets, not the
+minority-of-the-suite class it was re-measured for. The second and third
+largest residuals, which one burst cannot trip (null maxima 1.221 and 1.184),
+are a different rule and only a +50% one: at the same 15% margin they see a
+quarter at +30% in 9.4% and 2.9% and at +50% in 97.1% and 96.5%, and they are
+red on 263 and 213 of the 552 stress pairs.
+
+**The count rule is the one that separates.** "At least K rows at least R
+times slower" is the statement "the K-th largest ratio is at least R", so the
+null that matters is how large the K-th largest ratio gets on identical
+code. On the 144 pairs the count at R=1.25 was 0 on 133 and 1 on 11 (at 1.30:
+0 on 140, 1 on 4; at 1.20: at most 2; at 1.15: at most 3), and the largest
+third-largest ratio was 1.190. So K=3 at R=1.25 is the null's maximum count
+plus two, and R clears the third-largest ratio's worst by 5%. Among the (R, K)
+pairs that keep K at the null's maximum count plus two it detects a random
+quarter at +30% best: 91.0% against 89.2% for 1.20 with K=4, 81.0% for 1.15
+with K=5 and 50.0% for 1.30 with K=3. One or two slowed rows are invisible to
+it, by construction: K=3.
+
+**The margin is the price.** 5% is thin next to the median gate's 23%, and
+detection is very sensitive to it. Sweeping the third-largest-ratio threshold
+over a random quarter (40 draws per pair; a cell is 91.0 in one run of the
+simulation and 91.7 in another, so read them to a point):
+
+| threshold on the 3rd-largest ratio | margin over the null's worst, 1.190 | +20% | +30% | +40% | +50% |
+|---|---|---|---|---|---|
+| 1.25 | 5.0% | 9.7 | 91.7 | 99.6 | 100.0 |
+| 1.30 | 9.2% | 2.2 | 51.5 | 97.9 | 99.9 |
+| 1.37 | 15.1% | 0.1 | 4.9 | 80.0 | 99.0 |
+
+At the margin the median gate keeps (15%), the rule sees a quarter 30% slower
+in 5% of cases and a quarter 40% slower in 80%. At 5% it sees +30% in 91% and
+is also closer to firing on a clean pull request. That is the trade, and it
+is why the evidence below matters more than the detection table.
+
+**What the evidence cannot yet say.** Zero false reds in 144 pairs is
+zero in 12 independent runners, not in 144 (pairs from one runner share its
+state). The 21 real reports are not 21 independent samples either: they come
+from 11 pull requests (one pull request has four runs, another three), and a
+rerun or a push of one pull request shares its code. So the clean sets are 12
+runners and 11 pull requests, **23**, and zero in 23 bounds the false-red
+rate below only about 12% (95% upper bound, 1 - 0.05^(1/23)); the 33 that
+counting the runs would give is an overstatement. A model that treats the
+rows as independent puts the per-run chance of three rows over 1.25x at 6e-5
+(from 11 of 2736 row-observations over 1.25x), but the rows of one run share
+its contention, so they are not independent and the model is a reason for
+hope, not a bound. The loaded box is not the gate's environment, but it shows
+what the rule depends on: it is red on 328 of 552 clean pairs there, so under
+load three rows are over 1.25x more often than not. On the runners the rule
+is as good as the runners are quiet, and 23 clean sets cannot yet say that is
+good enough for a gate.
+
+**The decision: shadow.** The count rule is computed and reported on every
+gated comparison, and it does not fail the job. The report carries a
+paragraph of its own, after the median's:
+
+> Shadow rule (not gating yet, #1989): 5 of 19 benchmarks ≥ 1.25x slower;
+> would fail at 3, so it would fail this pull request if it gated. The job's
+> verdict is the median rule's alone; this line does not change it.
+
+followed by the rows and their ratios, worst first (the first 15, then
+`…N more`). When the median does fail, the `#### Regression` section below
+says so and the shadow paragraph still describes only itself.
+`ab_report.json` carries `count_ratio`, `count_min`, `count_would_fail`,
+`over_count` and `over` (the rows, as `nodeid|label|occurrence` and ratio).
+`count_would_fail` is `true`
+(the rule would fail the comparison), `false` (it ran and would not) or
+`null` (it did **not** run: the comparison was not gated, or the rule was not
+configured); a scorer reads `null` as nothing measured, never as clean. The
+two numbers live in the job's `env:` block
+(`FM_AB_COUNT_RATIO`, `FM_AB_COUNT_MIN`), and
+`tests/unit/ci/test_benchmark_ab.py` holds them two ways: the pair is pinned
+**exactly** (1.25, 3), because every other check is a floor and a floor lets a
+worse pair through (1.30 with K=3 passes the null and cuts a random quarter
+at +30% from 91% to 50%; K=4 at 1.25 sees it in 71% against 92%), and the
+pair is checked against the null (a ratio the runner null measured, K at
+least two over the null's maximum count and over what a real green pull
+request reached, and a 5% margin over the K-th largest ratio's null maximum).
+‼ **R=1.25 and K=3 are statements about 19 benchmarks.** If the suite's size
+changes the null has to be re-measured before they are trusted; a test fails
+when the row count moves.
+
+**Promotion criterion.** The same evidence-first policy that keeps
+`FM_AB_SUITE` at 1.30 until the gate's own medians say otherwise: the rule
+fails a pull request when **20 more pull requests** (counted from the merge
+of the change that added the shadow rule), **one run each** (the latest that
+evaluated the rule), which touch **no benchmarked code**, have been scored
+with `count_would_fail` false, none true, and the scorer's output is recorded
+in the #1989 thread.
+
+*Benchmarked code* is whatever can move a recorded number or the rule that
+scores it, and it is read off the interpreter, not written by hand:
+`python -m tests.wallclock.benchmarked_files` prints it. It is every
+`faultmaven` and `tests` file the benchmark modules import (112 `faultmaven`
+files, mostly reached through imports: a hand-written list of the suite's
+directories covered 58 of them, and missed
+`faultmaven/utils/serialization.py`, which both repositories' hot paths run),
+plus the inputs no import names (`tests/conftest.py`, `pytest.ini`,
+`pyproject.toml`, `requirements/*.txt`) and the instrument itself (the
+comparator, `tests/wallclock/ab.py`, and `.github/workflows/benchmarks.yml`),
+because a pull request that edits the rule is not a clean sample of its
+false-red rate. It takes about 4 seconds in a fresh interpreter. What it
+leaves out: the modules only `tests/conftest.py` imports (44 more
+`faultmaven` files: the LLM providers, health and protection modules, none of
+which the SQLite CRUD benchmarks execute). The direction of that error is the
+safe one: a pull request that touches only those is read as touching no
+benchmarked code, so if it did move a benchmark the rule fires on a "clean"
+pull request, that is recorded as a false red and the count restarts.
+
+A `true` on a pull request that touches none is a false red: it is recorded
+with its `over` rows, it restarts the count and it is a reason to re-measure
+the rule, not to promote it. A `true` on a pull request that does touch
+benchmarked code is evidence of nothing until someone has read the rows. The
+bounds are per pull request: the 23 existing clean sets plus 20 make 43, and
+zero false reds in 43 bounds the rate below about 6.7% (from about 12%).
+Promotion is then a separate, small change (`ab.compare` adds the rule to its
+failures).
+
+The scoring command is `scripts/score_ab_shadow_rule.sh`, run from a clone
+with the dev environment installed and an authenticated `gh`
+(`SINCE` is the day the shadow rule merged; `PYTHON=` picks the interpreter):
+
+```bash
+scripts/score_ab_shadow_rule.sh YYYY-MM-DD
+```
+
+It reads the `benchmark-ab` artifacts' `ab_report.json`, finds each run's
+pull request from the run's commit (`gh api .../commits/<sha>/pulls`, which
+still names the pull request after it has merged, where the run's own
+`pull_requests` is `[]`) and the pull request's changed files from
+`.../pulls/<n>/files`, and prints one row per pull request: run id, pull
+request, how many of its files are benchmarked code (0 counts toward the 20),
+`count_would_fail`, `over_count` and the suite median. The count is the rows
+with `touches` 0 and `false`; any with 0 and `true` are the false reds to
+record. A summary goes to stderr, so no runs yet is a sentence. It fails
+loudly instead of printing a clean-looking nothing: a lookup or listing that
+fails is an `ERROR` row (never a 0) and exit status 1; outside a clone, on a
+failed `gh run list`, or with a helper that fails or prints nothing it exits
+2. Runs from before the shadow rule and runs that were not gated have no
+`count_would_fail` and are skipped, never scored as clean.
+`tests/unit/ci/test_score_ab_shadow_rule.py` runs it against a stub `gh`,
+including the merged-pull-request lookup.
+
+**Best of two runs per side: measured, not adopted.** Running each side
+twice and taking the better observation per row (what `load` already does
+for several files per side) shrinks the noise: on the runner null, over 72
+pairs, the median's worst falls to 1.046, the residual's to 1.267 (second and
+third 1.178 and 1.159) and the count's null maximum at 1.30 to **0** (at
+1.25 and 1.20 still 1). It also lifts the rule's detection (a random quarter at
++30% from 91.0 to 96.4, the 6-row module from 94.4 to 100), and on the stress
+box it takes the share of clean pairs the rule is red on from 59% (328 of
+552) to 38% (50 of 132). It costs about 22 seconds
+of runner time per job and it changes the statistic every threshold above was
+measured on, and `test_both_sides_run_in_one_job` pins exactly two recorded
+runs on purpose. The rule as shadowed clears the null without it, so the lever
+waits: if the shadow record shows false reds, this is the first thing to
+re-measure.
 
 **Against CI history.** Six green `main` runs of this suite since #1960
 (four `benchmark-results` artifacts, two nightly `wallclock-rows-nightly`
@@ -730,6 +923,12 @@ an ORM event listener, a logging or tracing hook, a validator on every
 write. The table in the job summary is ranked worst-first and will usually
 point at it. The other side of the comparison is the base commit, already
 green on `main`, so the difference is this pull request's.
+
+**If the report carries a shadow line** that says the rule would fail, a
+minority of the benchmarks moved together and the job is still green (#1989).
+It is not a verdict yet, so read the rows it names and the module they share,
+and say so on the pull request if it points at a change; whether it was a false
+alarm is how the rule earns promotion (see the criterion above).
 
 **If a benchmark fails its absolute budget:**
 

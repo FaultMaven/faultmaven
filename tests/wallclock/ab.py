@@ -23,8 +23,8 @@ box, minutes apart, on two checkouts. Machine speed, co-tenant load and
 thermal state are shared by both sides and cancel. What is left is the
 code.
 
-The rule, and the two that were measured and rejected
------------------------------------------------------
+The rule, the one rejected, and the one in shadow
+-------------------------------------------------
 
 Every matched row yields a ratio in which **above 1.0 is worse** — head
 over base for a latency, base over head for a throughput, so one number
@@ -36,27 +36,52 @@ instead of corrected for.
 Two more sensitive-looking rules were measured on #1567's 12-run null
 experiment (identical code on both sides, 132 ordered pairs, 50
 benchmarks each, on a loaded development box) and both were rejected by
-their own numbers. That is the history of the 50-benchmark suite;
-#1963 re-measured the MEDIAN rule at 19 benchmarks (the note on
-``COVERAGE_FLOOR``) and did not re-adjudicate these two:
+their own numbers: a per-test rule on ``ratio / median`` (null range
+1.18x-3.38x) and a count rule (at R = 1.30 the null count reached 19 of 50
+while slowing half the suite by 30% gave 15). #1963 then measured the
+suite's null at 19 benchmarks on the gate's own kind of runner, and #1989
+re-adjudicated both rules on it (run 38538085168: 144 same-runner ordered
+pairs, 24 of them the job's own A1 to B1 and A2 to B2 direction, plus the 21
+real reports of this job). They come out differently:
 
-* **A per-test rule** on ``ratio / median`` — "did THIS path get slower
-  relative to the rest of the suite". Its statistic is the maximum over
-  50 residuals, an extreme-order statistic over 50 draws, and on the null
-  it ranged **1.18x to 3.38x**. A threshold with no false positives is
-  therefore about 3.5x, which is above the 2.46x-3.57x band the absolute
-  budgets already fire in. A per-test A/B rule is dominated by the
-  budgets it would sit beside, so it is not a gate. The residual is still computed and printed, because it is how
-  you read a red median.
-* **A count rule** — "fail if K of the 50 are at least R times slower".
-  At R = 1.30 the null count reached **19 of 50**, while a regression
-  slowing **half** the suite by 30% produced **15**. The signal is below
-  the noise; there is no K that separates them.
+* **The per-test rule stays rejected, for a new reason.** Its null tail on
+  the runner is single-row bursts: the worst ``ratio / median`` over the 144
+  pairs is 1.742 (p90 1.23), and one of the 21 real reports shows the same
+  shape (+57% in one row). Clear of that by the 15% the median gate keeps
+  the threshold is 2.0, and there it sees a quarter of the suite 30%
+  slower in 0.5% of cases and the 6-row module in 1.4% — it fires, 46% of
+  the time, only on ONE row twice as slow: the single-path class, not the
+  one it was re-measured for. The residual is still computed and printed,
+  because it is how you read a red median.
+* **The count rule is adopted in SHADOW.** "Fail if at least K benchmarks
+  are at least R times slower" is the same statement as "the K-th largest
+  ratio is at least R". On the runner null the count at R = 1.25 is at most
+  1 of 19 (0 on 133 of the 144 pairs), and the third-largest ratio's
+  maximum is 1.190, so R = 1.25 clears it by 5% and K = 3 is the null's
+  maximum count plus two. Through ``compare`` it detects a random quarter of
+  the suite 30% slower in 91% of cases, a random half in 99.9%, the 6-row
+  case module in 94% and a uniform +30% in 100% — where the median gate sees
+  0%, 0.8%, 0% and 50%. One or two slowed rows are invisible to it by
+  construction. It is red on 0 of the 144 pairs, 0 of the 24 and 0 of the
+  21 real reports, but that is 23 independent clean run-sets (12 runners,
+  and the 11 pull requests behind the 21 real reports): too few to bound its
+  false-red rate below about 12%, and a loaded box (the stress case, not the
+  gate's environment) reddens it on 328 of 552 clean pairs. So it is
+  **computed and reported on every gated comparison and does not fail the
+  job** until the evidence says it should, the same evidence-first policy
+  ``THRESHOLD_FLOOR`` (in ``tests/unit/ci/test_benchmark_ab.py``) pins for the
+  median. R = 1.25 and K = 3 were measured at 19 benchmarks: re-run the null
+  before trusting them if the suite's size changes (the note on
+  ``COVERAGE_FLOOR`` has the same condition). The promotion criterion, and
+  the numbers behind all of this, are in
+  ``docs/development/testing/performance.md``.
 
 What the median cannot see is stated rather than hidden: a regression
 confined to a minority of the suite. Slowing a quarter of these
 benchmarks by 30% moves the median to about 1.05, well under any usable
-threshold. That class stays with the absolute budgets.
+threshold. The shadow rule is the instrument pointed at that class; until it
+is promoted the class stays with the absolute budgets, and the report says
+how many rows the shadow rule saw.
 
 The threshold is supplied by the caller and is chosen from a null
 experiment; the number and its margin are in the workflow's ``env:``
@@ -228,9 +253,25 @@ class Verdict(NamedTuple):
     gated: bool
     #: Matched benchmarks as a share of the base's.
     coverage: float
+    #: The SHADOW count rule (#1989), as configured: rows at least
+    #: ``count_ratio`` slower, and how many of them fail it. ``None`` for
+    #: both means the caller did not ask for the rule.
+    count_ratio: Optional[float]
+    count_min: Optional[int]
+    #: The matched rows whose ratio is at least ``count_ratio``, worst
+    #: first. Empty when the rule was not evaluated, which is also what a
+    #: clean comparison looks like: ``count_would_fail`` tells them apart.
+    over: List[Comparison]
+    #: ‼ Three states, not two. ``True``: the rule would fail this
+    #: comparison. ``False``: it ran and would not. ``None``: it did NOT
+    #: run (not configured, or the comparison was not gated), which is not
+    #: the same thing as clean and must not be scored as clean.
+    count_would_fail: Optional[bool]
 
     @property
     def ok(self) -> bool:
+        # ‼ The shadow rule is deliberately absent. `failures` holds what
+        # gates; the count rule only reports until it is promoted (#1989).
         return not self.failures
 
 
@@ -349,13 +390,45 @@ def _ratio(metric: str, base: float, head: float) -> Optional[float]:
     return None
 
 
+def check_count_rule(count_ratio: Optional[float], count_min: Optional[int]) -> None:
+    """Refuse a half-configured or meaningless shadow count rule (#1989).
+
+    Both or neither: a half-configured rule would either never run or run on
+    a number nobody chose, and the job would still look green. ``main``
+    turns the ``ValueError`` into a usage error.
+    """
+    if (count_ratio is None) != (count_min is None):
+        raise ValueError(
+            "the count rule's ratio and minimum are given together or not at all"
+        )
+    if count_ratio is not None and not count_ratio > 1.0:
+        raise ValueError(
+            f"the count ratio must exceed 1.0 (above 1.0 is slower), got "
+            f"{count_ratio!r}"
+        )
+    if count_min is not None and count_min < 1:
+        raise ValueError(f"the count minimum must be at least 1, got {count_min!r}")
+
+
 def compare(
     base: Dict[Key, Row],
     head: Dict[Key, Row],
     *,
     suite_threshold: float,
+    count_ratio: Optional[float] = None,
+    count_min: Optional[int] = None,
 ) -> Verdict:
-    """Join the two sides and apply the rule."""
+    """Join the two sides and apply the rule.
+
+    ``count_ratio`` and ``count_min`` configure the SHADOW count rule
+    (#1989): on a gated comparison, the matched rows at least
+    ``count_ratio`` slower are collected and ``count_would_fail`` says
+    whether there are ``count_min`` of them. They come together or not at
+    all, and they never reach ``failures``: the verdict is the median's
+    until the rule is promoted.
+    """
+    check_count_rule(count_ratio, count_min)
+
     compared: List[Comparison] = []
     unusable: List[Tuple[Row, str]] = []
 
@@ -412,6 +485,8 @@ def compare(
     failures: List[str] = []
     notes: List[str] = []
     gated = False
+    over: List[Comparison] = []
+    count_would_fail: Optional[bool] = None
 
     if base_total == 0:
         # The base is a commit already green on `main`; recording nothing
@@ -462,6 +537,14 @@ def compare(
                 f"{matched} benchmarks); the suite rule fails at "
                 f"{suite_threshold:.2f}x"
             )
+        # ‼ The shadow rule reads the same gated rows the median does and
+        # writes nowhere near `failures`. `compared` is sorted worst-first,
+        # so `over` is too. Only a gated comparison evaluates it: a
+        # fragment or a renamed suite is not what the count was measured
+        # on, and "not evaluated" must not read as "clean" (#1989).
+        if count_ratio is not None and count_min is not None:
+            over = [entry for entry in compared if entry.ratio >= count_ratio]
+            count_would_fail = len(over) >= count_min
 
     return Verdict(
         compared=compared,
@@ -475,6 +558,10 @@ def compare(
         notes=notes,
         gated=gated,
         coverage=coverage,
+        count_ratio=count_ratio,
+        count_min=count_min,
+        over=over,
+        count_would_fail=count_would_fail,
     )
 
 
@@ -482,6 +569,35 @@ def _units(metric: str, value: float) -> str:
     if metric == LATENCY_METRIC:
         return f"{value * 1000:.2f}ms"
     return f"{value:.1f}/s"
+
+
+def _shadow_lines(verdict: Verdict) -> List[str]:
+    """The shadow count rule's paragraph (#1989), for an evaluated verdict.
+
+    ‼ Says in so many words that it does not gate. The line sits beside the
+    one that does, and a reader who cannot tell the two apart will either
+    ignore a rule that is collecting its evidence or blame the pull request
+    for a red that is not there.
+    """
+    would_fail = bool(verdict.count_would_fail)
+    outcome = (
+        "so it would fail this pull request if it gated"
+        if would_fail
+        else "so it would not fail this pull request"
+    )
+    lines = [
+        f"Shadow rule (not gating yet, #1989): {len(verdict.over)} of "
+        f"{len(verdict.compared)} benchmarks ≥ {verdict.count_ratio:.2f}x "
+        f"slower; would fail at {verdict.count_min}, {outcome}. The job's "
+        f"verdict is the median rule's alone; this line does not change it."
+    ]
+    if verdict.over:
+        lines.append("")
+        for entry in verdict.over[:TABLE_ROWS]:
+            lines.append(f"- {entry.label}: {entry.ratio:.2f}x")
+        if len(verdict.over) > TABLE_ROWS:
+            lines.append(f"- …{len(verdict.over) - TABLE_ROWS} more")
+    return lines
 
 
 def render(
@@ -530,9 +646,12 @@ def render(
             "That number is **not** a gate: on identical code it ranged "
             "1.18x-3.38x at 50 benchmarks on a loaded box (#1567) and "
             "1.03x-1.74x (p50 1.16, p90 1.23) at 19 benchmarks on GitHub "
-            "runners (#1963), so one benchmark's residual is triage "
-            "information, not evidence."
+            "runners (#1963), a tail of single-row bursts, so one "
+            "benchmark's residual is triage information, not evidence."
         )
+        if verdict.count_would_fail is not None:
+            lines.append("")
+            lines.extend(_shadow_lines(verdict))
     lines.append("")
 
     if verdict.failures:
@@ -621,14 +740,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--base-label", default="base")
     parser.add_argument("--head-label", default="head")
     parser.add_argument("--suite-threshold", type=float, required=True)
+    parser.add_argument(
+        "--count-ratio",
+        type=float,
+        help="shadow count rule (#1989): a benchmark this many times slower "
+        "or more is counted; requires --count-min",
+    )
+    parser.add_argument(
+        "--count-min",
+        type=int,
+        help="shadow count rule (#1989): the rule would fail at this many "
+        "counted benchmarks; requires --count-ratio",
+    )
     parser.add_argument("--markdown-out", metavar="PATH")
     parser.add_argument("--json-out", metavar="PATH")
     args = parser.parse_args(argv)
+    try:
+        check_count_rule(args.count_ratio, args.count_min)
+    except ValueError as error:
+        parser.error(f"--count-ratio / --count-min: {error}")
 
     verdict = compare(
         load(_existing(args.base)),
         load(_existing(args.head)),
         suite_threshold=args.suite_threshold,
+        count_ratio=args.count_ratio,
+        count_min=args.count_min,
     )
     markdown = render(
         verdict,
@@ -649,6 +786,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "notes": verdict.notes,
                     "median": verdict.median,
                     "worst_residual": verdict.worst_residual,
+                    # The shadow count rule (#1989). ‼ `count_would_fail`
+                    # and `over_count` are null, not false and 0, when the
+                    # rule did not run (not configured, or not gated): a
+                    # scorer that reads null as clean would count a run
+                    # that measured nothing toward promotion.
+                    "count_ratio": verdict.count_ratio,
+                    "count_min": verdict.count_min,
+                    "count_would_fail": verdict.count_would_fail,
+                    "over_count": (
+                        len(verdict.over)
+                        if verdict.count_would_fail is not None
+                        else None
+                    ),
+                    "over": [
+                        {
+                            "benchmark": f"{entry.row.nodeid}|{entry.row.label}|"
+                            f"{entry.row.key[2]}",
+                            "ratio": entry.ratio,
+                        }
+                        for entry in verdict.over
+                    ],
                     "compared": len(verdict.compared),
                     "head_only": [row.nodeid for row in verdict.head_only],
                     "base_only": [row.nodeid for row in verdict.base_only],
