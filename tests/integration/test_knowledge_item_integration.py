@@ -149,10 +149,12 @@ async def test_full_item_lifecycle(repository: DatabaseKnowledgeItemRepository):
     assert retrieved is not None
     assert retrieved.item_id == item.item_id
 
-    # Step 3: Update item
-    item.title = "Updated: How to fix connection timeout"
-    item.helpful_count = 10
-    updated = await repository.update(item)
+    # Step 3: Update item (the targeted write — the only write after create)
+    assert await repository.update_fields(
+        item.item_id,
+        {"title": "Updated: How to fix connection timeout", "helpful_count": 10},
+    )
+    updated = await repository.get_by_id(item.item_id)
     assert updated.title == "Updated: How to fix connection timeout"
     assert updated.helpful_count == 10
 
@@ -184,8 +186,7 @@ async def test_item_with_embedding_lifecycle(
 
     # Update embedding
     new_embedding = create_valid_embedding(0.8)
-    item.embedding_vector = new_embedding
-    await repository.update(item)
+    await repository.update_fields(item.item_id, {"embedding_vector": new_embedding})
 
     retrieved = await repository.get_by_id(item.item_id)
     assert retrieved.embedding_vector == new_embedding
@@ -368,7 +369,14 @@ async def test_embedding_update_workflow(repository: DatabaseKnowledgeItemReposi
     # Generate and set embedding
     embedding = create_valid_embedding(0.5)
     item.set_embedding(embedding, model="bge-m3", version=1)
-    await repository.update(item)
+    await repository.update_fields(
+        item.item_id,
+        {
+            "embedding_vector": item.embedding_vector,
+            "embedding_model": item.embedding_model,
+            "embedding_version": item.embedding_version,
+        },
+    )
 
     # Verify no more items need embeddings
     items_needing_embedding = await repository.get_items_without_embeddings(
@@ -476,7 +484,15 @@ async def test_usage_tracking_persistence(repository: DatabaseKnowledgeItemRepos
     item.mark_helpful()
     item.mark_helpful()
     item.mark_not_helpful()
-    await repository.update(item)
+    await repository.update_fields(
+        item.item_id,
+        {
+            "view_count": item.view_count,
+            "helpful_count": item.helpful_count,
+            "not_helpful_count": item.not_helpful_count,
+            "last_retrieved_at": item.last_retrieved_at,
+        },
+    )
 
     # Reload from database
     retrieved = await repository.get_by_id(item.item_id)
@@ -500,7 +516,15 @@ async def test_multiple_usage_updates(repository: DatabaseKnowledgeItemRepositor
     for _ in range(5):
         item.mark_helpful()
 
-    await repository.update(item)
+    await repository.update_fields(
+        item.item_id,
+        {
+            "view_count": item.view_count,
+            "helpful_count": item.helpful_count,
+            "not_helpful_count": item.not_helpful_count,
+            "last_retrieved_at": item.last_retrieved_at,
+        },
+    )
 
     retrieved = await repository.get_by_id(item.item_id)
     assert retrieved.view_count == 10
@@ -537,13 +561,14 @@ async def test_create_duplicate_id_fails(repository: DatabaseKnowledgeItemReposi
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_update_non_existent_fails(repository: DatabaseKnowledgeItemRepository):
-    """Test updating non-existent item fails."""
+async def test_update_non_existent_reports_false(
+    repository: DatabaseKnowledgeItemRepository,
+):
+    """Updating a non-existent item matches no row: reported, not raised."""
     item = create_sample_item()
     # Don't create it
 
-    with pytest.raises(ValueError, match="not found"):
-        await repository.update(item)
+    assert await repository.update_fields(item.item_id, {"title": "x"}) is False
 
 
 @pytest.mark.asyncio
@@ -591,8 +616,9 @@ async def test_metadata_update(repository: DatabaseKnowledgeItemRepository):
     item = create_sample_item(metadata={"initial": "value"})
     await repository.create(item)
 
-    item.metadata = {"updated": "data", "new_key": 123}
-    await repository.update(item)
+    await repository.update_fields(
+        item.item_id, {"metadata": {"updated": "data", "new_key": 123}}
+    )
 
     retrieved = await repository.get_by_id(item.item_id)
     assert retrieved.metadata == {"updated": "data", "new_key": 123}
@@ -687,8 +713,10 @@ async def test_inmemory_full_lifecycle(inmemory_repository):
     assert retrieved is not None
 
     # Update
-    item.title = "Updated title"
-    updated = await inmemory_repository.update(item)
+    assert await inmemory_repository.update_fields(
+        item.item_id, {"title": "Updated title"}
+    )
+    updated = await inmemory_repository.get_by_id(item.item_id)
     assert updated.title == "Updated title"
 
     # Delete

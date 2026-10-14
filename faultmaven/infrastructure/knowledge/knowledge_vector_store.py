@@ -1402,6 +1402,8 @@ class KnowledgeVectorStore(BaseExternalClient):
         self,
         parent_document_id: str,
         collection_name: str = KB_COLLECTION,
+        *,
+        retries: int = 2,
     ) -> int:
         """Delete all chunks of a parent document from a KB collection.
 
@@ -1410,6 +1412,15 @@ class KnowledgeVectorStore(BaseExternalClient):
         the document lifecycle. Without it the re-ingest/prune paths in
         ``bootstrap.kb_init`` could only drop the SQL row, leaving the vectors
         orphaned in ChromaDB (the index drift the reconcile pass cleans up).
+
+        ``retries`` is the number of further attempts after a failed one, with
+        backoff sleeps between them. ``KnowledgeService.delete_document`` calls
+        this while holding its row change uncommitted and passes 0: on SQLite
+        that hold is the database's single writer lock, so it must stay one
+        attempt long, and the caller's 503 makes its own caller the retry loop.
+        (The ``timeout`` below does not bound the hold either: the ChromaDB
+        calls inside are synchronous, so ``asyncio.wait_for`` cannot interrupt
+        them.)
 
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """
@@ -1436,7 +1447,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             operation_name="delete_documents_by_parent_id",
             call_func=_delete_wrapper,
             timeout=10.0,
-            retries=2,
+            retries=retries,
             retry_delay=1.0,
         )
 

@@ -21,6 +21,7 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -586,8 +587,89 @@ class KnowledgeService:
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
           ``knowledge_items`` row and its vectors.
 
+        **Invariant (#1966): a document reported removed has no retrievable
+        chunk**, now or after any later restart, reconcile, repair or kb_seed
+        run. Retrieval never checks that a chunk's row exists, and the
+        reconcile pass deletes only built-in vectors (diffing the shared
+        collection against one tenant's rows would delete other tenants'
+        content), so a chunk whose row is gone would stay searchable for good.
+
+        **What a restart (or kb_seed run) does to a removed document:**
+
+        - An unpublished built-in STAYS unpublished with no vectors. The pack
+          skip compares the pack's content hash with the hash stamped on the
+          row when the pack last ingested it (``metadata.pack_content_hash``),
+          not with the row's current content, so an operator's edit is never
+          mistaken for a new pack version. The reconcile pass never repairs an
+          unpublished row, and it deletes any vectors an unpublished built-in
+          still has (an older version's repair re-embedded them). Only a NEW
+          pack version of that runbook republishes it: a shipped update is a
+          new document.
+        - A deleted authored document has no row, so nothing re-indexes it:
+          repair works from rows, and it re-checks the row after embedding,
+          discarding what it wrote if a delete or unpublish landed meanwhile.
+          That re-check is a locked read, which also waits for a delete still
+          holding the row — for every repair pass whose role may UPDATE
+          ``knowledge_items``: the web-startup bootstrap and SQLite. The one
+          exception is ``kb_seed`` under ``TENANT_PROVIDER=multi``, whose
+          maintenance role holds no UPDATE: its re-check is a plain read, so a
+          delete or unpublish inside the milliseconds between its vector delete
+          and its commit, while that job's repair embeds the same row, is not
+          waited for.
+
+        Two stores cannot commit atomically, so the order decides which
+        failure is possible:
+
+        1. The row change is issued UNCOMMITTED: a ``DELETE``, or a targeted
+           ``UPDATE ... SET is_published = false`` that writes no other column
+           but ``updated_at`` (so it cannot revert a concurrent committed
+           edit). Zero rows
+           matched — absent, deleted concurrently, or refused by an RLS write
+           policy (a tenant session against a platform-tier row under multi,
+           #770) — rolls back and reports not-removed WITHOUT touching the
+           vector store. The shared ChromaDB collection holds every tenant's
+           chunks, so a vector delete is only ever issued for a row this
+           session proved it may change.
+        2. ONE vector delete attempt (``retries=0``). A failure rolls the row
+           change back and raises ``KnowledgeBaseError``: the document stays
+           listed and published, and a retry completes the delete (the DELETE
+           route answers 503). The vectors are not guaranteed intact — a
+           remote store can fail after applying the delete, or part of it —
+           so the outcome is the document as it was or the split state below,
+           never a chunk without a row.
+        3. Commit. A commit that fails, or a task cancelled at it, after the
+           vector delete leaves the one recoverable split state, row present
+           with no vectors: the document is still live (the caller was told
+           the delete failed), a retry completes it, and otherwise the
+           reconcile/repair pass re-indexes the published row. Logged at
+           ERROR with the id.
+        4. Team share rows, after the commit and best effort. A share row for
+           a resource with no row grants nothing (visibility is computed from
+           rows), so a failure here is logged and the delete still succeeds.
+           Unpublish keeps the row, so keeps its shares.
+
+        Holding the transaction across the vector call departs from
+        :meth:`update_document_metadata`'s rule of never holding one across a
+        vector-store call. That rule is about a 60-120 s embed; this is a
+        single ChromaDB delete by metadata, and it is kept to one attempt
+        because the hold is real: on SQLite it is the database's single writer
+        lock, and the KB store's ``timeout`` cannot bound it (its ChromaDB
+        calls are synchronous inside ``async def``). If a deployment's
+        ``idle_in_transaction_session_timeout`` reaps the connection mid-hold,
+        the commit fails and the outcome is the split state of step 3.
+
         Returns ``{success, document_id, action}`` where action is
-        "unpublished" or "deleted".
+        "unpublished" or "deleted", or ``{success: False, error}`` when the
+        document is absent or no row matched.
+
+        Raises:
+            KnowledgeBaseError: removing the vectors failed, so the row change
+                was rolled back and the delete did not complete; retrying it
+                finishes it. ``error_code`` is
+                ``KNOWLEDGE_VECTOR_DELETE_FAILED``.
+            ValueError: empty ``document_id``.
+            RuntimeError: any other failure, including a failed commit (whose
+                outcome is the split state above).
         """
         with self._tracer.trace("knowledge_service_delete_document"):
             if not document_id or not document_id.strip():
@@ -610,43 +692,109 @@ class KnowledgeService:
                             "error": f"Document {document_id} not found",
                         }
 
+                    # Step 1: the row change, uncommitted.
                     if builtin:
-                        # Unpublish: keep the row, flip the flag (commits in repo).
-                        item.is_published = False
-                        await repo.update(item)
+                        removed = await repo.update_fields(
+                            document_id, {"is_published": False}, commit=False
+                        )
                         action = "unpublished"
                     else:
-                        deleted = await repo.delete(document_id)
-                        if not deleted:
-                            # Zero rows matched — the RLS delete policy refused
-                            # (e.g. a tenant session targeting a platform-tier
-                            # global row under multi, #770) or a concurrent
-                            # delete won. NEVER touch the shared vector store
-                            # when the SQL row was not actually removed: the
-                            # ChromaDB collection is shared across tenants, so
-                            # an unguarded vector delete here would let any
-                            # org admin destroy platform content for everyone.
-                            return {
-                                "success": False,
-                                "error": f"Document {document_id} not deleted",
-                            }
+                        removed = await repo.delete(document_id, commit=False)
                         action = "deleted"
 
-                # Cascade the item's team share rows on hard delete (source of
-                # truth, ADR-013 §D4). Orphan shares are already fail-safe (they
-                # match nothing in the allowlist), but clean them to keep the
-                # table tidy. Unpublish keeps the row, so keeps its shares.
-                if action == "deleted" and self._share_repo:
-                    await self._share_repo.delete_for_resource(
-                        "knowledge_item", document_id
-                    )
+                    if not removed:
+                        # Zero rows matched. NEVER touch the shared vector store
+                        # when this session did not change the row: an
+                        # unguarded vector delete here would let any tenant
+                        # destroy platform content for everyone (#770).
+                        await repo.rollback()
+                        return {
+                            "success": False,
+                            "error": f"Document {document_id} not {action}",
+                        }
 
-                # Remove ChromaDB vectors in BOTH paths (best-effort, after DB
-                # commit). Critical for unpublish: retrieval ignores
-                # is_published, so deleting the vectors is what actually
-                # removes the runbook from investigations.
-                if self._vector_store:
-                    await self._remove_from_vector_store(document_id)
+                    # Step 2: one vector delete attempt, row change still open.
+                    store = self._vector_store
+                    if store:
+                        try:
+                            count = await store.delete_documents_by_parent_id(
+                                document_id, retries=0
+                            )
+                        except asyncio.CancelledError:
+                            # Closing the session rolls the row change back;
+                            # the vectors may be partly gone (split state).
+                            logger.error(
+                                "Document %s: the delete was cancelled while "
+                                "removing its vectors, so it was not %s. The "
+                                "row change is rolled back; the vectors may be "
+                                "partly removed. Retry the delete to complete "
+                                "it.",
+                                document_id,
+                                action,
+                            )
+                            raise
+                        except Exception as vector_error:
+                            await repo.rollback()
+                            logger.error(
+                                "Document %s was not %s: removing its vectors "
+                                "failed (%s). The row change was rolled back, "
+                                "so the document is still live; its vectors may "
+                                "be partly removed if the store failed after "
+                                "applying the delete. Retrying the delete "
+                                "completes it.",
+                                document_id,
+                                action,
+                                vector_error,
+                            )
+                            # Wraps CircuitBreakerError and timeouts too: to the
+                            # caller every vector-side failure is the same
+                            # retryable "did not complete".
+                            raise KnowledgeBaseError(
+                                f"Could not remove the vectors of document "
+                                f"{document_id}; it was not {action}",
+                                error_code="KNOWLEDGE_VECTOR_DELETE_FAILED",
+                            ) from vector_error
+                        logger.info(
+                            f"Removed {count} chunks for document {document_id}"
+                        )
+
+                    # Step 3: commit. A failure — or a cancellation, which is
+                    # not an Exception — after the vector delete leaves the
+                    # split state, and says so.
+                    try:
+                        await repo.commit()
+                    except (Exception, asyncio.CancelledError) as commit_error:
+                        logger.error(
+                            "SPLIT KNOWLEDGE DOCUMENT %s: its vectors were "
+                            "removed, but committing the row change failed "
+                            "(%r), so it was not %s. Unless the commit landed "
+                            "regardless, the row is still present with no "
+                            "vectors: live, but not retrievable — and the "
+                            "caller was told the delete failed. Retry the "
+                            "delete to complete it; otherwise the KB "
+                            "reconcile/repair pass (startup bootstrap or "
+                            "kb_seed) re-indexes the published row.",
+                            document_id,
+                            commit_error,
+                            action,
+                        )
+                        raise
+
+                # Step 4: team shares, after the commit, best effort.
+                if action == "deleted" and self._share_repo:
+                    try:
+                        await self._share_repo.delete_for_resource(
+                            "knowledge_item", document_id
+                        )
+                    except Exception as share_error:
+                        logger.error(
+                            "Deleted document %s, but removing its team share "
+                            "rows failed (%s). They grant nothing — visibility "
+                            "is computed from knowledge_items rows — but remain "
+                            "in resource_shares until removed by hand.",
+                            document_id,
+                            share_error,
+                        )
 
                 logger.info(f"{action} document {document_id}")
                 return {
@@ -655,7 +803,7 @@ class KnowledgeService:
                     "action": action,
                 }
 
-            except ValidationException:
+            except (ValidationException, KnowledgeBaseError):
                 raise
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
@@ -958,29 +1106,30 @@ class KnowledgeService:
             ) from e
 
     async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
-        """Drop vectors written for a row that was deleted mid-update (#952).
+        """Drop vectors this process just wrote for a row that was deleted or
+        unpublished while it wrote them — by an update (#952) or a repair
+        (#1966).
 
-        Separate from :meth:`_remove_from_vector_store`, which swallows its
-        errors because its callers are deleting a document and a failed vector
-        delete is one more orphan among many the reconcile pass can find. Here
-        the failure is not equivalent: these chunks carry content that was
-        never saved, under an id that now 404s, and orphan pruning only covers
-        built-in pack ids — so for an authored document nothing will ever
-        remove them. That earns a loud, specific log rather than a shrug.
+        Unlike :meth:`delete_document`, which can refuse the delete and leave
+        the row in place when its vector delete fails, this runs after the row
+        is already gone or retired. For a deleted authored document these
+        chunks sit under an id that now 404s, and orphan pruning only covers
+        built-in pack ids — so nothing will ever remove them. That earns a
+        loud, specific log rather than a shrug.
 
-        Still does not raise: the caller is already abandoning the update and
-        reporting that: a secondary failure must not replace the primary one.
+        Still does not raise: the caller is already abandoning its write and
+        reporting that; a secondary failure must not replace the primary one.
         """
         try:
             await self._vector_store.delete_documents_by_parent_id(document_id)
         except Exception as discard_error:
             logger.error(
-                "ORPHANED KNOWLEDGE VECTORS %s: the document was deleted "
-                "during an update, and removing the chunks written for that "
-                "update failed (%s). They describe content that was never "
-                "saved, under an id that no longer resolves, and orphan "
-                "pruning does not cover authored documents. Remove them by "
-                "hand or re-create and re-delete the document.",
+                "ORPHANED KNOWLEDGE VECTORS %s: the document was deleted or "
+                "unpublished while its vectors were being written, and "
+                "removing those chunks failed (%s). They stay retrievable "
+                "under an id that no longer resolves (or is retired), and "
+                "orphan pruning does not cover authored documents. Remove them "
+                "by hand, or re-create and re-delete the document.",
                 document_id,
                 discard_error,
             )
@@ -992,7 +1141,7 @@ class KnowledgeService:
         attempted_content: str,
         commit_error: Exception,
     ) -> None:
-        """Realign the vectors after ``repo.update`` failed, by OBSERVING the row.
+        """Realign the vectors after the update's row write failed, by OBSERVING it.
 
         The vectors already describe the attempted update. The obvious response
         — put the previous content back — is right only if the write actually
@@ -1077,21 +1226,6 @@ class KnowledgeService:
                 restore_error,
             )
 
-    async def _remove_from_vector_store(self, document_id: str) -> None:
-        """Remove all chunks for a document from the vector store.
-
-        Indexing always chunks (see ``_index_in_vector_store``), so deletion
-        keys off ``parent_document_id``.
-        """
-        if not self._vector_store:
-            return
-
-        try:
-            count = await self._vector_store.delete_documents_by_parent_id(document_id)
-            logger.info(f"Removed {count} chunks for document {document_id}")
-        except Exception as e:
-            logger.error(f"Failed to remove document from vector store: {e}")
-
     async def _create_team_share(
         self,
         *,
@@ -1143,6 +1277,7 @@ class KnowledgeService:
         verified_by: Optional[str] = None,
         verification_level: "Optional[VerificationLevel]" = None,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
+        pack_content_hash: Optional[str] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1168,6 +1303,12 @@ class KnowledgeService:
                 ``require_global_authoring_allowed`` /
                 ``ensure_global_authoring_allowed``); this parameter is about
                 the tier being *named*, not about who may name it.
+            pack_content_hash: The KB pack's ``content_hash`` for this
+                runbook, when the pack bootstrap is the caller. Stamped on the
+                row as ``metadata.pack_content_hash`` — what the next boot's
+                skip compares the pack against, so a later edit of the row is
+                never mistaken for a new pack version (#1966). Every other
+                caller leaves it out and the metadata stays ``{}``.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -1192,6 +1333,7 @@ class KnowledgeService:
         # Lazy imports keep this method self-contained against the knowledge
         # vertical (avoids top-level cycles between service and persistence).
         from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+            PACK_CONTENT_HASH_KEY,
             KnowledgeItem,
             KnowledgeItemType,
             VerificationLevel,
@@ -1263,7 +1405,9 @@ class KnowledgeService:
             verified_at=now if verified_by else None,
             created_at=now,
             updated_at=now,
-            metadata={},
+            metadata=(
+                {PACK_CONTENT_HASH_KEY: pack_content_hash} if pack_content_hash else {}
+            ),
         )
         async with self._db_session_factory() as session:
             repo = DatabaseKnowledgeItemRepository(session)
@@ -1318,14 +1462,17 @@ class KnowledgeService:
 
         return chunks_created
 
-    async def reindex_missing_vectors(self, item_id: str) -> int:
+    async def reindex_missing_vectors(
+        self, item_id: str, *, role_may_update: bool
+    ) -> int:
         """Re-chunk + re-embed an existing row's chunks into the vector store.
 
         Cross-store repair for an ORPHANED row — a ``knowledge_items`` row whose
         ChromaDB chunks are missing (a crash between the SQL commit and the
-        vector write in :meth:`ingest_runbook` leaves exactly this half-state;
-        the KB bootstrap reconcile pass can detect it but cannot fix it without
-        the embedding model). This re-derives the vectors from the row's
+        vector write in :meth:`ingest_runbook` leaves exactly this half-state,
+        as does a :meth:`delete_document` whose commit failed after its vector
+        delete; the KB bootstrap reconcile pass can detect it but cannot fix it
+        without the embedding model). This re-derives the vectors from the row's
         persisted ``content`` using the runtime chunker + BGE-M3 and writes them
         under the row's ``item_id`` — the SQL row itself is NEVER touched (it is
         the source of truth and already correct). Per-chunk RAG metadata
@@ -1343,12 +1490,33 @@ class KnowledgeService:
         BGE-M3 (guarded by the pack model-identity check) so they remain
         query-compatible — a retrievable runbook beats a silently missing one.
 
+        **Only a published row is repaired** (#1966). An unpublished row with
+        no vectors is not an orphan but the intended state:
+        :meth:`delete_document` unpublishes a built-in by dropping its vectors,
+        because retrieval does not honour ``is_published``. Re-indexing it
+        would silently undo the unpublish at the next boot. The reconcile pass
+        already lists published rows only; this refusal (logged, nothing
+        written) is the second line, for any caller that does not. The row is
+        read again AFTER the vectors are written, and if it was deleted or
+        unpublished meanwhile they are discarded and 0 is returned; a read
+        that fails discards too.
+
+        ``role_may_update`` is the repair pass's one capability answer
+        (``KnowledgeItemRepository.may_update``). When the role may UPDATE the
+        re-read is LOCKED, so it also waits for a delete or unpublish still
+        holding the row. The ``kb_seed`` maintenance role (multi-tenant) holds
+        no UPDATE, and a locked read would be refused — so it reads plainly:
+        it still sees a delete or unpublish that committed during the embed,
+        but not one inside the milliseconds between that writer's vector
+        delete and its commit.
+
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
-        row is absent, no vector store is wired, the embedding model is
-        unavailable, or the row names no usable tenant (the indexer's #1168
-        ``ValueError``, logged at ERROR with the item id) — leaving the row
-        orphaned for a later boot to repair, which the caller counts as a failed
-        repair.
+        row is absent or unpublished (before or after the embed), no vector
+        store is wired, the embedding
+        model is unavailable, or the row names no usable tenant (the indexer's
+        #1168 ``ValueError``, logged at ERROR with the item id) — leaving the
+        row orphaned for a later boot to repair, which the caller counts as a
+        failed repair.
 
         This is the ONE caller that legitimately tolerates an indexing failure,
         because it runs as a bounded best-effort repair pass during boot and a
@@ -1369,6 +1537,9 @@ class KnowledgeService:
         from sqlalchemy import select as _select
 
         from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+            DatabaseKnowledgeItemRepository,
+        )
 
         async with self._db_session_factory() as session:
             found = await session.execute(
@@ -1380,6 +1551,15 @@ class KnowledgeService:
             logger.warning(
                 f"reindex_missing_vectors: no knowledge_items row for {item_id} — "
                 "nothing to repair"
+            )
+            return 0
+
+        if not row.is_published:
+            logger.warning(
+                "reindex_missing_vectors: %s is unpublished, and an unpublished "
+                "row has no vectors by design (that is how it was removed from "
+                "retrieval) — refusing to re-index it",
+                item_id,
             )
             return 0
 
@@ -1404,7 +1584,7 @@ class KnowledgeService:
             updated_at=to_json_compatible(row.updated_at),
         )
         try:
-            return await self._index_document_in_vector_store(
+            chunks = await self._index_document_in_vector_store(
                 doc_model, prechunked=None, enterprise_id=row.enterprise_id
             )
         except KnowledgeBaseError as e:
@@ -1427,6 +1607,48 @@ class KnowledgeService:
                 "the row names no usable enterprise_id; leaving it orphaned"
             )
             return 0
+
+        # RE-READ after writing (#1966), as update_document_metadata does
+        # (#952): the row was read before an embed that can take minutes, and
+        # a delete or unpublish that landed meanwhile — on another replica or
+        # worker, or the user's retry of a delete that left the split state —
+        # has already removed whatever vectors it found. Keeping ours would
+        # leave a chunk with no row (permanent for an authored id) or a retired
+        # runbook retrievable. Where the role may UPDATE the read is LOCKED: it
+        # waits for a delete or unpublish still holding the row, so it sees
+        # that writer's outcome whichever order the two ran in (FOR SHARE on
+        # PostgreSQL, the writer lock on SQLite — see ``read_is_published``).
+        # The maintenance role reads plainly (see the docstring).
+        if chunks > 0:
+            try:
+                async with self._db_session_factory() as session:
+                    repo = DatabaseKnowledgeItemRepository(session)
+                    published = await repo.read_is_published(
+                        item_id, lock=role_may_update
+                    )
+                    await repo.rollback()  # releases the lock; nothing to keep
+            except Exception as reread_error:
+                # Unverified means discarded: the worst outcome is then the
+                # row without vectors that the next pass repairs again, never
+                # a chunk without a row.
+                logger.error(
+                    "reindex_missing_vectors: re-reading %s after writing its "
+                    "vectors failed (%s); discarding them rather than keeping "
+                    "vectors for a row that may be gone",
+                    item_id,
+                    reread_error,
+                )
+                published = None
+            if not published:
+                await self._discard_vectors_for_vanished_row(item_id)
+                logger.warning(
+                    "reindex_missing_vectors: %s was deleted or unpublished (or "
+                    "could not be re-read) while it was being repaired; the "
+                    "vectors just written were discarded",
+                    item_id,
+                )
+                return 0
+        return chunks
 
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
         """Best-effort cleanup of an orphaned knowledge_items row.
@@ -2481,13 +2703,14 @@ class KnowledgeService:
         connection killed out from under the commit).
 
         Splitting them would widen the read-modify-write window to cover the
-        whole embed, so the row is RE-READ inside the write session and the
-        update applied to that fresh copy. ``repo.update`` writes every column
-        from the object it is handed, so writing the pre-embed snapshot would
-        revert any column another writer touched meanwhile — and one of those,
-        ``is_published``, is how a built-in runbook is retired. The window is
-        therefore back to milliseconds, as it was before the re-index moved
-        ahead of the write.
+        whole embed, so the row is RE-READ inside the write session, and the
+        write is TARGETED (``repo.update_fields``): it sets only the fields
+        this update changes and never ``is_published``, which is how a
+        built-in runbook is retired. A full-row write would put back whatever
+        it read for every other column, so an unpublish committing between
+        the re-read and the write would be reverted (#1966). After the write
+        commits the row is read once more, and if it is unpublished the
+        vectors this update wrote are discarded.
 
         Residuals, stated rather than papered over:
 
@@ -2495,8 +2718,9 @@ class KnowledgeService:
           the delete, the row keeps its previous content and the vectors are
           missing or partial — the recoverable class above, not a mispairing,
           but not "unchanged" either.
-        * If the vector swap succeeds and ``repo.update`` then fails, the
-          vectors are ahead of the row. That is compensated by
+        * If the vector swap succeeds and the row write
+          (``repo.update_fields``) then fails, the vectors are ahead of the
+          row. That is compensated by
           :meth:`_resynchronise_after_failed_commit`, which re-reads the row
           and decides from what it OBSERVES — a raised commit does not prove
           the write failed, and restoring on that assumption alone would
@@ -2600,7 +2824,7 @@ class KnowledgeService:
             #
             # The chunk metadata is stamped with this timestamp so it does not
             # carry the PREVIOUS one. The row's own `updated_at` is set by
-            # `repo.update` at commit time and will be LATER than this by
+            # the row write at commit time and will be LATER than this by
             # however long the embed takes — seconds, or a cold load's minutes.
             # Nothing compares the two; retrieval reads the chunk value only as
             # a recency signal.
@@ -2620,12 +2844,8 @@ class KnowledgeService:
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
 
-                    # RE-READ before writing, and apply the update to the fresh
-                    # row. `repo.update` writes EVERY column from the object it
-                    # is given, so committing the pre-embed snapshot would
-                    # silently revert whatever another writer changed while we
-                    # embedded — the read-modify-write window is now the whole
-                    # embed rather than the milliseconds it used to be.
+                    # RE-READ before writing: it tells a document deleted while
+                    # we embedded from one that is still there.
                     current = await repo.get_by_id(document_id)
                     if current is None:
                         # Deleted while we embedded. Our vectors describe a row
@@ -2640,18 +2860,49 @@ class KnowledgeService:
                         )
                         return None
 
-                    _apply(current)
-                    await repo.update(current)  # commits + stamps updated_at
+                    # A TARGETED write of only the fields this update changes
+                    # (#1966). A full-row write from the re-read would put back
+                    # whatever it read for every other column — and one of
+                    # those, `is_published`, is how a built-in runbook is
+                    # retired: an unpublish committing between our re-read and
+                    # our write would be reverted, and the runbook republished
+                    # with the vectors written above. The targeted UPDATE waits
+                    # for such a writer (its row lock on PostgreSQL, the writer
+                    # lock on SQLite) and leaves its `is_published` alone.
+                    # (The metadata blob is still read-modify-written when a
+                    # `version` is given; the only other metadata writer is the
+                    # pack bootstrap's hash stamp.)
+                    fields = dict(updates)
+                    if "version" in kwargs:
+                        meta = dict(current.metadata or {})
+                        meta["version"] = kwargs["version"]
+                        fields["metadata"] = meta
+                    if fields and not await repo.update_fields(document_id, fields):
+                        # Deleted between the re-read and the write.
+                        if needs_reindex:
+                            await self._discard_vectors_for_vanished_row(document_id)
+                        logger.warning(
+                            f"Document {document_id} was deleted during its "
+                            "update; the update was abandoned"
+                        )
+                        return None
 
-                    # Re-reading fixes the SQL half of a concurrent retirement;
-                    # it does NOT undo the vectors we already re-added. That
-                    # matters because retrieval does not honour `is_published`
-                    # (`kb_qa` filters ChromaDB by scope alone) — which is
-                    # exactly why `delete_document` deletes the vectors rather
-                    # than only clearing the flag. So an unpublished row must
-                    # end this method with no vectors, or a retired runbook
-                    # stays queryable through chunks this update wrote.
-                    if needs_reindex and not current.is_published:
+                    # The row AS COMMITTED, after our write: whether it is
+                    # still published is only known now. Retrieval does not
+                    # honour `is_published` (`kb_qa` filters ChromaDB by scope
+                    # alone) — which is exactly why `delete_document` deletes
+                    # the vectors rather than only clearing the flag — so an
+                    # unpublished row must end this method with no vectors, or
+                    # a retired runbook stays queryable through chunks this
+                    # update wrote. An unpublish committing after this read
+                    # deletes the vectors itself.
+                    committed = await repo.get_by_id(document_id)
+                    if committed is None:
+                        # Deleted after our write committed: that delete's own
+                        # vector delete came after ours, so nothing is left.
+                        _apply(current)
+                        committed = current
+                    elif needs_reindex and not committed.is_published:
                         await self._discard_vectors_for_vanished_row(document_id)
                         logger.warning(
                             "Document %s was unpublished during its update; the "
@@ -2660,8 +2911,6 @@ class KnowledgeService:
                             "retrievable",
                             document_id,
                         )
-
-                    committed = current
             except Exception as commit_error:
                 if needs_reindex:
                     await self._resynchronise_after_failed_commit(
@@ -2734,7 +2983,11 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body (see
         ``bulk_update_documents``), so neither the raised exception nor the
         per-document ``error`` field — both of which carry driver text — is
-        echoed; the diagnostic stays in the log line.
+        echoed; the diagnostic stays in the log line. Each entry is a constant
+        sentence per id: a vector-store failure (``KnowledgeBaseError``, which
+        :meth:`delete_document` raises having rolled its row change back) says
+        the delete did not complete and a retry finishes it; anything else
+        says only that the delete failed.
         """
         deleted_count = 0
         errors = []
@@ -2750,6 +3003,12 @@ class KnowledgeService:
                         f"Failed to delete document {doc_id}: "
                         f"{result.get('error', 'Unknown error')}"
                     )
+            except KnowledgeBaseError as e:
+                errors.append(
+                    f"Document {doc_id}: not deleted, because removing it from "
+                    "search did not complete; retrying the delete finishes it"
+                )
+                logger.error(f"Failed to delete document {doc_id}: {e}")
             except Exception as e:
                 errors.append(f"Document {doc_id}: delete failed")
                 logger.error(f"Failed to delete document {doc_id}: {e}")

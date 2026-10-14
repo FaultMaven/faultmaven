@@ -379,19 +379,19 @@ class TestItemUpdatePerformance:
         item = create_sample_item()
         await knowledge_item_repository.create(item)
 
-        # Update item
-        item.title = "Updated Title"
-        item.helpful_count = 10
-
-        # Repeating rewrites the SAME row from the SAME inputs: the same
-        # statement each sample, and no row is added. (The repository stamps
-        # its own `updated_at`, so that one column differs per sample.)
+        # Update item — the targeted write, the repository's only write after
+        # create (#1966). Repeating rewrites the SAME row from the SAME inputs:
+        # the same statement each sample, and no row is added. (The repository
+        # stamps its own `updated_at`, so that one column differs per sample.)
         measured = await measure_min_latency(
-            lambda: knowledge_item_repository.update(item)
+            lambda: knowledge_item_repository.update_fields(
+                item.item_id, {"title": "Updated Title", "helpful_count": 10}
+            )
         )
 
-        assert measured.result is not None
-        assert measured.result.title == "Updated Title"
+        assert measured.result is True
+        stored = await knowledge_item_repository.get_by_id(item.item_id)
+        assert stored.title == "Updated Title"
         assert_latency_within(
             measured.best, ITEM_UPDATE, "Item update latency", measured.report()
         )
@@ -420,11 +420,19 @@ class TestItemUpdatePerformance:
         # — so calling it in the loop would not corrupt the measurement; it
         # would just put domain-object work inside the timed window.)
         measured = await measure_min_latency(
-            lambda: knowledge_item_repository.update(item)
+            lambda: knowledge_item_repository.update_fields(
+                item.item_id,
+                {
+                    "embedding_vector": item.embedding_vector,
+                    "embedding_model": item.embedding_model,
+                    "embedding_version": item.embedding_version,
+                },
+            )
         )
 
-        assert measured.result is not None
-        assert measured.result.has_embedding()
+        assert measured.result is True
+        stored = await knowledge_item_repository.get_by_id(item.item_id)
+        assert stored.has_embedding()
         assert_latency_within(
             measured.best,
             ITEM_EMBEDDING_UPDATE,
@@ -554,10 +562,17 @@ class TestItemMixedWorkloadPerformance:
             # Retrieve
             await knowledge_item_repository.get_by_id(item.item_id)
 
-            # Update with feedback
+            # Update with feedback (the targeted write)
             item.mark_retrieved()
             item.mark_helpful()
-            await knowledge_item_repository.update(item)
+            await knowledge_item_repository.update_fields(
+                item.item_id,
+                {
+                    "view_count": item.view_count,
+                    "helpful_count": item.helpful_count,
+                    "last_retrieved_at": item.last_retrieved_at,
+                },
+            )
 
             # Read back the enterprise's items. This step was
             # ``search_by_text(enterprise_id, "sample")`` until #1288 deleted

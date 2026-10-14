@@ -751,6 +751,84 @@ async def test_tenant_cannot_publish_a_global_row_billed_to_an_organization(
 
 @pytest.mark.asyncio
 @pytest.mark.security
+async def test_a_tenant_delete_of_a_platform_row_is_refused_before_the_vectors(
+    limited_engine, kb_rows, superuser_engine
+):
+    """``KnowledgeService.delete_document`` through a tenant-bound session (#1966).
+
+    The RLS write policies make the row change match zero rows, and the service
+    must answer not-removed without calling the shared vector store: a vector
+    delete for a row this session could not remove would let a tenant destroy
+    platform content for everyone (#770). Both arms: the built-in unpublish (an
+    ``UPDATE``, which used to raise and answer 500 here, #1966 A2) and a
+    hard delete of an authored-id platform row (a ``DELETE``).
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+    from faultmaven.utils.runbook_id import is_builtin_item_id
+
+    ent_a, _ent_b, builtin_id, _personal_id = kb_rows
+    authored_id = str(uuid4())
+    assert is_builtin_item_id(builtin_id) and not is_builtin_item_id(authored_id)
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await session.execute(
+            _KI_INSERT,
+            {
+                "i": authored_id,
+                "e": STANDALONE_ENTERPRISE_ID,
+                "org": None,
+                "s": "global",
+                "t": "A",
+                "c": "body",
+            },
+        )
+        await session.commit()
+
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def tenant_session():
+        async with maker() as session:
+            await _bind(session, ent_a)
+            yield session
+
+    service = KnowledgeService.__new__(KnowledgeService)
+    service._db_session_factory = tenant_session
+    service._vector_store = MagicMock()
+    service._vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
+    service._tracer = MagicMock()
+    service._share_repo = None
+
+    try:
+        for item_id in (builtin_id, authored_id):
+            result = await service.delete_document(item_id)
+            assert result["success"] is False, item_id
+
+        service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+        async with su_maker() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT item_id, is_published FROM knowledge_items "
+                        "WHERE item_id IN (:b, :a)"
+                    ),
+                    {"b": builtin_id, "a": authored_id},
+                )
+            ).all()
+        assert dict(rows) == {builtin_id: True, authored_id: True}
+    finally:
+        async with su_maker() as session:
+            await session.execute(_KI_DELETE, {"i": authored_id})
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
 async def test_standalone_enterprise_session_can_maintain_platform_tier(
     limited_engine,
 ):
