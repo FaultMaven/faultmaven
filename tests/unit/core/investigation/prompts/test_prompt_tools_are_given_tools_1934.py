@@ -69,6 +69,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
+    DEGRADED_NO_TOOLS_NOTICE,
     get_fallback_prompt_for_case,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
@@ -589,24 +590,49 @@ MISSING_TOOL_IMPLYING = {
 
 #: ``<evidence_collected>`` is case data: its bodies quote file content, which
 #: may say anything. The probes read the prompt's own text, so they skip the
-#: bodies. The opening tags are the renderer's own words (their attributes
-#: mark provenance, ``file_backed="true"``, whatever the turn's tools — #1969),
-#: so those are still read.
+#: bodies. The opening tags the renderer wrote are its own words (their
+#: attributes mark provenance, ``file_backed="true"``, whatever the turn's
+#: tools — #1969), so those are still read. What marks a tag as the
+#: renderer's is the block's genuine fence token, which quoted content cannot
+#: contain: a tag-shaped string in a body has none and stays skipped.
 _EVIDENCE_BLOCK = re.compile(
-    r'<evidence_collected fence="[0-9a-f]+">.*?</evidence_collected fence="[0-9a-f]+">',
+    r'<evidence_collected fence="([0-9a-f]+)">.*?</evidence_collected fence="\1">',
     re.S,
 )
 _OPENING_TAG = re.compile(r"<[a-z_]+(?:\s[^<>]*)?>")
 
 
+def _renderers_own_tags(block: re.Match) -> list[str]:
+    """The opening tags in one evidence block that carry its genuine token."""
+    live = f'fence="{block.group(1)}"'
+    return [tag for tag in _OPENING_TAG.findall(block.group(0)) if live in tag]
+
+
 def synonym_hits(text: str, phrases) -> list[str]:
     tags = " ".join(
         tag
-        for block in _EVIDENCE_BLOCK.findall(text)
-        for tag in _OPENING_TAG.findall(block)
+        for block in _EVIDENCE_BLOCK.finditer(text)
+        for tag in _renderers_own_tags(block)
     )
     own = (_EVIDENCE_BLOCK.sub("", text) + "\n" + tags).lower()
     return [p for p in phrases if p in own]
+
+
+def test_the_evidence_exemption_reads_only_the_renderers_own_tags() -> None:
+    """A tag-shaped string quoted in a body is case data, not prompt text: it
+    carries no genuine token, so it is not read. The renderer's own opening
+    tags are."""
+    quoted = (
+        '<evidence_collected fence="abc123">\n'
+        '  <evidence id="ev_1" label="app.log" fence="abc123">'
+        '<summary fence="abc123"><a title="search for it">quoted</a>'
+        '</summary fence="abc123"></evidence fence="abc123">\n'
+        '</evidence_collected fence="abc123">'
+    )
+    assert synonym_hits(quoted, ["search for"]) == []
+    # The same words in a tag the renderer wrote are read.
+    own = quoted.replace('label="app.log"', 'label="search for it"')
+    assert synonym_hits(own, ["search for"]) == ["search for"]
 
 
 def test_a_toolless_turn_implies_no_tool_by_any_name() -> None:
@@ -641,6 +667,55 @@ def test_no_render_calls_a_row_searchable(row: str) -> None:
     assert any(
         'file_backed="true"' in text for text in rendered.values()
     ), "no column rendered a file-backed row — the probe is vacuous"
+
+
+#: What a tool-less turn may say with ``searchab`` in it: the fallback upload
+#: heading, which says the file is NOT searchable on this turn.
+_TOOLLESS_TRUE_NEGATIVES = ("not searchable this turn",)
+
+
+def _searchability_claims(text: str) -> list[str]:
+    """Every line of ``text`` that says ``searchab``, less the true negatives."""
+    lines = []
+    for line in text.split("\n"):
+        scrubbed = line.lower()
+        for ok in _TOOLLESS_TRUE_NEGATIVES:
+            scrubbed = scrubbed.replace(ok, "")
+        if "searchab" in scrubbed:
+            lines.append(line.strip()[:160])
+    return lines
+
+
+def _toolless_renders() -> dict[str, str]:
+    """Every column of the tool-less row, plus the #662 retry's fallback with
+    its degraded-turn notice appended (the engine sends both as one prompt)."""
+    out = renders(ROWS["none"])
+    for column in [c for c in out if c.startswith("fallback_")]:
+        out[f"{column}+notice"] = out[column] + DEGRADED_NO_TOOLS_NOTICE
+    return out
+
+
+def test_a_toolless_turn_makes_no_claim_about_searchability() -> None:
+    """The fence declaration and the fallback fence rule are rendered on every
+    fenced prompt, so a stale ``searchability`` there reaches every tool-less
+    turn (#1969). Nothing a tool-less turn renders says ``searchab``, in the
+    evidence block or out of it, but the fallback heading's true negative."""
+    claims = {
+        column: _searchability_claims(text)
+        for column, text in _toolless_renders().items()
+        if _searchability_claims(text)
+    }
+    assert not claims, claims
+
+
+def test_the_searchability_probe_bites() -> None:
+    """Non-vacuity: the true negative is really rendered (and really scrubbed),
+    and a stale claim in the fence texts would be caught."""
+    heading = "CURRENT-TURN UPLOAD (not searchable this turn):"
+    assert any(heading in t for t in _toolless_renders().values())
+    assert _searchability_claims(heading) == []
+    assert _searchability_claims("never a claim about an item's searchability.")
+    assert _searchability_claims("Files are fully SEARCHABLE")
 
 
 def test_the_synonym_probes_bite() -> None:
@@ -780,3 +855,11 @@ def test_each_terminal_redirect_renders_somewhere(monkeypatch) -> None:
     assert _REGENERATE_REDIRECT in seen["closed"]
     assert _DRAFT_POINTER in seen["resolved_draft_exists"]
     assert "No runbook can be generated from this case here" in seen["closed"]
+
+
+@pytest.mark.parametrize("condition", sorted(_TERMINAL))
+def test_a_toolless_terminal_prompt_makes_no_claim_about_searchability(
+    condition: str, monkeypatch
+) -> None:
+    _, prompt = _terminal_turn(condition, ROWS["none"], monkeypatch)
+    assert not _searchability_claims(prompt), _searchability_claims(prompt)

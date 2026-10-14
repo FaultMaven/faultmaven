@@ -67,18 +67,22 @@ KB_MAX_SOLUTION_CHARS = 800
 
 # Min structural-index length for an uploaded file to count as a searchable
 # target. This is the single source of truth: the context builder renders a
-# file as ``<uploaded_file file_backed="true">`` only above this length, and
-# the engine's force_tools guards (``_has_searchable_material`` /
-# ``_turn_delivers_evidence_bearing_attachment``) use the same rule — they
-# must agree, or a forced Directed-Analysis turn could have no rendered search
-# target and the tool loop would crash for lack of one (#708).
+# file as an ``<uploaded_file>`` in the main context only above this length.
+# The threshold decides whether that element renders at all, not what it says:
+# every ``<uploaded_file>`` carries ``file_backed="true"``, the fallback stub of
+# a shorter index included. The engine's force_tools guards
+# (``_has_searchable_material`` / ``_turn_delivers_evidence_bearing_attachment``)
+# use the same rule — they must agree, or a forced Directed-Analysis turn could
+# have no rendered search target and the tool loop would crash for lack of one
+# (#708).
 SEARCHABLE_STRUCTURAL_INDEX_MIN_CHARS = 10
 
 
 def structural_index_is_searchable(structural_index: Optional[str]) -> bool:
     """True when an uploaded file's structural index carries enough content to
-    be a search target. Shared by the context builder's ``file_backed`` render
-    and the engine's force_tools guards so the threshold stays in lockstep."""
+    be a search target. Shared by the context builder's gate on rendering an
+    ``<uploaded_file>`` and the engine's force_tools guards so the threshold
+    stays in lockstep."""
     return bool(structural_index) and (
         len(structural_index) > SEARCHABLE_STRUCTURAL_INDEX_MIN_CHARS
     )
