@@ -781,10 +781,11 @@ class TestReconcileVectors:
             delete_batches=delete_batches,
         )
         # DB has only a and b → c is an orphaned built-in vector.
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == ["kb_cccccccccccc"]
+        assert unpublished_cleaned == []
         assert delete_batches == [["kb_cccccccccccc"]]  # ONE batched call
         assert orphaned_rows == []
 
@@ -803,10 +804,11 @@ class TestReconcileVectors:
             },
             delete_batches=delete_batches,
         )
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa"})
         )
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert delete_batches == []  # nothing deleted — blast radius bounded
         assert orphaned_rows == []
 
@@ -817,10 +819,11 @@ class TestReconcileVectors:
         svc = self._service(
             chroma_parents={"kb_aaaaaaaaaaaa"}, delete_batches=delete_batches
         )
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert delete_batches == []
         assert orphaned_rows == ["kb_bbbbbbbbbbbb"]
 
@@ -834,7 +837,7 @@ class TestReconcileVectors:
         svc = self._service(
             chroma_parents={"kb_cccccccccccc"}, delete_batches=delete_batches
         )
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc,
             self._factory(
                 {"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"},
@@ -843,7 +846,48 @@ class TestReconcileVectors:
         )
         assert orphaned_rows == ["kb_aaaaaaaaaaaa"]
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert delete_batches == []
+
+    @pytest.mark.asyncio
+    async def test_an_unpublished_builtin_with_vectors_is_cleaned(self):
+        """#1966: a retired built-in must not stay retrievable. Its vectors are
+        deleted in the SAME batch as the no-row orphans and reported apart from
+        them. The built-in boundary holds: an unpublished UUID row and an
+        unpublished authored ``kb_<16 hex>`` row keep their vectors (possibly
+        another tenant's), and so does a published built-in."""
+        delete_batches: list[list[str]] = []
+        unpublished_builtin = "kb_aaaaaaaaaaaa"
+        published_builtin = "kb_bbbbbbbbbbbb"
+        ghost_builtin = "kb_cccccccccccc"  # vectors, no row
+        unpublished_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        unpublished_kb16 = "kb_0123456789abcdef"
+        svc = self._service(
+            chroma_parents={
+                unpublished_builtin,
+                published_builtin,
+                ghost_builtin,
+                unpublished_uuid,
+                unpublished_kb16,
+            },
+            delete_batches=delete_batches,
+        )
+        result = await kb_init._reconcile_vectors(
+            svc,
+            self._factory(
+                {
+                    unpublished_builtin,
+                    published_builtin,
+                    unpublished_uuid,
+                    unpublished_kb16,
+                },
+                unpublished={unpublished_builtin, unpublished_uuid, unpublished_kb16},
+            ),
+        )
+        assert result.orphaned_vectors_cleaned == [ghost_builtin]
+        assert result.unpublished_vectors_cleaned == [unpublished_builtin]
+        assert result.orphaned_rows == []
+        assert delete_batches == [[ghost_builtin, unpublished_builtin]]  # ONE call
 
     @pytest.mark.asyncio
     async def test_consistent_index_is_noop(self):
@@ -852,10 +896,11 @@ class TestReconcileVectors:
             chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
             delete_batches=delete_batches,
         )
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert orphaned_rows == []
         assert delete_batches == []
 
@@ -868,10 +913,11 @@ class TestReconcileVectors:
             chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
             delete_batches=delete_batches,
         )
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory(set())
         )
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert delete_batches == []  # the safety guard held
         assert orphaned_rows == []
 
@@ -881,10 +927,11 @@ class TestReconcileVectors:
         degrades to a clean no-op — and warns, since drift goes uncleaned."""
         svc = MagicMock()
         svc._vector_store = object()  # no list_parent_document_ids
-        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa"})
         )
         assert cleaned == []
+        assert unpublished_cleaned == []
         assert orphaned_rows == []
 
 
@@ -1138,7 +1185,9 @@ class TestCrossStoreRepairSeam:
         factory = TestReconcileVectors._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
 
         # Step 1 — reconcile only DETECTS the orphaned row (cannot fix it alone).
-        _cleaned, orphaned = await kb_init._reconcile_vectors(svc, factory)
+        _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
+            svc, factory
+        )
         assert orphaned == ["kb_bbbbbbbbbbbb"]
 
         # Step 2 — repair HEALS it by re-embedding from its persisted SQL row.

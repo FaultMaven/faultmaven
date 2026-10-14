@@ -27,6 +27,8 @@ duplicated here.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -49,6 +51,7 @@ from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain import global_authoring
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    PACK_CONTENT_HASH_KEY,
     KnowledgeItem,
     KnowledgeItemType,
 )
@@ -61,7 +64,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 from faultmaven.utils.runbook_id import is_builtin_item_id, item_id_from_runbook_id
-from tests.unit.bootstrap.test_kb_init import _write_pack
+from tests.unit.bootstrap.test_kb_init import RUNBOOK_MD, _write_pack
 
 pytestmark = [pytest.mark.unit]
 
@@ -198,6 +201,12 @@ async def kb():
     svc._share_repo = _Shares(factory)
     svc._index_document_in_vector_store = _index
     svc._delete_knowledge_item_row = AsyncMock()
+    svc._sanitizer = MagicMock()
+
+    async def _same(text):
+        return text
+
+    svc._sanitizer.asanitize = _same
 
     async def seed(item, *, chunks=3):
         async with factory() as session:
@@ -223,9 +232,21 @@ async def kb():
 
     async def boot_repair():
         """The reconcile + repair pair exactly as ``bootstrap_kb`` runs it."""
-        _cleaned, orphaned = await kb_init._reconcile_vectors(svc, factory)
+        _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
+            svc, factory
+        )
         repaired, _still = await kb_init._repair_orphaned_rows(orphaned, svc)
         return orphaned, repaired
+
+    async def boot(tmp_path, pack_dir):
+        """One startup bootstrap (or kb_seed run) over the shipped pack."""
+        return await kb_init.bootstrap_kb(
+            knowledge_service=svc,
+            db_session_factory=factory,
+            enterprise_id="ent-1",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
 
     yield SimpleNamespace(
         svc=svc,
@@ -237,6 +258,7 @@ async def kb():
         share_to_team=share_to_team,
         shares=shares,
         boot_repair=boot_repair,
+        boot=boot,
     )
     await engine.dispose()
 
@@ -505,7 +527,7 @@ async def test_t8_bulk_delete_reports_a_vector_failure_without_driver_text(kb):
     assert result["deleted_count"] == 1
     assert result["errors"] == [
         f"Document {AUTHORED_ID}: not deleted, because removing it from search "
-        "failed; nothing was changed, so the delete can be retried"
+        "did not complete; retrying the delete finishes it"
     ]
     assert not any(
         fragment in error
@@ -516,6 +538,166 @@ async def test_t8_bulk_delete_reports_a_vector_failure_without_driver_text(kb):
     assert kb.store.parents[AUTHORED_ID] == 3
     assert await kb.row(OTHER_AUTHORED_ID) is None
     assert OTHER_AUTHORED_ID not in kb.store.parents
+
+
+# ---------------------------------------------------------------------------
+# Item 6: a cancellation mid-hold is logged, and leaves no chunk without a row
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("item_id", "make"),
+    [
+        pytest.param(AUTHORED_ID, lambda: _item(AUTHORED_ID), id="authored"),
+        pytest.param(BUILTIN_ID, _builtin, id="builtin"),
+    ],
+)
+async def test_a_cancellation_at_the_commit_logs_the_split_state(
+    kb, caplog, item_id, make
+):
+    """``CancelledError`` is not an ``Exception``: without its own handler a
+    task cancelled at the commit left the split state with no log line."""
+    await kb.seed(make())
+    with (
+        patch.object(
+            AsyncSession, "commit", AsyncMock(side_effect=asyncio.CancelledError())
+        ),
+        caplog.at_level(logging.ERROR),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await kb.svc.delete_document(item_id)
+
+    assert any(
+        "SPLIT KNOWLEDGE DOCUMENT" in r.getMessage() and item_id in r.getMessage()
+        for r in caplog.records
+    )
+    row = await kb.row(item_id)
+    assert row is not None and row.is_published is True
+    assert item_id not in kb.store.parents
+
+
+async def test_a_cancellation_during_the_vector_delete_is_logged_and_rolled_back(
+    kb, caplog
+):
+    await kb.seed(_item(AUTHORED_ID))
+    kb.store.fail_for[AUTHORED_ID] = asyncio.CancelledError()
+
+    with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+        await kb.svc.delete_document(AUTHORED_ID)
+
+    assert any(
+        "cancelled" in r.getMessage() and AUTHORED_ID in r.getMessage()
+        for r in caplog.records
+    )
+    assert await kb.row(AUTHORED_ID) is not None
+
+
+# ---------------------------------------------------------------------------
+# Item 2: a reboot compares the pack with what the row was ingested from
+# ---------------------------------------------------------------------------
+
+PACK_V1_HASH = hashlib.sha256(RUNBOOK_MD.encode("utf-8")).hexdigest()
+RUNBOOK_V2 = RUNBOOK_MD.replace("# Body content for tests.", "# Body, version two.")
+
+
+async def test_the_pack_bootstrap_stamps_the_pack_hash_on_the_row(kb, tmp_path):
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, _write_pack(tmp_path))
+    assert (await kb.row(shipped)).metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
+
+
+async def test_an_edited_then_unpublished_builtin_stays_unpublished_after_a_reboot(
+    kb, tmp_path
+):
+    """The pack is unchanged; the ROW was edited (PUT) and then unpublished. The
+    skip used to hash the row's current content, so the edit looked like a new
+    pack version: delete + re-ingest republished the runbook with vectors."""
+    pack_dir = _write_pack(tmp_path)
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, pack_dir)
+    assert await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    assert (await kb.svc.delete_document(shipped))["action"] == "unpublished"
+
+    second = await kb.boot(tmp_path, pack_dir)
+
+    assert second.skipped_unchanged == ["global/example.md"], second
+    row = await kb.row(shipped)
+    assert row.is_published is False, "the reboot republished it"
+    assert row.content == "# Edited\nfix", "the reboot replaced the operator's edit"
+    assert shipped not in kb.store.parents
+
+
+async def test_a_new_pack_version_republishes_an_unpublished_builtin(kb, tmp_path):
+    """The documented rule still holds: a shipped update is a new document."""
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, _write_pack(tmp_path))
+    await kb.svc.delete_document(shipped)
+
+    second = await kb.boot(tmp_path, _write_pack(tmp_path, content=RUNBOOK_V2))
+
+    assert second.ingested == ["global/example.md"], second
+    row = await kb.row(shipped)
+    assert row.is_published is True and row.content == RUNBOOK_V2
+    assert row.metadata[PACK_CONTENT_HASH_KEY] == (
+        hashlib.sha256(RUNBOOK_V2.encode("utf-8")).hexdigest()
+    )
+    assert shipped in kb.store.parents
+
+
+async def test_a_row_from_before_the_stamp_is_compared_by_content_once(kb, tmp_path):
+    """Every row predating the stamp: compared by content, then stamped —
+    without touching ``updated_at`` (bookkeeping, not an edit) — so a later
+    edit and unpublish survive the boot after that."""
+    pack_dir = _write_pack(tmp_path)
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, pack_dir)
+    async with kb.factory() as session:  # what every row looks like today
+        await DatabaseKnowledgeItemRepository(session).update_fields(
+            shipped, {"metadata": {}}, touch=False
+        )
+    before = await kb.row(shipped)
+
+    second = await kb.boot(tmp_path, pack_dir)
+
+    assert second.skipped_unchanged == ["global/example.md"], second
+    stamped = await kb.row(shipped)
+    assert stamped.metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
+    assert stamped.updated_at == before.updated_at
+
+    await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    await kb.svc.delete_document(shipped)
+    await kb.boot(tmp_path, pack_dir)
+    assert (await kb.row(shipped)).is_published is False
+    assert shipped not in kb.store.parents
+
+
+# ---------------------------------------------------------------------------
+# Item 7: the next boot cleans vectors an older version's repair put back
+# ---------------------------------------------------------------------------
+
+
+async def test_an_upgrade_cleans_an_unpublished_builtin_an_older_repair_restored(
+    kb, tmp_path
+):
+    """Before #1966 every boot re-embedded unpublished built-ins, so upgraded
+    deployments hold vectors for retired runbooks. The first boot on this
+    version deletes them, and no later boot brings them back."""
+    pack_dir = _write_pack(tmp_path)
+    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    await kb.boot(tmp_path, pack_dir)
+    await kb.svc.delete_document(shipped)
+    kb.store.parents[shipped] = 3  # what the old repair did at the next boot
+
+    second = await kb.boot(tmp_path, pack_dir)
+
+    assert second.unpublished_vectors_cleaned == [shipped]
+    assert second.orphaned_vectors_cleaned == []
+    assert shipped not in kb.store.parents
+    assert (await kb.row(shipped)).is_published is False
+
+    third = await kb.boot(tmp_path, pack_dir)
+    assert third.repaired_rows == [] and third.unpublished_vectors_cleaned == []
+    assert shipped not in kb.store.parents
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +739,7 @@ def _app(service, user):
         pytest.param(BUILTIN_ID, _builtin, ("platform_admin",), id="operator"),
     ],
 )
-async def test_the_delete_route_answers_503_and_says_nothing_was_deleted(
+async def test_the_delete_route_answers_503_and_says_the_delete_did_not_complete(
     kb, monkeypatch, item_id, make, roles
 ):
     monkeypatch.setattr(
@@ -572,8 +754,12 @@ async def test_the_delete_route_answers_503_and_says_nothing_was_deleted(
         detail = failed.json()["detail"]
 
         assert failed.status_code == 503
-        assert "not deleted" in detail and "nothing was changed" in detail
+        assert "not deleted" in detail and "did not complete" in detail
+        assert "still in the knowledge base" in detail
         assert "Retry" in detail
+        # A remote store can fail after applying the delete (or part of it),
+        # so the answer must not promise that nothing changed.
+        assert "nothing was changed" not in detail
         assert "chroma" not in detail.lower()
         row = await kb.row(item_id)
         assert row is not None and row.is_published is True

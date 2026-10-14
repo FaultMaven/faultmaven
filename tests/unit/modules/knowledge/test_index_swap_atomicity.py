@@ -178,7 +178,7 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
 
     repo = MagicMock()
     repo.get_by_id = AsyncMock(return_value=item)
-    repo.update = AsyncMock()
+    repo.update_fields = AsyncMock(return_value=True)
 
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)

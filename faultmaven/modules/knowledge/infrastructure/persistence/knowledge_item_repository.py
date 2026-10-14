@@ -83,6 +83,30 @@ class KnowledgeItemRepositoryException(Exception):
     pass
 
 
+#: Domain field → column value, serialised exactly as ``update`` writes it, for
+#: the fields a targeted write may set. ``is_published`` is here so a retirement
+#: can be written on its own; a content edit simply does not name it.
+_TARGETED_FIELDS = {
+    "title": lambda v: ("title", v),
+    "content": lambda v: ("content", v),
+    "category": lambda v: ("category", v),
+    "tags": lambda v: ("tags", list(v) if v else None),
+    "item_type": lambda v: ("item_type", KnowledgeItemType(v).value),
+    "is_published": lambda v: ("is_published", bool(v)),
+    "metadata": lambda v: ("knowledge_metadata", json.dumps(v) if v else "{}"),
+}
+
+
+def _column_values(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Column values for a targeted write; rejects what it does not know."""
+    if not fields:
+        raise ValueError("A targeted update needs at least one field")
+    unknown = sorted(set(fields) - set(_TARGETED_FIELDS))
+    if unknown:
+        raise ValueError(f"Fields not writable by a targeted update: {unknown}")
+    return dict(_TARGETED_FIELDS[name](value) for name, value in fields.items())
+
+
 class KnowledgeItemRepository(ABC):
     """Abstract base class for knowledge item repositories."""
 
@@ -119,28 +143,64 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def update(
-        self, item: KnowledgeItem, *, commit: bool = True
-    ) -> Optional[KnowledgeItem]:
-        """Update existing knowledge item.
+    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
+        """Update existing knowledge item — EVERY column, from ``item``.
+
+        A full-row write: whatever another writer committed since ``item`` was
+        read is overwritten. A writer that changes some fields of a row other
+        writers also change uses :meth:`update_fields` instead.
 
         Args:
             item: Item with updated fields
-            commit: ``False`` leaves the write uncommitted in the open
-                transaction: :meth:`commit` makes it durable and
-                :meth:`rollback` discards it. A caller that defers the commit
-                is deciding from the outcome whether to commit at all, so a
-                write that matched no row is REPORTED (``None``) instead of
-                raised.
 
         Returns:
-            The updated item. ``None`` only with ``commit=False`` when no row
-            matched: absent, deleted concurrently, or refused by an RLS write
-            policy (which a PostgreSQL ``UPDATE`` reports as zero rows).
+            Updated item
 
         Raises:
-            ValueError: If item not found and ``commit`` is True
+            ValueError: If item not found
             KnowledgeItemRepositoryException: If update fails
+        """
+        pass
+
+    @abstractmethod
+    async def update_fields(
+        self,
+        item_id: str,
+        fields: Dict[str, Any],
+        *,
+        commit: bool = True,
+        touch: bool = True,
+    ) -> bool:
+        """Write ONLY ``fields`` on one row; every other column is left as the
+        database holds it (#1966).
+
+        Unlike :meth:`update`, this cannot revert a concurrent writer's change
+        to a column it does not name — ``is_published`` above all, which is how
+        a built-in runbook is retired. The statement is a single targeted
+        ``UPDATE``, so on PostgreSQL it waits for a concurrent writer's row
+        lock and applies to the row as that writer left it, and on SQLite it
+        waits for the database's writer lock.
+
+        Args:
+            item_id: Item identifier
+            fields: Domain field name → new value. Accepted: ``title``,
+                ``content``, ``category``, ``tags``, ``item_type``,
+                ``is_published`` and ``metadata``, serialised exactly as
+                :meth:`update` serialises them.
+            commit: ``False`` leaves the write uncommitted in the open
+                transaction, for :meth:`commit` or :meth:`rollback` to settle.
+            touch: Stamp ``updated_at`` with the current time. ``False`` keeps
+                the stored value (bookkeeping writes the document's readers
+                should not see as an edit).
+
+        Returns:
+            Whether a row matched. Zero rows — absent, deleted concurrently, or
+            refused by an RLS write policy (which a PostgreSQL ``UPDATE``
+            reports as zero rows) — is reported, never raised.
+
+        Raises:
+            ValueError: an unknown field name, or no fields
+            KnowledgeItemRepositoryException: If the write fails
         """
         pass
 
@@ -174,6 +234,18 @@ class KnowledgeItemRepository(ABC):
     @abstractmethod
     async def rollback(self) -> None:
         """Discard the writes issued with ``commit=False``."""
+        pass
+
+    @abstractmethod
+    async def is_published_locked(self, item_id: str) -> Optional[bool]:
+        """Whether ``item_id`` is published (``None``: no such row), read AFTER
+        any writer still holding the row has finished (#1966).
+
+        For a caller that has just written vectors for a row read earlier and
+        must know whether a delete or unpublish landed meanwhile — including
+        one whose row change is issued but not yet committed. The caller rolls
+        its session back afterwards, which releases the lock.
+        """
         pass
 
     # =========================================================================
@@ -430,10 +502,8 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get knowledge item {item_id}: {e}"
             ) from e
 
-    async def update(
-        self, item: KnowledgeItem, *, commit: bool = True
-    ) -> Optional[KnowledgeItem]:
-        """Update knowledge item fields (see the base class for ``commit``)."""
+    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
+        """Update knowledge item fields."""
         try:
             item.updated_at = datetime.now(timezone.utc)
 
@@ -482,12 +552,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             result = await self.db.execute(stmt)
 
             if result.rowcount == 0:
-                if not commit:
-                    return None
                 raise ValueError(f"Knowledge item {item.item_id} not found")
 
-            if commit:
-                await self.db.commit()
+            await self.db.commit()
             logger.debug(f"Updated knowledge item {item.item_id}")
             return item
 
@@ -499,6 +566,38 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             logger.error(f"Failed to update knowledge item: {e}")
             raise KnowledgeItemRepositoryException(
                 f"Failed to update knowledge item: {e}"
+            ) from e
+
+    async def update_fields(
+        self,
+        item_id: str,
+        fields: Dict[str, Any],
+        *,
+        commit: bool = True,
+        touch: bool = True,
+    ) -> bool:
+        """Targeted update (see the base class)."""
+        values = _column_values(fields)
+        values["updated_at"] = (
+            datetime.now(timezone.utc) if touch else KnowledgeItemModel.updated_at
+        )
+        try:
+            stmt = (
+                update(KnowledgeItemModel)
+                .where(KnowledgeItemModel.item_id == item_id)
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            result = await self.db.execute(stmt)
+            if commit:
+                await self.db.commit()
+            return result.rowcount > 0
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update knowledge item {item_id}: {e}")
+            raise KnowledgeItemRepositoryException(
+                f"Failed to update knowledge item {item_id}: {e}"
             ) from e
 
     async def delete(self, item_id: str, *, commit: bool = True) -> bool:
@@ -536,6 +635,38 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def rollback(self) -> None:
         """Roll back the session's open transaction."""
         await self.db.rollback()
+
+    async def is_published_locked(self, item_id: str) -> Optional[bool]:
+        """Locked read of ``is_published`` (see the base class).
+
+        PostgreSQL: ``SELECT ... FOR SHARE`` waits for an uncommitted
+        ``UPDATE``/``DELETE`` of the row, then reads its outcome. SQLite
+        ignores that clause, and under WAL a reader sees the last committed
+        state while a writer still holds its lock, so the read is preceded by
+        a no-op write of the row: it must take the database's writer lock
+        first, which waits (``busy_timeout``) for the held change to commit.
+        The no-op write changes nothing (``updated_at`` included) and is
+        discarded by the caller's rollback.
+        """
+        where = KnowledgeItemModel.item_id == item_id
+        if self.db.get_bind().dialect.name == "sqlite":
+            await self.db.execute(
+                update(KnowledgeItemModel)
+                .where(where)
+                .values(
+                    is_published=KnowledgeItemModel.is_published,
+                    updated_at=KnowledgeItemModel.updated_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        found = (
+            await self.db.execute(
+                select(KnowledgeItemModel.is_published)
+                .where(where)
+                .with_for_update(read=True)
+            )
+        ).first()
+        return None if found is None else bool(found[0])
 
     # =========================================================================
     # Query Operations
@@ -959,21 +1090,40 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             return None
         return deepcopy(item)
 
-    async def update(
-        self, item: KnowledgeItem, *, commit: bool = True
-    ) -> Optional[KnowledgeItem]:
-        """Update knowledge item fields (see the base class for ``commit``)."""
-        if not self._exists(item.item_id):
-            if not commit:
-                return None
+    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
+        """Update knowledge item fields."""
+        if item.item_id not in self._items:
             raise ValueError(f"Knowledge item {item.item_id} not found")
 
         item.updated_at = datetime.now(timezone.utc)
-        if commit:
-            self._items[item.item_id] = deepcopy(item)
-        else:
-            self._pending[item.item_id] = deepcopy(item)
+        self._items[item.item_id] = deepcopy(item)
         return deepcopy(item)
+
+    async def update_fields(
+        self,
+        item_id: str,
+        fields: Dict[str, Any],
+        *,
+        commit: bool = True,
+        touch: bool = True,
+    ) -> bool:
+        """Targeted update (see the base class)."""
+        _column_values(fields)  # the same validation as the database repository
+        if not self._exists(item_id):
+            return False
+        pending = self._pending.get(item_id)
+        target = deepcopy(pending if pending is not None else self._items[item_id])
+        for name, value in fields.items():
+            if name == "item_type":
+                value = KnowledgeItemType(value)
+            setattr(target, name, deepcopy(value))
+        if touch:
+            target.updated_at = datetime.now(timezone.utc)
+        if commit:
+            self._items[item_id] = target
+        else:
+            self._pending[item_id] = target
+        return True
 
     async def delete(self, item_id: str, *, commit: bool = True) -> bool:
         """Delete knowledge item by ID (see the base class for ``commit``)."""
@@ -997,6 +1147,11 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     async def rollback(self) -> None:
         """Discard the writes issued with ``commit=False``."""
         self._pending.clear()
+
+    async def is_published_locked(self, item_id: str) -> Optional[bool]:
+        """Committed ``is_published`` (no concurrent writers to wait for)."""
+        item = self._items.get(item_id)
+        return None if item is None else bool(item.is_published)
 
     # =========================================================================
     # Query Operations

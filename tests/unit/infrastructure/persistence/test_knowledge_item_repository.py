@@ -306,10 +306,10 @@ async def deferring_repository(request):
 
 
 class TestDeferredCommit:
-    """``delete``/``update`` with ``commit=False`` leave the write open for the
-    caller to commit or roll back once it knows whether it wants it — which is
-    how ``KnowledgeService.delete_document`` holds the row change across its
-    vector delete (#1966)."""
+    """``delete``/``update_fields`` with ``commit=False`` leave the write open
+    for the caller to commit or roll back once it knows whether it wants it —
+    which is how ``KnowledgeService.delete_document`` holds the row change
+    across its vector delete (#1966)."""
 
     @pytest.mark.asyncio
     async def test_a_deferred_delete_is_undone_by_rollback(self, deferring_repository):
@@ -332,29 +332,33 @@ class TestDeferredCommit:
         assert await repo.get_by_id(item.item_id) is None
 
     @pytest.mark.asyncio
-    async def test_a_deferred_update_is_undone_by_rollback(self, deferring_repository):
+    async def test_a_deferred_targeted_write_is_undone_by_rollback(
+        self, deferring_repository
+    ):
         repo = deferring_repository
         item = await repo.create(create_sample_item())
-        item.is_published = False
 
-        assert await repo.update(item, commit=False) is not None
+        assert await repo.update_fields(
+            item.item_id, {"is_published": False}, commit=False
+        )
         await repo.rollback()
 
         assert (await repo.get_by_id(item.item_id)).is_published is True
 
     @pytest.mark.asyncio
-    async def test_a_deferred_update_lands_on_commit(self, deferring_repository):
+    async def test_a_deferred_targeted_write_lands_on_commit(
+        self, deferring_repository
+    ):
         repo = deferring_repository
         item = await repo.create(create_sample_item())
-        item.is_published = False
 
-        await repo.update(item, commit=False)
+        await repo.update_fields(item.item_id, {"is_published": False}, commit=False)
         await repo.commit()
 
         assert (await repo.get_by_id(item.item_id)).is_published is False
 
     @pytest.mark.asyncio
-    async def test_a_deferred_write_reports_a_missing_row_instead_of_raising(
+    async def test_a_write_that_matches_no_row_is_reported_not_raised(
         self, deferring_repository
     ):
         """The caller decides from the outcome whether to commit at all, so
@@ -363,15 +367,80 @@ class TestDeferredCommit:
         repo = deferring_repository
         ghost = create_sample_item()
 
-        assert await repo.update(ghost, commit=False) is None
+        assert (
+            await repo.update_fields(
+                ghost.item_id, {"is_published": False}, commit=False
+            )
+            is False
+        )
         assert await repo.delete(ghost.item_id, commit=False) is False
 
+
+class TestTargetedWrite:
+    """``update_fields`` writes only the fields it names (#1966): it cannot
+    revert another writer's change to a column it does not name."""
+
     @pytest.mark.asyncio
-    async def test_a_committing_update_of_a_missing_row_still_raises(
+    async def test_only_the_named_fields_move(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item(tags=["a"]))
+        await repo.update_fields(item.item_id, {"is_published": False})
+
+        assert await repo.update_fields(
+            item.item_id, {"content": "new body", "tags": ["b"]}
+        )
+
+        stored = await repo.get_by_id(item.item_id)
+        assert stored.content == "new body" and stored.tags == ["b"]
+        assert stored.is_published is False, "an edit put is_published back"
+        assert stored.title == item.title
+
+    @pytest.mark.asyncio
+    async def test_metadata_round_trips_and_touch_false_keeps_updated_at(
         self, deferring_repository
     ):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+        before = (await repo.get_by_id(item.item_id)).updated_at
+
+        await repo.update_fields(
+            item.item_id, {"metadata": {"pack_content_hash": "abc"}}, touch=False
+        )
+
+        stored = await repo.get_by_id(item.item_id)
+        assert stored.metadata == {"pack_content_hash": "abc"}
+        assert stored.updated_at == before
+
+    @pytest.mark.asyncio
+    async def test_the_locked_read_reports_publication_and_writes_nothing(
+        self, deferring_repository
+    ):
+        """``is_published_locked``: None for no row, the flag otherwise. On
+        SQLite it takes the writer lock with a no-op write, which must leave
+        the row exactly as it was once the caller rolls back."""
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+        before = await repo.get_by_id(item.item_id)
+
+        assert await repo.is_published_locked("ki_absent") is None
+        assert await repo.is_published_locked(item.item_id) is True
+        await repo.rollback()
+        await repo.update_fields(item.item_id, {"is_published": False})
+        assert await repo.is_published_locked(item.item_id) is False
+        await repo.rollback()
+
+        after = await repo.get_by_id(item.item_id)
+        assert after.title == before.title and after.content == before.content
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_field_is_refused(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+
+        with pytest.raises(ValueError, match="owner_id"):
+            await repo.update_fields(item.item_id, {"owner_id": "someone"})
         with pytest.raises(ValueError):
-            await deferring_repository.update(create_sample_item())
+            await repo.update_fields(item.item_id, {})
 
 
 # ============================================================

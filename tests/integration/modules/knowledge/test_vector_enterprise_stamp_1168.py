@@ -387,7 +387,7 @@ async def test_a_failed_commit_realigns_the_vectors_stamped_from_the_observed_ro
         _ambient_enterprise(ENTERPRISE_A),
         patch.object(
             DatabaseKnowledgeItemRepository,
-            "update",
+            "update_fields",
             side_effect=RuntimeError("commit failed"),
         ),
     ):

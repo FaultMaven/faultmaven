@@ -757,9 +757,9 @@ async def delete_document(
     cannot even see answers 404 rather than 403 (#867).
 
     A 204 means the document has no retrievable chunk left (#1966). When its
-    search-index entries cannot be removed the answer is 503 and nothing was
-    deleted: the document stays exactly as it was, and the request can be
-    retried once the knowledge base is available.
+    search-index entries cannot be removed the answer is 503: the delete did
+    not complete, the document is still in the knowledge base, and retrying
+    the request once the knowledge base is available finishes it.
 
     Args:
         document_id: Document identifier
@@ -790,17 +790,19 @@ async def delete_document(
         raise
     except KnowledgeBaseError as e:
         # The vector delete failed, so the row change was rolled back before
-        # it committed (#1966): the response can promise that nothing was
-        # deleted, which is what makes retrying safe. A 404 here — what a
-        # `success: False` maps to — would tell the caller the document is
-        # gone while it is still listed and searchable.
+        # it committed (#1966): the document is still there, and a retry
+        # completes the delete. It does not promise that nothing changed — a
+        # remote store can fail after applying the delete, or part of it. A
+        # 404 here — what a `success: False` maps to — would tell the caller
+        # the document is gone while it is still listed.
         logger.error(f"Failed to remove document {document_id} from search: {e}")
         raise HTTPException(
             status_code=503,
             detail=(
-                "The document was not deleted: removing it from search failed, "
-                "so nothing was changed. Retry the delete once the knowledge "
-                "base is available."
+                "The document was not deleted: removing it from search did not "
+                "complete, and it is still in the knowledge base. Retry the "
+                "delete once the knowledge base is available; the retry "
+                "finishes it."
             ),
         )
     except Exception as e:
