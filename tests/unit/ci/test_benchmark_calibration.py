@@ -53,9 +53,13 @@ What it holds down, and why each one:
 from __future__ import annotations
 
 import ast
+import json
 import math
 import os
+import platform
 import re
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import List, Tuple
@@ -3966,6 +3970,176 @@ class TestTheGrowthHelper:
         )
         # Moved up by whole steps of 8 from 1: the window is one of these.
         assert growth.sizes[0] in {8, 64, 512}, growth.describe()
+
+
+#: What a function that copies its input pays in a COLD process (#1991), run
+#: through ``measure_growth`` in a child so that no earlier test has taught the
+#: allocator anything. ``copies_twice`` makes the sshd reader's two copies;
+#: the child reports the minor page faults of each call at the window's top
+#: size, ``RUSAGE_THREAD`` counting this thread only. The first call at the top
+#: size grows the heap whether or not the allocator was settled, so it is not
+#: counted.
+_FAULTS_THROUGH_THE_HELPER = """
+import json, resource, sys
+from tests.wallclock.growth import measure_growth
+
+top = 4 << 20
+seen = {}
+
+def copies_twice(text):
+    before = resource.getrusage(resource.RUSAGE_THREAD).ru_minflt
+    text.lower()[1:]
+    seen.setdefault(len(text), []).append(
+        resource.getrusage(resource.RUSAGE_THREAD).ru_minflt - before
+    )
+
+settle = (lambda size: 4 * size) if sys.argv[1] == "settled" else None
+measure_growth(
+    copies_twice,
+    lambda size: "A" * size,
+    small=top // 64,
+    max_escalations=0,
+    settle_bytes=settle,
+)
+per_call = seen[top][1:]
+print(json.dumps(sum(per_call) / len(per_call)))
+"""
+
+
+class TestTheAllocatorSettle:
+    """``settle_bytes``: first-touch page faults are not growth (#1991)."""
+
+    @staticmethod
+    def _recorded(monkeypatch, *, decides_from: int):
+        """Replace the window and the settle with recorders: no timing at all.
+
+        A window reads as undecided until its smallest size reaches
+        ``decides_from`` and as linear from there, so the call escalates up
+        to it and the order of ``settle``/``window`` events is the whole story.
+        """
+        from tests.wallclock import growth as growth_module
+
+        events: List[tuple] = []
+
+        def window(fn, payload_at, small, step, repetitions):
+            events.append(("window", small))
+            sizes = (small, small * step, small * step * step)
+            if small >= decides_from:
+                seconds = (1.0, 1.0 + (step - 1.0), 1.0 + (step**2 - 1.0))  # linear
+            else:
+                seconds = (1.0, 1.0, 1.0)  # all fixed cost: undecided
+            return growth_module.Growth(sizes=sizes, seconds=seconds, step=step)
+
+        monkeypatch.setattr(growth_module, "_measure_window", window)
+        monkeypatch.setattr(
+            growth_module, "_settle_allocator", lambda n: events.append(("settle", n))
+        )
+        return events
+
+    @staticmethod
+    def _judge(**settle):
+        from tests.wallclock import assert_linear_growth
+
+        return assert_linear_growth(
+            _untimed, lambda size: size, small=2, label="settle", **settle
+        )
+
+    def test_the_default_settles_nothing(self, monkeypatch):
+        """Every other caller measures as it did before the keyword existed."""
+        import inspect
+
+        from tests.wallclock import assert_linear_growth, measure_growth
+
+        for function in (measure_growth, assert_linear_growth):
+            default = inspect.signature(function).parameters["settle_bytes"].default
+            assert default is None, function
+
+        events = self._recorded(monkeypatch, decides_from=1024)
+        self._judge()
+        assert events == [("window", small) for small in (2, 16, 128, 1024)], events
+
+    def test_it_settles_before_each_window_that_reaches_a_new_maximum(
+        self, monkeypatch
+    ):
+        events = self._recorded(monkeypatch, decides_from=1024)
+        self._judge(settle_bytes=lambda top: 3 * top)
+        # Tops 128, 1024, 8192, 65536: each settled for, before its window.
+        assert events == [
+            ("settle", 384),
+            ("window", 2),
+            ("settle", 3072),
+            ("window", 16),
+            ("settle", 24576),
+            ("window", 128),
+            ("settle", 196608),
+            ("window", 1024),
+        ], events
+
+        events.clear()
+        self._judge(settle_bytes=lambda top: 1000)
+        assert events.count(("settle", 1000)) == 1, events  # no new maximum after it
+
+    def test_a_request_the_allocator_cannot_learn_from_is_refused_up_front(
+        self, monkeypatch
+    ):
+        """Refused for the last window the call can reach, before the first
+        runs, and never clamped: a clamped settle does nothing and the
+        refusal it was meant to prevent comes back unexplained."""
+        from tests.wallclock.growth import MAX_SETTLE_BYTES
+
+        events = self._recorded(monkeypatch, decides_from=1024)
+        last_top = 2 * 8**5
+
+        with pytest.raises(ValueError, match=str(MAX_SETTLE_BYTES + 1)):
+            self._judge(
+                settle_bytes=lambda top: MAX_SETTLE_BYTES + 1 if top == last_top else 1
+            )
+        assert events == [], events
+
+        self._judge(settle_bytes=lambda top: MAX_SETTLE_BYTES)
+        assert ("settle", MAX_SETTLE_BYTES) in events, events
+
+    @pytest.mark.skipif(
+        platform.system() != "Linux" or platform.libc_ver()[0] != "glibc",
+        reason="the thresholds and per-thread fault counts are glibc on Linux",
+    )
+    def test_settling_stops_the_faults_a_cold_process_pays_on_every_call(self):
+        """Through the helper, in two fresh processes: cold, each call on a
+        4 MB input faults ~2000 pages in; settled, none.
+
+        The cold figure is the positive control. Where it is small (another
+        allocator, transparent huge pages, ``MALLOC_*`` in the environment)
+        there is nothing to settle and the test skips rather than passes.
+        With the block removed from ``_settle_allocator`` the settled child
+        reads the cold figure and the last assertion fails.
+        """
+        children = {
+            mode: subprocess.Popen(
+                [
+                    sys.executable,
+                    "-W",
+                    "ignore",
+                    "-c",
+                    _FAULTS_THROUGH_THE_HELPER,
+                    mode,
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for mode in ("cold", "settled")
+        }
+        faults = {}
+        for mode, child in children.items():
+            out, err = child.communicate(timeout=120)
+            assert child.returncode == 0, err
+            faults[mode] = json.loads(out.strip().splitlines()[-1])
+        pages = (4 << 20) // 4096
+        if faults["cold"] < pages:
+            pytest.skip(f"this allocator does not fault on large copies: {faults}")
+        assert faults["settled"] < pages / 10, faults
 
 
 # ------------------------------------------------------------ the workflow
