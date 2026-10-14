@@ -1065,6 +1065,54 @@ class TestNonFileBackedEvidenceGuard:
         )
 
     @pytest.mark.asyncio
+    async def test_a_recorded_row_with_no_stored_file_is_not_offered(self, tool):
+        """#2004 review: a file-backed row whose upload has no stored file
+        (``storage_ref`` is None when the deployment has no file storage) is as
+        unreadable as an unrecorded upload with none, and was listed anyway,
+        sending the model to a "no stored file content" miss."""
+        stored = _make_evidence(
+            evidence_id="ev_stored",
+            content_ref="evidence/case_123/system.log",
+            filename="system.log",
+        )
+        unstored = _make_evidence(
+            evidence_id="ev_unstored",
+            content_ref="evidence/case_123/gone.log",
+            filename="gone.log",
+        )
+        unstored._uploaded_file = unstored._uploaded_file.model_copy(
+            update={"storage_ref": None}
+        )
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [stored, unstored]
+        _wire_case_lookup(case)
+        ctx = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+        )
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_typo_or_stale", "query": "ERROR"},
+            context=ctx,
+        )
+
+        assert result.error == (
+            "Evidence ev_typo_or_stale not found in this case. "
+            "Available file-backed evidence in this case: ev_stored (system.log)."
+        )
+        # The row it left out really is the dead end the list would have sent
+        # the model to.
+        dead_end = await tool.execute_with_context(
+            params={"evidence_id": "ev_unstored", "query": "ERROR"},
+            context=ctx,
+        )
+        assert "no stored file content" in dead_end.error
+
+    @pytest.mark.asyncio
     async def test_a_failed_file_id_is_not_offered_back(self, tool):
         """The id that just failed is not in its own list."""
         case = self._case_with_unrecorded_uploads()

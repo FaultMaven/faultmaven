@@ -1018,9 +1018,10 @@ def _with_case_evidence(g: frozenset[str]) -> bool:
     return "case_evidence_search" in g
 
 
-#: The turns that can run the tool: every row giving it, the terminal turn's
-#: share of each (#1964), and the registry without ``search_file`` — the
-#: column where the pointer must be absent.
+#: The turns that can run the tool: every row giving it, and the terminal
+#: turn's share of each (#1964). ``search_file`` is in every one of them (the
+#: pin below), so the empty text always has a tool to point at; the text that
+#: names none is the one a context with no turn gets.
 _EMPTY_SEARCH_GIVEN: dict[str, frozenset[str]] = {
     **{row: ROWS[row] for row in ROWS if _with_case_evidence(ROWS[row])},
     **{
@@ -1028,7 +1029,6 @@ _EMPTY_SEARCH_GIVEN: dict[str, frozenset[str]] = {
         for row in ROWS
         if _with_case_evidence(ROWS[row])
     },
-    "no_search_file": frozenset(given(_minus("search_file_tool"))),
 }
 
 _SMALL_UPLOAD_BYTES = 2_000
@@ -1052,10 +1052,51 @@ def _no_upload_case():
     return case
 
 
-#: case -> (builder, the ids a tool that reads its files can be pointed at)
+def _unstored_row_case():
+    """The only file is recorded as evidence but has no stored file
+    (``storage_ref`` is None when the deployment has no file storage): there
+    is nothing for ``search_file`` to read."""
+    case = _small_files_case()
+    case.uploaded_files = [
+        case.uploaded_files[0].model_copy(update={"storage_ref": None})
+    ]
+    return case
+
+
+def _unstored_row_beside_a_stored_one_case():
+    """Two recorded rows: one with no stored file, one with. Only the stored
+    one is offered."""
+    case = _small_files_case()
+    unstored, stored = case.uploaded_files
+    case.uploaded_files = [unstored.model_copy(update={"storage_ref": None}), stored]
+    case.evidence = [
+        case.evidence[0],
+        _evidence().model_copy(
+            update={"evidence_id": "ev_193900000002", "source_file_id": stored.file_id}
+        ),
+    ]
+    return case
+
+
+#: case -> (builder, the ids a tool that reads its files can be pointed at, the
+#: ids it must not be: they name a file with nothing stored behind it)
 _EMPTY_SEARCH_CASES = {
-    "small_files": (_small_files_case, {"ev_193900000001", "file_1939bbbbbbbb"}),
-    "no_upload": (_no_upload_case, set()),
+    "small_files": (
+        _small_files_case,
+        {"ev_193900000001", "file_1939bbbbbbbb"},
+        set(),
+    ),
+    "no_upload": (_no_upload_case, set(), set()),
+    "unstored_row_only": (
+        _unstored_row_case,
+        set(),
+        {"ev_193900000001", "file_1939aaaaaaaa"},
+    ),
+    "unstored_row_beside_stored": (
+        _unstored_row_beside_a_stored_one_case,
+        {"ev_193900000002"},
+        {"ev_193900000001", "file_1939aaaaaaaa"},
+    ),
 }
 
 
@@ -1108,13 +1149,22 @@ def _empty_search(g: frozenset[str], case):
             pass
 
 
-def test_the_empty_search_columns_cover_both_offers() -> None:
-    """Non-vacuity: some column gives ``search_file`` and some does not, and
-    the terminal columns are among both."""
-    offered = {r for r, g in _EMPTY_SEARCH_GIVEN.items() if "search_file" in g}
-    withheld = {r for r, g in _EMPTY_SEARCH_GIVEN.items() if "search_file" not in g}
-    assert offered and withheld == {"no_search_file"}
-    assert {r for r in _EMPTY_SEARCH_GIVEN if r.endswith("_terminal")} <= offered
+def test_search_file_is_given_on_every_turn_that_can_run_a_tool() -> None:
+    """The impossibility the empty-search columns rest on, asserted rather than
+    assumed (#2004 review): ``search_file`` registers unconditionally, so no
+    turn that gives any tool lacks it, terminal share included, and the only
+    set without it is the tool-less one, on which no tool runs. A row that
+    gives tools but not ``search_file`` fails here, and that row needs its own
+    empty-search column and conditional tool text (``case_evidence_search``'s
+    description and ``vectorize_file``'s results name ``search_file``)."""
+    assert ROWS["none"] == frozenset()
+    for row, g in ROWS.items():
+        if g:
+            assert "search_file" in g, row
+            assert "search_file" in terminal_given(row), f"{row} (terminal)"
+    # Non-vacuity: the columns below exist, and the terminal share is among them.
+    assert _EMPTY_SEARCH_GIVEN
+    assert {r for r in _EMPTY_SEARCH_GIVEN if r.endswith("_terminal")}
 
 
 @pytest.mark.parametrize("case_name", sorted(_EMPTY_SEARCH_CASES))
@@ -1123,7 +1173,7 @@ def test_an_empty_case_evidence_search_is_true_for_the_case_and_names_only_given
     row: str, case_name: str
 ) -> None:
     g = _EMPTY_SEARCH_GIVEN[row]
-    build, readable = _EMPTY_SEARCH_CASES[case_name]
+    build, readable, unreadable = _EMPTY_SEARCH_CASES[case_name]
     result, collections, case = _empty_search(g, build())
     text = result.data
     min_size = get_settings().agent.vectorization_min_size_bytes
@@ -1141,22 +1191,20 @@ def test_an_empty_case_evidence_search_is_true_for_the_case_and_names_only_given
         assert claim not in text.lower(), claim
     assert "searchab" not in text.lower()
 
-    # Only a tool the turn gives is named; ``search_file`` only with a file it
-    # can read, and with the list ``search_file``'s own miss uses.
+    # Only a tool the turn gives is named: ``search_file`` (given on every
+    # such turn), and only with a file it can read, listed as its own miss
+    # lists them. A file with nothing stored behind it is never offered.
     named = rendered_mentions(text)
-    assert named <= g
-    if "search_file" in g and readable:
+    assert named <= g and "search_file" in g
+    assert not any(i in text for i in unreadable)
+    if readable:
         assert named == {"search_file"}
         assert format_searchable_alternatives(case.evidence, "", case) in text
         assert all(i in text for i in readable)
-    elif "search_file" in g:
-        assert named == set()
-        assert case.uploaded_files == [] and case.evidence == []
-        assert "This case has no uploaded file to read." in text
     else:
         assert named == set()
-        assert not any(i in text for i in readable)
-        assert "does not show whether the case has uploaded files" in text
+        assert not any(f.storage_ref for f in case.uploaded_files)
+        assert "This case has no uploaded file to read." in text
 
     # Searching created nothing (#1994).
     assert f"case_{case.case_id}" not in collections
@@ -1174,8 +1222,18 @@ def test_the_empty_search_floor_is_read_from_settings_not_written_in_the_text() 
     assert "50,000" not in result.data
 
 
-def test_a_context_built_without_a_turns_tools_names_none() -> None:
+@pytest.mark.parametrize("case_name", sorted(_EMPTY_SEARCH_CASES))
+def test_a_context_built_without_a_turns_tools_names_none(case_name: str) -> None:
     """The default of ``ToolContext.given_tools`` is the tool-less set, so a
-    context nobody stated a turn for cannot point the model at a tool."""
-    result, _, _ = _empty_search(frozenset(), _small_files_case())
-    assert rendered_mentions(result.data) == set()
+    context nobody stated a turn for cannot point the model at a tool or at a
+    file: it says what the index holds and that the result shows nothing about
+    uploads."""
+    build, readable, unreadable = _EMPTY_SEARCH_CASES[case_name]
+    result, collections, case = _empty_search(frozenset(), build())
+    text = result.data
+
+    assert rendered_mentions(text) == set()
+    assert not any(i in text for i in readable | unreadable)
+    assert "No file of this case has been indexed for semantic search" in text
+    assert "does not show whether the case has uploaded files" in text
+    assert f"case_{case.case_id}" not in collections

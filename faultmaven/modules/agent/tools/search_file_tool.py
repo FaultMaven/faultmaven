@@ -60,8 +60,10 @@ def format_searchable_alternatives(
     INQUIRY, a paste no row named, every upload of a case closed before
     any row existed. A terminal turn's prompt renders no ids, so this list
     is how it learns them, and a file under the vectorization size floor
-    is readable no other way. An upload with no stored file is left out:
-    there is nothing to read.
+    is readable no other way. An upload with no stored file is left out of
+    both lists, whether or not an evidence row records it: there is nothing
+    to read, and naming it would send the model to a "no stored file content"
+    miss.
 
     Module-level because ``case_evidence_search`` points at the same list when
     its search finds nothing (#1977); that caller excludes no id (``""``).
@@ -79,7 +81,10 @@ def format_searchable_alternatives(
         if source_file_id is None:
             continue
         file_meta = case.find_uploaded_file(source_file_id)
-        if file_meta is None:
+        if file_meta is None or not getattr(file_meta, "storage_ref", None):
+            # No stored file (``storage_ref`` is None when the deployment has
+            # no file storage): there is nothing to read, so the row is not
+            # offered, the same rule the uploads below follow.
             continue
         filename = file_meta.display_name or "(unnamed)"
         alternatives.append(f"{ev_id} ({filename})")
