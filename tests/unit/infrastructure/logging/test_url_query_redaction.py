@@ -126,10 +126,10 @@ class TestRedactUrls:
         was an absolute wall-clock bound in both required gates, and whether a
         runner under four xdist workers clears it says nothing about the
         regex. From 256 B to 16 KB of near-miss it reads ~8, linear's value
-        (7.8-8.3 here, idle and on a 2x oversubscribed box; bound ~22.6). The
-        highest reading its noise allows sits close to the bound at those
-        sizes, so under load the window moves up once, to 2 KB-128 KB. The
-        scheme-class pattern, restored, reads at least 51 at the same sizes.
+        (7.8-8.3 here, idle and on a 2x oversubscribed box; bound ~22.6). Its
+        total growth there, ~8-9, is under the helper's gate (~11.5, #1781),
+        so the window moves up once, to 2 KB-128 KB. The scheme-class
+        pattern, restored, reads at least 51 at the same sizes.
         """
         assert_linear_growth(
             redact_urls,
