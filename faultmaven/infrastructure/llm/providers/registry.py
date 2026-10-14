@@ -15,7 +15,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
 from faultmaven.infrastructure.llm.metering import record_provider_call
@@ -119,13 +119,19 @@ class ProviderState:
 # A ``*_var`` key NAMES THE ENVIRONMENT VARIABLE THE SETTINGS LAYER ACTUALLY
 # CONSUMES for that provider, or it does not exist.
 #
-# None of these keys is a resolution path — the construction path below reads
-# each provider's own settings field directly (``llm_settings.openai_model``,
-# ``llm_settings.local_url``, …). Having no reader is therefore the NORMAL
-# state here and is not by itself grounds for deletion: ``model_var`` has no
-# reader either and is kept, because every value it carries is the variable
-# the settings layer really consumes. What these keys are is documentation,
-# and the only way documentation fails is by being WRONG.
+# The construction path below does not resolve configuration through these
+# keys — it reads each provider's own settings field directly
+# (``llm_settings.openai_model``, ``llm_settings.local_url``, …). Having no
+# reader is therefore the NORMAL state for most of them and is not by itself
+# grounds for deletion: ``model_var`` has no reader and is kept, because every
+# value it carries is the variable the settings layer really consumes. Two
+# keys DO have a reader: ``api_key_var`` and, for the one provider that needs
+# an endpoint instead of a key, ``endpoint_var`` answer "did the operator
+# configure this provider?" for ``configured_provider_names`` below — the
+# question the zero-config preset asks before it decides nobody did (#1984),
+# so a provider added here is recognised there by declaring one of the two.
+# The rest is documentation, and the only way documentation fails is by
+# being WRONG.
 #
 # ``base_url_var`` was wrong. For ``local`` it advertised
 # ``LOCAL_LLM_BASE_URL`` while the code reads ``LOCAL_LLM_URL`` — a name
@@ -164,6 +170,8 @@ PROVIDER_SCHEMA = {
     },
     "local": {
         "api_key_var": None,  # No API key needed
+        # A local provider is configured by naming its server, not by a key.
+        "endpoint_var": "LOCAL_LLM_URL",
         "model_var": "LOCAL_LLM_MODEL",
         "default_base_url": "http://localhost:5000",
         "default_model": "llama2-7b",
@@ -1090,6 +1098,39 @@ def reset_registry():
 def get_valid_provider_names() -> List[str]:
     """Get list of valid provider names for CHAT_PROVIDER"""
     return list(PROVIDER_SCHEMA.keys())
+
+
+def configuration_env_var(provider_name: str) -> str:
+    """The environment variable whose being set means ``provider_name`` is configured.
+
+    A cloud provider is configured by its API key (``api_key_var``); the local
+    provider has none and is configured by naming its server (``endpoint_var``).
+    An entry declaring neither is a schema defect, so it raises rather than
+    answering "never configured" — a provider the router supports must not be
+    one a deployment can configure invisibly (#1984).
+    """
+    schema = PROVIDER_SCHEMA[provider_name]
+    env_var = schema.get("api_key_var") or schema.get("endpoint_var")
+    if not env_var:
+        raise ValueError(
+            f"PROVIDER_SCHEMA[{provider_name!r}] declares neither api_key_var "
+            "nor endpoint_var, so nothing says how an operator configures it."
+        )
+    return env_var
+
+
+def configured_provider_names(environ: Mapping[str, str]) -> List[str]:
+    """Every registered provider ``environ`` configures, in registry order.
+
+    Reads ``environ`` rather than the settings object: the zero-config check
+    runs before settings exist. A blank or whitespace-only value is unset,
+    matching ``llm_validation``'s own credential test.
+    """
+    return [
+        name
+        for name in PROVIDER_SCHEMA
+        if (environ.get(configuration_env_var(name)) or "").strip()
+    ]
 
 
 def print_provider_options():
