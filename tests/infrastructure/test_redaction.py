@@ -11,6 +11,7 @@ from faultmaven.infrastructure.security.pseudonym_key import (
     reset_pseudonym_key_cache,
 )
 from faultmaven.infrastructure.security.redaction import (
+    SANITIZER_PATTERNS,
     DataSanitizer,
     RedactionUnavailableError,
 )
@@ -20,10 +21,10 @@ class TestDataSanitizer:
     """Test suite for DataSanitizer class."""
 
     def test_init_default_patterns(self):
-        """Test DataSanitizer initialization with default patterns."""
+        """A sanitizer detects with the module's one secret pattern set (#1980)."""
         sanitizer = DataSanitizer()
-        assert sanitizer.pattern_replacements is not None
-        assert len(sanitizer.pattern_replacements) > 0
+        assert sanitizer.regex_patterns is SANITIZER_PATTERNS
+        assert len(sanitizer.regex_patterns) > 0
 
     @pytest.mark.parametrize(
         "input_text,expected_redacted",

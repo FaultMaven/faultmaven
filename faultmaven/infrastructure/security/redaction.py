@@ -11,7 +11,7 @@ Requirements:
 Key Components:
 --------------------------------------------------------------------------------
   class DataSanitizer: sanitize(text: str) -> str
-  CUSTOM_PATTERNS: List[re.Pattern]
+  SECRET_PATTERNS: the one secret-detection pattern set (find_redaction_spans)
 
 Technology Stack:
 --------------------------------------------------------------------------------
@@ -29,13 +29,508 @@ import asyncio
 import hashlib
 import hmac
 import re
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.security.pseudonym_key import resolve_pseudonym_key
 from faultmaven.models.interfaces import ISanitizer
+
+# =============================================================================
+# The regex half of detection (#1980)
+# =============================================================================
+#
+# ONE secret-detection set, `SECRET_PATTERNS`, and every redaction path detects
+# secrets with it: the sanitizer's regex half (case redaction, the router's
+# pass, case titles) and the knowledge module's document preprocessor. The
+# sanitizer adds `NETWORK_ADDRESS_PATTERNS` (internal IPs, MACs), which are
+# identifiers, not secrets: the preprocessor's unconditional scrub leaves them
+# to the model-boundary redaction, which `SANITIZE_PII` governs (#1901).
+#
+# Detection runs on the RAW text, once per pattern, and the matches are merged
+# into non-overlapping spans before anything is substituted
+# (`find_redaction_spans`). So what is detected never depends on what a caller
+# substitutes, and no pattern ever reads another's placeholder.
+#
+# A pattern's entity type names its placeholder (`<PASSWORD_digest>`) and the
+# knowledge marker (`[REDACTED:password]`). The match is the span replaced,
+# except where a pattern names a `secret` group, which then is the span.
+
+
+@dataclass(frozen=True)
+class RedactionPattern:
+    """One detector: the entity type its matches are recorded under, and the
+    compiled expression. ``secret``, when the expression names that group, is
+    the span replaced; otherwise the whole match is.
+
+    ``triggers`` are lower-case literals, at least one of which every match
+    contains (case-insensitively); empty means none is known. ``keyed`` says
+    more: no match crosses a newline, and every match starts at the start of
+    its line or where a trigger starts. Both only let ``find_redaction_spans``
+    skip positions where no match can start.
+    """
+
+    entity_type: str
+    regex: "re.Pattern[str]"
+    triggers: Tuple[str, ...] = ()
+    keyed: bool = False
+
+    @property
+    def span_group(self) -> int | str:
+        """The group whose span is replaced: ``secret`` when named, else the
+        whole match."""
+        return "secret" if "secret" in self.regex.groupindex else 0
+
+
+@dataclass(frozen=True)
+class RedactionSpan:
+    """A detected span of the raw text, ``text[start:end]``."""
+
+    start: int
+    end: int
+    entity_type: str
+
+
+# --- value grammar for `key <separator> value` secrets -----------------------
+
+#: A value that REFERS to a secret instead of holding one: a braced shell
+#: variable, a command substitution, a template expression, a documentation
+#: placeholder (`<your-password>`), or a placeholder this sanitizer wrote.
+#: A bare `$NAME` is not on the list: a real secret can start with `$`.
+_REFERENCE = r"""(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$\(|\{\{|<[A-Za-z][A-Za-z0-9_ -]*>)"""
+_NOT_A_REFERENCE = rf"""(?!["']?{_REFERENCE})"""
+_QUOTED_VALUE = r"""(?:"[^"\r\n]*"|'[^'\r\n]*')"""
+#: Any value: quoted (spaces allowed inside), else the run up to whitespace.
+_ANY_VALUE = rf"{_NOT_A_REFERENCE}(?:{_QUOTED_VALUE}|\S+)"
+#: A word as prose writes one: lower case, Capitalised, or a short ALL-CAPS
+#: word, joined by `-`, `_`, `'` or `[` (`read-only`, `invalid_grant`,
+#: `Optional[str]`), or short ones joined by `/` (`n/a`, `and/or`, `TCP/IP`)
+#: — a longer `/` run is as likely a password (`w/ddrf/afdff`).
+_WORD = r"(?:[a-z]+|[A-Z][a-z]+|[A-Z]{1,8})"
+_SHORT = r"(?:[a-z]{1,3}|[A-Z][a-z]{0,2}|[A-Z]{2,3})"
+_PLAIN_WORD_RUN = rf"{_WORD}(?:[-_'\[]{_WORD})*"
+_WORD_RUN = rf"(?:{_PLAIN_WORD_RUN}|{_SHORT}(?:/{_SHORT}){{1,2}})"
+#: A word run in optional parentheses with optional trailing punctuation, or
+#: a number of at most three digits (a count, a status code).
+_PROSE_VALUE = rf"\(?(?:{_WORD_RUN}|[0-9]{{1,3}})[.,;:!?)\]]*(?=\s|\Z)"
+#: A value after `key: ` in running text. That spelling is also prose
+#: ("password: expired for the svc account", MySQL's "(using password: YES)"),
+#: so a value shaped like a word is not read as a secret; anything else —
+#: a digit, a symbol, mixed case inside the run, quotes — is.
+_MIDLINE_VALUE = rf"(?-i:(?!{_PROSE_VALUE})){_ANY_VALUE}"
+#: A value that is the rest of its line (an optional `#` comment after it) —
+#: unless it is a word closing a sentence (`api_key: missing.`).
+_LINE_END = r"[ \t]*(?:#[^\r\n]*)?(?:\r?\n|\Z)"
+_LINE_VALUE = (
+    rf"(?-i:(?!{_PLAIN_WORD_RUN}[.!?]+[ \t]*(?:\r?\n|\Z)))"
+    rf"{_NOT_A_REFERENCE}\S+(?={_LINE_END})"
+)
+#: A compound key's literal that is a count or a flag, not a secret
+#: (`failed_password=520`, `reset_password=true`) — the config extractor's
+#: `_NON_SECRET_VALUE_RE` precedent.
+_NOT_A_COUNT_OR_FLAG = (
+    r"""(?!["']?(?:true|false|yes|no|on|off|none|null|nil|\d{1,5})["']?"""
+    r"""[,;)\]}]*(?:\s|\Z))"""
+)
+#: `=` or `=>`. A spaced `==` is a comparison (`if password == "":`), not an
+#: assignment; a tight `password==x` is a value that starts with `=`.
+_ASSIGN = r"(?:=>?|[ \t]+=>?(?!=))[ \t]*"
+_QUOTED_KEY_SEPARATOR = r"""["'][ \t]*[:=][ \t]*"""
+
+
+def _keyed_secret(keywords: str, cased: str, value_guard: str = "") -> str:
+    """``key <separator> value``, for one family of secret-naming keys.
+
+    ``keywords`` match in any case; ``cased`` are the spellings that mark a
+    keyword inside a longer name with no separator (``clientSecret``,
+    ``PGPASSWORD``). The match runs from the keyword to the end of the value
+    (the key is part of what is replaced, as it always was). The spellings:
+
+    1. ``key: value`` as a whole line (YAML, ``.env``, a header block), under
+       optional indentation, a list dash and a dotted key path: any value.
+    2. A bare key with a separator that prose does not use — ``=``, ``=>``,
+       ``key:value``, ``key : value``, or a quoted key (``"key": value``): any
+       value.
+    3. A bare key as ``key: value`` in running text, or as a command-line
+       flag (``--password value``): any value not shaped like a word (see
+       ``_MIDLINE_VALUE``).
+    4. A compound key — ``db_password``, ``clientSecret``, ``PGPASSWORD`` —
+       with ``=``/``=>`` or as a quoted key, and a value that is not a count
+       or a flag. A compound ``key: value`` is not read as a secret: that is
+       how event counts print (``failed_password: 520``, #654).
+
+    "Bare" means not preceded by a letter, digit or underscore, so
+    ``X-Auth-Token`` and ``spring.datasource.password`` are bare keys and
+    ``failed_password`` is compound.
+    """
+    key = rf"(?:{keywords})"
+    bare = rf"(?<![A-Za-z0-9_]){key}"
+    compound = rf"(?:(?<=[A-Za-z0-9]_){key}|(?<=[A-Za-z0-9])(?-i:{cased}))"
+    return (
+        rf"(?:^|(?<=\n))[ \t]*(?:-[ \t]+)?(?:[\w-]+\.)*"
+        rf"(?P<secret>{key}[ \t]*:[ \t]+{value_guard}{_LINE_VALUE})"
+        rf"|{bare}(?:{_ASSIGN}|:(?=\S)|[ \t]+:[ \t]*|{_QUOTED_KEY_SEPARATOR})"
+        rf"{value_guard}{_ANY_VALUE}"
+        rf"|(?:{bare}:|(?<=-){key})[ \t]+{value_guard}{_MIDLINE_VALUE}"
+        rf"|{compound}(?:{_ASSIGN}|{_QUOTED_KEY_SEPARATOR})"
+        rf"{_NOT_A_COUNT_OR_FLAG}{value_guard}{_ANY_VALUE}"
+    )
+
+
+# --- private keys ------------------------------------------------------------
+
+_PEM_BEGIN = r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+#: A key block with no END line (a truncated paste): the BEGIN line and every
+#: line after it that is still key material — a base64 line, a PEM header
+#: (`Proc-Type:`/`DEK-Info:`), a blank line, the same run flattened onto one
+#: line, or JSON-escaped `\n`s. It stops at the first line that is not, so the
+#: log lines after a truncated key survive; bounding it by end of text would
+#: redact every one of them.
+_PEM_TRUNCATED_BODY = (
+    r"(?:[ \t]+[A-Za-z0-9+/=]{16,}"
+    r"|(?:\\r)?\\n[A-Za-z0-9+/=]*"
+    r"|\r?\n[ \t]*(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info|Comment):[^\r\n]*)?"
+    r"[ \t]*(?=\r?\n|\Z))*"
+)
+
+# --- the set -----------------------------------------------------------------
+
+_I = re.IGNORECASE
+_CREDENTIAL_SCHEMES = r"(?:postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?)"
+
+
+def _pattern(
+    entity_type: str,
+    expression: str,
+    flags: int,
+    triggers: Tuple[str, ...],
+    keyed: bool = False,
+) -> RedactionPattern:
+    return RedactionPattern(entity_type, re.compile(expression, flags), triggers, keyed)
+
+
+def _keyed(
+    entity_type: str,
+    keywords: str,
+    cased: str,
+    triggers: Tuple[str, ...],
+    value_guard: str = "",
+) -> RedactionPattern:
+    """A ``_keyed_secret`` family, case-insensitive. ``triggers`` must each
+    be the start of a keyword (every keyword and cased spelling starts with
+    one), so a match starts at a trigger or, as a whole-line spelling, at the
+    start of its line."""
+    return _pattern(
+        entity_type,
+        _keyed_secret(keywords, cased, value_guard),
+        _I,
+        triggers,
+        keyed=True,
+    )
+
+
+#: The secret-detection pattern set. Order is the tie-break when two patterns
+#: claim the same span (see ``find_redaction_spans``), so the more specific
+#: come first.
+SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
+    # Private keys: a whole block, else a truncated one (no END line).
+    _pattern(
+        "PRIVATE_KEY",
+        _PEM_BEGIN + r".*?-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
+        _I | re.DOTALL,
+        ("private key",),
+    ),
+    _pattern("PRIVATE_KEY", _PEM_BEGIN + _PEM_TRUNCATED_BODY, _I, ("private key",)),
+    # Connection URLs with a user (and password) before the host. The user
+    # part never crosses whitespace — the former `[^@]+` ran on to the next
+    # `@` anywhere later in the text (an email, an @mention, `user@service`)
+    # and redacted everything between. Within the URL it runs to the LAST
+    # `@`, so a password holding a raw `@` and `/` (`p@ss/w0rd`) is not cut
+    # short with its tail in clear.
+    _pattern(
+        "DATABASE_URL",
+        rf"(?<![A-Za-z0-9]){_CREDENTIAL_SCHEMES}(?:\+[A-Za-z0-9]+)?://\S+@[^/\s]+",
+        _I,
+        ("://",),
+    ),
+    # Any other URL that carries `user:password@`. (A former "docker registry
+    # credentials" pattern `email@host.tld:token` was removed in #654 — it
+    # false-matched any `user@host.tld:port` in logs/connection strings. This
+    # one needs the `scheme://` and the `:password`.)
+    _pattern(
+        "CREDENTIAL_URL",
+        r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://"
+        r"[^\s:/?#@]+:[^\s/?#@]+@[^\s/?#]+",
+        _I,
+        ("://",),
+    ),
+    # Provider tokens with a fixed prefix.
+    _pattern(
+        "GITHUB_TOKEN",
+        r"(?<![A-Za-z0-9_])"
+        r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})",
+        0,
+        ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"),
+    ),
+    _pattern(
+        "SLACK_TOKEN",
+        r"(?<![A-Za-z0-9_-])"
+        r"(?:xox[a-z]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,})",
+        0,
+        ("xox", "xapp-"),
+    ),
+    # OpenAI-style keys, `sk-proj-…`/`sk-ant-…` included, and `pk-` keys.
+    # Not inside a word: `task-0123…abcdef` is not a key.
+    _pattern(
+        "API_KEY",
+        r"(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]{32,}"
+        r"|(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,})",
+        _I,
+        ("sk-",),
+    ),
+    _pattern("API_KEY", r"(?<![A-Za-z0-9])pk-[A-Za-z0-9]{32,}", _I, ("pk-",)),
+    # AWS access key ids (long-term AKIA, temporary ASIA). Case-sensitive: a
+    # real id is upper case, and "asia" + 16 letters is prose.
+    _pattern(
+        "AWS_ACCESS_KEY",
+        r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}",
+        0,
+        ("akia", "asia"),
+    ),
+    # AWS secret access keys — CONTEXT-ANCHORED. An AWS secret is 40 base64
+    # chars, indistinguishable from any hash/SHA/base64 blob, so it MUST be
+    # gated on an adjacent `aws...secret...key =` context. A bare
+    # `[0-9a-zA-Z/+]{40}` pattern here previously corrupted opaque data (e.g.
+    # Gemini thought_signature base64) — see #654.
+    _pattern(
+        "AWS_SECRET_KEY",
+        r"aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[=:]\s*['\"]?[0-9a-zA-Z/+]{40}",
+        _I,
+        ("secret",),
+    ),
+    # JWTs. (The former `[A-Za-z0-9-_=]` was a `9-_` RANGE, which also took
+    # `:;<=>?@[\]^`.)
+    _pattern(
+        "JWT_TOKEN",
+        r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+\.?[A-Za-z0-9_.+/=-]*",
+        _I,
+        ("eyj",),
+    ),
+    # `Bearer <token>`: the token is the span, so a JWT keeps its own type and
+    # placeholder here as anywhere else. Eight or more token characters with
+    # a digit, an inner `.`/`_`/`~`/`+`/`/`, or a capital after a lower-case
+    # letter — never "the bearer of bad news", "Bearer authentication", a
+    # `$TOKEN` variable or a `<token>` placeholder.
+    _pattern(
+        "BEARER_TOKEN",
+        r"(?<![A-Za-z0-9_])bearer[ \t]+(?P<secret>"
+        r"(?=[A-Za-z0-9._~+/-]*"
+        r"(?:[0-9]|[._~+/](?=[A-Za-z0-9])|(?-i:[a-z][A-Z])))"
+        r"[A-Za-z0-9._~+/-]{8,}=*)",
+        _I,
+        ("bearer",),
+    ),
+    # `Authorization: Basic <base64 user:password>`: the credential is the
+    # span.
+    _pattern(
+        "BASIC_AUTH",
+        r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?[ \t]*[:=][ \t]*"
+        r"[\"']?basic[ \t]+(?P<secret>"
+        r"(?=[A-Za-z0-9+/]*(?:[0-9+/]|(?-i:[a-z][A-Z])))"
+        r"[A-Za-z0-9+/]{8,}={0,2})",
+        _I,
+        ("basic",),
+    ),
+    _pattern("K8S_SECRET", r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", _I, ("k8s",)),
+    # `apikey<hex>` with no separator, then the keyed spellings.
+    _pattern("API_KEY", r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", _I, ("api",)),
+    _keyed("API_KEY", r"api[_-]?key", r"Api[_-]?Key|API[_-]?K(?:ey|EY)", ("api",)),
+    _keyed(
+        "PASSWORD",
+        r"password|passwd|passphrase",
+        r"Pass(?:word|wd|phrase)|PASS(?:WORD|WD|PHRASE)",
+        ("pass",),
+    ),
+    # `pwd` is also the working directory (`PWD=/home/app` in every env
+    # dump): a path is not its password.
+    _keyed("PASSWORD", r"pwd", r"Pwd|PWD", ("pwd",), value_guard=r"""(?!["']?[/~])"""),
+    _keyed(
+        "SECRET",
+        r"secret(?:[_-]?key)?",
+        r"Secret(?:Key)?|SECRET(?:KEY)?",
+        ("secret",),
+    ),
+    _keyed("TOKEN", r"token", r"Token|TOKEN", ("token",)),
+)
+
+#: Network identifiers the sanitizer also redacts: internal addresses and
+#: hardware addresses. Not secrets — see the section comment.
+NETWORK_ADDRESS_PATTERNS: Tuple[RedactionPattern, ...] = (
+    # IP addresses (internal ranges). Two things this spelling fixes.
+    #
+    # Each alternative must leave EXACTLY two octets for the shared tail:
+    # 10/8 has three octets after its prefix, 172.16/12 and 192.168/16 have
+    # two. The former `(10\.|...)` spelling gave 10/8 the same two-octet tail
+    # as the others, so `10.1.2.3` matched only `10.1.2` — the final octet
+    # survived redaction in the clear, and every host on a /24 shared one
+    # placeholder in the registry.
+    #
+    # The bounds are lookarounds rather than `\b`, because `\b` only holds
+    # against a non-word character. Fixing the octet count while keeping `\b`
+    # would have made an abutting address WORSE: `10.1.2.3_backup` (a
+    # filename, a log field) matches nothing at all under a `\b`-bounded
+    # four-octet pattern and leaks in full, where the old three-octet pattern
+    # at least caught `10.1.2`.
+    #
+    # They exclude an adjacent DIGIT, and separately a dot that is part of a
+    # longer dotted run — not any adjacent dot. A blanket
+    # `(?<![\d.])`/`(?![\d.])` looks equivalent and is not: it refuses to
+    # match an address ending a sentence, so `refused from 192.168.1.10.`
+    # leaked the whole address that the pattern it replaced had redacted.
+    # `(?!\d)(?!\.\d)` accepts the full stop and still refuses the
+    # continuation, so `10.1.2.34567`, `10.1.2.3.4`, `110.1.2.3` and
+    # `1.10.1.2.3` stay unmatched.
+    _pattern(
+        "IP_ADDRESS",
+        r"(?<!\d)(?<!\d\.)"
+        r"(?:10\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)"
+        r"\.\d{1,3}\.\d{1,3}(?!\d)(?!\.\d)",
+        _I,
+        ("10.", "172.", "192.168"),
+    ),
+    # MAC addresses — except six dash-joined pairs of decimal digits, which
+    # are a timestamp or a release id (`24-01-02-03-04-05`), not a MAC.
+    _pattern(
+        "MAC_ADDRESS",
+        r"[0-9A-F]{2}(?:[:-][0-9A-F]{2}){5}"
+        r"(?<![0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2})",
+        _I,
+        (),
+    ),
+)
+
+#: The sanitizer's regex half: every secret, then the network identifiers.
+SANITIZER_PATTERNS: Tuple[RedactionPattern, ...] = (
+    SECRET_PATTERNS + NETWORK_ADDRESS_PATTERNS
+)
+
+#: The non-ASCII letters `re.IGNORECASE` folds onto an ASCII one that
+#: `str.lower()` leaves alone: dotless i and long s (sre's `_equivalences`).
+#: Mapped back so a trigger is found wherever its pattern can match.
+_IGNORECASE_ASCII_FOLDS = {0x131: "i", 0x17F: "s"}
+
+
+def _trigger_view(text: str) -> Optional[str]:
+    """``text`` lower-cased for the trigger checks, index for index — or
+    None when lower-casing changes its length (``İ``), when no index maps
+    and every pattern runs on the whole text."""
+    view = text.lower().translate(_IGNORECASE_ASCII_FOLDS)
+    return view if len(view) == len(text) else None
+
+
+def _keyed_starts(text: str, view: str, triggers: Tuple[str, ...]) -> List[int]:
+    """Where a keyed pattern's match can start: each trigger, and the start
+    of each line that holds one. Sorted."""
+    starts = set()
+    for trigger in triggers:
+        hit = view.find(trigger)
+        while hit != -1:
+            starts.add(hit)
+            starts.add(text.rfind("\n", 0, hit) + 1)
+            hit = view.find(trigger, hit + 1)
+    return sorted(starts)
+
+
+def _keyed_matches(
+    pattern: RedactionPattern, text: str, view: str
+) -> List["re.Match[str]"]:
+    """``pattern.regex.finditer(text)`` for a keyed pattern, trying only the
+    positions where its match can start: leftmost first, and the next try
+    from where the last match ended, as ``finditer`` does."""
+    matches = []
+    resume = 0
+    for start in _keyed_starts(text, view, pattern.triggers):
+        if start >= resume:
+            match = pattern.regex.match(text, start)
+            if match:
+                matches.append(match)
+                resume = match.end()
+    return matches
+
+
+def find_redaction_spans(
+    text: str, patterns: Sequence[RedactionPattern]
+) -> List[RedactionSpan]:
+    """Every span of ``text`` that ``patterns`` detect, in order, never
+    overlapping.
+
+    Each pattern runs on the raw text. Matches are taken leftmost first, the
+    longer first at one start, the earlier pattern first at one span; a match
+    that overlaps the span before it extends that span instead of starting
+    its own, so no character any pattern detected is left in clear and no
+    placeholder ever wraps another.
+
+    A pattern whose triggers are all absent cannot match, and is skipped; a
+    keyed one is tried only where a match can start (``match`` at a position
+    of the whole text, so its lookarounds read what a scan's would). Neither
+    changes what is found — only what it costs.
+    """
+    if not text:
+        return []
+    view = _trigger_view(text)
+    candidates = []
+    for priority, pattern in enumerate(patterns):
+        if view is None or not pattern.triggers:
+            matches: Iterable["re.Match[str]"] = pattern.regex.finditer(text)
+        elif not any(trigger in view for trigger in pattern.triggers):
+            continue
+        elif pattern.keyed:
+            matches = _keyed_matches(pattern, text, view)
+        else:
+            matches = pattern.regex.finditer(text)
+        for match in matches:
+            start, end = match.span(pattern.span_group)
+            if start == -1:  # the span group did not take part
+                start, end = match.span()
+            if end > start:
+                candidates.append((start, -end, priority, pattern.entity_type))
+    candidates.sort()
+    spans: List[RedactionSpan] = []
+    for start, negative_end, _priority, entity_type in candidates:
+        end = -negative_end
+        if spans and start < spans[-1].end:
+            if end > spans[-1].end:
+                last = spans[-1]
+                spans[-1] = RedactionSpan(last.start, end, last.entity_type)
+            continue
+        spans.append(RedactionSpan(start, end, entity_type))
+    return spans
+
+
+def redact_spans(
+    text: str,
+    patterns: Sequence[RedactionPattern],
+    replace: Callable[[RedactionSpan, str], str],
+) -> str:
+    """``text`` with each detected span replaced by ``replace(span, value)``.
+
+    Substitution is by span, on the raw text: what one path writes in place
+    of a secret (a keyed placeholder, a knowledge marker) cannot change what
+    is detected.
+    """
+    spans = find_redaction_spans(text, patterns)
+    if not spans:
+        return text
+    pieces = []
+    position = 0
+    for span in spans:
+        pieces.append(text[position : span.start])
+        pieces.append(replace(span, text[span.start : span.end]))
+        position = span.end
+    pieces.append(text[position:])
+    return "".join(pieces)
 
 
 class RedactionUnavailableError(RuntimeError):
@@ -138,95 +633,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         self._presidio_entities = list(settings.protection.entities_to_protect)
         self._presidio_score_threshold = settings.protection.min_score_threshold
 
-        # Pattern-to-replacement mapping (in priority order)
-        # IMPORTANT: Order matters - more specific patterns should come first
-        self.pattern_replacements = [
-            # OpenAI patterns first (most specific) - flexible length for test compatibility
-            (r"sk-[0-9a-zA-Z]{32,}", "[API_KEY_REDACTED]"),
-            (r"pk-[0-9a-zA-Z]{32,}", "[API_KEY_REDACTED]"),
-            # AWS Access Keys
-            (r"AKIA[0-9A-Z]{16}", "[AWS_ACCESS_KEY_REDACTED]"),
-            # Generic API key patterns
-            (r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", "[API_KEY_REDACTED]"),
-            # Database URLs
-            (r"(mongodb|postgresql|mysql)://[^@]+@[^/\s]+", "[DATABASE_URL_REDACTED]"),
-            # JWT tokens
-            (
-                r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
-                "[JWT_TOKEN_REDACTED]",
-            ),
-            # Private keys
-            (
-                r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----",
-                "[PRIVATE_KEY_REDACTED]",
-            ),
-            (
-                r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----",
-                "[PRIVATE_KEY_REDACTED]",
-            ),
-            # (A former "docker registry credentials" pattern
-            # `email@host.tld:token` was removed in #654 — it false-matched any
-            # `user@host.tld:port` in logs/connection strings. Real registry
-            # creds are caught by the API-key / database-URL patterns.)
-            # Kubernetes secrets
-            (r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", "[K8S_SECRET_REDACTED]"),
-            # Password patterns
-            (r"\bpassword[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
-            (r"\bpasswd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
-            # IP addresses (internal ranges). Two things this spelling fixes.
-            #
-            # Each alternative must leave EXACTLY two octets for the shared
-            # tail: 10/8 has three octets after its prefix, 172.16/12 and
-            # 192.168/16 have two. The former `(10\.|...)` spelling gave 10/8
-            # the same two-octet tail as the others, so `10.1.2.3` matched only
-            # `10.1.2` — the final octet survived redaction in the clear, and
-            # every host on a /24 shared one placeholder in the registry.
-            #
-            # The bounds are lookarounds rather than `\b`, because `\b` only
-            # holds against a non-word character. Fixing the octet count while
-            # keeping `\b` would have made an abutting address WORSE:
-            # `10.1.2.3_backup` (a filename, a log field) matches nothing at
-            # all under a `\b`-bounded four-octet pattern and leaks in full,
-            # where the old three-octet pattern at least caught `10.1.2`.
-            #
-            # They exclude an adjacent DIGIT, and separately a dot that is part
-            # of a longer dotted run — not any adjacent dot. A blanket
-            # `(?<![\d.])`/`(?![\d.])` looks equivalent and is not: it refuses
-            # to match an address ending a sentence, so
-            # `refused from 192.168.1.10.` leaked the whole address that the
-            # pattern it replaced had redacted. `(?!\d)(?!\.\d)` accepts the
-            # full stop and still refuses the continuation, so `10.1.2.34567`,
-            # `10.1.2.3.4`, `110.1.2.3` and `1.10.1.2.3` stay unmatched.
-            (
-                r"(?<!\d)(?<!\d\.)"
-                r"(?:10\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)"
-                r"\.\d{1,3}\.\d{1,3}(?!\d)(?!\.\d)",
-                "[IP_ADDRESS_REDACTED]",
-            ),
-            # MAC addresses
-            (r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", "[MAC_ADDRESS_REDACTED]"),
-            # AWS Secret Access Keys — CONTEXT-ANCHORED. An AWS secret is 40
-            # base64 chars, indistinguishable from any hash/SHA/base64 blob, so
-            # it MUST be gated on an adjacent `aws...secret...key =` context.
-            # A bare `[0-9a-zA-Z/+]{40}` pattern here previously corrupted opaque
-            # data (e.g. Gemini thought_signature base64) — see #654.
-            (
-                r"(?i)aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[=:]\s*"
-                r"['\"]?[0-9a-zA-Z/+]{40}",
-                "[AWS_SECRET_KEY_REDACTED]",
-            ),
-        ]
-
-        # Precompile once (patterns are applied on every hot-path sanitize).
-        # Each entry: (compiled pattern, entity_type derived from the template,
-        # e.g. "[IP_ADDRESS_REDACTED]" → "IP_ADDRESS").
-        self._compiled_patterns = [
-            (
-                re.compile(pattern_str, re.IGNORECASE | re.DOTALL),
-                replacement_template.strip("[]").replace("_REDACTED", ""),
-            )
-            for pattern_str, replacement_template in self.pattern_replacements
-        ]
+        # The regex half of detection: the module's one pattern set (#1980),
+        # held here so a test can stand in a broken one.
+        self.regex_patterns: Sequence[RedactionPattern] = SANITIZER_PATTERNS
 
         # Dict keys whose values are opaque model/provider artifacts (base64
         # reasoning signatures, provider round-trip metadata). They carry no
@@ -371,23 +780,13 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if not text or not isinstance(text, str):
             return text
 
-        def _get_placeholder(entity_type: str, value: str) -> str:
-            if entity_type not in entity_registry:
-                entity_registry[entity_type] = {}
-            type_map = entity_registry[entity_type]
+        def _get_placeholder(span: RedactionSpan, value: str) -> str:
+            type_map = entity_registry.setdefault(span.entity_type, {})
             if value not in type_map:
-                type_map[value] = self._hashed_placeholder(entity_type, value)
+                type_map[value] = self._hashed_placeholder(span.entity_type, value)
             return type_map[value]
 
-        sanitized_text = text
-        for pattern, entity_type in self._compiled_patterns:
-
-            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
-                return _get_placeholder(_type, match.group(0))
-
-            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
-
-        return sanitized_text
+        return redact_spans(text, self.regex_patterns, _get_placeholder)
 
     def sanitize_text_with_registry(
         self,
@@ -504,9 +903,6 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             Sanitized list
         """
         return [self.sanitize(item) for item in data]
-
-    # Legacy _apply_pattern method - no longer used
-    # Replaced with pattern_replacements approach for better priority control
 
     def _test_service_health(self, service_url: str) -> bool:
         """Test if a Presidio service is available with external call wrapping"""
@@ -664,10 +1060,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if not text:
             return False
 
-        # Check custom patterns (precompiled)
-        for pattern, _entity_type in self._compiled_patterns:
-            if pattern.search(text):
-                return True
+        # The regex half.
+        if find_redaction_spans(text, self.regex_patterns):
+            return True
 
         # Check with K8s Presidio analyzer if available
         if self.analyzer_available:
@@ -726,7 +1121,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                     "analyzer_url": self.analyzer_url,
                     "anonymizer_url": self.anonymizer_url,
                 },
-                "pattern_replacements_count": len(self.pattern_replacements),
+                "regex_patterns_count": len(self.regex_patterns),
             }
 
             # Determine overall status

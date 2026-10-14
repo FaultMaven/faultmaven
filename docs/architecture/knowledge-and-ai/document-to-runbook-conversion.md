@@ -312,12 +312,9 @@ The cleanup step removes content that would waste tokens and dilute embeddings w
 
 ### 2.4 Sensitive Content Handling
 
-The sensitive content scan runs the same detection layers as the evidence pipeline:
+The sensitive content scan detects secrets with the sanitizer's own secret pattern set, `SECRET_PATTERNS` in `infrastructure/security/redaction.py` (#1980): private keys, connection URLs with credentials, provider tokens (GitHub, Slack, `sk-`/`pk-` keys, AWS keys), JWTs, `Bearer`/`Basic` credentials, and `password`/`secret`/`token`/`api_key` assignments. It runs on every conversion, whatever `SANITIZE_PII` says. The sanitizer's network-address patterns (internal IPs, MAC addresses) and Presidio's entities (cards, SSNs, emails, phone numbers) are not applied here: on this path they belong to the model-boundary redaction, which `SANITIZE_PII` governs (#1901).
 
-- **Regex layer**: API keys, AWS keys, JWTs, private keys, DB connection strings, passwords
-- **Presidio layer**: Credit cards, SSNs, emails, phone numbers (if present in the source doc)
-
-Redacted content is replaced with `[REDACTED:{type}]` markers. The LLM sees these markers and can note in the runbook that specific values need to be filled in by the user.
+Each secret is replaced with a `[REDACTED:{type}]` marker, `{type}` the sanitizer's entity type in lower case (`password`, `database_url`, `private_key`, …). The LLM sees these markers and can note in the runbook that specific values need to be filled in by the user.
 
 The scan produces a `redaction_report` included in the `ConversionResponse`:
 
@@ -325,7 +322,7 @@ The scan produces a `redaction_report` included in the `ConversionResponse`:
 {
   "redactions": [
     { "type": "api_key", "count": 2, "context": "Found in code blocks" },
-    { "type": "db_connection_string", "count": 1, "context": "Found in configuration example" }
+    { "type": "database_url", "count": 1, "context": "Found in text content" }
   ],
   "warning": "3 sensitive items were redacted. Review generated runbooks for [REDACTED] placeholders."
 }

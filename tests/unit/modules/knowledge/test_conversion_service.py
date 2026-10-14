@@ -710,7 +710,8 @@ class TestPIIRedaction:
         assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in user_message
 
     def test_redaction_covers_multiple_patterns(self):
-        """Redaction catches API keys, passwords, JWTs, and DB connection strings."""
+        """Redaction catches API keys, passwords and connection URLs; the
+        marker names the sanitizer's entity type (#1980)."""
         from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
             redact_sensitive_content,
         )
@@ -724,7 +725,7 @@ class TestPIIRedaction:
 
         assert "[REDACTED:api_key]" in redacted
         assert "[REDACTED:password]" in redacted
-        assert "[REDACTED:db_connection_string]" in redacted
+        assert "[REDACTED:database_url]" in redacted
         assert report.total_redacted >= 3
 
 

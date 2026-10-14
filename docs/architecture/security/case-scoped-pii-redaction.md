@@ -121,7 +121,10 @@ The existing `sanitize()` and `_sanitize_text()` methods are unchanged.
 
 The sanitizer has two detection stages, both configurable through `ProtectionSettings`:
 
-**Stage 1 — Regex patterns** (`pattern_replacements`): Matches secrets and credentials (API keys, AWS keys, database URLs, JWT tokens, passwords). Password patterns use `\b` word boundaries to avoid corrupting compound tokens in log data (e.g., `failed_password: 520` must survive intact).
+**Stage 1 — Regex patterns** (`regex_patterns`, which is `SANITIZER_PATTERNS`): `SECRET_PATTERNS`, the one secret-detection set (#1980), then `NETWORK_ADDRESS_PATTERNS` (internal IPs, MAC addresses). The secrets: private keys (a block without its END line too), connection URLs with credentials (postgres, mysql, mariadb, mongodb(+srv), redis(s), amqp(s), and `user:password@` in any other URL), GitHub and Slack tokens, `sk-`/`pk-` keys, AWS key ids and context-anchored secret keys, JWTs, `Bearer` tokens, `Authorization: Basic` credentials, and `key <separator> value` for the password, secret, token and API-key families. The knowledge document preprocessor detects with `SECRET_PATTERNS` too, so a document and case content are scanned for the same secrets.
+
+- Detection runs every pattern on the raw text, and the matches are merged into non-overlapping spans before anything is substituted (`find_redaction_spans`): what one path writes in place of a secret cannot change what is detected, and no placeholder wraps another.
+- A keyed secret is read with a separator prose does not use (`=`, `=>`, `key:value`, `key : value`, a quoted key, or a whole `key: value` line as YAML and `.env` write it). In running text, `key: value` counts only when the value is not shaped like a word, so `password: expired for the svc account` and MySQL's `(using password: YES)` survive. A compound key (`db_password`, `clientSecret`, `PGPASSWORD`) counts with `=` or as a quoted key, never as `key: value`, so `failed_password: 520` survives intact. A value that refers to a secret (`${VAR}`, `$(…)`, `{{ … }}`, `<your-password>`) is not one.
 
 **Stage 2 — Presidio NLP** (`_apply_presidio()`): Sends text to Presidio Analyzer/Anonymizer services for NLP-based entity detection. Two settings control behavior:
 
@@ -247,7 +250,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | File | Role |
 | --- | --- |
 | `infrastructure/security/case_redaction.py` | `CaseRedactionContext`: the case-scoped registry, persisted in Redis |
-| `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()`, the Presidio settings wiring, and the `\b` word boundary on the password regex |
+| `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()` and the Presidio settings wiring; the regex pattern sets (`SECRET_PATTERNS`, `NETWORK_ADDRESS_PATTERNS`) and `find_redaction_spans()` |
 | `infrastructure/security/case_redaction.py` | `should_redact()`, the one redaction decision; `load_case_redaction()`, the case loader; `case_redacted()` / `case_redacted_messages()`, the send-site helpers; `model_boundary_redaction()`, the knowledge-authoring paths' context |
 | `modules/agent/domain/services/investigation_service/service.py` | Loads the turn's one context and hands it to every call on the turn's behalf; saves it after the route |
 | `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`); puts the context on `ToolContext` |
@@ -288,6 +291,8 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 `tests/infrastructure/test_redaction.py` — includes regression tests:
 
 - `TestPasswordRegexWordBoundary` (5 tests): verifies compound tokens like `failed_password: 520` survive sanitization intact, while standalone `password=secret` is still redacted
+
+`tests/unit/infrastructure/security/test_secret_patterns_1980.py` pins the pattern set both ways: every listed secret spelling is detected with its entity type on each path (the sanitizer, its regex half, the document preprocessor), and a corpus of ordinary incident text comes back unchanged except for the listed network identifiers.
 - `TestPresidioSettingsWiring` (4 tests): verifies settings injection, custom entity list honored, default entity list excludes `PERSON`/`DATE_TIME`/`NRP`/`LOCATION`/`URL`, default threshold is 0.85
 
 ### Integration Verification

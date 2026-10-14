@@ -106,7 +106,7 @@ def _sanitizer(*, probed: bool, analyzer: bool, redacts: bool = True) -> Any:
     sanitizer.presidio_probed = probed
     sanitizer.analyzer_available = analyzer
     sanitizer.anonymizer_available = analyzer
-    sanitizer.pattern_replacements = [("a", "b")] * 14
+    sanitizer.regex_patterns = [object()] * 14
     sanitizer.apply_regex_redaction = MagicMock(
         side_effect=lambda text, registry: (
             "health probe from <IP>" if redacts else text
@@ -1241,7 +1241,7 @@ async def test_the_sanitizer_probe_leaves_the_redaction_breaker_alone(monkeypatc
 async def test_the_sanitizer_probe_still_detects_broken_redaction(monkeypatch):
     """Staying off the network must not cost the probe its teeth."""
     sanitizer = _real_sanitizer_in_cloud_posture()
-    sanitizer._compiled_patterns = []
+    sanitizer.regex_patterns = ()
     _use_container(monkeypatch, _FakeContainer(sanitizer=sanitizer))
 
     out = await ComponentHealthMonitor()._check_sanitizer_health()

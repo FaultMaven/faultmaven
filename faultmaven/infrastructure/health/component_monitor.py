@@ -985,7 +985,7 @@ class ComponentHealthMonitor:
             # flags are False by configuration and say nothing.
             metadata["presidio_analyzer"] = bool(analyzer)
             metadata["presidio_anonymizer"] = bool(anonymizer)
-        patterns = getattr(sanitizer, "pattern_replacements", None)
+        patterns = getattr(sanitizer, "regex_patterns", None)
         if patterns is not None:
             metadata["redaction_patterns"] = len(patterns)
 
