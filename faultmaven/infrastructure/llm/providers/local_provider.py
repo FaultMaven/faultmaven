@@ -246,9 +246,14 @@ class LocalProvider(BaseLLMProvider):
         effective_model = self.get_effective_model(model)
 
         # Router-level reasoning knobs (#1117/#1118) this provider has no
-        # mechanism for. Popped HERE, before transport dispatch, because the
-        # Ollama path merges raw kwargs into payload["options"] — the keys
-        # must never reach a request body. Logs any intent it cannot act on.
+        # mechanism for. Popped HERE, before transport dispatch, so an intent
+        # it cannot act on is logged once rather than once per transport
+        # attempt. The rest of ``ROUTER_LEVEL_KWARGS`` (``case_id`` and the
+        # others, #2002) is discarded by each transport that builds a body:
+        # ``_merge_extra_kwargs`` on the two chat/completion transports, and
+        # ``_call_ollama_api`` itself, which merges raw kwargs into
+        # ``payload["options"]``. ``cache_prompt`` has to survive to the
+        # llama.cpp transport, which sends it as a real body field.
         self._discard_reasoning_kwargs(kwargs, model=effective_model)
 
         # Which protocol this endpoint speaks, decided by the SAME function
@@ -348,15 +353,23 @@ class LocalProvider(BaseLLMProvider):
             "options": {"num_predict": max_tokens, "temperature": temperature},
         }
 
-        # Add any additional options
-        if kwargs:
-            # Handle structured output (Ollama uses "format": "json")
-            if "response_format" in kwargs:
-                payload["format"] = "json"
-                # Remove it so it doesn't clutter options
-                kwargs.pop("response_format")
+        # The native API takes generation options only. Router-level knobs
+        # (``case_id``, and ``cache_prompt``, which ``generate`` leaves for the
+        # llama.cpp transport) are not Ollama options and must not land in
+        # ``options``.
+        self._discard_router_kwargs(kwargs, model=model)
 
-            payload["options"].update(kwargs)
+        # /api/generate takes a prompt plus generation options: tools,
+        # tool_choice and messages are /api/chat fields, not options.
+        for not_an_option in ("messages", "tools", "tool_choice"):
+            kwargs.pop(not_an_option, None)
+
+        # Structured output (Ollama uses "format": "json"): only when one was
+        # asked for -- the router forwards response_format=None on every call.
+        if kwargs.pop("response_format", None):
+            payload["format"] = "json"
+
+        payload["options"].update({k: v for k, v in kwargs.items() if v is not None})
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -431,8 +444,9 @@ class LocalProvider(BaseLLMProvider):
             payload["messages"] = messages
 
         # Add any additional kwargs
-        if "response_format" in kwargs:
-            payload["response_format"] = kwargs.pop("response_format")
+        response_format = kwargs.pop("response_format", None)
+        if response_format:
+            payload["response_format"] = response_format
 
         # Discards the router-level knobs, then merges the rest (see base).
         self._merge_extra_kwargs(payload, kwargs, model=model)

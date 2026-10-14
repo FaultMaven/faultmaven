@@ -885,11 +885,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "attr",
         "result",
     ): ("other", 1),
-    # LLM routing kwargs; pattern-learner feedback dicts.
-    ("infrastructure/llm/router.py", "LLMRouter.generate", "get", "kwargs"): (
-        "other",
-        1,
-    ),
+    # Pattern-learner feedback dicts.
     (
         "core/processing/pattern_learner.py",
         "PatternLearner._analyze_feedback",
