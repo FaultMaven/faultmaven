@@ -1260,6 +1260,7 @@ class StructuredOutputGenerator:
         user_id: str | None = None,
         *,
         redaction_ctx: Any,
+        given_tools: GivenTools,
     ) -> Any:
         """Build ToolContext for tool execution during DA turns.
 
@@ -1285,6 +1286,12 @@ class StructuredOutputGenerator:
         ``deep_analysis``) sends through it, so the values it redacts enter the
         case registry and the placeholders in its answer can be reversed in the
         reply the user reads.
+
+        ``given_tools`` is the turn's given set (#1939), the one its prompt was
+        built from. A tool whose result points the model at another tool
+        (``case_evidence_search`` on an empty search) names it only when it is
+        in this set. Required: a caller that left it out would silently make
+        every such pointer vanish.
         """
         from faultmaven.modules.agent.tools.base import ToolContext
 
@@ -1318,6 +1325,7 @@ class StructuredOutputGenerator:
             metadata=metadata,
             in_memory_case=case,
             redaction_ctx=redaction_ctx,
+            given_tools=given_tools,
         )
 
     @classmethod

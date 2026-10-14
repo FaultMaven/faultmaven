@@ -31,6 +31,7 @@ import pytest
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
@@ -177,7 +178,7 @@ class TestTheToolContextCarriesTheTurnsRedaction:
             new=AsyncMock(return_value={"scope": "x"}),
         ):
             ctx = await generator.build_tool_context(
-                case, user_id="u", redaction_ctx=redaction
+                case, user_id="u", redaction_ctx=redaction, given_tools=NO_TOOLS
             )
         assert ctx.redaction_ctx is redaction
 

@@ -42,6 +42,77 @@ DEFAULT_MAX_RESULTS = 20
 MAX_RESULTS_CEILING = 200
 
 
+def format_searchable_alternatives(
+    all_evidence: list[Any],
+    excluded_evidence_id: str,
+    case: Any,
+) -> str:
+    """Build a redirect hint naming every file in this case this tool reads.
+
+    ISS-025: when the LLM picks a non-file-backed evidence_id (an
+    ENGINE_INFERENCE row), the tool error should
+    point it at the actual searchable upload(s) so the next
+    iteration succeeds. File-backed evidence rows are listed by
+    evidence_id.
+
+    #1964: then the uploads no evidence row records, by file_id, which
+    ``_resolve_evidence_content`` resolves too: a file uploaded during
+    INQUIRY, a paste no row named, every upload of a case closed before
+    any row existed. A terminal turn's prompt renders no ids, so this list
+    is how it learns them, and a file under the vectorization size floor
+    is readable no other way. An upload with no stored file is left out:
+    there is nothing to read.
+
+    Module-level because ``case_evidence_search`` points at the same list when
+    its search finds nothing (#1977); that caller excludes no id (``""``).
+    Returns ``""`` when the case has no file to read.
+    """
+    alternatives = []
+    recorded_files = set()
+    for ev in all_evidence:
+        source_file_id = getattr(ev, "source_file_id", None)
+        if source_file_id is not None:
+            recorded_files.add(source_file_id)
+        ev_id = getattr(ev, "evidence_id", None)
+        if not ev_id or ev_id == excluded_evidence_id:
+            continue
+        if source_file_id is None:
+            continue
+        file_meta = case.find_uploaded_file(source_file_id)
+        if file_meta is None:
+            continue
+        filename = file_meta.display_name or "(unnamed)"
+        alternatives.append(f"{ev_id} ({filename})")
+
+    unrecorded = []
+    for upload in getattr(case, "uploaded_files", None) or []:
+        file_id = getattr(upload, "file_id", None)
+        if (
+            not file_id
+            or file_id == excluded_evidence_id
+            or file_id in recorded_files
+            or not getattr(upload, "storage_ref", None)
+        ):
+            continue
+        filename = upload.display_name or "(unnamed)"
+        unrecorded.append(f"{file_id} ({filename})")
+
+    hint = ""
+    if alternatives:
+        hint += (
+            " Available file-backed evidence in this case: "
+            + ", ".join(alternatives)
+            + "."
+        )
+    if unrecorded:
+        hint += (
+            " Uploaded files with no evidence row (search them by file_id): "
+            + ", ".join(unrecorded)
+            + "."
+        )
+    return hint
+
+
 class SearchFileTool(AgentTool):
     """Mechanical search over raw evidence file content.
 
@@ -496,7 +567,7 @@ class SearchFileTool(AgentTool):
                 context.case_id,
                 len(all_evidence),
             )
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
+            alts = format_searchable_alternatives(all_evidence, evidence_id, case)
             return f"Evidence {evidence_id} not found in this case.{alts}"
 
         # Reject non-file-backed evidence forms BEFORE hitting storage.
@@ -506,7 +577,7 @@ class SearchFileTool(AgentTool):
         # these against search_file and treated the failure as "the
         # file is inaccessible", giving up on follow-up questions.
         if getattr(case_evidence, "source_file_id", None) is None:
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
+            alts = format_searchable_alternatives(all_evidence, evidence_id, case)
             logger.warning(
                 "search_file: evidence %s has no source file (engine inference); "
                 "pointing LLM at file-backed alternatives",
@@ -526,7 +597,7 @@ class SearchFileTool(AgentTool):
                 "search_file: evidence %s has no backing file (file not stored)",
                 evidence_id,
             )
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
+            alts = format_searchable_alternatives(all_evidence, evidence_id, case)
             return f"Evidence {evidence_id} has no stored file content.{alts}"
 
         if self.storage_service is not None and hasattr(
@@ -546,9 +617,7 @@ class SearchFileTool(AgentTool):
                     storage_ref,
                     e,
                 )
-                alts = self._format_searchable_alternatives(
-                    all_evidence, evidence_id, case
-                )
+                alts = format_searchable_alternatives(all_evidence, evidence_id, case)
                 return (
                     f"Evidence {evidence_id}: stored file could not be "
                     f"retrieved (storage_ref={storage_ref}, error: {e}).{alts}"
@@ -561,73 +630,6 @@ class SearchFileTool(AgentTool):
             storage_ref,
         )
         return f"Evidence {evidence_id}: storage service unavailable."
-
-    def _format_searchable_alternatives(
-        self,
-        all_evidence: list[Any],
-        excluded_evidence_id: str,
-        case: Any,
-    ) -> str:
-        """Build a redirect hint naming every file in this case this tool reads.
-
-        ISS-025: when the LLM picks a non-file-backed evidence_id (an
-        ENGINE_INFERENCE row), the tool error should
-        point it at the actual searchable upload(s) so the next
-        iteration succeeds. File-backed evidence rows are listed by
-        evidence_id.
-
-        #1964: then the uploads no evidence row records, by file_id, which
-        ``_resolve_evidence_content`` resolves too: a file uploaded during
-        INQUIRY, a paste no row named, every upload of a case closed before
-        any row existed. A terminal turn's prompt renders no ids, so this list
-        is how it learns them, and a file under the vectorization size floor
-        is readable no other way. An upload with no stored file is left out:
-        there is nothing to read.
-        """
-        alternatives = []
-        recorded_files = set()
-        for ev in all_evidence:
-            source_file_id = getattr(ev, "source_file_id", None)
-            if source_file_id is not None:
-                recorded_files.add(source_file_id)
-            ev_id = getattr(ev, "evidence_id", None)
-            if not ev_id or ev_id == excluded_evidence_id:
-                continue
-            if source_file_id is None:
-                continue
-            file_meta = case.find_uploaded_file(source_file_id)
-            if file_meta is None:
-                continue
-            filename = file_meta.display_name or "(unnamed)"
-            alternatives.append(f"{ev_id} ({filename})")
-
-        unrecorded = []
-        for upload in getattr(case, "uploaded_files", None) or []:
-            file_id = getattr(upload, "file_id", None)
-            if (
-                not file_id
-                or file_id == excluded_evidence_id
-                or file_id in recorded_files
-                or not getattr(upload, "storage_ref", None)
-            ):
-                continue
-            filename = upload.display_name or "(unnamed)"
-            unrecorded.append(f"{file_id} ({filename})")
-
-        hint = ""
-        if alternatives:
-            hint += (
-                " Available file-backed evidence in this case: "
-                + ", ".join(alternatives)
-                + "."
-            )
-        if unrecorded:
-            hint += (
-                " Uploaded files with no evidence row (search them by file_id): "
-                + ", ".join(unrecorded)
-                + "."
-            )
-        return hint
 
     def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
         """Keyword search: tokenize query, find matching lines, return context windows.

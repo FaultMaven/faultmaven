@@ -15,6 +15,12 @@ from typing import Any, Dict
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
+    CaseEvidenceConfig,
+)
+from faultmaven.modules.agent.tools.search_file_tool import (
+    format_searchable_alternatives,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +159,25 @@ class CaseEvidenceQAAdapter(AgentTool):
             "required": ["question"],
         }
 
+    @staticmethod
+    def _empty_result(context: ToolContext) -> str:
+        """What an empty search tells the model on THIS turn (#1977).
+
+        ``search_file`` is named, with the case's files it reads, only when the
+        turn offers it (``context.given_tools``) and the case is in hand to list
+        them from; otherwise no tool is named. Built on every call but shown
+        only for a search that ran and matched nothing.
+        """
+        case = context.in_memory_case
+        if "search_file" not in context.given_tools or case is None:
+            return CaseEvidenceConfig().empty_result_for(search_file_offered=False)
+        return CaseEvidenceConfig().empty_result_for(
+            search_file_offered=True,
+            readable_files=format_searchable_alternatives(
+                getattr(case, "evidence", None) or [], "", case
+            ),
+        )
+
     async def execute_with_context(
         self,
         params: Dict[str, Any],
@@ -168,6 +193,7 @@ class CaseEvidenceQAAdapter(AgentTool):
                 question=question,
                 k=5,
                 redaction_ctx=context.redaction_ctx,
+                empty_result=self._empty_result(context),
             )
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:
