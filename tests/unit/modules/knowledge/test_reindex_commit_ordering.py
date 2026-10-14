@@ -22,10 +22,11 @@ So the fix is an ordering one: index first, commit last. The most likely
 failure by far (the embedder is unavailable) then touches neither store.
 
 Moving the write after the embed opens a second problem these tests also pin:
-the row is read long before it is written, and ``repo.update`` writes EVERY
-column from the object it is given. Committing the pre-embed snapshot would
-revert whatever another writer changed meanwhile — including ``is_published``,
-which is how a built-in runbook is retired. Hence the re-read at commit time.
+the row is read long before it is written, and a write of EVERY column from
+that read would revert whatever another writer changed meanwhile — including
+``is_published``, which is how a built-in runbook is retired. Hence the re-read
+at commit time, and (#1966) a targeted write of only the changed fields,
+followed by a read of the row as committed.
 
 The fake below models the ROW, not a single mock object: reads return a fresh
 view of current state and a successful commit is what changes it. That is what
@@ -97,7 +98,7 @@ def _service(state, *, commit_raises=None, commit_lands=True):
     """Service wired so every store write appends to `calls`, in order.
 
     Args:
-        commit_raises: exception `repo.update` raises, if any.
+        commit_raises: exception the targeted write (`repo.update_fields`) raises, if any.
         commit_lands: whether a raising commit nonetheless PERSISTED. Models
             the ack-lost case (connection dropped after the server committed).
     """
@@ -127,21 +128,23 @@ def _service(state, *, commit_raises=None, commit_lands=True):
     repo = MagicMock()
     repo.get_by_id = AsyncMock(side_effect=lambda _id: _row_from(state))
 
-    async def _update(obj):
-        calls.append(("sql_commit", obj.content))
-        # The real `repo.update` stamps this on the object it is handed, as its
-        # first statement — so the committed object, not the snapshot, is the
-        # only place the stored timestamp can be read from.
-        obj.updated_at = COMMITTED_AT
+    async def _update_fields(item_id, fields, *, commit=True, touch=True):
+        # The targeted write (#1966): only the named fields move, so a column
+        # another writer changed — `is_published` above all — keeps its value.
+        calls.append(("sql_commit", fields.get("content", state["content"])))
+        if not state["present"]:
+            return False
         if commit_raises is None or commit_lands:
-            state["title"] = obj.title
-            state["content"] = obj.content
-            state["is_published"] = obj.is_published
+            for name in ("title", "content", "tags"):
+                if name in fields:
+                    state[name] = fields[name]
+            if touch:
+                state["updated_at"] = COMMITTED_AT
         if commit_raises is not None:
             raise commit_raises
-        return obj
+        return True
 
-    repo.update = AsyncMock(side_effect=_update)
+    repo.update_fields = AsyncMock(side_effect=_update_fields)
 
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
@@ -304,9 +307,8 @@ async def test_metadata_only_update_commits_without_touching_the_vectors():
 async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
     """The regression that moving the write after the embed introduces.
 
-    `repo.update` writes every column from the object it is handed. The row is
-    now read up to a cold load before it is written, so committing the snapshot
-    would silently restore any column another writer changed meanwhile — and
+    A write of every column would put back what was read up to a cold load
+    earlier, silently restoring any column another writer changed meanwhile — and
     `delete_document` retires a built-in runbook precisely by setting
     `is_published=False` and dropping its vectors. Since this method re-adds
     vectors, a snapshot write would bring a retired runbook back in BOTH
@@ -521,7 +523,7 @@ async def test_the_response_describes_the_committed_row_not_the_snapshot():
 @pytest.mark.asyncio
 async def test_a_failing_re_read_is_compensated_like_a_failing_commit():
     """The vectors are already ahead of the row once the swap succeeds, so
-    everything after it has to be compensated — not just `repo.update`. A
+    everything after it has to be compensated — not just the write. A
     re-read that raises would otherwise leave the mispairing with no repair
     and no log."""
     state = _state()

@@ -321,8 +321,14 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retry_delay=1.0,
         )
 
-    async def delete_documents_by_parent_id(self, parent_document_id: str) -> int:
-        """Delete all chunks belonging to a parent document."""
+    async def delete_documents_by_parent_id(
+        self, parent_document_id: str, *, retries: int = 2
+    ) -> int:
+        """Delete all chunks belonging to a parent document.
+
+        ``retries`` counts the attempts after a failed one (see
+        ``IVectorStore.delete_documents_by_parent_id``).
+        """
         deleted_count = 0
 
         async def _delete_by_parent_wrapper():
@@ -343,7 +349,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             operation_name="delete_documents_by_parent_id",
             call_func=_delete_by_parent_wrapper,
             timeout=10.0,
-            retries=2,
+            retries=retries,
             retry_delay=1.0,
         )
         return deleted_count

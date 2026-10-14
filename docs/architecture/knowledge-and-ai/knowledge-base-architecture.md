@@ -120,7 +120,7 @@ Runbook text is stored in the database, not on disk. A built-in runbook's text s
 data/
 ├── knowledge/                          # Standalone scan import directory (hand-placed .md files only)
 │   ├── global/                         # Imported as global-scope drafts (platform operator only)
-│   ├── team_{team_id}/                 # Imported as team-scope drafts
+│   ├── team_{team_id}/                 # Imported as PERSONAL drafts (a standalone deployment has no teams)
 │   └── user_{user_id}/                 # Imported as personal drafts (`personal_{user_id}/` works too)
 ├── chroma-kb/                          # ChromaDB KB vectors (derived from knowledge_items / the pack)
 ├── chroma-evidence/                    # ChromaDB case-evidence vectors
@@ -130,7 +130,7 @@ data/
 
 **Design decisions:**
 
-- **Scope comes from the first directory.** A file under `team_{id}/` imports as a team draft, under `user_{id}/` or `personal_{id}/` as a personal draft; anything else (including `global/`) as a global draft, which only a platform operator's scan imports. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
+- **Scope comes from the first directory.** A file under `user_{id}/`, `personal_{id}/` or `team_{id}/` imports as a personal draft (a `team_{id}/` file too, because the scan runs only where there are no teams and a team scope with no team would publish a row only its owner sees; the scan's `notes` name each such file, #1986); anything else (including `global/`) as a global draft, which only a platform operator's scan imports. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
 - **Vectors are derived artifacts.** If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the vectors are regenerated from their sources: the KB pack for built-ins, `knowledge_items.content` for published runbooks. Without those rows, vectors cannot be regenerated.
 - **Authored text lives in the database, not in this tree.** A runbook made by the Dashboard upload, the template create or the document-to-runbook conversion is a draft row holding its text (`conversion_drafts.content`) and, once verified, a `knowledge_items` row; nothing is written under `data/knowledge/` (#1950). The tree is the standalone scan's import source and no startup step reads it.
 
@@ -203,7 +203,7 @@ Live (during investigation):
 | Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
 | Ingestion entry point | `KnowledgeService.ingest_runbook()` (atomic: SQL row + ChromaDB chunks or neither) |
-| Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, content-hash idempotent |
+| Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, idempotent on the pack content hash stamped on the row |
 | Case-generated drafts | `conversion_drafts` → `ConversionService.verify_draft()` (atomic: status flips to VERIFIED only after successful ingestion) |
 | Architecture detail | [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) |
 
@@ -410,11 +410,11 @@ Adding a new KB tier requires:
 `modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed` / `is_global_authoring_allowed`), reused at the API layer by `modules/knowledge/api/platform_tier.py`. It refuses any tenant session under `TENANT_PROVIDER=multi` (org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `admin` role single-tenant. Enforcement points:
 
 - **Creation routes** (`convert`, `runbooks/create`, `documents` upload) — the scope is a request field, gated at the route (403).
-- **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal/team ones. This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
+- **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal and `team_`-directory ones (the latter as personal drafts, #1986). This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
 
 ### Ingestion Pipeline
 
-Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap loads the shipped **KB pack** (`faultmaven/bootstrap/kb_pack.py`) and, for each runbook in it, writes a row to `knowledge_items` plus the pack's pre-computed chunk vectors to ChromaDB via `KnowledgeService.ingest_runbook(prechunked=...)`. Because the pack ships pre-chunked and pre-embedded, startup does **no chunking and no embedding** — it is pure SQL + vector writes and completes in seconds. Idempotent: unchanged runbooks are skipped via content-hash comparison on every restart, and runbooks no longer in the pack are pruned from both stores.
+Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap loads the shipped **KB pack** (`faultmaven/bootstrap/kb_pack.py`) and, for each runbook in it, writes a row to `knowledge_items` plus the pack's pre-computed chunk vectors to ChromaDB via `KnowledgeService.ingest_runbook(prechunked=...)`. Because the pack ships pre-chunked and pre-embedded, startup does **no chunking and no embedding** — it is pure SQL + vector writes and completes in seconds. Idempotent: a runbook is skipped on every restart while the pack's content hash equals the one stamped on its row at ingest (`metadata.pack_content_hash`, #1966), and runbooks no longer in the pack are pruned from both stores.
 
 Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
@@ -503,6 +503,22 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 - **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap).
 - **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
+
+A document reported removed has no retrievable chunk, now or after any restart, reconcile, repair or `kb_seed` run (#1966). Retrieval never checks that a chunk's row exists, and the reconcile pass deletes only built-in vectors (diffing the shared collection against one tenant's rows would delete other tenants' content), so a chunk whose row is gone would stay searchable for good.
+
+**What a restart or `kb_seed` run does to a removed document:**
+
+- An **unpublished built-in stays unpublished, with no vectors.** The pack skip compares the pack's content hash with the hash stamped on the row when the pack last ingested it (`metadata.pack_content_hash`), not with the row's current content, so an operator's edit is never mistaken for a new pack version. A row ingested before the stamp existed is compared by content once and stamped — except an unpublished one, which is taken as this pack version (its retirement outranks a content edit), stamped and skipped, so an older edited-and-unpublished built-in is not republished by the first boot after the upgrade. The stamp is written only when the pass's role may UPDATE `knowledge_items`; the `kb_seed` maintenance role under `TENANT_PROVIDER=multi` holds INSERT and DELETE but deliberately no UPDATE, so there the stamp is skipped and the content comparison is used — exact there, because a tenant session cannot edit or unpublish a platform row (RLS refuses). The reconcile pass never repairs an unpublished row, and it deletes any vectors an unpublished built-in still has (an earlier version's repair re-embedded them). **Only a new pack version of that runbook republishes it** — a shipped update is a new document.
+- A **deleted authored document** has no row, so nothing re-indexes it: repair works from rows, and it reads the row again after embedding, discarding what it wrote if a delete or unpublish landed meanwhile. Where the pass's role may UPDATE the table (the web-startup bootstrap, and SQLite) that read is locked, so it also waits for a delete still holding the row: `FOR SHARE` on PostgreSQL, the writer lock on SQLite (taken by a no-op write that is rolled back). The pass asks once (`has_table_privilege`) rather than issuing what the role would be refused. Under `kb_seed`'s maintenance role the read is plain: it still sees a delete or unpublish that committed during the embed — so `kb_seed` repairs orphaned rows and discards what a completed delete removed — but it does not wait for one inside the milliseconds between that delete's vector delete and its commit.
+
+The delete itself is ordered so that a failure can only leave the document as it was or in one recoverable split state:
+
+1. The row change is issued **uncommitted**: a `DELETE`, or a targeted `UPDATE … SET is_published = false` that writes no other column but `updated_at`, so it cannot revert an edit committed after the delete read the row. If it matched no row — absent, deleted concurrently, or refused by an RLS write policy — it is rolled back, the result is not-removed, and the vector store is never called.
+2. **One** vector delete attempt (`delete_documents_by_parent_id(..., retries=0)`). A failure rolls the row change back and raises `KnowledgeBaseError`: the document is still listed, `DELETE /documents/{id}` answers **503** saying the delete did not complete and a retry finishes it, and bulk delete reports that id with a constant sentence. Its vectors are not promised intact — a remote store can fail after applying the delete, or part of it.
+3. Commit. A commit that fails, or a task cancelled at it, after the vector delete leaves the split state — row present, vectors missing — logged at ERROR with the id: the document is still live, a retried delete completes it, and otherwise the reconcile/repair pass re-indexes the published row.
+4. Team share rows are removed after the commit, best effort (an ERROR log on failure): a share row whose resource row is gone grants nothing.
+
+The transaction is held across the single vector call, unlike the update path's no-hold rule (which exists for a 60–120 s embed): on SQLite the hold is the single writer lock, so it is kept to one attempt and the caller is the retry loop. The update path's own row write is targeted too, so an unpublish that commits during an edit is never reverted; if the row is unpublished once the edit commits, the vectors the edit wrote are dropped.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
 

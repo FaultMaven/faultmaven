@@ -56,13 +56,13 @@ from .calibration import (
     scale_was_used,
 )
 from .growth import (
-    MIN_TOTAL_GROWTH,
     NOISE_ALLOWANCE,
     PASS_NOISE_ALLOWANCE,
     Growth,
     assert_linear_growth,
     growth_bound,
     measure_growth,
+    min_total_growth,
 )
 from .record import (
     LATENCY_METRIC,
@@ -82,7 +82,6 @@ __all__ = [
     "CALIBRATION_REFERENCE_SECONDS",
     "LATENCY_METRIC",
     "MAX_REGRESSION_MULTIPLE",
-    "MIN_TOTAL_GROWTH",
     "MIN_REGRESSION_MULTIPLE",
     "NOISE_ALLOWANCE",
     "PASS_NOISE_ALLOWANCE",
@@ -106,6 +105,7 @@ __all__ = [
     "growth_bound",
     "measure_growth",
     "measured_calibration",
+    "min_total_growth",
     "record_comparison",
     "reset_calibration_cache",
     "restore_calibration_state",

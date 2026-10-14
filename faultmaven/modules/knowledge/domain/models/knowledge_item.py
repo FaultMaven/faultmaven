@@ -17,6 +17,12 @@ from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 # BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
 EMBEDDING_DIMENSIONS = 1024
 
+#: ``KnowledgeItem.metadata`` key holding the KB pack ``content_hash`` a
+#: built-in row was last ingested from (#1966). The pack bootstrap skips a
+#: runbook whose pack hash equals it, so an edit of the row is never mistaken
+#: for a new pack version, while a new pack version still re-ingests.
+PACK_CONTENT_HASH_KEY = "pack_content_hash"
+
 
 class VerificationLevel(IntEnum):
     """Verification levels for knowledge items.

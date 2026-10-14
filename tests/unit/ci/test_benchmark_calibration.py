@@ -2910,7 +2910,10 @@ class TestTheRestOfTheTree:
 # allowance could not call super-linear, so a pure quadratic with a moderate
 # fixed cost passed (review of #1701, reproduced: F=2000 and F=3000 below,
 # 3/3 green). So the rule's invariant is pinned here in arithmetic, over
-# every fixed cost, and each measured control is held to both columns.
+# every fixed cost, and each measured control is held to both columns. A
+# third gap was in the measurement (#1781): each size's figure was the
+# minimum of its samples, and on the CI runners one fast sample at one size
+# set it. So the measurement is also replayed here from recorded samples.
 
 
 _BACKTRACKING = re.compile(r"\s+y").search  # every start rescans to the end
@@ -2972,8 +2975,8 @@ def _fixed_then_linear(fixed: int):
 #: quadratic column's ``small=2``. From 2, the control's last window
 #: (``1024, 8192, 65536``) left its fixed cost at ~1-3x the work at that
 #: window's smallest size, and raising ``small`` is what the helper's refusal
-#: tells a caller to do (#1760). Production callers' headroom under CI noise
-#: is #1781.
+#: tells a caller to do (#1760). Such readings come from one odd sample at
+#: one size, which the helper's per-size figure sheds since #1781.
 _FIXED_COST_LINEAR_SMALL = 16
 
 
@@ -2982,7 +2985,7 @@ def _assert_failed_as_super_linear(fn, payload_at, small: int, label: str) -> No
 
     A pass is the defect, so it reports the reading it passed on. #1741's
     control passed a quadratic on a CI runner, and ``pytest.raises`` said only
-    ``DID NOT RAISE``: nothing to tell which size's minimum was off.
+    ``DID NOT RAISE``: nothing to tell which size's figure was off.
     """
     from tests.wallclock import assert_linear_growth
 
@@ -3031,7 +3034,7 @@ def _procedure(fixed: float, linear: float, quadratic: float) -> str:
 
 
 def _noisy(seconds, errors):
-    """Minima each within ``NOISE_ALLOWANCE`` of the truth: |t - m| <= e*m."""
+    """Per-size figures each within an allowance of the truth: |t - m| <= e*m."""
     return [t / (1 + d) for t, d in zip(seconds, errors)]
 
 
@@ -3085,12 +3088,33 @@ class TestTheGrowthRule:
                 assert quadratic.verdict != LINEAR, (fixed, escalation)
 
     def test_the_hole_the_review_found_is_closed(self):
-        """C/q from 433 to 1364 passed a pure quadratic; now it escalates."""
-        from tests.wallclock.growth import SUPER_LINEAR, UNDECIDED
+        """C/q from 433 to 1364 passed a pure quadratic; now it escalates.
+
+        Since #1781 the gate leaves every one of those windows undecided
+        before the two-sided rule is read (their total growth is at most
+        10.4), so the loop alone would stay green under a one-sided rule. The
+        hole is also held where the gate lets a window decide: ``300 + n**2``
+        with ``t(n)`` and ``t(64n)`` read 10% low and ``t(8n)`` 10% high,
+        inside both allowances. Its floor is under the bound, so a rule that
+        passes whatever it cannot fail would pass it; the two-sided rule
+        escalates, and the next window fails it.
+        """
+        from tests.wallclock.growth import (
+            SUPER_LINEAR,
+            UNDECIDED,
+            growth_bound,
+            min_total_growth,
+        )
 
         for fixed in range(434, 1370, 5):
             assert _growth(_costs(fixed, 0, 1)).verdict == UNDECIDED, fixed
             assert _procedure(fixed, 0, 1) == SUPER_LINEAR, fixed
+
+        decidable = _growth(_noisy(_costs(300, 0, 1), (0.1, -0.1, 0.1)))
+        assert decidable.total_growth >= min_total_growth(_STEP)
+        assert decidable.ratio_floor < growth_bound(_STEP)
+        assert decidable.verdict == UNDECIDED
+        assert _growth(_costs(300, 0, 1, 1)).verdict == SUPER_LINEAR
 
     def test_what_the_procedure_concludes_for_every_fixed_cost(self):
         """Quadratic: failed at every C tried. Linear: passed, or refused.
@@ -3099,7 +3123,8 @@ class TestTheGrowthRule:
         size; three escalations reach C up to ~2600x. Beyond that it is
         refused as miscalibrated — never failed, never passed unseen. (It was
         ~16x and ~8000x while a pass allowed no more error than a fail,
-        #1741.)
+        #1741.) The gate sits exactly at ~5x (#1781), so neither reach moved
+        when it rose from 4 to ``min_total_growth``.
         """
         from tests.wallclock.growth import LINEAR, SUPER_LINEAR
 
@@ -3109,9 +3134,9 @@ class TestTheGrowthRule:
             assert _procedure(fixed, 1, 0) == expected, fixed
 
     def test_inside_the_allowance_no_error_produces_a_wrong_verdict(self):
-        """The invariant itself, every C: a linear is never failed with minima
-        within ``NOISE_ALLOWANCE``, a quadratic never passed with minima within
-        ``PASS_NOISE_ALLOWANCE``."""
+        """The invariant itself, every C: a linear is never failed with figures
+        within ``NOISE_ALLOWANCE``, a quadratic never passed with figures
+        within ``PASS_NOISE_ALLOWANCE``."""
         from tests.wallclock.growth import (
             LINEAR,
             MAX_ESCALATIONS,
@@ -3183,31 +3208,83 @@ class TestTheGrowthRule:
     def test_beyond_the_allowance_a_wrong_verdict_needs_a_large_error(self):
         """The margin, as a per-size error an adversary must reach, any C.
 
-        Computed with this class: a quadratic can be passed only with an
-        error over 24.1% per size (13.8% while both sides allowed the same
-        error, #1741), a linear failed only over 18.3%. The positive halves
-        show the search is able to find a win at all.
+        Computed with this class on its quarter-decade grid of fixed costs,
+        in steps of 0.1%: a quadratic can be passed only with an error over
+        30.9% per size, a linear failed only over 29.5%. Over every fixed cost
+        the exact thresholds are 30.20% and 29.41%, at the fixed costs where a
+        noise-free window's growth meets the gate (the next test pins both).
+        Under the gate of 4 the grid found 24.0% and 18.3% (exactly 23.5% and
+        18.2%; 13.8% for the pass while both sides allowed the same error,
+        #1741): the gate took the verdicts where the fixed cost swamps the
+        first difference, which is where the adversary won (#1781). The
+        positive halves show the search is able to find a win at all.
         """
         from tests.wallclock.growth import LINEAR, SUPER_LINEAR
 
         costs = _FIXED_COSTS
-        assert not any(_adversary_reaches(c, 0, 1, 0.23, LINEAR) for c in costs)
-        assert any(_adversary_reaches(c, 0, 1, 0.25, LINEAR) for c in costs)
-        assert not any(_adversary_reaches(c, 1, 0, 0.18, SUPER_LINEAR) for c in costs)
-        assert any(_adversary_reaches(c, 1, 0, 0.19, SUPER_LINEAR) for c in costs)
+        assert not any(_adversary_reaches(c, 0, 1, 0.30, LINEAR) for c in costs)
+        assert any(_adversary_reaches(c, 0, 1, 0.31, LINEAR) for c in costs)
+        assert not any(_adversary_reaches(c, 1, 0, 0.29, SUPER_LINEAR) for c in costs)
+        assert any(_adversary_reaches(c, 1, 0, 0.30, SUPER_LINEAR) for c in costs)
 
-    def test_a_pass_must_survive_twice_the_error_a_fail_does(self):
+    def test_the_worst_cases_sit_where_the_gate_binds(self):
+        """The exact adversary's two readings, either side of its thresholds.
+
+        A quadratic at ``C = 389``, where its noise-free growth is the gate,
+        read ``t(n)`` and ``t(64n)`` low and ``t(8n)`` high by ``e``: passed
+        from ``e`` 30.20%. A linear at ``C = 5`` (``C*`` is 5.0008) read the
+        other way: failed from ``e`` 29.41%. Either error keeps ``t3 / t1``
+        where it was, so the gate is what the adversary is pressed against:
+        read ``t(64n)`` a little lower still and the ceiling is under the
+        bound, and only the gate keeps the quadratic from passing.
+        """
+        from tests.wallclock.growth import (
+            LINEAR,
+            SUPER_LINEAR,
+            UNDECIDED,
+            growth_bound,
+            min_total_growth,
+        )
+
+        def read(exact, signs, error):
+            return _growth([t * (1 + s * error) for t, s in zip(exact, signs)])
+
+        quadratic, toward_linear = _costs(389, 0, 1), (-1, 1, -1)
+        assert read(quadratic, toward_linear, 0.3010).verdict != LINEAR
+        assert read(quadratic, toward_linear, 0.3025).verdict == LINEAR
+        pressed = _growth(
+            (quadratic[0] * 0.6975, quadratic[1] * 1.3025, quadratic[2] * 0.68)
+        )
+        assert pressed.ratio_ceiling < growth_bound(_STEP)
+        assert pressed.total_growth < min_total_growth(_STEP)
+        assert pressed.verdict == UNDECIDED
+
+        linear, toward_quadratic = _costs(5.0, 1, 0), (1, -1, 1)
+        assert read(linear, toward_quadratic, 0.2930).verdict != SUPER_LINEAR
+        assert read(linear, toward_quadratic, 0.2943).verdict == SUPER_LINEAR
+
+    def test_a_pass_must_survive_twice_the_error_a_fail_does(self, monkeypatch):
         """#1741: the planted ``3000 + n**2`` loop, measured here at sizes 2,
-        16 and 128, then the middle minimum read 1.5x high, as a loaded runner
+        16 and 128, then the middle figure read 1.5x high, as a loaded runner
         can. The lower half is nearly all fixed cost, so one symmetric
         allowance called that linear and the quadratic passed without the
         window moving up. With the pass side's allowance doubled it is
-        undecided and escalates, where the same quadratic fails."""
+        undecided and escalates, where the same quadratic fails.
+
+        That reading's total growth (5.5) is now under the gate as well
+        (#1781), which leaves it undecided before either allowance is read. So
+        the allowance is also held where the gate lets a window decide: the
+        same shape at ``300 + n**2`` (total growth 14.6), the middle read
+        1.7x high, is linear under one symmetric allowance and undecided
+        under the doubled one.
+        """
+        from tests.wallclock import growth as growth_module
         from tests.wallclock.growth import (
             LINEAR,
             NOISE_ALLOWANCE,
             PASS_NOISE_ALLOWANCE,
             UNDECIDED,
+            min_total_growth,
         )
 
         measured = (146.72, 158.18, 810.95)
@@ -3217,6 +3294,13 @@ class TestTheGrowthRule:
         assert _growth(measured).verdict == UNDECIDED
         assert inflated.verdict == UNDECIDED
         assert inflated.verdict != LINEAR
+
+        exact = _costs(300, 0, 1)
+        decidable = _growth((exact[0], exact[1] * 1.7, exact[2]))
+        assert decidable.total_growth >= min_total_growth(_STEP)
+        assert decidable.verdict == UNDECIDED
+        monkeypatch.setattr(growth_module, "PASS_NOISE_ALLOWANCE", NOISE_ALLOWANCE)
+        assert decidable.verdict == LINEAR
 
     @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
     def test_the_fixed_cost_control_decides_under_ci_measured_noise(
@@ -3230,7 +3314,10 @@ class TestTheGrowthRule:
         ``_FIXED_COST_LINEAR_SMALL`` the procedure reaches a window where that
         error decides linear, its top one. From ``small=2``, the pre-#1760
         configuration on the same budget, it never decides and is refused
-        (#1760). Production callers' headroom under the same noise is #1781.
+        (#1760). This replays the error at the figures, past the measurement:
+        a reading whose middle size is the cheapest per unit is the shape one
+        fast middle sample gave the minimum, which the second-smallest sheds
+        (#1781, ``TestTheGrowthMeasurement``). Here the figures carry it.
         """
         from tests.wallclock import assert_linear_growth
         from tests.wallclock import growth as growth_module
@@ -3285,21 +3372,494 @@ class TestTheGrowthRule:
         ``t2/t1 = 1.12`` and ``t3/t1 = 3.84``: a raw ratio of 22.7, over the
         bound, from a denominator that was noise. Neither verdict: the window
         moves up. A pure quadratic's reading keeps a floor twice the bound.
+
+        That reading's total growth is under the gate (#1781), so the same
+        shape is also held where the gate lets a window decide: ``t(8n)``
+        read low at a total growth of 12, a raw ratio of 23.4 whose floor,
+        13.2, the allowance brings under the bound.
         """
-        from tests.wallclock.growth import SUPER_LINEAR, UNDECIDED, growth_bound
+        from tests.wallclock.growth import (
+            SUPER_LINEAR,
+            UNDECIDED,
+            growth_bound,
+            min_total_growth,
+        )
 
         noisy_linear = _growth((1.0, 1.12, 3.84))
         pure_quadratic = _growth(_costs(0, 0, 1))
         assert noisy_linear.ratio > growth_bound(_STEP)
         assert noisy_linear.verdict == UNDECIDED
+
+        decidable = _growth((1.0, 1.45, 12.0))
+        assert decidable.total_growth >= min_total_growth(_STEP)
+        assert decidable.ratio > growth_bound(_STEP)
+        assert decidable.verdict == UNDECIDED
         assert pure_quadratic.verdict == SUPER_LINEAR
         assert pure_quadratic.ratio_floor > 2 * growth_bound(_STEP)
 
     def test_the_bound_is_the_midpoint_of_linear_and_quadratic(self):
-        from tests.wallclock import growth_bound
+        """At step 4 the bound is 8, linear's own value: a linear cost with no
+        fixed part reads a ceiling of exactly 8 under the pass allowance, and
+        any fixed part raises it. So no noise-free linear cost passes at step
+        4 (``C*`` is 0 there), and ``min_total_growth(4)`` is ``4 ** 2``, the
+        total growth of a cost with no fixed part."""
+        from tests.wallclock import growth_bound, min_total_growth
+        from tests.wallclock.growth import UNDECIDED, Growth
 
         assert growth_bound(8) == 8**1.5
         assert growth_bound(4) == 8.0
+
+        assert min_total_growth(4) == 16.0
+        no_fixed_cost = Growth(sizes=(1, 4, 16), seconds=(1.0, 4.0, 16.0), step=4)
+        assert no_fixed_cost.ratio_ceiling == pytest.approx(growth_bound(4))
+        assert no_fixed_cost.verdict == UNDECIDED
+
+    def test_the_gate_is_where_a_noise_free_linear_cost_first_passes(self):
+        """``min_total_growth``: the total growth of ``C* + n`` whose ceiling
+        meets the bound, solved here two ways.
+
+        In closed form (the module's, written out again), and by bisecting
+        ``ratio_ceiling`` itself. The gate equals the first and does not
+        exceed the second, so no noise-free linear window that can pass is
+        held back by it: just under ``C*`` the first window passes, just
+        over it does not. 11.4986 at step 8 (``C*`` 5.0008), where it was 4
+        before #1781.
+        """
+        from tests.wallclock.growth import (
+            LINEAR,
+            PASS_NOISE_ALLOWANCE,
+            UNDECIDED,
+            growth_bound,
+            min_total_growth,
+        )
+
+        k, p, bound = float(_STEP), PASS_NOISE_ALLOWANCE, growth_bound(_STEP)
+        closed_fixed = ((k - 1) * (bound - k) - p * (k + 1) * (bound + k)) / (
+            2 * p * (bound + 1)
+        )
+        closed_gate = (closed_fixed + k * k) / (closed_fixed + 1)
+        assert abs(min_total_growth(_STEP) - closed_gate) < 1e-9
+
+        passes, fails = 0.0, 100.0
+        assert _growth(_costs(passes, 1, 0)).ratio_ceiling < bound
+        assert _growth(_costs(fails, 1, 0)).ratio_ceiling >= bound
+        for _ in range(200):
+            middle = (passes + fails) / 2
+            if _growth(_costs(middle, 1, 0)).ratio_ceiling < bound:
+                passes = middle
+            else:
+                fails = middle
+        assert abs(passes - closed_fixed) < 1e-9
+        assert min_total_growth(_STEP) <= _growth(_costs(passes, 1, 0)).total_growth
+        assert min_total_growth(_STEP) == pytest.approx(11.4986, abs=1e-4)
+
+        assert _growth(_costs(closed_fixed - 1e-6, 1, 0)).verdict == LINEAR
+        assert _growth(_costs(closed_fixed + 1e-6, 1, 0)).verdict == UNDECIDED
+
+
+# ---- replay: the measurement, fed recorded samples (no clock)
+
+
+class _Recorded:
+    """One size's per-call samples in one window, in the order they were taken.
+
+    It stands in for the payload: ``_replay`` hands one out each time the
+    measurement builds a size, and ``_replayed_cpu_seconds`` reads it back as
+    the clock would have.
+    """
+
+    def __init__(self, size: int, per_call):
+        self.size = size
+        self.per_call = tuple(per_call)
+        self.taken = 0
+
+
+def _replayed_cpu_seconds(fn, payload: _Recorded, calls: int) -> float:
+    """``growth._cpu_seconds``, replayed: ``calls`` times the next sample.
+
+    The calibration loop calls with 1, 2, 4, ... calls until a sample reaches
+    ``MIN_SAMPLE_SECONDS``. Each of those reads the first recorded sample, and
+    the one that settles the count takes it, as the measurement does; every
+    call after that is one round's sample. Counts are powers of two, so the
+    per-call time the measurement divides back out is the recorded one.
+    """
+    from tests.wallclock.growth import MAX_CALLS_PER_SAMPLE, MIN_SAMPLE_SECONDS
+
+    seconds = payload.per_call[payload.taken] * calls
+    if payload.taken or seconds >= MIN_SAMPLE_SECONDS or calls >= MAX_CALLS_PER_SAMPLE:
+        payload.taken += 1
+    return seconds
+
+
+def _replay(monkeypatch, *windows):
+    """Have the measurement replay ``windows``: per window, ``(size, samples)``
+    for each of its three sizes, in the order the measurement builds them.
+
+    Returns ``payload_at`` and every ``_Recorded``, so a test can check how
+    many samples of each the measurement took.
+    """
+    from tests.wallclock import growth as growth_module
+
+    monkeypatch.setattr(growth_module, "_cpu_seconds", _replayed_cpu_seconds)
+    recorded = [
+        _Recorded(size, samples) for window in windows for size, samples in window
+    ]
+    queue = list(recorded)
+
+    def payload_at(size: int) -> _Recorded:
+        payload = queue.pop(0)
+        assert payload.size == size, (payload.size, size)
+        return payload
+
+    return payload_at, recorded
+
+
+def _untimed(_payload) -> None:
+    """The function under test in a replay: only the warm-up calls it."""
+
+
+def _shaped(sizes, clean, shapes):
+    """A window whose samples at each size are its clean cost times a shape."""
+    return [
+        (size, [cost * factor for factor in shape])
+        for size, cost, shape in zip(sizes, clean, shapes)
+    ]
+
+
+#: Every early-window false super-linear CI recorded since 2026-09-15 (#1781):
+#: run, sizes, and the per-call figures in ms. Each read ``t(8n)`` at or
+#: below ``t(n)``, or within 4% of it, at a total growth of 4.1-10.8.
+_CI_EARLY_WINDOW_READINGS = [
+    ("redact-38210471923", (256, 2048, 16384), (0.0052, 0.0045, 0.0213)),
+    ("redact-38248444848", (256, 2048, 16384), (0.0048, 0.0041, 0.0224)),
+    ("redact-37607508169", (256, 2048, 16384), (0.0051, 0.0049, 0.0305)),
+    ("redact-38551626267", (256, 2048, 16384), (0.0053, 0.0045, 0.0272)),
+    ("linear-2000-38234575913", (128, 1024, 8192), (0.2451, 0.2058, 1.0176)),
+    ("linear-2000-36806974464", (128, 1024, 8192), (0.3345, 0.2809, 1.7592)),
+    ("sshd-rhost-37742299909", (6, 48, 384), (0.0661, 0.0661, 0.5137)),
+    ("sshd-slot-36981120535", (48, 384, 3072), (0.0127, 0.0132, 0.1370)),
+]
+
+#: One window of the CI probe (#1781, run 38534921699, ``2000 + n`` under four
+#: saturated workers) in ns per unit of work, the first five samples per size.
+#: The middle size's fourth read 30% fast; the smallest's read 13% fast in the
+#: same round. Recorded at sizes 128-8192, where that control's fixed cost is
+#: too large to decide; replayed per unit at 1024-65536, where it decides.
+_PROBE_PER_UNIT_NS = (
+    (51.6, 50.6, 50.4, 44.0, 50.3),
+    (51.1, 51.1, 51.2, 35.6, 51.0),
+    (53.3, 53.6, 53.7, 53.0, 53.5),
+)
+_PROBE_SIZES = (1024, 8192, 65536)
+
+#: CI's false pass of the planted quadratic (run 37004223565, 2026-10-02):
+#: ``2000 + n**2`` at sizes 2, 16 and 128, passed as linear on these figures
+#: in ms (measured 7.7x).
+_CI_FALSE_PASS_MS = (0.0999, 0.3631, 2.3914)
+
+
+def _probe_window(per_unit_ns=_PROBE_PER_UNIT_NS):
+    return [
+        (size, [ns * 1e-9 * (2000 + size) for ns in samples])
+        for size, samples in zip(_PROBE_SIZES, per_unit_ns)
+    ]
+
+
+class TestTheGrowthMeasurement:
+    """The measurement itself, replayed from recorded samples (#1781).
+
+    ``_cpu_seconds`` is replaced by a replay, so ``_calibrate``,
+    ``_measure_window``, ``measure_growth`` and the judge run as they do on a
+    runner: the figure judged is the one the measurement picks from the
+    samples, not one handed to ``Growth``. ``max_escalations=0`` judges one
+    window alone.
+    """
+
+    @pytest.mark.parametrize(
+        "sizes, ms",
+        [reading[1:] for reading in _CI_EARLY_WINDOW_READINGS],
+        ids=[reading[0] for reading in _CI_EARLY_WINDOW_READINGS],
+    )
+    def test_a_ci_early_window_false_fail_is_not_super_linear(
+        self, monkeypatch, sizes, ms
+    ):
+        """Replayed as a window whose figures read CI's, it is not failed.
+
+        Its total growth is under ``min_total_growth``: the work does not show
+        there, so the window is undecided and would move up (alone, it is
+        refused). Under the old gate of 4 the same replay fails as
+        super-linear, the false fail CI reported, on the same figures.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock import growth as growth_module
+        from tests.wallclock.growth import DEFAULT_REPETITIONS
+
+        figures = [figure * 1e-3 for figure in ms]
+        shape = (1.03, 1.0, 1.0, 1.01, 1.05)  # second-smallest of 3 or 5: 1.0
+        reading = ", ".join(
+            f"{size}: {figure:.4f} ms" for size, figure in zip(sizes, ms)
+        )
+
+        def judged():
+            payload_at, recorded = _replay(
+                monkeypatch, _shaped(sizes, figures, [shape] * 3)
+            )
+            with pytest.raises(AssertionError) as error:
+                assert_linear_growth(
+                    _untimed,
+                    payload_at,
+                    small=sizes[0],
+                    label="CI's reading, replayed",
+                    max_escalations=0,
+                )
+            assert reading in str(error.value), str(error.value)
+            return str(error.value), [payload.taken for payload in recorded]
+
+        message, taken = judged()
+        assert "could not decide" in message, message
+        assert taken == [DEFAULT_REPETITIONS] * 3, taken
+
+        # The old gate: failed, after every sample or, where the floor is
+        # already twice the bound, once every size has three.
+        monkeypatch.setattr(growth_module, "min_total_growth", lambda step: 4.0)
+        message, taken = judged()
+        assert "is the usual cause" in message, message
+        assert taken in ([DEFAULT_REPETITIONS] * 3, [3] * 3), taken
+
+    def test_one_fast_sample_does_not_set_a_size(self, monkeypatch):
+        """The probe's middle size, ``51.1, 51.1, 51.2, 35.6, 51.0`` ns per
+        unit: the figure reads 51.0, the clean value, and the window decides
+        linear. Its minimum, the old figure, read 35.6 and left the window
+        undecided — the shape of the five CI refusals at a top window, where
+        the middle size was the cheapest per unit.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import DEFAULT_REPETITIONS, UNDECIDED, Growth
+
+        window = _probe_window()
+        payload_at, recorded = _replay(monkeypatch, window)
+
+        growth = assert_linear_growth(
+            _untimed,
+            payload_at,
+            small=_PROBE_SIZES[0],
+            label="the probe's window, replayed",
+            max_escalations=0,
+        )
+        assert [payload.taken for payload in recorded] == [DEFAULT_REPETITIONS] * 3
+        middle_per_unit_ns = growth.seconds[1] / (2000 + _PROBE_SIZES[1]) * 1e9
+        assert middle_per_unit_ns == pytest.approx(51.1, rel=0.02)
+
+        minima = tuple(min(samples) for _, samples in window)
+        assert Growth(_PROBE_SIZES, minima, _STEP).verdict == UNDECIDED
+
+    def test_two_fast_samples_at_one_size_can_move_it(self, monkeypatch):
+        """The residual the module states: one fast sample per size cannot set
+        the figure, two can. With a second fast middle sample the figure reads
+        the fast regime, 36.1 ns per unit, and the window no longer decides
+        (it would move up). 57 of 14652 saturated probe windows had two fast
+        samples of five at one size, and in 56 another size had at most one.
+        """
+        from tests.wallclock import assert_linear_growth
+
+        second_fast = (51.1, 51.1, 36.1, 35.6, 51.0)
+        window = _probe_window(
+            (_PROBE_PER_UNIT_NS[0], second_fast, _PROBE_PER_UNIT_NS[2])
+        )
+        payload_at, _ = _replay(monkeypatch, window)
+
+        with pytest.raises(AssertionError, match="could not decide") as error:
+            assert_linear_growth(
+                _untimed,
+                payload_at,
+                small=_PROBE_SIZES[0],
+                label="two fast middle samples",
+                max_escalations=0,
+            )
+        middle_ms = 36.1e-9 * (2000 + _PROBE_SIZES[1]) * 1e3
+        assert f"{_PROBE_SIZES[1]}: {middle_ms:.4f} ms" in str(error.value)
+
+    def test_one_fast_sample_does_not_pass_a_quadratic(self, monkeypatch):
+        """CI's false pass, with each odd figure ONE sample among clean ones.
+
+        ``2000 + n**2`` read 0.0999, 0.3631 and 2.3914 ms at sizes 2, 16 and
+        128: per unit of that cost, ``t(n)`` and ``t(64n)`` read 0.31x and
+        0.81x the middle size's, and the minimum passed it. Replayed with
+        those two values as one sample each among five that read the middle
+        size's speed, at that window and the next: the first no longer
+        decides (its fixed cost is ~500x the work at its smallest size, past
+        the ~390x a quadratic fails from) and the second fails it, ending
+        once every size has three samples.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import LINEAR, Growth
+
+        unit = _CI_FALSE_PASS_MS[1] * 1e-3 / (2000 + 16 * 16)
+        fast_first = _CI_FALSE_PASS_MS[0] * 1e-3 / ((2000 + 2 * 2) * unit)
+        fast_last = _CI_FALSE_PASS_MS[2] * 1e-3 / ((2000 + 128 * 128) * unit)
+        shapes = (
+            (1.0, 1.01, 1.0, fast_first, 1.02),
+            (1.0, 1.01, 1.0, 1.0, 1.01),
+            (1.0, fast_last, 1.01, 1.0, 1.02),
+        )
+
+        def window(small):
+            sizes = (small, small * _STEP, small * _STEP * _STEP)
+            return _shaped(sizes, [(2000 + n * n) * unit for n in sizes], shapes)
+
+        payload_at, recorded = _replay(monkeypatch, window(2), window(16))
+        with pytest.raises(AssertionError, match="is the usual cause") as error:
+            assert_linear_growth(
+                _untimed, payload_at, small=2, label="CI's false pass, replayed"
+            )
+        assert "(16: " in str(error.value), str(error.value)
+        assert [payload.taken for payload in recorded] == [5, 5, 5, 3, 3, 3]
+
+        minima = tuple(min(samples) for _, samples in window(2))
+        assert minima == pytest.approx(
+            tuple(ms * 1e-3 for ms in _CI_FALSE_PASS_MS), rel=1e-9
+        )
+        assert Growth((2, 16, 128), minima, _STEP).verdict == LINEAR
+
+    def test_a_window_does_not_end_on_one_sample(self, monkeypatch):
+        """The early exit waits until every size has three samples.
+
+        ``C + n`` with ``C`` 4.5x the work at the smallest size, the middle
+        size's first sample (the one that settles its call count) read at
+        0.42x. On that one sample per size the floor is three times the
+        bound, so a window allowed to end there would fail a linear cost.
+        The exit needs a floor of twice the bound, which takes a sample this
+        deep; the probe's deepest was 0.53x, and CI read ``t(8n)`` under
+        ``t(n)``.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import (
+            DEFAULT_REPETITIONS,
+            SUPER_LINEAR,
+            Growth,
+            growth_bound,
+        )
+
+        sizes = (1024, 8192, 65536)
+        clean = [(4.5 * 1024 + n) * 50e-9 for n in sizes]
+        shapes = (
+            (1.0, 1.01, 1.0, 1.02, 1.01),
+            (0.42, 1.0, 1.01, 1.0, 1.02),
+            (1.0, 1.01, 1.02, 1.0, 1.01),
+        )
+        window = _shaped(sizes, clean, shapes)
+        payload_at, recorded = _replay(monkeypatch, window)
+
+        assert_linear_growth(
+            _untimed,
+            payload_at,
+            small=sizes[0],
+            label="a fast first sample",
+            max_escalations=0,
+        )
+        assert [payload.taken for payload in recorded] == [DEFAULT_REPETITIONS] * 3
+
+        first = Growth(sizes, tuple(samples[0] for _, samples in window), _STEP)
+        assert first.verdict == SUPER_LINEAR
+        assert first.ratio_floor / growth_bound(_STEP) == pytest.approx(3.0, rel=0.01)
+
+    def test_a_window_ends_early_only_at_twice_the_bound(self, monkeypatch):
+        """Super-linear is not enough to stop: the floor must be twice the bound.
+
+        ``300 + n**2`` at 2, 16 and 128 reads super-linear on every sample,
+        with a floor of 27.5, over the bound (22.6) and under twice it. So the
+        window takes all five samples per size before it fails the quadratic.
+        CI's false pass replayed above shows the other side: a floor past
+        twice the bound ends the window at three.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import DEFAULT_REPETITIONS, SUPER_LINEAR, Growth
+
+        sizes = (2, 16, 128)
+        clean = [300 * 4 + n * n for n in sizes]
+        shape = (1.0, 1.01, 1.0, 1.02, 1.01)
+        payload_at, recorded = _replay(
+            monkeypatch, _shaped(sizes, [cost * 1e-6 for cost in clean], [shape] * 3)
+        )
+
+        with pytest.raises(AssertionError, match="is the usual cause"):
+            assert_linear_growth(
+                _untimed,
+                payload_at,
+                small=sizes[0],
+                label="over the bound, under twice it",
+                max_escalations=0,
+            )
+        assert [payload.taken for payload in recorded] == [DEFAULT_REPETITIONS] * 3
+
+        exact = Growth(sizes, tuple(clean), _STEP)
+        assert exact.verdict == SUPER_LINEAR
+        assert exact.ratio_floor == pytest.approx(27.46, abs=0.01)
+
+    def test_the_sample_that_settles_the_count_is_one_of_the_five(self, monkeypatch):
+        """The calibration sample counts toward the figure.
+
+        The probe's window, with the largest size's samples replaced: the
+        calibration sample reads 53.3 ns per unit, the regime the other sizes
+        were read in, then one fast round (37.3) and three slow ones (61.3).
+        The second-smallest of the five is the calibration sample. Of the
+        four rounds alone it would be a slow one.
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import DEFAULT_REPETITIONS
+
+        only_the_first_is_clean = (53.3, 37.3, 61.3, 61.3, 61.3)
+        window = _probe_window(
+            (_PROBE_PER_UNIT_NS[0], _PROBE_PER_UNIT_NS[1], only_the_first_is_clean)
+        )
+        payload_at, recorded = _replay(monkeypatch, window)
+
+        growth = assert_linear_growth(
+            _untimed,
+            payload_at,
+            small=_PROBE_SIZES[0],
+            label="a clean calibration sample",
+            max_escalations=0,
+        )
+        assert [payload.taken for payload in recorded] == [DEFAULT_REPETITIONS] * 3
+        largest_per_unit_ns = growth.seconds[2] / (2000 + _PROBE_SIZES[2]) * 1e9
+        assert largest_per_unit_ns == pytest.approx(53.3, rel=1e-9)
+
+    @pytest.mark.parametrize("repetitions", [1, 2])
+    def test_fewer_than_three_samples_per_size_are_refused(self, repetitions):
+        """The figure is the second-smallest, and the early exit reads three."""
+        from tests.wallclock import assert_linear_growth, measure_growth
+
+        def never_built(size):
+            raise AssertionError("refused before anything is measured")
+
+        with pytest.raises(ValueError, match="repetitions must be at least 3"):
+            measure_growth(_untimed, never_built, small=1, repetitions=repetitions)
+        with pytest.raises(ValueError, match="repetitions must be at least 3"):
+            assert_linear_growth(
+                _untimed,
+                never_built,
+                small=1,
+                label="too few samples",
+                repetitions=repetitions,
+            )
+
+    def test_three_samples_per_size_are_enough(self, monkeypatch):
+        """The positive half: three samples per size measure and decide."""
+        from tests.wallclock import assert_linear_growth
+
+        three_each = tuple(samples[:3] for samples in _PROBE_PER_UNIT_NS)
+        payload_at, recorded = _replay(monkeypatch, _probe_window(three_each))
+
+        assert_linear_growth(
+            _untimed,
+            payload_at,
+            small=_PROBE_SIZES[0],
+            label="three samples per size",
+            repetitions=3,
+            max_escalations=0,
+        )
+        assert [payload.taken for payload in recorded] == [3, 3, 3]
 
 
 # ---- behaviour: the helper, measured
@@ -3350,7 +3910,7 @@ class TestTheGrowthHelper:
         configuration, this control's last window is ``1024, 8192, 65536``,
         and there its fixed cost is still ~1-3x the work at the window's
         smallest size. So the pass side's 20% allowance, charged on
-        ``t1 + t2``, takes 31-42% of the first difference with exact minima,
+        ``t1 + t2``, takes 31-42% of the first difference with exact figures,
         and #1758's per-size error (``t1`` ~1.5x high relative to ``t2``)
         raised that to 53% and left the ceiling straddling the bound:
         undecided, so refused (#1760).
@@ -3358,9 +3918,9 @@ class TestTheGrowthHelper:
         Starting at ``_FIXED_COST_LINEAR_SMALL`` puts the top window at
         ``8192, 65536, 524288``, where the replay in ``TestTheGrowthRule``
         decides linear. The bound and both allowances are untouched, and the
-        quadratic column above keeps ``small=2``. Production callers' headroom
-        under CI noise, and a false super-linear at an early window, belong to
-        the helper: #1781.
+        quadratic column above keeps ``small=2``. A false super-linear at an
+        early window, and the single odd sample behind both kinds of reading,
+        were the helper's: #1781 changed its per-size figure and its gate.
         """
         from tests.wallclock import assert_linear_growth
         from tests.wallclock.growth import DEFAULT_STEP, MAX_ESCALATIONS
@@ -3372,7 +3932,7 @@ class TestTheGrowthHelper:
             label=f"linear after {fixed} fixed iterations",
         )
         # Escalated at least once: the first window never decides for these
-        # fixed costs (total growth under 4).
+        # fixed costs (total growth under ``min_total_growth``, ~11.5).
         escalated = {
             _FIXED_COST_LINEAR_SMALL * DEFAULT_STEP**k
             for k in range(1, MAX_ESCALATIONS + 1)
