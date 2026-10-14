@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.config.settings import ServerSettings
-from faultmaven.main import run_server
+from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
 

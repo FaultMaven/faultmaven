@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from types import FrameType
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -47,42 +47,6 @@ REFUSE_RAW_MODEL_CONTENT = False
 
 class RawModelContentWarning(UserWarning):
     """A model call carried content the redaction module did not mint (#1998)."""
-
-
-#: The keywords a provider's ``generate()`` accepts beyond ``prompt``,
-#: ``model``, ``max_tokens`` and ``temperature``: the union of what the
-#: adapters read by name. Anything else is reported at the boundary — the
-#: adapters that merge leftover keywords into the request body
-#: (``_merge_extra_kwargs``) would otherwise send it to the provider's API.
-GENERATE_KWARGS = frozenset(
-    {
-        # content, checked by type
-        "messages",
-        "system",  # Anthropic
-        "preamble",  # Cohere
-        # tool and response schemas, built from code
-        "tools",
-        "tool_choice",
-        "response_format",
-        # router knobs every provider consumes or discards
-        "cache_prompt",
-        "reasoning_intent",
-        "min_output_tokens",
-        # provider options read by name
-        "reasoning_effort",  # OpenAI family
-        "stop_sequences",  # Anthropic, Gemini, HuggingFace
-        "top_p",  # Gemini, HuggingFace
-        "top_k",  # Gemini, HuggingFace
-        "repetition_penalty",  # HuggingFace
-        "safety_settings",  # Gemini
-        "strict_tools",  # Cohere
-        "stream",  # Cohere
-        "timeout",  # Fireworks
-    }
-)
-
-#: The keywords that carry text to the model: minted ``ModelText`` only.
-CONTENT_KWARGS = ("system", "preamble")
 
 
 class SendSite(NamedTuple):
@@ -141,6 +105,97 @@ def find_send_site(frame: FrameType) -> Optional[SendSite]:
     """The nearest frame from ``frame`` up outside ``infrastructure/llm/``,
     or ``None`` when a task boundary comes first."""
     return _walk_to_caller(frame)[0]
+
+
+# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, in three
+# groups by what happens to them. Together they are the ONE place the router's
+# call surface is declared: ``generate`` filters its kwargs through the union,
+# a provider's ``_merge_extra_kwargs`` discards ``ROUTER_LEVEL_KWARGS``, and
+# ``tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py``
+# pins that the union is exactly ``route()``'s signature, so a new parameter
+# cannot be added to the router without being classified here.
+#
+# ROUTER-CONSUMED: used by the router layer (``route()``, or the registry's
+# ``route_request`` for ``provider_override``) and never forwarded to a
+# provider on a routed call. Only a caller that reaches ``provider.generate()``
+# directly can hand them to a provider, and ``milestone_engine`` can: with
+# ``DA_PROVIDER`` set it binds a concrete provider (#2002).
+ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "case_id",
+        "bypass_cache",
+        "provider_override",
+        "data_type",
+    }
+)
+
+# FORWARDED-KNOB: forwarded by the router to the provider's ``generate()``,
+# which translates or pops them (OpenAI/Gemini translate ``reasoning_intent``,
+# Anthropic acts on ``cache_prompt``, llama.cpp sends ``cache_prompt`` under
+# its own name). They are not request fields in general, so a provider that
+# does not translate one must not send it.
+FORWARDED_KNOB_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "cache_prompt",
+        "reasoning_intent",
+        "min_output_tokens",
+    }
+)
+
+# Everything ``_merge_extra_kwargs`` discards. A provider that genuinely
+# consumes one of these pops it BEFORE the merge.
+ROUTER_LEVEL_KWARGS: FrozenSet[str] = ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KWARGS
+
+# PROVIDER-API: the other ``route()`` parameters, forwarded to the provider's
+# ``generate()`` (``prompt`` is positional and not listed). They are the
+# generic request vocabulary, not a promise about any one wire format: they
+# are request fields for the chat/completions-style APIs, while a transport
+# without that field names (llama.cpp ``/completion``, Ollama ``/api/generate``
+# take a prompt and options, not ``messages``/``tools``/``tool_choice``)
+# translates or drops them itself. A key the caller left at ``None`` is
+# "not given", never a value to send.
+PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "model",
+        "max_tokens",
+        "temperature",
+        "tools",
+        "tool_choice",
+        "response_format",
+        "messages",
+    }
+)
+
+# PROVIDER-OPTION: keywords a provider reads by name that the router never
+# passes — only a direct caller of ``generate()`` can. Disjoint from the three
+# groups above.
+PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "system",  # Anthropic; content, checked as such (CONTENT_KWARGS)
+        "preamble",  # Cohere; content, checked as such (CONTENT_KWARGS)
+        "reasoning_effort",  # OpenAI family
+        "stop_sequences",  # Anthropic, Gemini, HuggingFace
+        "top_p",  # Gemini, HuggingFace
+        "top_k",  # Gemini, HuggingFace
+        "repetition_penalty",  # HuggingFace
+        "safety_settings",  # Gemini
+        "strict_tools",  # Cohere
+        "stream",  # Cohere
+        "timeout",  # Fireworks
+    }
+)
+
+# The closed set a provider's ``generate()`` accepts beyond ``prompt``: what
+# the router forwards plus what an adapter reads by name (#1998). Anything
+# else — ``ROUTER_CONSUMED_KWARGS`` included, which a routed call never
+# forwards — is reported at the boundary, because the adapters that merge
+# leftover keywords into the request body would otherwise send it.
+GENERATE_KWARGS: FrozenSet[str] = (
+    FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS | PROVIDER_OPTION_KWARGS
+)
+
+#: The keywords that carry text to the model: minted ``ModelText`` only.
+CONTENT_KWARGS = ("system", "preamble")
 
 
 class StopReason(str, Enum):
@@ -971,6 +1026,20 @@ class BaseLLMProvider(ABC):
         else:
             self.logger.info(message)
 
+    def _discard_router_kwargs(
+        self, kwargs: Dict[str, Any], model: Optional[str] = None
+    ) -> None:
+        """Pop every router-level knob (``ROUTER_LEVEL_KWARGS``) from *kwargs*.
+
+        The reasoning knobs go through ``_discard_reasoning_kwargs`` so an
+        intent this provider cannot act on is still logged. A transport that
+        genuinely consumes one of the others (llama.cpp's ``cache_prompt``)
+        lifts it out of *kwargs* BEFORE calling this.
+        """
+        self._discard_reasoning_kwargs(kwargs, model=model)
+        for knob in ROUTER_LEVEL_KWARGS:
+            kwargs.pop(knob, None)
+
     def _merge_extra_kwargs(
         self,
         payload: Dict[str, Any],
@@ -983,23 +1052,25 @@ class BaseLLMProvider(ABC):
         if v is not None})`` verbatim, which sends every unconsumed kwarg to
         the provider API as a body field. That makes "remember to pop the
         router's knobs first" a convention rather than a mechanism — and the
-        convention already has holes for the older ``cache_prompt`` knob. A
-        provider written from the checklist in
+        convention already had holes: ``cache_prompt``, and then ``case_id``
+        (#2002), which the DA tool loop passes straight to a concrete provider.
+        A provider written from the checklist in
         ``.claude/rules/llm-providers.md`` with the copied merge idiom would
         send ``reasoning_intent`` and ``min_output_tokens`` on every routed
         call and be dead on arrival against any OpenAI-compatible endpoint.
 
         Routing the merge through here makes the discard automatic: a provider
         that consumes a knob pops it before calling this, and one that does not
-        cannot leak it. ``None`` values are still filtered, so a caller passing
-        ``tools=None`` cannot overwrite a constructed payload field.
+        cannot leak it. The set discarded is ``ROUTER_LEVEL_KWARGS``, the one
+        list of router-level knobs. ``None`` values are still filtered,
+        so a caller passing ``tools=None`` cannot overwrite a constructed
+        payload field.
 
         NOTE: ``registry.route_request`` is deliberately NOT the chokepoint —
         ``milestone_engine`` and ``admin_config`` call ``provider.generate()``
         directly, so a registry-level pop would miss them.
         """
-        self._discard_reasoning_kwargs(kwargs, model=model)
-        kwargs.pop("cache_prompt", None)
+        self._discard_router_kwargs(kwargs, model=model)
         payload.update({k: v for k, v in kwargs.items() if v is not None})
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:

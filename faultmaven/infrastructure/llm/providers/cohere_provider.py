@@ -145,8 +145,9 @@ class CohereProvider(BaseLLMProvider):
             payload["stream"] = True
 
         # Handle response format (v2 supports type: "json_object")
-        if "response_format" in kwargs:
-            payload["response_format"] = kwargs.pop("response_format")
+        response_format = kwargs.pop("response_format", None)
+        if response_format:
+            payload["response_format"] = response_format
 
         # Add any additional kwargs, filtering out None values
         # Discards the router-level knobs, then merges the rest (see base).

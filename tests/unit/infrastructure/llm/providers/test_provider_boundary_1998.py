@@ -536,10 +536,40 @@ def test_the_closed_kwarg_set_covers_what_the_adapters_read():
     dropped = {"max_tokens", "max_completion_tokens"}
     unaccepted = set(read) - base.GENERATE_KWARGS - dropped
     assert not unaccepted, f"adapters read keywords the boundary refuses: {unaccepted}"
-    # And the set names nothing no adapter reads (tools/tool_choice are named
-    # parameters on several adapters, so they are read without kwargs).
-    unread = base.GENERATE_KWARGS - set(read) - {"tools", "tool_choice"}
+    # And the set names nothing no adapter reads (the named parameters of
+    # generate/_generate are read without kwargs).
+    named = {"model", "max_tokens", "temperature", "tools", "tool_choice"}
+    unread = base.GENERATE_KWARGS - set(read) - named
     assert not unread, f"the closed set names keywords no adapter reads: {unread}"
+
+
+def test_the_closed_set_is_a_union_of_disjoint_parts():
+    """One classification of every keyword (#2002, #1998): the router's three
+    groups and the provider-only options are disjoint, and every accepted or
+    discarded set is a union of them."""
+    parts = {
+        "ROUTER_CONSUMED_KWARGS": base.ROUTER_CONSUMED_KWARGS,
+        "FORWARDED_KNOB_KWARGS": base.FORWARDED_KNOB_KWARGS,
+        "PROVIDER_API_KWARGS": base.PROVIDER_API_KWARGS,
+        "PROVIDER_OPTION_KWARGS": base.PROVIDER_OPTION_KWARGS,
+    }
+    names = sorted(parts)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            assert (
+                not parts[a] & parts[b]
+            ), f"{a} and {b} overlap: {parts[a] & parts[b]}"
+    assert base.GENERATE_KWARGS == (
+        base.FORWARDED_KNOB_KWARGS
+        | base.PROVIDER_API_KWARGS
+        | base.PROVIDER_OPTION_KWARGS
+    )
+    assert base.ROUTER_LEVEL_KWARGS == (
+        base.ROUTER_CONSUMED_KWARGS | base.FORWARDED_KNOB_KWARGS
+    )
+    assert not base.GENERATE_KWARGS & base.ROUTER_CONSUMED_KWARGS
+    assert set(base.CONTENT_KWARGS) <= base.PROVIDER_OPTION_KWARGS
+    assert len(base.PROVIDER_OPTION_KWARGS) == 11
 
 
 async def test_the_warning_points_at_the_caller_of_generate(metric):

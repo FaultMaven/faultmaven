@@ -124,7 +124,7 @@ class HuggingFaceProvider(BaseLLMProvider):
             ]
         if "stop_sequences" in kwargs:
             request_body["parameters"]["stop"] = kwargs["stop_sequences"]
-        if "response_format" in kwargs:
+        if kwargs.get("response_format"):
             # Some HF endpoints (TGI/vLLM) support response_format in parameters
             request_body["parameters"]["response_format"] = kwargs["response_format"]
 

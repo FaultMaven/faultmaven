@@ -130,10 +130,10 @@ pip install -e ".[dev]"
 ./scripts/faultmaven-dev.sh start
 
 # Or run the server directly (what the Docker image runs)
-HOST=0.0.0.0 PORT=8090 RELOAD=false python -m faultmaven.main
+HOST=0.0.0.0 PORT=8090 RELOAD=false python -m faultmaven.server
 ```
 
-`python -m faultmaven.main` reads host, port and reload from settings, so set
+`python -m faultmaven.server` reads host, port and reload from settings, so set
 `HOST`, `PORT` and `RELOAD` as above. With none of them set and no OpenAI,
 Anthropic, Fireworks, Groq or Cohere API key configured, the zero-config `local`
 preset applies and it serves `127.0.0.1:8000` with the reloader on.
