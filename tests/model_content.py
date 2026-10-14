@@ -42,7 +42,7 @@ def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Copies of ``messages`` with every content channel minted.
 
     ``content`` is minted as case content, or as model output on an assistant
-    message; tool-call ``arguments`` and every ``str`` leaf of
+    message; tool-call ``arguments`` and every ``str`` (leaf or key) of
     ``provider_metadata`` (on a message or a tool call) as model output, as
     ``model_output`` mints them. Every other key is copied as it is, so a test
     can still hand the boundary a grammar violation.
@@ -69,7 +69,9 @@ def _vetted_leaves(value: Any) -> Any:
     if isinstance(value, str):
         return vetted(value, SOURCE_MODEL_OUTPUT)
     if isinstance(value, dict):
-        return {key: _vetted_leaves(item) for key, item in value.items()}
+        return {
+            _vetted_leaves(key): _vetted_leaves(item) for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return type(value)(_vetted_leaves(item) for item in value)
     return value

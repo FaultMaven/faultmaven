@@ -439,6 +439,10 @@ class TestPlainMessages:
         assert type(messages[1]["tool_calls"][0]["function"]["arguments"]) is ModelText
 
 
+def _mo(text: str):
+    return vetted(text, SOURCE_MODEL_OUTPUT)
+
+
 class TestReasoningArtifacts:
     """F1 (#2015): ``provider_metadata`` is a content channel — an adapter
     echoes it in place of the content — so its ``str`` leaves are minted."""
@@ -471,6 +475,12 @@ class TestReasoningArtifacts:
     def test_model_output_mints_every_str_leaf_and_keeps_the_rest(self):
         message = model_output(self._response())
         metadata = message["provider_metadata"]
+        keys = [key for key in metadata] + [
+            key for block in metadata["assistant_content"] for key in block
+        ]
+        assert keys and all(
+            provenance(key) == (SOURCE_MODEL_OUTPUT, False) for key in keys
+        ), "every key is minted too"
         thinking, tool_use = metadata["assistant_content"]
         for leaf in (thinking["thinking"], thinking["signature"], tool_use["id"]):
             assert provenance(leaf) == (SOURCE_MODEL_OUTPUT, False)
@@ -484,6 +494,9 @@ class TestReasoningArtifacts:
         response = self._response()
         [plain] = plain_messages([model_output(response)])
         assert plain["provider_metadata"] == response.provider_metadata
+        assert all(type(key) is str for key in plain["provider_metadata"])
+        for block in plain["provider_metadata"]["assistant_content"]:
+            assert all(type(key) is str for key in block)
         assert type(plain["provider_metadata"]["assistant_parts"]) is tuple
         leaf = plain["provider_metadata"]["assistant_content"][0]["thinking"]
         assert type(leaf) is str
@@ -493,11 +506,28 @@ class TestReasoningArtifacts:
     @pytest.mark.parametrize(
         "metadata,kind",
         [
-            ({"assistant_parts": [{"text": "raw"}]}, "raw"),
-            ({"assistant_parts": [{"text": forged("x")}]}, "forged"),
-            ({"assistant_parts": [{"text": vetted("x")}]}, "not_model_output"),
+            ({_mo("assistant_parts"): [{_mo("text"): "raw"}]}, "raw"),
+            ({_mo("assistant_parts"): [{_mo("text"): forged("x")}]}, "forged"),
+            (
+                {_mo("assistant_parts"): [{_mo("text"): vetted("x")}]},
+                "not_model_output",
+            ),
+            # Keys reach the wire as text too (#2015 delta R-1).
+            ({_mo("assistant_parts"): [{"raw key": _mo("x")}]}, "raw"),
+            ({_mo("assistant_content"): [{forged("k"): _mo("x")}]}, "forged"),
+            ({vetted("case key"): _mo("x")}, "not_model_output"),
+            # Inside a tuple as inside a list.
+            ({_mo("assistant_parts"): ({_mo("text"): "raw"},)}, "raw"),
         ],
-        ids=["raw", "forged", "case_minted"],
+        ids=[
+            "raw",
+            "forged",
+            "case_minted",
+            "raw_key",
+            "forged_key",
+            "case_minted_key",
+            "raw_in_tuple",
+        ],
     )
     def test_the_grammar_checks_every_leaf(self, metadata, kind):
         message = {

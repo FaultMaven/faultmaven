@@ -20,14 +20,21 @@ repository, with a raw-text scan behind it:
 * R1: the module's dotted path appears in no string (``importlib``,
   ``sys.modules``, ``__import__``, a ``patch`` target);
 * R2: no private name of the module — read from its own source, so the list
-  cannot go stale — appears as an attribute or a string in a file that names
-  the module or the class;
+  cannot go stale — appears as an attribute or a string, in any file (the
+  module can be reached without naming it: ``type(v).__module__``,
+  ``inspect.getmodule``);
 * R3: no function's ``__globals__`` is read;
 * R4: no descriptor's ``__set__`` is called directly;
 * R5: no ``__setattr__`` call writes a ``redacted`` attribute — the slot every
   forgery has to set;
 * R6: no ``__class__`` is assigned, and no class declares a ``redacted`` slot —
-  the two halves of swapping a look-alike's class.
+  the two halves of swapping a look-alike's class;
+* R7, in ``faultmaven/`` only (tests patch it legitimately): nothing assigns
+  ``generate`` or ``_generate`` on an object or a class, so no instance can
+  step around the provider boundary (``provider.generate = provider._generate``).
+
+An exemption covers one hit: a (file, rule, line text) entry, so a second
+hit of the same rule in the same file is a violation.
 
 The raw-text scan catches the first group's shapes where the AST cannot see
 them, inside strings handed to ``eval``, ``exec`` or ``getattr``.
@@ -67,26 +74,34 @@ _MODULE_FILE = "faultmaven/infrastructure/security/" + _LEAF + ".py"
 #: The two files allowed to mint.
 EXEMPT = frozenset({_MODULE_FILE, "tests/" + _LEAF + ".py"})
 
-#: (file, rule) -> why that file's hit of that rule reaches no ModelText.
-RULE_EXEMPTIONS: Dict[Tuple[str, str], str] = {
-    ("tests/unit/modules/agent/tools/test_web_search_tool.py", "R6"): (
+#: (file, rule, the hit's line, stripped) -> why that one hit is no forgery.
+RULE_EXEMPTIONS: Dict[Tuple[str, str, str], str] = {
+    (
+        "tests/unit/modules/agent/tools/test_web_search_tool.py",
+        "R6",
+        "google_provider.__class__ = GoogleCSEProvider",
+    ): (
         "sets a mock's __class__ to GoogleCSEProvider so the tool's isinstance "
         "dispatch takes the CSE branch; the file mints nothing"
     ),
+    (
+        "faultmaven/container/base.py",
+        "R7",
+        'llm_provider.generate = MagicMock(return_value="Mock LLM response")',
+    ): (
+        "the container's minimal test stub: a MagicMock, not a BaseLLMProvider, "
+        "so there is no boundary to step around"
+    ),
 }
 
-#: Every rule needs one of these in a file's text, so a file without any of
-#: them has nothing to find. A necessary condition, not the check.
-_TRIGGERS = (
-    _CLASS,
-    _LEAF,
-    _TOKEN,
-    "__globals__",
-    "__set__",
-    "__setattr__",
-    "__class__",
-    "__slots__",
-)
+#: The method names R7 protects.
+_BOUNDARY_METHODS = frozenset({"generate", "_generate"})
+
+#: The raw-text scan's patterns all contain one of these, so a file without
+#: any is skipped by that scan. The AST walk has no such gate: a string
+#: constant need not appear in the source as written (``'_mi' 'nt'``,
+#: ``'\\x5fmint'``), so every file is parsed.
+_TEXT_TRIGGERS = (_CLASS, _LEAF, _TOKEN)
 
 #: The raw-text backstop: the shapes, wherever they appear in a file's text.
 _TEXT_PATTERNS = [
@@ -206,17 +221,28 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     ``path`` is repo-relative; it resolves relative imports.
     """
     found: List[Tuple[int, str, str]] = []
-    if not any(trigger in source for trigger in _TRIGGERS):
-        return found
-    for lineno, line in enumerate(source.splitlines(), 1):
-        for pattern, what in _TEXT_PATTERNS:
-            if pattern.search(line):
-                found.append((lineno, "text", what))
+    if any(trigger in source for trigger in _TEXT_TRIGGERS):
+        for lineno, line in enumerate(source.splitlines(), 1):
+            for pattern, what in _TEXT_PATTERNS:
+                if pattern.search(line):
+                    found.append((lineno, "text", what))
     tree = _parse(source)
-    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
-    docstrings = _docstrings(tree)
-    mentions = _CLASS in source or _LEAF in source
-    private = private_names() if mentions else frozenset()
+    # Only the type-test rule reads parents, and it needs the class's name as
+    # an identifier — which, unlike a string, is spelled in the source.
+    parents = (
+        {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+        if _CLASS in source
+        else {}
+    )
+    docstrings: List[Set[ast.AST]] = []  # computed on the first string hit
+
+    def is_docstring(node: ast.AST) -> bool:
+        if not docstrings:
+            docstrings.append(_docstrings(tree))
+        return node in docstrings[0]
+
+    private = private_names()
+    in_package = path.startswith("faultmaven/")
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Import):
@@ -239,12 +265,15 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                         (line, "import", f"{_CLASS} imported under another name")
                     )
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node in docstrings:
-                continue
-            if node.value == _MODULE or node.value.startswith(_MODULE + "."):
-                found.append((line, "R1", "the minting module named in a string"))
-            if node.value in private:
-                found.append((line, "R2", f"a private name as a string: {node.value}"))
+            r1 = node.value == _MODULE or node.value.startswith(_MODULE + ".")
+            r2 = node.value in private
+            if (r1 or r2) and not is_docstring(node):
+                if r1:
+                    found.append((line, "R1", "the minting module named in a string"))
+                if r2:
+                    found.append(
+                        (line, "R2", f"a private name as a string: {node.value}")
+                    )
         elif isinstance(node, (ast.Name, ast.Attribute)):
             name = node.id if isinstance(node, ast.Name) else node.attr
             if name == _TOKEN:
@@ -292,6 +321,28 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "R5", f"__setattr__ writing {_SLOT}"))
             if name in {"setattr", "__setattr__"} and "__class__" in strings:
                 found.append((line, "R6", "a __class__ assignment by setattr"))
+            if (
+                in_package
+                and name in {"setattr", "__setattr__"}
+                and _BOUNDARY_METHODS & set(strings)
+            ):
+                found.append((line, "R7", "the provider boundary replaced by setattr"))
+        if in_package and isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for element in ast.walk(target):
+                    if (
+                        isinstance(element, ast.Attribute)
+                        and element.attr in _BOUNDARY_METHODS
+                        and isinstance(element.ctx, ast.Store)
+                    ):
+                        found.append(
+                            (
+                                line,
+                                "R7",
+                                f"the provider boundary replaced: .{element.attr}",
+                            )
+                        )
     return sorted(set(found))
 
 
@@ -299,6 +350,21 @@ def _files() -> Iterable[Tuple[str, Path]]:
     for top in _SCANNED:
         for path in sorted((_ROOT / top).rglob("*.py")):
             yield path.relative_to(_ROOT).as_posix(), path
+
+
+def apply_exemptions(rel: str, source: str, hits: list) -> Tuple[list, dict]:
+    """``(violations, {exemption key: [hits]})``: an exemption covers only the
+    hit on its own line text."""
+    lines = source.splitlines()
+    found, exempted = [], {}
+    for hit in hits:
+        text = lines[hit[0] - 1].strip() if 0 < hit[0] <= len(lines) else ""
+        key = (rel, hit[1], text)
+        if key in RULE_EXEMPTIONS:
+            exempted.setdefault(key, []).append(hit)
+        else:
+            found.append(hit)
+    return found, exempted
 
 
 @lru_cache(maxsize=1)
@@ -309,11 +375,11 @@ def _scan() -> Tuple[dict, dict, int]:
         files += 1
         if rel in EXEMPT:
             continue
-        for hit in violations(path.read_text(encoding="utf-8"), rel):
-            if (rel, hit[1]) in RULE_EXEMPTIONS:
-                exempted.setdefault((rel, hit[1]), []).append(hit)
-            else:
-                found.setdefault(rel, []).append(hit)
+        source = path.read_text(encoding="utf-8")
+        hits, covered = apply_exemptions(rel, source, violations(source, rel))
+        if hits:
+            found[rel] = hits
+        exempted.update(covered)
     return found, exempted, files
 
 
@@ -331,12 +397,27 @@ def test_nothing_outside_the_minting_module_reaches_the_mint():
     )
 
 
-def test_every_rule_exemption_is_still_needed():
-    """An exemption whose hit is gone would silently cover a new one."""
+def test_every_rule_exemption_covers_exactly_its_one_hit():
+    """An exemption whose hit is gone would silently cover a new one, and one
+    that covered two would hide the second."""
     _, exempted, _ = _scan()
     assert set(exempted) == set(
         RULE_EXEMPTIONS
     ), f"stale exemptions: {sorted(set(RULE_EXEMPTIONS) - set(exempted))}"
+    for key, hits in exempted.items():
+        assert len(hits) == 1, f"{key} covers {len(hits)} hits"
+
+
+def test_a_second_hit_in_an_exempted_file_is_a_violation():
+    """A full class-swap forge planted in the R6-exempted file is caught."""
+    rel = "tests/unit/modules/agent/tools/test_web_search_tool.py"
+    source = (_ROOT / rel).read_text(encoding="utf-8") + (
+        f"\n\nclass Fake(str):\n    __slots__ = ('source', '{_SLOT}')\n\n\n"
+        "fake = Fake('raw')\nfake.__class__ = type(non_case_text('x'))\n"
+    )
+    hits, covered = apply_exemptions(rel, source, violations(source, rel))
+    assert {hit[1] for hit in hits} == {"R6"} and len(hits) == 2, hits
+    assert len(next(iter(covered.values()))) == 1
 
 
 def test_the_exempt_files_exist_and_mint():
@@ -427,6 +508,20 @@ PLANTED = {
     "r2_getmodule_getattr": _PUBLIC
     + "import inspect\nm = inspect.getmodule(non_case_text)\n"
     "x = getattr(m, '_mi' 'nt')(raw)\n",
+    # R2 in a file naming neither the module nor the class (#2015 delta).
+    "r2_sys_modules_of_type": "import sys\ndef relabel(v, raw):\n"
+    "    return sys.modules[type(v).__module__]._mint(raw, 'case', True)\n",
+    "r2_getmodule_of_type": "import inspect\ndef relabel(v, raw):\n"
+    "    return inspect.getmodule(type(v))._mint(raw, 'case', True)\n",
+    "r2_vars_of_module": "import inspect\ndef relabel(v, raw):\n"
+    "    return vars(inspect.getmodule(type(v)))['_mi' 'nt'](raw, 'case', True)\n",
+    # R7: the boundary replaced on an instance or a class.
+    "r7_instance_override": "provider.generate = provider._generate\n",
+    "r7_private_override": "provider._generate = send_raw\n",
+    "r7_class_override": "OpenAIProvider.generate = OpenAIProvider._generate\n",
+    "r7_setattr": "setattr(provider, 'generate', send_raw)\n",
+    "r7_object_setattr": "object.__setattr__(provider, '_generate', send_raw)\n",
+    "r7_tuple_target": "provider.generate, other = send_raw, 1\n",
 }
 
 
@@ -437,6 +532,13 @@ def test_a_planted_violation_is_caught(snippet, tmp_path):
     assert violations(
         planted.read_text(encoding="utf-8"), "faultmaven/planted.py"
     ), snippet
+
+
+def test_the_override_rule_is_the_packages_only():
+    """Tests patch ``generate`` legitimately; R7 reads ``faultmaven/`` alone."""
+    source = PLANTED["r7_instance_override"]
+    assert {hit[1] for hit in violations(source, "faultmaven/planted.py")} == {"R7"}
+    assert not violations(source, "tests/unit/test_planted.py")
 
 
 def test_a_relative_import_of_the_private_name_is_caught():

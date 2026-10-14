@@ -266,6 +266,27 @@ VIOLATIONS: Dict[str, tuple] = {
         },
         ("messages.tool_calls.provider_metadata", "raw"),
     ),
+    "raw_metadata_key": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {
+                        vetted("assistant_content", "model_output"): [
+                            {
+                                vetted("type", "model_output"): vetted(
+                                    "text", "model_output"
+                                ),
+                                SECRET: 1,
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        ("messages.provider_metadata", "raw"),
+    ),
     "case_minted_metadata": (
         {
             "messages": [

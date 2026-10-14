@@ -24,6 +24,7 @@ import pytest
 
 from faultmaven.infrastructure.llm.providers import base
 from faultmaven.infrastructure.llm.providers.base import (
+    SEND_SITE,
     BaseLLMProvider,
     LLMResponse,
     ProviderConfig,
@@ -290,3 +291,25 @@ async def test_a_send_its_caller_put_in_a_task_falls_back_to_the_dispatch(router
         assert warning.filename.endswith(
             "faultmaven/infrastructure/llm/providers/registry.py"
         )
+
+
+async def test_the_send_site_is_reset_when_route_returns(router):
+    """The router's record lives for the call, not in the caller's context."""
+    assert SEND_SITE.get() is None
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning):
+        await router.route(prompt=vetted("x"), max_tokens=10)
+        await router.route(prompt="raw", max_tokens=10)
+    assert SEND_SITE.get() is None, "route() left its send site in the caller's context"
+
+
+async def test_a_registry_awaited_inline_still_names_the_caller(router, monkeypatch):
+    """With no timeout, call_external awaits the registry in the caller's own
+    task: base_client.py is transport, never the send site."""
+    import inspect
+
+    monkeypatch.setattr(router, "_resolve_timeout", lambda: None)
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as recorded:
+        line = inspect.currentframe().f_lineno + 1
+        await router.route(prompt="raw text", max_tokens=50)
+    [warning] = _raw_warnings(recorded)
+    assert (warning.filename, warning.lineno) == (__file__, line)

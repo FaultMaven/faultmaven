@@ -326,7 +326,7 @@ async def model_boundary_redacted(value: Any, sanitizer: Any) -> Any:
 def model_output(response: Any) -> Dict[str, Any]:
     """The model's own reply as an assistant message to echo back to it.
 
-    ``content``, every tool call's ``arguments`` and every ``str`` leaf of the
+    ``content``, every tool call's ``arguments`` and every ``str`` (leaf or key) of the
     reasoning artifacts (``provider_metadata`` on the message and on each tool
     call: Anthropic's ``assistant_content``, Gemini's ``assistant_parts`` and
     ``thought_signature``) are minted with source ``model_output``: the model
@@ -372,11 +372,16 @@ def model_output(response: Any) -> Dict[str, Any]:
 
 
 def _mint_leaves(value: Any) -> Any:
-    """A copy of ``value`` with every ``str`` leaf minted as model output."""
+    """A copy of ``value`` with every ``str`` in it minted as model output.
+
+    Every ``str``: each leaf, and each dict KEY — a key reaches the wire as
+    text exactly as a value does (an Anthropic block's key, a ``tool_use``
+    input's key, a Gemini part's key).
+    """
     if isinstance(value, str):
         return _mint(str.__str__(value), SOURCE_MODEL_OUTPUT, False)
     if isinstance(value, dict):
-        return {key: _mint_leaves(item) for key, item in value.items()}
+        return {_mint_leaves(key): _mint_leaves(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return type(value)(_mint_leaves(item) for item in value)
     return value
@@ -542,12 +547,15 @@ def _plain_call(call: Any) -> Any:
 
 
 def _plain_leaves(value: Any) -> Any:
-    """``value`` with every ``str``-subclass leaf unwrapped; the same object if none."""
+    """``value`` with every ``str`` subclass in it (leaf or dict key) unwrapped;
+    the same object if there is none."""
     if isinstance(value, str):
         return value if type(value) is str else str.__str__(value)
     if isinstance(value, dict):
-        items = {key: _plain_leaves(item) for key, item in value.items()}
-        return items if any(items[key] is not value[key] for key in value) else value
+        pairs = [(_plain_leaves(k), k, _plain_leaves(v), v) for k, v in value.items()]
+        if all(pk is k and pv is v for pk, k, pv, v in pairs):
+            return value
+        return {pk: pv for pk, _, pv, _ in pairs}
     if isinstance(value, (list, tuple)):
         items = [_plain_leaves(item) for item in value]
         changed = any(a is not b for a, b in zip(items, value))
@@ -581,7 +589,7 @@ UNKNOWN_KWARG = "unknown_kwarg"  # a generate() keyword outside the closed set
 #: The message grammar: the keys each role may carry. ``content`` is minted
 #: text or ``None`` on every role. An assistant message may carry the model's
 #: tool calls and its reasoning artifacts (``provider_metadata``, whose every
-#: ``str`` leaf is minted model output); a tool result names its call
+#: ``str``, leaf or key, is minted model output); a tool result names its call
 #: (``tool_call_id``) and the function that produced it (``name``, which the
 #: Gemini adapter needs for ``functionResponse.name``).
 MESSAGE_KEYS = {
@@ -679,12 +687,19 @@ def _identifier_violation(
 def _metadata_violations(
     value: Any, argument: str, where: str
 ) -> List[ContentViolation]:
-    """Every ``str`` leaf of a reasoning artifact must be minted model output."""
+    """Every ``str`` in a reasoning artifact — leaf or dict key — must be minted
+    model output.
+
+    Out of scope, as a deliberate encoding rather than a channel: text spelled
+    as numbers (a list of code points). Numbers, booleans and ``None`` are not
+    text; any other object cannot be serialised into a request at all.
+    """
     found: List[ContentViolation] = []
     stack = [value]
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
+            stack.extend(item.keys())
             stack.extend(item.values())
         elif isinstance(item, (list, tuple)):
             stack.extend(item)

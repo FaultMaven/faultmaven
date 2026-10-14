@@ -50,7 +50,13 @@ class RawModelContentWarning(UserWarning):
 
 
 class SendSite(NamedTuple):
-    """The line a model call was made from, for the boundary's warning."""
+    """The line a model call was made from, for the boundary's warning.
+
+    A file name, a line number, a module name and that module's globals — the
+    dict ``warnings.warn`` itself would hand ``warn_explicit``, so the default
+    once-per-location filter applies. Never a frame or its locals: nothing a
+    request carries is held here.
+    """
 
     filename: str
     lineno: int
@@ -58,14 +64,24 @@ class SendSite(NamedTuple):
     module_globals: Dict[str, Any]
 
 
-#: ``faultmaven/infrastructure/llm/`` and asyncio, as path prefixes.
+#: ``faultmaven/infrastructure/llm/`` and asyncio, as path prefixes, and the
+#: one transport module outside the llm package a send passes through:
+#: ``BaseExternalClient.call_external``, which awaits the registry inline when
+#: the call has no timeout.
 _LLM_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
 _ASYNCIO_DIR = os.path.dirname(os.path.abspath(asyncio.__file__)) + os.sep
+_TRANSPORT_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(_LLM_PACKAGE_DIR)), "base_client.py"
+)
 
 #: The send site of the routed call in progress, recorded by ``LLMRouter.route``
 #: before ``call_external`` runs the registry in a task of its own (on 3.11,
 #: ``asyncio.wait_for`` wraps it in one), across which no frame reaches the
 #: caller. A task copies the context it is created in, so the boundary reads it.
+#: ``route`` resets it when the call returns. A task spawned INSIDE that window
+#: (a background flush, say) inherits the value, so a send that task makes
+#: later, from a stack whose frames cannot name it either, is labelled with the
+#: routed call's site: it only ever affects a label, never what is checked.
 SEND_SITE: ContextVar[Optional[SendSite]] = ContextVar("llm_send_site", default=None)
 
 
@@ -81,8 +97,8 @@ def _site_of(frame: FrameType) -> SendSite:
 def _walk_to_caller(
     frame: FrameType,
 ) -> "tuple[Optional[SendSite], FrameType]":
-    """The nearest frame from ``frame`` up outside ``infrastructure/llm/``, and
-    the outermost frame inside it that the walk passed.
+    """The nearest frame from ``frame`` up outside ``infrastructure/llm/`` (and
+    the transport module), and the outermost frame inside it the walk passed.
 
     The first is ``None`` when an asyncio frame comes first: the stack ends at
     a task boundary, and whatever lies beyond it (the event loop's driver) is
@@ -94,7 +110,7 @@ def _walk_to_caller(
         filename = os.path.abspath(cursor.f_code.co_filename)
         if filename.startswith(_ASYNCIO_DIR):
             return None, outermost
-        if not filename.startswith(_LLM_PACKAGE_DIR):
+        if not filename.startswith(_LLM_PACKAGE_DIR) and filename != _TRANSPORT_FILE:
             return _site_of(cursor), outermost
         outermost = cursor
         cursor = cursor.f_back
