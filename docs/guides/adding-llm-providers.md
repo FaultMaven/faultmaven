@@ -116,9 +116,9 @@ Providers that build an OpenAI-style payload must merge leftover kwargs with:
 self._merge_extra_kwargs(payload, kwargs, model=effective_model)
 ```
 
-**Never** hand-roll `payload.update({k: v for k, v in kwargs.items() if v is not None})`. Routing-level knobs — `reasoning_intent`, `min_output_tokens`, `cache_prompt` — are not API fields; a provider that merges them raw sends them as body fields on every routed call and is rejected by any OpenAI-compatible endpoint. The helper discards them (logging any intent it cannot act on) and then merges what remains. Pop a knob yourself only if your provider genuinely translates it.
+**Never** hand-roll `payload.update({k: v for k, v in kwargs.items() if v is not None})`. Routing-level knobs — `ROUTER_ONLY_KWARGS` in `providers/base.py`: `case_id`, `bypass_cache`, `provider_override`, `data_type`, `cache_prompt`, `reasoning_intent`, `min_output_tokens` — are not API fields; a provider that merges them raw sends them as body fields and is rejected by any OpenAI-compatible endpoint. That includes calls that never touch the router: `milestone_engine` binds a concrete provider when `DA_PROVIDER` is set and called `generate()` with `case_id` and `provider_override` (#2002; the caller now omits them, the discard is the provider-side defence). The helper discards the whole set (logging any intent it cannot act on) and then merges what remains. Pop a knob yourself only if your provider genuinely translates it.
 
-`tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` derives its coverage from `PROVIDER_SCHEMA`, so a newly registered provider is checked for this automatically.
+`tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py` derives its matrix from `PROVIDER_SCHEMA` and fails for any registered provider whose request body carries one of those knobs, and it pins that the two constants in `providers/base.py` are exactly `LLMRouter.route`'s signature. A new `route()` keyword must be listed in `ROUTER_ONLY_KWARGS` (discarded by every provider) or `PROVIDER_API_KWARGS` (forwarded). A newly registered provider also needs a response double in that file's `_RESPONSE_BY_PROVIDER`. `tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` covers the reasoning knobs' translation and logging.
 
 ### 3. Anthropic (Claude)
 

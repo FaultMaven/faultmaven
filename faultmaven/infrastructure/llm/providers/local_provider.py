@@ -246,9 +246,14 @@ class LocalProvider(BaseLLMProvider):
         effective_model = self.get_effective_model(model)
 
         # Router-level reasoning knobs (#1117/#1118) this provider has no
-        # mechanism for. Popped HERE, before transport dispatch, because the
-        # Ollama path merges raw kwargs into payload["options"] — the keys
-        # must never reach a request body. Logs any intent it cannot act on.
+        # mechanism for. Popped HERE, before transport dispatch, so an intent
+        # it cannot act on is logged once rather than once per transport
+        # attempt. The rest of ``ROUTER_ONLY_KWARGS`` (``case_id`` and the
+        # others, #2002) is discarded by each transport that builds a body:
+        # ``_merge_extra_kwargs`` on the two chat/completion transports, and
+        # ``_call_ollama_api`` itself, which merges raw kwargs into
+        # ``payload["options"]``. ``cache_prompt`` has to survive to the
+        # llama.cpp transport, which sends it as a real body field.
         self._discard_reasoning_kwargs(kwargs, model=effective_model)
 
         # Which protocol this endpoint speaks, decided by the SAME function
@@ -347,6 +352,12 @@ class LocalProvider(BaseLLMProvider):
             "stream": False,
             "options": {"num_predict": max_tokens, "temperature": temperature},
         }
+
+        # The native API takes generation options only. Router-level knobs
+        # (``case_id``, and ``cache_prompt``, which ``generate`` leaves for the
+        # llama.cpp transport) are not Ollama options and must not land in
+        # ``options``.
+        self._discard_router_kwargs(kwargs, model=model)
 
         # Add any additional options
         if kwargs:

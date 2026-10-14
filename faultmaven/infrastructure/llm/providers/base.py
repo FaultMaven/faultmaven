@@ -11,13 +11,57 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputStrategy,
     create_strategy_for_capability,
+)
+
+# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, split by who
+# consumes them. These two sets are the ONE place the router's call surface is
+# declared; ``generate`` filters its kwargs through their union, a provider's
+# ``_merge_extra_kwargs`` discards the first set, and
+# ``tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py``
+# pins that together they are exactly ``route()``'s signature, so a new
+# parameter cannot be added to the router without being classified here.
+#
+# ROUTER-ONLY: steer routing, caching, budgeting or reasoning, and are not
+# fields of any provider's API. A provider that reaches its request body
+# through ``_merge_extra_kwargs`` never sees them. A provider that genuinely
+# TRANSLATES one (Anthropic's ``cache_prompt``, OpenAI's ``reasoning_intent``,
+# llama.cpp's ``cache_prompt``) pops it BEFORE the merge, as before.
+#
+# This matters because the router is not the only caller: ``milestone_engine``
+# binds a concrete provider when ``DA_PROVIDER`` is set and calls
+# ``provider.generate()`` directly, with ``case_id`` and ``provider_override``
+# in its kwargs (#2002). Nothing upstream strips them on that path.
+ROUTER_ONLY_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "data_type",
+        "case_id",
+        "provider_override",
+        "cache_prompt",
+        "bypass_cache",
+        "reasoning_intent",
+        "min_output_tokens",
+    }
+)
+
+# PROVIDER-API: ``route()`` parameters that ARE request fields, forwarded to
+# the provider's ``generate()`` (``prompt`` is positional and not listed).
+PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "model",
+        "max_tokens",
+        "temperature",
+        "tools",
+        "tool_choice",
+        "response_format",
+        "messages",
+    }
 )
 
 
@@ -690,6 +734,20 @@ class BaseLLMProvider(ABC):
         else:
             self.logger.info(message)
 
+    def _discard_router_kwargs(
+        self, kwargs: Dict[str, Any], model: Optional[str] = None
+    ) -> None:
+        """Pop every router-level knob (``ROUTER_ONLY_KWARGS``) from *kwargs*.
+
+        The reasoning knobs go through ``_discard_reasoning_kwargs`` so an
+        intent this provider cannot act on is still logged. A transport that
+        genuinely consumes one of the others (llama.cpp's ``cache_prompt``)
+        lifts it out of *kwargs* BEFORE calling this.
+        """
+        self._discard_reasoning_kwargs(kwargs, model=model)
+        for knob in ROUTER_ONLY_KWARGS:
+            kwargs.pop(knob, None)
+
     def _merge_extra_kwargs(
         self,
         payload: Dict[str, Any],
@@ -702,23 +760,25 @@ class BaseLLMProvider(ABC):
         if v is not None})`` verbatim, which sends every unconsumed kwarg to
         the provider API as a body field. That makes "remember to pop the
         router's knobs first" a convention rather than a mechanism — and the
-        convention already has holes for the older ``cache_prompt`` knob. A
-        provider written from the checklist in
+        convention already had holes: ``cache_prompt``, and then ``case_id``
+        (#2002), which the DA tool loop passes straight to a concrete provider.
+        A provider written from the checklist in
         ``.claude/rules/llm-providers.md`` with the copied merge idiom would
         send ``reasoning_intent`` and ``min_output_tokens`` on every routed
         call and be dead on arrival against any OpenAI-compatible endpoint.
 
         Routing the merge through here makes the discard automatic: a provider
         that consumes a knob pops it before calling this, and one that does not
-        cannot leak it. ``None`` values are still filtered, so a caller passing
-        ``tools=None`` cannot overwrite a constructed payload field.
+        cannot leak it. The set discarded is ``ROUTER_ONLY_KWARGS``, the one
+        list of what the router consumes. ``None`` values are still filtered,
+        so a caller passing ``tools=None`` cannot overwrite a constructed
+        payload field.
 
         NOTE: ``registry.route_request`` is deliberately NOT the chokepoint —
         ``milestone_engine`` and ``admin_config`` call ``provider.generate()``
         directly, so a registry-level pop would miss them.
         """
-        self._discard_reasoning_kwargs(kwargs, model=model)
-        kwargs.pop("cache_prompt", None)
+        self._discard_router_kwargs(kwargs, model=model)
         payload.update({k: v for k, v in kwargs.items() if v is not None})
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:

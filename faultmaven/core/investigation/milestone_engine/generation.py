@@ -672,6 +672,14 @@ class StructuredOutputGenerator:
                 tools=tools_for_call,
                 window_tokens=tool_loop_budget.hard(max_tokens),
             )
+            # A dedicated DA provider is a CONCRETE provider (not the router),
+            # reached by ``provider.generate()`` directly. The router-level
+            # knobs ``case_id`` (the router's cache key) and ``provider_override``
+            # (the router's fallback-chain pick) mean nothing to it and would
+            # otherwise land in its request body (#2002), so they are set on
+            # the router path only. ``cache_prompt`` stays on both: Anthropic
+            # and llama.cpp act on it, every other provider discards it.
+            direct_provider = self.deps.da_provider is not None
             generate_kwargs = dict(
                 prompt="",
                 messages=bounded_messages,
@@ -679,13 +687,15 @@ class StructuredOutputGenerator:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                case_id=case.case_id if case is not None else None,
                 # Cache the stable prefix (system + tools) across the tool-loop
                 # iterations. Only Anthropic acts on this; other providers pop it.
                 cache_prompt=True,
             )
-            if self.deps.da_model and self.deps.da_provider:
-                generate_kwargs["model"] = self.deps.da_model
+            if direct_provider:
+                if self.deps.da_model:
+                    generate_kwargs["model"] = self.deps.da_model
+            else:
+                generate_kwargs["case_id"] = case.case_id if case is not None else None
 
             # Tier 2 — apply STRUCTURED_OUTPUT_PROVIDER override on the
             # tool-augmented path too. Tool-call iterations land Pydantic
@@ -693,8 +703,9 @@ class StructuredOutputGenerator:
             # _parse_schema_tool_call), so the same routing rationale
             # applies: force the LLM call onto a known-STRICT provider
             # when the operator has configured one. The override is only
-            # applied when no da_model is set (DA gets first dibs).
-            if not (self.deps.da_model and self.deps.da_provider):
+            # applied on the router path: a dedicated DA provider gets first
+            # dibs, and ``provider_override`` is a router knob in any case.
+            if not direct_provider:
                 try:
                     from faultmaven.config.settings import get_settings
 

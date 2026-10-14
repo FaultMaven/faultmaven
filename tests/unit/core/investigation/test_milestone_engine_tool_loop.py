@@ -124,6 +124,7 @@ def _make_engine(
     mock_provider=None,
     mock_registry=None,
     da_provider=None,
+    da_model=None,
 ):
     """Create a MilestoneEngine with mocked dependencies."""
     provider = mock_provider or AsyncMock()
@@ -135,6 +136,7 @@ def _make_engine(
         repository=repo,
         investigation_tools=mock_registry,
         da_provider=da_provider,
+        da_model=da_model,
     )
     return engine
 
@@ -2695,6 +2697,143 @@ class TestDaProviderRouting:
 
         # llm_provider should have been called (fallback)
         default_provider.generate.assert_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestDirectDaCallCarriesNoRouterKnobs:
+    """#2002: the tool loop reaches a dedicated DA provider (a concrete
+    provider, not the router) by calling ``provider.generate()`` directly. The
+    router-level knobs ``case_id``, ``bypass_cache`` and ``provider_override``
+    mean nothing there, and used to land in the provider's request body.
+
+    Asserted on the kwargs AT THE PROVIDER DOUBLE, which is the caller's whole
+    contribution; the provider-side discard (``_merge_extra_kwargs``) is pinned
+    separately in ``test_router_knobs_never_reach_a_provider.py`` and would
+    mask a caller regression in a payload-level test.
+    """
+
+    ROUTER_KNOBS = ("case_id", "bypass_cache", "provider_override")
+    CASE_ID = "case-SENTINEL-2002"
+
+    @pytest.fixture(autouse=True)
+    def _structured_output_override_is_configured(self, monkeypatch):
+        """With ``STRUCTURED_OUTPUT_PROVIDER`` set the router path adds
+        ``provider_override``; the direct path must still not carry it."""
+        from faultmaven.config.settings import LLMProvider, get_settings
+
+        monkeypatch.setattr(
+            get_settings().llm, "structured_output_provider", LLMProvider.OPENAI
+        )
+
+    async def _call_tool_loop(self, *, da_provider, da_model, llm_provider):
+        engine = _make_engine(
+            mock_provider=llm_provider,
+            mock_registry=_make_mock_registry(),
+            da_provider=da_provider,
+            da_model=da_model,
+        )
+        case = MagicMock()
+        case.case_id = self.CASE_ID
+        case.evidence = []
+        await engine.generator._tool_augmented_generate(
+            prompt="test",
+            schema_model=SampleResponse,
+            investigation_tools=engine.generator.build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            case=case,
+        )
+
+    @staticmethod
+    def _answering_provider():
+        provider = AsyncMock()
+        provider.generate = AsyncMock(
+            return_value=_make_schema_response(
+                {"agent_response": "Found it", "next_action": "done"}
+            )
+        )
+        return provider
+
+    @pytest.mark.parametrize("da_model", ["da-model-x", None])
+    async def test_a_dedicated_provider_is_called_without_the_router_knobs(
+        self, da_model
+    ):
+        da_prov = self._answering_provider()
+        router = self._answering_provider()
+
+        await self._call_tool_loop(
+            da_provider=da_prov, da_model=da_model, llm_provider=router
+        )
+
+        da_prov.generate.assert_called()
+        router.generate.assert_not_called()
+        for call in da_prov.generate.call_args_list:
+            sent = call.kwargs
+            assert set(self.ROUTER_KNOBS).isdisjoint(sent), sorted(sent)
+            assert self.CASE_ID not in str(sent)
+            # Positive controls: what the provider DOES need is still sent.
+            assert sent["messages"] and sent["tools"]
+            assert sent["cache_prompt"] is True
+            if da_model:
+                assert sent["model"] == da_model
+            else:
+                # No DA model: the structured-output override's model is a
+                # DIFFERENT provider's name and must not be sent either.
+                assert "model" not in sent
+
+    async def test_a_real_openai_adapter_as_da_provider_sends_none_in_its_body(self):
+        """End to end, the shape Fable reproduced for #1998: the real
+        ``OpenAIProvider.generate`` as ``DA_PROVIDER``, transport captured.
+        Two layers hold this (the caller omits the knobs; the provider
+        discards any it is still handed), so it goes red only if BOTH fail —
+        the layers are pinned one at a time by the tests around it."""
+        from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+        from faultmaven.infrastructure.llm.providers.openai_provider import (
+            OpenAIProvider,
+        )
+
+        bodies = []
+
+        async def capture(self, headers, payload, effective_model):
+            bodies.append(payload)
+            return _make_schema_response(
+                {"agent_response": "Found it", "next_action": "done"}
+            )
+
+        da_prov = OpenAIProvider(
+            ProviderConfig(
+                name="openai",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                models=["gpt-4o-mini"],
+                default_model="gpt-4o-mini",
+                timeout=30,
+            )
+        )
+        with patch.object(OpenAIProvider, "_post_chat_completion", capture):
+            await self._call_tool_loop(
+                da_provider=da_prov,
+                da_model="gpt-4o-mini",
+                llm_provider=self._answering_provider(),
+            )
+
+        assert bodies, "the DA provider was never called"
+        for body in bodies:
+            assert set(self.ROUTER_KNOBS + ("cache_prompt",)).isdisjoint(body)
+            assert self.CASE_ID not in str(body)
+
+    async def test_the_router_path_keeps_its_knobs(self):
+        """The control: the knobs were not removed wholesale. The router
+        consumes ``case_id`` (cache key) and ``provider_override``."""
+        router = self._answering_provider()
+
+        await self._call_tool_loop(da_provider=None, da_model=None, llm_provider=router)
+
+        router.generate.assert_called()
+        sent = router.generate.call_args.kwargs
+        assert sent["case_id"] == self.CASE_ID
+        assert sent["provider_override"] == "openai"
+        assert sent["cache_prompt"] is True
 
 
 @pytest.mark.unit
