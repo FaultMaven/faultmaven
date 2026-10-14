@@ -756,6 +756,11 @@ async def delete_document(
     only, per the global-tier policy). A refusal over a document the caller
     cannot even see answers 404 rather than 403 (#867).
 
+    A 204 means the document has no retrievable chunk left (#1966). When its
+    search-index entries cannot be removed the answer is 503 and nothing was
+    deleted: the document stays exactly as it was, and the request can be
+    retried once the knowledge base is available.
+
     Args:
         document_id: Document identifier
 
@@ -783,6 +788,21 @@ async def delete_document(
 
     except HTTPException:
         raise
+    except KnowledgeBaseError as e:
+        # The vector delete failed, so the row change was rolled back before
+        # it committed (#1966): the response can promise that nothing was
+        # deleted, which is what makes retrying safe. A 404 here — what a
+        # `success: False` maps to — would tell the caller the document is
+        # gone while it is still listed and searchable.
+        logger.error(f"Failed to remove document {document_id} from search: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The document was not deleted: removing it from search failed, "
+                "so nothing was changed. Retry the delete once the knowledge "
+                "base is available."
+            ),
+        )
     except Exception as e:
         logger.error(f"Failed to delete document {document_id}: {e}")
         # See update_document — no internal exception text to the widened

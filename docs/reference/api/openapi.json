@@ -12367,7 +12367,7 @@
     },
     "/api/v1/knowledge/documents/{document_id}": {
       "delete": {
-        "description": "Delete a knowledge base document\n\nOwnership-aware (#834): the owner may delete their own personal/team\ndocument; global-scope deletion is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion confirmation",
+        "description": "Delete a knowledge base document\n\nOwnership-aware (#834): the owner may delete their own personal/team\ndocument; global-scope deletion is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA 204 means the document has no retrievable chunk left (#1966). When its\nsearch-index entries cannot be removed the answer is 503 and nothing was\ndeleted: the document stays exactly as it was, and the request can be\nretried once the knowledge base is available.\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion confirmation",
         "operationId": "delete_document_api_v1_knowledge_documents__document_id__delete",
         "parameters": [
           {

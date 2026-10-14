@@ -755,7 +755,9 @@ class TestReconcileVectors:
         return svc
 
     @staticmethod
-    def _factory(db_ids):
+    def _factory(db_ids, unpublished=()):
+        """Rows as the reconcile query reads them: ``(item_id, is_published)``."""
+
         class _Session:
             async def __aenter__(self):
                 return self
@@ -764,7 +766,9 @@ class TestReconcileVectors:
                 return None
 
             async def execute(self, _stmt):
-                return MagicMock(all=lambda: [(i,) for i in db_ids])
+                return MagicMock(
+                    all=lambda: [(i, i not in unpublished) for i in db_ids]
+                )
 
         return lambda: _Session()
 
@@ -819,6 +823,27 @@ class TestReconcileVectors:
         assert cleaned == []
         assert delete_batches == []
         assert orphaned_rows == ["kb_bbbbbbbbbbbb"]
+
+    @pytest.mark.asyncio
+    async def test_an_unpublished_row_without_vectors_is_not_an_orphan(self):
+        """#1966: unpublishing a built-in drops its vectors on purpose. Listing
+        it as orphaned would hand it to repair, which re-embeds it and undoes
+        the unpublish at the next boot. A published row in the same state is
+        still listed."""
+        delete_batches: list[list[str]] = []
+        svc = self._service(
+            chroma_parents={"kb_cccccccccccc"}, delete_batches=delete_batches
+        )
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc,
+            self._factory(
+                {"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"},
+                unpublished={"kb_bbbbbbbbbbbb"},
+            ),
+        )
+        assert orphaned_rows == ["kb_aaaaaaaaaaaa"]
+        assert cleaned == []
+        assert delete_batches == []
 
     @pytest.mark.asyncio
     async def test_consistent_index_is_noop(self):

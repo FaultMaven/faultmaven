@@ -38,8 +38,16 @@ class IKnowledgeService(Protocol):
     See: modules/agent/tools/kb_qa.py, kb_tool_adapter.py.
     """
 
-    async def delete_document(self, document_id: str) -> bool:
-        """Delete a document from the knowledge base."""
+    async def delete_document(self, document_id: str) -> Dict[str, Any]:
+        """Remove a document: hard-delete an authored one, unpublish a built-in.
+
+        Returns ``{"success": True, "document_id", "action"}`` (action
+        ``"deleted"`` or ``"unpublished"``) once the document has no
+        retrievable chunk, or ``{"success": False, "error"}`` when it is absent
+        or no row could be changed. Raises ``KnowledgeBaseError`` when its
+        vectors could not be removed — the document is then left unchanged and
+        the call can be retried (#1966).
+        """
         ...
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:

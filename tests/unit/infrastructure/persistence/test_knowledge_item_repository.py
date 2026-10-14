@@ -273,6 +273,108 @@ class TestInMemoryRepositoryDelete:
 
 
 # ============================================================
+# Deferred commit (#1966)
+# ============================================================
+
+
+@pytest.fixture(params=["database", "in_memory"])
+async def deferring_repository(request):
+    """Both implementations of the ABC, so the deferred-commit contract is the
+    same on each. The database one is real SQLite."""
+    if request.param == "in_memory":
+        yield InMemoryKnowledgeItemRepository()
+        return
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        yield DatabaseKnowledgeItemRepository(session)
+    await engine.dispose()
+
+
+class TestDeferredCommit:
+    """``delete``/``update`` with ``commit=False`` leave the write open for the
+    caller to commit or roll back once it knows whether it wants it — which is
+    how ``KnowledgeService.delete_document`` holds the row change across its
+    vector delete (#1966)."""
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_delete_is_undone_by_rollback(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+
+        assert await repo.delete(item.item_id, commit=False) is True
+        await repo.rollback()
+
+        assert await repo.get_by_id(item.item_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_delete_lands_on_commit(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+
+        assert await repo.delete(item.item_id, commit=False) is True
+        await repo.commit()
+
+        assert await repo.get_by_id(item.item_id) is None
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_update_is_undone_by_rollback(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+        item.is_published = False
+
+        assert await repo.update(item, commit=False) is not None
+        await repo.rollback()
+
+        assert (await repo.get_by_id(item.item_id)).is_published is True
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_update_lands_on_commit(self, deferring_repository):
+        repo = deferring_repository
+        item = await repo.create(create_sample_item())
+        item.is_published = False
+
+        await repo.update(item, commit=False)
+        await repo.commit()
+
+        assert (await repo.get_by_id(item.item_id)).is_published is False
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_write_reports_a_missing_row_instead_of_raising(
+        self, deferring_repository
+    ):
+        """The caller decides from the outcome whether to commit at all, so
+        zero rows matched (absent, a concurrent delete, an RLS refusal) is an
+        answer, not an exception."""
+        repo = deferring_repository
+        ghost = create_sample_item()
+
+        assert await repo.update(ghost, commit=False) is None
+        assert await repo.delete(ghost.item_id, commit=False) is False
+
+    @pytest.mark.asyncio
+    async def test_a_committing_update_of_a_missing_row_still_raises(
+        self, deferring_repository
+    ):
+        with pytest.raises(ValueError):
+            await deferring_repository.update(create_sample_item())
+
+
+# ============================================================
 # List By Organization Tests
 # ============================================================
 

@@ -164,7 +164,8 @@ async def bootstrap_kb(
     # Reconcile the vector index against knowledge_items (the source of truth).
     # Catches drift that the row-keyed prune above is structurally blind to:
     # ChromaDB chunks whose parent has no row (orphaned vectors — deleted) and
-    # rows with no chunks (orphaned rows — warned). This is the safety net that
+    # published rows with no chunks (orphaned rows — warned; an unpublished row
+    # has none by design). This is the safety net that
     # keeps retrieval from landing on a ghost vector with no row behind it.
     (
         result.orphaned_vectors_cleaned,
@@ -360,8 +361,14 @@ async def _reconcile_vectors(
         of truth for a shipped runbook, so a vector with no row can never be
         retrieved-then-resolved — and a single such ghost landing as the top KB
         hit silently kills a runbook-cause match.
-      * **orphaned rows** — a row with no vectors. Can't be repaired here (no
-        embedding model at startup), so it is WARNED, not touched.
+      * **orphaned rows** — a PUBLISHED row with no vectors. Can't be repaired
+        here (no embedding model at startup), so it is WARNED, not touched, and
+        returned for :func:`_repair_orphaned_rows`. An unpublished row is never
+        listed: having no vectors is its intended state, because
+        ``KnowledgeService.delete_document`` unpublishes a built-in by dropping
+        its vectors (retrieval does not honour ``is_published``). Listing it
+        would hand it to repair, which would re-embed it and silently undo the
+        unpublish at the next boot (#1966).
 
     Returns ``(deleted_parent_ids, orphaned_row_ids)``.
 
@@ -405,8 +412,16 @@ async def _reconcile_vectors(
         return [], []
 
     async with db_session_factory() as session:
-        rows = await session.execute(select(KnowledgeItemModel.item_id))
-        db_ids = {r[0] for r in rows.all()}
+        rows = (
+            await session.execute(
+                select(KnowledgeItemModel.item_id, KnowledgeItemModel.is_published)
+            )
+        ).all()
+    # Every row counts as the source of truth for the DELETE side (a vector
+    # whose parent row exists, published or not, is not an orphan); only a
+    # published row is expected to HAVE vectors.
+    db_ids = {item_id for item_id, _published in rows}
+    published_ids = {item_id for item_id, published in rows if published}
 
     # Empty source of truth = anomaly, not a wipe signal. Guard FIRST, before any
     # delete or per-row warning (with no rows there is nothing meaningful to say).
@@ -420,7 +435,7 @@ async def _reconcile_vectors(
             )
         return [], []
 
-    orphaned_rows = sorted(db_ids - chroma_parents)
+    orphaned_rows = sorted(published_ids - chroma_parents)
     for item_id in orphaned_rows:
         logger.warning(
             f"KB consistency: knowledge_item {item_id} has no vectors — it cannot "
@@ -511,8 +526,11 @@ async def _repair_orphaned_rows(
     both entry paths (the single-tenant web-startup bootstrap and the
     cross-tenant ``kb_seed`` job seeding the org-free global tier). Contrast
     reconcile's DELETE side, restricted to built-in ids precisely because
-    deletion CAN cross tenants; addition cannot, so ALL orphaned rows are
-    eligible — a lost authored runbook is repaired the same as a shipped one.
+    deletion CAN cross tenants; addition cannot, so every orphaned PUBLISHED
+    row is eligible — a lost authored runbook is repaired the same as a
+    shipped one. An unpublished row is not an orphan (it has no vectors by
+    design, #1966): reconcile does not list it, and
+    ``reindex_missing_vectors`` refuses it if handed one anyway.
 
     Bounded twice (``max_rows`` / ``max_chunks``, deployment-configurable):
     ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the

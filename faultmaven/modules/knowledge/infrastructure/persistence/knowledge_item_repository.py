@@ -119,31 +119,61 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
+    async def update(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> Optional[KnowledgeItem]:
         """Update existing knowledge item.
 
         Args:
             item: Item with updated fields
+            commit: ``False`` leaves the write uncommitted in the open
+                transaction: :meth:`commit` makes it durable and
+                :meth:`rollback` discards it. A caller that defers the commit
+                is deciding from the outcome whether to commit at all, so a
+                write that matched no row is REPORTED (``None``) instead of
+                raised.
 
         Returns:
-            Updated item
+            The updated item. ``None`` only with ``commit=False`` when no row
+            matched: absent, deleted concurrently, or refused by an RLS write
+            policy (which a PostgreSQL ``UPDATE`` reports as zero rows).
 
         Raises:
-            ValueError: If item not found
+            ValueError: If item not found and ``commit`` is True
             KnowledgeItemRepositoryException: If update fails
         """
         pass
 
     @abstractmethod
-    async def delete(self, item_id: str) -> bool:
+    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
         """Delete knowledge item by ID.
 
         Args:
             item_id: Item identifier
+            commit: ``False`` leaves the delete uncommitted in the open
+                transaction, for :meth:`commit` or :meth:`rollback` to settle.
 
         Returns:
-            True if deleted, False if not found
+            True if a row matched (deleted, or deleted pending the commit),
+            False if none did: absent, or refused by an RLS write policy.
         """
+        pass
+
+    @abstractmethod
+    async def commit(self) -> None:
+        """Make the writes issued with ``commit=False`` durable.
+
+        Raises:
+            KnowledgeItemRepositoryException: If the commit fails. The writes
+                did not land unless the failure came after the database
+                committed (a connection dropped mid-acknowledgement), which a
+                caller cannot tell from here.
+        """
+        pass
+
+    @abstractmethod
+    async def rollback(self) -> None:
+        """Discard the writes issued with ``commit=False``."""
         pass
 
     # =========================================================================
@@ -400,8 +430,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get knowledge item {item_id}: {e}"
             ) from e
 
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Update knowledge item fields."""
+    async def update(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> Optional[KnowledgeItem]:
+        """Update knowledge item fields (see the base class for ``commit``)."""
         try:
             item.updated_at = datetime.now(timezone.utc)
 
@@ -450,9 +482,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             result = await self.db.execute(stmt)
 
             if result.rowcount == 0:
+                if not commit:
+                    return None
                 raise ValueError(f"Knowledge item {item.item_id} not found")
 
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
             logger.debug(f"Updated knowledge item {item.item_id}")
             return item
 
@@ -466,14 +501,15 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to update knowledge item: {e}"
             ) from e
 
-    async def delete(self, item_id: str) -> bool:
-        """Delete knowledge item by ID."""
+    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
+        """Delete knowledge item by ID (see the base class for ``commit``)."""
         try:
             stmt = delete(KnowledgeItemModel).where(
                 KnowledgeItemModel.item_id == item_id
             )
             result = await self.db.execute(stmt)
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
             deleted = result.rowcount > 0
             if deleted:
@@ -486,6 +522,20 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             raise KnowledgeItemRepositoryException(
                 f"Failed to delete knowledge item {item_id}: {e}"
             ) from e
+
+    async def commit(self) -> None:
+        """Commit the session's open transaction."""
+        try:
+            await self.db.commit()
+        except Exception as e:
+            logger.error(f"Failed to commit knowledge item changes: {e}")
+            raise KnowledgeItemRepositoryException(
+                f"Failed to commit knowledge item changes: {e}"
+            ) from e
+
+    async def rollback(self) -> None:
+        """Roll back the session's open transaction."""
+        await self.db.rollback()
 
     # =========================================================================
     # Query Operations
@@ -878,6 +928,16 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     def __init__(self):
         """Initialize empty storage."""
         self._items: Dict[str, KnowledgeItem] = {}
+        # Writes issued with ``commit=False``, keyed by item id: the item to
+        # store, or ``None`` for a delete. Reads see committed state only, as a
+        # second database session would.
+        self._pending: Dict[str, Optional[KnowledgeItem]] = {}
+
+    def _exists(self, item_id: str) -> bool:
+        """Whether the open transaction would see ``item_id``."""
+        if item_id in self._pending:
+            return self._pending[item_id] is not None
+        return item_id in self._items
 
     # =========================================================================
     # CRUD Operations
@@ -899,21 +959,44 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             return None
         return deepcopy(item)
 
-    async def update(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Update knowledge item fields."""
-        if item.item_id not in self._items:
+    async def update(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> Optional[KnowledgeItem]:
+        """Update knowledge item fields (see the base class for ``commit``)."""
+        if not self._exists(item.item_id):
+            if not commit:
+                return None
             raise ValueError(f"Knowledge item {item.item_id} not found")
 
         item.updated_at = datetime.now(timezone.utc)
-        self._items[item.item_id] = deepcopy(item)
+        if commit:
+            self._items[item.item_id] = deepcopy(item)
+        else:
+            self._pending[item.item_id] = deepcopy(item)
         return deepcopy(item)
 
-    async def delete(self, item_id: str) -> bool:
-        """Delete knowledge item by ID."""
-        if item_id not in self._items:
+    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
+        """Delete knowledge item by ID (see the base class for ``commit``)."""
+        if not self._exists(item_id):
             return False
-        del self._items[item_id]
+        if commit:
+            del self._items[item_id]
+        else:
+            self._pending[item_id] = None
         return True
+
+    async def commit(self) -> None:
+        """Apply the writes issued with ``commit=False``."""
+        for item_id, item in self._pending.items():
+            if item is None:
+                self._items.pop(item_id, None)
+            else:
+                self._items[item_id] = item
+        self._pending.clear()
+
+    async def rollback(self) -> None:
+        """Discard the writes issued with ``commit=False``."""
+        self._pending.clear()
 
     # =========================================================================
     # Query Operations
@@ -1073,3 +1156,4 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     def clear(self) -> None:
         """Clear all data (for testing)."""
         self._items.clear()
+        self._pending.clear()

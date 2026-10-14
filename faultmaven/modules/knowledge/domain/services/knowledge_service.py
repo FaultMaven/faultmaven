@@ -581,16 +581,67 @@ class KnowledgeService:
           ``is_published=False`` AND delete its ChromaDB vectors. A bare
           ``is_published=False`` is NOT sufficient — investigation retrieval
           does not honor the flag (``kb_qa`` filters ChromaDB by scope only),
-          so the vectors must be removed or the runbook stays queryable.
-          Deleting the vectors survives restart: the bootstrap content-hash
-          skip won't re-vectorize an unchanged row. (A later content change to
-          the on-disk file re-ingests it — an intentional new version.) The
-          row is kept because the file would resurrect a hard delete anyway.
+          so the vectors must be removed or the runbook stays queryable. The
+          row is kept because the pack file would resurrect a hard delete.
+          The unpublish survives restart: the bootstrap content-hash skip
+          won't re-vectorize an unchanged row, and the reconcile/repair pass
+          re-indexes only PUBLISHED rows without vectors (a later content
+          change to the pack file re-ingests it — an intentional new version).
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
           ``knowledge_items`` row and its vectors.
 
+        **Invariant (#1966): a document reported removed has no retrievable
+        chunk**, now or after any later restart, reconcile, repair or kb_seed
+        run. Retrieval never checks that a chunk's row exists, and the
+        reconcile pass deletes only built-in orphans (diffing the shared
+        collection against one tenant's rows would delete other tenants'
+        content), so a chunk whose row is gone would stay searchable for good.
+        Two stores cannot commit atomically, so the order decides which
+        failure is possible:
+
+        1. The row change (``DELETE``, or ``UPDATE ... is_published=false``)
+           is issued UNCOMMITTED. Zero rows matched — absent, deleted
+           concurrently, or refused by an RLS write policy (a tenant session
+           against a platform-tier row under multi, #770) — rolls back and
+           reports not-removed WITHOUT touching the vector store. The shared
+           ChromaDB collection holds every tenant's chunks, so a vector delete
+           is only ever issued for a row this session proved it may remove.
+        2. ONE vector delete attempt (``retries=0``). A failure rolls the row
+           change back and raises ``KnowledgeBaseError``: the document is left
+           as it was, and the caller can retry (the DELETE route answers 503).
+        3. Commit. A commit that fails after the vectors are gone leaves the
+           one recoverable split state, row present with no vectors: the
+           document is still live (the caller was told the delete failed), a
+           retry completes it, and otherwise the reconcile/repair pass
+           re-indexes the published row. Logged at ERROR with the id.
+        4. Team share rows, after the commit and best effort. A share row for
+           a resource with no row grants nothing (visibility is computed from
+           rows), so a failure here is logged and the delete still succeeds.
+           Unpublish keeps the row, so keeps its shares.
+
+        Holding the transaction across the vector call departs from
+        :meth:`update_document_metadata`'s rule of never holding one across a
+        vector-store call. That rule is about a 60-120 s embed; this is a
+        single ChromaDB delete by metadata, and it is kept to one attempt
+        because the hold is real: on SQLite it is the database's single writer
+        lock, and the KB store's ``timeout`` cannot bound it (its ChromaDB
+        calls are synchronous inside ``async def``). If a deployment's
+        ``idle_in_transaction_session_timeout`` reaps the connection mid-hold,
+        the commit fails and the outcome is the split state of step 3.
+        A task cancelled mid-hold (``CancelledError`` is not an
+        ``Exception``) closes the session, which rolls the row change back:
+        again at worst the split state, never a chunk without a row.
+
         Returns ``{success, document_id, action}`` where action is
-        "unpublished" or "deleted".
+        "unpublished" or "deleted", or ``{success: False, error}`` when the
+        document is absent or no row matched.
+
+        Raises:
+            KnowledgeBaseError: the vectors could not be removed; nothing was
+                changed. ``error_code`` is ``KNOWLEDGE_VECTOR_DELETE_FAILED``.
+            ValueError: empty ``document_id``.
+            RuntimeError: any other failure, including a failed commit (whose
+                outcome is the split state above).
         """
         with self._tracer.trace("knowledge_service_delete_document"):
             if not document_id or not document_id.strip():
@@ -613,43 +664,90 @@ class KnowledgeService:
                             "error": f"Document {document_id} not found",
                         }
 
+                    # Step 1: the row change, uncommitted.
                     if builtin:
-                        # Unpublish: keep the row, flip the flag (commits in repo).
                         item.is_published = False
-                        await repo.update(item)
+                        removed = await repo.update(item, commit=False) is not None
                         action = "unpublished"
                     else:
-                        deleted = await repo.delete(document_id)
-                        if not deleted:
-                            # Zero rows matched — the RLS delete policy refused
-                            # (e.g. a tenant session targeting a platform-tier
-                            # global row under multi, #770) or a concurrent
-                            # delete won. NEVER touch the shared vector store
-                            # when the SQL row was not actually removed: the
-                            # ChromaDB collection is shared across tenants, so
-                            # an unguarded vector delete here would let any
-                            # org admin destroy platform content for everyone.
-                            return {
-                                "success": False,
-                                "error": f"Document {document_id} not deleted",
-                            }
+                        removed = await repo.delete(document_id, commit=False)
                         action = "deleted"
 
-                # Cascade the item's team share rows on hard delete (source of
-                # truth, ADR-013 §D4). Orphan shares are already fail-safe (they
-                # match nothing in the allowlist), but clean them to keep the
-                # table tidy. Unpublish keeps the row, so keeps its shares.
-                if action == "deleted" and self._share_repo:
-                    await self._share_repo.delete_for_resource(
-                        "knowledge_item", document_id
-                    )
+                    if not removed:
+                        # Zero rows matched. NEVER touch the shared vector store
+                        # when this session did not remove the row: an
+                        # unguarded vector delete here would let any tenant
+                        # destroy platform content for everyone (#770).
+                        await repo.rollback()
+                        return {
+                            "success": False,
+                            "error": f"Document {document_id} not {action}",
+                        }
 
-                # Remove ChromaDB vectors in BOTH paths (best-effort, after DB
-                # commit). Critical for unpublish: retrieval ignores
-                # is_published, so deleting the vectors is what actually
-                # removes the runbook from investigations.
-                if self._vector_store:
-                    await self._remove_from_vector_store(document_id)
+                    # Step 2: one vector delete attempt, row change still open.
+                    store = self._vector_store
+                    if store:
+                        try:
+                            count = await store.delete_documents_by_parent_id(
+                                document_id, retries=0
+                            )
+                        except Exception as vector_error:
+                            await repo.rollback()
+                            logger.error(
+                                "Document %s was not %s: removing its vectors "
+                                "failed (%s). The row change was rolled back, "
+                                "so the document is unchanged.",
+                                document_id,
+                                action,
+                                vector_error,
+                            )
+                            # Wraps CircuitBreakerError and timeouts too: to the
+                            # caller every vector-side failure is the same
+                            # retryable "nothing changed".
+                            raise KnowledgeBaseError(
+                                f"Could not remove the vectors of document "
+                                f"{document_id}; it was not {action}",
+                                error_code="KNOWLEDGE_VECTOR_DELETE_FAILED",
+                            ) from vector_error
+                        logger.info(
+                            f"Removed {count} chunks for document {document_id}"
+                        )
+
+                    # Step 3: commit.
+                    try:
+                        await repo.commit()
+                    except Exception as commit_error:
+                        logger.error(
+                            "SPLIT KNOWLEDGE DOCUMENT %s: its vectors were "
+                            "removed, but committing the row change failed "
+                            "(%s), so it was not %s. Unless the commit landed "
+                            "regardless, the row is still present with no "
+                            "vectors: live, but not retrievable — and the "
+                            "caller was told the delete failed. Retry the "
+                            "delete to complete it; otherwise the KB "
+                            "reconcile/repair pass (startup bootstrap or "
+                            "kb_seed) re-indexes the published row.",
+                            document_id,
+                            commit_error,
+                            action,
+                        )
+                        raise
+
+                # Step 4: team shares, after the commit, best effort.
+                if action == "deleted" and self._share_repo:
+                    try:
+                        await self._share_repo.delete_for_resource(
+                            "knowledge_item", document_id
+                        )
+                    except Exception as share_error:
+                        logger.error(
+                            "Deleted document %s, but removing its team share "
+                            "rows failed (%s). They grant nothing — visibility "
+                            "is computed from knowledge_items rows — but remain "
+                            "in resource_shares until removed by hand.",
+                            document_id,
+                            share_error,
+                        )
 
                 logger.info(f"{action} document {document_id}")
                 return {
@@ -658,7 +756,7 @@ class KnowledgeService:
                     "action": action,
                 }
 
-            except ValidationException:
+            except (ValidationException, KnowledgeBaseError):
                 raise
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
@@ -963,13 +1061,12 @@ class KnowledgeService:
     async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
         """Drop vectors written for a row that was deleted mid-update (#952).
 
-        Separate from :meth:`_remove_from_vector_store`, which swallows its
-        errors because its callers are deleting a document and a failed vector
-        delete is one more orphan among many the reconcile pass can find. Here
-        the failure is not equivalent: these chunks carry content that was
-        never saved, under an id that now 404s, and orphan pruning only covers
-        built-in pack ids — so for an authored document nothing will ever
-        remove them. That earns a loud, specific log rather than a shrug.
+        Unlike :meth:`delete_document`, which can refuse the delete and leave
+        the row in place when its vector delete fails, this runs after the row
+        is already gone. These chunks carry content that was never saved,
+        under an id that now 404s, and orphan pruning only covers built-in
+        pack ids — so for an authored document nothing will ever remove them.
+        That earns a loud, specific log rather than a shrug.
 
         Still does not raise: the caller is already abandoning the update and
         reporting that: a secondary failure must not replace the primary one.
@@ -1079,21 +1176,6 @@ class KnowledgeService:
                 commit_error,
                 restore_error,
             )
-
-    async def _remove_from_vector_store(self, document_id: str) -> None:
-        """Remove all chunks for a document from the vector store.
-
-        Indexing always chunks (see ``_index_in_vector_store``), so deletion
-        keys off ``parent_document_id``.
-        """
-        if not self._vector_store:
-            return
-
-        try:
-            count = await self._vector_store.delete_documents_by_parent_id(document_id)
-            logger.info(f"Removed {count} chunks for document {document_id}")
-        except Exception as e:
-            logger.error(f"Failed to remove document from vector store: {e}")
 
     async def _create_team_share(
         self,
@@ -1326,9 +1408,10 @@ class KnowledgeService:
 
         Cross-store repair for an ORPHANED row — a ``knowledge_items`` row whose
         ChromaDB chunks are missing (a crash between the SQL commit and the
-        vector write in :meth:`ingest_runbook` leaves exactly this half-state;
-        the KB bootstrap reconcile pass can detect it but cannot fix it without
-        the embedding model). This re-derives the vectors from the row's
+        vector write in :meth:`ingest_runbook` leaves exactly this half-state,
+        as does a :meth:`delete_document` whose commit failed after its vector
+        delete; the KB bootstrap reconcile pass can detect it but cannot fix it
+        without the embedding model). This re-derives the vectors from the row's
         persisted ``content`` using the runtime chunker + BGE-M3 and writes them
         under the row's ``item_id`` — the SQL row itself is NEVER touched (it is
         the source of truth and already correct). Per-chunk RAG metadata
@@ -1346,12 +1429,20 @@ class KnowledgeService:
         BGE-M3 (guarded by the pack model-identity check) so they remain
         query-compatible — a retrievable runbook beats a silently missing one.
 
+        **Only a published row is repaired** (#1966). An unpublished row with
+        no vectors is not an orphan but the intended state:
+        :meth:`delete_document` unpublishes a built-in by dropping its vectors,
+        because retrieval does not honour ``is_published``. Re-indexing it
+        would silently undo the unpublish at the next boot. The reconcile pass
+        already lists published rows only; this refusal (logged, nothing
+        written) is the second line, for any caller that does not.
+
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
-        row is absent, no vector store is wired, the embedding model is
-        unavailable, or the row names no usable tenant (the indexer's #1168
-        ``ValueError``, logged at ERROR with the item id) — leaving the row
-        orphaned for a later boot to repair, which the caller counts as a failed
-        repair.
+        row is absent or unpublished, no vector store is wired, the embedding
+        model is unavailable, or the row names no usable tenant (the indexer's
+        #1168 ``ValueError``, logged at ERROR with the item id) — leaving the
+        row orphaned for a later boot to repair, which the caller counts as a
+        failed repair.
 
         This is the ONE caller that legitimately tolerates an indexing failure,
         because it runs as a bounded best-effort repair pass during boot and a
@@ -1383,6 +1474,15 @@ class KnowledgeService:
             logger.warning(
                 f"reindex_missing_vectors: no knowledge_items row for {item_id} — "
                 "nothing to repair"
+            )
+            return 0
+
+        if not row.is_published:
+            logger.warning(
+                "reindex_missing_vectors: %s is unpublished, and an unpublished "
+                "row has no vectors by design (that is how it was removed from "
+                "retrieval) — refusing to re-index it",
+                item_id,
             )
             return 0
 
@@ -2737,7 +2837,11 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body (see
         ``bulk_update_documents``), so neither the raised exception nor the
         per-document ``error`` field — both of which carry driver text — is
-        echoed; the diagnostic stays in the log line.
+        echoed; the diagnostic stays in the log line. Each entry is a constant
+        sentence per id: a vector-store failure (``KnowledgeBaseError``, which
+        :meth:`delete_document` raises having changed nothing) says the
+        document was not deleted and can be retried; anything else says only
+        that the delete failed.
         """
         deleted_count = 0
         errors = []
@@ -2753,6 +2857,13 @@ class KnowledgeService:
                         f"Failed to delete document {doc_id}: "
                         f"{result.get('error', 'Unknown error')}"
                     )
+            except KnowledgeBaseError as e:
+                errors.append(
+                    f"Document {doc_id}: not deleted, because removing it from "
+                    "search failed; nothing was changed, so the delete can be "
+                    "retried"
+                )
+                logger.error(f"Failed to delete document {doc_id}: {e}")
             except Exception as e:
                 errors.append(f"Document {doc_id}: delete failed")
                 logger.error(f"Failed to delete document {doc_id}: {e}")

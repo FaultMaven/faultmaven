@@ -498,8 +498,17 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 **Delete path**: `delete_document()` is provenance-gated by id shape:
 
-- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (a hard delete would be resurrected by the next bootstrap from the on-disk file); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row.
+- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (a hard delete would be resurrected by the next bootstrap from the on-disk file); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row, and the reconcile/repair pass (startup bootstrap and `kb_seed`) re-indexes only **published** rows without vectors — an unpublished row has none by design.
 - **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
+
+A document reported removed has no retrievable chunk, now or after any restart, reconcile, repair or `kb_seed` run (#1966). Retrieval never checks that a chunk's row exists, and the reconcile pass deletes only built-in orphan vectors (diffing the shared collection against one tenant's rows would delete other tenants' content), so a chunk whose row is gone would stay searchable for good. The order is therefore:
+
+1. The row change (`DELETE`, or the unpublish `UPDATE`) is issued **uncommitted**. If it matched no row — absent, deleted concurrently, or refused by an RLS write policy — it is rolled back, the result is not-removed, and the vector store is never called.
+2. **One** vector delete attempt (`delete_documents_by_parent_id(..., retries=0)`). A failure rolls the row change back and raises `KnowledgeBaseError`: the document is unchanged, `DELETE /documents/{id}` answers **503** saying nothing was deleted and the request can be retried, and bulk delete reports that id with the same constant reason.
+3. Commit. A commit that fails after the vector delete leaves the one recoverable split state — row present, vectors missing — logged at ERROR with the id: the document is still live, a retried delete completes it, and otherwise the reconcile/repair pass re-indexes the published row.
+4. Team share rows are removed after the commit, best effort (an ERROR log on failure): a share row whose resource row is gone grants nothing.
+
+The transaction is held across the single vector call, unlike the update path's no-hold rule (which exists for a 60–120 s embed): on SQLite the hold is the single writer lock, so it is kept to one attempt and the caller is the retry loop.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
 
