@@ -120,7 +120,7 @@ Runbook text is stored in the database, not on disk. A built-in runbook's text s
 data/
 ├── knowledge/                          # Standalone scan import directory (hand-placed .md files only)
 │   ├── global/                         # Imported as global-scope drafts (platform operator only)
-│   ├── team_{team_id}/                 # Imported as team-scope drafts
+│   ├── team_{team_id}/                 # Imported as PERSONAL drafts (a standalone deployment has no teams)
 │   └── user_{user_id}/                 # Imported as personal drafts (`personal_{user_id}/` works too)
 ├── chroma-kb/                          # ChromaDB KB vectors (derived from knowledge_items / the pack)
 ├── chroma-evidence/                    # ChromaDB case-evidence vectors
@@ -130,7 +130,7 @@ data/
 
 **Design decisions:**
 
-- **Scope comes from the first directory.** A file under `team_{id}/` imports as a team draft, under `user_{id}/` or `personal_{id}/` as a personal draft; anything else (including `global/`) as a global draft, which only a platform operator's scan imports. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
+- **Scope comes from the first directory.** A file under `user_{id}/`, `personal_{id}/` or `team_{id}/` imports as a personal draft (a `team_{id}/` file too, because the scan runs only where there are no teams and a team scope with no team would publish a row only its owner sees; the scan's `notes` name each such file, #1986); anything else (including `global/`) as a global draft, which only a platform operator's scan imports. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
 - **Vectors are derived artifacts.** If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the vectors are regenerated from their sources: the KB pack for built-ins, `knowledge_items.content` for published runbooks. Without those rows, vectors cannot be regenerated.
 - **Authored text lives in the database, not in this tree.** A runbook made by the Dashboard upload, the template create or the document-to-runbook conversion is a draft row holding its text (`conversion_drafts.content`) and, once verified, a `knowledge_items` row; nothing is written under `data/knowledge/` (#1950). The tree is the standalone scan's import source and no startup step reads it.
 
@@ -410,7 +410,7 @@ Adding a new KB tier requires:
 `modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed` / `is_global_authoring_allowed`), reused at the API layer by `modules/knowledge/api/platform_tier.py`. It refuses any tenant session under `TENANT_PROVIDER=multi` (org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `admin` role single-tenant. Enforcement points:
 
 - **Creation routes** (`convert`, `runbooks/create`, `documents` upload) — the scope is a request field, gated at the route (403).
-- **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal/team ones. This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
+- **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal and `team_`-directory ones (the latter as personal drafts, #1986). This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
 
 ### Ingestion Pipeline
 

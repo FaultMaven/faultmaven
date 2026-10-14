@@ -36,7 +36,7 @@ data/
 └── knowledge/                 # Standalone scan import directory: hand-placed .md files only.
     │                          #   Nothing writes here and no startup step reads it.
     ├── global/                #   Imported as global-scope drafts (platform operator only)
-    ├── team_<team_id>/        #   Imported as team-scope drafts
+    ├── team_<team_id>/        #   Imported as personal drafts (no teams on a standalone deployment); the scan's `notes` say so
     └── personal_<user_id>/    #   Imported as personal drafts (`user_<user_id>/` works too)
 ```
 
