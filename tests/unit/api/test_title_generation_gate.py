@@ -37,6 +37,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+from tests.utils import regex_only_sanitizer
 
 # The Case model enforces created_at <= resolved_at, so a terminal fixture needs
 # two ordered instants rather than two calls to "now".
@@ -70,6 +71,10 @@ def _conversation(user_turns: int, words_per_turn: int = 3) -> str:
 @pytest.fixture
 def mock_request():
     request = MagicMock()
+    # The DI sanitizer, real: a MagicMock one answers the title's disclosure
+    # gate with a Mock, which the gate refuses (fail closed, #1967).
+    request.app.state.sanitizer = regex_only_sanitizer()
+    request.app.state.redis_client = None
     request.app.state.llm_provider = AsyncMock()
     request.app.state.llm_provider.generate = AsyncMock(
         return_value=LLMResponse(

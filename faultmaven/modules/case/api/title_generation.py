@@ -31,6 +31,14 @@ from faultmaven.modules.case.domain.models.evidence import (
 
 logger = logging.getLogger(__name__)
 
+#: A redaction placeholder in ANY letter case (#1967). The sanitizer writes
+#: ``<TYPE_digest>`` in upper case and ``REDACTION_PLACEHOLDER_RE`` matches only
+#: that spelling, but title-casing lowercases every word after its first
+#: character: ``<IP_ADDRESS_1a2b…>`` reaches a title as ``<ip_address_1a2b…>``,
+#: which the shared pattern no longer sees. Derived from the shared pattern so
+#: the two cannot drift apart.
+_PLACEHOLDER_ANY_CASE_RE = re.compile(REDACTION_PLACEHOLDER_RE.pattern, re.IGNORECASE)
+
 
 # Configurable banned words list - minimal but extensible
 BANNED_GENERIC_WORDS = [
@@ -423,8 +431,9 @@ def is_title_valid(title: str, check_banned_words: bool = True) -> bool:
     # titles from case-redacted text, and a title that kept a placeholder is
     # refused here, which sends it to the extractive fallback. (One at the END
     # was already refused by the final-character check below; one mid-title
-    # passed.)
-    if REDACTION_PLACEHOLDER_RE.search(title):
+    # passed.) In any letter case (#1967): a title-cased placeholder is
+    # lower case, and it is still a placeholder.
+    if _PLACEHOLDER_ANY_CASE_RE.search(title):
         return False
 
     # Check for incomplete endings (titles ending mid-sentence)
@@ -478,6 +487,8 @@ def get_extractive_fallback_title(
     context_text: str,
     case,
     max_words: int = MAX_TITLE_WORDS_DEFAULT,
+    *,
+    sanitizer,
 ) -> Optional[str]:
     """Generate fallback title using extractive logic.
 
@@ -486,14 +497,24 @@ def get_extractive_fallback_title(
     2. Re-extract from context
     3. Case description
 
+    Every source passes :func:`_scrub_title_source` before a title is built
+    from it (#1967) — the description included, which used to reach the title
+    with no scrub at all. The caller still runs the full disclosure check on
+    what this returns (:func:`_gated_fallback`).
+
     Args:
         user_signals: Pre-extracted user content
         context_text: Full conversation context
         case: Case object
         max_words: Maximum words in title
+        sanitizer: The deployment's ``DataSanitizer``; its regex half scrubs
+            each source
 
     Returns:
         Extracted title or None if insufficient content
+
+    Raises:
+        _TitleDisclosureGateUnavailable: the sanitizer could not scrub a source.
     """
 
     def _clean_fallback_candidate(text: str) -> Optional[str]:
@@ -513,14 +534,17 @@ def get_extractive_fallback_title(
             return apply_title_case(candidate)
         return None
 
-    # First try the pre-extracted user signals (most reliable)
-    if user_signals and user_signals.strip():
-        result = _clean_fallback_candidate(user_signals)
+    # First try the pre-extracted user signals (most reliable). The caller's
+    # signals are scrubbed already; scrubbing is idempotent, so this function
+    # does not rest on that.
+    signals = _scrub_title_source(user_signals or "", sanitizer)
+    if signals:
+        result = _clean_fallback_candidate(signals)
         if result:
             return result
 
     # Fallback to re-extracting from context if user_signals not provided
-    extracted_signals = _extract_user_signals_from_context(context_text)
+    extracted_signals = _extract_user_signals_from_context(context_text, sanitizer)
     if extracted_signals:
         result = _clean_fallback_candidate(extracted_signals)
         if result:
@@ -533,7 +557,8 @@ def get_extractive_fallback_title(
         and case.description.strip()
         and case.description != "No description"
     ):
-        result = _clean_fallback_candidate(case.description)
+        description = _scrub_title_source(case.description, sanitizer)
+        result = _clean_fallback_candidate(description) if description else None
         if result:
             return result
 
@@ -570,12 +595,164 @@ def _sanitize_title_content(content: str) -> str:
     return content.strip()
 
 
-def _extract_user_signals_from_context(context_text: str) -> str:
+# =============================================================================
+# The disclosure gate (#1967)
+#
+# A case title is shown to every reader of the case, in every list, and is
+# never reversed (#1956). So no title is persisted — from the smart-extractive,
+# LLM or fallback path — that carries a span the deployment's sanitizer detects
+# (its regex patterns always, Presidio's entities when the analyzer is
+# available) or a redaction placeholder in any letter case, whatever
+# SANITIZE_PII says. Two halves:
+#
+# * every title SOURCE (substance, chat signals, description) passes
+#   ``_scrub_title_source`` before a title is built from it — the sanitizer's
+#   in-process regex half, so the extraction helpers stay synchronous;
+# * every final CANDIDATE passes ``_passes_disclosure_gate`` — the sanitizer's
+#   full detection, Presidio included — at the point the LLM output is
+#   validated (so a refused candidate still gets the fallback) and once more
+#   right before the write.
+#
+# Fail closed: a sanitizer that is missing, raises, or answers with something
+# that is not text yields no title, and the case keeps its placeholder.
+# =============================================================================
+
+
+class _TitleDisclosureGateUnavailable(ValidationException):
+    """The disclosure gate could not run, so no title is made (#1967).
+
+    Distinct from both other refusals: the case is not too thin to name
+    (``_TitleSubstanceTooThin``), and nothing was refused for what it said —
+    the deployment's sanitizer did not answer. To a client it is the same 422;
+    to an operator it is a fault, logged at WARNING with the reason (the
+    exception type) and the text's length, never the text.
+    """
+
+
+_GATE_UNAVAILABLE_MESSAGE = (
+    "Cannot generate a title: the sensitive-data check on titles is unavailable"
+)
+
+
+def _gate_unavailable(stage: str, reason: str, length: int) -> Exception:
+    """Log a fail-closed gate by reason and length, and build its exception."""
+    logger.warning(
+        "Title disclosure gate unavailable; no title is made",
+        extra={"gate_stage": stage, "reason": reason, "text_length": length},
+    )
+    return _TitleDisclosureGateUnavailable(_GATE_UNAVAILABLE_MESSAGE)
+
+
+def _type_marker(match: re.Match) -> str:
+    """``<API_KEY_0123abcd>`` → ``[api_key]``.
+
+    The type is everything before the digest's underscore (a digest is hex and
+    never holds one). The marker is ``_sanitize_title_content``'s own style
+    (``[ip]``, ``[email]``): it discloses the kind of value only, and it is not
+    a ``<TYPE_digest>`` placeholder (#1956).
+    """
+    return f"[{match.group(0)[1:-1].rsplit('_', 1)[0].lower()}]"
+
+
+def _redact_title_source(text: str, sanitizer) -> str:
+    """Steps 1 and 2 of :func:`_scrub_title_source`: placeholders still in."""
+    scrubbed = _sanitize_title_content(text)
+    if not scrubbed:
+        return ""
+    if sanitizer is None:
+        raise _gate_unavailable("source", "no_sanitizer", len(scrubbed))
+    try:
+        redacted = sanitizer.apply_regex_redaction(scrubbed, {})
+    except Exception as e:  # fail closed on ANY failure
+        raise _gate_unavailable("source", type(e).__name__, len(scrubbed)) from None
+    if not isinstance(redacted, str):
+        raise _gate_unavailable("source", "non_text_result", len(scrubbed))
+    return redacted
+
+
+def _scrub_title_source(text: str, sanitizer) -> str:
+    """A title source as a title may be built from it (#1967).
+
+    In this order, which a test pins:
+
+    1. ``_sanitize_title_content`` — email, phone, IPv4, URL and path, which
+       the sanitizer's pattern set does not all cover. First, so today's
+       ``[ip]``/``[email]`` markers are kept and the sanitizer's database-URL
+       pattern (``[^@]+@``) cannot swallow a later email into one span.
+    2. The sanitizer's regex half (``apply_regex_redaction``, in-process, no
+       network) with a throwaway registry, so nothing enters the case's.
+    3. Every placeholder, in any letter case, becomes a lower-case type marker.
+
+    Presidio is NOT consulted here; it runs once, on the final candidate
+    (``_passes_disclosure_gate``). An analyzer-only entity in a source therefore
+    yields no title rather than a scrubbed one.
+
+    Raises:
+        _TitleDisclosureGateUnavailable: no sanitizer, the sanitizer raised
+            (``PseudonymKeyUnavailableError`` among others), or it answered
+            with something that is not text.
+    """
+    redacted = _redact_title_source(text, sanitizer)
+    return _PLACEHOLDER_ANY_CASE_RE.sub(_type_marker, redacted).strip()
+
+
+async def _passes_disclosure_gate(candidate: str, sanitizer) -> bool:
+    """May ``candidate`` be shown to every reader of the case? (#1967)
+
+    False when it holds a placeholder in any letter case, or a span the
+    sanitizer's full detection finds — ``sanitize_text_with_registry``, the
+    one detection path (regex, then Presidio when the analyzer is available),
+    in a worker thread, with a throwaway registry. Detection is the text
+    coming back changed: the sanitizer only ever rewrites what it detects.
+
+    Raises:
+        _TitleDisclosureGateUnavailable: no sanitizer, the sanitizer raised
+            (``RedactionUnavailableError``, ``PseudonymKeyUnavailableError``,
+            anything), or it answered with something that is not text.
+    """
+    if _PLACEHOLDER_ANY_CASE_RE.search(candidate):
+        return False
+    if sanitizer is None:
+        raise _gate_unavailable("candidate", "no_sanitizer", len(candidate))
+    try:
+        detected = await asyncio.to_thread(
+            sanitizer.sanitize_text_with_registry, candidate, {}
+        )
+    except Exception as e:  # fail closed on ANY failure
+        raise _gate_unavailable("candidate", type(e).__name__, len(candidate)) from None
+    if not isinstance(detected, str):
+        raise _gate_unavailable("candidate", "non_text_result", len(candidate))
+    return detected == candidate
+
+
+async def _gated_fallback(
+    user_signals: Optional[str],
+    context_text: str,
+    case,
+    max_words: int,
+    sanitizer,
+) -> Optional[str]:
+    """The extractive fallback title, if it passes the disclosure gate."""
+    fallback = get_extractive_fallback_title(
+        user_signals, context_text, case, max_words, sanitizer=sanitizer
+    )
+    if fallback and not await _passes_disclosure_gate(fallback, sanitizer):
+        logger.info(
+            "Title generation: extractive fallback refused by the disclosure gate",
+            extra={"rejected_by": "disclosure", "candidate_length": len(fallback)},
+        )
+        return None
+    return fallback
+
+
+def _extract_user_signals_from_context(context_text: str, sanitizer) -> str:
     """Extract meaningful user content from conversation context for title generation.
 
     Focuses only on user messages, filtering out system/agent responses.
     Dedupes near-identical lines and caps to last 8-12 meaningful user messages.
-    Returns the most relevant user content for title generation.
+    Returns the most relevant user content for title generation, through
+    :func:`_scrub_title_source` (``sanitizer`` is the deployment's
+    ``DataSanitizer``, #1967).
     """
     if not context_text or not context_text.strip():
         return ""
@@ -640,7 +817,7 @@ def _extract_user_signals_from_context(context_text: str) -> str:
     if user_messages:
         # Join all user messages with space separator
         all_content = " ".join(user_messages)
-        return _sanitize_title_content(all_content)
+        return _scrub_title_source(all_content, sanitizer)
 
     return ""
 
@@ -661,12 +838,21 @@ def _case_problem_statement(case) -> str:
 _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE = 20
 
 
-def _has_problem_statement(case) -> bool:
-    """True when the case carries a non-trivial problem statement (title-grade)."""
-    return len(_case_problem_statement(case)) >= _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE
+def _has_problem_statement(case, sanitizer) -> bool:
+    """True when the case carries a non-trivial problem statement (title-grade).
+
+    Measured on the statement as the title's source scrub leaves it, with
+    every span the sanitizer's patterns detected taken out rather than counted
+    as its type marker (#1967): a statement that is nothing but pasted secrets
+    is not a title-grade summary, and counting it would send a case with
+    nothing titleable in it on to the LLM.
+    """
+    redacted = _redact_title_source(_case_problem_statement(case), sanitizer)
+    remaining = " ".join(_PLACEHOLDER_ANY_CASE_RE.sub(" ", redacted).split())
+    return len(remaining) >= _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE
 
 
-def _titleable_substance(case, user_signals: str) -> str:
+def _titleable_substance(case, user_signals: str, sanitizer) -> str:
     """Richest titleable content for a case, for the title gate + prompt.
 
     The previous gate measured only sanitized user chat from the last few
@@ -683,6 +869,10 @@ def _titleable_substance(case, user_signals: str) -> str:
     The guard still fires on a genuinely empty case (no problem statement, no
     evidence, no files, a one-line "hi") because none of 1–3 contribute and the
     chat is below threshold — preserving the gate's original intent.
+
+    Returned through :func:`_scrub_title_source`, so the substance the gate
+    measures and the titles built from it carry no span the sanitizer's regex
+    patterns detect (#1967).
     """
     parts: list[str] = []
 
@@ -716,7 +906,7 @@ def _titleable_substance(case, user_signals: str) -> str:
             seen.add(key)
             unique.append(part)
 
-    return _sanitize_title_content(" ".join(unique))
+    return _scrub_title_source(" ".join(unique), sanitizer)
 
 
 # The placeholder every case is born with when the caller supplies no title:
@@ -801,8 +991,12 @@ async def _generate_and_persist_title(
     # measure the richest available signal (problem statement → evidence/
     # file summaries → user chat) so the guard fires on genuinely empty
     # cases without blocking content-rich ones. See _titleable_substance.
-    user_signals = _extract_user_signals_from_context(context_text)
-    user_message_content = _titleable_substance(case, user_signals)
+    #
+    # Both pass the title's source scrub (#1967): nothing a title is built
+    # from, and nothing the LLM prompt is built from, carries a span the
+    # sanitizer's regex patterns detect.
+    user_signals = _extract_user_signals_from_context(context_text, sanitizer)
+    user_message_content = _titleable_substance(case, user_signals, sanitizer)
 
     # Extraction diagnostics. Lengths only, at DEBUG. This used to log 300 chars
     # of raw conversation and 200 of extracted substance at INFO — verbatim user
@@ -827,7 +1021,7 @@ async def _generate_and_persist_title(
     # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file summaries +
     # chat) so we don't ask the LLM to title an empty case. This is the *only*
     # gate; see the constants block for why turn count is no longer one.
-    has_problem_statement = _has_problem_statement(case)
+    has_problem_statement = _has_problem_statement(case, sanitizer)
     if (
         not has_problem_statement
         and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
@@ -865,6 +1059,7 @@ async def _generate_and_persist_title(
             # richer substance (user_message_content).
             routing_signal=user_signals,
             redaction_ctx=redaction_ctx,
+            sanitizer=sanitizer,
         )
     except ValueError:
         raise ValidationException(
@@ -873,6 +1068,25 @@ async def _generate_and_persist_title(
     # What the prompt added to the case registry, kept like a turn's (a save
     # with nothing new writes nothing).
     await redaction_ctx.save()
+
+    # The backstop (#1967): the disclosure gate once more, on exactly the
+    # string about to be written. ``_generate_title_with_llm`` gates every
+    # candidate it returns, and that is where a refusal can still reach the
+    # fallback; this one only refuses. A title is shown to every reader of the
+    # case and never reversed, so nothing it does not pass is persisted.
+    if not await _passes_disclosure_gate(generated_title, sanitizer):
+        logger.warning(
+            "Generated title refused by the disclosure gate before the write",
+            extra={
+                "case_id": case_id,
+                "title_source": title_source,
+                "rejected_by": "disclosure",
+                "candidate_length": len(generated_title),
+            },
+        )
+        raise ValidationException(
+            "Cannot generate meaningful title from available context"
+        )
 
     # Persist the generated title to database (Approach 1: Generate AND persist)
     try:
@@ -1096,6 +1310,13 @@ def _generate_smart_extractive_title(
     title = " ".join(meaningful_words)
     title = title.strip(".,!?;:")
 
+    # Refuse a placeholder BEFORE title-casing (#1967). Casing lowercases
+    # ``<IP_ADDRESS_…>`` into ``<ip_address_…>``, which the sanitizer's own
+    # placeholder pattern no longer sees — so validating only the cased title
+    # passed it (``is_title_valid`` now also matches any letter case).
+    if REDACTION_PLACEHOLDER_RE.search(title):
+        return None
+
     # Apply title casing and return
     return apply_title_case(title)
 
@@ -1110,6 +1331,7 @@ async def _generate_title_with_llm(
     routing_signal: Optional[str] = None,
     *,
     redaction_ctx,
+    sanitizer,
 ) -> tuple[str, str]:
     """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
 
@@ -1129,15 +1351,23 @@ async def _generate_title_with_llm(
         llm_provider: LLM provider from app.state (Composition Root)
         redaction_ctx: The case's redaction context; the LLM prompt is sent
             through it, and the title is never reversed (#1956)
+        sanitizer: The deployment's ``DataSanitizer``. Every candidate this
+            returns has passed the disclosure gate with it (#1967); a refused
+            candidate moves on to the next source, as an invalid one does.
 
     Returns:
         Tuple of (title, source) where source is "extractive", "llm", or "fallback"
+
+    Raises:
+        ValueError: no candidate passed validation and the disclosure gate.
+        _TitleDisclosureGateUnavailable: the gate could not run (fail closed —
+            no further source is tried and no model call is made after it).
     """
     try:
         # LLM provider passed from app.state (Composition Root)
         if not llm_provider:
-            fallback = get_extractive_fallback_title(
-                user_signals, context_text, case, max_words
+            fallback = await _gated_fallback(
+                user_signals, context_text, case, max_words, sanitizer
             )
             if not fallback:
                 raise ValueError("Insufficient context for title generation")
@@ -1166,18 +1396,25 @@ async def _generate_title_with_llm(
         if use_smart_extractive:
             # Fast path: Smart extractive title generation (1ms, $0, no API call)
             extractive_title = _generate_smart_extractive_title(user_signals, max_words)
-            if extractive_title and is_title_valid(extractive_title):
+            if not (extractive_title and is_title_valid(extractive_title)):
+                rejected_by = "validation"
+            elif not await _passes_disclosure_gate(extractive_title, sanitizer):
+                rejected_by = "disclosure"
+            else:
                 logger.info(
                     "Title generation: Smart extractive success",
                     extra={"extractive_title": extractive_title},
                 )
                 return extractive_title, "extractive"
-            else:
-                # Extractive failed (rare), fall through to LLM
-                logger.info(
-                    "Title generation: Smart extractive insufficient, using LLM",
-                    extra={"extractive_attempt": extractive_title},
-                )
+            # Extractive failed (rare), fall through to LLM. A refused
+            # candidate is logged by reason and length, never verbatim.
+            logger.info(
+                "Title generation: Smart extractive insufficient, using LLM",
+                extra={
+                    "rejected_by": rejected_by,
+                    "candidate_length": len(extractive_title or ""),
+                },
+            )
 
         # Slow path: LLM-based title generation (500-1200ms, $0.0001-0.0003, API call)
         # Used for: complex conversations, long content, multi-topic discussions
@@ -1296,7 +1533,7 @@ async def _generate_title_with_llm(
                     logger.info(
                         "Title generation: LLM output over the word cap with "
                         "no usable phrase boundary under it",
-                        extra={"over_cap_title": generated_title},
+                        extra={"candidate_length": len(generated_title)},
                     )
                     raise ValueError(
                         "LLM title exceeded the word cap with no usable "
@@ -1305,11 +1542,22 @@ async def _generate_title_with_llm(
                 words = trimmed
                 generated_title = " ".join(words)
 
-            # Run lightweight validation guards
+            # Run lightweight validation guards, then the disclosure gate
+            # (#1967): the model may copy a value the prompt carried — under
+            # SANITIZE_PII=false the prompt is not redacted at all.
             if not is_title_valid(generated_title):
+                rejected_by = "validation"
+            elif not await _passes_disclosure_gate(generated_title, sanitizer):
+                rejected_by = "disclosure"
+            else:
+                rejected_by = None
+            if rejected_by:
                 logger.info(
                     "Title generation: LLM output failed validation guards",
-                    extra={"invalid_title": generated_title},
+                    extra={
+                        "rejected_by": rejected_by,
+                        "candidate_length": len(generated_title),
+                    },
                 )
 
                 # Minimal deterministic fallback behind flag for resiliency (optional but prudent)
@@ -1317,8 +1565,8 @@ async def _generate_title_with_llm(
 
                 use_fallback = get_settings().case.title_generation_use_fallback
                 if use_fallback:
-                    fallback = get_extractive_fallback_title(
-                        user_signals, context_text, case, max_words
+                    fallback = await _gated_fallback(
+                        user_signals, context_text, case, max_words, sanitizer
                     )
                     if fallback and is_title_valid(
                         fallback, check_banned_words=False
@@ -1340,8 +1588,8 @@ async def _generate_title_with_llm(
             )
             return generated_title, "llm"
         else:
-            fallback = get_extractive_fallback_title(
-                user_signals, context_text, case, max_words
+            fallback = await _gated_fallback(
+                user_signals, context_text, case, max_words, sanitizer
             )
             if not fallback:
                 raise ValueError("LLM failed and insufficient fallback context")
@@ -1351,10 +1599,14 @@ async def _generate_title_with_llm(
             )
             return fallback, "fallback"
 
+    except _TitleDisclosureGateUnavailable:
+        # Fail closed: the gate that would vet the fallback is the one that
+        # just failed, so there is nothing safe left to try.
+        raise
     except Exception as e:
         logger.warning(f"LLM title generation failed, trying fallback: {e}")
-        fallback = get_extractive_fallback_title(
-            user_signals, context_text, case, max_words
+        fallback = await _gated_fallback(
+            user_signals, context_text, case, max_words, sanitizer
         )
         if not fallback:
             raise ValueError("Both LLM and fallback title generation failed")

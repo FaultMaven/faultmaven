@@ -318,6 +318,7 @@ class TestTheTitle:
             router,
             routing_signal=signals,
             redaction_ctx=_MarkingRedaction(),
+            sanitizer=_FakeSanitizer(),
         )
 
         assert source == "llm"
@@ -352,6 +353,7 @@ class TestTheTitle:
             router,
             routing_signal=signals,
             redaction_ctx=_MarkingRedaction(),
+            sanitizer=_FakeSanitizer(),
         )
 
         assert source != "llm"
@@ -385,7 +387,9 @@ class TestTheTitle:
             ),
         )
         router.title = "Login Failures On The Auth Service"
-        sanitizer, redis_client = object(), object()
+        # A sanitizer the title's disclosure gate can run (#1967); the loader
+        # is a double, so this one only has to reach it unchanged.
+        sanitizer, redis_client = _FakeSanitizer(), object()
 
         with patch.object(title_generation, "load_case_redaction", new=loader):
             await title_generation._generate_and_persist_title(
@@ -424,6 +428,12 @@ class _FakeSanitizer:
             if value in text:
                 registry.setdefault(kind, {}).setdefault(value, placeholder)
                 text = text.replace(value, placeholder)
+        return text
+
+    def apply_regex_redaction(self, text, registry):
+        """The in-process half finds none of these values: they stand for
+        analyzer entities, so the case title's source scrub (#1967) leaves
+        them to the case pass these tests are about."""
         return text
 
 
