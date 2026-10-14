@@ -48,9 +48,10 @@ ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 * otherwise **undecided**. So is any window whose largest size costs under
   ``min_total_growth(step)`` times its smallest, ~11.5 at step 8: the total
   growth at which a noise-free linear cost's ceiling meets the bound. Below
-  it a window could only ever FAIL, where the fixed cost swamps the first
-  difference and noise decides. Every early-window false fail CI recorded
-  before #1781 read a total growth of 4.1-10.8, just over the old gate of 4.
+  it no noise-free linear window can pass, so it could only ever FAIL one,
+  where the fixed cost swamps the first difference and noise decides. Every
+  early-window false fail CI recorded before #1781 read a total growth of
+  4.1-10.8, just over the old gate of 4.
 
 The two sides do not allow the same error. The floor allows
 ``NOISE_ALLOWANCE`` and the ceiling ``PASS_NOISE_ALLOWANCE``, twice as much,
@@ -102,9 +103,14 @@ residual, measured below).
 
 ``tests/unit/ci/test_benchmark_calibration.py`` pins all of this over fixed
 costs from 0 to 1e7 times the work, and outside the model it searches for an
-adversarial per-size error: a wrong verdict needs one over 30.9% (a quadratic
-passed) or over 29.5% (a linear failed), against 24.0% and 18.3% under the
-old gate. It also replays recorded samples through the measurement itself.
+adversarial per-size error. Over every fixed cost, a wrong verdict needs one
+over 30.20% (a quadratic passed) or over 29.41% (a linear failed), against
+23.5% and 18.2% under the old gate of 4. Both worst cases sit where a
+noise-free window's growth meets the gate: a quadratic at ``C`` ~389 read
+``(-30.25%, +30.25%, -30.25%)``, a linear at ``C`` ~5 read ``(+29.43%,
+-29.43%, +29.43%)``. The test's quarter-decade grid of fixed costs finds
+30.9% and 29.5%. It also replays recorded samples through the measurement
+itself.
 
 A cost exactly at the bound (``n ** 1.5``) is undecidable by construction and
 is refused, which is the honest answer.
@@ -124,10 +130,11 @@ two:
   the suite it is small SLOW ones.
 * Whether a fast sample is the thread clock under-counting or contention
   easing for a moment cannot be told from the probe. The same work ran at
-  17.9 ns per unit in the suite untraced, 48.4 traced and 53.2 saturated;
-  about half the fast outliers are round-wide (every size of that round
-  reads fast); a x0.645 shift can hold for 2-4 rounds. The design does not
-  depend on which: every size's figure must be read in the same regime.
+  a median 17.9 ns per unit in the suite untraced, 48.5 traced and 53.3
+  saturated; about half the fast outliers are round-wide (every size of
+  that round reads fast); a x0.645 shift can hold for 2-4 rounds. The
+  design does not depend on which: every size's figure must be read in the
+  same regime.
 * The minimum stops guaranteeing that once the fast state is rare: it
   selects exactly the one fast sample, and more samples make that worse.
   One fast sample explains the three kinds of CI failure. A fast ``t(8n)``
@@ -152,8 +159,10 @@ The second-smallest of the same five samples costs nothing and keeps the
 worst window under the ~30% a wrong verdict needs. The median of five reads
 better at p99 and worse in the worst window, where a regime shift mid-window
 held three of the five; the median of ten is best and takes twice the time.
-The residual is two fast samples at one size: 56 of 14652 saturated windows
-had them, and the second-smallest of five read over 20% in 1 of 6525.
+The residual is two fast samples at one size: 57 of 14652 saturated windows
+had two of five at one size, and in 56 of those another size had at most
+one, so the two figures were read in different regimes. The second-smallest
+of five read over 20% in 1 of 6525.
 
 The measurement, each choice against a measured failure
 -------------------------------------------------------
@@ -217,7 +226,7 @@ MAX_CALLS_PER_SAMPLE = 1 << 16
 
 #: How far each per-size figure may be off, as a fraction of itself, before a
 #: reading can FAIL a call. On the CI probe the figure's error was 9.4% at
-#: p99 and 20.5% at most; a false fail needs over 29.5% (#1781).
+#: p99 and 20.5% at most; a false fail needs over 29.41% (#1781).
 NOISE_ALLOWANCE = 0.10
 
 #: The same allowance before a reading can PASS a call, twice as wide. A false
