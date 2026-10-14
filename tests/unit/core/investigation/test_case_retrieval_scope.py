@@ -23,6 +23,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
 )
+from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -240,7 +241,7 @@ async def test_pull_the_tool_context_carries_the_cases_scope_not_the_turn_users(
     generator = _generator(_Teams(), _Shares())
 
     context = await generator.build_tool_context(
-        _case(), user_id=TEAMMATE, redaction_ctx=None
+        _case(), user_id=TEAMMATE, redaction_ctx=None, given_tools=NO_TOOLS
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE
@@ -251,7 +252,7 @@ async def test_pull_an_engine_internal_turn_still_gets_the_cases_scope():
     generator = _generator(_Teams(), _Shares())
 
     context = await generator.build_tool_context(
-        _case(), user_id=None, redaction_ctx=None
+        _case(), user_id=None, redaction_ctx=None, given_tools=NO_TOOLS
     )
 
     assert context.user_id == "system"
@@ -263,7 +264,7 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
 
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _case(), user_id=DRIVER, redaction_ctx=None
+        _case(), user_id=DRIVER, redaction_ctx=None, given_tools=NO_TOOLS
     )
     wrapped = MagicMock()
     wrapped._arun = AsyncMock(return_value="answer")
@@ -341,7 +342,7 @@ async def test_push_after_a_hand_off_searches_the_drivers_scope_and_stamps_it():
 
 async def test_pull_after_a_hand_off_carries_the_drivers_scope():
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _handed_off_case(), user_id=DRIVER, redaction_ctx=None
+        _handed_off_case(), user_id=DRIVER, redaction_ctx=None, given_tools=NO_TOOLS
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE

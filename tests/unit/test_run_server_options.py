@@ -27,7 +27,7 @@ from uvicorn.importer import import_from_string
 
 import faultmaven.main
 from faultmaven.config.settings import ServerSettings
-from faultmaven.main import run_server
+from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
 

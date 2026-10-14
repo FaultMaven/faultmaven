@@ -35,6 +35,11 @@ from faultmaven.utils.token_estimation import estimate_tokens
 from .cache import LLMResponseCache
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
+from .providers.base import (
+    FORWARDED_KNOB_KWARGS,
+    PROVIDER_API_KWARGS,
+    ROUTER_CONSUMED_KWARGS,
+)
 
 # Opik native tracing for LLM calls.
 #
@@ -993,8 +998,14 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 - response_format: Structured output format (optional)
                 - tools: Tool/function definitions (optional)
                 - tool_choice: Tool choice strategy (optional)
+                - messages: Multi-turn message list (optional)
+                - case_id, provider_override, cache_prompt, bypass_cache:
+                  router-level knobs (see ``route``)
                 - reasoning_intent: Caller-declared reasoning need (#1118, optional)
                 - min_output_tokens: Visible-output floor (#1117, optional)
+                The accepted keys are ``ROUTER_CONSUMED_KWARGS``,
+                ``FORWARDED_KNOB_KWARGS`` and ``PROVIDER_API_KWARGS``; any
+                other key is ignored.
 
         Returns:
             LLMResponse with generated content
@@ -1003,40 +1014,23 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             TypeError: If prompt is None
             Exception: If all providers fail to generate a response
         """
-        # Extract parameters from kwargs with defaults
-        model = kwargs.get("model")
-        max_tokens = kwargs.get("max_tokens", 1000)
-        temperature = kwargs.get("temperature", 0.7)
-        data_type = kwargs.get("data_type")
-        tools = kwargs.get("tools")
-        tool_choice = kwargs.get("tool_choice")
-        response_format = kwargs.get("response_format")
-        messages = kwargs.get("messages")
-        case_id = kwargs.get("case_id")
-        provider_override = kwargs.get("provider_override")
-        cache_prompt = kwargs.get("cache_prompt", False)
-        bypass_cache = kwargs.get("bypass_cache", False)
-        reasoning_intent = kwargs.get("reasoning_intent")
-        min_output_tokens = kwargs.get("min_output_tokens")
+        # Forward exactly the keywords route() takes, and no others. The key
+        # set is read from the three constants that declare route()'s call
+        # surface (providers/base.py) rather than spelled out here, so this
+        # method cannot gain a knob the providers' discard list lacks (#2002);
+        # a test pins that the union equals route()'s signature. Defaults for
+        # absent keys are route()'s own (max_tokens=1000, temperature=0.7,
+        # cache_prompt/bypass_cache=False). Anything else is ignored, as before.
+        route_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in ROUTER_CONSUMED_KWARGS
+            or key in FORWARDED_KNOB_KWARGS
+            or key in PROVIDER_API_KWARGS
+        }
 
         # Call existing route method with all the robust functionality
-        response = await self.route(
-            prompt=prompt,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            data_type=data_type,
-            tools=tools,
-            tool_choice=tool_choice,
-            response_format=response_format,
-            messages=messages,
-            case_id=case_id,
-            provider_override=provider_override,
-            cache_prompt=cache_prompt,
-            bypass_cache=bypass_cache,
-            reasoning_intent=reasoning_intent,
-            min_output_tokens=min_output_tokens,
-        )
+        response = await self.route(prompt=prompt, **route_kwargs)
 
         # Return the full LLMResponse (milestone_engine expects this)
         return response

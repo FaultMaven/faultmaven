@@ -26,7 +26,8 @@ The reading: three sizes and the ratio of the DIFFERENCES
 cancels exactly, so the TRUE ``R`` of a cost does not depend on it: a linear
 cost has ``R = 8`` and a quadratic one ``R = 64`` whatever its fixed cost. The
 bound is their geometric midpoint, ``8 ** 1.5`` ~ 22.6. Step 8 rather than 4
-so a quadratic read at half still clears it.
+so a quadratic read at half still clears it; at step 4 not even a noise-free
+linear cost could pass (``min_total_growth``).
 
 The verdict: an interval, and a third answer
 --------------------------------------------
@@ -36,7 +37,7 @@ The verdict: an interval, and a third answer
 version of this module spent a noise allowance against one side only and
 passed whatever that could not call super-linear — so a pure quadratic with a
 moderate fixed cost passed (``fixed + n**2`` loop, ``C/q`` from ~430 to
-~1360: 3/3 green). The rule is now two-sided. With every per-size minimum
+~1360: 3/3 green). The rule is now two-sided. With every per-size figure
 allowed to be off by an allowance of itself, ``[ratio_floor,
 ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 
@@ -45,8 +46,12 @@ ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 * **linear** only if ``ratio_ceiling < bound`` — even the most quadratic
   reading is under it;
 * otherwise **undecided**. So is any window whose largest size costs under
-  ``MIN_TOTAL_GROWTH`` times its smallest: the work does not show there, and
-  deciding either way on it is deciding on noise.
+  ``min_total_growth(step)`` times its smallest, ~11.5 at step 8: the total
+  growth at which a noise-free linear cost's ceiling meets the bound. Below
+  it no noise-free linear window can pass, so it could only ever FAIL one,
+  where the fixed cost swamps the first difference and noise decides. Every
+  early-window false fail CI recorded before #1781 read a total growth of
+  4.1-10.8, just over the old gate of 4.
 
 The two sides do not allow the same error. The floor allows
 ``NOISE_ALLOWANCE`` and the ceiling ``PASS_NOISE_ALLOWANCE``, twice as much,
@@ -63,19 +68,24 @@ miscalibrated. It is never passed.
 The invariant
 -------------
 
-If every per-size minimum ``m`` is within ``NOISE_ALLOWANCE * m`` of the true
+If every per-size figure ``m`` is within ``NOISE_ALLOWANCE * m`` of the true
 per-call cost, the true ``R`` is at least ``ratio_floor``, so a cost whose
-true ``R`` is under the bound can never be failed. If every minimum is within
+true ``R`` is under the bound can never be failed. If every figure is within
 ``PASS_NOISE_ALLOWANCE * m``, the true ``R`` is at most ``ratio_ceiling``, so
-a cost at or over the bound can never be passed. Both hold **for every fixed
+a cost at or over the bound can never be passed. A call still undecided at
+the last window is refused, never passed. All of it holds **for every fixed
 cost C**, because ``C`` is not in ``R``. ``C`` only decides whether a window
 can decide. In particular:
 
 * ``C + a*n`` (``R = 8``) never fails. It passes once ``C`` is under ~5x
-  the work at the smallest size; three escalations reach that from ~2600x,
-  and above that it is refused;
+  the work at the smallest size, which is where the gate sits, so the gate
+  never delays a noise-free pass; three escalations reach that from ~2600x,
+  and above that it is refused. A reading within the allowance can decide
+  linear from a total growth of ~3.6, and the gate moves those up one window
+  (the sshd reader's ``rhost-repeats`` on the CI probe: first-window passes
+  50 of 128 before, 1 of 128 after, +0.054 s a call);
 * ``C + q*n**2`` (``R = 64``) never passes. It fails once ``C`` is under
-  ~430x the work at the smallest size — one escalation divides that by 64;
+  ~390x the work at the smallest size — one escalation divides that by 64;
 * ``C + a*n + q*n**2`` has ``R = (56a + 4032q) / (7a + 63q)``, increasing
   in ``q/a``: it crosses the bound where the quadratic term at the window's
   LARGEST size is ~2.5x the linear term. With no fixed cost the window says
@@ -84,14 +94,75 @@ can decide. In particular:
   moves a mixture toward failing. The check answers for the sizes it
   measured; a call site picks sizes that reach the payloads it guards.
 
+The figure is chosen so that one sample cannot set it. A size's figure is
+the second-smallest of its ``n`` samples, and it is a sample from the speed
+regime the other sizes were read in provided at most ONE of that size's
+samples reads below that regime and at most ``n - 2`` read above it: one
+sample in either direction cannot set it; two reading below it can (the
+residual, measured below).
+
 ``tests/unit/ci/test_benchmark_calibration.py`` pins all of this over fixed
 costs from 0 to 1e7 times the work, and outside the model it searches for an
-adversarial per-size error: a wrong verdict needs one over 24% (a quadratic
-passed) or over 18% (a linear failed). The measured spread of the minima
-here is a few percent; a CI runner's has exceeded 13% (#1741).
+adversarial per-size error. Over every fixed cost, a wrong verdict needs one
+over 30.20% (a quadratic passed) or over 29.41% (a linear failed), against
+23.5% and 18.2% under the old gate of 4. Both worst cases sit where a
+noise-free window's growth meets the gate: a quadratic at ``C`` ~389 read
+``(-30.25%, +30.25%, -30.25%)``, a linear at ``C`` ~5 read ``(+29.43%,
+-29.43%, +29.43%)``. The test's quarter-decade grid of fixed costs finds
+30.9% and 29.5%. It also replays recorded samples through the measurement
+itself.
 
 A cost exactly at the bound (``n ** 1.5``) is undecidable by construction and
 is refused, which is the honest answer.
+
+What the samples look like (#1781)
+----------------------------------
+
+A probe on the CI runners recorded every sample of 6525 windows of the
+linear controls (``C + n`` at known ``C``) under two conditions: four
+saturated measuring workers, and the unit suite under xdist with coverage
+beside one measurer. Typical error is small, p50 2.5% for the minimum of
+five. The tail is ONE size read in a different speed regime from the other
+two:
+
+* Under saturation it is a FAST sample, one 20-30% below ten consistent
+  ones (``51.1, 51.1, 51.2, 35.6, 51.0`` ns per unit), at most 47%. Under
+  the suite it is small SLOW ones.
+* Whether a fast sample is the thread clock under-counting or contention
+  easing for a moment cannot be told from the probe. The same work ran at
+  a median 17.9 ns per unit in the suite untraced, 48.5 traced and 53.3
+  saturated; about half the fast outliers are round-wide (every size of
+  that round reads fast); a x0.645 shift can hold for 2-4 rounds. The
+  design does not depend on which: every size's figure must be read in the
+  same regime.
+* The minimum stops guaranteeing that once the fast state is rare: it
+  selects exactly the one fast sample, and more samples make that worse.
+  One fast sample explains the three kinds of CI failure. A fast ``t(8n)``
+  reads ``t(8n) <= t(n)`` and the floor's denominator vanishes: a false
+  super-linear. A fast middle reads ``R`` 12-16 and the ceiling straddles
+  the bound: a refusal. A fast ``t(n)`` on a quadratic lowers its ``R``: a
+  false pass.
+
+Per-size error by figure: the worse of ``t(n)`` and ``t(64n)`` per unit of
+work, relative to ``t(8n)``'s, over the 6525 windows; then its maximum
+saturated, in the suite untraced, and in the suite traced::
+
+    figure              p99    p99.9  max    >15%  >20%  >30%   sat / suite / traced
+    minimum of 5        .163   .305   .492   81    34    7      .492 / .163 / .141
+    minimum of 10       .194   .388   .505   120   62    16     .505 / .113 / .141
+    2nd-smallest of 5   .094   .157   .205   10    1     0      .205 / .128 / .091
+    median of 5         .062   .116   .264   1     1     0      .264 / .148 / .096
+    3rd-smallest of 10  .066   .123   .270   3     2     0      .270 / .148 / .123
+    median of 10        .055   .070   .099   0     0     0      .075 / .099 / .079
+
+The second-smallest of the same five samples costs nothing and keeps the
+worst window under the ~30% a wrong verdict needs. The median of five reads
+better at p99 and worse in the worst window, where a regime shift mid-window
+held three of the five; the median of ten is best and takes twice the time.
+The residual is two fast samples at one size: 57 of 14652 saturated windows
+had two of five at one size, and in 56 of those another size had at most
+one, so the two figures were read in different regimes. The second-smallest
+of five read over 20% in 1 of 6525.
 
 The measurement, each choice against a measured failure
 -------------------------------------------------------
@@ -99,16 +170,19 @@ The measurement, each choice against a measured failure
 * **Thread CPU time, not wall clock.** ``time.thread_time`` does not
   advance while this thread is descheduled, which is most of what xdist
   adds.
-* **Interleaved rounds, minimum per size.** Every source of noise here is
-  additive, so the fastest sample is the least contaminated, and taking
-  the three sizes in each round keeps a burst of contention from landing
-  on one of them only.
+* **Interleaved rounds, the second-smallest per size.** A size's figure is
+  the second-smallest of its per-call samples (the one that settled its
+  call count, then one per round), for the reasons above. Taking the three
+  sizes in each round keeps a burst of contention from landing on one of
+  them only.
 * **A call count per size.** Each size repeats its call until one sample
   costs ``MIN_SAMPLE_SECONDS``, the per-call figure is what is compared,
   and the sample that settled the count is the first observation — so the
   large side of a restored quadratic runs once per round, not twice.
-* **Stop at the unmistakable.** A round whose ``ratio_floor`` is already
-  twice the bound ends the measurement.
+* **Stop at the unmistakable.** Once every size has ``MIN_REPETITIONS``
+  samples, a round whose ``ratio_floor`` is already twice the bound ends the
+  measurement. Not before: on one sample per size, the figure IS the sample
+  the tail lives in.
 
 What it does NOT do, stated so nobody reads it in: it says nothing about
 absolute cost. A linear path that got 50x slower passes. That is a latency
@@ -126,16 +200,21 @@ import gc
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Tuple, TypeVar
+from typing import Callable, List, Sequence, Tuple, TypeVar
 
 P = TypeVar("P")
 
 #: The ratio between consecutive sizes: ``n``, ``step * n``, ``step**2 * n``.
 DEFAULT_STEP = 8
 
-#: Interleaved rounds per window. Five kept the minima stable on a box
-#: running four other pytest workers.
+#: Samples per size per window: the one that settles the call count, then one
+#: per further round. A size's figure is the second-smallest of them.
 DEFAULT_REPETITIONS = 5
+
+#: The fewest samples per size a window takes, and how many every size has
+#: before a window may end early: the second-smallest of three is their
+#: median, so no one sample sets it.
+MIN_REPETITIONS = 3
 
 #: Each size repeats its call until one sample costs at least this much CPU,
 #: so no size is measuring the timer.
@@ -145,9 +224,9 @@ MIN_SAMPLE_SECONDS = 0.002
 #: cannot spin the check forever.
 MAX_CALLS_PER_SAMPLE = 1 << 16
 
-#: How far each per-size minimum may be off, as a fraction of itself, before
-#: a reading can FAIL a call. The measured spread of the minima on a loaded box
-#: is a few percent.
+#: How far each per-size figure may be off, as a fraction of itself, before a
+#: reading can FAIL a call. On the CI probe the figure's error was 9.4% at
+#: p99 and 20.5% at most; a false fail needs over 29.41% (#1781).
 NOISE_ALLOWANCE = 0.10
 
 #: The same allowance before a reading can PASS a call, twice as wide. A false
@@ -156,13 +235,6 @@ NOISE_ALLOWANCE = 0.10
 #: produced a per-size error past the old symmetric margin and passed the
 #: planted quadratic (#1741).
 PASS_NOISE_ALLOWANCE = 2 * NOISE_ALLOWANCE
-
-#: A window whose largest size costs less than this many times its smallest
-#: decides nothing. A linear window can only pass above ~11.5 anyway, so this
-#: never delays a correct pass; what it removes is a verdict taken where the
-#: fixed cost swamps the work, which is where error beyond the allowance
-#: could flip one (the sweep in ``test_benchmark_calibration.py``).
-MIN_TOTAL_GROWTH = 4.0
 
 #: How many times an undecided window may move up before the call is refused.
 MAX_ESCALATIONS = 3
@@ -179,6 +251,36 @@ def growth_bound(step: int) -> float:
     (``step ** 2``), so the margin is the same multiple on both sides.
     """
     return float(step) ** 1.5
+
+
+def min_total_growth(step: int) -> float:
+    """The least total growth ``t3 / t1`` at which a window may decide.
+
+    The total growth of a noise-free linear cost ``C + n`` whose ceiling,
+    under ``PASS_NOISE_ALLOWANCE``, meets the bound. Its fixed cost there,
+    in units of the work at the window's smallest size, solves
+    ``ratio_ceiling == growth_bound(step)`` in closed form::
+
+        C* = ((k - 1)(B - k) - p(k + 1)(B + k)) / (2p(B + 1))
+
+    for step ``k``, bound ``B`` and allowance ``p``, and the growth is
+    ``(C* + k**2) / (C* + 1)``: 11.4986 at step 8 and 20% (``C*`` 5.0008).
+    A linear cost with a smaller ``C`` reads a larger growth, so the gate
+    never delays a noise-free pass; below it a window could only fail.
+
+    At step 4 ``C*`` is 0: the bound is 8 and even ``C = 0`` reads a ceiling
+    of exactly 8, so no noise-free linear cost can pass at all. ``C*`` is
+    held at 0 there and below, which makes the gate ``step ** 2``, the
+    growth of a cost with no fixed part.
+    """
+    k = float(step)
+    bound = growth_bound(step)
+    allowance = PASS_NOISE_ALLOWANCE
+    fixed = ((k - 1) * (bound - k) - allowance * (k + 1) * (bound + k)) / (
+        2 * allowance * (bound + 1)
+    )
+    fixed = max(0.0, fixed)
+    return (fixed + k * k) / (fixed + 1)
 
 
 @dataclass(frozen=True)
@@ -203,10 +305,10 @@ class Growth:
 
     @property
     def ratio_floor(self) -> float:
-        """The least true ratio consistent with the minima.
+        """The least true ratio consistent with the per-size figures.
 
         Numerator as small and denominator as large as ``NOISE_ALLOWANCE``
-        permits. ``-inf`` when the minima are consistent with ``t(8n)`` not
+        permits. ``-inf`` when the figures are consistent with ``t(8n)`` not
         exceeding ``t(n)``, where no ratio is defined.
         """
         t1, t2, t3 = self.seconds
@@ -216,9 +318,9 @@ class Growth:
 
     @property
     def ratio_ceiling(self) -> float:
-        """The greatest true ratio consistent with the minima, each off by up
-        to ``PASS_NOISE_ALLOWANCE`` (the wider allowance: this is the side a
-        pass is judged on).
+        """The greatest true ratio consistent with the per-size figures, each
+        off by up to ``PASS_NOISE_ALLOWANCE`` (the wider allowance: this is
+        the side a pass is judged on).
 
         ``inf`` when the noise could make ``t(8n) - t(n)`` zero: nothing then
         bounds the ratio from above.
@@ -231,7 +333,7 @@ class Growth:
     @property
     def verdict(self) -> str:
         """``SUPER_LINEAR``, ``LINEAR``, or ``UNDECIDED`` — see the module."""
-        if self.total_growth < MIN_TOTAL_GROWTH:
+        if self.total_growth < min_total_growth(self.step):
             return UNDECIDED
         bound = growth_bound(self.step)
         if self.ratio_floor >= bound:
@@ -251,8 +353,8 @@ def _cpu_seconds(fn: Callable[[P], object], payload: P, calls: int) -> float:
     """Thread CPU seconds for ``calls`` calls, with the collector paused.
 
     A collection that happens to land inside one sample is CPU time spent on
-    something other than ``fn`` — the minimum would absorb it, but pausing
-    costs nothing and removes the question.
+    something other than ``fn``. The figure would shed one such sample, but
+    pausing costs nothing and removes the question.
     """
     was_enabled = gc.isenabled()
     gc.disable()
@@ -281,6 +383,18 @@ def _calibrate(fn: Callable[[P], object], payload: P) -> Tuple[int, float]:
         calls *= 2
 
 
+def _figure(samples: Sequence[float]) -> float:
+    """A size's per-call figure: the second-smallest of its samples."""
+    return sorted(samples)[1]
+
+
+def _reading(
+    sizes: Tuple[int, int, int], samples: Sequence[Sequence[float]], step: int
+) -> Growth:
+    t1, t2, t3 = (_figure(taken) for taken in samples)
+    return Growth(sizes=sizes, seconds=(t1, t2, t3), step=step)
+
+
 def _measure_window(
     fn: Callable[[P], object],
     payload_at: Callable[[int], P],
@@ -293,24 +407,22 @@ def _measure_window(
 
     fn(payloads[0])  # warm-up: first-call costs belong to no size
     calls: List[int] = []
-    best: List[float] = []
+    samples: List[List[float]] = []
     for payload in payloads:
         count, first = _calibrate(fn, payload)
         calls.append(count)
-        best.append(first)
+        samples.append([first])
 
-    growth = Growth(sizes=sizes, seconds=tuple(best), step=step)
-    for round_number in range(repetitions):
-        if round_number:
-            for index, payload in enumerate(payloads):
-                per_call = _cpu_seconds(fn, payload, calls[index]) / calls[index]
-                best[index] = min(best[index], per_call)
-            growth = Growth(sizes=sizes, seconds=tuple(best), step=step)
-        if growth.verdict == SUPER_LINEAR and growth.ratio_floor >= 2 * growth_bound(
-            step
-        ):
-            break
-    return growth
+    bound = growth_bound(step)
+    for taken in range(2, repetitions + 1):
+        for index, payload in enumerate(payloads):
+            per_call = _cpu_seconds(fn, payload, calls[index]) / calls[index]
+            samples[index].append(per_call)
+        if taken >= MIN_REPETITIONS:
+            growth = _reading(sizes, samples, step)
+            if growth.verdict == SUPER_LINEAR and growth.ratio_floor >= 2 * bound:
+                return growth
+    return _reading(sizes, samples, step)
 
 
 def measure_growth(
@@ -331,8 +443,14 @@ def measure_growth(
     """
     if step < 2:
         raise ValueError(f"step must be at least 2, got {step}")
-    if small < 1 or repetitions < 1 or max_escalations < 0:
-        raise ValueError("small and repetitions must be positive")
+    if repetitions < MIN_REPETITIONS:
+        raise ValueError(
+            f"repetitions must be at least {MIN_REPETITIONS}, got {repetitions}: "
+            f"a size's figure is the second-smallest of its samples, and a "
+            f"window may end early only once every size has {MIN_REPETITIONS}"
+        )
+    if small < 1 or max_escalations < 0:
+        raise ValueError("small must be positive and max_escalations not negative")
     growth = None
     for escalation in range(max_escalations + 1):
         growth = _measure_window(
@@ -371,6 +489,8 @@ def assert_linear_growth(
         small: The smallest size tried; the window is it, ``step`` and
             ``step**2`` times it, and may move up (see ``measure_growth``).
         label: What was measured, for the failure message.
+        repetitions: Samples per size per window, at least
+            ``MIN_REPETITIONS``.
 
     Returns:
         The measurement, so a caller can print it.

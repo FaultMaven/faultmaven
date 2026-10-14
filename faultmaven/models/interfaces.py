@@ -524,11 +524,17 @@ class IVectorStore(ABC):
         """
         pass
 
-    async def delete_documents_by_parent_id(self, parent_document_id: str) -> int:
+    async def delete_documents_by_parent_id(
+        self, parent_document_id: str, *, retries: int = 2
+    ) -> int:
         """Delete all chunks belonging to a parent document.
 
         Args:
             parent_document_id: The original document ID whose chunks to delete.
+            retries: Further attempts after a failed one. A caller holding a
+                database transaction open across this call passes 0 and lets
+                its own caller retry, since every retry (and its backoff sleep)
+                extends the hold.
 
         Returns:
             Number of chunks deleted.

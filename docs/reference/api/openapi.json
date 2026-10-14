@@ -12367,7 +12367,7 @@
     },
     "/api/v1/knowledge/documents/{document_id}": {
       "delete": {
-        "description": "Delete a knowledge base document\n\nOwnership-aware (#834): the owner may delete their own personal/team\ndocument; global-scope deletion is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion confirmation",
+        "description": "Delete a knowledge base document\n\nOwnership-aware (#834): the owner may delete their own personal/team\ndocument; global-scope deletion is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA 204 means the document has no retrievable chunk left (#1966). When its\nsearch-index entries cannot be removed the answer is 503: the delete did\nnot complete, the document is still in the knowledge base, and retrying\nthe request once the knowledge base is available finishes it.\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion confirmation",
         "operationId": "delete_document_api_v1_knowledge_documents__document_id__delete",
         "parameters": [
           {
@@ -12741,7 +12741,7 @@
     },
     "/api/v1/knowledge/scan": {
       "post": {
-        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global (personal/team) discovery is\nunaffected.",
+        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global discovery is unaffected.\n\nA file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal\ndraft. A file under ``team_<id>/`` is imported as a **personal** draft too\n(#1986): the scan runs only where there are no teams, so no team exists to\nshare it with, and a team-scope runbook with no team would be visible to\nits owner alone. The response's ``notes`` list names each such file\n(\"team_x/foo.md imported as personal: ...\"); ``errors`` names the files\nthat were not imported.",
         "operationId": "scan_for_runbooks_api_v1_knowledge_scan_post",
         "responses": {
           "200": {

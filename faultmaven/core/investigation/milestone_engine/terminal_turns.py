@@ -524,7 +524,7 @@ class TerminalTurnHandler:
         if terminal_tools:
             tools_kwargs["investigation_tools"] = terminal_tools
             tools_kwargs["tool_context"] = await self.generator.build_tool_context(
-                case, user_id=user_id, redaction_ctx=redaction_ctx
+                case, user_id=user_id, redaction_ctx=redaction_ctx, given_tools=given
             )
             tools_kwargs["force_tool_use"] = False
             tools_kwargs["base_prompt_builder"] = _build_tool_loop_base

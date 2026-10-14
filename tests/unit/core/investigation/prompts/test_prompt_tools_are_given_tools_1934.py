@@ -36,14 +36,19 @@ import hashlib
 import importlib
 import pkgutil
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import chromadb
 import pytest
+from chromadb.config import Settings as ChromaSettings
 
 import faultmaven
 import faultmaven.modules.agent.tools as tools_pkg
+from faultmaven.config.settings import get_settings
 from faultmaven.container.providers.services import _create_investigation_tools
 from faultmaven.core.investigation import terminal_transitions
 from faultmaven.core.investigation.milestone_engine import terminal_replies
@@ -79,8 +84,10 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
+from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
 from faultmaven.modules.agent.tools.kb_tool_adapter import (
@@ -91,7 +98,10 @@ from faultmaven.modules.agent.tools.list_top_entities_tool import ListTopEntitie
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
-from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
+from faultmaven.modules.agent.tools.search_file_tool import (
+    SearchFileTool,
+    format_searchable_alternatives,
+)
 from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
 from faultmaven.modules.agent.tools.web_search import WebSearchTool
 from faultmaven.modules.case.contracts import (
@@ -124,6 +134,7 @@ MODEL_FACING = [
             "vectorize_file_tool.py",
             "kb_qa.py",
             "case_evidence_qa.py",
+            "kb_configs/case_evidence_config.py",
             "find_entity_tool.py",
             "list_top_entities_tool.py",
             "reclassify_evidence_tool.py",
@@ -976,3 +987,253 @@ def test_a_toolless_terminal_prompt_makes_no_claim_about_searchability(
 ) -> None:
     _, prompt = _terminal_turn(condition, ROWS["none"], monkeypatch)
     assert not _searchability_claims(prompt), _searchability_claims(prompt)
+
+
+# ---------------------------------------------------------------------------
+# #1977 / #1994: what an EMPTY case_evidence_search tells the model
+# ---------------------------------------------------------------------------
+#
+# The text is a tool result, not a prompt, so it is a column of its own: the
+# real adapter over a real ``CaseVectorStore`` on an in-memory ChromaDB client
+# (only the query embedding is stubbed), fed the tools one turn gives it and
+# one case. The invariant: what it says is true for that case and names only
+# tools the turn gives, and the search leaves no collection behind.
+
+_EMBEDDER = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
+
+#: What the text said before #1977. Each is false of a case whose uploads are
+#: all under ``vectorization_min_size_bytes``: those files are never indexed,
+#: so "nothing uploaded" and "still being indexed" are both wrong, and the
+#: model could repeat either to the user.
+_OLD_EMPTY_CLAIMS = (
+    "no vectorized evidence",
+    "nothing has been uploaded",
+    "still being indexed",
+    "5-15 seconds",
+    "file summaries received",
+)
+
+
+def _with_case_evidence(g: frozenset[str]) -> bool:
+    return "case_evidence_search" in g
+
+
+#: The turns that can run the tool: every row giving it, and the terminal
+#: turn's share of each (#1964). ``search_file`` is in every one of them (the
+#: pin below), so the empty text always has a tool to point at; the text that
+#: names none is the one a context with no turn gets.
+_EMPTY_SEARCH_GIVEN: dict[str, frozenset[str]] = {
+    **{row: ROWS[row] for row in ROWS if _with_case_evidence(ROWS[row])},
+    **{
+        f"{row}_terminal": terminal_given(row)
+        for row in ROWS
+        if _with_case_evidence(ROWS[row])
+    },
+}
+
+_SMALL_UPLOAD_BYTES = 2_000
+
+
+def _small_files_case():
+    """Every upload is far under the vectorization floor: none is ever
+    indexed, though one is recorded as evidence and one is not."""
+    case = _case()
+    case.uploaded_files = [
+        f.model_copy(update={"size_bytes": _SMALL_UPLOAD_BYTES})
+        for f in case.uploaded_files
+    ]
+    return case
+
+
+def _no_upload_case():
+    case = _case()
+    case.uploaded_files = []
+    case.evidence = []
+    return case
+
+
+def _unstored_row_case():
+    """The only file is recorded as evidence but has no stored file
+    (``storage_ref`` is None when the deployment has no file storage): there
+    is nothing for ``search_file`` to read."""
+    case = _small_files_case()
+    case.uploaded_files = [
+        case.uploaded_files[0].model_copy(update={"storage_ref": None})
+    ]
+    return case
+
+
+def _unstored_row_beside_a_stored_one_case():
+    """Two recorded rows: one with no stored file, one with. Only the stored
+    one is offered."""
+    case = _small_files_case()
+    unstored, stored = case.uploaded_files
+    case.uploaded_files = [unstored.model_copy(update={"storage_ref": None}), stored]
+    case.evidence = [
+        case.evidence[0],
+        _evidence().model_copy(
+            update={"evidence_id": "ev_193900000002", "source_file_id": stored.file_id}
+        ),
+    ]
+    return case
+
+
+#: case -> (builder, the ids a tool that reads its files can be pointed at, the
+#: ids it must not be: they name a file with nothing stored behind it)
+_EMPTY_SEARCH_CASES = {
+    "small_files": (
+        _small_files_case,
+        {"ev_193900000001", "file_1939bbbbbbbb"},
+        set(),
+    ),
+    "no_upload": (_no_upload_case, set(), set()),
+    "unstored_row_only": (
+        _unstored_row_case,
+        set(),
+        {"ev_193900000001", "file_1939aaaaaaaa"},
+    ),
+    "unstored_row_beside_stored": (
+        _unstored_row_beside_a_stored_one_case,
+        {"ev_193900000002"},
+        {"ev_193900000001", "file_1939aaaaaaaa"},
+    ),
+}
+
+
+def _ephemeral_client():
+    """Pinned settings: chromadb refuses a second client for one cached System
+    whose ``Settings`` differ (#823)."""
+    return chromadb.EphemeralClient(
+        settings=ChromaSettings(
+            anonymized_telemetry=False,
+            allow_reset=False,
+            environment="",
+            is_persistent=False,
+        )
+    )
+
+
+def _empty_search(g: frozenset[str], case):
+    """The real ``case_evidence_search`` over a case with no vectors: its
+    result, the collections left behind, and the case it searched.
+
+    The case id is unique, so a collection a regression leaves behind in this
+    shared in-process store cannot be read as another test's."""
+    case = case.model_copy(update={"case_id": f"case_1977{uuid.uuid4().hex[:12]}"})
+    client = _ephemeral_client()
+    adapter = CaseEvidenceQAAdapter(
+        AnswerFromCaseEvidence(
+            vector_store=CaseVectorStore(client=client), llm_router=MagicMock()
+        )
+    )
+    context = ToolContext(
+        session_id=case.case_id,
+        case_id=case.case_id,
+        enterprise_id=case.enterprise_id,
+        user_id=case.user_id,
+        in_memory_case=case,
+        given_tools=g,
+    )
+    try:
+        with patch(_EMBEDDER, new=AsyncMock(return_value=[0.1] * 8)):
+            result = asyncio.run(
+                adapter.execute_with_context(
+                    {"question": "what errors are in the log?"}, context
+                )
+            )
+        return result, [c.name for c in client.list_collections()], case
+    finally:
+        try:
+            client.delete_collection(f"case_{case.case_id}")
+        except Exception:  # noqa: BLE001 - nothing was created: nothing to remove
+            pass
+
+
+def test_search_file_is_given_on_every_turn_that_can_run_a_tool() -> None:
+    """The impossibility the empty-search columns rest on, asserted rather than
+    assumed (#2004 review): ``search_file`` registers unconditionally, so no
+    turn that gives any tool lacks it, terminal share included, and the only
+    set without it is the tool-less one, on which no tool runs. A row that
+    gives tools but not ``search_file`` fails here, and that row needs its own
+    empty-search column and conditional tool text (``case_evidence_search``'s
+    description and ``vectorize_file``'s results name ``search_file``)."""
+    assert ROWS["none"] == frozenset()
+    for row, g in ROWS.items():
+        if g:
+            assert "search_file" in g, row
+            assert "search_file" in terminal_given(row), f"{row} (terminal)"
+    # Non-vacuity: the columns below exist, and the terminal share is among them.
+    assert _EMPTY_SEARCH_GIVEN
+    assert {r for r in _EMPTY_SEARCH_GIVEN if r.endswith("_terminal")}
+
+
+@pytest.mark.parametrize("case_name", sorted(_EMPTY_SEARCH_CASES))
+@pytest.mark.parametrize("row", sorted(_EMPTY_SEARCH_GIVEN))
+def test_an_empty_case_evidence_search_is_true_for_the_case_and_names_only_given_tools(
+    row: str, case_name: str
+) -> None:
+    g = _EMPTY_SEARCH_GIVEN[row]
+    build, readable, unreadable = _EMPTY_SEARCH_CASES[case_name]
+    result, collections, case = _empty_search(g, build())
+    text = result.data
+    min_size = get_settings().agent.vectorization_min_size_bytes
+
+    assert result.success is True
+    # True for the case: its files are all under the floor, so none is ever
+    # indexed, and the text says what the index holds and where the floor is,
+    # read from settings. It claims nothing about uploads being absent or
+    # about a file "still being indexed".
+    assert all(f.size_bytes < min_size for f in case.uploaded_files)
+    assert "No file of this case has been indexed for semantic search" in text
+    assert f"files of at least {min_size:,} bytes that have been indexed" in text
+    assert "a smaller file is never indexed" in text
+    for claim in _OLD_EMPTY_CLAIMS:
+        assert claim not in text.lower(), claim
+    assert "searchab" not in text.lower()
+
+    # Only a tool the turn gives is named: ``search_file`` (given on every
+    # such turn), and only with a file it can read, listed as its own miss
+    # lists them. A file with nothing stored behind it is never offered.
+    named = rendered_mentions(text)
+    assert named <= g and "search_file" in g
+    assert not any(i in text for i in unreadable)
+    if readable:
+        assert named == {"search_file"}
+        assert format_searchable_alternatives(case.evidence, "", case) in text
+        assert all(i in text for i in readable)
+    else:
+        assert named == set()
+        assert not any(f.storage_ref for f in case.uploaded_files)
+        assert "This case has no uploaded file to read." in text
+
+    # Searching created nothing (#1994).
+    assert f"case_{case.case_id}" not in collections
+
+
+def test_the_empty_search_floor_is_read_from_settings_not_written_in_the_text() -> None:
+    stub = SimpleNamespace(agent=SimpleNamespace(vectorization_min_size_bytes=12_345))
+    with patch(
+        "faultmaven.modules.agent.tools.kb_configs.case_evidence_config.get_settings",
+        return_value=stub,
+    ):
+        result, _, _ = _empty_search(ROWS["six"], _small_files_case())
+
+    assert "files of at least 12,345 bytes that have been indexed" in result.data
+    assert "50,000" not in result.data
+
+
+@pytest.mark.parametrize("case_name", sorted(_EMPTY_SEARCH_CASES))
+def test_a_context_built_without_a_turns_tools_names_none(case_name: str) -> None:
+    """The default of ``ToolContext.given_tools`` is the tool-less set, so a
+    context nobody stated a turn for cannot point the model at a tool or at a
+    file: it says what the index holds and that the result shows nothing about
+    uploads."""
+    build, readable, unreadable = _EMPTY_SEARCH_CASES[case_name]
+    result, collections, case = _empty_search(frozenset(), build())
+    text = result.data
+
+    assert rendered_mentions(text) == set()
+    assert not any(i in text for i in readable | unreadable)
+    assert "No file of this case has been indexed for semantic search" in text
+    assert "does not show whether the case has uploaded files" in text
+    assert f"case_{case.case_id}" not in collections

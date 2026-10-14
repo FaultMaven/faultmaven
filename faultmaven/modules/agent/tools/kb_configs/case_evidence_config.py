@@ -6,6 +6,7 @@ KB-specific configuration for case-scoped forensic evidence (logs, configs, metr
 
 from typing import Optional
 
+from faultmaven.config.settings import get_settings
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
@@ -68,22 +69,51 @@ class CaseEvidenceConfig(KBConfig):
 
     @property
     def empty_result_message(self) -> str:
-        """This case's evidence collection was searched and is empty.
+        """The empty result for a caller that offers the model no other tool.
 
-        Unlike the KB config, naming ingestion causes IS in-domain here: this
-        tool queries ``case_{case_id}``, so an empty collection really does
-        mean nothing has been vectorized for this case yet. The causes are
-        offered as possibilities, not asserted, and the failure case no longer
-        reaches this path (it raises) — so this text can no longer be shown
-        for a search that did not run (#943).
+        Names no tool: see ``empty_result_for``.
         """
+        return self.empty_result_for(search_file_offered=False)
+
+    def empty_result_for(
+        self, *, search_file_offered: bool, readable_files: str = ""
+    ) -> str:
+        """What a search that ran and found nothing tells the model (#1977).
+
+        An empty result means one thing: no file of this case has been indexed
+        for semantic search. It does NOT mean the case has no uploads: a file
+        under ``vectorization_min_size_bytes`` is never indexed (``vectorize_file``
+        refuses it, and the proactive and reactive gates skip it), and a larger
+        one is indexed only once something vectorizes it. The old text blamed
+        "nothing uploaded yet, or still being indexed", false for a case whose
+        files are all small, and the model could repeat it to the user or stop
+        looking. The size is read from settings, not written here.
+
+        Names a tool only the turn offers (#1939): ``search_file`` when
+        ``search_file_offered``, with ``readable_files`` (the case's files that
+        tool reads, ``format_searchable_alternatives``'s list, which starts with
+        a space), and no tool otherwise. Nothing here claims the case's files
+        are or are not searchable: it says only what the index holds. Reached
+        only when the search ran: a failed one raises and never gets here
+        (#943).
+        """
+        min_size = get_settings().agent.vectorization_min_size_bytes
+        text = (
+            "No file of this case has been indexed for semantic search, so "
+            "there was nothing to search. Semantic search covers only files of "
+            f"at least {min_size:,} bytes that have been indexed; a smaller "
+            "file is never indexed."
+        )
+        if not search_file_offered:
+            return (
+                text + " This result does not show whether the case has "
+                "uploaded files."
+            )
+        if not readable_files:
+            return text + " This case has no uploaded file to read."
         return (
-            "No vectorized evidence is available for this case yet. The case "
-            "evidence store was searched successfully and is empty — most "
-            "likely nothing has been uploaded yet, or an uploaded file is "
-            "still being indexed (usually 5-15 seconds).\n\n"
-            "Note: you can still ask about the file summaries received when "
-            "files were uploaded."
+            text + " This does not mean there is nothing to read: search_file "
+            "reads this case's uploaded files, by id." + readable_files
         )
 
     @property

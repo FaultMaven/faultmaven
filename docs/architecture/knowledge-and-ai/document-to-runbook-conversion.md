@@ -901,7 +901,7 @@ Response: Updated draft object with re-run validation and quality score.
 ```
 
 This endpoint:
-1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` in the draft's text, `conversion_drafts.content` (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source. Runbooks verified before #1942 carried the username; migration `019_verified_by_is_the_display_name` (#1948) rewrote those, in the published item and its verified draft alike, to the verifier's current display name (`""` when the verifier's account is gone). It chooses runbooks by `knowledge_items.verified_by` and rewrites only an account-derived value (the username, an address, the real email's local part), so a name or team an owner chose stays; uploads and the KB pack are untouched.
+1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` in the draft's text, `conversion_drafts.content` (so chunk metadata carries `status=verified`). `verified_by` is the verifier's display name, read from their `users` row by user id: the runbook is published at its scope, and a username can be an email's local part (#1924). The JWT principal carries the username in its `display_name`, so the request's user object is never the source. It also sets the frontmatter `scope` to the job's scope, the tier the item is published at (`taxonomy.KnowledgeScope`): a file's own `scope:` line is a claim the scan never honoured (a `team_*` file is published personal, #1986), and the stored text now says what the row says. Runbooks verified before #1942 carried the username; migration `019_verified_by_is_the_display_name` (#1948) rewrote those, in the published item and its verified draft alike, to the verifier's current display name (`""` when the verifier's account is gone). It chooses runbooks by `knowledge_items.verified_by` and rewrites only an account-derived value (the username, an address, the real email's local part), so a name or team an owner chose stays; uploads and the KB pack are untouched.
 2. (Removed in fm#1295.) Until then this step extracted the v4 `## Causes` graph record from the markdown and stored it as `knowledge_items.metadata["causes"]` for the KB cause seeder; with the seeder gone the record had no reader, and extraction, the record and the chunk cause-letter stamp were retired. The runbook's `## Causes` section still chunks one Cause per chunk, so a verified runbook re-enters investigations as retrievable cause→fix units. See **Flywheel closure** below.
 3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
 4. Only after ingestion succeeds, writes the verified text with `status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` as one **compare-and-swap** `UPDATE … WHERE status = 'draft' AND content = <the text it read>` (#1950). If the row changed during ingestion, nothing is swapped: the published item and its vectors are removed (`KnowledgeService.delete_document`; a failed removal is logged at ERROR naming the orphaned item, and the 409 says so), and the caller gets a 409 naming what won — `already_verified` (another verify; `verify_batch` records it as skipped), `discarded` (a delete) or `changed_during_verification` (an edit, which survives). An edit's own write is conditional too (`UPDATE … WHERE status = 'draft'`), so an edit can never overwrite a draft a verify has just published.
@@ -1293,7 +1293,7 @@ reads (§9.5):
 ```
 data/knowledge/
     global/                          # imported as global-scope drafts (operator only)
-    team_{team_id}/                  # imported as team-scope drafts
+    team_{team_id}/                  # imported as PERSONAL drafts: no teams here (§9.5)
     user_{user_id}/                  # imported as personal drafts
 ```
 
@@ -1350,7 +1350,7 @@ stateDiagram-v2
 
 Key rules:
 - **Draft**: Text in `conversion_drafts.content`. NOT in ChromaDB. NOT searchable by the AI.
-- **Verified**: Text updated with `status: verified` and `verified_by`. Ingested into ChromaDB. Searchable.
+- **Verified**: Text updated with `status: verified`, `verified_by` and `scope` (the published tier). Ingested into ChromaDB. Searchable.
 - **Discarded**: Soft-delete. Database row retained (audit trail), `knowledge_item_id` cleared.
 - **No reverse transition**: Once verified, the runbook follows the standard KB lifecycle. It is no longer a "conversion draft."
 
@@ -1373,6 +1373,17 @@ bound (§9.1) is reported as an error,
 and a global-scope file is imported only for a platform operator. What is on
 disk decides nothing about an existing draft: a draft whose file is gone keeps
 its row and its text.
+
+**A `team_*` directory imports as personal (#1986).** A team's visibility is a
+share row tied to a real team (ADR-013 §D4), and a directory name is not one.
+The scan runs only on a single-tenant deployment, which builds no team service
+and has no teams, so a `team_{id}/` file has no team to be shared with. It is
+imported with `scope="personal"` — what it can be — rather than as a team-scope
+draft with no team, which would publish a row labelled team that only its
+owner sees. The response says so per file, in its `notes` list
+(`"team_x/foo.md imported as personal: this deployment has no teams to share it
+with"`); `errors` stays the list of files that were not imported. Verify then
+publishes a personal row, because the job's scope is the one a publish reads.
 
 Under `TENANT_PROVIDER=multi` the service refuses the scan with a
 `ValidationException` — `422`, detail "This deployment has no runbook

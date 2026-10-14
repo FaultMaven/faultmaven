@@ -130,13 +130,17 @@ pip install -e ".[dev]"
 ./scripts/faultmaven-dev.sh start
 
 # Or run the server directly (what the Docker image runs)
-HOST=0.0.0.0 PORT=8090 RELOAD=false python -m faultmaven.main
+HOST=0.0.0.0 PORT=8090 RELOAD=false python -m faultmaven.server
 ```
 
-`python -m faultmaven.main` reads host, port and reload from settings, so set
-`HOST`, `PORT` and `RELOAD` as above. With none of them set and no OpenAI,
-Anthropic, Fireworks, Groq or Cohere API key configured, the zero-config `local`
-preset applies and it serves `127.0.0.1:8000` with the reloader on.
+`python -m faultmaven.server` reads host, port and reload from settings, so set
+`HOST`, `PORT` and `RELOAD` as above. With none of them set and no LLM
+provider configured (no API key for any of the nine providers, and no
+`LOCAL_LLM_URL` for a local Ollama/vLLM server, in the environment or in the
+`.env` of the working directory), the zero-config `local` preset
+applies and it serves `127.0.0.1:8000` with the reloader on. Configuring any one
+provider, Redis (`REDIS_HOST`), ChromaDB (`CHROMADB_URL`), or naming an
+`ENVIRONMENT` other than `development` declines the preset.
 
 ### API Access
 
