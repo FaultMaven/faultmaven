@@ -30,6 +30,7 @@ import bisect
 import hashlib
 import hmac
 import re
+import string
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -278,10 +279,17 @@ _ESCAPE = rf"(?<={_ESCAPED_CONTROL})|(?<=%[0-9A-Fa-f]{{2}})"
 #: (YAML's ` #`, whatever follows it) or the line's end. Read only after
 #: `key:` (#2025): `--password | tee` and `token=>` are not blocks.
 _BLOCK_INDICATOR = r"[|>](?:[-+][1-9]?|[1-9][-+]?)?"
+#: Up to two node properties before the indicator, a tag or an anchor
+#: (`password: !!binary |`, `password: &pw |`, `db_password: !vault |`),
+#: each ended by blanks. A property is read to the next blank or `:`, so a
+#: scan that tries every `:` reads each character once (`: !` glued to `:`
+#: again and again would be re-read to the end of the run per `:`).
+_NODE_PROPERTIES = r"(?:[!&][^\s:]*+[ \t]++){0,2}+"
+_BLOCK_START = rf"{_NODE_PROPERTIES}{_BLOCK_INDICATOR}"
 _BLOCK_LINE_REST = r"(?:[ \t]++#|[ \t]*+(?![^\r\n]))"
 #: After `key:`, a block indicator is not the value (``_keyed_block_scalar``
 #: reads the block), so `password: |` keeps its indicator and stays YAML.
-_NOT_A_BLOCK_INDICATOR = rf"(?!{_BLOCK_INDICATOR}{_BLOCK_LINE_REST})"
+_NOT_A_BLOCK_INDICATOR = rf"(?!{_BLOCK_START}{_BLOCK_LINE_REST})"
 
 
 def _keys(keywords: str) -> Tuple[str, str, str]:
@@ -315,7 +323,7 @@ def _keyed_secret(keywords: str, value_guard: str = "") -> str:
     3. A command-line flag (``--password value``): a value not shaped like a
        word (``_PROSE_VALUE``), and not a separator (`` : `` is spelling 1's).
        The empty ``flag`` group marks it: a match that took it stands only
-       when the token holding the key starts with ``-`` (``_flag_in_a_word``,
+       when the word holding the key starts with ``-`` (``_flag_in_a_word``,
        #2025), so ``--db-password x`` is a flag and the command names
        ``get-login-password`` and ``rotate-secret`` are not.
 
@@ -361,18 +369,23 @@ def _keyed_on_next_line(keywords: str, value_guard: str = "") -> str:
     )
 
 
-#: Lines of only blanks, each followed by another line; and a line of a block
-#: body: indented deeper than the key's line (``indent``), not blank.
+#: Lines of only blanks, each followed by another line; a block body's
+#: indentation: deeper than the key's line (``indent``), and for a list item's
+#: key (`- password: |`, ``item``) deeper than the key itself, so the item's
+#: sibling keys (`  user: bob`) are not its body; and a body line, not blank.
 _BLANK_LINES = r"(?:\r?\n[ \t]*+(?=\r?\n))*+"
-_BODY_LINE = r"\r?\n(?P=indent)[ \t]++[^ \t\r\n][^\r\n]*+"
+_DEEPER = r"(?P=indent)(?(item)[ \t]{2})[ \t]++"
+_BODY_LINE = rf"\r?\n{_DEEPER}[^ \t\r\n][^\r\n]*+"
 
 
 def _keyed_block_scalar(keywords: str) -> str:
     """``key: |`` (or ``>``, with a chomping ``-``/``+`` and an indentation
-    digit, and an optional comment): the value is the YAML block below it
-    (#2025). The body is every following line indented deeper than the key's
-    line; a run of blank lines belongs to it only when a deeper line follows
-    the run, and it ends at the first other line or at the end of the text.
+    digit, after up to two node properties, a tag or an anchor, and with an
+    optional comment): the value is the YAML block below it (#2025). The body
+    is every following line indented deeper than the key's line — for a
+    ``- key: |`` list item, deeper than the key itself; a run of blank lines
+    belongs to it only when a deeper line follows the run, and it ends at the
+    first other line or at the end of the text.
     An empty block (the indicator, then a sibling or the end) reads nothing.
 
     The span runs from the first body line's first non-blank character to the
@@ -383,18 +396,23 @@ def _keyed_block_scalar(keywords: str) -> str:
 
     Linear: the key line is matched atomically, committing to the first key
     whose indicator ends the line (after a ``#`` everything is comment), and
-    every quantifier over the body is possessive. The match consumes the body,
+    every quantifier over the body is possessive. Whether the key is a list
+    item's is decided there too, by the first body line's indentation (a body
+    at the dash's own depth is read as the dash's), and never revisited: a
+    second pass reading a placeholder body must not fall back to the dash's
+    depth and take the item's siblings. The match consumes the body,
     so a scan resumes after it, and a key line inside a body (whose own block
     lies inside the outer one) is not read again.
     """
     _key, bare, compound = _keys(keywords)
     return (
         r"(?<![^\n])(?P<indent>[ \t]*+)"
+        rf"(?>(?P<item>-[ \t](?=[^ \t]))?"
         rf"(?>[^\r\n]*?(?:{bare}|{compound}){_KEY_QUOTE}{_COLON}"
-        rf"{_BLOCK_INDICATOR}{_BLOCK_LINE_REST})[^\r\n]*+"
-        rf"{_BLANK_LINES}\r?\n(?P=indent)[ \t]++"
+        rf"{_BLOCK_START}{_BLOCK_LINE_REST})[^\r\n]*+"
+        rf"{_BLANK_LINES}\r?\n{_DEEPER})"
         rf"(?!{_REFERENCE}[ \t]*+(?![^\r\n])"
-        rf"(?!{_BLANK_LINES}\r?\n(?P=indent)[ \t]++[^ \t\r\n]))"
+        rf"(?!{_BLANK_LINES}\r?\n{_DEEPER}[^ \t\r\n]))"
         rf"(?P<secret>[^ \t\r\n][^\r\n]*+(?:{_BLANK_LINES}{_BODY_LINE})*+)"
     )
 
@@ -552,6 +570,16 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"(?:xox[a-z]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,})",
         0,
         ("xox", "xapp-"),
+    ),
+    # GitLab personal, impersonation, project and group access tokens: the
+    # `glpat-` prefix (docs.gitlab.com/security/tokens/#token-prefixes), and
+    # a 20-character token (docs.gitlab.com/user/profile/personal_access_tokens/),
+    # longer when routable. GitLab's other prefixes document no shape.
+    _pattern(
+        "GITLAB_TOKEN",
+        rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE})glpat-[0-9A-Za-z_-]{{20,}}+",
+        0,
+        ("glpat-",),
     ),
     # OpenAI-style keys, `sk-proj-…`/`sk-ant-…` included, and `pk-` keys.
     # Not after a letter: `task-0123…abcdef` is a task id, not a key (a
@@ -767,8 +795,16 @@ def _within(hits: List[int], lines: Optional[List[Tuple[int, int]]]) -> List[int
     return inside
 
 
+#: What a command-line word is made of: a flag (`--db-password`) or a
+#: hyphenated command name (`get-login-password`), and nothing else, so a
+#: flag glued after punctuation (`"--password x"`, `;--password`, `$(--`)
+#: is still a word that starts with `-`.
+_WORD_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
+
+
 def _run_start(text: str, position: int, walked: List[int]) -> int:
-    """Where the run of non-whitespace holding ``position`` starts.
+    """Where the run of word characters (``_WORD_CHARS``) holding
+    ``position`` starts.
 
     ``walked`` is ``[position, run start]`` of the last call, and positions
     only grow, so the walk back stops where the last one began: each
@@ -776,7 +812,7 @@ def _run_start(text: str, position: int, walked: List[int]) -> int:
     once."""
     floor, floor_start = walked
     start = position
-    while start > floor and start and not text[start - 1].isspace():
+    while start > floor and start and text[start - 1] in _WORD_CHARS:
         start -= 1
     if start == floor and floor >= 0:
         start = floor_start
@@ -786,9 +822,11 @@ def _run_start(text: str, position: int, walked: List[int]) -> int:
 
 def _flag_in_a_word(match: "re.Match[str]", text: str, walked: List[int]) -> bool:
     """Whether ``match`` read the command-line flag spelling (its ``flag``
-    group took part) of a key whose token does not start with ``-``: a
+    group took part) of a key whose word does not start with ``-``: a
     hyphenated command name (``get-login-password --region``,
-    ``rotate-secret \\``), not a flag (#2025). ``--db-password x`` is one."""
+    ``rotate-secret \\``), not a flag (#2025). ``--db-password x`` is one, and
+    so is ``"--password x"``: the word is ``_WORD_CHARS``, not the whole run
+    of non-whitespace."""
     return (
         match.start("flag") != -1
         and text[_run_start(text, match.start(), walked)] != "-"
@@ -844,9 +882,9 @@ def _keyed_matches(
 _KEY_LINE_END = re.compile(r":[ \t]*\r?\n[ \t]")
 #: What every block pattern's match holds: `:`, a block indicator, and a
 #: comment or the line's end. Neither can a stand-in make.
-_BLOCK_LINE_END = re.compile(rf":[ \t]*+{_BLOCK_INDICATOR}(?:[ \t]++#|[ \t]*+\r?\n)")
+_BLOCK_LINE_END = re.compile(rf":[ \t]*+{_BLOCK_START}(?:[ \t]++#|[ \t]*+\r?\n)")
 #: The same, ending the line ``_block_matches`` is given.
-_BLOCK_KEY_LINE = re.compile(rf":[ \t]*+{_BLOCK_INDICATOR}(?:[ \t]++#|[ \t]*+\r?$)")
+_BLOCK_KEY_LINE = re.compile(rf":[ \t]*+{_BLOCK_START}(?:[ \t]++#|[ \t]*+\r?$)")
 
 
 def _block_matches(

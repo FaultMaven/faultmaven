@@ -26,6 +26,7 @@ path                                               test
 ``verify_draft``: a draft validated before the     ``TestADraftValidatedBefore``
 check (template, conversion, case)
 ``update_document_metadata``                       ``TestUpdate``
+``bulk_update_documents``                          ``TestBulkUpdate``
 the upload and update routes                       ``TestTheRoutesAnswer422``
 the KB pack (``shipped=True``)                     ``TestShippedPack`` (exempt)
 ``KnowledgeIngester`` (dead)                       ``TestDeadIngesterPaths``
@@ -39,23 +40,34 @@ Mutations, each restored from a ``cp`` backup:
 * select the keyed families too: ``TestShippedPack`` fails (and the
   false-positive rows);
 * drop the placeholder filter: the placeholder rows fail.
+
+The review of f137dfc2c added ``REVIEW``: each row was published at that head
+(F2 a JWT read past its own characters, F3 a placeholder's spelling at the
+start of a real password, F4 key material wrapped short, F9 a truncated key
+past its BEGIN line, F10 a GitLab token), and is refused now. The routes are
+read through the app's own ``http_exception_handler`` (F6).
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import pathlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.api.exception_handlers import get_exception_handlers
+from faultmaven.api.exception_handlers import (
+    get_exception_handlers,
+    http_exception_handler,
+)
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import ValidationException
@@ -153,6 +165,137 @@ REAL = [
 ]
 REAL_IDS = [row[0] for row in REAL]
 
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+#: A real-shaped JWT, assembled: header.payload.signature.
+_REVIEW_JWT = ".".join(
+    (
+        _b64url(b'{"alg":"HS256","typ":"JWT"}'),
+        _b64url(b'{"sub":"1234567890","name":"prod-svc","iat":1716239022}'),
+        _b64url(bytes(range(32))),
+    )
+)
+#: 1,024 characters of real-shaped key material.
+_KEY_B64 = base64.b64encode(bytes(range(256)) * 3).decode()
+_PEM_BEGIN = "-----BEGIN RSA " + "PRIVATE KEY-----"
+_PEM_END = "-----END RSA " + "PRIVATE KEY-----"
+
+
+def _pem(width: int, sep: str = "\n") -> str:
+    lines = [_KEY_B64[i : i + width] for i in range(0, len(_KEY_B64), width)]
+    return _PEM_BEGIN + sep + sep.join(lines) + sep + _PEM_END
+
+
+_GITLAB = "gl" + "pat-" + "Zq7Wm2Kx9Lp4Rt6Yv3Bn"
+_TRUNCATED_LINES = [_KEY_B64[i : i + 64] for i in range(0, 448, 64)]
+
+#: The review of f137dfc2c (``scratchpad/rev2031/a1.py``): each one was
+#: published, and each is refused now. ``(label, snippet, type, secret)``.
+REVIEW = [
+    # F2: a JWT read on to the next blank took a query string's or a JSON
+    # document's `example` into its parts, which excused it.
+    (
+        "jwt-in-a-query-string",
+        f"curl 'https://api.internal/cb?id_token={_REVIEW_JWT}"
+        "&next=https://app.example.com/'",
+        "JWT_TOKEN",
+        _REVIEW_JWT,
+    ),
+    (
+        "jwt-in-compact-json",
+        '{"id_token":"' + _REVIEW_JWT + '","iss":"https://auth.example.com"}',
+        "JWT_TOKEN",
+        _REVIEW_JWT,
+    ),
+    ("jwt-dot-xxx", _REVIEW_JWT + ".xxx", "JWT_TOKEN", _REVIEW_JWT),
+    # F3: a placeholder's spelling at the start of a real password.
+    (
+        "url-dollar-word",
+        "psql 'postgres://app:$uperS3cret@db.internal/app'",
+        "DATABASE_URL",
+        "$uperS3cret",
+    ),
+    (
+        "url-example-word",
+        "psql postgres://app:example-Pr0d-pass@db.internal/app",
+        "DATABASE_URL",
+        "example-Pr0d-pass",
+    ),
+    (
+        "url-your-word",
+        "psql postgres://app:your_Pr0d_s3cret@db.internal/app",
+        "DATABASE_URL",
+        "your_Pr0d_s3cret",
+    ),
+    (
+        "url-placeholder-word",
+        "psql postgres://app:placeholder_9fK2x@db.internal/app",
+        "DATABASE_URL",
+        # The tail: "placeholder" is a word the message itself uses.
+        "lder_9fK2x",
+    ),
+    (
+        "url-bind-shaped",
+        "psql postgres://app::hunter2x@db.internal/app",
+        "DATABASE_URL",
+        ":hunter2x",
+    ),
+    (
+        "url-open-substitution",
+        "psql postgres://app:$(s3cretpw@db.internal/app",
+        "DATABASE_URL",
+        "$(s3cretpw",
+    ),
+    (
+        "github-example-tail",
+        "gh" + "p_example" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+        "GITHUB_TOKEN",
+        "exampleA1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+    ),
+    (
+        "bearer-your-word",
+        "Authorization: Bearer your_9fK2xA7bQ1zR",
+        "BEARER_TOKEN",
+        "your_9fK2xA7bQ1zR",
+    ),
+    (
+        "bearer-example-word",
+        "Authorization: Bearer example-9fK2xA7bQ1zR",
+        "BEARER_TOKEN",
+        "example-9fK2xA7bQ1zR",
+    ),
+    # F4: key material wrapped short, spaced or JSON-escaped.
+    ("pem-wrapped-39", _pem(39), "PRIVATE_KEY", _KEY_B64),
+    ("pem-wrapped-32", _pem(32), "PRIVATE_KEY", _KEY_B64),
+    ("pem-spaced-groups", _pem(32, " "), "PRIVATE_KEY", _KEY_B64),
+    ("pem-json-escapes", _pem(32, "\\n"), "PRIVATE_KEY", _KEY_B64),
+    # F9: a truncated key the sanitizer reads as its BEGIN line only.
+    (
+        "pem-truncated-with-a-comment",
+        _PEM_BEGIN + "\n# prod key\n" + "\n".join(_TRUNCATED_LINES),
+        "PRIVATE_KEY",
+        _KEY_B64[:448],
+    ),
+    (
+        "pem-truncated-in-a-blockquote",
+        _PEM_BEGIN + "\n" + "\n".join("> " + line for line in _TRUNCATED_LINES),
+        "PRIVATE_KEY",
+        _KEY_B64[:448],
+    ),
+    # F10: GitLab access tokens.
+    ("gitlab-token", f"git push uses {_GITLAB}", "GITLAB_TOKEN", _GITLAB),
+    (
+        "gitlab-token-as-url-user",
+        f"git clone https://{_GITLAB}@gitlab.com/acme/app.git",
+        "GITLAB_TOKEN",
+        _GITLAB,
+    ),
+]
+REVIEW_IDS = [row[0] for row in REVIEW]
+
 #: The 16 false positives the keyed families measured on the shipped bodies
 #: (#2012 ruling): CLI flags read as keys, a ``\\`` continuation, a ``>``
 #: redirect, ``$VAR"``, ``...``, ``false```, ``os.environ[...]``,
@@ -205,6 +348,13 @@ PLACEHOLDERS = [
     "AK" + "IA" + "X" * 16,
     "sk" + "-" + "x" * 40,
     "aws_secret_access_key = " + "X" * 40,
+    # Still placeholders after the review of f137dfc2c: a JWT whose signature
+    # part is `<…>` (F2), an illustrative key quoted in markdown (F9), and a
+    # GitLab token of `X`s (F10).
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.<signature>",
+    "> -----BEGIN " + "PRIVATE KEY-----\n> MIIEpAIBAAKCAQEA...\n> -----END "
+    "PRIVATE KEY-----",
+    "gl" + "pat-" + "X" * 20,
 ]
 #: Shapes no shape pattern detects at all (Fable's "ok" rows).
 UNDETECTED = [
@@ -403,6 +553,21 @@ class TestTheChokePoint:
 
         with pytest.raises(RunbookQualityError) as refused:
             await service.ingest_runbook(**_ingest_args(scope, content=body))
+
+        _assert_named_not_echoed(refused.value, entity_type, line, secret)
+        assert await _row_counts(session_factory) == dict.fromkeys(_ROW_TABLES, 0)
+        service._index_document_in_vector_store.assert_not_awaited()
+
+    @pytest.mark.parametrize("label,snippet,entity_type,secret", REVIEW, ids=REVIEW_IDS)
+    async def test_each_secret_the_review_found_is_refused(
+        self, session_factory, label, snippet, entity_type, secret
+    ):
+        """The review of f137dfc2c (F2, F3, F4, F9, F10): each was published."""
+        service = _knowledge(session_factory)
+        body, line = _body_with(snippet)
+
+        with pytest.raises(RunbookQualityError) as refused:
+            await service.ingest_runbook(**_ingest_args("personal", content=body))
 
         _assert_named_not_echoed(refused.value, entity_type, line, secret)
         assert await _row_counts(session_factory) == dict.fromkeys(_ROW_TABLES, 0)
@@ -766,6 +931,9 @@ def _client(service) -> TestClient:
     app.state.team_service = None
     for exc_type, handler in get_exception_handlers().items():
         app.add_exception_handler(exc_type, handler)
+    # As `main.py` registers it: a dict `detail` is answered with its
+    # `message` alone, which is what a client shows (#2012 review F6).
+    app.add_exception_handler(HTTPException, http_exception_handler)
 
     async def _service():
         return service
@@ -813,9 +981,10 @@ class TestTheRoutesAnswer422:
 
         assert response.status_code == 422, response.text
         detail = response.json()["detail"]
-        assert detail["help"] == RUNBOOK_SECURITY_HELP
-        named = [e for e in detail["errors"] if f"({entity_type})" in e]
-        assert named and f"line {line}" in named[0], detail
+        # What the dashboard shows: the finding's type, line and the advice.
+        assert detail.startswith("Runbook does not meet quality standards: ")
+        assert f"line {line} ({entity_type})" in detail, detail
+        assert "rotate the credential" in detail
         assert not [f for f in _fragments(secret) if f in response.text]
 
     @pytest.mark.parametrize("label,snippet,entity_type,secret", REAL, ids=REAL_IDS)
@@ -833,9 +1002,61 @@ class TestTheRoutesAnswer422:
         )
 
         assert response.status_code == 422, response.text
-        named = [e for e in response.json()["detail"]["errors"] if entity_type in e]
-        assert named and f"line {line}" in named[0]
+        detail = response.json()["detail"]
+        assert detail.startswith("Runbook does not meet quality standards: ")
+        assert f"line {line} ({entity_type})" in detail, detail
         assert not [f for f in _fragments(secret) if f in response.text]
+
+    def test_the_structured_detail_carries_the_errors_and_the_help(self):
+        """For a handler that keeps a dict detail: the errors, the help for a
+        credential, and the same errors in the message."""
+        body, line = _body_with(REAL[0][1])
+        with pytest.raises(RunbookQualityError) as refused:
+            enforce_runbook_security(body)
+
+        detail = routes.runbook_quality_detail(
+            refused.value, help_text=RUNBOOK_SECURITY_HELP
+        )
+
+        assert detail["help"] == RUNBOOK_SECURITY_HELP
+        assert detail["errors"] == refused.value.errors
+        assert all(error in detail["message"] for error in detail["errors"])
+
+
+class TestBulkUpdate:
+    """``POST /knowledge/documents/bulk-update`` loops over the update. A refused
+    body is the caller's content, not a fault: logged at INFO, never ERROR,
+    and reported with the endpoint's generic per-item text (#866).
+
+    Mutation: log the refusal through the generic ``except Exception`` arm.
+    """
+
+    async def test_a_refused_body_is_a_generic_failure_logged_at_info(
+        self, session_factory, caplog
+    ):
+        service = _knowledge(session_factory)
+        await service.ingest_runbook(**_ingest_args("personal"))
+        body, _ = _body_with(REAL[0][1])
+        name = "faultmaven.modules.knowledge.domain.services.knowledge_service"
+
+        with caplog.at_level(logging.INFO, logger=name):
+            result = await service.bulk_update_documents(
+                ["kb_0123456789ab"], {"content": body}
+            )
+
+        assert result["updated_count"] == 0
+        assert result["errors"] == ["Document kb_0123456789ab: update failed"]
+        assert await _published(session_factory) == [valid_runbook()]
+        records = [r for r in caplog.records if r.name == name]
+        assert [r for r in records if "Refused" in r.getMessage()], records
+        assert not [r for r in records if r.levelno >= logging.ERROR]
+        assert not [
+            # The token's tail: its digits are the document id's too.
+            f
+            for r in records
+            for f in _fragments(_GITHUB[14:])
+            if f in r.getMessage()
+        ]
 
 
 # =============================================================================

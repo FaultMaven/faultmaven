@@ -90,6 +90,8 @@ def _marker(span, _value: str) -> str:
 # ---------------------------------------------------------------------------
 
 _GH = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"[:36]
+#: A GitLab token's 20 characters after `glpat-` (#2012 review F10).
+_GL = "Zq7Wm2Kx9Lp4Rt6Yv3Bn"
 _PEM_BODY = (
     "MIIEowIBAAKCAQEA7bq98EXAMPLEb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9u\n"
     "ZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQAAACDc0Bn5dXN2bVt7Lfw1yZ8ql3pq"
@@ -308,6 +310,19 @@ POSITIVE = [
         "glpat-AbCd1234EfGh",
     ),
     # provider tokens
+    ("gitlab-pat", f"clone failed with glpat-{_GL}", "GITLAB_TOKEN", f"glpat-{_GL}"),
+    (
+        "gitlab-pat-as-url-user",
+        f"git clone https://glpat-{_GL}@gitlab.com/acme/app.git",
+        "GITLAB_TOKEN",
+        f"glpat-{_GL}",
+    ),
+    (
+        "gitlab-pat-routable",
+        f"push uses glpat-{_GL}{_GL}.01abcdefg now",
+        "GITLAB_TOKEN",
+        f"glpat-{_GL}{_GL}",
+    ),
     ("github-ghp", f"push rejected for ghp_{_GH}", "GITHUB_TOKEN", f"ghp_{_GH}"),
     ("github-gho", f"oauth token gho_{_GH} expired", "GITHUB_TOKEN", f"gho_{_GH}"),
     ("github-ghu", f"ghu_{_GH}", "GITHUB_TOKEN", f"ghu_{_GH}"),
@@ -1199,6 +1214,7 @@ _ATOMS = [
     "Bearer abc.def.ghi",
     "Authorization: Basic dXNlcjpwYXNz",
     "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+    "glpat-" + _GL,
     _SLACK_SHORT,
     "postgresql://app:pw4321@db:5432",
     "redis://user:pass99@cache:6379",
@@ -1677,6 +1693,7 @@ _GEN_ATOMS = [
     "AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE",
     "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", _GH, _SL, "xapp-1-A0123456789-abcdef",
+    "glpat-" + _GL,
     "postgresql://app:pw4321@db:5432", "redis://user:pass99@cache:6379",
     "postgresql://db:5432/app", "mongodb+srv://u:p@ss@c0.x.net",
     "https://oauth2:glpatAbCd1234@gitlab.example.com", "me@example.com", "@oncall",
@@ -1715,9 +1732,9 @@ def _generated(rng: random.Random) -> str:
 def _reference_matches(pattern, view: str) -> list:
     """Every match of ``pattern`` on ``view``, as ``finditer`` reads them,
     except a command-line flag match (its ``flag`` group took part) whose
-    token does not start with ``-``: dropped, and the scan goes on one past
-    its start (#2025). The token is found by walking back to whitespace from
-    scratch each time, nothing cached."""
+    word does not start with ``-``: dropped, and the scan goes on one past
+    its start (#2025). The word is the run of ``[A-Za-z0-9_.-]`` ending at the
+    key, found from scratch each time, nothing cached."""
     if "flag" not in pattern.regex.groupindex:
         return list(pattern.regex.finditer(view))
     matches = []
@@ -1726,9 +1743,8 @@ def _reference_matches(pattern, view: str) -> list:
         match = pattern.regex.search(view, pos)
         if match is None:
             break
-        token = view[: match.start()].split()[-1:] if match.start() else []
-        glued = token and not view[match.start() - 1].isspace()
-        if match.start("flag") != -1 and not (glued and token[0].startswith("-")):
+        word = re.search(r"[A-Za-z0-9_.-]*\Z", view[: match.start()]).group()
+        if match.start("flag") != -1 and not word.startswith("-"):
             pos = match.start() + 1
             continue
         matches.append(match)
@@ -1924,6 +1940,23 @@ _HOSTILE = {
         64,
         1,
     ),
+    # #2012 review: a flag glued after punctuation, each word walked back once;
+    # tagged and anchored blocks; `: !` glued again and again, where a node
+    # property read to the next blank would re-read the run per `:`; GitLab
+    # prefixes glued into one run, and short ones.
+    "flag-glued-punctuation": (
+        lambda n: 'x="--password a" ;--token b (--secret c) ' * n,
+        64,
+        1,
+    ),
+    "block-tagged-bodies": (
+        lambda n: "password: !!binary &a |\n  Tr0ub4dor&3\n  line2\n" * n,
+        64,
+        1,
+    ),
+    "block-tag-colons": (lambda n: "password " + ":!" * n + "\n  v\n", 256, 1),
+    "gitlab-run": (lambda n: "glpat-" * n, 128, 1),
+    "gitlab-short-tokens": (lambda n: "glpat-0123456789abcdefghi " * n, 64, 1),
 }
 
 
@@ -2019,9 +2052,18 @@ _BLOCK_ROWS = [
     ("tab-indented", "password: |\n\thunter2\n\tline2\n", [("PASSWORD", "hunter2\n\tline2")]),
     ("provider-token", "token: >-\n  " + _GH + "\nother: x\n", [("GITHUB_TOKEN", _GH)]),
     ("k8s-string-data", "stringData:\n  api_key: |\n    k3y-value-1\n", [("API_KEY", "k3y-value-1")]),
-    # Declared trade: the body is every line deeper than the key's LINE, and
-    # a list item's sibling key is deeper than the dash: over-redacted.
-    ("list-item-sibling", "- password: |\n    hunter2\n  user: bob\n", [("PASSWORD", "hunter2\n  user: bob")]),
+    # A list item's body is deeper than its KEY, so the item's sibling keys are
+    # not its body (#2012 review F7); a body at the dash's own depth (not
+    # YAML) is still read, as the dash's.
+    ("list-item-sibling", "- password: |\n    hunter2\n  user: bob\n", [("PASSWORD", "hunter2")]),
+    ("nested-list-sibling", "users:\n  - name: a\n    password: |\n      hunter2\n    user: bob\n", [("PASSWORD", "hunter2")]),
+    ("list-item-shallow-body", "- password: |\n  hunter2\n", [("PASSWORD", "hunter2")]),
+    # Node properties before the indicator (#2012 review F5).
+    ("tag-binary", "password: !!binary |\n  aHVudGVyMg==\n  line2\n", [("PASSWORD", "aHVudGVyMg==\n  line2")]),
+    ("anchor", "password: &pw |\n  hunter2\n  line2\n", [("PASSWORD", "hunter2\n  line2")]),
+    ("local-tag", "db_password: !vault |\n  hunter2\n  line2\n", [("PASSWORD", "hunter2\n  line2")]),
+    ("tag-folded", "token: !!str >-\n  abc123def\n  line2\n", [("TOKEN", "abc123def\n  line2")]),
+    ("tag-and-anchor", "secret: !!str &s |\n  s3cr3t-value\n", [("SECRET", "s3cr3t-value")]),
 ]  # fmt: skip
 
 #: An indicator with no body below it reads nothing (main took the indicator).
@@ -2071,7 +2113,11 @@ def test_no_line_of_a_block_survives_either_path(sanitizer, text, expected):
         for line in value.split("\n")
         if line.strip()
     }
-    key_line = next(line for line in text.splitlines() if re.search(r":\s*[|>]", line))
+    key_line = next(
+        line
+        for line in text.splitlines()
+        if re.search(r":\s*(?:[!&]\S*\s+)*[|>]", line)
+    )
     once_s = sanitizer.apply_regex_redaction(text, {})
     once_p = redact_sensitive_content(text)[0]
     for once in (once_s, once_p):
@@ -2158,7 +2204,10 @@ def _block_generated(rng: random.Random) -> str:
         key = rng.choice(_KEYS + ["name", "config", "data"])
         quote = rng.choice(["", "", '"'])
         sep = rng.choice([" ", "", "  "])
-        lines.append(f"{indent}{quote}{key}{quote}:{sep}{rng.choice(_INDICATORS)}")
+        props = rng.choice(["", "", "", "!!binary ", "&a ", "!vault ", "!!str &b "])
+        lines.append(
+            f"{indent}{quote}{key}{quote}:{sep}{props}{rng.choice(_INDICATORS)}"
+        )
         deeper = indent.replace("-", " ") + rng.choice([" ", "  ", "    ", "\t"])
         for _ in range(rng.randint(0, 3)):
             roll = rng.random()
@@ -2208,8 +2257,8 @@ def test_blocks_agree_with_the_reference_and_the_ungated_scan():
     assert differ == [], differ[:3]
 
 
-#: A4: a keyword inside a hyphenated command name is no flag. The token
-#: holding the key must start with `-`.
+#: A4: a keyword inside a hyphenated command name is no flag. The word
+#: holding the key (`[A-Za-z0-9_.-]`) must start with `-`.
 _COMMAND_NAMES = [
     "aws ecr get-login-password --region us-east-1",
     "aws eks get-token --cluster-name my-cluster",
@@ -2227,6 +2276,33 @@ _FLAGS = [
     ("pg_dump --db-password Tr0ub4dor&3 -h db", "Tr0ub4dor&3"),
     ("İ --password Tr0ub4dor&3", "Tr0ub4dor&3"),
 ]
+
+
+#: A flag glued after punctuation is a flag: its WORD starts with `-`, though
+#: its run of non-whitespace does not (#2012 review F1). Main read each of
+#: these; the first walk-back over all non-whitespace lost them.
+_GLUED_FLAGS = [
+    'ARGS="--password hunter2Zq"',
+    "'--password hunter2Zq'",
+    '["--password hunter2Zq"]',
+    "cat f |--password hunter2Zq",
+    "true;--password hunter2Zq",
+    "a&&--password hunter2Zq",
+    "(--password hunter2Zq)",
+    "`--password hunter2Zq`",
+    "ARGS=--password hunter2Zq",
+    "x=$(--password hunter2Zq)",
+]
+
+
+@pytest.mark.parametrize("text", _GLUED_FLAGS)
+def test_a_flag_glued_after_punctuation_is_read(sanitizer, text):
+    assert _spans(text), text
+    assert find_redaction_spans(text, _UNGATED) == find_redaction_spans(
+        text, SANITIZER_PATTERNS
+    )
+    assert "hunter2Zq" not in sanitizer.apply_regex_redaction(text, {})
+    assert "hunter2Zq" not in redact_sensitive_content(text)[0]
 
 
 @pytest.mark.parametrize("text", _COMMAND_NAMES)

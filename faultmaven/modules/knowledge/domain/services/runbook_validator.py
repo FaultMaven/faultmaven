@@ -180,6 +180,7 @@ _SHAPE_NAMES: Dict[str, Tuple[str, str]] = {
     "DATABASE_URL": ("a database URL with credentials", "<DB_PASSWORD>"),
     "CREDENTIAL_URL": ("a URL with a password", "<PASSWORD>"),
     "GITHUB_TOKEN": ("a GitHub token", "<GITHUB_TOKEN>"),
+    "GITLAB_TOKEN": ("a GitLab token", "<GITLAB_TOKEN>"),
     "SLACK_TOKEN": ("a Slack token", "<SLACK_TOKEN>"),
     "API_KEY": ("an API key", "<API_KEY>"),
     "AWS_ACCESS_KEY": ("an AWS access key ID", "<AWS_ACCESS_KEY_ID>"),
@@ -191,16 +192,53 @@ _SHAPE_NAMES: Dict[str, Tuple[str, str]] = {
 }
 #: A fixed-prefix token's prefix: its secret is what follows.
 _TOKEN_PREFIX_RE = re.compile(
-    r"gh[pousr]_|github_pat_|xox[a-z]-|xapp-|sk-|pk-|akia|asia"
+    r"gh[pousr]_|github_pat_|glpat-|xox[a-z]-|xapp-|sk-|pk-|akia|asia"
     r"|k8s[_-]?secret[_-]?|api[_-]?key[_-]?",
     re.IGNORECASE,
 )
 #: The end of a PEM marker line (``-{5}`` rather than five literal dashes: a
 #: dash run is the frontmatter grammar's, and lives in one place).
 _PEM_MARKER_END_RE = re.compile(r"PRIVATE KEY(?: BLOCK)?-{5}", re.IGNORECASE)
-#: Key material: a real key's base64 lines are 64 characters, the illustrative
-#: header ``MIIEpAIBAAKCAQEA...`` is 16.
-_KEY_MATERIAL_RE = re.compile(r"[A-Za-z0-9+/=]{40,}")
+#: Key material: the base64 runs of 16 or more characters, summed (#2012
+#: review F4), so a key wrapped at any width, split into spaced groups or
+#: written with JSON ``\n`` escapes is counted whole. A real key holds
+#: hundreds; the illustrative ``MIIEpAIBAAKCAQEA...`` sums to 16.
+_KEY_RUN_RE = re.compile(r"[A-Za-z0-9+/=]{16,}")
+_ESCAPED_LINE_BREAK_RE = re.compile(r"\\[nr]")
+_KEY_MATERIAL_MIN = 40
+#: A markdown blockquote's markers at the start of a line (``> > ``).
+_BLOCKQUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+#: The JWT characters a token may run on through, ``<…>`` placeholders
+#: included, and no further: a query string's ``&``, a JSON ``"``.
+_JWT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_=.<>-"
+)
+#: What a shape's secret portion may be and still be a placeholder (#2012
+#: review F3). Stricter than ``_PLACEHOLDER_VALUE_RE``, which judges a quoted
+#: keyed value: a shell variable only as ``$UPPER_NAME``; the ``your-``,
+#: ``example`` and ``placeholder`` words only with no digit in them; and of
+#: the references only the closed forms (``_CLOSED_REFERENCE_RE``). So
+#: ``$uperS3cret``, ``example-Pr0d-pass``, ``:hunter2x`` and ``$(s3cretpw`` are
+#: secrets: a real secret can start with ``$`` (#1980).
+_SHAPE_PLACEHOLDER_RE = re.compile(
+    r"""^\s*(?:
+        <[^>]*>
+      | \$\{[^}]*\}
+      | \{\{[^}]*\}\}
+      | (?-i:\$[A-Z_][A-Z0-9_]*)
+      | your[-_][A-Za-z_-]*
+      | change[-_]?me
+      | example[A-Za-z_-]*
+      | placeholder[A-Za-z_-]*
+      | redacted
+      | x{3,}
+      | todo
+      | \.\.\.
+      | \*+
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_CLOSED_REFERENCE_RE = re.compile(r"<[^<>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|\[[^\]]*\]")
 #: How many line numbers one message lists before it says how many more.
 _MAX_LINES_LISTED = 10
 
@@ -211,9 +249,11 @@ def _secret_portion(entity_type: str, content: str, span: RedactionSpan) -> str:
     A credential URL's userinfo password (between the first ``:`` after
     ``//`` and the last ``@``; empty when there is none); the value after an
     AWS secret key's separator; a fixed-prefix token's text after its prefix;
-    a JWT as written, through any ``.<signature>`` glued to it. A bearer or
-    basic credential's span is the credential already, as is any type this
-    does not know (a pattern added later).
+    a JWT's first three dot-separated parts, read on through ``_JWT_CHARS`` so
+    a ``.<signature>`` glued to it is its own (and a query string's ``&``, a
+    JSON ``"`` or a trailing ``.xxx`` is not). A bearer or basic credential's
+    span is the credential already, as is any type this does not know (a
+    pattern added later).
     """
     text = content[span.start : span.end]
     if entity_type in ("DATABASE_URL", "CREDENTIAL_URL"):
@@ -224,36 +264,87 @@ def _secret_portion(entity_type: str, content: str, span: RedactionSpan) -> str:
         return re.split(r"[=:]", text, maxsplit=1)[-1].strip().strip("'\"")
     if entity_type == "JWT_TOKEN":
         end = span.end
-        while end < len(content) and not content[end].isspace():
+        while end < len(content) and content[end] in _JWT_CHARS:
             end += 1
-        return content[span.start : end]
+        return ".".join(content[span.start : end].split(".")[:3])
     prefix = _TOKEN_PREFIX_RE.match(text)
     return text[prefix.end() :] if prefix else text
 
 
 def _is_placeholder(value: str) -> bool:
-    return _value_is_placeholder(value) or is_reference(value.strip())
+    """Whether a shape's secret portion is a placeholder (F3): one of the
+    strict spellings, or a closed reference (``<…>``, ``${…}``, ``{{…}}``, a
+    ``[…]`` marker) that the sanitizer reads as one."""
+    stripped = value.strip()
+    return _SHAPE_PLACEHOLDER_RE.match(value) is not None or (
+        _CLOSED_REFERENCE_RE.fullmatch(stripped) is not None and is_reference(stripped)
+    )
+
+
+def _key_material(text: str) -> int:
+    """How much base64 ``text`` holds as key material (``_KEY_RUN_RE``)."""
+    text = _ESCAPED_LINE_BREAK_RE.sub(" ", text)
+    return sum(len(run) for run in _KEY_RUN_RE.findall(text))
+
+
+def _key_material_after_begin(content: str, position: int) -> int:
+    """The key material from ``position`` (the end of a BEGIN marker) on: the
+    rest of its line, then each line after it up to the END line or the first
+    line that holds none (#2012 review F9). A blockquote's ``>`` markers are
+    stripped and a ``#`` comment line skipped, so a truncated key quoted in
+    markdown or carrying a comment is read past the BEGIN line the sanitizer
+    stops at. Stops once there is enough to decide."""
+    total = 0
+    first = True
+    while True:
+        newline = content.find("\n", position)
+        line_end = len(content) if newline == -1 else newline
+        line = content[position:line_end]
+        comment = False
+        if not first:
+            line = _BLOCKQUOTE_RE.sub("", line, count=1)
+            comment = line.lstrip().startswith("#")
+        if not comment:
+            end_marker = line.find("-----END")
+            if end_marker != -1:
+                return total + _key_material(line[:end_marker])
+            material = _key_material(line)
+            if material == 0 and not first:
+                return total
+            total += material
+            if total >= _KEY_MATERIAL_MIN or newline == -1:
+                return total
+        elif newline == -1:
+            return total
+        first = False
+        position = newline + 1
 
 
 def _shape_is_real(entity_type: str, content: str, span: RedactionSpan) -> bool:
     """Whether a shape detection holds a credential, not a placeholder."""
     if entity_type == "PRIVATE_KEY":
         # Key material between the BEGIN line and the END line (or the end of
-        # the span): a BEGIN line alone, ``...`` or ``<base64 key material>``
-        # is documentation.
+        # the span), and on the lines a truncated key runs on through (F9): a
+        # BEGIN line alone, ``...`` or ``<base64 key material>`` is
+        # documentation.
         text = content[span.start : span.end]
         begin = _PEM_MARKER_END_RE.search(text)
         body_start = begin.end() if begin else 0
         body_end = text.find("-----END", body_start)
         body = text[body_start : body_end if body_end != -1 else len(text)]
-        return _KEY_MATERIAL_RE.search(body) is not None
+        if _key_material(body) >= _KEY_MATERIAL_MIN:
+            return True
+        return (
+            begin is not None
+            and _key_material_after_begin(content, span.start + begin.end())
+            >= _KEY_MATERIAL_MIN
+        )
     portion = _secret_portion(entity_type, content, span)
     if not portion:
         return False  # a URL with a user and no password holds no credential
     if entity_type == "JWT_TOKEN":
         # A ``<payload>``/``<signature>`` part is an illustration.
-        parts = portion.strip("\"'`,;()[]{}").split(".")
-        return not any(_is_placeholder(part) for part in parts if part)
+        return not any(_is_placeholder(part) for part in portion.split(".") if part)
     return not _is_placeholder(portion)
 
 

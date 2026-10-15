@@ -3057,6 +3057,12 @@ class KnowledgeService:
                     updated_count += 1
                 else:
                     errors.append(f"Document {doc_id} not found")
+            except RunbookQualityError as refused:
+                # The body holds a credential (#2012): the caller's content,
+                # refused before anything was written, not a fault. The entry
+                # stays the generic text this endpoint's policy requires.
+                errors.append(f"Document {doc_id}: update failed")
+                logger.info(f"Refused the update of document {doc_id}: {refused}")
             except Exception as e:
                 errors.append(f"Document {doc_id}: update failed")
                 logger.error(f"Failed to update document {doc_id}: {e}")

@@ -109,9 +109,16 @@ def runbook_quality_detail(
     ``RunbookQualityError`` carries ``errors``/``warnings`` for exactly this —
     the generic ``ValidationException`` handler would flatten them into
     ``str(exc)`` and lose the per-error structure a client renders.
+
+    The errors are in ``message`` too: the app's ``http_exception_handler``
+    answers a dict ``detail`` with its ``message`` alone, and that is the text
+    a client shows (the dashboard's save error). Each error names a finding's
+    type and line, never a credential's text (#2012 review F6).
     """
+    reasons = "; ".join(error.errors)
     return {
-        "message": "Runbook does not meet quality standards",
+        "message": "Runbook does not meet quality standards"
+        + (f": {reasons}" if reasons else ""),
         "errors": error.errors,
         "warnings": error.warnings,
         "help": help_text,
