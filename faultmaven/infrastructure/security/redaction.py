@@ -70,7 +70,11 @@ from faultmaven.models.interfaces import ISanitizer
 # except where a pattern names a `secret` group, which then is the span: a
 # keyed secret's value (`password=<…>`, the key in clear), a bearer or basic
 # credential. A value that is a provider token takes the token's own type, so
-# one secret has one placeholder however it is written.
+# one secret has one placeholder however it is written. A keyed value is the
+# whole run after its separator, as main read it, unless the WHOLE value is a
+# word from a closed list each of whose entries a negative line needs, or a
+# reference (`${VAR}`, a placeholder): nothing of a secret is left in clear
+# (the #2021 review, round 3).
 #
 # Every pattern runs in time linear in the text: no quantifier can re-split
 # what it read (possessive or atomic where it could), no attempt reads past
@@ -94,8 +98,10 @@ class RedactionPattern:
       neither, nothing is known and the whole text is scanned.
     - ``scope`` says where a match can lie. ``"token"``: inside one run of
       non-whitespace, which is scanned whole. ``"keyed"``: starting where a
-      trigger starts, and ending on that line or the next. ``"text"``:
-      anywhere, across lines too.
+      trigger starts, and ending on that line or the next. ``"line"``: an
+      empty match at the start of a line holding a trigger, its span read
+      from there to the end of the next line. ``"text"``: anywhere, across
+      lines too.
 
     A token pattern's lookarounds read at most three characters past its
     run; the masked rounds rely on it (``_detect``).
@@ -133,56 +139,96 @@ class RedactionSpan:
 
 # --- value grammar for `key <separator> value` secrets -----------------------
 
+#: Where a quoted value's closing quote must stand for the quotes to delimit
+#: it: before closing punctuation and whitespace or the end of the text, or
+#: before closing punctuation and the next item (`{"password":"x","u":1}`).
+#: Otherwise (`"ab"cd`) the value is the whole run, quotes and all.
+_QUOTED_END = r"""(?=[,;)\]}]*+(?:\s|\Z)|[,;)\]}]++["'{\[(])"""
+#: Where an unquoted value ends: whitespace or the end of the text, after
+#: closing punctuation and quotes — the run ``_merge`` leaves after a provider
+#: token (``_TRAILING_PUNCTUATION``), so `token=<JWT_TOKEN_…>.` written by one
+#: pass is a whole reference to the next.
+_VALUE_END = r"""[,;.)\]}'"]*(?:\s|\Z)"""
+
+
+def _not_the_whole_value(shape: str, end: str = _VALUE_END) -> str:
+    """Not a value that IS ``shape``: quoted, the whole quoted text as
+    ``_VALUE`` delimits it; else the whole run, to ``end``. A value that only
+    starts with ``shape`` is not exempt: `password=${{x` and `password=<a>b`
+    are secrets (#1980 review)."""
+    return (
+        rf"""(?!"(?:{shape})"{_QUOTED_END}|'(?:{shape})'{_QUOTED_END}"""
+        rf"""|["']?(?:{shape}){end})"""
+    )
+
+
 #: A value that REFERS to a secret instead of holding one: a shell or GitHub
-#: Actions variable, a command substitution, a template expression, a
+#: Actions variable (`${VAR}`, `${{ secrets.X }}`), a command substitution
+#: (`$(vault read …)`), a template expression (`{{ .Values.x }}`), a
 #: documentation placeholder (`<your-password>`), a placeholder or marker a
 #: redaction pass wrote (`<PASSWORD_ab12>`, `[REDACTED:password]`, a title's
-#: `[password]` — so a second pass over redacted text changes nothing), or a
-#: SQL bind parameter (`?`, `$2`, `:pwd`, `%s`). A bare `$NAME` is not on the
-#: list: a real secret can start with `$`.
+#: `[password]`, a sanitized dict's `[PASSWORD_REDACTED]` — so a second pass
+#: over redacted text changes nothing), or a
+#: SQL bind parameter (`?`, `$2`, `:pwd`, `%s`). A spaced expression's value
+#: is its opening (`${{`, `{{`, `$(vault`). Markers and bind names are
+#: matched case-sensitively, as written. A bare `$NAME` is not on the list: a
+#: real secret can start with `$`.
 _REFERENCE = (
-    r"(?:\$\{\{|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$\(|\{\{|<[A-Za-z][A-Za-z0-9_ -]*>"
-    r"|\[(?:REDACTED:)?[a-z][a-z0-9_]*\]"
-    r"|(?:\?|\$[0-9]+|:[A-Za-z_][A-Za-z0-9_]*|%s|%\([A-Za-z_][A-Za-z0-9_]*\)s)"
-    r"(?=[\s,;)\]}]|\Z))"
+    r"(?:\$\{\{(?:[^\s{}]*\}\})?|\{\{(?:[^\s{}]*\}\})?|\$\{[A-Za-z_][A-Za-z0-9_]*\}"
+    r"|\$\((?:(?-i:[a-z][a-z0-9_.-]*)|[^\s()]*\))|<[A-Za-z][A-Za-z0-9_ -]*>"
+    r"|(?-i:\[(?:REDACTED:)?[a-z][a-z0-9_]*\]|\[[A-Z][A-Z0-9_]*_REDACTED\])"
+    r"|\?|\$[0-9]{1,4}|(?-i::[a-z_][a-z0-9_]*|:[A-Z_][A-Z0-9_]*)|%s"
+    r"|%\([A-Za-z_][A-Za-z0-9_]*\)s)"
 )
-_NOT_A_REFERENCE = rf"""(?!["']?{_REFERENCE})"""
+_NOT_A_REFERENCE = _not_the_whole_value(_REFERENCE)
 #: Values that say a key's state, not its secret: the closed list a keyed
-#: value is never read as (#1980 review ruling). Booleans and nulls (`token:
-#: false` in YAML), status words (`password: expired`, MySQL's `(using
-#: password: YES)`, `Password: required`, `apikey: not provided`, `api_key:
-#: missing.`), a masked value (`********`), an
-#: empty quoted value, an auth scheme word (`token: Bearer …` — the token is
-#: the next word), and a type name (`password: str` in code). Every other value
-#: is read as a secret, a dictionary word included: `password: changeme` is.
+#: value is never read as (#1980 review rulings). Each entry is there for a
+#: line of the negative corpora that needs it (`test_secret_patterns_1980`'s
+#: and the review's), and costs the rockyou hits the PR lists: `(using
+#: password: YES)`/`NO`, `token: false`, `apiKey: true`, `secret: null`,
+#: `Password: required`, `password: expired`, `password: n/a`, `password:
+#: incorrect`, `token: invalid_grant`, `password: changed 2 days ago`,
+#: `secret: rotated last week`, `api_key: missing.`, `apikey: not provided`,
+#: `password: str)` and `password: Optional[str]` in code, `Password:
+#: ********`, `password: ""`. Every other value is read as a secret, a
+#: dictionary word included: `password: changeme` is.
 _NON_SECRET_WORDS = (
-    r"yes|no|true|false|on|off|null|nil|none|empty|required|optional|expired"
-    r"|set|unset|redacted|hidden|masked|n/a|na|incorrect|invalid(?:_[a-z]+)?"
-    r"|changed|rotated|missing|not|bearer|basic|digest"
-    r"|str|string|bytes|secretstr|optional\[str\]"
+    r"yes|no|true|false|null|required|expired|n/a|incorrect|invalid_grant"
+    r"|changed|rotated|missing|not|str|optional\[str\]"
 )
 _NOT_A_STATUS = (
-    rf"""(?!["']?(?:{_NON_SECRET_WORDS}|\*{{3,}})["']?[.,;:!?)\]}}]*(?:\s|\Z)"""
-    r"""|(?:""|'')(?:[\s,;)\]}]|\Z))"""
+    _not_the_whole_value(
+        rf"{_NON_SECRET_WORDS}|\*{{3,}}", r"""["']?[.,;:!?)\]}]*(?:\s|\Z)"""
+    )
+    + rf"""(?!""{_QUOTED_END})"""
 )
 #: The value, and nothing else: it is the span replaced, so the key and a
 #: quoted value's quotes stay in clear (`id_token=<…>`, `"password": "<…>"`
-#: stays JSON). Quoted, the text between the quotes. Else the run up to
-#: whitespace, short of an escaped newline/tab/return (`…\\npassword: x\\nport:
-#: 1` inside a JSON string keeps its next key) and of closing quotes and
-#: brackets that end the run (`{"msg": "password: x"}` keeps its `"}`). An
-#: unterminated quote is read unquoted, quote and all.
+#: stays JSON). Quoted, the text between the quotes (a backslash escapes the
+#: next character), when the closing quote ends the value too. Else the
+#: whole run up to whitespace, as main read it — through a quoted part that
+#: has more after it (`'x y'=z`, `"ab"cd`), quote and all, and from an
+#: unterminated quote (`"ab` cd: `"ab`, as main) — an escaped `\n` inside it, a
+#: closing bracket or quote at its end, are all part of the value
+#: (`{"msg": "password: x"}` loses its `"}`; a secret never keeps a tail).
 _VALUE = (
     rf"{_NOT_A_STATUS}{_NOT_A_REFERENCE}"
-    r"""(?P<quote>["'])?(?P<secret>(?(quote)(?:(?!(?P=quote))[^\r\n])+"""
-    r"""|(?:(?!\\[ntr]|["']?[,;}\])]{0,8}+(?:\s|\Z))\S)+))"""
-    r"(?(quote)(?P=quote))"
+    r"""(?P<quote>["'])?(?P<secret>(?(quote)"""
+    r"""(?:\\[^\r\n]|(?!(?P=quote))[^\\\r\n])++"""
+    r"""|(?:(?P<run_quote>["'])(?:\\[^\r\n]|(?!(?P=run_quote))[^\\\r\n])*+"""
+    r"""(?P=run_quote)\S*+|\S++)))"""
+    rf"(?(quote)(?P=quote){_QUOTED_END})"
 )
-#: A value on the next line when nothing follows the separator on its own
-#: (`password:` then an indented value, as YAML may write it; main read it
-#: too) — unless that line starts a key of its own (`secretKeyRef:`,
-#: `USER=bob`, but not a `scheme://` URL) or a list item.
-_NEXT_LINE = r"(?:\r?\n[ \t]*+(?![\w.-]+[ \t]*[:=](?!//)|-(?:[ \t]|\Z)))?"
+#: A key on its line, then a value: the next line's first token after `=`
+#: with nothing after it on its own line, as main read it (`password=` then
+#: the value) — unless that line starts a key of its own (`USER=bob`, but not
+#: a `scheme://` URL) or a list item. After `:` see ``_keyed_on_next_line``.
+_NOT_A_KEY_OR_ITEM = r"(?![\w.-]+[ \t]*[:=](?!//)|-(?:[ \t]|\Z))"
+_NEXT_LINE = rf"(?:\r?\n[ \t]*+{_NOT_A_KEY_OR_ITEM})?"
+#: The same for a YAML block, as YAML reads one: a key is `name:` before
+#: whitespace (`secretKeyRef:`), a list item `- `; `john3:16`, `a=b` and
+#: `redis://…` are scalars, so values.
+_NOT_A_YAML_KEY_OR_ITEM = r"(?![\w.-]+[ \t]*:(?:\s|\Z)|-(?:\s|\Z))"
 #: A word as prose writes one: lower case, Capitalised, or a short ALL-CAPS
 #: word, joined by `-`, `_`, `'` or `[`, or short ones joined by `/`
 #: (`n/a`, `and/or`), in optional parentheses, with optional trailing
@@ -193,24 +239,39 @@ _WORD = r"(?:[a-z]+|[A-Z][a-z]+|[A-Z]{1,8})"
 _SHORT = r"(?:[a-z]{1,3}|[A-Z][a-z]{0,2}|[A-Z]{2,3})"
 _WORD_RUN = rf"(?:{_WORD}(?:[-_'\[]{_WORD})*|{_SHORT}(?:/{_SHORT}){{1,2}})"
 _PROSE_VALUE = rf"\(?(?:{_WORD_RUN}|[0-9]{{1,3}})[.,;:!?)\]]*(?=\s|\Z)"
-#: A compound key's literal that is a count or a flag, not a secret
-#: (`failed_password=520`, `reset_password=true`) — the config extractor's
-#: `_NON_SECRET_VALUE_RE` precedent.
-_NOT_A_COUNT_OR_FLAG = (
-    r"""(?!["']?(?:true|false|yes|no|on|off|none|null|nil|\d{1,5})["']?"""
-    r"""[,;)\]}]*(?:\s|\Z))"""
-)
-#: `=` or `=>`. A spaced `==` is a comparison (`if password == "":`), not an
-#: assignment; a tight `password==x` is a value that starts with `=`.
-#: Possessive, so `pwd => ${VAR}` cannot give back the `>` and read it as a
-#: value.
-_ASSIGN = r"(?:=>?+|[ \t]++=>?+(?!=))[ \t]*+"
+#: A compound key's value that is a count, not a secret: that is how event
+#: counts print (`failed_password=520`, `failed_password: 520`,
+#: `output_token: 30`, #654) — the config extractor's `_NON_SECRET_VALUE_RE`
+#: precedent, cut to what the negative corpora need (its flags are status
+#: words already).
+_NOT_A_COUNT = _not_the_whole_value(r"\d{1,5}")
+#: `=`, or `=>` before whitespace (`"password" => "x"`; a `>` glued to what
+#: follows is the value's: `password=>x9` is the password `>x9`). A spaced
+#: `==` is a comparison (`if password == "":`), not an assignment; a tight
+#: `password==x` is a value that starts with `=`. Possessive, so `pwd =>
+#: ${VAR}` cannot give back the `>` and read it as a value.
+_ASSIGN = r"(?:=|[ \t]++=(?!=))(?:>(?=\s))?+[ \t]*+"
 _COLON = r"[ \t]*+:[ \t]*+"
-_QUOTED_KEY_SEPARATOR = r"""["'][ \t]*+[:=][ \t]*+"""
+#: A quoted key's closing quote (`"password": x`, `'pwd' => x`).
+_KEY_QUOTE = r"""["']?+"""
 #: An escaped newline, tab or return (`"line one\npassword: …"` in a JSON log
 #: field), or a percent-encoded byte (`%3Dsk-…`), before a token: a boundary,
-#: as the character it encodes would be.
-_ESCAPE = r"(?<=\\[ntr])|(?<=%[0-9A-Fa-f]{2})"
+#: as the character it encodes would be. Case-sensitive: `\N` escapes
+#: nothing.
+_ESCAPED_CONTROL = r"(?-i:\\[ntr])"
+_ESCAPE = rf"(?<={_ESCAPED_CONTROL})|(?<=%[0-9A-Fa-f]{{2}})"
+
+
+def _keys(keywords: str) -> Tuple[str, str, str]:
+    """A family's keyword, as a bare key and as a compound key (see
+    ``_keyed_secret``)."""
+    key = rf"(?:{keywords})"
+    bare = rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE}){key}[_-]?"
+    compound = (
+        rf"(?<=[A-Za-z0-9_])(?<!{_ESCAPED_CONTROL})(?<!%[0-9A-Fa-f]{{2}})"
+        rf"{key}[_-]?"
+    )
+    return key, bare, compound
 
 
 def _keyed_secret(keywords: str, value_guard: str = "") -> str:
@@ -219,14 +280,16 @@ def _keyed_secret(keywords: str, value_guard: str = "") -> str:
     The span is the VALUE (``_VALUE``): the key stays in clear. The spellings:
 
     1. A bare key with ``=``/``=>``, ``:`` (``key:value``, ``key : value``,
-       ``key: value``), or as a quoted key (``"key": value``), optionally
+       ``key: value``), as a quoted key too (``"key": value``), optionally
        after `_`/`-` (``password_=``, main's spelling): any value but a
-       status word (``_NOT_A_STATUS``) or a reference, on the same line or —
-       with nothing after the separator — on the next.
+       status word (``_NOT_A_STATUS``) or a reference, on the same line — or,
+       after ``=`` with nothing after it, on the next (``_NEXT_LINE``; after
+       ``:`` that is ``_keyed_on_next_line``'s).
     2. A compound key — ``db_password``, ``clientSecret``, ``PGPASSWORD``,
        ``xpassword``, a keyword glued to whatever precedes it — with the same
-       separators, and a value that is not a count or a flag either: that is
-       how event counts print (``failed_password: 520`` survives, #654).
+       separators, and a value that is not a count either (``_NOT_A_COUNT``):
+       that is how event counts print (``failed_password: 520`` survives,
+       #654).
     3. A command-line flag (``--password value``): a value not shaped like a
        word (``_PROSE_VALUE``), and not a separator (`` : `` is spelling 1's).
 
@@ -236,15 +299,34 @@ def _keyed_secret(keywords: str, value_guard: str = "") -> str:
     ``spring.datasource.password`` and ``"…\\npassword: …"`` hold bare keys
     and ``failed_password`` a compound one.
     """
-    key = rf"(?:{keywords})"
-    bare = rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE}){key}[_-]?"
-    compound = rf"(?<=[A-Za-z0-9_])(?<!\\[ntr])(?<!%[0-9A-Fa-f]{{2}}){key}[_-]?"
-    separator = rf"(?:{_ASSIGN}|{_COLON}|{_QUOTED_KEY_SEPARATOR}){_NEXT_LINE}"
+    key, bare, compound = _keys(keywords)
+    separator = rf"{_KEY_QUOTE}(?:{_ASSIGN}{_NEXT_LINE}|{_COLON})"
     return (
         rf"(?:{bare}{separator}"
-        rf"|{compound}{separator}{_NOT_A_COUNT_OR_FLAG}"
+        rf"|{compound}{separator}{_NOT_A_COUNT}"
         rf"|(?<=-){key}[ \t]++(?![:=])(?-i:(?!{_PROSE_VALUE})))"
         rf"{value_guard}{_VALUE}"
+    )
+
+
+def _keyed_on_next_line(keywords: str, value_guard: str = "") -> str:
+    """``key:`` ending its line, and the value starting the next — only when
+    that line is indented deeper than the key's line, as a YAML block writes
+    a value it continues (``password:`` then ``    hunter2``), and is not a
+    comment, a key of its own or a list item. ``Enter password:`` then a log
+    line, a status line or ``# filled in by CI``, is a prompt or an empty
+    key, not a value.
+
+    It matches, empty, at the start of the key's line, so the line's
+    indentation is read; the value is the ``secret`` group, read inside the
+    lookahead. Same keys, guards and value as ``_keyed_secret``.
+    """
+    _key, bare, compound = _keys(keywords)
+    return (
+        r"(?<![^\n])(?=(?P<indent>[ \t]*+)[^\r\n]*?"
+        rf"(?:{bare}|{compound}(?P<compound>)){_KEY_QUOTE}{_COLON}"
+        rf"\r?\n(?P=indent)[ \t]++(?!#){_NOT_A_YAML_KEY_OR_ITEM}"
+        rf"(?(compound){_NOT_A_COUNT}){value_guard}{_VALUE})"
     )
 
 
@@ -274,7 +356,14 @@ _PEM_TRUNCATED_BODY = (
 _I = re.IGNORECASE
 #: `namespace/name`, each part two or more DNS-label characters (`n/a` is a
 #: status, not a namespace).
-_NOT_A_K8S_REF = r"(?-i:(?![a-z0-9][-a-z0-9]+/[a-z0-9][-.a-z0-9]+(?=[\s,;)]|\Z)))"
+_NOT_A_K8S_REF = _not_the_whole_value(r"(?-i:[a-z0-9][-a-z0-9]+/[a-z0-9][-.a-z0-9]+)")
+#: A path, the whole value (`PWD=/home/app`, `pwd: ~/src`): the working
+#: directory, not a password — as a title's scrub writes it too, its parts
+#: marked (`PWD=[path][email]`, ``_sanitize_title_content``), so a scrubbed
+#: title stays as it is. `pwd=/x$Q9!` is a password.
+_NOT_A_PATH = _not_the_whole_value(
+    r"(?:[/~]|~?(?-i:\[path\]))(?:[\w./@+-]|(?-i:\[[a-z][a-z0-9_]*\]))*+"
+)
 _CREDENTIAL_SCHEMES = r"(?:postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?)"
 
 
@@ -302,18 +391,29 @@ def _keyed(
     keywords: str,
     triggers: Tuple[str, ...],
     value_guard: str = "",
-) -> RedactionPattern:
-    """A ``_keyed_secret`` family, case-insensitive. ``triggers`` must each
-    be the start of a keyword (every keyword starts with one), so a match
-    starts at a trigger or, as a whole-line spelling, at the start of its
-    line."""
-    return _pattern(
-        entity_type,
-        _keyed_secret(keywords, value_guard),
-        _I,
-        triggers,
-        scope="keyed",
-        names_a_value=True,
+) -> Tuple[RedactionPattern, RedactionPattern]:
+    """A family of secret-naming keys, case-insensitive: its value on the
+    key's line (``_keyed_secret``), and its value on the next line after
+    ``key:`` (``_keyed_on_next_line``). ``triggers`` must each be the start of
+    a keyword (every keyword starts with one): the first starts at a trigger,
+    the second at the start of a line holding one."""
+    return (
+        _pattern(
+            entity_type,
+            _keyed_secret(keywords, value_guard),
+            _I,
+            triggers,
+            scope="keyed",
+            names_a_value=True,
+        ),
+        _pattern(
+            entity_type,
+            _keyed_on_next_line(keywords, value_guard),
+            _I,
+            triggers,
+            scope="line",
+            names_a_value=True,
+        ),
     )
 
 
@@ -455,15 +555,15 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     _pattern("K8S_SECRET", r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", _I, ("k8s",)),
     # `apikey<hex>` with no separator, then the keyed spellings.
     _pattern("API_KEY", r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", _I, ("api",)),
-    _keyed("API_KEY", r"api[_-]?key", ("api",)),
-    _keyed("PASSWORD", r"password|passwd|passphrase", ("pass",)),
+    *_keyed("API_KEY", r"api[_-]?key", ("api",)),
+    *_keyed("PASSWORD", r"password|passwd|passphrase", ("pass",)),
     # `pwd` is also the working directory (`PWD=/home/app` in every env
     # dump): a path is not its password.
-    _keyed("PASSWORD", r"pwd", ("pwd",), value_guard=r"""(?!["']?[/~])"""),
+    *_keyed("PASSWORD", r"pwd", ("pwd",), value_guard=_NOT_A_PATH),
     # A secret or a token named `namespace/name` is a Kubernetes object, not
     # its value (`Secret: monitoring/grafana-admin not found`).
-    _keyed("SECRET", r"secret(?:[_-]?key)?", ("secret",), value_guard=_NOT_A_K8S_REF),
-    _keyed("TOKEN", r"token", ("token",), value_guard=_NOT_A_K8S_REF),
+    *_keyed("SECRET", r"secret(?:[_-]?key)?", ("secret",), value_guard=_NOT_A_K8S_REF),
+    *_keyed("TOKEN", r"token", ("token",), value_guard=_NOT_A_K8S_REF),
 )
 
 #: Network identifiers the sanitizer also redacts: internal addresses and
@@ -606,6 +706,40 @@ def _keyed_matches(
     return matches
 
 
+#: What every line pattern's match holds: `:`, blanks, a newline, and the next
+#: line's indentation.
+_KEY_LINE_END = re.compile(r":[ \t]*\r?\n[ \t]")
+
+
+def _line_matches(
+    pattern: RedactionPattern, text: str, hits: List[int]
+) -> List["re.Match[str]"]:
+    """``finditer`` for a line pattern: tried once at the start of each line
+    holding a hit — where its every match is — and only when the line can
+    be a key's: it ends in ``:`` (and blanks), and the next line starts
+    indented. The hits are in order, so each newline search starts where the
+    last one ended: the text is read once."""
+    matches = []
+    line_start = -1
+    searched = 0
+    for hit in hits:
+        newline = text.rfind("\n", searched, hit)
+        start = newline + 1 if newline != -1 else max(line_start, 0)
+        searched = hit
+        if start == line_start:
+            continue
+        line_start = start
+        end = text.find("\n", hit)
+        if end == -1 or text[end + 1 : end + 2] not in (" ", "\t"):
+            continue
+        searched = end
+        if text[start:end].rstrip("\r").rstrip(" \t").endswith(":"):
+            match = pattern.regex.match(text, start)
+            if match:
+                matches.append(match)
+    return matches
+
+
 _NON_WHITESPACE = re.compile(r"\S*")
 
 
@@ -658,20 +792,21 @@ def _detect(
     sortable ``(start, -end, priority, entity_type, names_a_value)`` — or,
     given ``lines`` (``(start, end)`` of whole lines, newline included), every
     match that can lie on them: a token pattern is scanned only there, a keyed
-    one from there and the line before (its value can sit on the next line).
-    ``only`` limits the run to those priorities. ``spans``, in a masked
+    or line one from there and the line before (its value can sit on the next
+    line). ``only`` limits the run to those priorities. ``spans``, in a masked
     round, are the spans masked: a new match must read or cover one, and a
     token pattern reads nothing past its run but up to three characters, so
-    it is scanned only in the runs holding one. (A keyed pattern's guards
-    read its whole value and the next line's first token, so it is tried on
-    every touched line and the line before.) Returns the priorities that
-    were scanned: the patterns that can match ``text`` at all.
+    it is scanned only in the runs holding one. (A keyed or line pattern's
+    guards read its whole value and the next line, so it is tried on every
+    touched line and the line before.) Returns the priorities that were
+    scanned: the patterns that can match ``text`` at all.
 
     Each pattern is scanned only where its ``triggers``/``hint`` and
     ``scope`` say a match can be (see ``RedactionPattern``), always with
     ``pos``/``endpos`` or ``match`` at a position of the whole text, so
-    lookarounds read what a whole-text scan's would. None of this changes
-    what is found — only what it costs.
+    lookarounds read what a whole-text scan's would (a window's ``endpos``
+    reaches the end of the line after it). None of this changes what is
+    found — only what it costs.
     """
     view = _trigger_view(text)
     found = _triggers_in(view, patterns) if view is not None else set()
@@ -680,9 +815,21 @@ def _detect(
     if candidates is None:
         candidates = []
     scanned = set()
+    # A family's keyed and line patterns share their triggers: their hits,
+    # and the windows of a masked round, are found once.
+    shared_hits: Dict[Tuple[str, ...], List[int]] = {}
+    before = _with_line_before(text, lines)
+    # A line pattern needs a line ending in `:` before an indented one; no
+    # stand-in can make one, so a text without one skips them every round.
+    key_line: Optional[bool] = None
     for priority, pattern in enumerate(patterns):
         if only is not None and priority not in only:
             continue
+        if pattern.scope == "line":
+            if key_line is None:
+                key_line = _KEY_LINE_END.search(text) is not None
+            if not key_line:
+                continue
         located = view is not None and (pattern.triggers or pattern.hint)
         if located and not _present(pattern, view, found):
             continue
@@ -690,8 +837,8 @@ def _detect(
         if not located or pattern.scope == "text":
             if lines is not None and pattern.scope != "text":
                 windows = (
-                    _with_line_before(text, lines)
-                    if pattern.scope == "keyed"
+                    _with_line_before_and_after(text, lines)
+                    if pattern.scope in ("keyed", "line")
                     else lines
                 )
                 matches: Iterable["re.Match[str]"] = [
@@ -702,12 +849,28 @@ def _detect(
             else:
                 matches = pattern.regex.finditer(text)
         else:
-            hits = _hits(pattern, view)
-            if pattern.scope == "keyed":
-                hits = _within(hits, _with_line_before(text, lines))
-                matches = _keyed_matches(pattern, text, hits)
+            if pattern.scope in ("keyed", "line") and pattern.hint is None:
+                hits = shared_hits.get(pattern.triggers)
+                if hits is None:
+                    hits = _within(_hits(pattern, view), before)
+                    shared_hits[pattern.triggers] = hits
+                if pattern.scope == "keyed":
+                    matches = _keyed_matches(pattern, text, hits)
+                else:
+                    matches = _line_matches(pattern, text, hits)
             else:
-                matches = _token_matches(pattern, text, hits, span_starts, span_ends)
+                hits = _hits(pattern, view)
+                if pattern.scope in ("keyed", "line"):
+                    hits = _within(hits, before)
+                    matches = (
+                        _keyed_matches(pattern, text, hits)
+                        if pattern.scope == "keyed"
+                        else _line_matches(pattern, text, hits)
+                    )
+                else:
+                    matches = _token_matches(
+                        pattern, text, hits, span_starts, span_ends
+                    )
         group = pattern.span_group
         entity_type = pattern.entity_type
         names_a_value = pattern.names_a_value
@@ -801,6 +964,20 @@ def _with_line_before(
     if lines is None:
         return None
     return [(text.rfind("\n", 0, max(start - 1, 0)) + 1, end) for start, end in lines]
+
+
+def _with_line_before_and_after(
+    text: str, lines: List[Tuple[int, int]]
+) -> List[Tuple[int, int]]:
+    """``lines``, each widened to the line before it and the line after it:
+    the windows a keyed or line match starting on or before a touched line
+    can lie in, when the text has no index-mapped view and is scanned by
+    ``finditer`` (its ``endpos`` cuts what a lookahead reads)."""
+    windows = []
+    for start, end in _with_line_before(text, lines) or ():
+        newline = text.find("\n", end)
+        windows.append((start, len(text) if newline == -1 else newline + 1))
+    return windows
 
 
 #: Real text settles within three masked rounds (a 175,000-input fuzz); only a

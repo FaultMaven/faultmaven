@@ -20,14 +20,18 @@ Pinned on each path:
 4. seeded random secrets per class leave no six-character fragment in clear;
 5. the trigger gating in ``find_redaction_spans`` changes no result;
 6. one pass is idempotent, and secrets glued to one another are gone after it;
-7. the review's rulings: a keyed value is a secret unless it is a status word
-   (the 113 common passwords all are), the value alone is replaced (the key
-   and quotes stay, JSON stays JSON, one secret has one placeholder), a value
-   on the next line is read, an escaped newline or a percent byte is a
-   boundary, binds/flags/references/markers are not secrets; the full review
-   generator agrees with an independent reference and is idempotent on both
-   paths and through the title scrub; and every hostile shape found in review
-   costs linear time (``assert_linear_growth``).
+7. the review's rulings: a keyed value is a secret unless it is, whole, a
+   word from a closed list each of whose entries a negative line needs (the
+   113 common passwords all are secrets); the value alone is replaced (the
+   key and delimiting quotes stay, one secret has one placeholder), and an
+   unquoted value is its whole run, so no random printable password leaves a
+   character in clear; a value on the next line is read after `=`, and after
+   `:` only as a deeper-indented YAML continuation; an escaped newline or a
+   percent byte is a boundary; binds/flags/references/markers are not
+   secrets, as whole values only; the full review generator agrees with an
+   independent reference and is idempotent on both paths and through the
+   title scrub; and every hostile shape found in review costs linear time
+   (``assert_linear_growth``).
 """
 
 from __future__ import annotations
@@ -468,13 +472,21 @@ def test_a_url_password_is_cut_at_the_last_at_sign():
     ]
 
 
-#: The closed list a keyed value is never read as (#1980 review ruling):
-#: states, not secrets. Every other value is one.
+#: The closed list a keyed value is never read as (#1980 review rulings):
+#: states, not secrets, each one needed by a negative line
+#: (``test_every_closed_list_entry_is_needed_by_a_negative_line``). Every
+#: other value is one.
 _STATUS_WORDS = [
-    "YES", "no", "true", "False", "null", "none", "empty", "required",
-    "expired", "set", "unset", "redacted", "hidden", "n/a", "incorrect",
-    "invalid", "invalid_grant", "missing", "not", "Bearer", "********",
-    '""', "str", "Optional[str]",
+    "YES", "no", "true", "False", "null", "required", "expired", "n/a",
+    "incorrect", "invalid_grant", "changed", "rotated", "missing", "not",
+    "str", "Optional[str]", "********", '""',
+]  # fmt: skip
+#: Words the list held before the review measured them on rockyou (R3): no
+#: negative line needs them, so each is a secret like any other.
+_FORMER_STATUS_WORDS = [
+    "on", "off", "nil", "none", "empty", "optional", "set", "unset",
+    "redacted", "hidden", "masked", "na", "invalid", "invalid_request",
+    "bearer", "basic", "digest", "string", "bytes", "secretstr", "''",
 ]  # fmt: skip
 
 
@@ -491,6 +503,12 @@ _STATUS_WORDS = [
 def test_a_status_word_after_a_key_is_not_a_secret(template, word):
     text = template.format(w=word.strip('"') if '"' in template else word)
     assert _spans(text) == []
+
+
+@pytest.mark.parametrize("word", _FORMER_STATUS_WORDS)
+def test_a_word_no_negative_line_needs_is_a_secret(word):
+    assert _spans(f"login with password: {word} failed") == [("PASSWORD", word)]
+    assert _spans(f"secret={word}") == [("SECRET", word)]
 
 
 #: The 113 common passwords the review drew from (rockyou's top list, vendor
@@ -748,6 +766,94 @@ LINES = [
     "AKIA prefixed keys must be rotated every 90 days",
 ]
 
+#: The review's negative corpus (#2021, round 3), the lines not above.
+REVIEW_LINES = [
+    "2026-10-14T10:00:01.123Z ERROR [auth] token validation failed: signature expired",
+    'FATAL:  password authentication failed for user "app"',
+    'DETAIL:  Password does not match for user "app".',
+    "Failed password for invalid user admin from 203.0.113.7 port 22 ssh2",
+    "Access denied for user 'root'@'localhost' (using password: YES)",
+    "UPDATE accounts SET password_hash = $1, token = $2 WHERE id = $3",
+    "SELECT id FROM users WHERE email = ? AND password = ?",
+    "INSERT INTO sessions (user_id, token) VALUES (%s, %s)",
+    'cursor.execute("UPDATE users SET password = :pwd WHERE id = :id")',
+    "  at com.example.auth.TokenService.validate(TokenService.java:42)",
+    '  File "/app/auth/token.py", line 42, in verify',
+    "KeyError: 'password'",
+    "jwt.exceptions.ExpiredSignatureError: Signature has expired",
+    'WWW-Authenticate: Basic realm="Restricted Area"',
+    "  automountServiceAccountToken: false",
+    "  secretName: tls-cert",
+    '  existingSecret: ""',
+    "  passwordKey: postgres-password",
+    "  token: false",
+    '  password: ""',
+    "  secret: null",
+    "  apiKey: true",
+    "Password: required",
+    "Password: ********",
+    "Secret: monitoring/grafana-admin not found",
+    "Token: kube-system/default-token-x7k2p",
+    'level=warn msg="token refresh failed" token_ttl=3600 retry=3',
+    '{"level":"error","msg":"login failed","reason":"invalid password","attempts":3}',
+    '{"event": "token_rotated", "token_id": "tk_2024_10_14", "ok": true}',
+    "request_id=550e8400-e29b-41d4-a716-446655440000 status=401",
+    "commit 3f9a2b1c4d5e6f708192a3b4c5d6e7f8091a2b3c merged",
+    "image sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 pulled",
+    'etag "33a64df551425fcc55e4d42a148795d9f25f89d4" stale',
+    "uptime 12:00:00:00:00:00 since boot",
+    "build 2026-10-14-10-00-00 promoted",
+    "pod payments-7f9c8d6b5-x2k4z restarted 4 times",
+    "kube-apiserver --token-auth-file=/etc/k8s/tokens.csv --secure-port=6443",
+    "helm upgrade app ./chart --set image.tag=v1.2.3",
+    "the secret: rotate it every 90 days",
+    "see docs for password: requirements",
+    "the bearer token was rejected by the gateway",
+    '"token_type": "Bearer", "expires_in": 3600',
+    "api_key rotation is scheduled for friday",
+    "Set PWD=/srv/app and restart",
+    "PASSWORD_MIN_LENGTH=12",
+    "password_reset_requests: 42 in the last hour",
+    "failed_login_password_attempts=7",
+    "redis-cli INFO keyspace shows db0:keys=1024,expires=10",
+    "mongodb://mongo-0:27017,mongo-1:27017/?replicaSet=rs0&readPreference=primary",
+    "amqp://rabbitmq:5672/vhost connection refused",
+    "https://grafana.internal/d/abc123/api?orgId=1&from=now-6h",
+    "git@github.com:acme/payments.git",
+    "smtp://mail.internal:587 rejected relay for ops@example.com",
+    "ldap://ldap.internal:389 bind as cn=admin,dc=example,dc=com",
+    "connection string: Server=db;Database=app;Integrated Security=true;",
+    "Authorization header missing; expected: Bearer <token>",
+    'curl -H "Authorization: Bearer $TOKEN" https://api.example.com',
+    "export GITHUB_TOKEN=$(gh auth token)",
+    "password: ${{ secrets.DB_PASSWORD }}",
+    "  password:",
+    "    secretKeyRef:",
+    "      name: db",
+    "      key: password",
+    "env: [{name: TOKEN, valueFrom: {secretKeyRef: {name: t, key: token}}}]",
+    "--password-stdin < /run/secrets/registry",
+    "docker login -u ci --password-stdin registry.example.com",
+    "sk-learn version 1.3.2 installed",
+    "pk-12 sensor reading 0.42",
+    "ASIAPACIFICSOUTHEAST region list",
+    "xoxo the team",
+    "ghp_ prefix tokens are classic PATs",
+    'eyJ is the base64 of {" which starts every JWT header',
+    "-----BEGIN CERTIFICATE-----",
+    "MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkqhkiG9w0BAQUFADBaMQswCQYDVQQGEwJJ",
+    "-----END CERTIFICATE-----",
+    "-----BEGIN PUBLIC KEY-----",
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexample",
+    "-----END PUBLIC KEY-----",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample user@host",
+    "the token: refresh succeeded at 10:02",
+    "token: 3 retries left",
+    "password: changed 2 days ago by alice",
+    "Token expires in 3600 seconds",
+    "secret_key_base is set in credentials.yml.enc",
+]
+
 
 #: The only negative lines any pattern changes, each with the spans it
 #: takes and why it should. Internal addresses and MACs are the sanitizer's
@@ -795,9 +901,17 @@ JUSTIFIED = {
     ],
     # A number cannot be a status: `password: 123` is a password.
     "token: 401 from the idp on every refresh": [("TOKEN", "401")],
+    "token: 3 retries left": [("TOKEN", "3")],
+    "the secret: rotate it every 90 days": [("SECRET", "rotate")],
+    "see docs for password: requirements": [("PASSWORD", "requirements")],
+    "the token: refresh succeeded at 10:02": [("TOKEN", "refresh")],
+    # Six pairs of hex digits are a MAC address, as on main.
+    "uptime 12:00:00:00:00:00 since boot": [("MAC_ADDRESS", "12:00:00:00:00:00")],
+    # `ASIA` and sixteen capitals is an access key id's shape exactly.
+    "ASIAPACIFICSOUTHEAST region list": [("AWS_ACCESS_KEY", "ASIAPACIFICSOUTHEAST")],
 }
 
-NEGATIVE = P11 + LINES + ["Token: expired"]
+NEGATIVE = P11 + LINES + REVIEW_LINES + ["Token: expired"]
 
 
 def test_the_corpus_is_the_size_the_issue_asks_for():
@@ -821,6 +935,55 @@ def test_ordinary_text_is_unchanged_but_for_the_justified_spans(sanitizer, text)
     assert report.total_redacted == len(secrets_only)
     if not secrets_only:
         assert document == text
+
+
+def _without(listed: str, entry: str) -> tuple:
+    """The sanitizer set with ``entry`` cut from the closed list ``listed``
+    (the regex source of ``_NON_SECRET_WORDS`` or of the count guard)."""
+    entries = listed.split("|")
+    assert entry in entries
+    rest = "|".join(e for e in entries if e != entry) or "(?!)"
+    variant = []
+    for pattern in SANITIZER_PATTERNS:
+        source = pattern.regex.pattern
+        if pattern.names_a_value:
+            assert listed in source, pattern.entity_type
+            source = source.replace(listed, rest)
+        variant.append(
+            dataclasses.replace(pattern, regex=re.compile(source, pattern.regex.flags))
+        )
+    return tuple(variant)
+
+
+_CLOSED_LISTS = [
+    (redaction._NON_SECRET_WORDS, entry)
+    for entry in redaction._NON_SECRET_WORDS.split("|")
+] + [(r"\d{1,5}", r"\d{1,5}")]
+
+
+@pytest.mark.parametrize("listed,entry", _CLOSED_LISTS)
+def test_every_closed_list_entry_is_needed_by_a_negative_line(listed, entry):
+    """R3 of the #2021 review: the closed lists stay minimal, every entry
+    cited by a negative line it spares. Cut the entry, and a line of the
+    corpus (ours or the review's) is redacted."""
+    variant = _without(listed, entry)
+    needs = [
+        text
+        for text in NEGATIVE
+        if find_redaction_spans(text, variant)
+        != find_redaction_spans(text, SANITIZER_PATTERNS)
+    ]
+    assert needs, entry
+
+
+def test_a_masked_or_empty_value_is_needed_by_a_negative_line():
+    """The two exemptions outside the word list: a masked value and an empty
+    quoted one."""
+    assert _spans("Password: ********") == []
+    assert _spans('  password: ""') == []
+    assert _spans("Password: ***") == []
+    assert _spans("Password: **") == [("PASSWORD", "**")]
+    assert _spans("password: ''") == [("PASSWORD", "''")]
 
 
 def test_a_url_without_credentials_does_not_reach_a_later_at_sign(sanitizer):
@@ -954,6 +1117,10 @@ _UNICODE = [
     "api_key=abc and pr\u0131vate notes",  # dotless i
     "\u0130stanbul dc: password=hunter2",  # lower() lengthens it: no index maps
     "\u212a8s_secret_0123456789abcdef0123456789abcdef",  # Kelvin sign
+    # No index maps, and a masked round finds a key whose value is on the
+    # line after the one it touched: its window must reach that line.
+    "\u0130\n10.0.0.5password:\n    520",
+    "\u0130\n10.0.0.5password=\n520",
 ]
 
 
@@ -1152,11 +1319,19 @@ def test_an_assignment_glued_after_anything_is_gone_after_one_pass(sanitizer):
         ("db:\n  password:\n    Tr0ub4dor&3xyz\n  host: x", "Tr0ub4dor&3xyz"),
         ("password=\nTr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
         ("password:\r\n  Tr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+        ("  - name: app\n    password:\n      Tr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+        ('"password":\n    "Tr0ub4dor&3xyz"', "Tr0ub4dor&3xyz"),
+        ("password:\n  john3:16", "john3:16"),
+        ("password:\n  music=life", "music=life"),
+        ("\tpassword:\n\t\tTr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+        ("Password: \r\n  Tr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+        ("PASSWORD =\nTr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
     ],
 )
 def test_a_value_on_the_next_line_is_read(sanitizer, text, value):
-    """`password:` then the value on its own line — valid YAML, and main read
-    it on both paths."""
+    """`password:` then the value on its own, deeper-indented line — valid
+    YAML, and main read it on both paths; and `password=` then the next
+    line's first token, as main read it."""
     assert _spans(text) == [("PASSWORD", value)]
     assert value not in sanitizer.apply_regex_redaction(text, {})
     assert value not in redact_sensitive_content(text)[0]
@@ -1178,39 +1353,82 @@ def test_a_next_line_that_starts_a_key_is_not_the_value(text):
 def test_a_url_on_the_next_line_is_the_value():
     """`scheme://` is not a key: the next line is the value, typed by the URL
     pattern that also reads it."""
-    assert _spans("password:\nredis://u:p4ss@cache:6379") == [
+    assert _spans("password:\n  redis://u:p4ss@cache:6379") == [
         ("DATABASE_URL", "redis://u:p4ss@cache:6379")
     ]
-    assert _spans("password:\npostgresql://db:5432/app") == [
+    assert _spans("password:\n  postgresql://db:5432/app") == [
         ("PASSWORD", "postgresql://db:5432/app")
     ]
+    assert _spans("password=\npostgresql://db:5432/app") == [
+        ("PASSWORD", "postgresql://db:5432/app")
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Enter password:\n2026-10-14 10:00:01 ERROR db refused",
+        "Enter password: \nERROR 1045 (28000): Access denied",
+        "Password: \r\nLogin incorrect",
+        "token:\n  # filled in by CI",
+        "  password:\n  hunter2x9",
+        "\tpassword:\n\thunter2x9",
+        "db:\n    password:\n  host: x",
+    ],
+)
+def test_after_a_colon_only_a_deeper_line_holds_the_value(sanitizer, text):
+    """R4 of the #2021 review: after an empty `key:`, the next line is its
+    value only as a YAML continuation — indented deeper than the key's line,
+    and not a comment. A prompt's next log line, a status line, a comment, a
+    sibling key are not. (Main read the first four's next token: the date,
+    `ERROR`, `Login` — and the head before this, `#`.)"""
+    assert _spans(text) == []
+    assert sanitizer.apply_regex_redaction(text, {}) == text
+    assert redact_sensitive_content(text)[0] == text
+
+
+def test_after_equals_the_next_line_is_read_as_main_read_it():
+    """A listed trade, kept from main: `password=` then nothing reads the
+    next line's first token, whatever it is."""
+    text = "password=\n2026-10-14 10:00:01 ERROR db refused"
+    assert _spans(text) == [("PASSWORD", "2026-10-14")]
 
 
 _SK = "sk-" + "Ab3dEfGh1JkLmn0PqRsTuvWxYz12345678"
 
 
 @pytest.mark.parametrize(
-    "text,secret",
+    "text,secret,keeps_json",
     [
-        ('{"msg":"line one\\n' + _SK + '\\nline two"}', _SK),
-        ('{"msg":"col\\t' + _SK + '"}', _SK),
-        ("payload=%22" + _SK + "%22", _SK),
-        ('{"cfg": "user: app\\npassword: Tr0ub4dor&3xyz\\nport: 5432"}', "Tr0ub4dor"),
-        ('{"s": "a\\ntoken: 9f8e7d6c5b4a\\n"}', "9f8e7d6c5b4a"),
+        ('{"msg":"line one\\n' + _SK + '\\nline two"}', _SK, True),
+        ('{"msg":"col\\t' + _SK + '"}', _SK, True),
+        ("payload=%22" + _SK + "%22", _SK, False),
+        (
+            '{"cfg": "user: app\\npassword: Tr0ub4dor&3xyz\\nport: 5432"}',
+            "Tr0ub4dor",
+            False,
+        ),
+        ('{"s": "a\\ntoken: 9f8e7d6c5b4a\\n"}', "9f8e7d6c5b4a", False),
         (
             '{"req": "GET /\\nAuthorization: Basic dXNlcjpwYXNzd29yZDEyMw==\\n"}',
             "dXNlc",
+            True,
         ),
-        ('{"req": "GET /\\nBearer Zk91aXJlbGVzc3Rva2VuMTIz\\n"}', "Zk91aXJl"),
+        ('{"req": "GET /\\nBearer Zk91aXJlbGVzc3Rva2VuMTIz\\n"}', "Zk91aXJl", True),
     ],
 )
-def test_an_escaped_newline_or_percent_byte_is_a_boundary(sanitizer, text, secret):
+def test_an_escaped_newline_or_percent_byte_is_a_boundary(
+    sanitizer, text, secret, keeps_json
+):
     """R5: `\\n`, `\\t` or `%XX` before a token or a key reads as the character
-    it encodes would. Main caught these; the first #2021 head did not."""
+    it encodes would. Main caught these; the first #2021 head did not. A
+    provider token ends where its alphabet does, so the JSON around it
+    survives; a keyed value is its whole run, escapes and closers included
+    (R2 of round 3), so the JSON string it ends does not."""
     out = sanitizer.apply_regex_redaction(text, {})
     assert secret not in out
     assert secret not in redact_sensitive_content(text)[0]
-    if text.startswith("{"):
+    if keeps_json:
         json.loads(out)  # the escape and the next key survive
 
 
@@ -1240,6 +1458,98 @@ def test_a_bind_flag_reference_or_marker_is_not_a_secret(text):
     expressions, `=>` that cannot give back its `>` (R4), and markers a pass
     wrote (R1)."""
     assert _spans(text) == []
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        # R2(i): a reference shape exempts only the WHOLE value.
+        ("password=${{xQ9!", "${{xQ9!"),
+        ("password=${VAR}x9", "${VAR}x9"),
+        ("password=$(x9!", "$(x9!"),
+        ("password={{x9", "{{x9"),
+        ("password=<a>bQ9", "<a>bQ9"),
+        ("password=[a]Q9", "[a]Q9"),
+        ("password=?Q9", "?Q9"),
+        ("password=$1abc", "$1abc"),
+        ("password=:pwd;x9", ":pwd;x9"),
+        ("password=%sQ9", "%sQ9"),
+        ("PWD=/home/app$Q9!", "/home/app$Q9!"),
+        ("password=truex9", "truex9"),
+        ("password=n/a/x9", "n/a/x9"),
+        ("password=*****x", "*****x"),
+        # R2(ii): markers and escapes are case-sensitive.
+        ("password=[REDACTED:PASSWORD]", "[REDACTED:PASSWORD]"),
+        ("password=[Password]", "[Password]"),
+        ("password=:Pwd9", ":Pwd9"),
+        # R2(iii): trailing closers are the value's.
+        ("password=Tr0ub4dor&3)]}", "Tr0ub4dor&3)]}"),
+        ('password=Tr0ub4dor&3"}', 'Tr0ub4dor&3"}'),
+        ('{"msg": "password: Tr0ub4dor&3"}', 'Tr0ub4dor&3"}'),
+        ("password=Tr0ub4dor&3,,,,,,,,,,", "Tr0ub4dor&3,,,,,,,,,,"),
+        # R2(iv): an escape inside a value does not end it.
+        ("password=Tr0ub\\n4dor", "Tr0ub\\n4dor"),
+        ("password=Tr0ub\\N4dor", "Tr0ub\\N4dor"),
+        ('{"cfg": "password: Tr0ub4dor\\nport: 5432"}', "Tr0ub4dor\\nport:"),
+        # A quote that does not end the value is the value's too.
+        ('password="ab"cd9', '"ab"cd9'),
+        ("password='x y'=z9 next", "'x y'=z9"),
+        ("password='it's9'", "'it's9'"),
+        ("password=>x9Q", ">x9Q"),
+    ],
+)
+def test_an_unquoted_value_is_its_whole_run(sanitizer, text, value):
+    """R2 of the #2021 review (round 3): after `key=` or `key: `, unquoted,
+    the value is the maximal run of non-whitespace, as on main — and a
+    shape exempts it only when it is the whole run."""
+    assert _spans(text) == [(_spans(text)[0][0], value)]
+    assert value not in sanitizer.apply_regex_redaction(text, {})
+    assert value not in redact_sensitive_content(text)[0]
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        ("x\\Npassword=hunter2x", "hunter2x"),
+        ("x\\Tsk-" + "Ab3dEfGh1JkLmn0PqRsTuvWxYz12345678", None),
+    ],
+)
+def test_an_upper_case_escape_is_not_a_boundary(text, value):
+    """`\\N` escapes nothing: `Npassword` is a compound key (read), and a
+    letter before `sk-` is the listed `task-…` trade (not read)."""
+    expected = [] if value is None else [("PASSWORD", value)]
+    assert _spans(text) == expected
+
+
+_PRINTABLE = string.ascii_letters + string.digits + string.punctuation
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "connect password={} host=db",
+        "DB_PASSWORD={}",
+        "login with password: {} failed",
+    ],
+)
+def test_no_character_of_a_random_printable_password_is_left(sanitizer, template):
+    """The review's full-printable fuzz (R2): 14 random printable characters
+    after `password=`, `DB_PASSWORD=` and a mid-line `password: ` are replaced
+    whole, every time — none missed, no character in clear. (A value that
+    opens with a quote is a quoted value, delimited by its quotes.)"""
+    rng = random.Random("1980-printable")
+    head, tail = template.split("{}")
+    left = []
+    for _ in range(3000):
+        password = "".join(rng.choice(_PRINTABLE) for _ in range(14))
+        if password[0] in "\"'":
+            continue
+        out = sanitizer.apply_regex_redaction(template.format(password), {})
+        if not re.fullmatch(
+            re.escape(head) + r"<PASSWORD_[0-9a-f]{16}>" + re.escape(tail), out
+        ):
+            left.append((password, out))
+    assert left == [], left[:3]
 
 
 @pytest.mark.parametrize(
@@ -1443,6 +1753,25 @@ def test_the_finder_agrees_with_an_independent_reference():
     assert differ == [], differ[:3]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A provider token with a full stop after it, as a keyed value on the
+        # next line: the token keeps its type and the `.` stays out, so the
+        # next pass must read `<K8S_SECRET_…>.` as a whole reference.
+        "x)PWD: \n k8s_secret_0123456789abcdef0123456789abcdef.",
+        "token=" + _JWT + ".",
+        "password='x y';[REDACTED:token]_DB_PASSWORD:Optional[str]",
+    ],
+)
+def test_a_shape_the_round_three_fuzz_found_is_idempotent(sanitizer, text):
+    once = sanitizer.apply_regex_redaction(text, {})
+    assert once != text
+    assert sanitizer.apply_regex_redaction(once, {}) == once
+    document = redact_sensitive_content(text)[0]
+    assert redact_sensitive_content(document)[0] == document
+
+
 def test_both_paths_are_idempotent_over_the_full_generator(sanitizer):
     rng = random.Random("1980-full-generator")
     changed = []
@@ -1455,6 +1784,26 @@ def test_both_paths_are_idempotent_over_the_full_generator(sanitizer):
         if redact_sensitive_content(document)[0] != document:
             changed.append(("preprocessor", text))
     assert changed == [], changed[:3]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "PWD=/home/runner/app is set",
+        "pwd: ~/src/app/ on the box",
+        "password=$1234567890 in the dump",
+        "PWD=/home/runner_me@example.com",
+        "PWD=/srv/x10.0.0.5 on the box",
+    ],
+)
+def test_a_value_the_title_scrub_rewrites_stays_scrubbed(sanitizer, text):
+    # (``PWD=[path][email]``, ``PWD=[path]x[ip_address]`` after one scrub.)
+    """The title's last step marks paths and phone numbers (`[path]app`,
+    `$[phone]`). A path the sanitizer spares stays spared once marked, and a
+    bind is at most four digits, so a ten-digit `$…` is a secret before the
+    title marks it a phone number."""
+    once = _scrub_title_source(text, sanitizer)
+    assert _scrub_title_source(once, sanitizer) == once
 
 
 def test_the_title_scrub_is_idempotent(sanitizer):
@@ -1508,6 +1857,13 @@ _HOSTILE = {
     "one-line-of-spans": (lambda n: "password: x " * n, 320, 0),
     # Escaped newlines in one JSON string.
     "json-escaped-keys": (lambda n: '{"m":"' + "\\npassword: x" * n + '"}', 32, 1),
+    # R4: `key:` lines whose next line is no continuation, each a line start
+    # the line patterns try; then real continuations, each one a value.
+    "colon-prompts": (lambda n: "Enter password:\nERROR 1045 x\n" * n, 64, 1),
+    "yaml-continuations": (lambda n: "  password:\n    Tr0ub4dor&3\n" * n, 64, 1),
+    # One line of `key: ` with the newline only at its end: the line start's
+    # lazy prefix reads the line once.
+    "one-line-of-colon-keys": (lambda n: "token: " * n + "\n  x", 128, 1),
     # Glued detections across masked rounds.
     "ip-akia-chain": (
         lambda n: "".join(f"10.0.{i % 250}.1AKIAABCDEFGHIJKLMNO1" for i in range(n)),

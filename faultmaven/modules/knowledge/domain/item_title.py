@@ -53,15 +53,15 @@ from faultmaven.models.interfaces import ISanitizer
 from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 
 #: How many times the sanitizer may be run over one title before it is judged
-#: not to settle. The patterns run in a fixed order, and an earlier one can be
-#: blocked by text a later one removes: ``\bpassword[=:]`` needs a word boundary,
-#: and in ``10.0.0.5password=hunter2`` the digit before ``p`` is none until the IP
-#: pattern (later in the list) has replaced the address. One pass is then not
-#: its own fixed point, and the copies of a title that were scrubbed a different
-#: number of times diverged. The deepest chain the patterns make is three layers
+#: not to settle. The copies of a title must be one text, so each is scrubbed to
+#: a fixed point, whatever the sanitizer's own idempotence. The regex half has
+#: it since #1980: a detection that needs its neighbour gone
 #: (``00:1A:2B:3C:4D:5510.0.0.5password=hunter2``: the password waits on the IP,
-#: which waits on the MAC), which takes three changing passes and one more to see
-#: nothing change: four calls. The bound is six so that depth has slack.
+#: which waits on the MAC) is settled inside one call, so such a title takes one
+#: changing call and one more to see nothing change — two. Main's patterns
+#: settled it one layer per call: four. The loop stays for a sanitizer without
+#: the property (an analyzer's half, a future pattern); the bound is six, so
+#: four layers still have slack.
 MAX_SCRUB_PASSES = 6
 
 
