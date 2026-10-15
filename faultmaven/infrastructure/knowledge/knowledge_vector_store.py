@@ -1536,3 +1536,106 @@ class KnowledgeVectorStore(BaseExternalClient):
             retries=1,
             retry_delay=1.0,
         )
+
+    async def list_chunk_ids_by_parent(
+        self,
+        where: Dict[str, Any],
+        collection_name: str = KB_COLLECTION,
+    ) -> Dict[str, List[str]]:
+        """Chunk ids matching ``where``, grouped by the parent their id names.
+
+        The authored-orphan sweep's listing (#1982): one enterprise's chunks
+        (``{"enterprise_id": E}``), or the chunks no listed enterprise owns
+        (``{"enterprise_id": {"$nin": [...]}}``). Ids only — ``include=[]`` —
+        like :meth:`list_parent_document_ids`, so no chunk text or metadata
+        crosses a tenant boundary. Never unfiltered: a missing ``where`` is
+        refused rather than read as "every chunk".
+
+        The parent is derived from the id (``{item_id}_chunk_{N}``) for the
+        same reason :meth:`list_parent_document_ids` derives it: a chunk
+        missing the ``parent_document_id`` key still resolves. The chunk ids
+        are kept so the caller deletes exactly what it observed.
+        """
+        if not where:
+            raise ValueError(
+                "list_chunk_ids_by_parent requires a where clause — an "
+                "unfiltered listing is list_parent_document_ids' alone."
+            )
+
+        async def _list_wrapper() -> Dict[str, List[str]]:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except NotFoundError:
+                return {}
+            results = collection.get(where=where, include=[])
+            by_parent: Dict[str, List[str]] = {}
+            for chunk_id in results.get("ids", []) or []:
+                if not isinstance(chunk_id, str):
+                    continue
+                by_parent.setdefault(chunk_id.rsplit("_chunk_", 1)[0], []).append(
+                    chunk_id
+                )
+            return by_parent
+
+        return await self.call_external(
+            operation_name="list_chunk_ids_by_parent",
+            call_func=_list_wrapper,
+            timeout=10.0,
+            retries=1,
+            retry_delay=1.0,
+        )
+
+    async def delete_chunk_ids(
+        self,
+        chunk_ids: Iterable[str],
+        where: Dict[str, Any],
+        collection_name: str = KB_COLLECTION,
+    ) -> List[str]:
+        """Delete exactly these chunk ids, and only those still matching ``where``.
+
+        The authored-orphan sweep's delete (#1982). Deletes the intersection of
+        the ids the caller observed and ``where`` (the enterprise stamp it
+        listed them under), never "every chunk of these parents": a chunk
+        another enterprise's stamp carries, or one rewritten under a different
+        stamp since the listing, is not touched. ChromaDB 1.5.8 applies
+        ``delete(ids=..., where=...)`` as that intersection; the ``get`` before
+        it asks the same question so the return value is what was deleted,
+        not what was asked for.
+
+        Returns the chunk ids deleted.
+        """
+        ids = list(chunk_ids)
+        if not ids:
+            return []
+        if not where:
+            raise ValueError(
+                "delete_chunk_ids requires a where clause — the sweep deletes "
+                "only chunks still carrying the stamp it listed them under."
+            )
+
+        async def _delete_wrapper() -> List[str]:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except NotFoundError:
+                return []
+            matched = list(
+                collection.get(ids=ids, where=where, include=[]).get("ids") or []
+            )
+            if not matched:
+                return []
+            collection.delete(ids=matched, where=where)
+            self.logger.info(
+                f"Deleted {len(matched)} observed chunk(s) from KB collection "
+                f"'{collection_name}'"
+            )
+            return matched
+
+        self._invalidate_term_stats(collection_name)
+
+        return await self.call_external(
+            operation_name="delete_chunk_ids",
+            call_func=_delete_wrapper,
+            timeout=15.0,
+            retries=2,
+            retry_delay=1.0,
+        )
