@@ -984,6 +984,24 @@ class _Flip(list):
         return iter(good if type(self).calls == 1 else bad)
 
 
+class _FlipText(list):
+    """A stop-sequence list that iterates as minted once, then raw (M1)."""
+
+    calls = 0
+
+    def __iter__(self):
+        type(self).calls += 1
+        return iter([vetted("END", "non_case")] if type(self).calls == 1 else [SECRET])
+
+
+class _FlipTuple(tuple):
+    calls = 0
+
+    def __iter__(self):
+        type(self).calls += 1
+        return iter([vetted("END", "non_case")] if type(self).calls == 1 else [SECRET])
+
+
 class _LyingMessage(dict):
     def get(self, key, default=None):
         return vetted("hello") if key == "content" else dict.get(self, key, default)
@@ -1020,6 +1038,15 @@ _LYING = {
     "str subclass message key": (
         {"messages": [{"role": "user", _SubStr("content"): vetted("x")}]},
         ("messages", "bad_shape"),
+    ),
+    # M1: a content list must be an EXACT list or tuple, like the messages.
+    "list subclass stop_sequences": (
+        {"stop_sequences": _FlipText([SECRET])},
+        ("stop_sequences", "bad_shape"),
+    ),
+    "tuple subclass stop_sequences": (
+        {"stop_sequences": _FlipTuple([SECRET])},
+        ("stop_sequences", "bad_shape"),
     ),
     "str subclass keyword name": (
         {_KwargName("system"): SECRET},
@@ -1073,7 +1100,7 @@ async def test_a_lying_container_is_refused_before_the_transport(
     case, metric, monkeypatch
 ):
     monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    _Flip.calls = 0
+    _Flip.calls = _FlipText.calls = _FlipTuple.calls = 0
     overrides, (argument, kind) = _LYING[case]
     cls = next(c for c in ADAPTER_CLASSES if c.__name__ == "OpenAIProvider")
     transport = AsyncMock(return_value=_response())
@@ -1083,6 +1110,7 @@ async def test_a_lying_container_is_refused_before_the_transport(
             await send_to_model(_adapter(cls), **call)
     transport.assert_not_called()
     assert _Flip.calls == 0, "the check iterated the caller's list subclass"
+    assert _FlipText.calls == _FlipTuple.calls == 0, "a content list was iterated"
 
 
 def test_the_grammar_tables_are_read_only():

@@ -10,7 +10,9 @@ profile. A test of redaction itself uses the real minting functions instead.
 ``forged`` is here for the same reason: a boundary test needs a ``ModelText``
 the module never minted, and building one is a spelling no other file may use.
 
-Every minter here — ``vetted``, ``vetted_messages``, ``forged`` and
+No private minting name is bound at module scope: ``vetted`` imports the
+mint inside itself, after its check. Every minter here — ``vetted``,
+``vetted_messages``, ``forged`` and
 ``disabled_redaction`` (a context that redacts nothing lets ``case_redacted``
 mint raw text) — refuses to run outside pytest (``_test_runs_only``): rule T of
 ``test_model_dispatch_lexical_1998.py`` flags an import of ``tests`` from
@@ -39,7 +41,6 @@ from faultmaven.infrastructure.security.model_content import (
     SOURCE_CASE,
     SOURCE_MODEL_OUTPUT,
     ModelText,
-    _mint,
 )
 
 
@@ -65,6 +66,11 @@ def disabled_redaction(
 def vetted(text: str, source: str = SOURCE_CASE) -> ModelText:
     """``text`` minted as if through a disabled case context (``redacted`` False)."""
     _test_runs_only()
+    # Imported here, after the check, never bound at module scope: a module
+    # attribute would be reachable without calling a guarded helper
+    # (``pkgutil.resolve_name("tests.model_content:_mint")``).
+    from faultmaven.infrastructure.security.model_content import _mint
+
     if not isinstance(text, str):
         raise TypeError(f"vetted takes a str, not {type(text).__name__}")
     return _mint(str.__str__(text), source, False)

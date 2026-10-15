@@ -17,12 +17,24 @@ repository, with a raw-text scan behind it:
   ...security import model_content``), never reached by dotted attribute
   access, and never asked for a private (``_``) name;
 * the token's name appears nowhere — in code, a string or a comment;
-* R1: the module's dotted path appears in no string (``importlib``,
-  ``sys.modules``, ``__import__``, a ``patch`` target);
-* R2: no private name of the module — read from its own source, so the list
-  cannot go stale — appears as an attribute or a string, in any file (the
-  module can be reached without naming it: ``type(v).__module__``,
-  ``inspect.getmodule``);
+* R1: no string names the minting module or the dispatch
+  (``faultmaven/infrastructure/llm/dispatch.py``) by path: its dotted path,
+  its ``parent:leaf`` form, or anything under either (``path.attr``,
+  ``path:attr``, ``parent:leaf.attr``) — the forms ``importlib``,
+  ``sys.modules``, ``__import__``, ``pkgutil.resolve_name`` and a ``patch``
+  target take — and no string is the minting module's leaf name alone
+  (``getattr(security_package, "model_content")``). A module's own file is
+  exempt for its own path;
+* R2: no private name of the minting module appears as an attribute, and no
+  string — any string, in any file — has a SEGMENT (split on ``.`` and ``:``)
+  equal to a private name of the minting module or of the dispatch, read from
+  their own sources so the lists cannot go stale. So ``'x.y:_mint'``,
+  ``'_mint.__call__'``, ``pkgutil.resolve_name('tests.model_content:_mint')``,
+  ``operator.attrgetter('model_content._mint')`` and the literal parts of an
+  f-string (``f"{mod}:_mint"``) are all caught: the module can be reached
+  without naming it (``type(v).__module__``, ``inspect.getmodule``), and a
+  private name is the part that cannot be avoided. The minting module, the
+  dispatch (for its own names) and the test minter are exempt;
 * R3: no function's ``__globals__`` is read;
 * R4: no descriptor's ``__set__`` is called directly;
 * R5: no ``__setattr__`` call writes a ``redacted`` attribute — the slot every
@@ -40,10 +52,14 @@ The raw-text scan catches the first group's shapes where the AST cannot see
 them, inside strings handed to ``eval``, ``exec`` or ``getattr``.
 
 Out of scope, by the ruling, and nothing else: reflection through a name
-computed at runtime (``import_module("faultmaven." + name)``,
-``getattr(obj, "__se" + "t__")``, a slot name built from pieces). Every
-spelled route to a forged value, including through ``type()`` of a minted
-value, ends in one of the shapes above.
+computed at runtime — a string built by concatenation, ``chr``, a format of
+non-literal parts or any other computation (``import_module("faultmaven." +
+name)``, ``getattr(obj, "__se" + "t__")``, ``"_mi" + "nt"``, a slot name built
+from pieces) — and runtime mutation of a first-party module's namespace
+(ruling D1). Bypass requires a deliberate act: a flagged spelling, computed
+reflection, or such a mutation. Every LITERAL spelling of a route to a forged
+value, including through ``type()`` of a minted value, ends in one of the
+shapes above.
 """
 
 from __future__ import annotations
@@ -71,6 +87,16 @@ _TOKEN = "_MINT" + "_TOKEN"
 #: The one slot every forgery must set (R5, R6).
 _SLOT = "redac" + "ted"
 _MODULE_FILE = "faultmaven/infrastructure/security/" + _LEAF + ".py"
+# The dispatch: its private names and its path are held to R1/R2 as well.
+_DISPATCH_PARENT = "faultmaven.infrastructure.llm"
+_DISPATCH_LEAF = "dis" + "patch"
+_DISPATCH_MODULE = f"{_DISPATCH_PARENT}.{_DISPATCH_LEAF}"
+_DISPATCH_FILE = "faultmaven/infrastructure/llm/" + _DISPATCH_LEAF + ".py"
+#: R2's segment separators: ``a.b`` attribute paths and ``a.b:c`` resolve-names.
+_SEGMENTS = re.compile(r"[.:]")
+#: A private name of each module, in pieces, for the planted controls.
+_PRIVATE = "_mi" + "nt"
+_DISPATCH_PRIVATE = "_provider" + "_label"
 #: The two files allowed to mint.
 EXEMPT = frozenset({_MODULE_FILE, "tests/" + _LEAF + ".py"})
 
@@ -121,7 +147,17 @@ def _parse(source: str) -> ast.Module:
 @lru_cache(maxsize=1)
 def private_names() -> frozenset:
     """The minting module's private top-level names, read from its source."""
-    tree = _parse((_ROOT / _MODULE_FILE).read_text(encoding="utf-8"))
+    return _private_names_of(_MODULE_FILE)
+
+
+@lru_cache(maxsize=1)
+def dispatch_private_names() -> frozenset:
+    """The dispatch's private top-level names, read from its source."""
+    return _private_names_of(_DISPATCH_FILE)
+
+
+def _private_names_of(rel: str) -> frozenset:
+    tree = _parse((_ROOT / rel).read_text(encoding="utf-8"))
     names: Set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -204,6 +240,24 @@ def _string_args(node: ast.Call) -> List[str]:
     ]
 
 
+def _names_a_module(value: str, path: str) -> Optional[str]:
+    """R1: which module ``value`` names by path, if any.
+
+    ``:`` is read as ``.``, so ``parent:leaf``, ``path:attr`` and
+    ``parent:leaf.attr`` are the dotted path or something under it.
+    """
+    dotted = value.replace(":", ".")
+    if value == _LEAF:
+        return "the minting module's leaf name"
+    for module, own_file, what in (
+        (_MODULE, _MODULE_FILE, "the minting module"),
+        (_DISPATCH_MODULE, _DISPATCH_FILE, "the dispatch"),
+    ):
+        if path != own_file and (dotted == module or dotted.startswith(module + ".")):
+            return what
+    return None
+
+
 def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     """``(line, rule, what)`` for every spelled way ``source`` reaches the mint.
 
@@ -231,6 +285,10 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
         return node in docstrings[0]
 
     private = private_names()
+    # Strings may name neither module's privates, except the dispatch its own.
+    string_private = private | (
+        dispatch_private_names() if path != _DISPATCH_FILE else frozenset()
+    )
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Import):
@@ -253,14 +311,15 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                         (line, "import", f"{_CLASS} imported under another name")
                     )
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            r1 = node.value == _MODULE or node.value.startswith(_MODULE + ".")
-            r2 = node.value in private
+            r1 = _names_a_module(node.value, path)
+            segments = set(_SEGMENTS.split(node.value))
+            r2 = segments & string_private
             if (r1 or r2) and not is_docstring(node):
                 if r1:
-                    found.append((line, "R1", "the minting module named in a string"))
+                    found.append((line, "R1", f"{r1} named in a string"))
                 if r2:
                     found.append(
-                        (line, "R2", f"a private name as a string: {node.value}")
+                        (line, "R2", f"a private name in a string: {sorted(r2)}")
                     )
         elif isinstance(node, (ast.Name, ast.Attribute)):
             name = node.id if isinstance(node, ast.Name) else node.attr
@@ -397,6 +456,17 @@ def test_the_private_names_are_read_from_the_module():
     names = private_names()
     assert {"_mi" + "nt", _TOKEN} <= names, names
     assert not any(n.startswith("__") for n in names)
+    dispatch_names = dispatch_private_names()
+    assert {_DISPATCH_PRIVATE, "_send" + "_site"} <= dispatch_names, dispatch_names
+
+
+def test_the_dispatch_may_name_its_own_privates_and_path():
+    """R1/R2 exempt the dispatch for ITS OWN names, never the minting module's."""
+    own = f"x = '{_DISPATCH_MODULE}:{_DISPATCH_PRIVATE}'\n"
+    assert not violations(own, _DISPATCH_FILE)
+    assert {h[1] for h in violations(own, "faultmaven/planted.py")} == {"R1", "R2"}
+    theirs = f"x = 'a:{_PRIVATE}'\n"
+    assert {h[1] for h in violations(theirs, _DISPATCH_FILE)} == {"R2"}
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +538,35 @@ PLANTED = {
     "r6_setattr_class": "setattr(obj, '__class__', K)\n",
     "r6_slots_alone": f"class L(str):\n    __slots__ = ['{_SLOT}']\n",
     "r1_patch_target": f"patch('{_MODULE}.should_redact')\n",
+    # #2023 final delta: every LITERAL spelling of a private name reaches R2,
+    # and every path form R1 (built from pieces, so this file passes its scan).
+    "r2_resolve_name_module_colon_private": (
+        f"m = pkgutil.resolve_name('{_MODULE}:{_PRIVATE}')\n"
+    ),
+    "r2_resolve_name_parent_colon_leaf_private": (
+        f"m = pkgutil.resolve_name('{_PARENT}:{_LEAF}.{_PRIVATE}')\n"
+    ),
+    "r2_attrgetter_leaf_private": (
+        f"m = operator.attrgetter('{_LEAF}.{_PRIVATE}')(faultmaven.infrastructure.security)\n"
+    ),
+    "r2_resolve_name_test_minter": (
+        f"m = pkgutil.resolve_name('tests.{_LEAF}:{_PRIVATE}')\n"
+    ),
+    "r2_any_module_colon_private": f"m = resolve('x.y:{_PRIVATE}')\n",
+    "r2_private_then_attribute": f"m = resolve('{_PRIVATE}.__call__')\n",
+    "r2_fstring_literal_segment": "m = resolve(f'{mod}:" + _PRIVATE + "')\n",
+    "r2_dispatch_private": (f"f = pkgutil.resolve_name('x:{_DISPATCH_PRIVATE}')\n"),
+    "r1_leaf_by_getattr": (
+        f"m = getattr(faultmaven.infrastructure.security, '{_LEAF}')\n"
+    ),
+    "r1_parent_colon_leaf": f"m = pkgutil.resolve_name('{_PARENT}:{_LEAF}')\n",
+    "r1_module_colon_attribute": (
+        f"m = pkgutil.resolve_name('{_MODULE}:non_case_text')\n"
+    ),
+    "r1_dispatch_path": f"m = importlib.import_module('{_DISPATCH_MODULE}')\n",
+    "r1_dispatch_parent_colon_leaf": (
+        f"m = pkgutil.resolve_name('{_DISPATCH_PARENT}:{_DISPATCH_LEAF}')\n"
+    ),
     # R2 alone: the module object reached without naming its path.
     "r2_getmodule_attribute": _PUBLIC
     + "import inspect\nm = inspect.getmodule(non_case_text)\nx = m._mint(raw)\n",
@@ -512,6 +611,12 @@ ALLOWED = {
     "docstring_naming_the_module": f'"""See {_MODULE}."""\n',
     "other_slots": "class P:\n    __slots__ = ('source',)\n",
     "other_setattr": "object.__setattr__(obj, 'source', 1)\n",
+    # R2 is segment equality: a name that merely contains a private one is not it.
+    "a_name_containing_a_private_one": "x = resolve('a.b:my_mint_helper')\n",
+    "a_private_name_of_another_module": "x = resolve('a.b:_private')\n",
+    "the_test_minter_by_path": "x = 'tests.model_content'\n",
+    "a_computed_name_out_of_scope": "x = resolve('a:' + '_mi' + 'nt')\n",
+    "the_dispatch_named_in_its_own_file_is_checked_elsewhere": "x = 'dispatch'\n",
 }
 
 
