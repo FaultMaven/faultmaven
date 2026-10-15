@@ -34,13 +34,15 @@ KB pack / ``kb_seed``                 NO, by     ``TestShippedPackTitle``
 from __future__ import annotations
 
 import ast
+import json
+import logging
 import os
 import pathlib
 import re
 import warnings
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -52,6 +54,7 @@ from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import FaultMavenSettings, env_var_spellings
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -78,11 +81,14 @@ from faultmaven.modules.knowledge.domain.item_title import (
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
+    CaseConversionRequest,
     ConversionDraft,
     ConversionStatus,
     DraftStatus,
     FailureModeAnalysis,
+    PreprocessingResult,
     QualityScore,
+    RedactionReport,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
@@ -883,6 +889,580 @@ class TestDeadIngesterPaths:
         assert ingester._process_and_store.await_args.args[0].title == PLAIN_TITLE
 
 
+# ---------------------------------------------------------------------------
+# Everything derived from a title, and the column cut
+# ---------------------------------------------------------------------------
+
+CASE_ID = "case_aa0000001981"
+
+#: The key in ``SECRET_TITLES``, in 8-character blocks, so a fragment of it is
+#: recognisable wherever a cut leaves one.
+KEY_BLOCK = "a1B2c3D4"
+
+
+def _settings() -> MagicMock:
+    settings = MagicMock()
+    settings.llm.get_knowledge_model.return_value = "test-model"
+    return settings
+
+
+def _model_response(content: str) -> LLMResponse:
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=StopReason.STOP,
+    )
+
+
+def _analysis_json(title: str) -> str:
+    return json.dumps(
+        {
+            "is_actionable": True,
+            "failure_modes": [
+                {
+                    "id": "pg-login",
+                    "title": title,
+                    "domain": "database",
+                    "service": "postgresql",
+                    "symptom_class": ["replication_lag"],
+                    "severity": "high",
+                    "symptoms_summary": "The replica login fails",
+                    "resolution_summary": "Rotate the credentials",
+                }
+            ],
+            "source_assessment": {
+                "content_type": "troubleshooting_guide",
+                "actionability_rating": "high",
+                "missing_information": [],
+            },
+        }
+    )
+
+
+def _preprocessed(text: str) -> PreprocessingResult:
+    return PreprocessingResult(
+        extracted_text=text,
+        source_metadata={"original_filename": "notes.md", "file_size_bytes": len(text)},
+        redaction_report=RedactionReport(),
+        warnings=[],
+        is_rejected=False,
+        rejection_reason=None,
+        token_count=len(text.split()),
+    )
+
+
+def _runbook_titled(raw_title: str) -> str:
+    """A valid runbook whose frontmatter title is ``raw_title`` (quoted)."""
+    return valid_runbook("Placeholder Title For Replacement").replace(
+        "title: Placeholder Title For Replacement\n", f'title: "{raw_title}"\n'
+    )
+
+
+def _squash(text: str) -> str:
+    """Lower-case alphanumerics only: how a slug spells a title."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _data_dir(tmp_path: pathlib.Path):
+    return patch.object(
+        ConversionService,
+        "_data_dir",
+        new_callable=lambda: property(lambda self: tmp_path),
+    )
+
+
+class _CountingSanitizer:
+    """Delegates to a real sanitizer and counts the runs."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = 0
+
+    async def asanitize(self, text):
+        self.calls += 1
+        return await self.inner.asanitize(text)
+
+
+async def _assert_every_stored_title_fits(session_factory) -> None:
+    """What PostgreSQL would enforce and SQLite does not: no stored title or
+    file name is past its column."""
+    async with session_factory() as session:
+        for column in (
+            KnowledgeItemModel.title,
+            ConversionDraftModel.title,
+            UploadedFileModel.filename,
+        ):
+            for value in (await session.execute(select(column))).scalars():
+                assert len(value) <= column.type.length, (column, len(value))
+
+
+class TestEveryTextDerivedFromATitleIsScrubbed:
+    """No text derived from a runbook title reaches a reader, a log line or the
+    case transcript unscrubbed, on any convert path (#1981). The title is
+    scrubbed ONCE where it enters as raw text (the model's failure-mode title,
+    the case's title, the title the model writes into a case draft, a typed
+    title; a scanned file's title enters at the persistence choke, which derives nothing
+    from it first), assigned back to the object, and everything
+    else (the draft's id slug, the draft, the stored analysis, the response, the
+    prompt, the log line, the transcript notice) is derived from the scrubbed
+    value. Scrubbing a finished slug does nothing: ``password-hunter2`` has no
+    ``=`` left for a pattern to match.
+
+    Each test asserts the returned objects and the persisted rows are one text.
+
+    Mutation: drop the scrub in ``_scrub_failure_mode_titles`` (document), in
+    ``_convert_from_case_impl`` (the case's title), in ``_scrub_content_title``
+    (the model's); none of the later layers hide it. For the disk scan the
+    backstop IS the entry: drop the assign-back or the scrub in
+    ``_persist_job_rows`` and ``test_a_scanned_files_title`` fails.
+    """
+
+    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
+    async def test_a_document_conversion_whose_model_titled_a_failure_mode_with_a_secret(
+        self, session_factory, tmp_path, label, secret, title
+    ):
+        router = AsyncMock()
+        router.route.side_effect = [
+            _model_response(_analysis_json(title)),
+            _model_response(valid_runbook("Postgres Login Failure Recovery")),
+        ]
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=session_factory,
+            sanitizer=regex_only_sanitizer(),
+        )
+        source = tmp_path / "notes.md"
+        source.write_text("# Notes\n\nThe replica login fails after rotation.\n")
+
+        with (
+            patch.object(
+                conversion._preprocessor,
+                "preprocess",
+                return_value=_preprocessed(source.read_text()),
+            ),
+            _data_dir(tmp_path),
+        ):
+            result = await conversion.convert_document(
+                file_path=source,
+                content_type="text/markdown",
+                original_filename="notes.md",
+                scope="global",
+                user_id="admin1",
+                enterprise_id=None,
+            )
+
+        (draft,) = result.drafts
+        # Nothing the caller is handed names the secret: draft, id, the analysis
+        # it carries, the warnings.
+        assert secret not in result.model_dump_json()
+        assert _squash(secret) not in _squash(draft.runbook_id)
+        _assert_scrubbed(draft.title, secret)
+        # The model is shown the scrubbed title too: no secret leaves in a prompt.
+        assert secret not in str(router.route.await_args_list)
+        # Listed to ANOTHER user (a global draft is): the rows are the objects.
+        (listed,) = await conversion.list_all_drafts("some-other-user")
+        assert (listed["title"], listed["runbook_id"]) == (
+            draft.title,
+            draft.runbook_id,
+        )
+        async with session_factory() as session:
+            stored = (
+                await session.execute(select(ConversionJobModel.analysis_result))
+            ).scalar_one()
+        assert secret not in json.dumps(stored)
+
+    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
+    async def test_a_case_conversion_whose_case_title_and_model_title_carry_a_secret(
+        self, session_factory, tmp_path, label, secret, title
+    ):
+        router = AsyncMock()
+        router.route.return_value = _model_response(_runbook_titled(title))
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=session_factory,
+            sanitizer=regex_only_sanitizer(),
+        )
+        request = CaseConversionRequest(
+            case_id=CASE_ID,
+            title=title,
+            description="The replica login fails after rotation",
+            root_cause="The credentials were rotated on the primary only",
+            scope="global",
+        )
+
+        with _data_dir(tmp_path):
+            result = await conversion.convert_from_case(
+                request, user_id="admin1", enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
+
+        (draft,) = result.drafts
+        assert secret not in result.model_dump_json()
+        assert _squash(secret) not in _squash(draft.runbook_id)
+        _assert_scrubbed(draft.title, secret)
+        # The text the draft carries names the scrubbed title, not the model's.
+        assert secret not in draft.content
+        # Neither the case's title nor the model's reached the prompt unscrubbed.
+        assert secret not in str(router.route.await_args_list)
+        # Listed to the case's readers: the same text the caller was handed.
+        (listed,) = await conversion.list_drafts_for_case(CASE_ID)
+        assert (listed["title"], listed["runbook_id"]) == (
+            draft.title,
+            draft.runbook_id,
+        )
+        async with session_factory() as session:
+            stored = (
+                await session.execute(select(ConversionJobModel.analysis_result))
+            ).scalar_one()
+        assert secret not in json.dumps(stored)
+
+    async def test_a_model_title_that_cannot_be_rewritten_refuses_the_draft(
+        self, session_factory, tmp_path
+    ):
+        """Never keep a title it could not clean: the draft is refused (the
+        mode's own error), not stored."""
+        router = AsyncMock()
+        router.route.return_value = _model_response(
+            _runbook_titled("Login fails (password=hunter2)")
+        )
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=session_factory,
+            sanitizer=regex_only_sanitizer(),
+        )
+        request = CaseConversionRequest(
+            case_id=CASE_ID,
+            title="Replica login",
+            description="The replica login fails",
+            root_cause="Credentials rotated on the primary only",
+            scope="global",
+        )
+
+        with (
+            _data_dir(tmp_path),
+            patch.object(
+                ConversionService, "_scrub_content_title", AsyncMock(return_value=None)
+            ),
+        ):
+            result = await conversion.convert_from_case(
+                request, user_id="admin1", enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
+
+        assert result.status == ConversionStatus.FAILED and result.drafts == []
+        assert await _draft_titles(session_factory) == []
+
+    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES[:1] + ABUTTING)
+    async def test_the_case_transcript_notice_and_the_log_name_no_secret(
+        self, session_factory, tmp_path, caplog, label, secret, title
+    ):
+        """``runbook_creation`` logs the draft's title at INFO and writes it into
+        the case transcript for every reader of the case. It reads the draft the
+        service returned, so the title it holds must already be clean."""
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
+        from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (  # noqa: E501
+            _committed_gate,
+            _make_resolved_case,
+        )
+
+        case = _make_resolved_case()
+        router = AsyncMock()
+        router.route.return_value = _model_response(_runbook_titled(title))
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=session_factory,
+            sanitizer=regex_only_sanitizer(),
+        )
+        request = CaseConversionRequest(
+            case_id=case.case_id,
+            title=title,
+            description="The replica login fails after rotation",
+            root_cause="The credentials were rotated on the primary only",
+            scope="global",
+        )
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=case)
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        with _data_dir(tmp_path), caplog.at_level(logging.DEBUG):
+            await engine.runbooks._run_runbook_conversion(
+                conversion,
+                request,
+                "u1",
+                STANDALONE_ENTERPRISE_ID,
+                committed=_committed_gate(),
+            )
+
+        notice = case.messages[-1]["content"]
+        assert "is ready" in notice, "control: the success notice was written"
+        assert secret not in notice
+        assert secret not in caplog.text and secret not in str(
+            [r.__dict__ for r in caplog.records]
+        )
+
+    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
+    async def test_a_scanned_files_title(
+        self, session_factory, tmp_path, label, secret, title
+    ):
+        directory = tmp_path / "global" / "database"
+        directory.mkdir(parents=True)
+        (directory / "leaky.md").write_text(_runbook_titled(title))
+        conversion = _conversion(session_factory)
+
+        with _data_dir(tmp_path):
+            result = await conversion.scan_for_runbooks(
+                user_id=None, enterprise_id=None, is_platform_admin=True
+            )
+
+        assert result["discovered"] == 1, result
+        assert secret not in json.dumps(result)
+        (listed,) = await conversion.list_all_drafts("some-other-user")
+        _assert_scrubbed(listed["title"], secret)
+        assert result["drafts"][0]["title"] == listed["title"]
+
+    async def test_the_title_returned_and_the_title_stored_are_one_text(
+        self, session_factory
+    ):
+        """``_persist_job_rows`` assigns what it stores back to the draft it was
+        given, so the object a caller returns is never the raw one."""
+        draft = ConversionDraft(
+            draft_id="draft_assign_back",
+            runbook_id="rb-assign-back",
+            title="Login fails (password=hunter2) " + "x" * 300,
+            scope="personal",
+            status=DraftStatus.DRAFT,
+            source_type=SourceType.CASE,
+            validation=ValidationResult(passed=True),
+            quality_score=QualityScore(
+                overall=80.0,
+                grade="B",
+                completeness=80.0,
+                clarity=80.0,
+                actionability=80.0,
+                comprehensiveness=80.0,
+            ),
+            content_preview="p",
+            content="---\nid: rb-assign-back\n---\n\n# R\n",
+        )
+
+        await _persist_job(
+            session_factory,
+            None,
+            conversion_id="conv_assign_back",
+            user_id="u1",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(filename="f", size_bytes=1, content_type="x"),
+            analysis=AnalysisResult(
+                is_actionable=True,
+                failure_modes=[],
+                source_assessment=SourceAssessment(
+                    content_type="x",
+                    actionability_rating="high",
+                    missing_information=[],
+                ),
+            ),
+            drafts=[draft],
+            created_at=datetime.now(timezone.utc),
+            sanitizer=regex_only_sanitizer(),
+        )
+
+        (stored,) = await _draft_titles(session_factory)
+        assert draft.title == stored
+        _assert_scrubbed(stored, "hunter2")
+        assert len(stored) == 255
+
+
+class TestTheColumnCutComesAfterTheScrub:
+    """A secret that straddles a column's length is cut into a FRAGMENT no
+    pattern matches (the first 21 characters of a 32-character key), so cutting
+    before scrubbing publishes it. And a title the item's column cannot hold must
+    not fail AFTER the draft, job and upload rows are committed, stranding a
+    verified draft with no item listed to everyone at global scope.
+
+    Mutation: cut before the scrub inside ``sanitize_item_title``; drop the
+    item-column cut from ``ingest_runbook`` or from ``upload_document``.
+    """
+
+    #: 21 key characters survive a cut-first at the column's length.
+    KEY = "sk-" + KEY_BLOCK * 4
+
+    def _straddling(self, length: int) -> str:
+        return "x" * (length - 3 - 21) + self.KEY + " tail"
+
+    @pytest.mark.parametrize("length", [255, 512], ids=["String(255)", "String(512)"])
+    async def test_the_helper_scrubs_before_it_cuts(self, length):
+        column = SimpleNamespace(type=SimpleNamespace(length=length))
+
+        result = await sanitize_item_title(
+            regex_only_sanitizer(), self._straddling(length), column
+        )
+
+        assert len(result) <= length and KEY_BLOCK not in result
+
+    async def test_the_persistence_choke_scrubs_before_it_cuts(self, session_factory):
+        draft = ConversionDraft(
+            draft_id="draft_straddle",
+            runbook_id="rb-straddle",
+            title=self._straddling(255),
+            scope="personal",
+            status=DraftStatus.DRAFT,
+            source_type=SourceType.CASE,
+            validation=ValidationResult(passed=True),
+            quality_score=QualityScore(
+                overall=80.0,
+                grade="B",
+                completeness=80.0,
+                clarity=80.0,
+                actionability=80.0,
+                comprehensiveness=80.0,
+            ),
+            content_preview="p",
+            content="---\nid: rb-straddle\n---\n\n# R\n",
+        )
+
+        await _persist_job(
+            session_factory,
+            None,
+            conversion_id="conv_straddle",
+            user_id="u1",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(filename="f", size_bytes=1, content_type="x"),
+            analysis=AnalysisResult(
+                is_actionable=True,
+                failure_modes=[],
+                source_assessment=SourceAssessment(
+                    content_type="x",
+                    actionability_rating="high",
+                    missing_information=[],
+                ),
+            ),
+            drafts=[draft],
+            created_at=datetime.now(timezone.utc),
+            sanitizer=regex_only_sanitizer(),
+        )
+
+        (stored,) = await _draft_titles(session_factory)
+        assert KEY_BLOCK not in stored and len(stored) <= 255
+
+    @pytest.mark.parametrize("length", [255, 512], ids=["String(255)", "String(512)"])
+    async def test_an_upload_whose_secret_straddles_a_cut_stores_no_fragment(
+        self, session_factory, length
+    ):
+        service = _knowledge(session_factory)
+
+        await service.upload_document(
+            content=valid_runbook("Redis Notes For The Cache Tier"),
+            title=self._straddling(length),
+            document_type="runbook",
+            scope="personal",
+            owner_id="u1",
+        )
+
+        async with session_factory() as session:
+            filenames = list(
+                (await session.execute(select(UploadedFileModel.filename))).scalars()
+            )
+        stored = await _runbook_titles(session_factory) + await _draft_titles(
+            session_factory
+        )
+        assert KEY_BLOCK not in " ".join(stored + filenames)
+        await _assert_every_stored_title_fits(session_factory)
+
+    async def test_a_title_past_the_items_column_strands_nothing(self, session_factory):
+        service = _knowledge(session_factory)
+
+        result = await service.upload_document(
+            content=valid_runbook("Redis Notes For The Cache Tier"),
+            title="Pool exhausted " + "x" * 590,
+            document_type="runbook",
+            scope="global",
+            owner_id="u1",
+        )
+
+        (item_title,) = await _runbook_titles(session_factory)
+        assert len(item_title) == 512
+        # The response names what was stored, not what was sent.
+        assert result["metadata"]["title"] == item_title
+        counts = await _row_counts(session_factory)
+        assert counts["knowledge_items"] == counts["conversion_drafts"] == 1
+        await _assert_every_stored_title_fits(session_factory)
+
+    async def test_ingest_runbook_cuts_to_the_items_column(self, session_factory):
+        service = _knowledge(session_factory)
+
+        await service.ingest_runbook(**_ingest_args("personal", title="x" * 600))
+
+        (stored,) = await _runbook_titles(session_factory)
+        assert len(stored) == 512
+
+    async def test_an_update_cuts_to_the_items_column(self, session_factory):
+        service = _knowledge(session_factory)
+        await service.ingest_runbook(**_ingest_args("personal"))
+
+        await service.update_document_metadata("kb_0123456789ab", title="y" * 600)
+
+        (stored,) = await _runbook_titles(session_factory)
+        assert len(stored) == 512
+
+    async def test_a_manual_runbooks_filename_fits_its_column(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        conversion = _conversion(session_factory)
+
+        await conversion.create_runbook_from_template(
+            **_template(title="T" * 240 + " password=a password=b password=c")
+        )
+
+        await _assert_every_stored_title_fits(session_factory)
+
+
+class TestTheDeepestChainSettlesWithSlack:
+    """``password`` waits on the IP, which waits on the MAC: three changing
+    passes and one more to see nothing change, four calls. A bound of four had
+    no slack at all; it is six."""
+
+    CHAIN = "Login fails (00:1A:2B:3C:4D:5510.0.0.5password=hunter2)"
+
+    async def test_it_settles_in_four_calls_inside_the_bound(self):
+        counting = _CountingSanitizer(regex_only_sanitizer())
+
+        result = await sanitize_item_title(counting, self.CHAIN)
+
+        assert "hunter2" not in result and counting.calls == 4
+        assert counting.calls < MAX_SCRUB_PASSES
+
+    async def test_the_chain_survives_the_real_paths_too(self, session_factory):
+        service = _knowledge(session_factory)
+
+        await service.upload_document(
+            content=valid_runbook("Redis Notes For The Cache Tier"),
+            title=self.CHAIN,
+            document_type="runbook",
+            scope="personal",
+            owner_id="u1",
+        )
+
+        (draft_title,) = await _draft_titles(session_factory)
+        assert "hunter2" not in draft_title
+        assert draft_title == (await _runbook_titles(session_factory))[0]
+
+
 class _LayerPeelingSanitizer:
     """A sanitizer that removes one ``<`` per run, the way the real one removes
     one layer of an abutting secret per run: a title with two layers is stable
@@ -1050,261 +1630,3 @@ class TestAnUnavailableScrubAnswers503:
         )
 
         assert response.status_code == 500
-
-
-# ---------------------------------------------------------------------------
-# One creator of a knowledge item, and one place that says `shipped=True`
-# ---------------------------------------------------------------------------
-
-#: What constructs a knowledge item row. ``KnowledgeItem`` is the domain object,
-#: ``KnowledgeItemModel`` the ORM row; either one in a new place is a create
-#: path these tests do not cover.
-ITEM_NAMES = {"KnowledgeItem", "KnowledgeItemModel"}
-
-#: ``insert into knowledge_items`` in a string: raw SQL is a create path too.
-RAW_INSERT_RE = re.compile(r"(?is)\binsert\b[^;]{0,60}?\binto\s+\"?knowledge_items\b")
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
-
-#: Scanned: the package, and the two trees outside it that run against the same
-#: database (a script or a migration can write a row as surely as a service).
-SCANNED_ROOTS = ("faultmaven", "scripts", "alembic")
-
-
-def _parse(path: pathlib.Path) -> ast.AST | None:
-    with warnings.catch_warnings():
-        # A file elsewhere in the tree has an invalid escape in a string;
-        # parsing it is all this does.
-        warnings.simplefilter("ignore")
-        try:
-            return ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            return None
-
-
-def item_creators(tree: ast.AST) -> list[tuple[str, str]]:
-    """``(spelling, enclosing function)`` for every way a module can write a
-    knowledge item row that this guard knows.
-
-    Catches: a bare call; a call through an alias import (``import X as Y``) or
-    an attribute (``models.KnowledgeItemModel(...)``); ``getattr(module, "X")(...)``;
-    ``insert(KnowledgeItemModel)``, ``KnowledgeItemModel.__table__.insert()``; a
-    raw ``INSERT INTO knowledge_items`` string; and any of those at module level.
-
-    RESIDUAL, not caught: ``instance.__class__(...)``, ``dataclasses.replace(item,
-    ...)`` (both build a new item from one that already exists, which a creator
-    must first have made) and text assembled at run time into an INSERT. A
-    reviewer is the guard for those.
-    """
-    aliases = set(ITEM_NAMES)
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                if alias.name.split(".")[-1] in ITEM_NAMES and alias.asname:
-                    aliases.add(alias.asname)
-
-    def names_an_item(node: ast.AST) -> bool:
-        return any(
-            (isinstance(x, ast.Name) and x.id in aliases)
-            or (isinstance(x, ast.Attribute) and x.attr in ITEM_NAMES)
-            or (isinstance(x, ast.Constant) and x.value in ITEM_NAMES)
-            for x in ast.walk(node)
-        )
-
-    parents = {}
-    for parent in ast.walk(tree):
-        for child in ast.iter_child_nodes(parent):
-            parents[child] = parent
-
-    def enclosing(node: ast.AST) -> str:
-        while node in parents:
-            node = parents[node]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return node.name
-        return "<module>"
-
-    found: list[tuple[str, str]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if (isinstance(func, ast.Name) and func.id in aliases) or (
-                isinstance(func, ast.Attribute) and func.attr in ITEM_NAMES
-            ):
-                found.append(("call", enclosing(node)))
-            elif (
-                isinstance(func, ast.Call)
-                and isinstance(func.func, ast.Name)
-                and func.func.id == "getattr"
-                and names_an_item(func)
-            ):
-                found.append(("getattr-call", enclosing(node)))
-            elif (isinstance(func, ast.Name) and func.id == "insert") or (
-                isinstance(func, ast.Attribute) and func.attr == "insert"
-            ):
-                if any(names_an_item(arg) for arg in node.args) or (
-                    isinstance(func, ast.Attribute) and names_an_item(func.value)
-                ):
-                    found.append(("insert()", enclosing(node)))
-        elif (
-            isinstance(node, ast.Attribute)
-            and node.attr == "__table__"
-            and names_an_item(node.value)
-        ):
-            found.append(("__table__", enclosing(node)))
-        elif (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and RAW_INSERT_RE.search(node.value)
-        ):
-            found.append(("raw-sql", enclosing(node)))
-    return found
-
-
-def _scan(roots=SCANNED_ROOTS) -> set[tuple[str, str, str]]:
-    found = set()
-    for root in roots:
-        for path in sorted((REPO_ROOT / root).rglob("*.py")):
-            tree = _parse(path)
-            if tree is None:
-                continue
-            for spelling, function in item_creators(tree):
-                found.add((path.relative_to(REPO_ROOT).as_posix(), function, spelling))
-    return found
-
-
-def _creators(source: str) -> list[tuple[str, str]]:
-    return item_creators(ast.parse(source))
-
-
-class TestOneCreatorOfAKnowledgeItem:
-    """The premise every test above rests on: ``ingest_runbook`` is the only
-    place a ``knowledge_items`` row is created. A second creator would be a
-    create path these tests do not cover, so it fails here until its author
-    decides what its title does (and adds it to the table at the top).
-
-    An AST walk, not a text search: it finds the CALL, in whatever function and
-    under whatever spelling, and is not fooled by a comment or a docstring that
-    names the class.
-    """
-
-    #: ``(file, function, spelling)``: the sites that may write the rows.
-    ALLOWED = {
-        # The one creator.
-        (
-            "faultmaven/modules/knowledge/domain/services/knowledge_service.py",
-            "ingest_runbook",
-            "call",
-        ),
-        # Read side: builds the domain object from a row it just selected.
-        (
-            "faultmaven/modules/knowledge/infrastructure/persistence/knowledge_item_repository.py",
-            "_to_domain",
-            "call",
-        ),
-        # The writer of the ``knowledge_items`` row ``ingest_runbook`` hands it.
-        (
-            "faultmaven/modules/knowledge/infrastructure/persistence/knowledge_item_repository.py",
-            "create",
-            "call",
-        ),
-        # Names the table, writes nothing: the ``has_table_privilege(..., 'UPDATE')``
-        # probe the maintenance role check (#1966) reads the table's full name for.
-        (
-            "faultmaven/modules/knowledge/infrastructure/persistence/knowledge_item_repository.py",
-            "may_update",
-            "__table__",
-        ),
-    }
-
-    def test_no_other_function_constructs_one(self):
-        found = _scan()
-        assert found, "the walk found nothing: this guard is vacuous"
-        assert found == self.ALLOWED, (
-            f"a new writer of a knowledge item: {sorted(found - self.ALLOWED)}; "
-            f"a vanished one: {sorted(self.ALLOWED - found)}"
-        )
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            "KnowledgeItem(item_id='x')",
-            "from m import KnowledgeItemModel as Row\nRow(item_id='x')",
-            "import m\ndef f():\n    return m.KnowledgeItemModel(item_id='x')",
-            "def f():\n    return getattr(m, 'KnowledgeItemModel')(item_id='x')",
-            "def f(s):\n    s.execute(insert(KnowledgeItemModel).values(a=1))",
-            "def f(s):\n    s.execute(KnowledgeItemModel.__table__.insert())",
-            "def f(s):\n    s.execute(text('INSERT INTO knowledge_items (a) VALUES (1)'))",
-            "def f(op):\n    op.execute('insert into \"knowledge_items\" values (1)')",
-        ],
-        ids=[
-            "module-level",
-            "alias",
-            "attribute",
-            "getattr",
-            "insert()",
-            "__table__",
-            "raw-sql",
-            "raw-sql-quoted",
-        ],
-    )
-    def test_the_guard_bites_each_spelling_it_claims(self, source):
-        assert _creators(source), source
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            "def f(s):\n    return s.execute(select(KnowledgeItemModel))",
-            "def f(x):\n    return isinstance(x, KnowledgeItem)",
-            "def f(s):\n    s.execute(text('SELECT * FROM knowledge_items'))",
-            "def f(s):\n    s.execute(insert(OtherModel))",
-        ],
-        ids=["select", "isinstance", "raw-select", "insert-other"],
-    )
-    def test_the_guard_does_not_flag_a_read(self, source):
-        assert _creators(source) == [], source
-
-    def test_the_residual_is_declared_not_hidden(self):
-        """``__class__`` and ``replace`` are not caught, and the docstring says so."""
-        assert _creators("def f(i):\n    return i.__class__(item_id='x')") == []
-        assert "RESIDUAL" in (item_creators.__doc__ or "")
-
-
-class TestOnlyKbInitIsShipped:
-    """``shipped=True`` skips the title scrub, so it is stated in exactly one
-    place: the pack's ingest. Any other call that passes it anything but the
-    literal ``False`` is a user path that opted out. (``**{"shipped": ...}`` is
-    the residual an AST keyword scan cannot see.)"""
-
-    ALLOWED = {("faultmaven/bootstrap/kb_init.py", "_ingest_pack_runbook")}
-
-    def test_nothing_else_passes_it(self):
-        found = set()
-        for root in SCANNED_ROOTS:
-            for path in sorted((REPO_ROOT / root).rglob("*.py")):
-                tree = _parse(path)
-                if tree is None:
-                    continue
-                parents = {
-                    c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)
-                }
-                for node in ast.walk(tree):
-                    if not (isinstance(node, ast.Call) and node.keywords):
-                        continue
-                    for keyword in node.keywords:
-                        if keyword.arg != "shipped":
-                            continue
-                        if (
-                            isinstance(keyword.value, ast.Constant)
-                            and keyword.value.value is False
-                        ):
-                            continue
-                        scope, cursor = "<module>", node
-                        while cursor in parents:
-                            cursor = parents[cursor]
-                            if isinstance(
-                                cursor, (ast.FunctionDef, ast.AsyncFunctionDef)
-                            ):
-                                scope = cursor.name
-                                break
-                        found.add((path.relative_to(REPO_ROOT).as_posix(), scope))
-        assert found == self.ALLOWED, sorted(found ^ self.ALLOWED)

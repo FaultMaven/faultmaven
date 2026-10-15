@@ -17,10 +17,7 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     UploadedFileModel,
 )
-from faultmaven.modules.knowledge.domain.item_title import (
-    fit_to_column,
-    sanitize_item_title,
-)
+from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionDraft,
@@ -136,14 +133,22 @@ async def _persist_job_rows(
     one call covers the LLM conversions, the manual template and the disk scan.
     The scrub fails closed (``ItemTitleScrubUnavailable``) and runs ahead of the
     first write, so a refusal leaves nothing behind.
+
+    This is the BACKSTOP, not the entry. Each path scrubs the title where it
+    arrives as raw text and mints the draft's id and text from the scrubbed
+    value (a slug of ``password=hunter2`` is ``...-password-hunter2``, which no
+    pattern matches), so by the time a draft reaches here its title is already
+    clean and this only has to cut it to the column. It assigns the stored
+    value back to the draft, so the object the caller returns and the row are
+    one text.
     """
-    draft_titles = {
-        draft.draft_id: fit_to_column(
-            await sanitize_item_title(sanitizer, draft.title),
-            ConversionDraftModel.title,
+    # Scrubbed to the column, and ASSIGNED BACK to the draft the caller holds
+    # (the response, the case-transcript notice and the log line are built from
+    # it): the object and the row are one text, never the row alone.
+    for draft in drafts:
+        draft.title = await sanitize_item_title(
+            sanitizer, draft.title, ConversionDraftModel.title
         )
-        for draft in drafts
-    }
 
     async with db_session_factory() as session:
         # Billing attribution for every row this writes (ADR-017 D2), read
@@ -220,7 +225,7 @@ async def _persist_job_rows(
                 organization_id=organization_id,
                 conversion_id=conversion_id,
                 runbook_id=draft.runbook_id,
-                title=draft_titles[draft.draft_id],
+                title=draft.title,
                 # The draft's text, in the same transaction as its row (#1950):
                 # there is no draft whose text a replica cannot read.
                 content=draft.content,

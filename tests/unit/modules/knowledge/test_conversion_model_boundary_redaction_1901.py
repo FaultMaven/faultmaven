@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 from tests.runbook_samples import valid_runbook
 from tests.utils import sanitize_pii_pinned
 
@@ -320,10 +321,12 @@ async def _convert_document(tmp_path, router, sanitizer):
 
 
 class TestTheCasePath:
-    @pytest.mark.parametrize("has_sanitizer", [True, False])
+    @pytest.mark.parametrize("has_sanitizer", [True])
     async def test_it_redacts_exactly_when_the_investigation_path_does(
         self, tmp_path, redaction_arm, has_sanitizer, sanitizer
     ):
+        # Always handed one: a conversion with NO sanitizer is refused, because
+        # no title could be scrubbed (#1981, ``TestNoSanitizerNoConversion``).
         handed = sanitizer if has_sanitizer else None
         router = RecordingRouter()
 
@@ -377,7 +380,7 @@ class TestTheCasePath:
 
 
 class TestTheDocumentPath:
-    @pytest.mark.parametrize("has_sanitizer", [True, False])
+    @pytest.mark.parametrize("has_sanitizer", [True])
     async def test_each_call_redacts_exactly_when_the_investigation_path_does(
         self, tmp_path, redaction_arm, has_sanitizer, sanitizer
     ):
@@ -412,6 +415,28 @@ class TestTheDocumentPath:
 # ---------------------------------------------------------------------------
 
 
+class TestNoSanitizerNoConversion:
+    """A conversion makes titles (the draft's name, its id) and a title that
+    cannot be scrubbed is not written (#1981), so a service with no sanitizer
+    refuses BEFORE the model is called, on both paths."""
+
+    async def test_the_case_path(self, tmp_path, redaction_arm):
+        router = RecordingRouter()
+
+        with pytest.raises(ItemTitleScrubUnavailable):
+            await _convert_case(tmp_path, router, None)
+
+        assert router.calls == []
+
+    async def test_the_document_path(self, tmp_path, redaction_arm):
+        router = RecordingRouter()
+
+        with pytest.raises(ItemTitleScrubUnavailable):
+            await _convert_document(tmp_path, router, None)
+
+        assert router.calls == []
+
+
 class TestARedactionThatCannotRunStopsTheSend:
     async def test_on_the_case_path(self, tmp_path, redaction_arm):
         """Not laundered into a ``ConversionError`` by the conversion's broad
@@ -420,12 +445,14 @@ class TestARedactionThatCannotRunStopsTheSend:
         engine does not call it either."""
         router = RecordingRouter()
 
+        # Refusing at the conversion call only: the case title's scrub (#1981)
+        # shares this sanitizer and reads text that carries no stage marker.
         if redaction_arm:
             with pytest.raises(RedactionUnavailableError):
-                await _convert_case(tmp_path, router, _RefusingAt())
+                await _convert_case(tmp_path, router, _RefusingAt("conversion"))
             assert router.calls == []
         else:
-            response = await _convert_case(tmp_path, router, _RefusingAt())
+            response = await _convert_case(tmp_path, router, _RefusingAt("conversion"))
             assert response.status == ConversionStatus.COMPLETED
             assert any(PII_IP in text for text in router.sent_text())
 

@@ -44,7 +44,7 @@ from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.domain.item_title import (
-    fit_to_column,
+    require_sanitizer,
     sanitize_item_title,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
@@ -311,6 +311,9 @@ class ConversionService:
     ) -> ConversionResponse:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
+        # No sanitizer means no title can be scrubbed, so refuse before the
+        # model calls this conversion would pay for (#1981).
+        require_sanitizer(self._sanitizer)
 
         # Step 0: Verify LLM provider is available
         try:
@@ -369,6 +372,12 @@ class ConversionService:
             original_filename,
             model_boundary_redaction(self._sanitizer),
         )
+
+        # Where the model's titles become failure modes: scrubbed HERE, before
+        # ``generate_runbook_id`` slugs them (a slug of ``password=hunter2`` is
+        # ``...-password-hunter2``, which no pattern matches), before the draft
+        # is named by one, and before the job row stores the analysis (#1981).
+        await self._scrub_failure_mode_titles(analysis.failure_modes)
 
         if not analysis.is_actionable or len(analysis.failure_modes) == 0:
             raise ConversionRejectedError(
@@ -500,6 +509,8 @@ class ConversionService:
         """Internal: the actual conversion pipeline. Always called via
         `convert_from_case`, which wraps this with the dedup registry."""
         await self._ensure_team_publish_allowed(request.scope, team_id, user_id)
+        # As in ``convert_document``: refuse before the model call (#1981).
+        require_sanitizer(self._sanitizer)
 
         # Verify LLM provider is available
         try:
@@ -549,6 +560,13 @@ class ConversionService:
         conversion_id = generate_conversion_id()
         created_at = datetime.now(timezone.utc)
         warnings: List[str] = []
+
+        # The case's title, scrubbed where it enters (#1981) and assigned back,
+        # so the failure mode below, the "CASE TITLE:" line of the source text
+        # and the analysis the job row stores all read the scrubbed value.
+        request = request.model_copy(
+            update={"title": await sanitize_item_title(self._sanitizer, request.title)}
+        )
 
         # Construct a FailureModeAnalysis from the case data
         failure_mode = FailureModeAnalysis(
@@ -944,6 +962,46 @@ class ConversionService:
             runbook_id=runbook_id,
         )
 
+    async def _scrub_failure_mode_titles(
+        self, failure_modes: List[FailureModeAnalysis]
+    ) -> None:
+        """Redact every failure mode's title, in place (#1981).
+
+        The title the model wrote is the raw text a document draft is named by
+        and its id is slugged from. Assigned back to the object, so everything
+        after (the partition, the id mint, the draft, the stored analysis)
+        derives from the scrubbed value.
+        """
+        for failure_mode in failure_modes:
+            failure_mode.title = await sanitize_item_title(
+                self._sanitizer, failure_mode.title
+            )
+
+    async def _scrub_content_title(self, content: str) -> Optional[str]:
+        """``content`` with its frontmatter ``title`` redacted, or ``None``.
+
+        For a case-built draft, the title the model wrote is what the draft is
+        named by and what its id is minted from (``mint_case_runbook_id``).
+        Returns ``content`` itself when the title is already clean or there is
+        no usable one, so an ordinary draft is not rewritten. A title that
+        needed redacting is written back with ``python-frontmatter``, as
+        ``verify_draft`` already round-trips the frontmatter, and the result is
+        read back: ``None`` when it does not read as the scrubbed title, so the
+        caller refuses this draft rather than keep a title it could not clean.
+        """
+        title = draft_title(content)
+        if title is None:
+            return content
+        scrubbed = await sanitize_item_title(self._sanitizer, title)
+        if scrubbed == title:
+            return content
+        import frontmatter
+
+        post = frontmatter.loads(content)
+        post.metadata["title"] = scrubbed
+        rewritten = frontmatter.dumps(post)
+        return rewritten if draft_title(rewritten) == scrubbed else None
+
     async def _convert_single_failure_mode(
         self,
         prepared: _PreparedConversion,
@@ -1039,6 +1097,21 @@ class ConversionService:
                 )
 
             if case_id is not None:
+                # The title the model wrote, scrubbed where it enters and
+                # written back into the frontmatter BEFORE the id is minted from
+                # it (#1981): the mint slugs the frontmatter's own title, and
+                # the draft is named by it.
+                scrubbed_content = await self._scrub_content_title(runbook_content)
+                if scrubbed_content is None:
+                    return ConversionError(
+                        failure_mode_id=failure_mode.id,
+                        error=(
+                            "LLM response carries a title that could not be " "redacted"
+                        ),
+                        retryable=True,
+                    )
+                runbook_content = scrubbed_content
+
                 # The case path's id, minted now from the frontmatter the model
                 # wrote (``case_authoring.mint_case_runbook_id``, #1880) — and
                 # claimed here: a slot another case holds gets this case's stem
@@ -1957,6 +2030,9 @@ class ConversionService:
         # listed (``GET /knowledge/drafts``) after publication as before
         # (#1981). Nothing is written yet, so a refusal leaves nothing behind.
         title = await sanitize_item_title(self._sanitizer, title)
+        draft_row_title = await sanitize_item_title(
+            self._sanitizer, title, ConversionDraftModel.title
+        )
 
         # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
         # the bootstrap orphan-prune would delete this user runbook on redeploy.
@@ -2023,7 +2099,7 @@ class ConversionService:
                     ConversionDraftModel.content == read_content,
                 )
                 .values(
-                    title=fit_to_column(title, ConversionDraftModel.title),
+                    title=draft_row_title,
                     content=content,
                     status=DraftStatus.VERIFIED.value,
                     verified_at=now,
@@ -2225,7 +2301,11 @@ status: draft
             team_id=team_id,
             status=ConversionStatus.COMPLETED,
             source_file=SourceFileInfo(
-                filename=title,
+                # The upload row's name, cut to its ``String(255)`` after the
+                # scrub (a typed title is not bounded by anything shorter).
+                filename=await sanitize_item_title(
+                    self._sanitizer, title, UploadedFileModel.filename
+                ),
                 size_bytes=len(content.encode()),
                 content_type="text/markdown",
             ),

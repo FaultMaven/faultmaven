@@ -325,10 +325,19 @@ async def _scan_for_runbooks_impl(
                 "Quality score is below 50. Review and edit before verifying."
             )
 
+        # No scrub here, on purpose (#1981): nothing is derived from the title
+        # before `_persist_job` (the draft's id is the file's own `id`), so the
+        # persistence choke IS this path's entry. It redacts the title, cuts it
+        # to the column and assigns it back to the draft, and `discovered`
+        # below reads the draft, so the response, the row and the listing are
+        # one text. A scan that cannot redact stops there (503), with the files
+        # before this one already imported.
+        title = title if isinstance(title, str) else str(title)
+
         draft = ConversionDraft(
             draft_id=draft_id,
             runbook_id=runbook_id,
-            title=title if isinstance(title, str) else str(title),
+            title=title,
             scope=scope,
             status=DraftStatus.DRAFT,
             validation=validation,

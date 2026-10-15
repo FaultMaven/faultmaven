@@ -3341,6 +3341,13 @@ its owner alone. The response's ``notes`` list names each such file
 ("team_x/foo.md imported as personal: ..."); ``errors`` names the files
 that were not imported.
 
+Each draft's title is redacted before its row is written (#1981). If that
+check cannot run (the sanitizer or its pseudonym key is unavailable) the
+scan answers **503**, a retryable server-side condition, with a generic
+detail. It can do so MID-WALK: the files imported before the failing one
+stay imported (each is its own draft), and a second scan skips them and
+imports the rest.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
