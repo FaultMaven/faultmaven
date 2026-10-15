@@ -373,3 +373,52 @@ def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
         ]
     )
     result.stdout.fnmatch_lines(["*localhost:11434*"])
+
+
+_CHILD_COLD_TIKTOKEN = """
+import os, sys
+from tests import network_guard, offline_tiktoken
+
+network_guard.install()
+offline_tiktoken.install()
+import tiktoken
+
+encoding = tiktoken.get_encoding("cl100k_base")
+print(encoding.encode("hello world"))
+print(sorted(os.listdir(sys.argv[1])))
+print(network_guard.drain_refusals())
+"""
+
+
+def test_a_cold_machine_counts_tokens_without_the_network(tmp_path):
+    """A runner with an empty tiktoken cache reads the encoding from the repository.
+
+    Without ``tests/offline_tiktoken.py`` the first ``get_encoding`` in a process
+    asks Azure storage for the file, the guard refuses it, and the 45 tests that
+    assert on real token counts fail. The cache directory is empty, stays
+    empty, and (``TIKTOKEN_CACHE_DIR`` unset) the answer is the same.
+    """
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    for env_var in ("TIKTOKEN_CACHE_DIR", None):
+        env = dict(os.environ)
+        env.pop(network_guard.ALLOW_LIVE_NETWORK_ENV, None)
+        env["PYTHONPATH"] = os.pathsep.join(
+            filter(None, [str(REPO_ROOT), env.get("PYTHONPATH")])
+        )
+        env.pop("TIKTOKEN_CACHE_DIR", None)
+        env.pop("DATA_GYM_CACHE_DIR", None)
+        if env_var:
+            env[env_var] = str(cold)
+        else:
+            env["TMPDIR"] = str(cold)  # tiktoken's default cache lives under it
+        done = subprocess.run(
+            [sys.executable, "-c", _CHILD_COLD_TIKTOKEN, str(cold)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.splitlines() == ["[15339, 1917]", "[]", "[]"]

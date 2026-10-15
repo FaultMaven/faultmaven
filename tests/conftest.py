@@ -58,6 +58,12 @@ from tests import network_guard  # noqa: E402
 
 network_guard.install()
 
+# tiktoken downloads its encoding from Azure storage on a cold machine, which
+# the guard refuses: serve it from the repository (``tests/offline_tiktoken.py``).
+from tests import offline_tiktoken  # noqa: E402
+
+offline_tiktoken.install()
+
 # "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
 # in-process FakeRedis without a connection (``redis_client.py``), the zero-
 # config preset reads it as unset, and a caller's value is left alone (the
