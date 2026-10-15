@@ -504,7 +504,7 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 - **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap).
 - **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
 
-A document reported removed has no retrievable chunk, now or after any restart, reconcile, repair or `kb_seed` run (#1966). Retrieval never checks that a chunk's row exists, and the reconcile pass deletes only built-in vectors (diffing the shared collection against one tenant's rows would delete other tenants' content), so a chunk whose row is gone would stay searchable for good.
+A document reported removed has no retrievable chunk, now or after any restart, reconcile, repair or `kb_seed` run (#1966). Retrieval never checks that a chunk's row exists, so a chunk whose row is gone would stay searchable for good. The reconcile pass deletes such chunks for built-ins only; authored chunks stranded by a vector delete that failed before #1966 are the authored-orphan sweep's (#1982, [ingestion step 6](kb-ingestion-architecture.md#algorithm)), which reports them by default and deletes them only when an operator arms it, and only where the pass's row read is proven unfiltered by row-level security.
 
 **What a restart or `kb_seed` run does to a removed document:**
 

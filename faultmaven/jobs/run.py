@@ -55,8 +55,9 @@ a misprovisioned (RLS-exempt) DB role must refuse to run, exactly like the API.
 
 Most flags configure the *runner* and apply to whatever job is named
 (``--verbose``, ``--enterprise-id``, ``--cross-tenant-maintenance``). A few
-configure ONE job: ``--dry-run``/``--no-dry-run`` and ``--ttl-hours`` belong to
-``storage_cleanup``. A job accepts a job-specific flag only by declaring it as
+configure ONE job: ``--ttl-hours`` belongs to ``storage_cleanup``,
+``--allow-disjoint-enterprise`` to ``kb_seed``, and ``--dry-run``/``--no-dry-run``
+to both (for ``kb_seed`` it governs only the authored-orphan sweep). A job accepts a job-specific flag only by declaring it as
 an explicit parameter of its ``run()``; passing one to a job that merely
 absorbs ``**kwargs`` is refused (``JobArgumentError``) rather than delivered as
 a stray kwarg nothing reads.
@@ -109,6 +110,7 @@ JOB_SPECIFIC_FLAGS: Dict[str, str] = {
     "dry_run": "--dry-run/--no-dry-run",
     "ttl_hours": "--ttl-hours",
     "allow_disjoint_reference_set": "--allow-disjoint-reference-set",
+    "allow_disjoint_enterprises": "--allow-disjoint-enterprise",
 }
 
 
@@ -599,8 +601,8 @@ Examples:
         ),
     )
 
-    # Job-specific flags (storage_cleanup). Both default to None — "defer to
-    # settings" — which is deliberately distinct from passing the setting's
+    # Job-specific flags (storage_cleanup, kb_seed). Both default to None —
+    # "defer to settings" — which is deliberately distinct from passing the setting's
     # current value, so an invocation that omits them behaves exactly as it
     # did before they existed. Passing one to a job that does not declare it
     # is refused by run_job rather than delivered as a stray kwarg.
@@ -609,11 +611,13 @@ Examples:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "storage_cleanup only. --dry-run logs 'would delete' without "
+            "storage_cleanup / kb_seed. --dry-run logs 'would delete' without "
             "deleting; --no-dry-run asks for real deletion. Omit to defer to "
-            "ORPHAN_CLEANUP_DRY_RUN. --no-dry-run is not an enabler: with "
-            "ORPHAN_CLEANUP_ENABLED=false the run is still refused "
-            "(status='skipped')."
+            "ORPHAN_CLEANUP_DRY_RUN (storage_cleanup) or KB_ORPHAN_SWEEP_DRY_RUN "
+            "(kb_seed, where it governs only the authored-orphan sweep: "
+            "seeding always runs). --no-dry-run is not an enabler: with "
+            "ORPHAN_CLEANUP_ENABLED / KB_ORPHAN_SWEEP_ENABLED false nothing is "
+            "deleted."
         ),
     )
     parser.add_argument(
@@ -627,6 +631,21 @@ Examples:
             "every candidate. Pass it only after a --dry-run has shown you "
             "the classification and you have confirmed the deployment really "
             "does reference none of them (issue #1232)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-disjoint-enterprise",
+        action="append",
+        default=None,
+        metavar="ENTERPRISE_ID",
+        help=(
+            "kb_seed only; repeatable. Let the authored-orphan sweep delete in "
+            "THIS enterprise even though none of its authored KB vectors has a "
+            "row there (#1982) — one enterprise per flag, never all at once. "
+            "'unattributed' names the bucket of chunks whose stamp names no "
+            "listed enterprise. Pass it only after a dry run has listed the "
+            "enterprise's documents and you have confirmed they were all "
+            "deleted."
         ),
     )
     parser.add_argument(
@@ -685,6 +704,10 @@ def main(args: Optional[List[str]] = None) -> int:
     # job that does not declare it must be refused rather than swallowed.
     if parsed_args.allow_disjoint_reference_set:
         kwargs["allow_disjoint_reference_set"] = True
+    if parsed_args.allow_disjoint_enterprise:
+        kwargs["allow_disjoint_enterprises"] = tuple(
+            parsed_args.allow_disjoint_enterprise
+        )
     # Only a flag that was actually given becomes a kwarg: absent means the
     # job defers to settings, which is not the same as passing their value.
     if parsed_args.dry_run is not None:

@@ -61,6 +61,14 @@ class _KbStore:
     async def delete_documents_by_parents(self, parent_ids, collection_name=None):
         return sum(self.parents.pop(p, 0) for p in list(parent_ids))
 
+    # The authored-orphan sweep's listing (#1982): this index holds no
+    # authored chunk when the sweep runs (repair writes ORPHAN_ID's after it).
+    async def list_chunk_ids_by_parent(self, where, collection_name=None):
+        return {}
+
+    async def delete_chunk_ids(self, chunk_ids, where, collection_name=None):
+        return []
+
 
 async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
     tmp_path, caplog
