@@ -11,7 +11,7 @@ from typing import List, Optional
 
 import aiohttp
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import CallShapeUnsupported, LLMException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -301,13 +301,14 @@ class LocalProvider(BaseLLMProvider):
             # below, so it reaches the caller as itself: non-retryable, naming
             # the fix, not re-typed as a two-format failure (#2016).
             if kwargs.get("messages"):
-                raise LLMException(
+                raise CallShapeUnsupported(
                     f"The server at {root} answered 404 on "
-                    f"/v1/chat/completions and serves only /completion, which "
-                    f"takes a single prompt; this call carries a conversation "
-                    f"(messages). Point LOCAL_LLM_URL at an endpoint that "
-                    f"serves /v1/chat/completions.",
-                    retryable=False,
+                    f"/v1/chat/completions (no such route, or no such model) "
+                    f"and has only /completion, which takes a single prompt; "
+                    f"this call carries a conversation (messages). Point "
+                    f"LOCAL_LLM_URL at an endpoint that serves "
+                    f"/v1/chat/completions, or set LOCAL_LLM_MODEL to a model "
+                    f"it serves."
                 ) from openai_error
             try:
                 return await self._call_llamacpp_api(

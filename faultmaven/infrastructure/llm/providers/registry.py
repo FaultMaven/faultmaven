@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
-from faultmaven.exceptions import ModelLoadingException
+from faultmaven.exceptions import CallShapeUnsupported, ModelLoadingException
 from faultmaven.infrastructure.llm.dispatch import (
     RawModelContentRefused,
     send_to_model,
@@ -1009,6 +1009,19 @@ class ProviderRegistry:
                 # is recorded and no other provider is tried with the same
                 # content.
                 raise
+            except CallShapeUnsupported as e:
+                # This CALL's shape on this transport, not the provider's
+                # health (#2016): no failure is recorded. Unlike a refused
+                # content grammar, another provider may carry the call, so
+                # the chain continues; a real failure already seen outranks
+                # the refusal when the chain is exhausted.
+                self.logger.warning(
+                    f"{provider_name} cannot carry this call shape and was "
+                    f"skipped without a health penalty: {e}"
+                )
+                if last_error is None or isinstance(last_error, CallShapeUnsupported):
+                    last_error = e
+                continue
             except Exception as e:
                 # Record failure for health tracking
                 state.record_failure()
