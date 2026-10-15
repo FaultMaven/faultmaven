@@ -364,6 +364,53 @@ class TestKbSeedJob:
         assert result["status"] == "failed"
         assert "pack unreadable" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_kb_seed_forwards_the_sweep_flags_and_reports_the_sweep(
+        self, mock_container, mock_settings
+    ):
+        """#1982: ``--no-dry-run`` and each ``--allow-disjoint-enterprise``
+        reach the bootstrap's authored-orphan sweep, and its counts are part of
+        the job result."""
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        bootstrapped = _bootstrap_result()
+        bootstrapped.authored_orphans.proven = True
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=bootstrapped),
+        ) as bootstrap:
+            result = await run(
+                settings=mock_settings,
+                container=mock_container,
+                dry_run=False,
+                allow_disjoint_enterprises=["ent-a", "unattributed"],
+            )
+
+        kwargs = bootstrap.await_args.kwargs
+        assert kwargs["sweep_dry_run"] is False
+        assert kwargs["allow_disjoint_enterprises"] == ("ent-a", "unattributed")
+        assert result["authored_orphans"]["proven"] is True
+        assert result["authored_orphans"]["deleted"] == 0
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_defaults_to_no_acknowledgment(
+        self, mock_container, mock_settings
+    ):
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=_bootstrap_result()),
+        ) as bootstrap:
+            await run(settings=mock_settings, container=mock_container)
+
+        kwargs = bootstrap.await_args.kwargs
+        assert kwargs["sweep_dry_run"] is None  # defer to KB_ORPHAN_SWEEP_DRY_RUN
+        assert kwargs["allow_disjoint_enterprises"] == ()
+
     def test_kb_seed_is_cross_tenant(self):
         """kb_seed writes the org-free global platform tier served to ALL
         tenants — under multi it must only run on the audited maintenance
@@ -1300,6 +1347,64 @@ class TestJobSpecificFlagWiring:
             _reject_unsupported_job_flags(
                 case_cleanup, "case_cleanup", {"dry_run": True}
             )
+
+    def test_kb_seed_accepts_its_sweep_flags_and_no_blanket_acknowledgment(self):
+        """#1982: kb_seed's authored-orphan sweep takes ``--dry-run`` and a
+        per-enterprise acknowledgment. The blanket
+        ``--allow-disjoint-reference-set`` would acknowledge every bucket at
+        once, so kb_seed refuses it."""
+        from faultmaven.jobs import kb_seed
+        from faultmaven.jobs.run import JobArgumentError, _reject_unsupported_job_flags
+
+        _reject_unsupported_job_flags(
+            kb_seed,
+            "kb_seed",
+            {"dry_run": True, "allow_disjoint_enterprises": ("ent-a",)},
+        )
+        with pytest.raises(JobArgumentError, match="--allow-disjoint-reference-set"):
+            _reject_unsupported_job_flags(
+                kb_seed, "kb_seed", {"allow_disjoint_reference_set": True}
+            )
+
+    def test_main_delivers_each_enterprise_acknowledgment_to_the_job(self):
+        from faultmaven.jobs import run as run_module
+
+        run_job = AsyncMock(return_value={"status": "completed"})
+        with (
+            patch.object(run_module, "run_job", run_job),
+            patch("dotenv.load_dotenv"),
+        ):
+            exit_code = run_module.main(
+                [
+                    "kb_seed",
+                    "--no-dry-run",
+                    "--allow-disjoint-enterprise",
+                    "ent-a",
+                    "--allow-disjoint-enterprise",
+                    "unattributed",
+                ]
+            )
+
+        assert exit_code == 0
+        kwargs = run_job.await_args.kwargs
+        assert kwargs["dry_run"] is False
+        assert kwargs["allow_disjoint_enterprises"] == ("ent-a", "unattributed")
+        assert "allow_disjoint_reference_set" not in kwargs
+
+    def test_the_enterprise_acknowledgment_parses_one_id_per_flag(self):
+        from faultmaven.jobs.run import build_parser
+
+        parsed = build_parser().parse_args(
+            [
+                "kb_seed",
+                "--allow-disjoint-enterprise",
+                "ent-a",
+                "--allow-disjoint-enterprise",
+                "unattributed",
+            ]
+        )
+        assert parsed.allow_disjoint_enterprise == ["ent-a", "unattributed"]
+        assert build_parser().parse_args(["kb_seed"]).allow_disjoint_enterprise is None
 
     def test_storage_cleanup_declares_both_flags(self):
         """The guard must not refuse the job the flags were added for."""

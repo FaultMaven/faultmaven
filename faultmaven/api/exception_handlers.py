@@ -67,6 +67,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
+from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -444,6 +445,39 @@ def llm_service_error_http_exception(
         SERVICE_ERROR_DETAIL,
         "10",
         correlation_id,
+    )
+
+
+async def item_title_scrub_unavailable_handler(
+    request: Request,
+    exc: ItemTitleScrubUnavailable,
+) -> JSONResponse:
+    """Answer an uncaught ``ItemTitleScrubUnavailable`` 503 (#1981).
+
+    A knowledge item's title is redacted before anything is written, and the
+    check could not run: the deployment's sanitizer or its pseudonym key is
+    unavailable. That is a server-side dependency, not a fault in the request
+    (not a 4xx) and not an unexpected error (not a bare 500): the client may
+    retry, and nothing was saved. The detail is generic. It does not name the
+    title, what the check found or why it failed; the cause is in the log by
+    exception type.
+    """
+    cause = exc.__cause__
+    logger.warning(
+        "Title scrub unavailable: %s %s - %s",
+        request.method,
+        request.url.path,
+        type(cause).__name__ if cause is not None else type(exc).__name__,
+    )
+    return await http_exception_handler(
+        request,
+        HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The sensitive-data check on titles is temporarily unavailable. "
+                "Nothing was saved; retry later."
+            ),
+        ),
     )
 
 
@@ -934,6 +968,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ValidationException: validation_exception_handler,
         ConflictError: conflict_exception_handler,
         TeamOperationRefused: team_operation_refused_handler,
+        ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

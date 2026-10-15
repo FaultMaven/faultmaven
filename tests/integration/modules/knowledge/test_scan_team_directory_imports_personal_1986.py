@@ -45,6 +45,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = pytest.mark.integration
 
@@ -81,7 +82,7 @@ async def session_factory():
 def knowledge(session_factory) -> KnowledgeService:
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
         db_session_factory=session_factory,
@@ -102,6 +103,7 @@ def conversion(session_factory, knowledge, knowledge_dir):
     """The real service over the real schema; no team service, as on the only
     deployments the scan runs on."""
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=session_factory,

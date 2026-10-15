@@ -65,6 +65,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
 )
+from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     render_vocabulary,
@@ -303,6 +304,12 @@ async def upload_document(
 
     Returns:
         Upload job information
+
+    The title is redacted with the deployment's sanitizer before anything is
+    written (#1981): it is shown to every reader of the tier and never
+    reversed. If that check cannot run (the sanitizer or its pseudonym key is
+    unavailable) the upload answers **503**, a retryable server-side
+    condition, with a generic detail, and nothing is saved.
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
@@ -486,6 +493,10 @@ async def upload_document(
     except ValidationException:
         # The service's other typed refusal — the draft bound (#1950) — goes to
         # the global handler's 422, not the blanket 500 below.
+        raise
+    except ItemTitleScrubUnavailable:
+        # The title's redaction (#1981) could not run: a server-side
+        # dependency, so the global handler's generic 503, not the blanket 500.
         raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
@@ -1035,6 +1046,11 @@ async def update_document(
     document; global-scope editing is platform-corpus authoring (operator
     only, per the global-tier policy). A refusal over a document the caller
     cannot even see answers 404 rather than 403 (#867).
+
+    A new ``title`` is redacted with the deployment's sanitizer, as is new
+    ``content``. If that check cannot run the update answers **503**, a
+    retryable server-side condition, with a generic detail, and nothing is
+    saved (#1981).
     """
     logger = logging.getLogger(__name__)
 
@@ -1061,6 +1077,10 @@ async def update_document(
         return result
 
     except HTTPException:
+        raise
+    except ItemTitleScrubUnavailable:
+        # The redaction (#1981) could not run: the global handler's generic
+        # 503, not the blanket 500 below. Nothing was saved.
         raise
     except KnowledgeBaseError as e:
         # Re-indexing failed, so the edit was NOT saved: the row is committed

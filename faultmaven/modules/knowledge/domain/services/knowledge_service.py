@@ -55,6 +55,7 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_quality,
@@ -1278,6 +1279,7 @@ class KnowledgeService:
         verification_level: "Optional[VerificationLevel]" = None,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
         pack_content_hash: Optional[str] = None,
+        shipped: bool = False,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1324,6 +1326,19 @@ class KnowledgeService:
                 from a KB pack. When provided, the runbook is written without
                 chunking or loading BGE-M3 — the fast boot path for shipped
                 runbooks. See :meth:`_index_document_in_vector_store`.
+            shipped: True ONLY for platform-shipped KB pack content
+                (``bootstrap/kb_init.py``). The title of every other runbook
+                is user- or model-supplied text, shown to every reader of its
+                tier and never reversed, so it is redacted here, once, before
+                the row or the vectors carry it (#1981) — the rule
+                :meth:`update_document` already applies. A shipped title is
+                vendored, reviewed source: it is stored as written, so that a
+                redaction outage that begins after a healthy start (Presidio
+                going down mid-seed under a fail-closed posture) cannot stop
+                the platform corpus from seeding, and the pack's own titles
+                are never rewritten. A seed that STARTS with the analyzer down
+                runs regex-only and does not raise either way. Defaults to
+                False: a caller that says nothing gets the scrub.
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success). On
@@ -1344,6 +1359,18 @@ class KnowledgeService:
         from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
         now = datetime.now(timezone.utc)
+
+        # The title, before any row or vector carries it (#1981). A title that
+        # cannot be scrubbed (``RedactionUnavailableError`` under a fail-closed
+        # posture) is not written, and nothing has been written yet.
+        if not shipped:
+            from faultmaven.infrastructure.persistence.models import (
+                KnowledgeItemModel,
+            )
+
+            title = await sanitize_item_title(
+                self._sanitizer, title, KnowledgeItemModel.title
+            )
 
         # Normalize tags to strings up front so BOTH the relational
         # KnowledgeItem and the Pydantic KnowledgeBaseDocument below receive
@@ -1695,6 +1722,10 @@ class KnowledgeService:
         actually checked.
 
         Args:
+            title: Redacted with the sanitizer before it is written anywhere
+                (#1981), so the upload row, the draft row, the
+                ``knowledge_items`` row, the vectors and the response all carry
+                the same scrubbed text.
             scope: REQUIRED knowledge tier — ``global`` | ``team`` |
                 ``personal``. No default (#1166); see
                 :meth:`ingest_runbook`, which this delegates to.
@@ -1748,6 +1779,38 @@ class KnowledgeService:
             # deleted (#1214 review) — so one hop covers both publish paths.
             await aenforce_runbook_quality(content)
 
+            from faultmaven.infrastructure.persistence.models import (
+                ConversionDraftModel,
+                ConversionJobModel,
+                KnowledgeItemModel,
+                UploadedFileModel,
+            )
+
+            # The title, once, before the first row: the upload row's
+            # ``filename`` and the draft row's ``title`` below are written from
+            # it BEFORE ``ingest_runbook`` runs, so they would otherwise hold
+            # the text the ``knowledge_items`` row does not (#1981). Still
+            # nothing written, so a title that cannot be scrubbed leaves
+            # nothing behind.
+            #
+            # Cut to the item's column in the same breath (``String(512)``):
+            # the upload, job and draft rows below are COMMITTED before
+            # ``ingest_runbook`` writes the item, so a title the item cannot
+            # hold would fail there and strand a verified draft with no item,
+            # listed to everyone at global scope.
+            title = await sanitize_item_title(
+                self._sanitizer, title, KnowledgeItemModel.title
+            )
+            # The two ``String(255)`` copies are scrubbed again to their own
+            # column, never cut from the scrubbed text blind: see
+            # ``sanitize_item_title``.
+            draft_title = await sanitize_item_title(
+                self._sanitizer, title, ConversionDraftModel.title
+            )
+            filename = await sanitize_item_title(
+                self._sanitizer, title, UploadedFileModel.filename
+            )
+
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
             # the bootstrap orphan-prune would delete this user runbook on redeploy.
             document_id = authored_item_id()
@@ -1778,12 +1841,6 @@ class KnowledgeService:
             enterprise_id = writable_enterprise_id(None)
 
             # Create SQLite record (synthetic draft, immediately verified)
-            from faultmaven.infrastructure.persistence.models import (
-                ConversionDraftModel,
-                ConversionJobModel,
-                UploadedFileModel,
-            )
-
             conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
 
@@ -1798,7 +1855,7 @@ class KnowledgeService:
                     uploaded_by=owner_id,
                     # The title, which is what this upload has for a name:
                     # nothing is written to a file (#1950).
-                    filename=title,
+                    filename=filename,
                     size_bytes=len(content.encode()),
                     content_type="text/markdown",
                     # A storage-backend key or NULL, never a path: the text is
@@ -1831,7 +1888,7 @@ class KnowledgeService:
                     enterprise_id=enterprise_id,
                     conversion_id=conversion_id,
                     runbook_id=document_id,
-                    title=title,
+                    title=draft_title,
                     content=content,
                     status="verified",
                     source_type="document",
@@ -2731,6 +2788,9 @@ class KnowledgeService:
           it is not mistaken for one that is covered.
         """
         try:
+            from faultmaven.infrastructure.persistence.models import (
+                KnowledgeItemModel,
+            )
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
                 KnowledgeItemType,
             )
@@ -2776,7 +2836,9 @@ class KnowledgeService:
             # what keeps those two from drifting.
             updates = {}
             if kwargs.get("title"):
-                updates["title"] = await self._sanitizer.asanitize(kwargs["title"])
+                updates["title"] = await sanitize_item_title(
+                    self._sanitizer, kwargs["title"], KnowledgeItemModel.title
+                )
             if kwargs.get("content"):
                 # Normalised here too (#1403). This is the ONLY write path that
                 # reaches ChromaDB with caller-supplied content and NO runbook

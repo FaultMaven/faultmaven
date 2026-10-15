@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 from faultmaven.utils.line_endings import decode_text, normalize_line_endings
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [
     pytest.mark.unit,
@@ -359,7 +360,7 @@ async def _session_factory(_engine):
 def _service(session_factory) -> KnowledgeService:
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
         db_session_factory=session_factory,
@@ -504,6 +505,7 @@ async def test_update_draft_stores_lf(_session_factory):
         await session.commit()
 
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=_session_factory,
@@ -542,6 +544,7 @@ async def test_create_runbook_from_template_stores_lf(_session_factory):
     )
 
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=_session_factory,
@@ -657,7 +660,10 @@ async def test_the_converted_draft_is_stored_lf():
     settings = MagicMock()
     settings.llm.explicit_role_provider.return_value = None
     service = ConversionService(
-        llm_router=router, settings=settings, db_session_factory=None
+        sanitizer=regex_only_sanitizer(),
+        llm_router=router,
+        settings=settings,
+        db_session_factory=None,
     )
 
     draft = await service._convert_single_failure_mode(

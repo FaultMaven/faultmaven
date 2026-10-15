@@ -1178,6 +1178,10 @@ def _wire_services(app, chroma) -> None:
         knowledge_service=knowledge_service,
         share_repository=share_repository,
         team_service=team_service,
+        # As ``bootstrap/composition.py`` wires it: every draft's title is
+        # redacted before its row is written, and without a sanitizer nothing
+        # is written (#1981).
+        sanitizer=sanitizer,
     )
     # ``get_case_repository`` reads the repository off ``app.extra`` rather than
     # ``app.state`` — the reports read path is the only consumer. A namespace is

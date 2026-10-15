@@ -71,6 +71,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = pytest.mark.integration
 
@@ -139,6 +140,7 @@ def conversion_service(session_factory, kb_root):
     settings.llm.get_knowledge_model.return_value = "test-model"
     settings.llm.explicit_role_provider.return_value = None
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,
@@ -200,7 +202,7 @@ class TestBothWritersStoreNoPath:
     async def test_upload_document_stores_no_path(self, session_factory, kb_root):
         service = KnowledgeService(
             knowledge_ingester=MagicMock(),
-            sanitizer=MagicMock(),
+            sanitizer=regex_only_sanitizer(),
             tracer=MagicMock(),
             vector_store=MagicMock(),
             db_session_factory=session_factory,

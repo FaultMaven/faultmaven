@@ -53,6 +53,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -124,6 +125,7 @@ async def _convert(tmp_path, produced: str):
         settings=settings,
         db_session_factory=None,
         knowledge_service=None,
+        sanitizer=regex_only_sanitizer(),
     )
     request = CaseConversionRequest.from_case(_resolved_case())
     with patch.object(
