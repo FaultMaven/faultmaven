@@ -1604,8 +1604,10 @@ def pytest_runtest_makereport(item, call):
     So each refusal is also recorded, and the report of the phase in which it
     happened is turned into a failure that names the host and port. A phase
     that had already failed keeps its own failure and gains a section listing
-    the refusals. ``tests/integration/conftest.py`` re-exports this hook for
-    runs rooted there.
+    the refusals. A skipped or xfailed phase fails too: a test that swallows a
+    refusal and then skips, or that is marked xfail, reached for the server all
+    the same. ``tests/integration/conftest.py`` re-exports this hook for runs
+    rooted there.
     """
     outcome = yield
     refused = network_guard.drain_refusals()
@@ -1614,7 +1616,9 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     listing = "\n".join(refused)
     report.sections.append(("network guard", listing))
-    if report.outcome == "passed":
+    if report.outcome != "failed":
+        if hasattr(report, "wasxfail"):
+            del report.wasxfail
         report.outcome = "failed"
         report.longrepr = (
             f"the network guard refused {len(refused)} connection(s) during "

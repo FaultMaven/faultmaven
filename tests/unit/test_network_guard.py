@@ -214,9 +214,11 @@ def test_the_database_url_service_port_is_the_one_the_job_configures():
 def test_the_policy_in_isolation():
     guard = NetworkGuard({5432: "the PostgreSQL named by DATABASE_URL"})
     guard.note_bound(40001)
+    guard.note_bound(1234)  # a model server's port, bound by the test itself
     for host, port in (("127.0.0.1", 40001), ("localhost", 5432), ("::1", 5432)):
         guard.check(host, port, "test")
     for host, port in (
+        ("127.0.0.1", 1234),
         ("127.0.0.1", 11434),
         ("::ffff:127.0.0.1", 11434),
         ("0.0.0.0", 8080),
@@ -226,7 +228,7 @@ def test_the_policy_in_isolation():
     ):
         with pytest.raises(NetworkAccessBlocked):
             guard.check(host, port, "test")
-    assert len(guard.drain_refusals()) == 6
+    assert len(guard.drain_refusals()) == 7
     assert guard.drain_refusals() == []
 
 
@@ -340,6 +342,23 @@ def test_a_refusal_the_test_expects_passes():
 
 def test_a_test_that_connects_to_nothing_passes():
     assert True
+
+
+@pytest.mark.xfail(reason="an xfail mark does not excuse the refusal")
+def test_a_swallowed_refusal_in_an_xfail_test_still_fails():
+    try:
+        socket.create_connection(("127.0.0.1", 11434), timeout=1)
+    except OSError:
+        pass
+    assert False
+
+
+def test_a_swallowed_refusal_then_a_skip_still_fails():
+    try:
+        socket.create_connection(("127.0.0.1", 11434), timeout=1)
+    except OSError:
+        pass
+    pytest.skip("skipping does not excuse the refusal")
 """
 
 
@@ -365,7 +384,7 @@ def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
     result = pytester.runpytest_subprocess(
         "-p", "no:cacheprovider", "-p", registered_by, timeout=600
     )
-    result.assert_outcomes(passed=2, failed=2)
+    result.assert_outcomes(passed=2, failed=4)
     result.stdout.fnmatch_lines(
         [
             "*the network guard refused 1 connection(s) during call of*",

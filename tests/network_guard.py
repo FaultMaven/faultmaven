@@ -209,6 +209,11 @@ class NetworkGuard:
             reason = "it is not a loopback address"
         elif number is None:
             reason = "its port is not a number"
+        elif number in MODEL_SERVER_PORTS:
+            # Before the bind record: a test that binds a model server's port
+            # and connects to it would otherwise be admitted (on a box where
+            # that port is free).
+            reason = "it is a model server's port, which no test may reach"
         elif number in self.bound_ports or number in self.service_ports:
             return
         else:
