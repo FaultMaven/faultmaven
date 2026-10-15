@@ -79,6 +79,12 @@ def service_checks_on(monkeypatch, tmp_path):
 
     monkeypatch.setenv("SKIP_SERVICE_CHECKS", "false")
     monkeypatch.setenv("DEPLOYMENT_MODE", "standalone")
+    # With checks on and protection on (the Cloud job), the composed
+    # DataSanitizer health-checks the Presidio services at their default
+    # in-cluster URLs, which is a real network call from a test that says it
+    # needs no server. The composition under test has no use for them.
+    monkeypatch.setenv("PROTECTION_ENABLED", "false")
+    monkeypatch.setenv("SANITIZE_PII", "false")
     monkeypatch.setenv("CHROMADB_KB_PERSIST_DIR", str(tmp_path / "chroma-kb"))
     monkeypatch.setenv(
         "CHROMADB_EVIDENCE_PERSIST_DIR", str(tmp_path / "chroma-evidence")

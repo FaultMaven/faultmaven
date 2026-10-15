@@ -43,6 +43,33 @@ except ImportError:
     pass  # dotenv not installed, which is fine for tests
 
 
+# A test process connects to nothing it did not start itself, and no test can
+# lift that. Installed here, at conftest import and before any test module is
+# collected, on the ``socket`` module itself: not a fixture, not a
+# ``monkeypatch``, so no test's teardown or ``monkeypatch.undo()`` restores the
+# original. Module level rather than a ``pytest_configure`` hook for the reason
+# ``_default_to_the_test_data_root`` below gives: a run rooted at
+# ``tests/integration`` reaches this file through that conftest's
+# ``import conftest``, and a hook on a copy pytest never registered does not
+# fire. ``install`` is idempotent. The refusal rule, and why a refused connect
+# fails the test even when the code under test swallowed it, is in
+# ``tests/network_guard.py``; ``pytest_runtest_makereport`` below reports it.
+from tests import network_guard  # noqa: E402
+
+network_guard.install()
+
+# "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
+# in-process FakeRedis without a connection (``redis_client.py``), the zero-
+# config preset reads it as unset, and a caller's value is left alone (the
+# Cloud job sets ``REDIS_HOST`` to its service container, which the guard
+# allows). Unset, the settings default is the in-cluster service name
+# ``faultmaven-redis-master``: every test that composed the container or ran
+# the rate limiter looked that name up and tried to connect to it before the
+# same FakeRedis fallback, which is traffic to the network that the fallback
+# hid. Set here, before any settings object is built.
+os.environ.setdefault("REDIS_HOST", "")
+
+
 # One data root per test process (#1636, #1772). Every path whose shipped
 # default sits under the cwd-relative ``./data`` -- the SQLite file, both
 # ChromaDB trees, the evidence files, the redaction pseudonym key, the local
@@ -1459,6 +1486,47 @@ def _configure_test_logging() -> None:
 _configure_test_logging()
 
 
+# ---------------------------------------------------------------------------
+# No test probes, or starts, a local model server
+# ---------------------------------------------------------------------------
+#
+# Under the zero-config ``local`` preset (no provider key, no Redis) the
+# lifespan's startup runs ``check_and_start_local_llm_service``: it probes
+# ``localhost:8080`` for a llama.cpp server and, finding none, runs
+# ``scripts/local_llm_service.sh`` to start one. Every test that boots the app
+# did that -- the shared boot, a rebuilt app (``_app_rebuild``), a lifespan
+# entered directly -- so the probe reached whatever listened on 8080 and the
+# script could start a model server. The network guard refuses the probe; this
+# makes it not happen, at the one function every boot calls. ``False`` is the
+# answer the same code gives a box with no such service ("failed to start", a
+# warning), so a boot takes the path it takes there. No test exercises the
+# function: the stand-in keeps the real signature
+# (``tests/unit/test_network_guard.py`` pins that) and the real function stays
+# on ``__real__``. After ``_configure_test_logging`` because importing the
+# module creates a logger.
+
+
+def _stand_in_for_the_local_llm_service_check() -> None:
+    from faultmaven.infrastructure.llm import local_llm_manager
+
+    real = local_llm_manager.check_and_start_local_llm_service
+    if hasattr(real, "__real__"):
+        return  # the other copy of this file already did
+
+    async def check_and_start_local_llm_service(
+        provider_name: str, base_url: str, model_name: str
+    ) -> bool:
+        return False
+
+    check_and_start_local_llm_service.__real__ = real
+    local_llm_manager.check_and_start_local_llm_service = (
+        check_and_start_local_llm_service
+    )
+
+
+_stand_in_for_the_local_llm_service_check()
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item, nextitem):
     """Give each test the logging state as the session configured it.
@@ -1518,6 +1586,35 @@ def pytest_runtest_protocol(item, nextitem):
         root.setLevel(level)
         structlog.configure(**structlog_config)
         logging_config._logger_config = singleton
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Fail the phase that made a connection the network guard refused.
+
+    The guard raises ``NetworkAccessBlocked`` at the call site, but code that
+    treats "server unreachable" as a fallback catches it and the test passes,
+    which is how a test reached a live model server twice and stayed green.
+    So each refusal is also recorded, and the report of the phase in which it
+    happened is turned into a failure that names the host and port. A phase
+    that had already failed keeps its own failure and gains a section listing
+    the refusals. ``tests/integration/conftest.py`` re-exports this hook for
+    runs rooted there.
+    """
+    outcome = yield
+    refused = network_guard.drain_refusals()
+    if not refused:
+        return
+    report = outcome.get_result()
+    listing = "\n".join(refused)
+    report.sections.append(("network guard", listing))
+    if report.outcome == "passed":
+        report.outcome = "failed"
+        report.longrepr = (
+            f"the network guard refused {len(refused)} connection(s) during "
+            f"{call.when} of {item.nodeid}, so the test reached for a server it "
+            "does not own (tests/network_guard.py):\n" + listing
+        )
 
 
 @pytest.fixture

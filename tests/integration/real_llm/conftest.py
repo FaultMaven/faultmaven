@@ -9,6 +9,7 @@ default config also excludes the `real_llm` marker).
 To run real-LLM tests:
 
     export ANTHROPIC_API_KEY=sk-ant-...
+    export FM_TEST_ALLOW_LIVE_NETWORK=1   # the session's network guard refuses otherwise
     pytest -m real_llm
 
 To override the default model:

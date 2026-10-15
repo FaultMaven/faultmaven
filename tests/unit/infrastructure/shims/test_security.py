@@ -237,7 +237,22 @@ class TestPIIRedactorErrorHandling:
 
     def test_redact_error_returns_original_text(self):
         """Test that redaction errors return original text (fail-open)."""
-        with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
+        with (
+            patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}),
+            # The real engines load a spaCy model and, when none is installed,
+            # download it: a network call from a test that replaces the
+            # analyzer a few lines down. The network guard refuses it.
+            patch(
+                "faultmaven.infrastructure.shims.security.AnalyzerEngine",
+                MagicMock(),
+                create=True,
+            ),
+            patch(
+                "faultmaven.infrastructure.shims.security.AnonymizerEngine",
+                MagicMock(),
+                create=True,
+            ),
+        ):
             from faultmaven.infrastructure.shims.security import PIIRedactor
 
             redactor = PIIRedactor()
@@ -337,7 +352,24 @@ def _presidio_is_usable() -> bool:
     Constructing one and asking is the only predicate that matches what the
     tests below need, and it costs one construction. Where the model IS present
     (a cloud image that adds it), they run for real rather than skipping.
+
+    The construction is asked only when the model is installed. Presidio's
+    engine, finding none, calls ``spacy.cli.download``, which looks up
+    ``raw.githubusercontent.com`` and installs the model from GitHub: a network
+    fetch and a ~400 MB install from inside a predicate, and one the network
+    guard refuses. A missing model is the answer "not usable" without the
+    attempt.
     """
+    import importlib.util
+
+    if importlib.util.find_spec("spacy") is None:
+        return False
+    import spacy.util
+
+    # The model Presidio's default engine configuration names.
+    if not spacy.util.is_package("en_core_web_lg"):
+        return False
+
     from faultmaven.infrastructure.shims.security import PIIRedactor
 
     with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
