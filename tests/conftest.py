@@ -2,21 +2,51 @@ import os
 import sys
 from unittest.mock import Mock
 
+# Every environment variable from .env that is cleared for tests. The provider
+# variables must cover every provider in the registry (#2006):
+# tests/unit/config/test_provider_tables_follow_registry.py pins it.
+ENV_VARS_TO_CLEAR = [
+    "ENVIRONMENT",
+    "DEBUG",
+    "HOST",
+    "PORT",
+    "WORKERS",
+    "INSTANCE_ID",
+    "CHAT_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "FIREWORKS_API_KEY",
+    "FIREWORKS_MODEL",
+    "COHERE_API_KEY",
+    "COHERE_MODEL",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "HUGGINGFACE_API_KEY",
+    "HUGGINGFACE_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "LOCAL_LLM_URL",
+    "LOCAL_LLM_MODEL",
+    "ENABLE_WEB_SEARCH",
+    "SESSION_STORAGE_TYPE",
+    "VECTOR_STORAGE_TYPE",
+    "USER_STORAGE_TYPE",
+    "CASE_STORAGE_TYPE",
+    "MAX_UPLOAD_SIZE_MB",
+    "CORS_ALLOW_CREDENTIALS",
+    "CORS_ALLOW_ORIGINS",
+    "STRICT_PROVIDER_MODE",
+    "TENANT_PROVIDER",  # Add any other vars that affect test isolation
+]
+
 # CRITICAL: Aggressively clear LLM credentials from os.environ at the VERY START of collection.
 # This prevents early-imported modules from capturing real credentials during Pytest collection.
-LLM_VARS_TO_WIPE = [
-    "CHAT_PROVIDER",
-    "FIREWORKS_API_KEY",
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GROQ_API_KEY",
-    "HUGGINGFACE_API_KEY",
-    "COHERE_API_KEY",
-    "OPENROUTER_API_KEY",
-    "STRICT_PROVIDER_MODE",
-]
-for var in LLM_VARS_TO_WIPE:
+# (The same list the session fixture clears: one list, pinned to the registry.)
+for var in ENV_VARS_TO_CLEAR:
     os.environ.pop(var, None)
 
 # CRITICAL: Prevent .env file loading in tests to avoid environment contamination
@@ -653,42 +683,6 @@ def clean_test_environment():
     Addresses: Test failures due to pydantic-settings caching real .env values
     """
     import os
-
-    # List of all environment variables from .env that should be cleared for tests
-    ENV_VARS_TO_CLEAR = [
-        "ENVIRONMENT",
-        "DEBUG",
-        "HOST",
-        "PORT",
-        "WORKERS",
-        "INSTANCE_ID",
-        "CHAT_PROVIDER",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_MODEL",
-        "FIREWORKS_API_KEY",
-        "FIREWORKS_MODEL",
-        "GEMINI_API_KEY",
-        "GEMINI_MODEL",
-        "GROQ_API_KEY",
-        "GROQ_MODEL",
-        "HUGGINGFACE_API_KEY",
-        "HUGGINGFACE_MODEL",
-        "OPENAI_API_KEY",
-        "OPENAI_MODEL",
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_MODEL",
-        "LOCAL_LLM_URL",
-        "LOCAL_LLM_MODEL",
-        "ENABLE_WEB_SEARCH",
-        "SESSION_STORAGE_TYPE",
-        "VECTOR_STORAGE_TYPE",
-        "USER_STORAGE_TYPE",
-        "CASE_STORAGE_TYPE",
-        "MAX_UPLOAD_SIZE_MB",
-        "CORS_ALLOW_CREDENTIALS",
-        "CORS_ALLOW_ORIGINS",
-        "TENANT_PROVIDER",  # Add any other vars that affect test isolation
-    ]
 
     # Clear all .env variables
     for var in ENV_VARS_TO_CLEAR:

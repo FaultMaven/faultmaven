@@ -19,6 +19,7 @@ Design Reference: docs/architecture/data-processing/README.md
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
@@ -42,34 +43,43 @@ DEFAULT_MAX_RESULTS = 20
 MAX_RESULTS_CEILING = 200
 
 
-def format_searchable_alternatives(
+@dataclass(frozen=True)
+class ReadableFile:
+    """One file of a case that the file tools can read.
+
+    ``id`` is what the model passes: the ``evidence_id`` of a recorded row, or
+    the ``file_id`` of an upload no row records (``recorded`` is False).
+    """
+
+    id: str
+    filename: str
+    recorded: bool
+
+
+def enumerate_readable_files(
     all_evidence: list[Any],
     excluded_evidence_id: str,
     case: Any,
-) -> str:
-    """Build a redirect hint naming every file in this case this tool reads.
+) -> list[ReadableFile]:
+    """Every file in this case the file tools read: the one source of the list.
 
-    ISS-025: when the LLM picks a non-file-backed evidence_id (an
-    ENGINE_INFERENCE row), the tool error should
-    point it at the actual searchable upload(s) so the next
-    iteration succeeds. File-backed evidence rows are listed by
-    evidence_id.
+    #2009: ``search_file``, ``case_evidence_search`` and ``deep_analysis`` each
+    phrase their miss answer from this list, so none can name a file another
+    cannot read, or omit one it can.
 
-    #1964: then the uploads no evidence row records, by file_id, which
-    ``_resolve_evidence_content`` resolves too: a file uploaded during
-    INQUIRY, a paste no row named, every upload of a case closed before
-    any row existed. A terminal turn's prompt renders no ids, so this list
-    is how it learns them, and a file under the vectorization size floor
-    is readable no other way. An upload with no stored file is left out of
-    both lists, whether or not an evidence row records it: there is nothing
-    to read, and naming it would send the model to a "no stored file content"
-    miss.
-
-    Module-level because ``case_evidence_search`` points at the same list when
-    its search finds nothing (#1977); that caller excludes no id (``""``).
-    Returns ``""`` when the case has no file to read.
+    Recorded rows come first, by ``evidence_id`` (ISS-025: when the LLM picks a
+    non-file-backed evidence_id, an ENGINE_INFERENCE row, the miss should point
+    at the actual uploads). Then the uploads no evidence row records, by
+    ``file_id``, which ``_resolve_evidence_content`` resolves too (#1964): a
+    file uploaded during INQUIRY, a paste no row named, every upload of a case
+    closed before any row existed. A terminal turn's prompt renders no ids, so
+    this list is how the model learns them, and a file under the vectorization
+    size floor is readable no other way. An upload with no stored file is left
+    out of both lists, whether or not an evidence row records it: there is
+    nothing to read, and naming it would send the model to a "no stored file
+    content" miss.
     """
-    alternatives = []
+    files: list[ReadableFile] = []
     recorded_files = set()
     for ev in all_evidence:
         source_file_id = getattr(ev, "source_file_id", None)
@@ -86,10 +96,10 @@ def format_searchable_alternatives(
             # no file storage): there is nothing to read, so the row is not
             # offered, the same rule the uploads below follow.
             continue
-        filename = file_meta.display_name or "(unnamed)"
-        alternatives.append(f"{ev_id} ({filename})")
+        # display_name, not filename: this goes back to the LLM and a minted
+        # pasted-content-<ts>.txt gets cited from there (#666).
+        files.append(ReadableFile(ev_id, file_meta.display_name or "(unnamed)", True))
 
-    unrecorded = []
     for upload in getattr(case, "uploaded_files", None) or []:
         file_id = getattr(upload, "file_id", None)
         if (
@@ -99,8 +109,25 @@ def format_searchable_alternatives(
             or not getattr(upload, "storage_ref", None)
         ):
             continue
-        filename = upload.display_name or "(unnamed)"
-        unrecorded.append(f"{file_id} ({filename})")
+        files.append(ReadableFile(file_id, upload.display_name or "(unnamed)", False))
+    return files
+
+
+def format_searchable_alternatives(
+    all_evidence: list[Any],
+    excluded_evidence_id: str,
+    case: Any,
+) -> str:
+    """Build a redirect hint naming every file in this case this tool reads.
+
+    Phrased for ``search_file`` from ``enumerate_readable_files``. Module-level
+    because ``case_evidence_search`` points at the same list when its search
+    finds nothing (#1977); that caller excludes no id (``""``). Returns ``""``
+    when the case has no file to read.
+    """
+    files = enumerate_readable_files(all_evidence, excluded_evidence_id, case)
+    alternatives = [f"{f.id} ({f.filename})" for f in files if f.recorded]
+    unrecorded = [f"{f.id} ({f.filename})" for f in files if not f.recorded]
 
     hint = ""
     if alternatives:

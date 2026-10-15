@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from faultmaven.modules.case.api.routes.cases import delete_case
 from faultmaven.modules.case.api.routes.reports import generate_case_reports
+from faultmaven.modules.case.contracts import ReportGenerationRequest, ReportType
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -78,7 +79,7 @@ async def test_report_regeneration_refuses_a_teammate_with_a_read_share():
         await generate_case_reports(
             case_id=CASE_ID,
             fastapi_request=fastapi_request,
-            request_body={"report_types": ["closure_summary"]},
+            request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
             case_service=case_service,
             current_user=_user(TEAMMATE),
         )
@@ -100,7 +101,7 @@ async def test_report_regeneration_still_serves_the_owner():
     result = await generate_case_reports(
         case_id=CASE_ID,
         fastapi_request=fastapi_request,
-        request_body={"report_types": ["closure_summary"]},
+        request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
         case_service=case_service,
         current_user=_user(OWNER),
     )
@@ -119,7 +120,7 @@ async def test_report_regeneration_refuses_the_creator_while_another_drives():
         await generate_case_reports(
             case_id=CASE_ID,
             fastapi_request=fastapi_request,
-            request_body={"report_types": ["closure_summary"]},
+            request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
             case_service=case_service,
             current_user=_user(OWNER),
         )
@@ -139,7 +140,7 @@ async def test_report_regeneration_serves_the_assigned_driver():
     result = await generate_case_reports(
         case_id=CASE_ID,
         fastapi_request=fastapi_request,
-        request_body={"report_types": ["closure_summary"]},
+        request=ReportGenerationRequest(report_types=[ReportType.CLOSURE_SUMMARY]),
         case_service=case_service,
         current_user=_user(DRIVER),
     )
