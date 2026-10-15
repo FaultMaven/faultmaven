@@ -1,10 +1,11 @@
 """#1980 — one secret-detection pattern set, and every redaction path uses it.
 
-Invariant: ``SECRET_PATTERNS`` (the sanitizer's own secret detection) serves
-every redaction path — the sanitizer's regex half and the knowledge document
-preprocessor; it detects the real-world secret spellings tabled below, and it
-leaves ordinary incident text unchanged except where a pattern genuinely needs
-the span (``JUSTIFIED``, each with its reason).
+Invariant (as restated by the #2021 review): every free-text redaction path
+detects with one pattern set, ``SECRET_PATTERNS`` (the sanitizer's regex half
+adds the network-address patterns); one pass is idempotent on both paths, the
+sanitizer's and the document preprocessor's; no secret class or spelling main
+detected is missed, except the trades listed (``test_the_listed_trades_hold``);
+and every pattern runs in time linear in the text.
 
 Pinned on each path:
 
@@ -17,30 +18,48 @@ Pinned on each path:
 3. the document preprocessor's output is ``SECRET_PATTERNS``' output, row for
    row (a second list there would diverge);
 4. seeded random secrets per class leave no six-character fragment in clear;
-5. the trigger gating in ``find_redaction_spans`` changes no result.
+5. the trigger gating in ``find_redaction_spans`` changes no result;
+6. one pass is idempotent, and secrets glued to one another are gone after it;
+7. the review's rulings: a keyed value is a secret unless it is a status word
+   (the 113 common passwords all are), the value alone is replaced (the key
+   and quotes stay, JSON stays JSON, one secret has one placeholder), a value
+   on the next line is read, an escaped newline or a percent byte is a
+   boundary, binds/flags/references/markers are not secrets; the full review
+   generator agrees with an independent reference and is idempotent on both
+   paths and through the title scrub; and every hostile shape found in review
+   costs linear time (``assert_linear_growth``).
 """
 
 from __future__ import annotations
 
 import base64
 import dataclasses
+import json
 import random
+import re
 import string
 
 import pytest
 
-from faultmaven.infrastructure.security.case_redaction import REDACTION_PLACEHOLDER_RE
+from faultmaven.infrastructure.security import redaction
+from faultmaven.infrastructure.security.case_redaction import (
+    REDACTION_PLACEHOLDER_RE,
+    CaseRedactionContext,
+)
 from faultmaven.infrastructure.security.redaction import (
     NETWORK_ADDRESS_PATTERNS,
     SANITIZER_PATTERNS,
     SECRET_PATTERNS,
     DataSanitizer,
+    RedactionPattern,
     find_redaction_spans,
     redact_spans,
 )
+from faultmaven.modules.case.api.title_generation import _scrub_title_source
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     redact_sensitive_content,
 )
+from tests.wallclock import assert_linear_growth
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -449,19 +468,67 @@ def test_a_url_password_is_cut_at_the_last_at_sign():
     ]
 
 
-def test_a_word_after_key_colon_in_running_text_is_prose_by_design():
-    """The trade the prose rule makes, pinned so it stays visible: in running
-    text, ``key: <a word>`` is not read as a secret — that is how
-    ``password: expired for the svc account`` and MySQL's ``(using password:
-    YES)`` survive. A letters-only password written that way, and only that
-    way, is missed (about 1 in 400,000 random 12-character passwords from
-    #1993's fuzz alphabet); every other spelling of it is caught."""
-    value = "Wcarjchlkakh"
-    assert _spans(f"ldap bind fails with passwd: {value} for svc") == []
-    assert _spans(f"ldap bind fails with passwd={value} for svc")
-    assert _spans(f"ldap bind fails with passwd:{value} for svc")
-    assert _spans(f'bind {{"passwd": "{value}"}} for svc')
-    assert _spans(f"ldap:\n  passwd: {value}\n")
+#: The closed list a keyed value is never read as (#1980 review ruling):
+#: states, not secrets. Every other value is one.
+_STATUS_WORDS = [
+    "YES", "no", "true", "False", "null", "none", "empty", "required",
+    "expired", "set", "unset", "redacted", "hidden", "n/a", "incorrect",
+    "invalid", "invalid_grant", "missing", "not", "Bearer", "********",
+    '""', "str", "Optional[str]",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("word", _STATUS_WORDS)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "users see password: {w} after the cutover",
+        "  token: {w}",
+        '{{"password": "{w}"}}',
+        "secret={w}",
+    ],
+)
+def test_a_status_word_after_a_key_is_not_a_secret(template, word):
+    text = template.format(w=word.strip('"') if '"' in template else word)
+    assert _spans(text) == []
+
+
+#: The 113 common passwords the review drew from (rockyou's top list, vendor
+#: defaults). Under the word-shape rule this replaced, 79 of them were missed
+#: written mid-line; main missed none.
+_COMMON_PASSWORDS = """123456 password 12345678 qwerty 123456789 12345 1234
+111111 1234567 dragon 123123 baseball abc123 football monkey letmein 696969
+shadow master 666666 qwertyuiop 123321 mustang 1234567890 michael 654321
+superman 1qaz2wsx 7777777 121212 000000 qazwsx 123qwe killer trustno1 jordan
+jennifer zxcvbnm asdfgh hunter buster soccer harley batman andrew tigger
+sunshine iloveyou 2000 charlie robert thomas hockey ranger daniel starwars
+klaster 112233 george computer michelle jessica pepper 1111 zxcvbn 555555
+11111111 131313 freedom 777777 pass maggie 159753 aaaaaa ginger princess
+joshua cheese amanda summer love ashley nicole chelsea biteme matthew access
+yankees 987654321 dallas austin thunder taylor matrix admin changeme changeit
+root toor guest default secret welcome Welcome Password P@ssw0rd Passw0rd
+Summer2024 Welcome1 CHANGEME ADMIN letmein1 correct-horse-battery-staple""".split()
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "login with password: {w} failed",
+        "2026-10-14 DEBUG db password: {w}",
+        "user admin password: {w} on the box",
+    ],
+)
+def test_every_common_password_after_a_key_is_redacted(sanitizer, template):
+    assert len(_COMMON_PASSWORDS) == 113
+    head, tail = template.split("{w}")
+    missed = []
+    for word in _COMMON_PASSWORDS:
+        out = sanitizer.apply_regex_redaction(template.format(w=word), {})
+        if not re.fullmatch(
+            re.escape(head) + r"<PASSWORD_[0-9a-f]{16}>" + re.escape(tail), out
+        ):
+            missed.append((word, out))
+    assert missed == [], missed[:5]
 
 
 def test_one_span_never_wraps_another(sanitizer):
@@ -470,7 +537,7 @@ def test_one_span_never_wraps_another(sanitizer):
     text = "password=postgresql://app:pw4321@10.1.2.3:5432/app now"
     out = sanitizer.apply_regex_redaction(text, {})
     assert len(REDACTION_PLACEHOLDER_RE.findall(out)) == 1
-    assert out.startswith("<PASSWORD_") and out.endswith(" now")
+    assert re.fullmatch(r"password=<PASSWORD_[0-9a-f]{16}> now", out), out
 
 
 # ---------------------------------------------------------------------------
@@ -714,9 +781,20 @@ JUSTIFIED = {
     ],
     "ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.0/255.0.0.0'"
     " (using password: NO)": [("IP_ADDRESS", "10.0.0.0")],
-    # A line that is exactly `key: value` is how YAML and `.env` write a
-    # secret; a bare word there is not told apart from `password: changeme`.
-    "Token: expired": [("TOKEN", "Token: expired")],
+    # The closed-list ruling (#1980 review): a keyed value is a secret unless
+    # it is a status word (`_STATUS_WORDS`). Detection of real secrets wins
+    # over these false positives — the word-shape rule that spared them missed
+    # 79 of 113 common passwords written the same way.
+    "Password: field empty in the login form": [("PASSWORD", "field")],
+    "user_passwd: changed_ok": [("PASSWORD", "changed_ok")],
+    "invalid token: signature verification failed on the gateway": [
+        ("TOKEN", "signature")
+    ],
+    "the k8s secret: db-creds is missing in the payments namespace": [
+        ("SECRET", "db-creds")
+    ],
+    # A number cannot be a status: `password: 123` is a password.
+    "token: 401 from the idp on every refresh": [("TOKEN", "401")],
 }
 
 NEGATIVE = P11 + LINES + ["Token: expired"]
@@ -1061,3 +1139,436 @@ def test_an_assignment_glued_after_anything_is_gone_after_one_pass(sanitizer):
         if value in sanitizer.apply_regex_redaction(text, {}):
             leaked.append(text)
     assert leaked == [], leaked[:3]
+
+
+# ---------------------------------------------------------------------------
+# 7. The #2021 review rulings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        ("db:\n  password:\n    Tr0ub4dor&3xyz\n  host: x", "Tr0ub4dor&3xyz"),
+        ("password=\nTr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+        ("password:\r\n  Tr0ub4dor&3xyz", "Tr0ub4dor&3xyz"),
+    ],
+)
+def test_a_value_on_the_next_line_is_read(sanitizer, text, value):
+    """`password:` then the value on its own line — valid YAML, and main read
+    it on both paths."""
+    assert _spans(text) == [("PASSWORD", value)]
+    assert value not in sanitizer.apply_regex_redaction(text, {})
+    assert value not in redact_sensitive_content(text)[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "  password:\n    secretKeyRef:\n      name: db",
+        "PASSWORD=\nUSER=bob",
+        "password:\n  - item",
+    ],
+)
+def test_a_next_line_that_starts_a_key_is_not_the_value(text):
+    assert [t for t, _ in _spans(text)] in ([], ["DATABASE_URL"])
+    assert ("PASSWORD", "secretKeyRef:") not in _spans(text)
+
+
+def test_a_url_on_the_next_line_is_the_value():
+    """`scheme://` is not a key: the next line is the value, typed by the URL
+    pattern that also reads it."""
+    assert _spans("password:\nredis://u:p4ss@cache:6379") == [
+        ("DATABASE_URL", "redis://u:p4ss@cache:6379")
+    ]
+    assert _spans("password:\npostgresql://db:5432/app") == [
+        ("PASSWORD", "postgresql://db:5432/app")
+    ]
+
+
+_SK = "sk-" + "Ab3dEfGh1JkLmn0PqRsTuvWxYz12345678"
+
+
+@pytest.mark.parametrize(
+    "text,secret",
+    [
+        ('{"msg":"line one\\n' + _SK + '\\nline two"}', _SK),
+        ('{"msg":"col\\t' + _SK + '"}', _SK),
+        ("payload=%22" + _SK + "%22", _SK),
+        ('{"cfg": "user: app\\npassword: Tr0ub4dor&3xyz\\nport: 5432"}', "Tr0ub4dor"),
+        ('{"s": "a\\ntoken: 9f8e7d6c5b4a\\n"}', "9f8e7d6c5b4a"),
+        (
+            '{"req": "GET /\\nAuthorization: Basic dXNlcjpwYXNzd29yZDEyMw==\\n"}',
+            "dXNlc",
+        ),
+        ('{"req": "GET /\\nBearer Zk91aXJlbGVzc3Rva2VuMTIz\\n"}', "Zk91aXJl"),
+    ],
+)
+def test_an_escaped_newline_or_percent_byte_is_a_boundary(sanitizer, text, secret):
+    """R5: `\\n`, `\\t` or `%XX` before a token or a key reads as the character
+    it encodes would. Main caught these; the first #2021 head did not."""
+    out = sanitizer.apply_regex_redaction(text, {})
+    assert secret not in out
+    assert secret not in redact_sensitive_content(text)[0]
+    if text.startswith("{"):
+        json.loads(out)  # the escape and the next key survive
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "UPDATE accounts SET token = $2 WHERE id = $3",
+        "SELECT id FROM users WHERE email = ? AND password = ?",
+        'cursor.execute("UPDATE users SET password = :pwd WHERE id = :id")',
+        "INSERT INTO t (user, password) VALUES (%s, %s) -- password = %s",
+        "  token: false",
+        "  secret: null",
+        "  apiKey: true",
+        '  password: ""',
+        "Password: ********",
+        "Secret: monitoring/grafana-admin not found",
+        "Token: kube-system/default-token-x7k2p",
+        "password: ${{ secrets.DB_PASSWORD }}",
+        "pwd => ${VAR}",
+        "password=[REDACTED:password]",
+        "the db password=[password] is the one being rejected",
+    ],
+)
+def test_a_bind_flag_reference_or_marker_is_not_a_secret(text):
+    """The review's unlisted over-redaction, fixed: SQL bind parameters, YAML
+    booleans and nulls, Kubernetes `namespace/name` references, GitHub Actions
+    expressions, `=>` that cannot give back its `>` (R4), and markers a pass
+    wrote (R1)."""
+    assert _spans(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password_=Tr0ub4dor&3xyz",
+        "password-=Tr0ub4dor&3xyz",
+        "password_: Tr0ub4dor&3xyz",
+    ],
+)
+def test_mains_suffixed_spellings_are_read(text):
+    assert _spans(text) == [("PASSWORD", "Tr0ub4dor&3xyz")]
+
+
+_JWT = (
+    "eyJhbGciOiJIUzI1NiJ9."
+    + base64.urlsafe_b64encode(b'{"sub":"42"}').decode().rstrip("=")
+    + ".c2lnbmF0dXJlMTIzNDU2"
+)
+
+
+@pytest.mark.parametrize(
+    "secret,spellings",
+    [
+        (
+            _JWT,
+            [
+                f"auth failed for {_JWT} at gateway",
+                f"Authorization: Bearer {_JWT}",
+                f"callback id_token={_JWT}",
+                f'{{"access_token": "{_JWT}"}}',
+            ],
+        ),
+        (
+            _SK,
+            [f"client used {_SK} today", f"OPENAI_API_KEY={_SK}", f"  api_key: {_SK}"],
+        ),
+    ],
+)
+def test_one_secret_has_one_placeholder_however_it_is_spelled(
+    sanitizer, secret, spellings
+):
+    """Value-only substitution, and a provider token typed by its own pattern
+    under any key (#1980 review, co-reference): one placeholder for the
+    secret, the key in clear, JSON still JSON, and the reverse exact."""
+    context = CaseRedactionContext("case-1980", sanitizer, enabled=True)
+    placeholders = set()
+    for text in spellings:
+        out = context.sanitize(text)
+        assert secret not in out
+        placeholders.update(REDACTION_PLACEHOLDER_RE.findall(out))
+        assert context.reverse(out) == text
+        if text.startswith("{"):
+            assert json.loads(out)["access_token"] in placeholders
+    assert len(placeholders) == 1, placeholders
+
+
+def test_a_provider_token_keeps_its_type_with_punctuation_after_it():
+    gh = "".join(("gh", "p_")) + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    assert _spans(f"GITHUB_TOKEN={gh},") == [("GITHUB_TOKEN", gh)]
+
+
+def test_the_key_stays_in_clear(sanitizer):
+    out = sanitizer.apply_regex_redaction('{"password": "Tr0ub4dor&3"}', {})
+    assert re.fullmatch(r'\{"password": "<PASSWORD_[0-9a-f]{16}>"\}', out), out
+
+
+def test_spans_that_only_touch_stay_two(sanitizer):
+    """Mutation B: merging touching spans would hide a secret under its
+    neighbour's type (`10.0.0.5` + an AWS key id glued to it)."""
+    assert _spans("10.0.0.5AKIAIOSFODNN7EXAMPLE") == [
+        ("IP_ADDRESS", "10.0.0.5"),
+        ("AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE"),
+    ]
+    out = sanitizer.apply_regex_redaction("10.0.0.5password=hunter2", {})
+    assert re.fullmatch(
+        r"<IP_ADDRESS_[0-9a-f]{16}>password=<PASSWORD_[0-9a-f]{16}>", out
+    ), out
+
+
+@pytest.mark.parametrize(
+    "text,why",
+    [
+        ("xsk-" + _SK[3:], "a letter before `sk-`: `task-0123…` ids are common"),
+        ("xpk-" + "Cad9D4uMs8YIfCj5cIpMyCLNMbyt6aFhDKuztIbZ", "as `sk-`"),
+        ("key id akiaiosfodnn7examplx leaked", "AWS key ids are upper case"),
+    ],
+)
+def test_the_listed_trades_hold(text, why):
+    """Spellings main read that this set deliberately does not (PR, Out of
+    scope): pinned, so a change to one is a decision, not a drift."""
+    assert _spans(text) == [], why
+
+
+def test_a_glued_jwt_or_aws_key_is_still_read():
+    """Restored main behaviour: a JWT or an AWS key id after a letter or a
+    digit is still one."""
+    assert _spans("x" + _JWT) == [("JWT_TOKEN", _JWT)]
+    assert _spans("7AKIAIOSFODNN7EXAMPLE") == [
+        ("AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE")
+    ]
+
+
+# --- the review's full generator ---------------------------------------------
+
+_SL = "-".join(("xoxb", "123456789012", "1234567890123", "AbCdEfGhIjKl"))
+_GH = "".join(("gh", "p_")) + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+_KEYS = ["password", "Password", "PASSWORD", "passwd", "passphrase", "pwd", "PWD", "secret",
+         "secret_key", "client_secret", "token", "access_token", "Token", "api_key", "apikey",
+         "api-key", "API_KEY", "DB_PASSWORD", "x-auth-token", "Authorization", "authorization"]  # fmt: skip
+_SEPS = ["=", " = ", ": ", ":", " : ", '": ', '":"', "=>", " => ", "==", " ", "\t", ": \n",
+         "=\n"]  # fmt: skip
+_VALS = ["hunter2", "changeme", "Welcome", "ADMIN", "n/a", "expired", "123", "1234",
+         "Tr0ub4dor&3", "'x y'", '"q v"', "${VAR}", "$(cmd)", "{{ v }}", "<your-password>",
+         "/home/u", "~/.ssh", "true", "520", "Optional[str]", "(using", "abc-def",
+         "Basic dXNlcjpwYXNzd29yZA==", "Bearer abc.def.ghi", "Bearer Zk91aXJlbGVzc3Rva2Vu1",
+         "<PASSWORD_0123456789abcdef>", "[REDACTED:password]", "#comment", ""]  # fmt: skip
+_GEN_ATOMS = [
+    "10.0.0.5", "192.168.1.20", "172.16.0.9", "10.1.2.3.", "00:1A:2B:3C:4D:5E",
+    "aa-bb-cc-dd-ee-ff", "24-01-02-03-04-05", "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",
+    "sk-proj-Ab3dEf_gh1JkLmn0PqRsTuvWxYz-1234", "pk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",
+    "AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE",
+    "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", _GH, _SL, "xapp-1-A0123456789-abcdef",
+    "postgresql://app:pw4321@db:5432", "redis://user:pass99@cache:6379",
+    "postgresql://db:5432/app", "mongodb+srv://u:p@ss@c0.x.net",
+    "https://oauth2:glpatAbCd1234@gitlab.example.com", "me@example.com", "@oncall",
+    "k8s_secret_0123456789abcdef0123456789abcdef", "api_key0123456789abcdef0123456789abcdef",
+    "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----",
+    "MIIEowIBAAKCAQEA7bq98EXAMPLEabcdef", "Proc-Type: 4,ENCRYPTED", "<XXXX>", "<X>",
+    "<IP_ADDRESS_0123456789abcdef>", "[REDACTED:token]", "X", ">", "<", "paſsword=hunter2",
+    "İ", "ı", "K8s_secret_0123456789abcdef0123456789abcdef", "ошибка", "失败", "é",
+    "the bearer of bad news", "Token: expired", "users see password: incorrect",
+    "--password Hunter2pw", "--token Zk91abc", "def f(password: str)", "if password == '':",
+    "PWD=/home/runner", "failed_password: 520",
+]  # fmt: skip
+_GEN_GLUE = ["", "", " ", " ", "\n", "\r\n", "\t", "_", "-", ".", ":", "=", "/", "@", ",", ";",
+             "x", "5", "E", '"', "'", "(", ")", "\\n", "%3D", "#"]  # fmt: skip
+
+
+def _generated(rng: random.Random) -> str:
+    """The #2021 review's fuzz generator: keyed spellings and atoms of every
+    pattern, glued every way."""
+    parts = []
+    for _ in range(rng.randint(1, 5)):
+        if rng.random() < 0.45:
+            parts.append(rng.choice(_KEYS) + rng.choice(_SEPS) + rng.choice(_VALS))
+        else:
+            parts.append(rng.choice(_GEN_ATOMS))
+    text = parts[0]
+    for part in parts[1:]:
+        text += rng.choice(_GEN_GLUE) + part
+    if rng.random() < 0.3:
+        text = rng.choice(["  ", "- ", "\n", "x ", '{"a": "']) + text
+    if rng.random() < 0.3:
+        text += rng.choice(["\n", ".", " now", "\r\n", '"}'])
+    return text
+
+
+def _reference_spans(text: str, patterns) -> list:
+    """An independent finder: every pattern on the whole text, every round,
+    no triggers, no scopes, no windows."""
+    candidates: list = []
+
+    def scan(view: str) -> None:
+        for priority, pattern in enumerate(patterns):
+            for match in pattern.regex.finditer(view):
+                start, end = match.span(pattern.span_group)
+                if start == -1:
+                    start, end = match.span()
+                if end > start:
+                    candidates.append(
+                        (
+                            start,
+                            -end,
+                            priority,
+                            pattern.entity_type,
+                            pattern.names_a_value,
+                        )
+                    )
+
+    scan(text)
+    spans = redaction._merge(candidates, text)
+    while spans:
+        scan(redaction._masked(text, spans))
+        grown = redaction._merge(candidates, text)
+        if [(x.start, x.end) for x in grown] == [(x.start, x.end) for x in spans]:
+            return grown
+        spans = grown
+    return spans
+
+
+def test_the_finder_agrees_with_an_independent_reference():
+    rng = random.Random("1980-reference")
+    differ = []
+    for _ in range(2000):
+        text = _generated(rng)
+        for patterns in (SANITIZER_PATTERNS, SECRET_PATTERNS):
+            if find_redaction_spans(text, patterns) != _reference_spans(text, patterns):
+                differ.append(text)
+    assert differ == [], differ[:3]
+
+
+def test_both_paths_are_idempotent_over_the_full_generator(sanitizer):
+    rng = random.Random("1980-full-generator")
+    changed = []
+    for _ in range(3000):
+        text = _generated(rng)
+        once = sanitizer.apply_regex_redaction(text, {})
+        if sanitizer.apply_regex_redaction(once, {}) != once:
+            changed.append(("sanitizer", text))
+        document = redact_sensitive_content(text)[0]
+        if redact_sensitive_content(document)[0] != document:
+            changed.append(("preprocessor", text))
+    assert changed == [], changed[:3]
+
+
+def test_the_title_scrub_is_idempotent(sanitizer):
+    """#1993's title scrub over the sanitizer: main changed 20 of 20,000 on a
+    second pass, the first #2021 head 776 (`_REFERENCE` did not know a
+    `[type]` marker, R1)."""
+    rng = random.Random("1980-title")
+    changed = []
+    for _ in range(3000):
+        once = _scrub_title_source(_generated(rng), sanitizer)
+        if _scrub_title_source(once, sanitizer) != once:
+            changed.append(once)
+    assert changed == [], changed[:3]
+
+
+# --- cost: every hostile shape the review found grows linearly ----------------
+
+
+def _cost(sanitizer):
+    return lambda text: (
+        sanitizer.apply_regex_redaction(text, {}),
+        redact_sensitive_content(text),
+    )
+
+
+#: Each shape, the smallest size tried, and how many times the helper may move
+#: its window up (it reads 1x, 8x and 64x the size, then 8x more per
+#: escalation, if those cannot decide). Every payload stays under ~256 KB.
+_HOSTILE = {
+    # R2: a BEGIN line, then one long line of spaces: the old body split the
+    # spaces between two `[ \t]*`.
+    "pem-spaces-line": (
+        lambda n: "-----BEGIN PRIVATE KEY-----\n" + " " * n + "!",
+        512,
+        1,
+    ),
+    # BEGIN after BEGIN with no END: a lazy body ran to the end every time.
+    "pem-begins-without-end": (
+        lambda n: "-----BEGIN PRIVATE KEY-----\nAAAA\n" * n,
+        16,
+        1,
+    ),
+    # A run of schemes with no `@`: `\S+@` rescanned the run from each one.
+    "dburl-run-without-at": (lambda n: "postgresql://h/" * n, 32, 1),
+    # `eyJ` after `eyJ` with no `.`: each was a start that read the run.
+    "jwt-run-without-dot": (lambda n: "eyJ" * n, 128, 1),
+    # `sk-` after `sk-` with no digit: the digit lookahead read the run.
+    "sk-run-without-digit": (lambda n: "sk-" * n, 128, 1),
+    # One line holding every span: a newline search per span read the line
+    # back to its start. That search is C-speed, so it shows only at ~250 KB.
+    "one-line-of-spans": (lambda n: "password: x " * n, 320, 0),
+    # Escaped newlines in one JSON string.
+    "json-escaped-keys": (lambda n: '{"m":"' + "\\npassword: x" * n + '"}', 32, 1),
+    # Glued detections across masked rounds.
+    "ip-akia-chain": (
+        lambda n: "".join(f"10.0.{i % 250}.1AKIAABCDEFGHIJKLMNO1" for i in range(n)),
+        16,
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_HOSTILE))
+def test_a_hostile_shape_costs_linear_time(sanitizer, name):
+    build, small, escalations = _HOSTILE[name]
+    assert_linear_growth(
+        _cost(sanitizer), build, small=small, label=name, max_escalations=escalations
+    )
+
+
+def test_a_chain_of_rounds_is_cut_and_fails_closed():
+    """R3: a chain whose every link needs the round before it — one new span
+    per masked round — is cut at `_MAX_MASKED_ROUNDS`, and the line still
+    growing is redacted whole. Uncapped it costs a round per link: quadratic.
+    No pattern in the set chains on real text (the fuzz settles within three
+    rounds), so the chain is built from a pattern of its own."""
+    link = (RedactionPattern("LINK", re.compile(r"(?<![A-Za-z])ab"), ("ab",), "token"),)
+    spans = find_redaction_spans("x ab" + "ab" * 40, link)
+    assert [(s.start, s.end) for s in spans] == [(0, 84)]  # the whole line
+    assert_linear_growth(
+        lambda text: find_redaction_spans(text, link),
+        lambda n: "ab" * n,
+        small=256,
+        label="masked-round chain",
+        max_escalations=1,
+    )
+
+
+class _CountingText(str):
+    """A ``str`` that counts the characters its ``find``/``rfind`` searches
+    cover: the cost of a line-bound helper, without a clock."""
+
+    covered = 0
+
+    def find(self, sub, start=0, end=None):  # type: ignore[override]
+        end = len(self) if end is None else end
+        type(self).covered += max(0, end - start)
+        return str.find(self, sub, start, end)
+
+    def rfind(self, sub, start=0, end=None):  # type: ignore[override]
+        end = len(self) if end is None else end
+        type(self).covered += max(0, end - start)
+        return str.rfind(self, sub, start, end)
+
+
+def test_the_line_bounds_read_the_text_once():
+    """``_lines_of`` over many spans on one line searches the line about once.
+    A newline search back to the text's start per span is quadratic, but in
+    C, too cheap to show as growth under 256 KB (it read 13-17x against the
+    bound of 22.6), so it is pinned by what it reads instead."""
+    text = "password: x " * 4000
+    spans = find_redaction_spans(text, SANITIZER_PATTERNS)
+    assert len(spans) == 4000
+    _CountingText.covered = 0
+    lines = redaction._lines_of(_CountingText(text), spans)
+    assert lines == [(0, len(text))]
+    assert _CountingText.covered <= 2 * len(text), _CountingText.covered

@@ -170,7 +170,9 @@ def _gate_failures(caplog) -> list[logging.LogRecord]:
     [
         pytest.param(
             f"db login fails with password={SECRET} on replica",
-            "Db Login Fails with [password] on Replica",
+            # The key stays in clear: a keyed secret's span is its value
+            # (#1980 review ruling, value-only substitution).
+            "Db Login Fails with Password=[password] on Replica",
             id="T1-password",
         ),
         pytest.param(
@@ -266,7 +268,7 @@ def test_the_description_is_scrubbed_before_a_title_is_built_from_it():
 
     title = get_extractive_fallback_title("", "", case, 8, sanitizer=SANITIZER)
 
-    assert title == "Login Fails with [password] for Every Replica"
+    assert title == "Login Fails with Password=[password] for Every Replica"
 
 
 async def test_the_no_model_path_gates_the_description_too():
@@ -280,7 +282,7 @@ async def test_the_no_model_path_gates_the_description_too():
     )
 
     assert (title, source) == (
-        "Login Fails with [password] for Every Replica",
+        "Login Fails with Password=[password] for Every Replica",
         "extractive",
     )
 
@@ -928,7 +930,7 @@ async def test_the_hint_is_scrubbed_before_it_reaches_the_prompt(sanitize_pii):
 
     prompt = model.generate.await_args.kwargs["prompt"]
     assert SECRET not in prompt
-    assert "the db [password] is the one being rejected" in prompt
+    assert "the db password=[password] is the one being rejected" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1012,8 @@ def test_the_title_route_control_names_the_case():
         response = client.post(f"/api/v1/cases/{case.case_id}/title", json={})
 
     assert response.status_code == 200, response.text
-    assert response.json()["title"] == "Db Login Fails with [password] on Replica"
+    assert (
+        response.json()["title"] == "Db Login Fails with Password=[password] on Replica"
+    )
     assert case.title == response.json()["title"]
     service.update_case.assert_awaited_once()

@@ -416,13 +416,22 @@ SANITIZE_LARGE_DOCUMENT = ThroughputBudget(
     product_target=100.0,
     reference=100650.0,
 )
-#: The clearance rule lowered this floor: 2.5x would be 7900/s, and clearing
-#: the worst job (11675/s) by 1.5x needs it at or below 7784/s.
+#: Re-anchored by #1980, by this table's derivation, on a measured ratio
+#: rather than new CI rows (re-derive with ``collect.py --propose`` once CI has
+#: recorded the change). #1980 made the sanitizer detect 22 pattern families
+#: where it had 14, read keyed values one by one, and run a masked second
+#: round on any text that has a span (one idempotent pass). On these 50
+#: secret-dense documents that costs 0.76-0.77x the old throughput (five
+#: interleaved A/B runs on the development box, best window of 25 each; the
+#: 1000-line document got 3.3x FASTER). At 0.76x: the #1910 reference
+#: 19661/s -> 14942/s, rounded down to 14900; the worst of the 26 jobs
+#: 11675/s -> 8873/s, which the floor must clear by 1.5x: at most 5915/s;
+#: 14900 / 2.5 = 5960 -> 5900/s, inside the band (2.53x).
 SANITIZE_DOCUMENT_BATCH = ThroughputBudget(
     "test_document_batch_sanitization_throughput",
-    regression=7700.0,
+    regression=5900.0,
     product_target=10.0,
-    reference=19661.0,
+    reference=14900.0,
 )
 
 # tests/performance/test_shim_overhead.py
