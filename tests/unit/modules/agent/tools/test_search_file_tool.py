@@ -10,6 +10,7 @@ from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 from faultmaven.modules.case.contracts import UploadedFile
+from tests.model_content import disabled_redaction
 
 
 @pytest.fixture
@@ -129,6 +130,7 @@ def context():
         enterprise_id="org_1",
         user_id="user_1",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -296,6 +298,7 @@ class TestPartialMatchFallback:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -382,6 +385,7 @@ class TestVocabularyExtraction:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -524,6 +528,7 @@ class TestTruncationReporting:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -608,6 +613,7 @@ class TestMaxResultsOverride:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -696,6 +702,7 @@ class TestCountOutputFormat:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -914,6 +921,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(
@@ -950,6 +958,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(
@@ -983,6 +992,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(
@@ -1040,6 +1050,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(
@@ -1093,6 +1104,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(
@@ -1122,6 +1134,7 @@ class TestNonFileBackedEvidenceGuard:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
         tool.storage_service.retrieve_file.side_effect = OSError("blob gone")
 
@@ -1159,6 +1172,7 @@ class TestSyntheticFilenameNotReported:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio
@@ -1206,6 +1220,7 @@ class TestSyntheticFilenameNotReported:
             enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
         result = await tool.execute_with_context(

@@ -13,10 +13,11 @@ per sanitizer instance at construction, so instances built across a Presidio
 outage can still differ.)
 
 Every site where case content becomes model-bound text now goes through one
-helper, ``case_redaction.case_redacted`` (moved there from ``generation`` by
-#1956, so every send site outside the engine shares it). Each test below drives one site with a
-fake provider (no live LLM call) and a redaction double whose output is
-recognisable, and asserts what the provider RECEIVED:
+helper, ``model_content.case_redacted`` (moved out of ``generation`` by
+#1956, and minting since #1998, so every send site shares it). Each test
+below drives one site with a fake provider (no live LLM call) and a
+redaction double whose output is recognisable, and asserts what the provider
+RECEIVED:
 
 - the starting prompt, on the tool-loop and the single-shot path;
 - the ``ToolCallingUnsupportedError`` full-evidence fallback (the defect),
@@ -48,6 +49,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
     StructuredOutputStrategy,
 )
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import ToolResult
 
 RAW = "alice@example.com"
@@ -58,11 +60,13 @@ class _Schema(BaseModel):
     agent_response: str = "ok"
 
 
-class _MarkingRedaction:
-    """Stands in for ``CaseRedactionContext``: rewrites the one entity to a
-    recognisable pseudonym and records every text it was handed."""
+class _MarkingRedaction(CaseRedactionContext):
+    """A ``CaseRedactionContext`` (the minting helpers take no other, #1998)
+    that rewrites the one entity to a recognisable pseudonym and records every
+    text it was handed."""
 
     def __init__(self) -> None:
+        super().__init__(case_id="case-1949", sanitizer=None, enabled=True)
         self.seen: list[str] = []
 
     async def asanitize(self, text: str) -> str:

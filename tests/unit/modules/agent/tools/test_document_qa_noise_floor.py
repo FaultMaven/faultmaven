@@ -27,6 +27,7 @@ from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
+from tests.model_content import disabled_redaction
 
 
 def _make_chunks(scores):
@@ -85,7 +86,7 @@ class TestNoiseFloorRefuse:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         llm_router.route.assert_not_called()
@@ -112,7 +113,7 @@ class TestNoiseFloorRefuse:
                 scope_id=None,
                 k=3,
                 filters={"$or": [{"scope": "global"}]},
-                redaction_ctx=None,
+                redaction_ctx=disabled_redaction(),
             )
         )["answer"].lower()
 
@@ -142,7 +143,7 @@ class TestNoiseFloorRefuse:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         llm_router.route.assert_called_once()
@@ -175,7 +176,7 @@ class TestNoiseFloorRefuse:
             question="when did the first error occur?",
             scope_id="case_abc",
             k=3,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         llm_router.route.assert_called_once()
@@ -208,7 +209,7 @@ class TestProvenanceIsAUseSet:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         llm_router.route.assert_called_once()  # synthesis DID run
@@ -230,7 +231,7 @@ class TestProvenanceIsAUseSet:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         eligible = {

@@ -50,6 +50,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     StopReason,
     ToolCall,
 )
+from tests.model_content import disabled_redaction, vetted
 
 MATRIX = [
     (StopReason.CONTENT_FILTER, RESPONSE_WITHHELD_TEXT),
@@ -152,7 +153,9 @@ class TestTheSingleShotPath:
     @pytest.mark.parametrize("reason,text", MATRIX, ids=MATRIX_IDS)
     async def test_an_empty_answer_is_named_by_its_stop_reason(self, reason, text):
         engine = _single_shot_engine({"agent_response": ""}, reason)
-        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner(
+            "p", _Resp, redaction_ctx=disabled_redaction()
+        )
 
         assert parsed.agent_response == text
         assert is_agent_response_synthesized(parsed)
@@ -163,7 +166,9 @@ class TestTheSingleShotPath:
         the field; the wording comes from here, and the model's other fields
         survive."""
         engine = _single_shot_engine({"note": "model's own"}, reason)
-        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner(
+            "p", _Resp, redaction_ctx=disabled_redaction()
+        )
 
         assert parsed.agent_response == text
         assert parsed.note == "model's own"
@@ -174,7 +179,9 @@ class TestTheSingleShotPath:
         ``TOOL_CALLS`` stop means the answer came through a tool call, not
         that control was handed to one — so the engine names the blank."""
         engine = _single_shot_engine({"agent_response": ""}, StopReason.TOOL_CALLS)
-        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner(
+            "p", _Resp, redaction_ctx=disabled_redaction()
+        )
 
         assert parsed.agent_response == RESPONSE_EMPTY_TEXT
         assert is_agent_response_synthesized(parsed)
@@ -184,7 +191,9 @@ class TestTheSingleShotPath:
         whitespace said nothing, and the ENGINE names it rather than leaving
         it to the service's blind backstop."""
         engine = _single_shot_engine({"agent_response": " \n\t"}, StopReason.STOP)
-        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner(
+            "p", _Resp, redaction_ctx=disabled_redaction()
+        )
 
         assert parsed.agent_response == RESPONSE_EMPTY_TEXT
         assert is_agent_response_synthesized(parsed)
@@ -194,7 +203,9 @@ class TestTheSingleShotPath:
         """Whatever the stop reason says — a filter can stop a body that still
         carries a whole answer."""
         engine = _single_shot_engine({"agent_response": "pool exhausted"}, reason)
-        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner(
+            "p", _Resp, redaction_ctx=disabled_redaction()
+        )
 
         assert parsed.agent_response == "pool exhausted"
         assert not is_agent_response_synthesized(parsed)
@@ -232,10 +243,11 @@ async def _tool_loop(response: LLMResponse):
         }
     ]
     return await engine.generator._tool_augmented_generate(
-        prompt="p",
+        prompt=vetted("p"),
         schema_model=_Resp,
         investigation_tools=tools,
         tool_context=MagicMock(),
+        redaction_ctx=disabled_redaction(),
     )
 
 

@@ -7,6 +7,7 @@ import pytest
 from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
+from tests.model_content import disabled_redaction
 
 
 @pytest.fixture
@@ -83,7 +84,7 @@ class TestLocalTier2Analyze:
             query="what errors occurred",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert result.backend_used == "local_llm"
         assert result.confidence == 0.6
@@ -99,7 +100,7 @@ class TestLocalTier2Analyze:
             query="critical database failure",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert result.confidence == 0.2
         assert len(result.excerpts) == 0
@@ -112,7 +113,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert "LLM analysis failed" in result.answer
         assert result.backend_used == "local_llm"
@@ -125,7 +126,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert result.backend_used == "local_llm"
 
@@ -137,7 +138,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert result.backend_used == "local_llm"
 
@@ -165,7 +166,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         assert "LLM analysis failed" in result.answer
@@ -192,7 +193,7 @@ class TestLocalTier2Analyze:
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         assert service.llm_client.route.await_count == 2

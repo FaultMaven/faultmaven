@@ -26,6 +26,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     QueryClassification,
     classify_query,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -125,7 +126,7 @@ class TestTriage:
             _case(),
             "what model are you?",
             classify_query("what model are you?"),
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         assert kind == OutOfBandKind.AGENT_META
         router.route.assert_not_called()
@@ -133,14 +134,20 @@ class TestTriage:
     async def test_closed_verdict_skips_the_llm(self):
         triage, router = self._triage("2")
         c = classify_query("why are we getting 503s from nginx?")
-        assert await triage.triage(_case(), "x", c, redaction_ctx=None) is None
+        assert (
+            await triage.triage(_case(), "x", c, redaction_ctx=disabled_redaction())
+            is None
+        )
         router.route.assert_not_called()
 
     async def test_two_means_off_topic(self):
         triage, router = self._triage("2")
         assert (
             await triage.triage(
-                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+                _case(),
+                HAIKU,
+                classify_query(HAIKU),
+                redaction_ctx=disabled_redaction(),
             )
             == OutOfBandKind.OFF_TOPIC
         )
@@ -153,7 +160,10 @@ class TestTriage:
         triage, _ = self._triage(content)
         assert (
             await triage.triage(
-                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+                _case(),
+                HAIKU,
+                classify_query(HAIKU),
+                redaction_ctx=disabled_redaction(),
             )
             is None
         )
@@ -163,7 +173,10 @@ class TestTriage:
         router.route = AsyncMock(side_effect=RuntimeError("provider down"))
         assert (
             await OutOfBandTriage(router).triage(
-                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+                _case(),
+                HAIKU,
+                classify_query(HAIKU),
+                redaction_ctx=disabled_redaction(),
             )
             is None
         )
@@ -272,7 +285,7 @@ class TestTriage:
             case,
             msg,
             QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5),
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         prompt = router.route.call_args.kwargs["messages"][0]["content"]
         assert "Did you restart postgres" in prompt
@@ -405,7 +418,7 @@ class TestContinuationGates:
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
         assert (
             await OutOfBandTriage(router).triage(
-                _case(), "lol ok", c, redaction_ctx=None
+                _case(), "lol ok", c, redaction_ctx=disabled_redaction()
             )
             is None
         )
@@ -435,7 +448,7 @@ class TestContinuationGates:
         # gate is reached and this guard would pass while the bug returned.
         c = classify_query(message)
         await OutOfBandTriage(router).triage(
-            _fresh_case(), message, c, redaction_ctx=None
+            _fresh_case(), message, c, redaction_ctx=disabled_redaction()
         )
         router.route.assert_called_once()
 
@@ -448,7 +461,7 @@ class TestContinuationGates:
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
         assert (
             await OutOfBandTriage(router).triage(
-                _case(), message, c, redaction_ctx=None
+                _case(), message, c, redaction_ctx=disabled_redaction()
             )
             is None
         )
@@ -467,7 +480,7 @@ class TestContinuationGates:
         router.route = AsyncMock(return_value=SimpleNamespace(content="1"))
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
         await OutOfBandTriage(router).triage(
-            _fresh_case(), "should I check?", c, redaction_ctx=None
+            _fresh_case(), "should I check?", c, redaction_ctx=disabled_redaction()
         )
         router.route.assert_called_once()
 
@@ -501,7 +514,10 @@ class TestContinuationGates:
         router.route = AsyncMock(side_effect=hang)
         assert (
             await OutOfBandTriage(router).triage(
-                _case(), HAIKU, classify_query(HAIKU), redaction_ctx=None
+                _case(),
+                HAIKU,
+                classify_query(HAIKU),
+                redaction_ctx=disabled_redaction(),
             )
             is None
         )
@@ -684,7 +700,11 @@ class TestAnswer:
             return_value=SimpleNamespace(content="  Canberra. Back to postgres?  ")
         )
         text = await answer_out_of_band(
-            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+            router,
+            _case(),
+            HAIKU,
+            OutOfBandKind.OFF_TOPIC,
+            redaction_ctx=disabled_redaction(),
         )
         assert text == "Canberra. Back to postgres?"
         assert router.route.call_args.kwargs["max_tokens"] == ANSWER_MAX_TOKENS
@@ -693,11 +713,19 @@ class TestAnswer:
         router = MagicMock()
         router.route = AsyncMock(return_value=SimpleNamespace(content=""))
         assert await answer_out_of_band(
-            router, _case(), HAIKU, OutOfBandKind.OFF_TOPIC, redaction_ctx=None
+            router,
+            _case(),
+            HAIKU,
+            OutOfBandKind.OFF_TOPIC,
+            redaction_ctx=disabled_redaction(),
         ) == fallback_answer(_case(), OutOfBandKind.OFF_TOPIC)
         router.route = AsyncMock(side_effect=RuntimeError("boom"))
         text = await answer_out_of_band(
-            router, _case(), "who are you", OutOfBandKind.AGENT_META, redaction_ctx=None
+            router,
+            _case(),
+            "who are you",
+            OutOfBandKind.AGENT_META,
+            redaction_ctx=disabled_redaction(),
         )
         assert "not told which model" in text
         assert "Nightly OOM kills" in text

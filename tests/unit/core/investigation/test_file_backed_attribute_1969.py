@@ -52,6 +52,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
+from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
@@ -301,6 +302,7 @@ class TestToolErrorsKeyOnTheNewAttribute:
             enterprise_id="org_1969",
             user_id="user_1969",
             in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @pytest.mark.asyncio

@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_USER_EMPTY,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -92,7 +93,7 @@ async def _routed_prompt(case) -> str:
     router = MagicMock()
     router.route = AsyncMock(return_value=SimpleNamespace(content="1"))
     await OutOfBandTriage(router).triage(
-        case, ASIDE, classify_query(ASIDE), redaction_ctx=None
+        case, ASIDE, classify_query(ASIDE), redaction_ctx=disabled_redaction()
     )
     router.route.assert_awaited_once()
     (message,) = router.route.call_args.kwargs["messages"]

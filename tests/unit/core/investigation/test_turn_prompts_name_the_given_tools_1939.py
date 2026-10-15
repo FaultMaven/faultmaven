@@ -55,6 +55,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+from tests.model_content import disabled_redaction
 
 #: A redaction context that redacts nothing: the terminal Q&A path takes the
 #: turn's context as a required argument (#1956).
@@ -235,6 +236,7 @@ async def test_the_minimal_retry_is_built_for_no_tools():
             tool_context=MagicMock(),
             case=case,
             user_message="what is wrong?",
+            redaction_ctx=disabled_redaction(),
         )
 
     retry_prompt = inner.await_args_list[1].args[0]

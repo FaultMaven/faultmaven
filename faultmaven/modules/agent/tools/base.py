@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -76,12 +77,12 @@ class ToolContext:
             writing a separately-loaded copy was silently overwritten by that
             save. So: do not cache it across turns, and do not copy it and
             expect a write to the copy to survive.
-        redaction_ctx: The turn's case redaction context
-            (``CaseRedactionContext``, typed ``Any`` like ``case_repository``,
-            #1956). A tool that sends case content to a model itself sends it
-            through this context, so the values enter the case registry and
-            the placeholders in its answer can be reversed in the reply the
-            user reads. ``None`` outside a turn.
+        redaction_ctx: The turn's case redaction context (#1956). A tool
+            that sends case content to a model itself sends it through this
+            context, so the values enter the case registry and the
+            placeholders in its answer can be reversed in the reply the user
+            reads. Required, by keyword, with no default (#1998): a context
+            built without it could not mint what its tools send.
         given_tools: The tool names this turn gives the model (#1939): the
             same set every prompt of the turn names tools from. A tool that
             points the model at another tool in its RESULT (``case_evidence_search``
@@ -110,8 +111,8 @@ class ToolContext:
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
-    redaction_ctx: Any = None
     given_tools: frozenset[str] = frozenset()
+    redaction_ctx: CaseRedactionContext = field(kw_only=True)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""

@@ -32,6 +32,7 @@ from faultmaven.core.investigation.reliability_metrics import (
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
+from tests.model_content import disabled_redaction, vetted
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -88,10 +89,11 @@ def _engine(first_response: LLMResponse, tool_result: ToolResult):
 
 async def _run(engine):
     return await engine.generator._tool_augmented_generate(
-        prompt="Search",
+        prompt=vetted("Search"),
         schema_model=SampleResponse,
         investigation_tools=SEARCH_FILE_TOOL,
         tool_context=MagicMock(),
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -398,7 +400,7 @@ class TestNonToolStructuredPathIsCounted:
         engine = self._engine_for(json.dumps({"agent_response": "hi"}))
         with patch.object(me, "schema_validation_total") as validations:
             await engine.generator._generate_structured_output_inner(
-                "p", SampleResponse
+                "p", SampleResponse, redaction_ctx=disabled_redaction()
             )
         assert [c.kwargs for c in validations.labels.call_args_list] == [
             {"schema": "SampleResponse", "outcome": "clean"}
@@ -413,7 +415,7 @@ class TestNonToolStructuredPathIsCounted:
         engine = self._engine_for(json.dumps({"agent_response": 123}))
         with patch.object(me, "schema_validation_total") as validations:
             parsed = await engine.generator._generate_structured_output_inner(
-                "p", SampleResponse
+                "p", SampleResponse, redaction_ctx=disabled_redaction()
             )
         assert isinstance(parsed, SampleResponse)
         assert [c.kwargs for c in validations.labels.call_args_list] == [
@@ -427,7 +429,7 @@ class TestNonToolStructuredPathIsCounted:
         with patch.object(me, "schema_validation_total") as validations:
             with pytest.raises(Exception):
                 await engine.generator._generate_structured_output_inner(
-                    "p", SampleResponse
+                    "p", SampleResponse, redaction_ctx=disabled_redaction()
                 )
         assert [c.kwargs for c in validations.labels.call_args_list] == [
             {"schema": "SampleResponse", "outcome": "failed"}

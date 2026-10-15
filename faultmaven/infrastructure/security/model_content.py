@@ -43,9 +43,10 @@ deliberate act — a flagged spelling, computed reflection, or runtime mutation
 of a first-party module's namespace (this one's or the dispatch's) — and those
 are out of scope: the boundary prevents ACCIDENTAL raw sends.
 
-The old helpers in :mod:`faultmaven.infrastructure.security.case_redaction`
-(same names, plain return values, ``None`` context allowed) keep their
-callers until those callers move here, one area at a time (#1998 P2).
+The case helpers here replaced the ones
+:mod:`faultmaven.infrastructure.security.case_redaction` had (same names,
+plain return values, ``None`` context allowed) once their last callers moved
+(#1998 P2a).
 """
 
 from __future__ import annotations

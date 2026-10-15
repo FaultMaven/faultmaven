@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.modules.case.api.title_generation import _generate_title_with_llm
+from tests.model_content import disabled_redaction
 from tests.utils import regex_only_sanitizer
 
 # The disclosure gate vets every candidate with the real sanitizer (#1967).
@@ -74,7 +75,7 @@ class TestTruncatedTitle:
             MagicMock(),
             llm_provider=provider,
             user_signals=CONTEXT,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
             sanitizer=SANITIZER,
         )
 
@@ -92,7 +93,7 @@ class TestTruncatedTitle:
             MagicMock(),
             llm_provider=provider,
             user_signals=CONTEXT,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
             sanitizer=SANITIZER,
         )
 
@@ -114,7 +115,7 @@ class TestTruncatedTitle:
             MagicMock(),
             llm_provider=provider,
             user_signals=CONTEXT,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
             sanitizer=SANITIZER,
         )
 

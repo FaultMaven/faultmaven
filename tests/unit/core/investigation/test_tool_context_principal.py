@@ -20,6 +20,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -153,7 +154,7 @@ async def test_the_principal_is_not_taken_from_the_client_intent_payload():
 
     # The shape a client could forge if the principal came from the payload.
     context = await engine.generator.build_tool_context(
-        _case(), user_id=None, redaction_ctx=None, given_tools=NO_TOOLS
+        _case(), user_id=None, redaction_ctx=disabled_redaction(), given_tools=NO_TOOLS
     )
 
     assert context.user_id == "system"

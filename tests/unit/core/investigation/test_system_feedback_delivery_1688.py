@@ -73,6 +73,7 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import NO_TOOLS
 
 _FILE_ID = "file_0123456789ab"
@@ -625,6 +626,7 @@ class TestTheFallbackRendersTheNotice:
             MagicMock(),
             case=_fallback_case(CaseState.INVESTIGATING),
             user_message=SUBSTANTIVE,
+            redaction_ctx=disabled_redaction(),
         )
         assert len(prompts) == 2
         assert NOTICE in prompts[1]

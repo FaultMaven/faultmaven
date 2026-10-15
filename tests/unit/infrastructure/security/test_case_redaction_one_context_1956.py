@@ -19,10 +19,13 @@ from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
     CaseRedactionContext,
-    case_redacted,
-    case_redacted_messages,
     load_case_redaction,
     should_redact,
+)
+from faultmaven.infrastructure.security.model_content import (
+    case_redacted,
+    case_redacted_messages,
+    provenance,
 )
 
 pytestmark = pytest.mark.unit
@@ -256,19 +259,19 @@ class TestTheLoader:
 
 
 class TestTheHelpers:
-    async def test_no_context_passes_through(self):
-        assert await case_redacted("alice@example.com", None) == "alice@example.com"
-        messages = [{"role": "user", "content": "alice@example.com"}]
-        out = await case_redacted_messages(messages, None)
-        assert out == messages and out[0] is not messages[0]
+    """The minting helpers (#1998) redact through the case's context, so
+    what they redact enters its registry. Their other rules (the context is
+    required, the shapes) are pinned in ``test_model_text_1998.py``."""
 
     async def test_a_context_redacts_and_records(self):
         ctx = _ctx(fakeredis.aioredis.FakeRedis())
-        assert await case_redacted(f"user {EMAIL}", ctx) == f"user {EMAIL_PH}"
+        text = await case_redacted(f"user {EMAIL}", ctx)
+        assert text == f"user {EMAIL_PH}" and provenance(text) == ("case", True)
         [message] = await case_redacted_messages(
             [{"role": "user", "content": f"from {IP}"}], ctx
         )
         assert message["content"] == f"from {IP_PH}"
+        assert provenance(message["content"]) == ("case", True)
         assert ctx.entity_count == 2
 
     @pytest.mark.parametrize(

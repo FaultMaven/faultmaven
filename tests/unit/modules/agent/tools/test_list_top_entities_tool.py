@@ -16,6 +16,7 @@ from faultmaven.modules.agent.tools.list_top_entities_tool import (
     ListTopEntitiesTool,
 )
 from faultmaven.modules.case.domain.models.evidence import CaseEntity, EntityType
+from tests.model_content import disabled_redaction
 
 
 def _ctx() -> ToolContext:
@@ -24,6 +25,7 @@ def _ctx() -> ToolContext:
         case_id="case_abc",
         enterprise_id="org_1",
         user_id="user_1",
+        redaction_ctx=disabled_redaction(),
     )
 
 

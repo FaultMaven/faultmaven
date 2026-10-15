@@ -94,6 +94,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     CaseActionManager,
 )
+from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -644,7 +645,7 @@ class TestTheChip:
         engine, case, _ = await _offered_then_declined()
         chip = declined_resolve_card(case)
         minted = await IntentResolver(None).resolve(
-            "Mark this case resolved.", [chip], redaction_ctx=None
+            "Mark this case resolved.", [chip], redaction_ctx=disabled_redaction()
         )
         assert minted == chip["intent"]
         # INV-26: the mint proposes, it commits no gate, so it is adopted.

@@ -136,6 +136,7 @@ async def test_single_shot_call_carries_intent_and_floor_when_declared():
         user_message="hi",
         reasoning_intent=ReasoningIntent.INFERENCE,
         min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
+        redaction_ctx=disabled_redaction(),
     )
     kwargs = provider.route.call_args.kwargs
     assert kwargs["reasoning_intent"] is ReasoningIntent.INFERENCE
@@ -148,7 +149,11 @@ async def test_single_shot_call_carries_intent_and_floor_when_declared():
 async def test_single_shot_call_sends_no_intent_when_not_declared():
     engine, provider = _engine_with_recording_provider()
     await engine.generator.generate_structured_output(
-        "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
+        "prompt",
+        InvestigationResponse_Diagnosis,
+        case=_case(),
+        user_message="hi",
+        redaction_ctx=disabled_redaction(),
     )
     kwargs = provider.route.call_args.kwargs
     assert "reasoning_intent" not in kwargs
@@ -171,6 +176,7 @@ def test_floor_sits_under_the_structured_output_cap():
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from tests.model_content import disabled_redaction
 
 
 def _investigating_case() -> Case:
@@ -265,7 +271,11 @@ async def test_single_shot_path_prunes_an_invalid_list_entry_instead_of_failing_
         )
     )
     parsed = await engine.generator.generate_structured_output(
-        "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
+        "prompt",
+        InvestigationResponse_Diagnosis,
+        case=_case(),
+        user_message="hi",
+        redaction_ctx=disabled_redaction(),
     )
     assert parsed.agent_response == "Checking the mount."
     assert not parsed.suggested_follow_ups  # the offending entry was pruned, not fatal

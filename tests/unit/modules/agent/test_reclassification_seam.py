@@ -66,6 +66,7 @@ from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
 )
 from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from tests.model_content import disabled_redaction
 
 from .conftest import (
     MockCaseRepository,
@@ -449,6 +450,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
                 enterprise_id=case.enterprise_id,
                 user_id=OWNER,
                 in_memory_case=case,
+                redaction_ctx=disabled_redaction(),
             )
             with patch(
                 "faultmaven.modules.agent.tools."
@@ -553,6 +555,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
                 enterprise_id=case.enterprise_id,
                 user_id=OWNER,
                 in_memory_case=case,
+                redaction_ctx=disabled_redaction(),
             )
             before = rig.repo.save.await_count
             with patch(
@@ -718,6 +721,7 @@ class TestATerminalCaseIsNotMutable:
                 enterprise_id=case.enterprise_id,
                 user_id=OWNER,
                 in_memory_case=case,
+                redaction_ctx=disabled_redaction(),
             )
             with patch(
                 "faultmaven.modules.agent.tools."

@@ -78,11 +78,13 @@ def _response(content: str) -> LLMResponse:
     )
 
 
-class _MarkingRedaction:
-    """Stands in for ``CaseRedactionContext``: rewrites the one entity to a
-    recognisable pseudonym, records what it was handed, reverses it back."""
+class _MarkingRedaction(CaseRedactionContext):
+    """A ``CaseRedactionContext`` (the minting helpers take no other, #1998)
+    that rewrites the one entity to a recognisable pseudonym, records what it
+    was handed, and reverses it back."""
 
     def __init__(self, raw: str = RAW) -> None:
+        super().__init__(case_id="case_1956", sanitizer=None, enabled=True)
         self.raw = raw
         self.seen: list[str] = []
         self.save = AsyncMock()

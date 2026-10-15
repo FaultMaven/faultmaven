@@ -79,6 +79,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     TurnOutcome,
 )
+from tests.model_content import disabled_redaction, vetted
 
 pytestmark = pytest.mark.unit
 
@@ -1314,12 +1315,13 @@ async def test_the_schema_tool_path_keeps_the_repairs_on_the_response(answer):
         llm_provider=provider, repository=repo, investigation_tools=registry
     )
     parsed = await engine.generator._tool_augmented_generate(
-        prompt="p",
+        prompt=vetted("p"),
         schema_model=D,
         investigation_tools=[
             {"type": "function", "function": {"name": "search_file", "parameters": {}}}
         ],
         tool_context=MagicMock(),
+        redaction_ctx=disabled_redaction(),
     )
     assert [h.likelihood for h in parsed.state_updates.hypotheses_to_add] == [
         pytest.approx(0.9)

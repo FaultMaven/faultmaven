@@ -24,6 +24,7 @@ from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -241,7 +242,10 @@ async def test_pull_the_tool_context_carries_the_cases_scope_not_the_turn_users(
     generator = _generator(_Teams(), _Shares())
 
     context = await generator.build_tool_context(
-        _case(), user_id=TEAMMATE, redaction_ctx=None, given_tools=NO_TOOLS
+        _case(),
+        user_id=TEAMMATE,
+        redaction_ctx=disabled_redaction(),
+        given_tools=NO_TOOLS,
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE
@@ -252,7 +256,7 @@ async def test_pull_an_engine_internal_turn_still_gets_the_cases_scope():
     generator = _generator(_Teams(), _Shares())
 
     context = await generator.build_tool_context(
-        _case(), user_id=None, redaction_ctx=None, given_tools=NO_TOOLS
+        _case(), user_id=None, redaction_ctx=disabled_redaction(), given_tools=NO_TOOLS
     )
 
     assert context.user_id == "system"
@@ -263,8 +267,12 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     """The adapter forwards the context's scope; it builds none of its own."""
     from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
 
+    redaction = disabled_redaction()
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _case(), user_id=DRIVER, redaction_ctx=None, given_tools=NO_TOOLS
+        _case(),
+        user_id=DRIVER,
+        redaction_ctx=redaction,
+        given_tools=NO_TOOLS,
     )
     wrapped = MagicMock()
     wrapped._arun = AsyncMock(return_value="answer")
@@ -275,7 +283,7 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
 
     assert result.success, result.error
     wrapped._arun.assert_awaited_once_with(
-        question="q", scope_filter=DRIVER_SCOPE, k=5, redaction_ctx=None
+        question="q", scope_filter=DRIVER_SCOPE, k=5, redaction_ctx=redaction
     )
 
 
@@ -342,7 +350,10 @@ async def test_push_after_a_hand_off_searches_the_drivers_scope_and_stamps_it():
 
 async def test_pull_after_a_hand_off_carries_the_drivers_scope():
     context = await _generator(_Teams(), _Shares()).build_tool_context(
-        _handed_off_case(), user_id=DRIVER, redaction_ctx=None, given_tools=NO_TOOLS
+        _handed_off_case(),
+        user_id=DRIVER,
+        redaction_ctx=disabled_redaction(),
+        given_tools=NO_TOOLS,
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE

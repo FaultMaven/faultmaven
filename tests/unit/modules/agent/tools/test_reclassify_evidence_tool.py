@@ -21,6 +21,7 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
+from tests.model_content import disabled_redaction
 
 #: Sentinel: ``_ctx(None)`` means "no in-flight case", which is a real
 #: (and refused) shape, so it cannot also be the default.
@@ -58,6 +59,7 @@ def _ctx(in_memory_case=_UNSET):
         enterprise_id="org_1",
         user_id="user_abc",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
 
 

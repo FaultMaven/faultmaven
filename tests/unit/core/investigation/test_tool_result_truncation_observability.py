@@ -34,7 +34,9 @@ from faultmaven.core.investigation.milestone_engine.generation import (
     StructuredOutputGenerator,
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import ToolResult
+from tests.model_content import disabled_redaction, vetted
 
 pytestmark = [pytest.mark.unit]
 
@@ -111,10 +113,11 @@ def _engine_returning(data: str, called_tool: str = "search_file"):
 
 async def _run(engine):
     return await engine.generator._tool_augmented_generate(
-        prompt="Search",
+        prompt=vetted("Search"),
         schema_model=SampleResponse,
         investigation_tools=SEARCH_FILE_TOOL,
         tool_context=MagicMock(),
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -295,12 +298,13 @@ async def test_a_formatter_trimmed_kb_qa_result_is_not_counted_twice():
         patch.object(me, "tool_result_chars") as sizes,
     ):
         await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=[
                 {"type": "function", "function": {"name": "kb_qa", "parameters": {}}}
             ],
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
     # Denominator counts the result exactly once...
@@ -337,12 +341,13 @@ async def test_an_answer_quoting_the_trim_marker_is_still_measured():
         patch.object(me, "tool_result_chars") as sizes,
     ):
         await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=[
                 {"type": "function", "function": {"name": "kb_qa", "parameters": {}}}
             ],
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
     relayed.labels.assert_called_once_with(tool="kb_qa")
@@ -355,8 +360,9 @@ async def test_an_answer_quoting_the_trim_marker_is_still_measured():
 KB_QA_TOOL = [{"type": "function", "function": {"name": "kb_qa", "parameters": {}}}]
 
 
-class _ExpandingRedaction:
-    """Stands in for PII redaction, which EXPANDS text.
+class _ExpandingRedaction(CaseRedactionContext):
+    """A case redaction context (the minting helpers take no other, #1998)
+    standing in for PII redaction, which EXPANDS text.
 
     Every entity becomes a ``<TYPE_digest>`` placeholder — an IPv4 grows from 8
     characters to 29 — so a kb_qa answer the formatter sized exactly to the
@@ -366,6 +372,7 @@ class _ExpandingRedaction:
     """
 
     def __init__(self, needle: str, replacement: str):
+        super().__init__(case_id="case-1088", sanitizer=None, enabled=True)
         self._needle = needle
         self._replacement = replacement
 
@@ -373,9 +380,9 @@ class _ExpandingRedaction:
         return text.replace(self._needle, self._replacement)
 
 
-async def _run_kb_qa(engine, redaction_ctx=None):
+async def _run_kb_qa(engine, *, redaction_ctx):
     return await engine.generator._tool_augmented_generate(
-        prompt="Look it up",
+        prompt=vetted("Look it up"),
         schema_model=SampleResponse,
         investigation_tools=KB_QA_TOOL,
         tool_context=MagicMock(),

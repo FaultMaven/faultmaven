@@ -12,6 +12,7 @@ from faultmaven.modules.agent.tools.web_search import (
     TavilyProvider,
     WebSearchTool,
 )
+from tests.model_content import disabled_redaction
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def context():
         enterprise_id="org_1",
         user_id="user_1",
         metadata={"stage": "DIAGNOSIS"},
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -32,6 +34,7 @@ def context_no_stage():
         case_id="case_123",
         enterprise_id="org_1",
         user_id="user_1",
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -225,6 +228,7 @@ class TestStageEnrichment:
             enterprise_id="o",
             user_id="u",
             metadata={"stage": "MITIGATION"},
+            redaction_ctx=disabled_redaction(),
         )
         enhanced = tool._enhance_query_with_context("service crash", ctx)
         assert "workaround" in enhanced or "mitigation" in enhanced
@@ -236,6 +240,7 @@ class TestStageEnrichment:
             enterprise_id="o",
             user_id="u",
             metadata={"stage": "TREATMENT"},
+            redaction_ctx=disabled_redaction(),
         )
         enhanced = tool._enhance_query_with_context("fix database", ctx)
         assert "fix" in enhanced or "solution" in enhanced or "resolve" in enhanced
@@ -256,6 +261,7 @@ class TestStageEnrichment:
             enterprise_id="o",
             user_id="u",
             metadata={"stage": "DIAGNOSIS"},
+            redaction_ctx=disabled_redaction(),
         )
         enhanced = tool._enhance_query_with_context("memory usage high", ctx)
         assert (

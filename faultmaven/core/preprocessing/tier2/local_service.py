@@ -27,9 +27,7 @@ from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
 )
-from faultmaven.infrastructure.security.case_redaction import (
-    case_redacted_messages,
-)
+from faultmaven.infrastructure.security.model_content import case_redacted_messages
 
 logger = logging.getLogger(__name__)
 

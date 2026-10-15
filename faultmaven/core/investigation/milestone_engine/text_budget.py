@@ -10,6 +10,7 @@ from faultmaven.exceptions import (
     LLMErrorCategory,
     declared_llm_category,
 )
+from faultmaven.infrastructure.security.model_content import non_case_text, provenance
 
 
 class _ToolLoopBudget(NamedTuple):
@@ -312,7 +313,10 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     # between them.
     if available < 2:
         kept = max(0, budget - len(end_marker))
-        return content[:kept] + end_marker, len(content) - min(kept, len(content))
+        return (
+            content[:kept] + fixed_text_like(content, end_marker),
+            len(content) - min(kept, len(content)),
+        )
 
     tail_chars = int(available * KB_QA_ANSWER_TAIL_SHARE)
     head_chars = available - tail_chars
@@ -333,10 +337,16 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     # everything after it render, and read, as code.
     head = _balance_code_fences(head)
     if tail.count("```") % 2:
-        tail = "```\n" + tail
+        tail = fixed_text_like(tail, "```\n") + tail
 
     elided = KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=dropped)
-    return head + elided + tail + end_marker, dropped
+    return (
+        head
+        + fixed_text_like(content, elided)
+        + tail
+        + fixed_text_like(content, end_marker),
+        dropped,
+    )
 
 
 # Most a paragraph realignment may spend to land on a clean boundary.
@@ -360,7 +370,7 @@ def _trim_head_to_paragraph(head: str) -> str:
     block and leaves the seam mid-command (``kubectl get pod pod-01``, verb
     intact, target truncated). A single newline is a real boundary there.
     """
-    return _rewind_to_boundary(head, ("\n\n", "\n")).rstrip()
+    return _rstripped(_rewind_to_boundary(head, ("\n\n", "\n")))
 
 
 def _trim_tail_to_paragraph(tail: str) -> str:
@@ -368,8 +378,18 @@ def _trim_tail_to_paragraph(tail: str) -> str:
     for sep in ("\n\n", "\n"):
         cut = tail.find(sep)
         if 0 <= cut <= PARAGRAPH_REALIGN_MAX_CHARS:
-            return tail[cut:].lstrip()
-    return tail.lstrip()
+            return _lstripped(tail[cut:])
+    return _lstripped(tail)
+
+
+# Stripped by slicing, never by ``str.strip``: a slice of minted text is still
+# minted, and ``strip`` returns a plain ``str`` the model boundary reads as raw.
+def _rstripped(text: str) -> str:
+    return text[: len(text.rstrip())]
+
+
+def _lstripped(text: str) -> str:
+    return text[len(text) - len(text.lstrip()) :]
 
 
 def _rewind_to_boundary(text: str, separators: tuple) -> str:
@@ -404,4 +424,20 @@ def _balance_code_fences(text: str) -> str:
     """
     if text.count("```") % 2 == 0:
         return text
-    return text + "\n```"
+    return text + fixed_text_like(text, "\n```")
+
+
+def fixed_text_like(text: str, fixed: str) -> str:
+    """``fixed`` — a marker or a fence these helpers write — in the kind of
+    ``text``, ready to join it.
+
+    A tool result is cut twice: by the formatter before redaction (plain text)
+    and by the tool loop after it (minted case text, #1998), and minted text
+    joined to a plain ``str`` raises. So beside a minted result the fixed text
+    is minted too, as text with no case content: every caller passes one of
+    this module's markers, a fence, or a count formatted into the elision
+    template, never anything the tool returned.
+    """
+    if provenance(text) is not None:
+        return non_case_text(fixed)
+    return fixed

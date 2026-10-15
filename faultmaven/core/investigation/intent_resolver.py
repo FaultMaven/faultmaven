@@ -20,9 +20,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
 from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
-from faultmaven.infrastructure.security.case_redaction import (
-    case_redacted_messages,
-)
+from faultmaven.infrastructure.security.model_content import case_redacted_messages
 
 logger = logging.getLogger(__name__)
 

@@ -449,9 +449,9 @@ class TestThinkingRoundTrip:
                 provider, prompt="Investigate", tools=_TOOLS, max_tokens=8000
             )
 
-        # Orchestrator carries the assistant turn exactly as
-        # milestone_engine._build_assistant_message does: content +
-        # tool_calls + response-level provider_metadata.
+        # Orchestrator carries the assistant turn exactly as the tool loop's
+        # echo (model_output) does: content + tool_calls + response-level
+        # provider_metadata.
         history = [
             {"role": "user", "content": "Investigate"},
             {

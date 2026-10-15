@@ -12,8 +12,8 @@ calls, and the function read without being called (stored, passed, bound with
 ``partial``). An import under another name fails outright, since the alias
 would hide every later site.
 
-#1998 P1 ships the function and this census with no sites: no caller has moved
-yet. P2 declares each site as it converts it.
+#1998 P1 shipped the function and this census with no sites; P2 declares each
+site as it converts it (P2a: the engine's tool loop and structured output).
 
 What this does NOT see: a call through a name computed at runtime, and tests
 (``tests/`` mints through ``tests/model_content.py``, or calls this freely).
@@ -39,8 +39,34 @@ _NAME = "non_case_text"
 #: The module that defines it: its ``def`` is not a site.
 _DEFINER = "faultmaven/infrastructure/security/model_content.py"
 
+_GENERATION = "faultmaven/core/investigation/milestone_engine/generation.py"
+_TEXT_BUDGET = "faultmaven/core/investigation/milestone_engine/text_budget.py"
+
 #: (file, function) -> (sites, why the text carries no case content).
-SITES: dict[tuple[str, str], tuple[int, str]] = {}
+SITES: dict[tuple[str, str], tuple[int, str]] = {
+    (_GENERATION, "StructuredOutputGenerator._bound_tool_loop_messages"): (
+        1,
+        "the elision marker, _TOOL_LOOP_ELISION_MARKER: a module constant",
+    ),
+    (_GENERATION, "StructuredOutputGenerator._tool_augmented_generate"): (
+        3,
+        "the DA system instruction (_build_da_system_instruction: the offered "
+        "tool names, the schema tool's name and fixed guidance), the recovery "
+        "nudge naming the schema tool, and the fixed stand-in for an empty "
+        "assistant reply",
+    ),
+    (_GENERATION, "StructuredOutputGenerator._generate_structured_output_inner"): (
+        1,
+        "the schema instruction (_schema_prompt_instruction), built from the "
+        "response model's JSON schema",
+    ),
+    (_TEXT_BUDGET, "fixed_text_like"): (
+        1,
+        "the truncation and elision markers and code fences these helpers join "
+        "to a minted tool result: module constants, or a count formatted into "
+        "KB_QA_ANSWER_ELIDED_TEMPLATE; never text the tool returned",
+    ),
+}
 
 
 def _parse(source: str) -> ast.Module:

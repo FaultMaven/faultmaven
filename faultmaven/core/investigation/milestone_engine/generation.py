@@ -31,7 +31,6 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TERMINAL_QA_TOOLS,
 )
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
-    _build_assistant_message,
     _build_da_system_instruction,
     _build_schema_tool,
 )
@@ -64,7 +63,12 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
-from faultmaven.infrastructure.security.case_redaction import case_redacted
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+from faultmaven.infrastructure.security.model_content import (
+    case_redacted,
+    model_output,
+    non_case_text,
+)
 
 from .affordances import (
     _schema_prompt_instruction,
@@ -82,6 +86,7 @@ from .text_budget import (
     _tool_loop_message_tokens,
     _tool_payload_tokens,
     _ToolLoopBudget,
+    fixed_text_like,
 )
 
 logger = logging.getLogger(__name__)
@@ -265,7 +270,8 @@ class StructuredOutputGenerator:
             else:
                 groups[-1].append(m)
 
-        marker = {"role": "user", "content": _TOOL_LOOP_ELISION_MARKER}
+        # Fixed text, no case content: minted as such (#1998).
+        marker = {"role": "user", "content": non_case_text(_TOOL_LOOP_ELISION_MARKER)}
         # Counted WITHOUT the by-id cache: the marker is not held in `messages`,
         # so once the returned list is dropped its address can be reused by a
         # later message dict — which would then read the marker's count from the
@@ -318,8 +324,9 @@ class StructuredOutputGenerator:
         provider_name: str,
         max_tokens: int,
         base_prompt_builder: Optional[Callable[..., str]] = None,
-        redaction_ctx: Any | None = None,
         token_cache: Optional[dict] = None,
+        *,
+        redaction_ctx: CaseRedactionContext,
     ) -> list[dict]:
         """Return the loop's opening ``[system, base task]`` messages with the
         base sized to the WINDOW of the model that receives the tool loop
@@ -441,10 +448,11 @@ class StructuredOutputGenerator:
         investigation_tools: list[dict],
         tool_context: Any,
         max_tokens: int = 8000,
-        redaction_ctx: Any | None = None,
         case: Any | None = None,
         force_tool_use: bool = False,
         base_prompt_builder: Optional[Callable[..., str]] = None,
+        *,
+        redaction_ctx: CaseRedactionContext,
     ) -> BaseInteractionResponse:
         """Run a bounded tool-calling loop with investigation tools.
 
@@ -587,7 +595,10 @@ class StructuredOutputGenerator:
         # when it cannot fit.
         messages = await self._fit_tool_loop_base(
             [
-                {"role": "system", "content": da_system_instruction},
+                # Built from the offered tool names and the schema's: no case
+                # content (#1998). ``prompt`` arrives minted, redacted once at
+                # the top of ``_generate_structured_output_inner``.
+                {"role": "system", "content": non_case_text(da_system_instruction)},
                 {"role": "user", "content": prompt},
             ],
             all_tools,
@@ -681,8 +692,10 @@ class StructuredOutputGenerator:
             # the router path only. ``cache_prompt`` stays on both: Anthropic
             # and llama.cpp act on it, every other provider discards it.
             direct_provider = self.deps.da_provider is not None
+            # No ``prompt``: the loop sends ``messages`` alone. (The router
+            # dropped the ``prompt=""`` this used to pass, and the model
+            # boundary would read it as raw text, #1998.)
             generate_kwargs = dict(
-                prompt="",
                 messages=bounded_messages,
                 tools=tools_for_call,
                 tool_choice=choice,
@@ -906,8 +919,9 @@ class StructuredOutputGenerator:
                 #
                 # Reasoning artifacts (response.provider_metadata — Anthropic
                 # thinking blocks, Gemini assistant_parts) are DELIBERATELY
-                # dropped here, unlike _build_assistant_message which
-                # round-trips them. This is a recovery re-prompt, not a
+                # dropped here, unlike the tool-call echo below
+                # (``model_output``), which round-trips them: only the
+                # content is kept. This is a recovery re-prompt, not a
                 # continuation: the point is to re-ask with a fresh
                 # instruction after the model failed to call a tool, and
                 # replaying signed reasoning blocks across a state the
@@ -919,8 +933,10 @@ class StructuredOutputGenerator:
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": response.content
-                        or "I should use a tool to proceed.",
+                        # The model's own text, echoed (#1998); the stand-in
+                        # when it wrote none is fixed text.
+                        "content": model_output(response)["content"]
+                        or non_case_text("I should use a tool to proceed."),
                     }
                 )
                 # Append a user nudge that explicitly directs the schema-tool
@@ -931,7 +947,8 @@ class StructuredOutputGenerator:
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
+                        # Fixed text naming the schema tool: no case content.
+                        "content": non_case_text(
                             f"You must now produce your structured response by "
                             f"calling the `{schema_tool_name}` tool. Use the text "
                             f"above as the `agent_response` field and fill in the "
@@ -966,9 +983,9 @@ class StructuredOutputGenerator:
                         schema_answer_stop_reason(response),
                     )
 
-            # Build assistant message with tool calls
-            assistant_msg = _build_assistant_message(response)
-            messages.append(assistant_msg)
+            # The model's own reply, tool calls and reasoning artifacts
+            # included, echoed back minted as model output (#1998).
+            messages.append(model_output(response))
 
             # Execute each investigation tool call
             for tc in response.tool_calls:
@@ -1098,7 +1115,9 @@ class StructuredOutputGenerator:
                 # Redact PII in tool results before sending to LLM.
                 # Tool results contain raw file content (search_file,
                 # deep_analysis) which bypasses prompt-level redaction.
-                # Off the event loop via the async boundary (#654).
+                # Off the event loop via the async boundary (#654). From here
+                # the result is minted case text (#1998): the cut below keeps
+                # it minted.
                 result_text = await case_redacted(result_text, redaction_ctx)
 
                 # Truncate long results.
@@ -1400,7 +1419,7 @@ class StructuredOutputGenerator:
         # stricter because its formatter has to reserve the relay wrapper, not
         # because the cap means something different here. Left alone
         # deliberately (#1088).
-        return text[:cap] + marker, max(0, len(text) - cap)
+        return text[:cap] + fixed_text_like(text, marker), max(0, len(text) - cap)
 
     @staticmethod
     def _format_tool_result(result: Any, tool_name: str = "") -> str:
@@ -1521,13 +1540,14 @@ class StructuredOutputGenerator:
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
         force_tool_use: bool = False,
-        redaction_ctx: Any | None = None,
         case: Any | None = None,
         user_message: Optional[str] = None,
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
         reasoning_intent: Optional[Any] = None,
         min_output_tokens: Optional[int] = None,
         base_prompt_builder: Optional[Callable[..., str]] = None,
+        *,
+        redaction_ctx: CaseRedactionContext,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -1607,12 +1627,13 @@ class StructuredOutputGenerator:
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
         force_tool_use: bool = False,
-        redaction_ctx: Any | None = None,
         case: Any | None = None,
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
         reasoning_intent: Optional[Any] = None,
         min_output_tokens: Optional[int] = None,
         base_prompt_builder: Optional[Callable[..., str]] = None,
+        *,
+        redaction_ctx: CaseRedactionContext,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -1714,8 +1735,10 @@ class StructuredOutputGenerator:
         if strategy.include_schema_in_prompt:
             # Provider requires schema in prompt text (json_object or prompt_only
             # modes). SCHEMA_INSTRUCTIONS is gated on the schema's shape inside
-            # the helper — see _schema_prompt_instruction.
-            final_prompt = f"{prompt}{_schema_prompt_instruction(schema)}"
+            # the helper — see _schema_prompt_instruction. The case prompt,
+            # minted above, plus the schema instruction, fixed text built from
+            # the response schema (#1998).
+            final_prompt = prompt + non_case_text(_schema_prompt_instruction(schema))
         else:
             # Provider supports strict json_schema - no need for schema in prompt
             final_prompt = prompt

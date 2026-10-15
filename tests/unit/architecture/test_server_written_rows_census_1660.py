@@ -197,6 +197,8 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     # The model dispatch (#1998): checks the call's messages against the
     # model-content grammar, then unwraps them for the adapter.
     ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (2, _WIRE),
+    # The routed seam (#1998 P2) reads a call's ``messages`` keyword to check it.
+    ("faultmaven/infrastructure/llm/dispatch.py", "route_model_call"): (1, _WIRE),
     # #1748: the terminal follow-up counter compares a turn's text with the
     # confirming turn's own message, to keep a resubmission out of a metric.
     (

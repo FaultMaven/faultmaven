@@ -52,6 +52,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
     StructuredOutputStrategy,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -220,7 +221,9 @@ async def test_an_overflow_wearing_truncation_wording_still_fails_with_token_lim
 
     with pytest.raises(MilestoneEngineError) as exc_info:
         await engine.generator._generate_structured_output_inner(
-            prompt="why is node-3 NotReady?", schema_model=_Schema
+            prompt="why is node-3 NotReady?",
+            schema_model=_Schema,
+            redaction_ctx=disabled_redaction(),
         )
 
     assert exc_info.value.error_code == TOKEN_LIMIT
@@ -262,7 +265,9 @@ async def test_parse_truncation_raises_the_cap_and_bypasses_the_cache():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -284,7 +289,9 @@ async def test_provider_reported_truncation_raises_the_cap_too():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -305,7 +312,9 @@ async def test_malformed_json_does_not_spend_the_truncation_ladder():
 
     with pytest.raises(MilestoneEngineError):
         await engine.generator._generate_structured_output_inner(
-            prompt="why is node-3 NotReady?", schema_model=_Schema
+            prompt="why is node-3 NotReady?",
+            schema_model=_Schema,
+            redaction_ctx=disabled_redaction(),
         )
 
     assert generate.await_count == 1, "malformed JSON must not trigger a retry"
@@ -329,7 +338,9 @@ async def test_at_the_ceiling_it_stops_climbing_and_asks_for_the_degrade():
 
     with pytest.raises(MilestoneEngineError) as exc_info:
         await engine.generator._generate_structured_output_inner(
-            prompt="why is node-3 NotReady?", schema_model=_Schema
+            prompt="why is node-3 NotReady?",
+            schema_model=_Schema,
+            redaction_ctx=disabled_redaction(),
         )
 
     raised = exc_info.value
@@ -365,6 +376,7 @@ async def test_ceiling_truncation_degrades_to_the_minimal_prompt():
             schema_model=_Schema,
             case=case,
             user_message="node-3 went NotReady an hour ago",
+            redaction_ctx=disabled_redaction(),
         )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -404,6 +416,7 @@ async def test_the_degrade_is_metered_as_truncation_not_overflow():
             schema_model=_Schema,
             case=case,
             user_message="node-3 went NotReady an hour ago",
+            redaction_ctx=disabled_redaction(),
         )
 
     metric.labels.assert_called_once_with(reason=RECOVERY_REASON_OUTPUT_TRUNCATION)
@@ -513,7 +526,9 @@ async def test_a_body_that_parses_is_kept_even_when_the_provider_reports_a_cut()
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -552,7 +567,9 @@ async def test_the_stop_reason_rescues_a_cut_the_positional_test_declines():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -585,7 +602,9 @@ async def test_a_malformed_body_without_a_reported_cut_still_does_not_ladder():
 
     with pytest.raises(MilestoneEngineError):
         await engine.generator._generate_structured_output_inner(
-            prompt="why is node-3 NotReady?", schema_model=_Schema
+            prompt="why is node-3 NotReady?",
+            schema_model=_Schema,
+            redaction_ctx=disabled_redaction(),
         )
 
     assert generate.await_count == 1
@@ -602,7 +621,9 @@ async def test_a_complete_response_is_not_diverted_into_the_ladder():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -624,7 +645,9 @@ async def test_an_unknown_stop_reason_is_not_treated_as_a_cut():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -663,7 +686,9 @@ async def test_a_fenced_truncated_body_still_spends_the_ladder():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
@@ -685,7 +710,9 @@ async def test_a_fenced_complete_body_needs_no_ladder():
     engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
-        prompt="why is node-3 NotReady?", schema_model=_Schema
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
