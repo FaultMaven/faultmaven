@@ -302,10 +302,13 @@ row, and never deletes a mis-stamped chunk of a live document.
 3. Watch the selection path the way storage cleanup's canary does: a run that
    reports `authored_orphans_would_delete=0` has rehearsed nothing. On a
    non-production install:
-   - author a throwaway personal runbook;
-   - delete only its `knowledge_items` row, as the table owner, leaving its
-     vectors;
-   - confirm the next report lists that id under its enterprise.
+   - author TWO throwaway personal runbooks in the same enterprise;
+   - delete only one of their `knowledge_items` rows, as the table owner,
+     leaving its vectors;
+   - confirm the next report lists that id under its enterprise. With only one
+     authored runbook in the enterprise, deleting its row leaves no overlap for
+     the reference-set check, so the enterprise reads `disjoint` and its
+     orphan is not listed (nothing is deleted either way).
 4. Then set `KB_ORPHAN_SWEEP_ENABLED=true` and `KB_ORPHAN_SWEEP_DRY_RUN=false`.
    For a single run, keep the settings and pass `kb_seed --no-dry-run` with
    `KB_ORPHAN_SWEEP_ENABLED=true`.
@@ -339,7 +342,7 @@ in the `kb_seed` result's `authored_orphans`.
 | `authored_orphans_unproven` | documents left unclassified: the row read is filtered by RLS. Expected under the app role (single-tenant PostgreSQL); a pass as the owner or under the maintenance role classifies them |
 | `authored_orphans_disjoint` | documents in an enterprise none of whose authored vectors has a row (WARNING names it) |
 | `authored_orphans_capped` | above `KB_REPAIR_MAX_ROWS` in total; nothing deleted (ERROR) |
-| `authored_orphans_misstamped` | chunks stamped one enterprise whose document lives in another; kept (WARNING) |
+| `authored_orphans_misstamped` | documents with chunks stamped one enterprise while the document lives in another; kept (WARNING) |
 | `authored_orphans_unremoved` | a delete raised; retried next pass. Not `…failed`: CD's gate reads the line's last `failed=` |
 
 The job's status stays `completed` for every sweep outcome. The seeding
