@@ -73,6 +73,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from faultmaven.modules.knowledge.taxonomy import SymptomClass, vocabulary
+from tests.utils import regex_only_sanitizer
 
 # =============================================================================
 # Fixtures
@@ -259,6 +260,7 @@ def source_file(tmp_path, source_document_text):
 def service(mock_llm_router, mock_settings):
     """ConversionService with mocked LLM and no DB."""
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=mock_llm_router,
         settings=mock_settings,
         db_session_factory=None,
@@ -1632,6 +1634,7 @@ def _make_live_case_service(session_factory) -> ConversionService:
     settings = MagicMock()
     settings.llm.get_knowledge_model.return_value = "test-model"
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,
@@ -1761,6 +1764,7 @@ class TestPersistJobLiveCaseKey:
             created_at=datetime.now(UTC),
             source_type="case",
             case_id="case-x",
+            sanitizer=regex_only_sanitizer(),
         )
         job = await _job_row(live_case_session_factory, "conv-case-live")
         assert job.live_case_id == "case-x"
@@ -1783,6 +1787,7 @@ class TestPersistJobLiveCaseKey:
             created_at=datetime.now(UTC),
             source_type="document",
             case_id=None,
+            sanitizer=regex_only_sanitizer(),
         )
         job = await _job_row(live_case_session_factory, "conv-doc")
         assert job.live_case_id is None
@@ -1809,6 +1814,7 @@ class TestPersistJobLiveCaseKey:
             created_at=datetime.now(UTC),
             source_type="case",
             case_id="case-y",
+            sanitizer=regex_only_sanitizer(),
         )
         job = await _job_row(live_case_session_factory, "conv-failed")
         assert job.live_case_id is None
@@ -2516,6 +2522,7 @@ class TestPersistJobOrgStamp:
             created_at=datetime.now(UTC),
             source_type="case",
             case_id="case_1765256eccdd",
+            sanitizer=regex_only_sanitizer(),
         )
 
     @staticmethod

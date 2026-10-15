@@ -17,6 +17,7 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     UploadedFileModel,
 )
+from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionDraft,
@@ -45,8 +46,16 @@ async def _persist_job(
     source_type: str = "document",
     case_id: str = None,
     warnings: Optional[List[str]] = None,
+    *,
+    sanitizer,
 ) -> None:
-    """Persist conversion job and drafts to database."""
+    """Persist conversion job and drafts to database.
+
+    ``sanitizer`` is required, with no default, because a draft's title is
+    disclosed and this is the one place a ``conversion_drafts`` row is written:
+    a caller that could leave it out would be a path that stores the title raw
+    (#1981). See :func:`_persist_job_rows`.
+    """
     if not db_session_factory:
         return
 
@@ -67,6 +76,7 @@ async def _persist_job(
             source_type=source_type,
             case_id=case_id,
             warnings=warnings,
+            sanitizer=sanitizer,
         )
     except IntegrityError:
         # Classified AFTER the session block has exited, never inside it:
@@ -107,12 +117,39 @@ async def _persist_job_rows(
     source_type: str,
     case_id: Optional[str],
     warnings: Optional[List[str]] = None,
+    sanitizer,
 ) -> None:
     """The upload + job + drafts write, as ONE transaction and one session.
 
     Split out of ``_persist_job`` only so its caller can classify an
     ``IntegrityError`` after this session has been returned to the pool.
+
+    Every draft's title is redacted here, before the session opens (#1981). A
+    draft is NOT author-only: ``GET /knowledge/drafts`` lists every global-scope
+    draft to every user, and a case's drafts are listed to its readers
+    (``GET /cases/{id}/reports``), so a title the author typed or a model wrote
+    is disclosed from the moment this row exists, well before the draft is
+    published. It is the one ``ConversionDraftModel`` written by conversion, so
+    one call covers the LLM conversions, the manual template and the disk scan.
+    The scrub fails closed (``ItemTitleScrubUnavailable``) and runs ahead of the
+    first write, so a refusal leaves nothing behind.
+
+    This is the BACKSTOP, not the entry. Each path scrubs the title where it
+    arrives as raw text and mints the draft's id and text from the scrubbed
+    value (a slug of ``password=hunter2`` is ``...-password-hunter2``, which no
+    pattern matches), so by the time a draft reaches here its title is already
+    clean and this only has to cut it to the column. It assigns the stored
+    value back to the draft, so the object the caller returns and the row are
+    one text.
     """
+    # Scrubbed to the column, and ASSIGNED BACK to the draft the caller holds
+    # (the response, the case-transcript notice and the log line are built from
+    # it): the object and the row are one text, never the row alone.
+    for draft in drafts:
+        draft.title = await sanitize_item_title(
+            sanitizer, draft.title, ConversionDraftModel.title
+        )
+
     async with db_session_factory() as session:
         # Billing attribution for every row this writes (ADR-017 D2), read
         # from the request binding exactly as ``CaseService.create_case``

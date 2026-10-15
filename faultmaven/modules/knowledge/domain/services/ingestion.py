@@ -53,6 +53,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.services.content_chunker import (
     HR_SPLIT_BOUNDARY_RE,
 )
@@ -326,7 +327,7 @@ class KnowledgeIngester:
             document_id = str(uuid.uuid4())
 
         try:
-            self.logger.info(f"Starting ingestion of document: {title}")
+            self.logger.info(f"Starting ingestion of document {document_id}")
 
             # Extract text content
             content = await self._extract_text(file_path)
@@ -335,12 +336,14 @@ class KnowledgeIngester:
 
             # Sanitize content
             sanitized_content = await self.sanitizer.asanitize(content)
+            # And the title, which every reader of the tier sees (#1981)
+            sanitized_title = await sanitize_item_title(self.sanitizer, title)
 
             # Create document object
             now = datetime.now(timezone.utc).isoformat()
             document = KnowledgeBaseDocument(
                 document_id=document_id,
-                title=title,
+                title=sanitized_title,
                 content=sanitized_content,
                 document_type=document_type,
                 tags=tags or [],
@@ -354,11 +357,11 @@ class KnowledgeIngester:
             # Process and store in chunks
             await self._process_and_store(document)
 
-            self.logger.info(f"Successfully ingested document: {title}")
+            self.logger.info(f"Successfully ingested document {document_id}")
             return document_id
 
         except Exception as e:
-            self.logger.error(f"Failed to ingest document {title}: {e}")
+            self.logger.error(f"Failed to ingest document {document_id}: {e}")
             raise
 
     async def _extract_text(self, file_path: str) -> str:
@@ -801,25 +804,27 @@ class KnowledgeIngester:
             Job ID for tracking the ingestion process
         """
         try:
-            self.logger.info(f"Starting ingestion of document: {document.title}")
+            self.logger.info(f"Starting ingestion of document {document.document_id}")
 
             # Sanitize content (already done in API, but double-check)
             sanitized_content = await self.sanitizer.asanitize(document.content)
 
             # Update document with sanitized content
             document.content = sanitized_content
+            # And its title, which every reader of the tier sees (#1981)
+            document.title = await sanitize_item_title(self.sanitizer, document.title)
 
             # Process and store in chunks
             await self._process_and_store(document)
 
-            self.logger.info(f"Successfully ingested document: {document.title}")
+            self.logger.info(f"Successfully ingested document {document.document_id}")
 
             # Generate job ID for tracking (in a real system, this would be stored)
             job_id = f"job_{document.document_id}"
             return job_id
 
         except Exception as e:
-            self.logger.error(f"Failed to ingest document {document.title}: {e}")
+            self.logger.error(f"Failed to ingest document {document.document_id}: {e}")
             raise
 
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:

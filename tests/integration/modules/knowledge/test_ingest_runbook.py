@@ -50,6 +50,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
+from tests.utils import regex_only_sanitizer
 
 # =============================================================================
 # Fixtures
@@ -128,7 +129,7 @@ def make_service(
     """
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
         db_session_factory=session_factory,

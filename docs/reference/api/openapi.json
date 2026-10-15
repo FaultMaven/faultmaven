@@ -11965,7 +11965,7 @@
     },
     "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify": {
       "post": {
-        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.",
+        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.\n\nThe published title is redacted before anything is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and the draft stays a draft.",
         "operationId": "verify_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__verify_post",
         "parameters": [
           {
@@ -12020,7 +12020,7 @@
     },
     "/api/v1/knowledge/convert": {
       "post": {
-        "description": "Upload a document and convert it to one or more runbook drafts.",
+        "description": "Upload a document and convert it to one or more runbook drafts.\n\nA draft's title is redacted before the draft is stored (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and nothing is saved.",
         "operationId": "convert_document_api_v1_knowledge_convert_post",
         "requestBody": {
           "content": {
@@ -12167,7 +12167,7 @@
         ]
       },
       "post": {
-        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n    scope: Publishing tier \u2014 ``personal`` (default), ``team`` or\n        ``global``. ``global`` is the platform corpus every tenant reads\n        and requires the platform-admin role; ``team`` requires a\n        ``team_id`` naming a team you belong to.\n    team_id: Required when ``scope`` is ``team``.\n\nReturns:\n    Upload job information",
+        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n    scope: Publishing tier \u2014 ``personal`` (default), ``team`` or\n        ``global``. ``global`` is the platform corpus every tenant reads\n        and requires the platform-admin role; ``team`` requires a\n        ``team_id`` naming a team you belong to.\n    team_id: Required when ``scope`` is ``team``.\n\nReturns:\n    Upload job information\n\nThe title is redacted with the deployment's sanitizer before anything is\nwritten (#1981): it is shown to every reader of the tier and never\nreversed. If that check cannot run (the sanitizer or its pseudonym key is\nunavailable) the upload answers **503**, a retryable server-side\ncondition, with a generic detail, and nothing is saved.",
         "operationId": "upload_document_api_v1_knowledge_documents_post",
         "requestBody": {
           "content": {
@@ -12452,7 +12452,7 @@
         ]
       },
       "put": {
-        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).",
+        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA new ``title`` is redacted with the deployment's sanitizer, as is new\n``content``. If that check cannot run the update answers **503**, a\nretryable server-side condition, with a generic detail, and nothing is\nsaved (#1981).",
         "operationId": "update_document_api_v1_knowledge_documents__document_id__put",
         "parameters": [
           {
@@ -12696,7 +12696,7 @@
     },
     "/api/v1/knowledge/runbooks/create": {
       "post": {
-        "description": "Create a runbook manually from template fields. Returns a draft for review.",
+        "description": "Create a runbook manually from template fields. Returns a draft for review.\n\nThe title is redacted before the draft, its id and its text are made\n(#1981). If that check cannot run (the sanitizer or its pseudonym key is\nunavailable) the request answers **503**, a retryable server-side condition,\nwith a generic detail, and nothing is saved.",
         "operationId": "create_runbook_manually_api_v1_knowledge_runbooks_create_post",
         "requestBody": {
           "content": {
@@ -12741,7 +12741,7 @@
     },
     "/api/v1/knowledge/scan": {
       "post": {
-        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global discovery is unaffected.\n\nA file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal\ndraft. A file under ``team_<id>/`` is imported as a **personal** draft too\n(#1986): the scan runs only where there are no teams, so no team exists to\nshare it with, and a team-scope runbook with no team would be visible to\nits owner alone. The response's ``notes`` list names each such file\n(\"team_x/foo.md imported as personal: ...\"); ``errors`` names the files\nthat were not imported.",
+        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global discovery is unaffected.\n\nA file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal\ndraft. A file under ``team_<id>/`` is imported as a **personal** draft too\n(#1986): the scan runs only where there are no teams, so no team exists to\nshare it with, and a team-scope runbook with no team would be visible to\nits owner alone. The response's ``notes`` list names each such file\n(\"team_x/foo.md imported as personal: ...\"); ``errors`` names the files\nthat were not imported.\n\nEach draft's title is redacted before its row is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nscan answers **503**, a retryable server-side condition, with a generic\ndetail. It can do so MID-WALK: the files imported before the failing one\nstay imported (each is its own draft), and a second scan skips them and\nimports the rest.",
         "operationId": "scan_for_runbooks_api_v1_knowledge_scan_post",
         "responses": {
           "200": {

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.exceptions import (
     EmbeddingException,
     KnowledgeBaseException,
+    ServiceUnavailableException,
     VectorStoreException,
 )
 
@@ -158,3 +159,17 @@ class IndexingError(KnowledgeException):
         super().__init__(
             message, details={"document_ids": document_ids, "error_code": error_code}
         )
+
+
+class ItemTitleScrubUnavailable(ServiceUnavailableException):
+    """The check that keeps sensitive text out of a knowledge item's title could
+    not run, so nothing was written (#1981).
+
+    Distinct from a refusal for what the title SAYS: the title is fine as far as
+    anyone knows, and a server-side dependency (the deployment's sanitizer, its
+    pseudonym key, Presidio under a fail-closed posture) did not answer, or
+    answered with something that cannot be trusted. Answered 503 with a generic
+    detail by ``api.exception_handlers``: a client may retry, and nothing in the
+    response says what the title held or why the check failed. The cause is on
+    ``__cause__`` and in the log, by type, never the text.
+    """

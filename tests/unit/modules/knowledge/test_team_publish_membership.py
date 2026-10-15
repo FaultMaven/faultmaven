@@ -25,6 +25,7 @@ from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from tests.utils import regex_only_sanitizer
 
 #: The isolation boundary these fixtures live in (ADR-017 D1). Every tenancy
 #: fact the code under test reads is keyed on this, never on the organization.
@@ -54,6 +55,7 @@ def _conversion_service(team_service=None) -> ConversionService:
     # the real pipeline.
     settings.llm.get_knowledge_model.return_value = None
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=settings,
         db_session_factory=None,
@@ -268,6 +270,7 @@ def _verify_ready_service(*, team_service, job_team="team_a"):
     knowledge_service.ingest_runbook = AsyncMock(return_value=3)
 
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=_Factory(),

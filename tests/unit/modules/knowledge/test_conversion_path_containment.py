@@ -19,6 +19,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from faultmaven.utils.runbook_id import RunbookPathEscape
+from tests.utils import regex_only_sanitizer
 
 #: The standalone deployment's one enterprise — the ISOLATION key every row
 #: below is stamped with (ADR-017 D1).
@@ -69,6 +70,7 @@ async def _real_db():
 
 def _real_service(factory) -> ConversionService:
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=factory,
