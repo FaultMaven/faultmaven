@@ -41,6 +41,7 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from tests.utils import regex_only_sanitizer
 
 # =============================================================================
 # Fixtures
@@ -180,6 +181,7 @@ def conversion_service(seeded_session_factory, runbook_dir):
     settings.llm.get_knowledge_model.return_value = "test-model"
 
     service = ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=settings,
         db_session_factory=seeded_session_factory,

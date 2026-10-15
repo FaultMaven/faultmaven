@@ -54,6 +54,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -113,6 +114,7 @@ def _service(session_factory, produced: str) -> ConversionService:
     settings = MagicMock()
     settings.llm.get_knowledge_model.return_value = "test-model"
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=router,
         settings=settings,
         db_session_factory=session_factory,

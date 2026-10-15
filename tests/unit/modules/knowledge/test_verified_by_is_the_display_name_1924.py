@@ -29,6 +29,7 @@ from faultmaven.modules.knowledge.api import conversion_routes as cr
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.api]
 
@@ -149,6 +150,7 @@ def _service(account_reader, draft) -> ConversionService:
     knowledge = AsyncMock()
     knowledge.ingest_runbook.return_value = 3
     return ConversionService(
+        sanitizer=regex_only_sanitizer(),
         llm_router=MagicMock(),
         settings=MagicMock(),
         db_session_factory=_session_factory(draft),

@@ -117,7 +117,11 @@ async def _analyze_document(
             ),
         )
     except Exception as e:
-        logger.error(f"Failed to parse analysis response: {e}")
+        # The exception's CLASS only, as `_convert_single_failure_mode` does
+        # (#836). A pydantic ValidationError quotes the failing failure-mode dict
+        # (`input_value={'title': 'db password=hu...`), which is raw model output
+        # and carries the title, unscrubbed, into the log (#1981).
+        logger.error(f"Failed to parse analysis response ({type(e).__name__})")
         raise ConversionRejectedError(
             # Static. ``ConversionRejectedError`` is serialized to the
             # caller by ``conversion_routes`` as ``detail=str(e)``, on the

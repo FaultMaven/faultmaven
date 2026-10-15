@@ -401,6 +401,10 @@ async def _ingest_pack_runbook(
         verification_level=VerificationLevel.COMMUNITY,
         prechunked=prechunked,
         pack_content_hash=runbook.content_hash,
+        # Vendored, reviewed pack source, not user or model text: its title is
+        # stored as shipped, so a redaction outage that begins after a healthy
+        # start cannot stop the platform corpus from seeding (#1981).
+        shipped=True,
     )
 
     if chunks_created <= 0:

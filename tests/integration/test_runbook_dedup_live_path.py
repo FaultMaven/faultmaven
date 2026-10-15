@@ -46,6 +46,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
     build_kb_scope_filter,
 )
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.integration]
 
@@ -130,7 +131,7 @@ def _production_knowledge_service(
     """KnowledgeService over the PRODUCTION writer store type."""
     return KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(),
+        sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=writer_store,
         db_session_factory=db_session_factory,

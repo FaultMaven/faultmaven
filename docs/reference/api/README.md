@@ -2796,6 +2796,11 @@ api/exception_handlers.py for canonical translation to 403 / 404 / 409 /
 422 respectively. The route no longer catches ValueError; see
 docs/architecture/specifications/exception-contract.md.
 
+The published title is redacted before anything is written (#1981). If that
+check cannot run (the sanitizer or its pseudonym key is unavailable) the
+request answers **503**, a retryable server-side condition, with a generic
+detail, and the draft stays a draft.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -2819,6 +2824,11 @@ docs/architecture/specifications/exception-contract.md.
 **Convert Document**
 
 Upload a document and convert it to one or more runbook drafts.
+
+A draft's title is redacted before the draft is stored (#1981). If that
+check cannot run (the sanitizer or its pseudonym key is unavailable) the
+request answers **503**, a retryable server-side condition, with a generic
+detail, and nothing is saved.
 
 **Tags:** `knowledge-conversion`
 
@@ -2892,6 +2902,12 @@ Args:
 
 Returns:
     Upload job information
+
+The title is redacted with the deployment's sanitizer before anything is
+written (#1981): it is shown to every reader of the tier and never
+reversed. If that check cannot run (the sanitizer or its pseudonym key is
+unavailable) the upload answers **503**, a retryable server-side
+condition, with a generic detail, and nothing is saved.
 
 **Tags:** `knowledge_base`
 
@@ -3111,6 +3127,11 @@ document; global-scope editing is platform-corpus authoring (operator
 only, per the global-tier policy). A refusal over a document the caller
 cannot even see answers 404 rather than 403 (#867).
 
+A new ``title`` is redacted with the deployment's sanitizer, as is new
+``content``. If that check cannot run the update answers **503**, a
+retryable server-side condition, with a generic detail, and nothing is
+saved (#1981).
+
 **Tags:** `knowledge_base`
 
 **Auth:** `HTTPBearer`
@@ -3273,6 +3294,11 @@ Activate multiple drafts sequentially (verify + ingest into KB).
 
 Create a runbook manually from template fields. Returns a draft for review.
 
+The title is redacted before the draft, its id and its text are made
+(#1981). If that check cannot run (the sanitizer or its pseudonym key is
+unavailable) the request answers **503**, a retryable server-side condition,
+with a generic detail, and nothing is saved.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -3314,6 +3340,13 @@ share it with, and a team-scope runbook with no team would be visible to
 its owner alone. The response's ``notes`` list names each such file
 ("team_x/foo.md imported as personal: ..."); ``errors`` names the files
 that were not imported.
+
+Each draft's title is redacted before its row is written (#1981). If that
+check cannot run (the sanitizer or its pseudonym key is unavailable) the
+scan answers **503**, a retryable server-side condition, with a generic
+detail. It can do so MID-WALK: the files imported before the failing one
+stay imported (each is its own draft), and a second scan skips them and
+imports the rest.
 
 **Tags:** `knowledge-conversion`
 

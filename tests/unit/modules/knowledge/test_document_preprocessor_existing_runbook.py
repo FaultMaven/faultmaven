@@ -37,6 +37,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 from faultmaven.utils.frontmatter import match_frontmatter
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -283,6 +284,9 @@ def _app_with_real_service():
 
     service = ConversionService.__new__(ConversionService)
     service._settings = get_settings()
+    # A conversion refuses a service with no sanitizer before it does anything
+    # (no title could be scrubbed, #1981), so the oracle below needs one.
+    service._sanitizer = regex_only_sanitizer()
     service._preprocessor = DocumentPreprocessor()
 
     async def _ensure_team_publish_allowed(*_args, **_kwargs):
