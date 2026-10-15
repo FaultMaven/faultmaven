@@ -352,6 +352,10 @@ PLACEHOLDERS = [
     # part is `<…>` (F2), an illustrative key quoted in markdown (F9), and a
     # GitLab token of `X`s (F10).
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.<signature>",
+    # ... and inside JSON: the token stops at its own characters, so the `"}`
+    # after `<signature>` is not part of its third part (F2).
+    '{"id_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+    '.<signature>"}',
     "> -----BEGIN " + "PRIVATE KEY-----\n> MIIEpAIBAAKCAQEA...\n> -----END "
     "PRIVATE KEY-----",
     "gl" + "pat-" + "X" * 20,
