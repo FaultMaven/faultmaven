@@ -770,29 +770,32 @@ when the row count moves.
 **Promotion criterion.** The same evidence-first policy that keeps
 `FM_AB_SUITE` at 1.30 until the gate's own medians say otherwise: the rule
 fails a pull request when **20 more pull requests** (counted from the merge
-of the change that added the shadow rule), **one run each** (the latest that
-evaluated the rule), which touch **no benchmarked code**, have been scored
+of the change that added the shadow rule), **counted per pull request**
+(red if any of its evaluated runs was red), which touch **no benchmarked code**, have been scored
 with `count_would_fail` false, none true, and the scorer's output is recorded
 in the #1989 thread.
 
 *Benchmarked code* is whatever can move a recorded number or the rule that
-scores it, and it is read off the interpreter, not written by hand:
-`python -m tests.wallclock.benchmarked_files` prints it. It is every
-`faultmaven` and `tests` file the benchmark modules import (112 `faultmaven`
-files, mostly reached through imports: a hand-written list of the suite's
-directories covered 58 of them, and missed
-`faultmaven/utils/serialization.py`, which both repositories' hot paths run),
-plus the inputs no import names (`tests/conftest.py`, `pytest.ini`,
-`pyproject.toml`, `requirements/*.txt`) and the instrument itself (the
-comparator, `tests/wallclock/ab.py`, and `.github/workflows/benchmarks.yml`),
-because a pull request that edits the rule is not a clean sample of its
-false-red rate. It takes about 4 seconds in a fresh interpreter. What it
-leaves out: the modules only `tests/conftest.py` imports (44 more
-`faultmaven` files: the LLM providers, health and protection modules, none of
-which the SQLite CRUD benchmarks execute). The direction of that error is the
-safe one: a pull request that touches only those is read as touching no
-benchmarked code, so if it did move a benchmark the rule fires on a "clean"
-pull request, that is recorded as a false red and the count restarts.
+scores it, and it is read off a real run, not written or walked by hand:
+the scorer runs `pytest tests/benchmarks -m benchmark` once with the plugin
+`tests/wallclock/closure_plugin.py` and takes every `faultmaven` and `tests`
+module found in `sys.modules` when the session ends. That is the code a run
+imports, the modules only `tests/conftest.py` pulls in and the ones imported
+lazily inside a function body included (a static import walk listed 112 of
+the 160 `faultmaven` files a run imports, and missed
+`faultmaven/core/investigation/terminal_transitions.py`, whose lines run
+inside benchmark test bodies; a hand-written list of directories covered 58
+and missed `faultmaven/utils/serialization.py`). Added to the imports are the
+inputs no import names (`tests/conftest.py`, `pytest.ini`, `pyproject.toml`,
+`requirements/*.txt`) and the instrument itself (the comparator,
+`tests/wallclock/ab.py`, and `.github/workflows/benchmarks.yml`), because a
+pull request that edits the rule is not a clean sample of its false-red rate.
+The run takes about 25 seconds and is cached per HEAD sha under
+`~/.cache/faultmaven/ab-closure` (not on a dirty tree; delete the directory
+to force it). Imported is not executed, so the list errs in the safe
+direction: a module imported and never called is listed, which can only turn a
+clean pull request into a recorded false red and delay promotion, never
+hasten it.
 
 A `true` on a pull request that touches none is a false red: it is recorded
 with its `over` rows, it restarts the count and it is a reason to re-measure
@@ -804,6 +807,8 @@ Promotion is then a separate, small change (`ab.compare` adds the rule to its
 failures).
 
 The scoring command is `scripts/score_ab_shadow_rule.sh`, run from a clone
+**at an up-to-date `main`** (it classifies against the clone's HEAD closure,
+so an old checkout scores today's pull requests against yesterday's code),
 with the dev environment installed and an authenticated `gh`
 (`SINCE` is the day the shadow rule merged; `PYTHON=` picks the interpreter):
 
@@ -817,16 +822,28 @@ still names the pull request after it has merged, where the run's own
 `pull_requests` is `[]`) and the pull request's changed files from
 `.../pulls/<n>/files`, and prints one row per pull request: run id, pull
 request, how many of its files are benchmarked code (0 counts toward the 20),
-`count_would_fail`, `over_count` and the suite median. The count is the rows
-with `touches` 0 and `false`; any with 0 and `true` are the false reds to
-record. A summary goes to stderr, so no runs yet is a sentence. It fails
-loudly instead of printing a clean-looking nothing: a lookup or listing that
-fails is an `ERROR` row (never a 0) and exit status 1; outside a clone, on a
-failed `gh run list`, or with a helper that fails or prints nothing it exits
+`count_would_fail`, `over_count`, the suite median, the head SHA of every run
+the row scored, and a note. The count is the rows with `touches` 0 and
+`false`; any with 0 and `true` are the false reds to record.
+
+A pull request has one row, and it is **red if any of its evaluated runs was
+red**: a push after review must not erase an earlier false red (`run`,
+`over_count` and `median` are then the newest red run's). When the pull
+request's newest run was not scored (still running, no artifact, not gated)
+the note says so, because `touches` comes from the pull request's current
+file list. A run not yet completed is a named `in_progress` bucket in the
+summary, never an error. A summary goes to stderr, so no runs yet is a
+sentence, and it warns when the listing reached `AB_SCORE_LIMIT` (500) and
+older runs may be missing. It fails loudly instead of printing a
+clean-looking nothing: a lookup or listing that fails is an `ERROR` row
+(never a 0) and exit status 1; a malformed date or limit, running outside a
+clone, a failed `gh run list` or a benchmark run that cannot collect exits
 2. Runs from before the shadow rule and runs that were not gated have no
 `count_would_fail` and are skipped, never scored as clean.
-`tests/unit/ci/test_score_ab_shadow_rule.py` runs it against a stub `gh`,
-including the merged-pull-request lookup.
+`tests/unit/ci/test_score_ab_shadow_rule.py` runs it against a stub `gh`
+that serves recorded API JSON through the script's own `--jq` expressions
+(fixtures in `tests/unit/ci/fixtures/ab_shadow/`), including the
+merged-pull-request lookup.
 
 **Best of two runs per side: measured, not adopted.** Running each side
 twice and taking the better observation per row (what `load` already does
