@@ -1,4 +1,5 @@
 import json
+import re
 from typing import (
     Any,
     NamedTuple,
@@ -337,7 +338,7 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     # everything after it render, and read, as code.
     head = _balance_code_fences(head)
     if tail.count("```") % 2:
-        tail = fixed_text_like(tail, "```\n") + tail
+        tail = fixed_text_like(tail, FENCE_OPEN) + tail
 
     elided = KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=dropped)
     return (
@@ -409,7 +410,9 @@ def _rewind_to_boundary(text: str, separators: tuple) -> str:
 # The reservation is otherwise pure loss: it is subtracted from the answer's
 # room whether or not repair fires, and for a KB answer with no fenced block it
 # never can.
-FENCE_REPAIR_RESERVE = len("\n```") + len("```\n")
+FENCE_CLOSE = "\n```"
+FENCE_OPEN = "```\n"
+FENCE_REPAIR_RESERVE = len(FENCE_CLOSE) + len(FENCE_OPEN)
 
 
 def _balance_code_fences(text: str) -> str:
@@ -424,20 +427,55 @@ def _balance_code_fences(text: str) -> str:
     """
     if text.count("```") % 2 == 0:
         return text
-    return text + fixed_text_like(text, "\n```")
+    return text + fixed_text_like(text, FENCE_CLOSE)
+
+
+# Appended to a tool result the tool loop cut at the cap (#1088).
+TOOL_RESULT_TRUNCATED_MARKER = "\n[truncated]"
+
+#: Everything ``fixed_text_like`` joins, but the elision notice: the end
+#: markers ("" when the answer already carries one) and the code fences.
+FIXED_TEXTS = frozenset(
+    {
+        "",
+        KB_QA_ANSWER_TRUNCATED_MARKER,
+        TOOL_RESULT_TRUNCATED_MARKER,
+        FENCE_OPEN,
+        FENCE_CLOSE,
+    }
+)
+_ELIDED_COUNT = "{dropped:,}"
+_ELIDED_HEAD, _ELIDED_TAIL = KB_QA_ANSWER_ELIDED_TEMPLATE.split(_ELIDED_COUNT)
+#: The elision notice with its count, and nothing else: the count formatted as
+#: ``{:,}`` formats a non-negative int — digits in groups of three.
+_ELIDED_NOTICE = re.compile(
+    re.escape(_ELIDED_HEAD) + r"\d{1,3}(?:,\d{3})*" + re.escape(_ELIDED_TAIL)
+)
 
 
 def fixed_text_like(text: str, fixed: str) -> str:
-    """``fixed`` — a marker or a fence these helpers write — in the kind of
-    ``text``, ready to join it.
+    """``fixed`` — a marker, a fence or the elision notice these helpers
+    write — in the kind of ``text``, ready to join it.
 
     A tool result is cut twice: by the formatter before redaction (plain text)
     and by the tool loop after it (minted case text, #1998), and minted text
     joined to a plain ``str`` raises. So beside a minted result the fixed text
-    is minted too, as text with no case content: every caller passes one of
-    this module's markers, a fence, or a count formatted into the elision
-    template, never anything the tool returned.
+    is minted too, as text with no case content (``non_case_text``).
+
+    That claim holds only for a closed set, checked here whatever ``text``
+    is: :data:`FIXED_TEXTS`, or the elision notice with nothing but its count
+    in it (:data:`KB_QA_ANSWER_ELIDED_TEMPLATE`). Anything else raises
+    ``ValueError``, so text with case content in it — a title, a note — cannot
+    be minted here as non-case: it needs a real mint at its own call site.
     """
+    if type(fixed) is not str or not (
+        fixed in FIXED_TEXTS or _ELIDED_NOTICE.fullmatch(fixed)
+    ):
+        raise ValueError(
+            "fixed_text_like joins only the truncation markers, the code fences "
+            "and the elision notice; any other text needs a real mint "
+            "(case_redacted, or non_case_text at a census-declared site)"
+        )
     if provenance(text) is not None:
         return non_case_text(fixed)
     return fixed

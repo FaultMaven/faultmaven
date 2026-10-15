@@ -62,9 +62,9 @@ SITES: dict[tuple[str, str], tuple[int, str]] = {
     ),
     (_TEXT_BUDGET, "fixed_text_like"): (
         1,
-        "the truncation and elision markers and code fences these helpers join "
-        "to a minted tool result: module constants, or a count formatted into "
-        "KB_QA_ANSWER_ELIDED_TEMPLATE; never text the tool returned",
+        "a closed set it checks itself: FIXED_TEXTS (the end markers and code "
+        "fences) or the elision notice with only its count in it; anything "
+        "else raises (test_fixed_text_like_1998.py)",
     ),
 }
 

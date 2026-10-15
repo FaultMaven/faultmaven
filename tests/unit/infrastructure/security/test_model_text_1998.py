@@ -276,6 +276,22 @@ class TestModelBoundaryRedacted:
 
 
 class TestModelOutput:
+    def test_an_object_in_content_is_json_encoded_not_refused(self):
+        """An adapter copies a tool call's arguments OBJECT into ``content``
+        when the server wrote no text (#2033 review, F2): encoded like
+        non-str arguments, so the loop carries on."""
+        response = LLMResponse(
+            content={"query": "q"},
+            confidence=1.0,
+            provider="p",
+            model="m",
+            tokens_used=1,
+            response_time_ms=1,
+        )
+        message = model_output(response)
+        assert message["content"] == '{"query": "q"}'
+        assert provenance(message["content"]) == (SOURCE_MODEL_OUTPUT, False)
+
     def test_the_reply_is_an_assistant_message_minted_as_model_output(self):
         response = LLMResponse(
             content="calling a tool",

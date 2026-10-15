@@ -81,6 +81,7 @@ from .text_budget import (
     KB_QA_ANSWER_TRUNCATED_MARKER,
     KB_QA_RELAY_PREFIX,
     KB_QA_RELAY_SUFFIX,
+    TOOL_RESULT_TRUNCATED_MARKER,
     _elide_answer_middle,
     _is_context_length_error,
     _tool_loop_message_tokens,
@@ -1400,7 +1401,7 @@ class StructuredOutputGenerator:
         other tool) take the plain head-first cut.
         """
         cap = cls.TOOL_RESULT_MAX_CHARS
-        marker = "\n[truncated]"
+        marker = TOOL_RESULT_TRUNCATED_MARKER
 
         protected = len(KB_QA_RELAY_SUFFIX) if tool_name == "kb_qa" else 0
         if protected and len(text) > protected + len(marker):

@@ -343,10 +343,22 @@ def model_output(response: Any) -> Dict[str, Any]:
     Arguments that are not a ``str`` are JSON-encoded, the form every adapter
     reads.
 
+    The echo is the OpenAI chat format, whatever shape the server answered
+    in: ``content`` text (JSON-encoded when an adapter stored an object
+    there), and each call's ``function`` as exactly ``name`` then
+    ``arguments`` (a JSON string). A server that deviates — arguments as an
+    object, the keys in another order, an extra key — is echoed in that
+    normalised shape, which the specification takes on input.
+
     A constructed ``LLMResponse`` can pass anything through here: that is a
     deliberate act, visible where it is written.
     """
     content = response.content or ""
+    if not isinstance(content, str):
+        # A server that answers a tool call with no text can have its
+        # arguments object copied into ``content`` by the adapter: encoded,
+        # like non-str arguments below, never refused (#2033 review, F2).
+        content = json.dumps(content)
     message: Dict[str, Any] = {
         "role": "assistant",
         "content": _mint(
