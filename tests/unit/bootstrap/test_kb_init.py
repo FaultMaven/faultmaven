@@ -745,8 +745,10 @@ class TestReconcileVectors:
 
     @staticmethod
     def _service(*, chroma_parents, delete_batches):
+        index = {p: [f"{p}_chunk_{n}" for n in range(3)] for p in chroma_parents}
+
         async def _list():
-            return {p: [f"{p}_chunk_{n}" for n in range(3)] for p in chroma_parents}
+            return {p: list(c) for p, c in index.items() if c}
 
         async def _delete_observed(chunk_ids, collection_name=None):
             ids = list(chunk_ids)
@@ -754,6 +756,10 @@ class TestReconcileVectors:
             delete_batches.append(
                 list(dict.fromkeys(c.rsplit("_chunk_", 1)[0] for c in ids))
             )
+            for chunk_id in ids:
+                parent = chunk_id.rsplit("_chunk_", 1)[0]
+                if chunk_id in index.get(parent, []):
+                    index[parent].remove(chunk_id)
             return ids
 
         vector_store = MagicMock()

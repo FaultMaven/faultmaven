@@ -658,8 +658,26 @@ async def _reconcile_vectors(
         logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
         return ReconcileResult([], [], orphaned_rows)
 
-    # A chunk absent from the delete's answer was already gone when it ran. One
-    # still in the store after the pass cannot occur: the delete addressed it by id.
+    # Report only parents with no chunk left: a chunk written for a parent
+    # between the listing and the delete survives an id delete (#2017).
+    targeted = orphaned_vectors + unpublished_with_vectors
+    if deleted:
+        try:
+            remaining = await vector_store.list_all_chunk_ids_by_parent()
+        except Exception as exc:
+            logger.warning(f"Reconcile: could not re-list after delete: {exc}")
+            return ReconcileResult([], [], orphaned_rows)
+        survivors = {p for p in targeted if remaining.get(p)}
+        for parent in sorted(survivors):
+            logger.warning(
+                f"KB consistency: built-in {parent} still has chunk(s) after the "
+                "reconcile delete (written since the listing) — not reported "
+                "cleaned; the next boot sees it again."
+            )
+        orphaned_vectors = [p for p in orphaned_vectors if p not in survivors]
+        unpublished_with_vectors = [
+            p for p in unpublished_with_vectors if p not in survivors
+        ]
     logger.info(
         f"Reconcile: deleted {len(deleted)} vector chunk(s) across "
         f"{len(orphaned_vectors)} built-in parent(s) with no knowledge_items row "

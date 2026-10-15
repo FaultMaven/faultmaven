@@ -1244,9 +1244,15 @@ def test_the_unfiltered_kb_readers_stay_id_only():
             )
             global_content_reads.append(node.lineno)
             continue
-        if "where" not in kwargs and "ids" not in kwargs:
-            # A get addressed by explicit chunk ids (the observed-id delete,
-            # #2017) is not a scan: it can name only what the caller listed.
+        ids_kw = kwargs.get("ids")
+        # A get addressed by explicit chunk ids (the observed-id delete, #2017)
+        # is not a scan: it can name only what the caller listed. ``ids=None``
+        # (or an empty literal) is a full scan and still counts.
+        addressed = ids_kw is not None and not (
+            (isinstance(ids_kw, ast.Constant) and ids_kw.value is None)
+            or (isinstance(ids_kw, (ast.List, ast.Tuple)) and not ids_kw.elts)
+        )
+        if "where" not in kwargs and not addressed:
             unfiltered.append(node.lineno)
 
     assert len(unfiltered) == 1, (
