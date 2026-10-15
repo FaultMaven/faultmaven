@@ -15,6 +15,7 @@ from pathlib import Path
 
 import chromadb
 import pytest
+from chromadb.config import Settings as ChromaSettings
 from chromadb.errors import NotFoundError
 from packaging.requirements import Requirement
 from packaging.version import Version
@@ -31,7 +32,18 @@ def test_both_stores_catch_the_class_the_client_raises():
 
 
 def test_ephemeral_client_raises_not_found_for_a_missing_collection():
-    client = chromadb.EphemeralClient()
+    # Pinned settings: a bare ``EphemeralClient()`` is order-fragile (#823).
+    # chromadb caches one System per identifier and refuses a second client
+    # whose ``Settings`` differ, and ``Settings.environment`` follows the
+    # ambient ENVIRONMENT other tests change.
+    client = chromadb.EphemeralClient(
+        settings=ChromaSettings(
+            anonymized_telemetry=False,
+            allow_reset=False,
+            environment="",
+            is_persistent=False,
+        )
+    )
     with pytest.raises(NotFoundError):
         client.get_collection("missing-2010")
 
