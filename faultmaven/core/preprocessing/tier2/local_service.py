@@ -22,6 +22,7 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
@@ -92,7 +93,8 @@ class LocalTier2Service:
         try:
 
             async def _analyze(cap: int):
-                return await self.llm_client.route(
+                return await route_model_call(
+                    self.llm_client,
                     messages=messages,
                     max_tokens=cap,
                 )

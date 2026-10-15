@@ -51,7 +51,7 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
-from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.dispatch import route_model_call, send_to_model
 from faultmaven.infrastructure.llm.json_response import (
     json_payload_text,
 )
@@ -747,7 +747,7 @@ class StructuredOutputGenerator:
                     # hands its ``_generate`` plain values (#1998).
                     result = await send_to_model(provider, **call_kwargs)
                 else:
-                    result = await provider.route(**call_kwargs)
+                    result = await route_model_call(provider, **call_kwargs)
                 if self.deps.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
                     # so this call bypassed the registry metering chokepoint.
@@ -1829,7 +1829,9 @@ class StructuredOutputGenerator:
                     generate_params["response_format"] = strategy.response_format
 
             try:
-                response = await self.deps.llm_provider.route(**generate_params)
+                response = await route_model_call(
+                    self.deps.llm_provider, **generate_params
+                )
             except Exception as gen_exc:
                 # Some providers can see the cut themselves and raise before
                 # there is any body to parse — Gemini does this on

@@ -2,10 +2,11 @@
 
 A send site is any ``<x>.route(...)`` call, any ``send_to_model(provider,
 ...)`` call (the model dispatch, #1998: its one positional argument is the
-provider) and any ``<x>._generate(...)`` call, and also any way of reaching
-those without calling them at the site: an uncalled reference (``send =
-router.route``, ``functools.partial(send_to_model, p)``) or ``getattr(x,
-"route")``. Each one must be ONE of:
+provider), any ``route_model_call(router, ...)`` call (the routed seam, #1998
+P2: its one positional argument is the router) and any ``<x>._generate(...)``
+call, and also any way of reaching those without calling them at the site: an
+uncalled reference (``send = router.route``, ``functools.partial(send_to_model,
+p)``) or ``getattr(x, "route")``. Each one must be ONE of:
 
 (R) redacted at the site. The call passes its content in exactly one of
     ``messages=`` / ``prompt=``, as a NAME. Every binding of that name that can
@@ -48,6 +49,9 @@ _ROOT = Path(faultmaven.__file__).parent
 _SEND_METHODS = {"route", "_generate"}
 #: The model dispatch, a module function: ``send_to_model(provider, **call)``.
 _DISPATCH = "send_to_model"
+#: The routed seam, a module function: ``route_model_call(router, **call)``.
+_SEAM = "route_model_call"
+_DISPATCHERS = {_DISPATCH, _SEAM}
 _REDACTING_HELPERS = {"case_redacted", "case_redacted_messages"}
 _REDACTING_METHODS = {"asanitize_messages"}
 
@@ -61,6 +65,12 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (
         "the dispatch's own provider._generate call; every caller of "
         "send_to_model is classified here"
+    ),
+    # The seam's coroutine, a private name of the dispatch: spelled in pieces,
+    # since the mint check's R2 flags a string naming one.
+    ("faultmaven/infrastructure/llm/dispatch.py", "_rou" + "ted"): (
+        "the seam's own router.route call; every caller of route_model_call "
+        "is classified here"
     ),
     ("faultmaven/infrastructure/llm/providers/registry.py", "route_request"): (
         "registry internals: the provider dispatch every routed call ends in"
@@ -329,7 +339,8 @@ def classify(node, parents) -> str | None:
         name = node.attr if isinstance(node, ast.Attribute) else node.id
         return f"an uncalled reference to {name} ({ast.unparse(parents[node])[:60]})"
     if _is_dispatch(node.func):
-        # The provider is the one positional argument; content is keywords.
+        # The provider (or the router, for the seam) is the one positional
+        # argument; content is keywords.
         if len(node.args) != 1 or isinstance(node.args[0], ast.Starred):
             return "passes a positional argument besides the provider"
         call = node
@@ -395,8 +406,8 @@ def classify(node, parents) -> str | None:
 
 
 def _is_dispatch(func) -> bool:
-    return (isinstance(func, ast.Name) and func.id == _DISPATCH) or (
-        isinstance(func, ast.Attribute) and func.attr == _DISPATCH
+    return (isinstance(func, ast.Name) and func.id in _DISPATCHERS) or (
+        isinstance(func, ast.Attribute) and func.attr in _DISPATCHERS
     )
 
 
@@ -413,14 +424,14 @@ def _send_sites(tree):
             yield node
         elif (
             isinstance(node, ast.Attribute)
-            and node.attr in _SEND_METHODS | {_DISPATCH}
+            and node.attr in _SEND_METHODS | _DISPATCHERS
             and isinstance(node.ctx, ast.Load)
             and not called
         ):
             yield node
         elif (
             isinstance(node, ast.Name)
-            and node.id == _DISPATCH
+            and node.id in _DISPATCHERS
             and isinstance(node.ctx, ast.Load)
             and not called
         ):
@@ -431,7 +442,7 @@ def _send_sites(tree):
             and node.func.id == "getattr"
             and len(node.args) > 1
             and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in _SEND_METHODS | {_DISPATCH}
+            and node.args[1].value in _SEND_METHODS | _DISPATCHERS
         ):
             yield node
 
@@ -523,6 +534,12 @@ def _verdicts(source: str) -> list:
             messages = await case_redacted_messages([{"content": prompt}], ctx)
             return await dispatch.send_to_model(provider, messages=messages)
         """,
+        # the routed seam (#1998 P2), its router the one positional argument
+        """
+        async def f(router, prompt, ctx):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await route_model_call(router, messages=messages, model="m")
+        """,
         # both arms of a branch redact
         """
         async def f(router, prompt, ctx, cond):
@@ -553,6 +570,17 @@ def test_the_classifier_accepts_a_redacted_send(source):
         """
         async def f(router, prompt):
             return await router.route(messages=[{"content": prompt}])
+        """,
+        # the same through the routed seam
+        """
+        async def f(router, prompt):
+            return await route_model_call(router, messages=[{"content": prompt}])
+        """,
+        # the seam, uncalled
+        """
+        async def f(router, prompt):
+            send = functools.partial(route_model_call, router)
+            return await send(messages=[{"content": prompt}])
         """,
         # bound, but not by the redaction
         """

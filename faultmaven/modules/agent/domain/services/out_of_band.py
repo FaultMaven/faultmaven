@@ -54,6 +54,7 @@ import re
 from enum import Enum
 from typing import Any, Optional
 
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.security.case_redaction import (
     case_redacted_messages,
@@ -335,7 +336,8 @@ class OutOfBandTriage:
                 [{"role": "user", "content": prompt}], redaction_ctx
             )
             response = await asyncio.wait_for(
-                self.llm_router.route(
+                route_model_call(
+                    self.llm_router,
                     messages=messages,
                     model=settings.llm.get_classifier_model(),
                     max_tokens=TRIAGE_MAX_TOKENS,
@@ -637,7 +639,8 @@ async def _one_answer_attempt(
     messages = await case_redacted_messages(
         [{"role": "user", "content": prompt}], redaction_ctx
     )
-    response = await llm_router.route(
+    response = await route_model_call(
+        llm_router,
         messages=messages,
         model=model,
         max_tokens=ANSWER_MAX_TOKENS,

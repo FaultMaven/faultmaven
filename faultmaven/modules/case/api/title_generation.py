@@ -29,6 +29,7 @@ from faultmaven.exceptions import (
     ServiceUnavailableException,
     ValidationException,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
     case_redacted,
@@ -1515,7 +1516,8 @@ async def _generate_title_with_llm(
         prompt = await case_redacted(prompt, redaction_ctx)
 
         # Generate title using LLM with optimized settings
-        response = await llm_provider.route(
+        response = await route_model_call(
+            llm_provider,
             prompt=prompt,
             max_tokens=LLM_TITLE_MAX_TOKENS,
             temperature=LLM_TITLE_TEMPERATURE,
