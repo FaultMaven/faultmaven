@@ -1,9 +1,11 @@
 """#1956: every LLM send site in the package is classified, by AST.
 
-A send site is any ``<x>.route(...)`` / ``<x>.generate(...)`` call, and also
-any way of reaching those methods without calling them at the site: an
-uncalled reference (``send = router.route``, ``functools.partial(router.route,
-...)``) or ``getattr(x, "route")``. Each one must be ONE of:
+A send site is any ``<x>.route(...)`` call, any ``send_to_model(provider,
+...)`` call (the model dispatch, #1998: its one positional argument is the
+provider) and any ``<x>._generate(...)`` call, and also any way of reaching
+those without calling them at the site: an uncalled reference (``send =
+router.route``, ``functools.partial(send_to_model, p)``) or ``getattr(x,
+"route")``. Each one must be ONE of:
 
 (R) redacted at the site. The call passes its content in exactly one of
     ``messages=`` / ``prompt=``, as a NAME. Every binding of that name that can
@@ -43,18 +45,22 @@ import faultmaven
 pytestmark = pytest.mark.unit
 
 _ROOT = Path(faultmaven.__file__).parent
-_SEND_METHODS = {"route", "generate"}
+_SEND_METHODS = {"route", "_generate"}
+#: The model dispatch, a module function: ``send_to_model(provider, **call)``.
+_DISPATCH = "send_to_model"
 _REDACTING_HELPERS = {"case_redacted", "case_redacted_messages"}
 _REDACTING_METHODS = {"asanitize_messages"}
 
 #: (path relative to the repo, innermost enclosing function) -> why the site
 #: needs no case pass of its own.
 ALLOWLIST: dict[tuple[str, str], str] = {
-    ("faultmaven/api/routes/admin_config.py", "check_llm_connection"): (
-        "a constant connection-test prompt; no case content"
-    ),
-    ("faultmaven/infrastructure/llm/router.py", "generate"): (
-        "router internals: ILLMProvider.generate delegating to route"
+    (
+        "faultmaven/infrastructure/llm/providers/registry.py",
+        "send_connection_check",
+    ): ("a constant connection-test prompt; no case content"),
+    ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (
+        "the dispatch's own provider._generate call; every caller of "
+        "send_to_model is classified here"
     ),
     ("faultmaven/infrastructure/llm/providers/registry.py", "route_request"): (
         "registry internals: the provider dispatch every routed call ends in"
@@ -319,15 +325,20 @@ def _parameters(func) -> set[str]:
 
 def classify(node, parents) -> str | None:
     """``None`` when the site is redacted at the send (R), else why not."""
-    if isinstance(node, ast.Attribute):
-        return (
-            f"an uncalled reference to .{node.attr} ({ast.unparse(parents[node])[:60]})"
-        )
-    if isinstance(node.func, ast.Name):  # getattr(x, "route")
-        return f"reaches .{node.args[1].value} through getattr"
-    call = node
-    if call.args:
-        return "passes a positional argument"
+    if isinstance(node, (ast.Attribute, ast.Name)):
+        name = node.attr if isinstance(node, ast.Attribute) else node.id
+        return f"an uncalled reference to {name} ({ast.unparse(parents[node])[:60]})"
+    if _is_dispatch(node.func):
+        # The provider is the one positional argument; content is keywords.
+        if len(node.args) != 1 or isinstance(node.args[0], ast.Starred):
+            return "passes a positional argument besides the provider"
+        call = node
+    elif isinstance(node.func, ast.Name):  # getattr(x, "route")
+        return f"reaches {node.args[1].value} through getattr"
+    else:
+        call = node
+        if call.args:
+            return "passes a positional argument"
     sent = {k.arg: k.value for k in call.keywords if k.arg in _CONTENT_KWARGS}
     if not sent:
         return "no messages=/prompt= argument the guard can follow"
@@ -383,22 +394,35 @@ def classify(node, parents) -> str | None:
     return f"{name!r} is not bound in an enclosing function"
 
 
+def _is_dispatch(func) -> bool:
+    return (isinstance(func, ast.Name) and func.id == _DISPATCH) or (
+        isinstance(func, ast.Attribute) and func.attr == _DISPATCH
+    )
+
+
 def _send_sites(tree):
     parents = _parents(tree)
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _SEND_METHODS
+        called = isinstance(parents.get(node), ast.Call) and parents[node].func is node
+        if isinstance(node, ast.Call) and (
+            _is_dispatch(node.func)
+            or (
+                isinstance(node.func, ast.Attribute) and node.func.attr in _SEND_METHODS
+            )
         ):
             yield node
         elif (
             isinstance(node, ast.Attribute)
-            and node.attr in _SEND_METHODS
+            and node.attr in _SEND_METHODS | {_DISPATCH}
             and isinstance(node.ctx, ast.Load)
-            and not (
-                isinstance(parents.get(node), ast.Call) and parents[node].func is node
-            )
+            and not called
+        ):
+            yield node
+        elif (
+            isinstance(node, ast.Name)
+            and node.id == _DISPATCH
+            and isinstance(node.ctx, ast.Load)
+            and not called
         ):
             yield node
         elif (
@@ -407,7 +431,7 @@ def _send_sites(tree):
             and node.func.id == "getattr"
             and len(node.args) > 1
             and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in _SEND_METHODS
+            and node.args[1].value in _SEND_METHODS | {_DISPATCH}
         ):
             yield node
 
@@ -491,7 +515,13 @@ def _verdicts(source: str) -> list:
         async def f(provider, ctx):
             prompt = f"Title: {raw}"
             prompt = await case_redacted(prompt, ctx)
-            return await provider.generate(prompt=prompt)
+            return await send_to_model(provider, prompt=prompt)
+        """,
+        # the dispatch, reached by attribute
+        """
+        async def f(provider, prompt, ctx):
+            messages = await case_redacted_messages([{"content": prompt}], ctx)
+            return await dispatch.send_to_model(provider, messages=messages)
         """,
         # both arms of a branch redact
         """
@@ -545,12 +575,29 @@ def test_the_classifier_accepts_a_redacted_send(source):
         # a splat
         """
         async def f(provider, kwargs):
-            return await provider.generate(**kwargs)
+            return await send_to_model(provider, **kwargs)
         """,
-        # positional
+        # positional content beside the provider
         """
         async def f(provider, prompt):
-            return await provider.generate(prompt)
+            return await send_to_model(provider, prompt)
+        """,
+        # the provider splatted in
+        """
+        async def f(args, prompt, ctx):
+            prompt = await case_redacted(prompt, ctx)
+            return await send_to_model(*args, prompt=prompt)
+        """,
+        # a provider's transport called directly
+        """
+        async def f(provider, prompt):
+            return await provider._generate(prompt=prompt)
+        """,
+        # the dispatch, uncalled
+        """
+        async def f(provider, prompt):
+            send = functools.partial(send_to_model, provider)
+            return await send(prompt=prompt)
         """,
         # a redaction that is not awaited is a coroutine, not text
         """
@@ -584,7 +631,7 @@ def test_the_classifier_accepts_a_redacted_send(source):
         """
         async def f(provider, prompt):
             prompt = await case_redacted(prompt, None)
-            return await provider.generate(prompt=prompt)
+            return await send_to_model(provider, prompt=prompt)
         """,
         # mutated after the redaction
         """

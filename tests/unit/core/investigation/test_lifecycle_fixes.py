@@ -26,7 +26,7 @@ from faultmaven.modules.case.contracts import (
 
 
 class MockLLMProvider(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return "{}"
 
     async def generate_stream(self, prompt, **kwargs):
@@ -50,7 +50,7 @@ class MockLLMProvider(ILLMProvider):
 @pytest.fixture
 def mock_llm():
     llm = MockLLMProvider()
-    llm.generate = AsyncMock()
+    llm.route = AsyncMock()
     return llm
 
 
@@ -148,7 +148,7 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
             },
         }
     )
-    mock_llm.generate.return_value = mock_response
+    mock_llm.route.return_value = mock_response
 
     result = await engine.process_turn(base_case, "Check logs", redaction_ctx=None)
     case = result["case_updated"]
@@ -195,7 +195,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
     # Scenarios to test:
 
     # 1. Milestone Completed
-    mock_llm.generate.return_value = json.dumps(
+    mock_llm.route.return_value = json.dumps(
         {
             "agent_response": "Done",
             "evidence_trail": {
@@ -218,7 +218,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
     # ... actually integration test is cleaner:
 
     # 3. Data Provided (Evidence Added)
-    mock_llm.generate.return_value = json.dumps(
+    mock_llm.route.return_value = json.dumps(
         {
             "agent_response": "Data",
             "state_updates": {

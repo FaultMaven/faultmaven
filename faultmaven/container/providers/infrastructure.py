@@ -80,7 +80,7 @@ def create_da_provider() -> tuple[Any | None, str | None]:
         Tuple of (provider_instance, model_name) or (None, None).
     """
     from faultmaven.config.settings import get_settings
-    from faultmaven.infrastructure.llm.providers import get_registry
+    from faultmaven.infrastructure.llm.providers.registry import get_registry
 
     settings = get_settings()
 

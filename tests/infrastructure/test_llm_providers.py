@@ -18,6 +18,15 @@ from aiohttp.test_utils import TestServer
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
 from faultmaven.infrastructure.llm.router import LLMRouter
+from tests.utils import sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused(own_loopback=True):
+        yield
 
 
 @pytest.fixture
@@ -176,7 +185,7 @@ class TestLLMProviderRealBehavior:
             # import machinery), causing the top-level `reset_settings` to
             # clear _settings_instance in a stale module copy.
             import faultmaven.config.settings as _settings_mod
-            import faultmaven.infrastructure.llm.providers as _providers_mod
+            import faultmaven.infrastructure.llm.providers.registry as _providers_mod
 
             _settings_mod.reset_settings()
             _providers_mod.reset_registry()
@@ -249,7 +258,7 @@ class TestLLMProviderRealBehavior:
         # Tell router to use OpenAI first to test its rate limit
         os.environ["CHAT_PROVIDER"] = "openai"
         import faultmaven.config.settings as _settings_mod
-        import faultmaven.infrastructure.llm.providers as _providers_mod
+        import faultmaven.infrastructure.llm.providers.registry as _providers_mod
 
         _settings_mod.reset_settings()
         _providers_mod.reset_registry()
@@ -554,7 +563,7 @@ class TestRealProviderIntegration:
             },
         ):
             import faultmaven.config.settings as _sm
-            import faultmaven.infrastructure.llm.providers as _pm
+            import faultmaven.infrastructure.llm.providers.registry as _pm
 
             _sm.reset_settings()
             _pm.reset_registry()
@@ -580,7 +589,7 @@ class TestRealProviderIntegration:
             {"OPENAI_API_KEY": "test-key", "OPENAI_API_BASE": str(server.make_url(""))},
         ):
             import faultmaven.config.settings as _sm
-            import faultmaven.infrastructure.llm.providers as _pm
+            import faultmaven.infrastructure.llm.providers.registry as _pm
 
             _sm.reset_settings()
             _pm.reset_registry()
@@ -663,7 +672,7 @@ class TestRealProviderIntegration:
             },
         ):
             import faultmaven.config.settings as _sm
-            import faultmaven.infrastructure.llm.providers as _pm
+            import faultmaven.infrastructure.llm.providers.registry as _pm
 
             _sm.reset_settings()
             _pm.reset_registry()
@@ -689,7 +698,7 @@ class TestRealProviderIntegration:
             {"OPENAI_API_KEY": "test-key", "OPENAI_API_BASE": str(server.make_url(""))},
         ):
             import faultmaven.config.settings as _sm
-            import faultmaven.infrastructure.llm.providers as _pm
+            import faultmaven.infrastructure.llm.providers.registry as _pm
 
             _sm.reset_settings()
             _pm.reset_registry()
@@ -735,7 +744,7 @@ class TestRealProviderIntegration:
             },
         ):
             import faultmaven.config.settings as _sm
-            import faultmaven.infrastructure.llm.providers as _pm
+            import faultmaven.infrastructure.llm.providers.registry as _pm
 
             _sm.reset_settings()
             _pm.reset_registry()

@@ -39,9 +39,14 @@ class OpenAIProvider(BaseLLMProvider):
         # one round trip by a fresh process.
         self._token_param_learned: Dict[str, str] = {}
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "openai"
+
     @property
     def provider_name(self) -> str:
-        return "openai"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Check if OpenAI provider is properly configured"""
@@ -151,7 +156,7 @@ class OpenAIProvider(BaseLLMProvider):
         normalizes the legacy parameter itself) can opt out.
 
         This is an EXPECTATION, not a requirement (#510): a wrong answer here
-        costs one round trip, because ``generate()`` reads the endpoint's own
+        costs one round trip, because ``_generate()`` reads the endpoint's own
         rejection and re-sends under the other name. See
         ``_COMPLETION_TOKENS_MODEL_FAMILIES``.
         """
@@ -318,7 +323,7 @@ class OpenAIProvider(BaseLLMProvider):
         """The effort this call SHAPE gets by default, or None for no default.
 
         Single source for a policy that was previously written twice — once as
-        two guarded assignments in ``generate()`` and once as a ternary in
+        two guarded assignments in ``_generate()`` and once as a ternary in
         ``_apply_reasoning_intent`` — in different vocabulary. They agreed, but
         the next family verified for ``"none"`` on structured calls would be
         added to one and not the other, and the stale copy would still look
@@ -499,7 +504,7 @@ class OpenAIProvider(BaseLLMProvider):
             # log has to say which — an operator sent after "/v1/responses"
             # for a model that has no reasoning at all is sent nowhere.
             if defaults_reasoning:
-                # ``"none"`` was already forced by generate(): the API rejects
+                # ``"none"`` was already forced by _generate(): the API rejects
                 # tools alongside reasoning on this family.
                 if intent is ReasoningIntent.INFERENCE:
                     self.logger.warning(
@@ -577,7 +582,7 @@ class OpenAIProvider(BaseLLMProvider):
                 or self._STRUCTURED_REASONING_EFFORT
             )
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,
@@ -765,7 +770,7 @@ class OpenAIProvider(BaseLLMProvider):
         (``LLMErrorHandler.with_retry``) and must not become one:
 
         * It is bounded at exactly ONE re-send, in-line, and the first attempt's
-          exception never escapes ``generate()`` when it fires — so it consumes
+          exception never escapes ``_generate()`` when it fires — so it consumes
           no part of the ladder's budget for transient failures, and the
           router's circuit breaker records no failure for a call that succeeded.
         * It fires only on a permanent rejection naming the parameter we sent
@@ -819,7 +824,7 @@ class OpenAIProvider(BaseLLMProvider):
     ) -> LLMResponse:
         """POST one prepared /chat/completions body and read the answer.
 
-        Split out of ``generate()`` so the request can be issued a second time
+        Split out of ``_generate()`` so the request can be issued a second time
         under the other token-cap spelling (#510) without duplicating the
         response parsing, and so the retry is visibly ONE re-send of the SAME
         prepared payload rather than a second trip through payload assembly.

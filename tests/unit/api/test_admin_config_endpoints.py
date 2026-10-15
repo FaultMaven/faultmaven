@@ -7,6 +7,7 @@ Tests:
 - GET  /api/v1/admin/config/status   — Environment status
 """
 
+from types import MethodType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from faultmaven.api.routes.admin_config import (
     update_llm_config,
 )
 from faultmaven.config.settings import LLM_MODEL_TASKS, Environment, LLMProvider
+from faultmaven.infrastructure.llm.providers.registry import ProviderRegistry
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
@@ -101,10 +103,15 @@ def mock_llm_provider():
 
     # Provider access for connection test
     mock_anthropic = MagicMock()
-    mock_anthropic.generate = AsyncMock(
+    mock_anthropic._generate = AsyncMock(
         return_value=MagicMock(model="claude-3-5-sonnet-20241022")
     )
     registry.get_provider.return_value = mock_anthropic
+    # The real send, so the check goes through the model dispatch to the
+    # provider double's ``_generate`` (#1998).
+    registry.send_connection_check = MethodType(
+        ProviderRegistry.send_connection_check, registry
+    )
 
     provider.registry = registry
     return provider
@@ -789,7 +796,7 @@ class TestLLMConnectionCheck:
             """Stands in for the provider SDK's own error class."""
 
         mock_provider = MagicMock()
-        mock_provider.generate = AsyncMock(
+        mock_provider._generate = AsyncMock(
             side_effect=AuthenticationError(
                 "invalid x-api-key at https://api.anthropic.com/v1/messages"
             )

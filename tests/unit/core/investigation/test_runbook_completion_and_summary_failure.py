@@ -76,7 +76,7 @@ _FILE_ID = "file_0123456789ab"
 @pytest.fixture
 def mock_llm():
     llm = MagicMock()
-    llm.generate = AsyncMock(return_value=MagicMock())
+    llm.route = AsyncMock(return_value=MagicMock())
     return llm
 
 

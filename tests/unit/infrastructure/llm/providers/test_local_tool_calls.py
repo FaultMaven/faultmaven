@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
 
@@ -76,8 +77,11 @@ class TestLocalToolCallParsing:
         }
 
         with patch("aiohttp.ClientSession", return_value=_mock_session(resp)):
-            result = await provider.generate(
-                "investigate", tools=[{"type": "function"}], tool_choice="required"
+            result = await send_to_model(
+                provider,
+                prompt="investigate",
+                tools=[{"type": "function"}],
+                tool_choice="required",
             )
 
         assert isinstance(result, LLMResponse)
@@ -95,6 +99,6 @@ class TestLocalToolCallParsing:
             "usage": {"total_tokens": 5},
         }
         with patch("aiohttp.ClientSession", return_value=_mock_session(resp)):
-            result = await provider.generate("hi")
+            result = await send_to_model(provider, prompt="hi")
         assert result.content == "Hello there"
         assert result.tool_calls is None

@@ -426,11 +426,7 @@ async def check_llm_connection(
 
         # Send a minimal test prompt directly to the provider
         start_time = time.monotonic()
-        response = await provider.generate(
-            prompt="Say hello",
-            max_tokens=50,
-            temperature=0.0,
-        )
+        response = await registry.send_connection_check(provider)
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
         return LLMConnectionTestResponse(

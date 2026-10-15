@@ -104,7 +104,7 @@ def _service(case: Case, context: str = "") -> AsyncMock:
 def _model(content: str) -> MagicMock:
     """A model double answering ``content`` (no network, no live call)."""
     provider = MagicMock()
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         return_value=LLMResponse(
             content=content,
             confidence=0.9,
@@ -207,7 +207,7 @@ async def test_the_extractive_title_names_the_type_never_the_value(
     service.update_case.assert_awaited_once_with(
         case.case_id, {"title": expected}, "user_123"
     )
-    model.generate.assert_not_awaited()
+    model.route.assert_not_awaited()
     _assert_never_logged(caplog, SECRET, API_KEY, JWT)  # T11
 
 
@@ -318,8 +318,8 @@ async def test_a_model_title_carrying_a_secret_gets_the_scrubbed_fallback(
     with sanitize_pii_pinned(sanitize_pii), caplog.at_level(logging.DEBUG):
         title, source, _ = await _name(case, service, llm=model)
 
-    model.generate.assert_awaited_once()
-    prompt = model.generate.await_args.kwargs["prompt"]
+    model.route.assert_awaited_once()
+    prompt = model.route.await_args.kwargs["prompt"]
     assert SECRET not in prompt and "[password]" in prompt  # sources scrubbed
     assert (title, source) == (_T7_FALLBACK, "fallback")
     service.update_case.assert_awaited_once_with(
@@ -394,7 +394,7 @@ async def test_a_secret_only_case_is_too_thin_and_costs_no_model_call():
             await _name(case, service, llm=model)
 
     titler.assert_not_awaited()
-    model.generate.assert_not_awaited()
+    model.route.assert_not_awaited()
     service.update_case.assert_not_awaited()
 
 
@@ -513,7 +513,7 @@ async def test_the_fail_closed_posture_writes_nothing_while_the_analyzer_errors(
         with pytest.raises(_TitleDisclosureGateUnavailable):
             await _name(case, service, llm=model, sanitizer=sanitizer)
 
-    model.generate.assert_not_awaited()
+    model.route.assert_not_awaited()
     service.update_case.assert_not_awaited()
     (failure,) = _gate_failures(caplog)
     assert (failure.gate_stage, failure.reason) == (
@@ -747,7 +747,7 @@ async def test_no_fragment_reaches_the_title_prompt(sanitize_pii):
     with sanitize_pii_pinned(sanitize_pii):
         await _name(case, service, llm=model)
 
-    prompt = model.generate.await_args.kwargs["prompt"]
+    prompt = model.route.await_args.kwargs["prompt"]
     for _, fragments in (c.values for c in _FRAGMENT_CASES):
         for fragment in fragments:
             assert fragment.lower() not in prompt.lower(), fragment
@@ -928,7 +928,7 @@ async def test_the_hint_is_scrubbed_before_it_reaches_the_prompt(sanitize_pii):
             redis_client=None,
         )
 
-    prompt = model.generate.await_args.kwargs["prompt"]
+    prompt = model.route.await_args.kwargs["prompt"]
     assert SECRET not in prompt
     assert "the db password=[password] is the one being rejected" in prompt
 

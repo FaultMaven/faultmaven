@@ -1295,7 +1295,7 @@ async def test_the_schema_tool_path_keeps_the_repairs_on_the_response(answer):
         function={"name": D.__name__, "arguments": json.dumps(body)},
     )
     provider = AsyncMock()
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         return_value=LLMResponse(
             content="",
             confidence=0.9,
@@ -1348,7 +1348,7 @@ class _StrictLLM:
             include_schema_in_prompt=True,
             response_format={"type": "json_object"},
         )
-        self.generate = AsyncMock(return_value=json.dumps(body))
+        self.route = AsyncMock(return_value=json.dumps(body))
 
     def get_structured_output_strategy(self, schema):
         return self._strategy

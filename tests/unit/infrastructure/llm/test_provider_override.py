@@ -19,6 +19,16 @@ import pytest
 
 from faultmaven.config.settings import LLMProvider, LLMSettings
 from faultmaven.infrastructure.llm.providers.registry import ProviderRegistry
+from tests.utils import sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
+
 
 # ============================================================
 # Settings layer
@@ -106,7 +116,7 @@ class TestRegistryProviderOverride:
     def _build_registry_with_providers(self, provider_names: list[str]):
         """Construct a minimal registry pre-populated with mock providers.
 
-        Each provider is an AsyncMock whose .generate() returns a unique
+        Each provider is a mock whose ._generate() returns a unique
         LLMResponse so tests can assert which provider got the call.
         """
         from faultmaven.infrastructure.llm.providers.base import LLMResponse
@@ -138,7 +148,7 @@ class TestRegistryProviderOverride:
                     response_time_ms=0,
                 )
 
-            mock_provider.generate = _generate
+            mock_provider._generate = _generate
             registry._providers[name] = mock_provider
             registry._provider_states[name] = ProviderState(name=name)
 
@@ -211,7 +221,7 @@ class TestRegistryProviderOverride:
         async def _failing_generate(*args, **kwargs):
             raise RuntimeError("gemini upstream error")
 
-        registry._providers["gemini"].generate = _failing_generate
+        registry._providers["gemini"]._generate = _failing_generate
 
         # Fireworks would normally succeed via the fallback chain — but
         # provider_override locks us to gemini only.

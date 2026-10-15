@@ -40,7 +40,7 @@ def _llm_response(content: str, stop_reason: StopReason = StopReason.STOP):
 @pytest.fixture
 def mock_llm():
     llm = AsyncMock()
-    llm.generate = AsyncMock(
+    llm.route = AsyncMock(
         return_value=_llm_response(
             "Analysis: Found 2 errors related to connection timeout."
         )
@@ -106,7 +106,7 @@ class TestLocalTier2Analyze:
 
     @pytest.mark.asyncio
     async def test_llm_failure_fallback(self, service, context):
-        service.llm_client.generate.side_effect = RuntimeError("LLM offline")
+        service.llm_client.route.side_effect = RuntimeError("LLM offline")
         result = await service.analyze(
             file_ref="ref_1",
             query="error",
@@ -158,7 +158,7 @@ class TestLocalTier2Analyze:
         Something genuinely unexpected still degrades rather than failing the
         turn — the raw excerpts are returned, which is what the caller needs.
         """
-        service.llm_client.generate.return_value = "plain string response"
+        service.llm_client.route.return_value = "plain string response"
 
         result = await service.analyze(
             file_ref="ref_1",
@@ -183,7 +183,7 @@ class TestLocalTier2Analyze:
         """
         from faultmaven.infrastructure.llm.truncation import TRUNCATION_NOTICE
 
-        service.llm_client.generate = AsyncMock(
+        service.llm_client.route = AsyncMock(
             return_value=_llm_response("Found 2 errors rel", StopReason.MAX_TOKENS)
         )
 
@@ -195,9 +195,9 @@ class TestLocalTier2Analyze:
             redaction_ctx=None,
         )
 
-        assert service.llm_client.generate.await_count == 2
+        assert service.llm_client.route.await_count == 2
         caps = [
-            c.kwargs["max_tokens"] for c in service.llm_client.generate.await_args_list
+            c.kwargs["max_tokens"] for c in service.llm_client.route.await_args_list
         ]
         assert caps == [service.max_tokens, service.max_tokens * 2]
         assert "Found 2 errors rel" in result.answer

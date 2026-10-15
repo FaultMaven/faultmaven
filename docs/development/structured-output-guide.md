@@ -59,7 +59,8 @@ if strategy.include_schema_in_prompt:
     prompt = f"{prompt}\n\nSchema: {json.dumps(schema)}"
 
 # Use strategy-determined response_format
-response = await provider.generate(
+response = await send_to_model(
+    provider,
     prompt=prompt,
     response_format=strategy.response_format
 )
@@ -90,7 +91,7 @@ from faultmaven.utils.schema_converter import create_response_format_json_schema
 response_format = create_response_format_json_schema(InquiryResponse)
 
 # Use with LLM provider
-response = await llm_provider.generate(
+response = await llm_provider.route(
     prompt=prompt,
     max_tokens=4000,
     temperature=0.2,
@@ -235,7 +236,8 @@ if model not in STRICT_JSON_SCHEMA_MODELS:
 # Test with simple schema first
 test_schema = create_response_format_json_schema(SimpleModel)
 try:
-    response = await provider.generate(
+    response = await send_to_model(
+        provider,
         prompt="Return a test response",
         response_format=test_schema
     )
@@ -318,7 +320,7 @@ async def test_llm_structured_output():
     """Test actual LLM response with json_schema"""
     response_format = create_response_format_json_schema(InquiryResponse)
 
-    response = await llm_provider.generate(
+    response = await llm_provider.route(
         prompt="User reports: The login page is down",
         response_format=response_format
     )

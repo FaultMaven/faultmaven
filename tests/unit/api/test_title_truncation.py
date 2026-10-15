@@ -38,7 +38,7 @@ CONTEXT = (
 
 def _provider(response):
     provider = MagicMock()
-    provider.generate = AsyncMock(return_value=response)
+    provider.route = AsyncMock(return_value=response)
     return provider
 
 
@@ -80,7 +80,7 @@ class TestTruncatedTitle:
 
         assert source == "fallback"
         assert "Prim" != title[-4:]
-        provider.generate.assert_awaited_once()
+        provider.route.assert_awaited_once()
 
     async def test_a_complete_title_is_used(self):
         provider = _provider(

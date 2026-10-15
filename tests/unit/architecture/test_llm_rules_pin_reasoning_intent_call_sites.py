@@ -233,7 +233,8 @@ def test_the_scanner_separates_declarations_from_plumbing() -> None:
 def route(reasoning_intent=None, min_output_tokens=None):
     if reasoning_intent is ReasoningIntent.INFERENCE and min_output_tokens is None:
         raise ValueError("floor required")
-    return provider.generate(
+    return send_to_model(
+        provider,
         reasoning_intent=reasoning_intent,
         min_output_tokens=min_output_tokens,
     )

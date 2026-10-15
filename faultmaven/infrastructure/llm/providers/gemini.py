@@ -34,9 +34,14 @@ from .base import (
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini LLM provider implementation"""
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "gemini"
+
     @property
     def provider_name(self) -> str:
-        return "gemini"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Check if Gemini provider is properly configured"""
@@ -84,7 +89,7 @@ class GeminiProvider(BaseLLMProvider):
     def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:
         """False for models measured to reject the engine's large stage schemas.
 
-        Resolves the model the way :meth:`generate` does — ``model or
+        Resolves the model the way :meth:`_generate` does — ``model or
         config.default_model``, verbatim — and deliberately NOT via
         ``get_effective_model``, which collapses anything outside
         ``config.models`` to the default. Using the latter let the gate clear a
@@ -293,7 +298,8 @@ class GeminiProvider(BaseLLMProvider):
 
           The router raises on INFERENCE-without-floor, but the router is not
           the only door: ``milestone_engine`` binds a concrete provider and
-          calls ``generate()`` on it directly, bypassing that check entirely.
+          sends to it directly (``dispatch.send_to_model``), bypassing that
+          check entirely.
           An invariant enforced at one of two entry points is not enforced, so
           the mechanism it guards refuses on its own here.
         """
@@ -406,7 +412,7 @@ class GeminiProvider(BaseLLMProvider):
         """Record (once per provider instance) that 3.7-surface calls drop the
         classic sampling params.
 
-        ``temperature`` arrives on every call (it is a ``generate()`` parameter
+        ``temperature`` arrives on every call (it is a ``_generate()`` parameter
         with a default), so this is expected on every single 3.7-surface
         request — per-call logging would be volume proportional to request
         rate for a fact that cannot change between calls. Once per instance,
@@ -445,7 +451,7 @@ class GeminiProvider(BaseLLMProvider):
         else:
             self.logger.info(message)
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

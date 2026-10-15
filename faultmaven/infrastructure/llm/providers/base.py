@@ -20,9 +20,8 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     create_strategy_for_capability,
 )
 
-# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, in three
-# groups by what happens to them. Together they are the ONE place the router's
-# call surface is declared: ``generate`` filters its kwargs through the union,
+# The keywords ``LLMRouter.route`` accepts, in three groups by what happens to
+# them. Together they are the ONE place the router's call surface is declared:
 # a provider's ``_merge_extra_kwargs`` discards ``ROUTER_LEVEL_KWARGS``, and
 # ``tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py``
 # pins that the union is exactly ``route()``'s signature, so a new parameter
@@ -30,9 +29,10 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 #
 # ROUTER-CONSUMED: used by the router layer (``route()``, or the registry's
 # ``route_request`` for ``provider_override``) and never forwarded to a
-# provider on a routed call. Only a caller that reaches ``provider.generate()``
-# directly can hand them to a provider, and ``milestone_engine`` can: with
-# ``DA_PROVIDER`` set it binds a concrete provider (#2002).
+# provider on a routed call. Only a caller that sends to a concrete provider
+# directly (``dispatch.send_to_model``) can hand them to one, and
+# ``milestone_engine`` does: with ``DA_PROVIDER`` set it binds a concrete
+# provider (#2002). The dispatch reports them (#1998).
 ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     {
         "case_id",
@@ -42,7 +42,7 @@ ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     }
 )
 
-# FORWARDED-KNOB: forwarded by the router to the provider's ``generate()``,
+# FORWARDED-KNOB: forwarded by the router to the provider's ``_generate()``,
 # which translates or pops them (OpenAI/Gemini translate ``reasoning_intent``,
 # Anthropic acts on ``cache_prompt``, llama.cpp sends ``cache_prompt`` under
 # its own name). They are not request fields in general, so a provider that
@@ -60,7 +60,7 @@ FORWARDED_KNOB_KWARGS: FrozenSet[str] = frozenset(
 ROUTER_LEVEL_KWARGS: FrozenSet[str] = ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KWARGS
 
 # PROVIDER-API: the other ``route()`` parameters, forwarded to the provider's
-# ``generate()`` (``prompt`` is positional and not listed). They are the
+# ``_generate()`` (``prompt`` is its own parameter and not listed). They are the
 # generic request vocabulary, not a promise about any one wire format: they
 # are request fields for the chat/completions-style APIs, while a transport
 # without that field names (llama.cpp ``/completion``, Ollama ``/api/generate``
@@ -78,6 +78,41 @@ PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
         "messages",
     }
 )
+
+# PROVIDER-OPTION: keywords a provider reads by name that the router never
+# passes — only a direct send (``dispatch.send_to_model``) can. Disjoint from
+# the three groups above.
+PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "system",  # Anthropic; content, checked as such (CONTENT_KWARGS)
+        "preamble",  # Cohere; content, checked as such (CONTENT_KWARGS)
+        "reasoning_effort",  # OpenAI family
+        "stop_sequences",  # Anthropic, Gemini, HuggingFace; content (CONTENT_LIST_KWARGS)
+        "top_p",  # Gemini, HuggingFace
+        "top_k",  # Gemini, HuggingFace
+        "repetition_penalty",  # HuggingFace
+        "safety_settings",  # Gemini
+        "strict_tools",  # Cohere
+        "stream",  # Cohere
+        "timeout",  # Fireworks
+    }
+)
+
+# The closed set ``dispatch.send_to_model`` accepts beyond ``prompt``: what the
+# router forwards plus what an adapter's ``_generate`` reads by name (#1998).
+# Anything else — ``ROUTER_CONSUMED_KWARGS`` included, which a routed call
+# never forwards — is reported at the dispatch, because the adapters that merge
+# leftover keywords into the request body would otherwise send it.
+GENERATE_KWARGS: FrozenSet[str] = (
+    FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS | PROVIDER_OPTION_KWARGS
+)
+
+#: The keywords that carry text to the model: minted ``ModelText`` only.
+CONTENT_KWARGS = ("system", "preamble")
+
+#: The keywords that carry a list of text to the model: every element a minted
+#: ``ModelText`` (a literal through ``non_case_text``), as for ``system``.
+CONTENT_LIST_KWARGS = ("stop_sequences",)
 
 
 class StopReason(str, Enum):
@@ -549,30 +584,33 @@ class BaseLLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def generate(
+    async def _generate(
         self,
-        prompt: str,
+        prompt: Optional[str],
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> LLMResponse:
-        """
-        Generate a response using this provider
+        """Send one request to this provider's API.
+
+        A provider has no public send method (#1998). This is called only by
+        :func:`~faultmaven.infrastructure.llm.dispatch.send_to_model`, after
+        its check of the call's model-bound content, with plain values:
+        ``prompt`` and every message's text are exact ``str``, and every
+        keyword is one in :data:`GENERATE_KWARGS`.
 
         Args:
-            prompt: Input prompt
+            prompt: Input prompt (``None`` when ``messages`` carries the call)
             model: Specific model to use (optional)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
-            **kwargs: Additional provider-specific parameters
+            **kwargs: ``messages``, ``tools``, ``tool_choice`` and the other
+                keywords in :data:`GENERATE_KWARGS` the caller passed
 
         Returns:
             LLMResponse with generated content
         """
-        pass
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -691,10 +729,10 @@ class BaseLLMProvider(ABC):
         """Pop the router-level reasoning knobs this provider cannot act on.
 
         ``reasoning_intent`` (#1118) and ``min_output_tokens`` (#1117) travel
-        to every provider as ``generate()`` kwargs. Providers with a reasoning
+        to every provider as ``_generate()`` kwargs. Providers with a reasoning
         control (OpenAI ``reasoning_effort``, Gemini ``thinkingLevel``)
         translate the intent themselves; every other provider calls this at
-        the top of ``generate()`` — mirroring the ``cache_prompt`` pattern —
+        the top of ``_generate()`` — mirroring the ``cache_prompt`` pattern —
         so the keys can never leak into a request body, and so an intent that
         cannot be applied is LOGGED rather than silently dropped.
 
@@ -790,8 +828,9 @@ class BaseLLMProvider(ABC):
         payload field.
 
         NOTE: ``registry.route_request`` is deliberately NOT the chokepoint —
-        ``milestone_engine`` and ``admin_config`` call ``provider.generate()``
-        directly, so a registry-level pop would miss them.
+        ``milestone_engine`` and ``admin_config`` send to a concrete provider
+        directly (``dispatch.send_to_model``), so a registry-level pop would
+        miss them.
         """
         self._discard_router_kwargs(kwargs, model=model)
         payload.update({k: v for k, v in kwargs.items() if v is not None})

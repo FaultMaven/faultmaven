@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 
@@ -112,7 +113,7 @@ async def _sent_body(model: str, thinking_mode=None, **generate_kwargs) -> dict:
     generate_kwargs.setdefault("max_tokens", 8000)
     generate_kwargs.setdefault("temperature", 0.2)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("Test prompt", **generate_kwargs)
+        await send_to_model(provider, prompt="Test prompt", **generate_kwargs)
     call = mock_session.post.call_args
     return call.kwargs.get("json") or call[1].get("json")
 

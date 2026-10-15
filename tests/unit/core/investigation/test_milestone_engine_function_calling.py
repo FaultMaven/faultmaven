@@ -37,7 +37,7 @@ class ResponseSchema(BaseModel):
 class MockFunctionCallingProvider(ILLMProvider):
     """Mock provider that uses FUNCTION_CALLING mode"""
 
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         # Simulate Anthropic-style response with tool_calls
         tool_calls = kwargs.get("tools")
 
@@ -88,7 +88,7 @@ class MockFunctionCallingProvider(ILLMProvider):
 def function_calling_provider():
     """Provider that uses function calling mode"""
     provider = MockFunctionCallingProvider()
-    provider.generate = AsyncMock(wraps=provider.generate)
+    provider.route = AsyncMock(wraps=provider.route)
     return provider
 
 
@@ -143,9 +143,9 @@ class TestMilestoneEngineFunctionCalling:
         except Exception:
             pass  # Expected - mock returns wrong schema
 
-        # Verify that generate was called with tools parameter
-        function_calling_provider.generate.assert_called()
-        call_kwargs = function_calling_provider.generate.call_args[1]
+        # Verify that route was called with tools parameter
+        function_calling_provider.route.assert_called()
+        call_kwargs = function_calling_provider.route.call_args[1]
 
         # Should have tools parameter
         assert "tools" in call_kwargs
@@ -179,7 +179,7 @@ class TestMilestoneEngineFunctionCalling:
             pass  # Expected - mock returns wrong schema
 
         # Get the prompt that was sent
-        call_kwargs = function_calling_provider.generate.call_args[1]
+        call_kwargs = function_calling_provider.route.call_args[1]
         prompt = call_kwargs["prompt"]
 
         # Should NOT include "## RESPONSE FORMAT" section

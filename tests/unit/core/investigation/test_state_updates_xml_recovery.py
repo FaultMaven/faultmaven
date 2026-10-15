@@ -393,7 +393,7 @@ async def test_single_shot_path(counters, state_updates, stop_reason, expected, 
         {"agent_response": "Resolved.", "state_updates": state_updates}
     )
     provider = MagicMock()
-    provider.generate = AsyncMock(return_value=_llm(content, stop_reason=stop_reason))
+    provider.route = AsyncMock(return_value=_llm(content, stop_reason=stop_reason))
     provider.get_structured_output_strategy = MagicMock(
         return_value=StructuredOutputStrategy(
             capability=StructuredOutputCapability.BEST_EFFORT,
@@ -424,7 +424,7 @@ async def _tool_loop(*responses: LLMResponse):
         return queue.pop(0) if len(queue) > 1 else queue[0]
 
     provider = AsyncMock()
-    provider.generate = AsyncMock(side_effect=_generate)
+    provider.route = AsyncMock(side_effect=_generate)
     repo = MagicMock()
     repo.save = AsyncMock()
     engine = MilestoneEngine(

@@ -29,9 +29,14 @@ from .base import (
 class HuggingFaceProvider(BaseLLMProvider):
     """Hugging Face Inference API provider implementation"""
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "huggingface"
+
     @property
     def provider_name(self) -> str:
-        return "huggingface"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Check if Hugging Face provider is properly configured"""
@@ -63,7 +68,7 @@ class HuggingFaceProvider(BaseLLMProvider):
         # All HuggingFace models use BEST_EFFORT mode
         return StructuredOutputCapability.BEST_EFFORT
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,

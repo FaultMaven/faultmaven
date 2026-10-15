@@ -34,6 +34,15 @@ from faultmaven.infrastructure.llm.providers.registry import (
     print_provider_options,
     reset_registry,
 )
+from tests.utils import sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -140,7 +149,7 @@ def mock_provider_classes():
             confidence_score=0.8,
         )
         # Create a fresh AsyncMock for each test
-        mock_provider.generate = AsyncMock(
+        mock_provider._generate = AsyncMock(
             return_value=LLMResponse(
                 content="Test response",
                 model="test-model",
@@ -683,7 +692,7 @@ class TestFallbackChain:
         assert response.confidence >= 0.8
 
         # Verify only first provider was called
-        mock_provider_classes["fireworks"].generate.assert_called_once()
+        mock_provider_classes["fireworks"]._generate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_route_request_fallback_on_failure(
@@ -693,10 +702,10 @@ class TestFallbackChain:
         os.environ.update(sample_env_vars)
 
         # Make first provider fail, reset second provider
-        mock_provider_classes["fireworks"].generate = AsyncMock(
+        mock_provider_classes["fireworks"]._generate = AsyncMock(
             side_effect=Exception("Provider failed")
         )
-        mock_provider_classes["openai"].generate = AsyncMock(
+        mock_provider_classes["openai"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="Test response",
                 model="test-model",
@@ -727,8 +736,8 @@ class TestFallbackChain:
         assert response.content == "Test response"
 
         # Verify fallback occurred
-        mock_provider_classes["fireworks"].generate.assert_called_once()
-        mock_provider_classes["openai"].generate.assert_called_once()
+        mock_provider_classes["fireworks"]._generate.assert_called_once()
+        mock_provider_classes["openai"]._generate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_route_request_all_providers_fail(self, mock_provider_classes):
@@ -760,7 +769,7 @@ class TestFallbackChain:
 
         # Make all providers fail
         for provider in mock_provider_classes.values():
-            provider.generate = AsyncMock(side_effect=Exception("Provider failed"))
+            provider._generate = AsyncMock(side_effect=Exception("Provider failed"))
 
         # Patch PROVIDER_SCHEMA so the registry uses our mock providers.
         # patch.multiple on module-level class names doesn't work because
@@ -793,7 +802,7 @@ class TestFallbackChain:
         os.environ.update(sample_env_vars)
 
         # First provider returns low confidence
-        mock_provider_classes["fireworks"].generate = AsyncMock(
+        mock_provider_classes["fireworks"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="Low confidence response",
                 model="test-model",
@@ -805,7 +814,7 @@ class TestFallbackChain:
         )
 
         # Second provider returns high confidence
-        mock_provider_classes["openai"].generate = AsyncMock(
+        mock_provider_classes["openai"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="Test response",
                 model="test-model",
@@ -838,8 +847,8 @@ class TestFallbackChain:
         assert response.confidence >= 0.8
 
         # Verify fallback due to low confidence
-        mock_provider_classes["fireworks"].generate.assert_called_once()
-        mock_provider_classes["openai"].generate.assert_called_once()
+        mock_provider_classes["fireworks"]._generate.assert_called_once()
+        mock_provider_classes["openai"]._generate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_route_request_skips_confidence_check_when_tools_present(
@@ -854,7 +863,7 @@ class TestFallbackChain:
         os.environ.update(sample_env_vars)
 
         # Provider returns 0.0 confidence (empty content, no tool calls)
-        mock_provider_classes["fireworks"].generate = AsyncMock(
+        mock_provider_classes["fireworks"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="",
                 model="test-model",
@@ -885,7 +894,7 @@ class TestFallbackChain:
         assert response.confidence == 0.0
         assert response.provider == "fireworks"
         # Should NOT have tried the second provider
-        mock_provider_classes["openai"].generate.assert_not_called()
+        mock_provider_classes["openai"]._generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_route_request_without_tools_still_filters_by_confidence(
@@ -894,7 +903,7 @@ class TestFallbackChain:
         """Without tools, confidence filtering still applies normally."""
         os.environ.update(sample_env_vars)
 
-        mock_provider_classes["fireworks"].generate = AsyncMock(
+        mock_provider_classes["fireworks"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="Low confidence",
                 model="test-model",
@@ -904,7 +913,7 @@ class TestFallbackChain:
                 confidence=0.3,
             )
         )
-        mock_provider_classes["openai"].generate = AsyncMock(
+        mock_provider_classes["openai"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="High confidence",
                 model="test-model",
@@ -931,8 +940,8 @@ class TestFallbackChain:
         # Should have skipped fireworks (0.3) and used openai (0.9)
         assert response.confidence == 0.9
         assert response.provider == "openai"
-        mock_provider_classes["fireworks"].generate.assert_called_once()
-        mock_provider_classes["openai"].generate.assert_called_once()
+        mock_provider_classes["fireworks"]._generate.assert_called_once()
+        mock_provider_classes["openai"]._generate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_route_request_best_low_confidence_includes_zero(
@@ -941,7 +950,7 @@ class TestFallbackChain:
         """A 0.0 confidence response should still be saved as best low-confidence fallback."""
         os.environ.update(sample_env_vars)
 
-        mock_provider_classes["fireworks"].generate = AsyncMock(
+        mock_provider_classes["fireworks"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="",
                 model="test-model",
