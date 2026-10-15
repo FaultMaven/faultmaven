@@ -130,10 +130,11 @@ class MockLLMServer:
                 }
             )
 
-        @self.app.post("/api/generate")
+        @self.app.post("/api/chat")
         async def ollama_generate(request: Dict[str, Any]):
-            """Mock Ollama generate endpoint."""
-            prompt = request.get("prompt", "")
+            """Mock Ollama chat endpoint."""
+            messages = request.get("messages") or []
+            prompt = " ".join(str(m.get("content", "")) for m in messages)
             model = request.get("model", "llama2")
 
             # Simulate processing time
@@ -149,9 +150,9 @@ class MockLLMServer:
                 {
                     "model": model,
                     "created_at": f"{int(time.time())}",
-                    "response": response,
+                    "message": {"role": "assistant", "content": response},
                     "done": True,
-                    "context": [1, 2, 3, 4, 5],
+                    "done_reason": "stop",
                     "total_duration": 200000000,
                     "load_duration": 100000000,
                     "prompt_eval_count": len(prompt.split()),

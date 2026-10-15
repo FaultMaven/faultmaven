@@ -82,7 +82,7 @@ a new KB read site forwarding an unpinned variable              ``test_every_kb_
 a read site passing the filter POSITIONALLY, literal or         ``test_every_kb_read_filter_originates_...``
 variable (the calling convention nobody writes by habit)
 a read site carrying two filter kwargs, the second a literal    ``test_every_kb_read_filter_originates_...``
-``list_parent_document_ids`` widened to                         ``test_the_unfiltered_kb_readers_stay_id_only``
+``list_all_chunk_ids_by_parent`` widened to                         ``test_the_unfiltered_kb_readers_stay_id_only``
 ``include=["documents", "metadatas"]``
 a second unfiltered ``collection.get`` on the KB collection     ``test_the_unfiltered_kb_readers_stay_id_only``
 ==============================================================  =============================================
@@ -1187,7 +1187,7 @@ def test_every_kb_read_filter_originates_from_build_kb_scope_filter():
 def test_the_unfiltered_kb_readers_stay_id_only():
     """Not every KB read carries a filter — the filter-less ones must stay blind.
 
-    ``list_parent_document_ids`` issues ``collection.get(include=[])`` over the
+    ``list_all_chunk_ids_by_parent`` issues ``collection.get(include=[])`` over the
     whole collection, with no ``where`` and no call to
     ``_require_kb_filter_present``. That is legitimate: the bootstrap reconcile
     pass (``bootstrap/kb_init.py``) compares the vector index against the
@@ -1248,13 +1248,21 @@ def test_the_unfiltered_kb_readers_stay_id_only():
             )
             global_content_reads.append(node.lineno)
             continue
-        if "where" not in kwargs:
+        ids_kw = kwargs.get("ids")
+        # A get addressed by explicit chunk ids (the observed-id delete, #2017)
+        # is not a scan: it can name only what the caller listed. ``ids=None``
+        # (or an empty literal) is a full scan and still counts.
+        addressed = ids_kw is not None and not (
+            (isinstance(ids_kw, ast.Constant) and ids_kw.value is None)
+            or (isinstance(ids_kw, (ast.List, ast.Tuple)) and not ids_kw.elts)
+        )
+        if "where" not in kwargs and not addressed:
             unfiltered.append(node.lineno)
 
     assert len(unfiltered) == 1, (
         "the number of UNFILTERED reads of the KB collection changed "
         f"(lines {unfiltered}). One is expected: the boot-time reconcile "
-        "enumeration in list_parent_document_ids."
+        "enumeration in list_all_chunk_ids_by_parent."
     )
     assert len(global_content_reads) == 1, (
         "the number of CONTENT reads of the KB collection changed "

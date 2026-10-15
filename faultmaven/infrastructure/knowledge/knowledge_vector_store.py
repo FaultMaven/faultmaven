@@ -234,6 +234,15 @@ def _tokenize(text: str) -> List[str]:
     return [t for t in _TOKEN_SEPARATORS.split(text.lower()) if t and len(t) >= 2]
 
 
+def _group_chunk_ids_by_parent(chunk_ids: Iterable[Any]) -> Dict[str, List[str]]:
+    """Group chunk ids by the parent their id names (``{item_id}_chunk_{N}``)."""
+    by_parent: Dict[str, List[str]] = {}
+    for chunk_id in chunk_ids:
+        if isinstance(chunk_id, str):
+            by_parent.setdefault(chunk_id.rsplit("_chunk_", 1)[0], []).append(chunk_id)
+    return by_parent
+
+
 class CorpusTermStats:
     """Document frequencies over one collection — the IDF the reranker lacked.
 
@@ -1451,60 +1460,18 @@ class KnowledgeVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
-    async def delete_documents_by_parents(
-        self,
-        parent_document_ids: Iterable[str],
-        collection_name: str = KB_COLLECTION,
-    ) -> int:
-        """Delete all chunks of MANY parents in one ChromaDB round-trip.
-
-        The reconcile pass can find a large batch of orphaned parents at once
-        (119 in the 2026-06 drift); a per-parent loop would issue one delete call
-        each. ChromaDB ``where`` supports ``$in``, so the whole batch resolves to a
-        single get (for the chunk-id set + count) plus a single delete.
-
-        Returns the number of chunks deleted (0 if the batch matches nothing).
-        """
-        ids = list(parent_document_ids)
-        if not ids:
-            return 0
-
-        async def _delete_wrapper() -> int:
-            collection = self._get_or_create_collection(collection_name)
-            results = collection.get(
-                where={"parent_document_id": {"$in": ids}},
-                include=[],
-            )
-            chunk_ids = results.get("ids", [])
-            if not chunk_ids:
-                return 0
-            collection.delete(ids=chunk_ids)
-            self.logger.info(
-                f"Deleted {len(chunk_ids)} chunks across {len(ids)} parent(s) "
-                f"from KB collection '{collection_name}'"
-            )
-            return len(chunk_ids)
-
-        self._invalidate_term_stats(collection_name)
-
-        return await self.call_external(
-            operation_name="delete_documents_by_parents",
-            call_func=_delete_wrapper,
-            timeout=15.0,
-            retries=2,
-            retry_delay=1.0,
-        )
-
-    async def list_parent_document_ids(
+    async def list_all_chunk_ids_by_parent(
         self,
         collection_name: str = KB_COLLECTION,
-    ) -> Set[str]:
-        """Return the distinct ``parent_document_id``s present in a collection.
+    ) -> Dict[str, List[str]]:
+        """Every chunk id in a collection, grouped by the parent its id names.
 
         Lets the bootstrap reconcile pass compare the vector index against the
         ``knowledge_items`` rows (the source of truth) to find drift in either
         direction — vectors with no row (orphans to delete) and rows with no
-        vectors (orphans to warn about).
+        vectors (orphans to warn about). The keys are the distinct parents;
+        the values are the chunk ids observed for each, so the caller deletes
+        exactly what it saw (#2017).
 
         Derives the parent from each chunk **id** (``{item_id}_chunk_{N}``) rather
         than pulling every chunk's full metadata payload — ``include=[]`` returns
@@ -1513,24 +1480,19 @@ class KnowledgeVectorStore(BaseExternalClient):
         (item_ids never contain ``_chunk_``).
         """
 
-        async def _list_wrapper() -> Set[str]:
+        async def _list_wrapper() -> Dict[str, List[str]]:
             try:
                 collection = self.client.get_collection(name=collection_name)
             except NotFoundError:
                 # Collection absent → nothing indexed yet. Any OTHER error
                 # (transport, corruption) propagates to call_external rather than
                 # being silently flattened to an empty index.
-                return set()
+                return {}
             results = collection.get(include=[])
-            parents: Set[str] = set()
-            for chunk_id in results.get("ids", []) or []:
-                if not isinstance(chunk_id, str):
-                    continue
-                parents.add(chunk_id.rsplit("_chunk_", 1)[0])
-            return parents
+            return _group_chunk_ids_by_parent(results.get("ids", []) or [])
 
         return await self.call_external(
-            operation_name="list_parent_document_ids",
+            operation_name="list_all_chunk_ids_by_parent",
             call_func=_list_wrapper,
             timeout=10.0,
             retries=1,
@@ -1547,19 +1509,19 @@ class KnowledgeVectorStore(BaseExternalClient):
         The authored-orphan sweep's listing (#1982): one enterprise's chunks
         (``{"enterprise_id": E}``), or the chunks no listed enterprise owns
         (``{"enterprise_id": {"$nin": [...]}}``). Ids only — ``include=[]`` —
-        like :meth:`list_parent_document_ids`, so no chunk text or metadata
+        like :meth:`list_all_chunk_ids_by_parent`, so no chunk text or metadata
         crosses a tenant boundary. Never unfiltered: a missing ``where`` is
         refused rather than read as "every chunk".
 
         The parent is derived from the id (``{item_id}_chunk_{N}``) for the
-        same reason :meth:`list_parent_document_ids` derives it: a chunk
+        same reason :meth:`list_all_chunk_ids_by_parent` derives it: a chunk
         missing the ``parent_document_id`` key still resolves. The chunk ids
         are kept so the caller deletes exactly what it observed.
         """
         if not where:
             raise ValueError(
                 "list_chunk_ids_by_parent requires a where clause — an "
-                "unfiltered listing is list_parent_document_ids' alone."
+                "unfiltered listing is list_all_chunk_ids_by_parent' alone."
             )
 
         async def _list_wrapper() -> Dict[str, List[str]]:
@@ -1568,14 +1530,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             except NotFoundError:
                 return {}
             results = collection.get(where=where, include=[])
-            by_parent: Dict[str, List[str]] = {}
-            for chunk_id in results.get("ids", []) or []:
-                if not isinstance(chunk_id, str):
-                    continue
-                by_parent.setdefault(chunk_id.rsplit("_chunk_", 1)[0], []).append(
-                    chunk_id
-                )
-            return by_parent
+            return _group_chunk_ids_by_parent(results.get("ids", []) or [])
 
         return await self.call_external(
             operation_name="list_chunk_ids_by_parent",
@@ -1604,26 +1559,57 @@ class KnowledgeVectorStore(BaseExternalClient):
 
         Returns the chunk ids deleted.
         """
-        ids = list(chunk_ids)
-        if not ids:
-            return []
         if not where:
             raise ValueError(
                 "delete_chunk_ids requires a where clause — the sweep deletes "
                 "only chunks still carrying the stamp it listed them under."
             )
+        return await self._delete_observed_ids(
+            "delete_chunk_ids", chunk_ids, where, collection_name
+        )
+
+    async def delete_observed_chunk_ids(
+        self,
+        chunk_ids: Iterable[str],
+        collection_name: str = KB_COLLECTION,
+    ) -> List[str]:
+        """Delete exactly these chunk ids, with no metadata condition (#2017).
+
+        The built-in reconcile's delete. Its listing
+        (:meth:`list_all_chunk_ids_by_parent`) reads ids and no stamp, so the
+        delete is keyed on the same thing it observed: a chunk with no
+        ``parent_document_id`` key is removed like any other. Same single
+        id-delete path as :meth:`delete_chunk_ids`; only the scope differs.
+
+        Returns the chunk ids deleted.
+        """
+        return await self._delete_observed_ids(
+            "delete_observed_chunk_ids", chunk_ids, None, collection_name
+        )
+
+    async def _delete_observed_ids(
+        self,
+        operation_name: str,
+        chunk_ids: Iterable[str],
+        where: Optional[Dict[str, Any]],
+        collection_name: str,
+    ) -> List[str]:
+        ids = list(chunk_ids)
+        if not ids:
+            return []
 
         async def _delete_wrapper() -> List[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
             except NotFoundError:
                 return []
+            scope = {"where": where} if where else {}
             matched = list(
-                collection.get(ids=ids, where=where, include=[]).get("ids") or []
+                collection.get(ids=ids, include=[], **scope).get("ids") or []
             )
             if not matched:
                 return []
-            collection.delete(ids=matched, where=where)
+            collection.delete(ids=matched, **scope)
             self.logger.info(
                 f"Deleted {len(matched)} observed chunk(s) from KB collection "
                 f"'{collection_name}'"
@@ -1633,7 +1619,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         self._invalidate_term_stats(collection_name)
 
         return await self.call_external(
-            operation_name="delete_chunk_ids",
+            operation_name=operation_name,
             call_func=_delete_wrapper,
             timeout=15.0,
             retries=2,

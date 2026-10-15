@@ -194,6 +194,12 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/infrastructure/llm/providers/anthropic.py",
         "AnthropicProvider._generate",
     ): (1, _WIRE),
+    # #2016: the raw llama.cpp fallback refuses a call that carries a
+    # conversation (it takes one prompt) rather than send an empty one.
+    (
+        "faultmaven/infrastructure/llm/providers/local_provider.py",
+        "LocalProvider._generate",
+    ): (1, _WIRE),
     # The model dispatch (#1998): checks the call's messages against the
     # model-content grammar, then unwraps them for the adapter.
     ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (2, _WIRE),

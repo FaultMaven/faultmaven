@@ -575,6 +575,50 @@ async def test_a_dry_runs_would_delete_set_is_what_the_armed_run_then_deletes(
         await world.engine.dispose()
 
 
+def _by_bucket(result, attribute):
+    return {
+        b: getattr(c, attribute)
+        for b, c in result._buckets().items()
+        if getattr(c, attribute)
+    }
+
+
+async def test_dry_and_armed_sweeps_agree_on_an_unacknowledged_disjoint_enterprise(
+    tmp_path,
+):
+    """#2022: a dry run makes the disjoint decision an armed run makes. E3's
+    chunks have no row anywhere, and nothing acknowledges E3: neither mode may
+    list or delete them, and both count the same disjoint chunks."""
+    world = await _with_disjoint_enterprise(tmp_path)
+    try:
+        before = world.present()
+        dry = await world.sweep(mode=SWEEP_REPORT_ONLY)
+        armed = await world.sweep(mode=SWEEP_ARMED)
+
+        assert dry.enterprises[E3].disjoint == armed.enterprises[E3].disjoint == 2
+        assert dry.enterprises[E3].would_delete == []
+        assert _by_bucket(armed, "deleted") == _by_bucket(dry, "would_delete")
+        assert _orphan_chunks(*E3_ORPHANS) <= world.present()
+        assert before - world.present() == _orphan_chunks(
+            *ALL_AUTHORED_ORPHANS
+        ), "armed deleted something the dry run had not listed, or less"
+    finally:
+        await world.engine.dispose()
+
+
+async def test_dry_and_armed_sweeps_agree_at_the_cap(world):
+    """#2022: a dry run applies the cap an armed run applies. Four orphan
+    documents against a cap of three: both modes cap the same non-zero count
+    and neither lists nor deletes anything."""
+    dry = await world.sweep(mode=SWEEP_REPORT_ONLY, max_parents=3)
+    armed = await world.sweep(mode=SWEEP_ARMED, max_parents=3)
+
+    assert dry.summary()["capped"] == armed.summary()["capped"] == 4
+    assert dry.would_delete == [] == armed.deleted
+    assert _by_bucket(dry, "would_delete") == _by_bucket(armed, "deleted") == {}
+    assert _orphan_chunks(*ALL_AUTHORED_ORPHANS) <= world.present()
+
+
 async def test_an_off_sweep_does_not_even_list(world, monkeypatch):
     async def boom(*_a, **_k):
         raise AssertionError("an off sweep listed the index")

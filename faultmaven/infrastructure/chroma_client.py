@@ -45,7 +45,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # The client-side token auth provider. ``chromadb.auth.token`` was renamed to
-# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 0.5.3`` floor,
+# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 1.0.0`` floor,
 # so the old path never imports and must not appear anywhere. It once did, in
 # the container provider, guarded by ``except Exception: pass`` — which
 # silently produced an unauthenticated client for over a year (#1173).

@@ -63,9 +63,10 @@ ROUTER_LEVEL_KWARGS: FrozenSet[str] = ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KW
 # ``_generate()`` (``prompt`` is its own parameter and not listed). They are the
 # generic request vocabulary, not a promise about any one wire format: they
 # are request fields for the chat/completions-style APIs, while a transport
-# without that field names (llama.cpp ``/completion``, Ollama ``/api/generate``
-# take a prompt and options, not ``messages``/``tools``/``tool_choice``)
-# translates or drops them itself. A key the caller left at ``None`` is
+# without that field names (llama.cpp ``/completion`` takes a prompt, not
+# ``messages``/``tools``/``tool_choice``; Ollama ``/api/chat`` takes
+# ``messages`` but its transport here sends no tools) translates, drops or
+# refuses them itself. A key the caller left at ``None`` is
 # "not given", never a value to send.
 PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
     {

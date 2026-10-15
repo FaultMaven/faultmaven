@@ -3,7 +3,7 @@
 ``LocalProvider`` is the one provider with more than one wire path, chosen at
 call time from the base URL and model name:
 
-* ``_call_ollama_api``            — POST {base}/api/generate
+* ``_call_ollama_api``            — POST {base}/api/chat
 * ``_call_openai_compatible_api`` — POST {base}/chat/completions (vLLM, llama.cpp+OAI)
 * ``_call_llamacpp_api``          — POST {base}/completion (fallback when that 404s)
 
@@ -51,7 +51,7 @@ def _config(base_url: str, model: str) -> ProviderConfig:
 # the substring "ollama" in the host, which is why this row once needed a host
 # containing it; hostnames no longer select anything (#1356 review F1).
 _TRANSPORTS = [
-    ("ollama", "http://ollama:11434/api", "llama3.2", "/api/generate"),
+    ("ollama", "http://ollama:11434/api", "llama3.2", "/api/chat"),
     (
         "openai_compatible",
         "http://localhost:8000/v1",

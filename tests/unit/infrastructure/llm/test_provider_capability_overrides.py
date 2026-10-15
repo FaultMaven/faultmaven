@@ -522,7 +522,7 @@ class TestLocalProviderOverride:
         """functionary/hermes on Ollama's NATIVE transport cannot return
         tool_calls, so the capability must downgrade to BEST_EFFORT — claiming
         FUNCTION_CALLING would have the engine force a tool call the
-        /api/generate protocol silently can't satisfy.
+        /api/chat transport silently can't satisfy.
 
         Selected by the URL path. This test used to select it with the hostname
         "my-ollama-host", which is exactly the defect #1356's review found: the
