@@ -613,7 +613,7 @@ class TestOutsideATurn:
             _case(),
             "who won the 1998 world cup?",
             OutOfBandKind.OFF_TOPIC,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         await drain_pending_usage_writes()
 

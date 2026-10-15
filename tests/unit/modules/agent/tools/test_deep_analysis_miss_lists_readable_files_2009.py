@@ -20,6 +20,7 @@ from faultmaven.modules.agent.tools.search_file_tool import (
     enumerate_readable_files,
     format_searchable_alternatives,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -108,6 +109,7 @@ async def _miss(case, evidence_id):
         enterprise_id="org",
         user_id="u",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
     result = await tool.execute_with_context(
         {"evidence_id": evidence_id, "query": "q"}, ctx
@@ -189,6 +191,7 @@ async def test_an_upload_with_no_row_is_named_and_then_analyzable():
         enterprise_id="org",
         user_id="u",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
     result = await tool.execute_with_context({"evidence_id": NO_ROW, "query": "q"}, ctx)
     assert result.success, result.error

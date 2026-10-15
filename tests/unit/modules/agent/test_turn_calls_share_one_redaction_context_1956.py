@@ -34,6 +34,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+from faultmaven.infrastructure.llm.dispatch import model_call_violations
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     CapPolicyResolver,
@@ -118,12 +119,19 @@ def _sent(call: dict[str, Any]) -> str:
     return call["prompt"]
 
 
+def _assert_minted(call: dict[str, Any]) -> None:
+    """What the router received is what the model boundary accepts: minted
+    content only (#1998 P2a), checked by the boundary's own validator."""
+    assert model_call_violations(call.get("prompt"), call.get("messages"), {}) == []
+
+
 def _assert_redacted(router: _RecordingRouter) -> None:
     assert router.calls, "the provider was never called"
     for call in router.calls:
         text = _sent(call)
         assert RAW not in text, text
         assert PSEUDONYM in text, text
+        _assert_minted(call)
 
 
 def _tool_context(redaction, case=None) -> ToolContext:
@@ -408,6 +416,7 @@ class TestTheTitle:
         assert router.calls
         for call in router.calls:
             assert host not in _sent(call) and PSEUDONYM in _sent(call)
+            _assert_minted(call)
         loaded.save.assert_awaited()
 
 
@@ -572,6 +581,7 @@ class TestOneContextPerTurn:
         for call in triage + answers:
             text = _sent(call)
             assert RAW not in text and PSEUDONYM in text, text
+            _assert_minted(call)
         # The reply the user reads and the row stored are reversed from the
         # turn's registry, which the answer prompt's redaction filled.
         assert RAW in resp.agent_response and PSEUDONYM not in resp.agent_response
