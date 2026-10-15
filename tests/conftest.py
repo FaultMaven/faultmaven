@@ -608,6 +608,47 @@ def _reset_observability_singletons():
                 container.clear()
 
 
+# Every environment variable from .env that is cleared for tests. The provider
+# variables must cover every provider in the registry (#2006):
+# tests/unit/config/test_provider_tables_follow_registry.py pins it.
+ENV_VARS_TO_CLEAR = [
+    "ENVIRONMENT",
+    "DEBUG",
+    "HOST",
+    "PORT",
+    "WORKERS",
+    "INSTANCE_ID",
+    "CHAT_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "FIREWORKS_API_KEY",
+    "FIREWORKS_MODEL",
+    "COHERE_API_KEY",
+    "COHERE_MODEL",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "HUGGINGFACE_API_KEY",
+    "HUGGINGFACE_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "LOCAL_LLM_URL",
+    "LOCAL_LLM_MODEL",
+    "ENABLE_WEB_SEARCH",
+    "SESSION_STORAGE_TYPE",
+    "VECTOR_STORAGE_TYPE",
+    "USER_STORAGE_TYPE",
+    "CASE_STORAGE_TYPE",
+    "MAX_UPLOAD_SIZE_MB",
+    "CORS_ALLOW_CREDENTIALS",
+    "CORS_ALLOW_ORIGINS",
+    "TENANT_PROVIDER",  # Add any other vars that affect test isolation
+]
+
+
 # Session-level fixture to clear .env variables that may have been loaded before tests started
 @pytest.fixture(scope="session", autouse=True)
 def clean_test_environment():
@@ -620,42 +661,6 @@ def clean_test_environment():
     Addresses: Test failures due to pydantic-settings caching real .env values
     """
     import os
-
-    # List of all environment variables from .env that should be cleared for tests
-    ENV_VARS_TO_CLEAR = [
-        "ENVIRONMENT",
-        "DEBUG",
-        "HOST",
-        "PORT",
-        "WORKERS",
-        "INSTANCE_ID",
-        "CHAT_PROVIDER",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_MODEL",
-        "FIREWORKS_API_KEY",
-        "FIREWORKS_MODEL",
-        "GEMINI_API_KEY",
-        "GEMINI_MODEL",
-        "GROQ_API_KEY",
-        "GROQ_MODEL",
-        "HUGGINGFACE_API_KEY",
-        "HUGGINGFACE_MODEL",
-        "OPENAI_API_KEY",
-        "OPENAI_MODEL",
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_MODEL",
-        "LOCAL_LLM_URL",
-        "LOCAL_LLM_MODEL",
-        "ENABLE_WEB_SEARCH",
-        "SESSION_STORAGE_TYPE",
-        "VECTOR_STORAGE_TYPE",
-        "USER_STORAGE_TYPE",
-        "CASE_STORAGE_TYPE",
-        "MAX_UPLOAD_SIZE_MB",
-        "CORS_ALLOW_CREDENTIALS",
-        "CORS_ALLOW_ORIGINS",
-        "TENANT_PROVIDER",  # Add any other vars that affect test isolation
-    ]
 
     # Clear all .env variables
     for var in ENV_VARS_TO_CLEAR:

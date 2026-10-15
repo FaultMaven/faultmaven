@@ -1362,18 +1362,11 @@ def _check_has_api_key(settings, provider_name: str) -> bool:
     if provider_name == "local":
         return True
 
-    key_map = {
-        "anthropic": "anthropic_api_key",
-        "openai": "openai_api_key",
-        "fireworks": "fireworks_api_key",
-        "groq": "groq_api_key",
-        "gemini": "gemini_api_key",
-        "huggingface": "huggingface_api_key",
-        "cohere": "cohere_api_key",
-        "openrouter": "openrouter_api_key",
-    }
-    attr_name = key_map.get(provider_name)
-    if attr_name is None:
+    from faultmaven.config.llm_validation import api_key_field
+
+    mapping = api_key_field(provider_name)
+    if mapping is None:
         return False
+    attr_name = mapping[0]
 
     return bool(_secret_value(getattr(settings.llm, attr_name, None)))
