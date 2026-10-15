@@ -29,20 +29,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Cloud provider → (settings field holding the SecretStr key, env var name).
-# ``local`` is handled separately (it needs a URL, not a key).
-_PROVIDER_API_KEY: dict[str, tuple[str, str]] = {
-    "openai": ("openai_api_key", "OPENAI_API_KEY"),
-    "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
-    "gemini": ("gemini_api_key", "GEMINI_API_KEY"),
-    "fireworks": ("fireworks_api_key", "FIREWORKS_API_KEY"),
-    "groq": ("groq_api_key", "GROQ_API_KEY"),
-    "huggingface": ("huggingface_api_key", "HUGGINGFACE_API_KEY"),
-    "cohere": ("cohere_api_key", "COHERE_API_KEY"),
-    "openrouter": ("openrouter_api_key", "OPENROUTER_API_KEY"),
-}
+def api_key_field(provider: str) -> tuple[str, str] | None:
+    """(settings field, env var name) of a keyed provider's API key, from the registry.
 
-_SUPPORTED = sorted(list(_PROVIDER_API_KEY) + ["local"])
+    ``None`` for a provider the registry does not know and for one with no API
+    key (``local`` is handled separately: it needs a URL, not a key). The
+    settings field is the env var name lower-cased, which
+    ``test_every_env_var_key_names_a_variable_settings_consumes`` pins.
+    """
+    from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
+
+    env_name = (PROVIDER_SCHEMA.get(provider) or {}).get("api_key_var")
+    return (env_name.lower(), env_name) if env_name else None
+
+
+def _supported() -> list[str]:
+    from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
+
+    return sorted(PROVIDER_SCHEMA)
 
 
 def _secret_present(value) -> bool:
@@ -80,11 +84,11 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
         return
 
     # Cloud providers: need the matching API key.
-    mapping = _PROVIDER_API_KEY.get(provider)
+    mapping = api_key_field(provider)
     if mapping is None:
         raise ValueError(
             f"CHAT_PROVIDER={provider!r} is not a supported provider. "
-            f"Choose one of: {', '.join(_SUPPORTED)}."
+            f"Choose one of: {', '.join(_supported())}."
         )
     field, env_name = mapping
     if not _secret_present(getattr(settings.llm, field, None)):
