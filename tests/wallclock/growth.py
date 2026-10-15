@@ -164,6 +164,68 @@ had two of five at one size, and in 56 of those another size had at most
 one, so the two figures were read in different regimes. The second-smallest
 of five read over 20% in 1 of 6525.
 
+A first-touch page fault is not growth (#1991)
+----------------------------------------------
+
+Thread CPU time includes the SYSTEM time of a page fault, and a function that
+copies a long input pays one fault per page of each copy, in every call, in a
+process that has not yet freed a block that large. glibc serves a copy above
+its mmap threshold (128 KiB at start) with a fresh mapping and gives it back
+when it is freed, or trims it off the heap when the top is free; the kernel
+zeroes every page it hands out again. The sshd reader copies its line twice
+(``lower()`` and a slice). On a 4 MB line that is 1952 faults and 3-7 ms of
+system time per call, beside 3 ms of its own; on 256 KB it is none. The
+threshold only moves up, to the size of a block the process has freed, so the
+cost belongs to the process's history, not to the function: the first
+procedure of a fresh process read it in 20 of 20 and the 80 after it in none,
+and in real runs the refused windows were the ones carrying ~13,000 faults.
+
+It lands on the TOP size of a window only (the others fit under the
+threshold), so one of three figures reads 2-3x dear, t(64n)/t(8n) 19 where
+linear is 8, and the window is refused. It is not the cache: with the faults
+gone the same function reads 0.72-0.89 ns a byte from 128 KB to 8 MB. Nothing
+in the estimator can cure it, because every sample of that size pays it.
+
+A caller whose function copies its input says how many bytes to settle
+(``settle_bytes``, size of a window's top to bytes). The helper then allocates
+and frees one block of that size before each window that reaches a new
+maximum, which raises both thresholds (mmap to the block, trim to twice it)
+past every copy. The default settles nothing, so every other caller measures
+as it always did.
+
+How many bytes is the caller's to say, because only it knows how big its own
+working set is: for a synthetic ``text.lower()[1:]`` a block of 3x the input
+cleared 4 MB and 8 MB inputs where 1x did not; for the sshd reader 1x already
+clears every shape but one on the box it was measured on (0.9x does not).
+
+What it does and does not do:
+
+* It raises thresholds; it does not grow the heap. The first call at a window's
+  top size still grows the heap and faults its pages in once (992 to 1792
+  pages, measured), and the calls after it reuse them and fault none. That
+  one sample is dropped by the figure, the second-smallest of at least
+  ``MIN_REPETITIONS``: one inflated sample cannot set it.
+* It cannot cover a function whose OWN allocations outgrow any block it may
+  ask for. The sshd ``timestamps`` shape peaks at 38x its line, so on a 4 MB
+  line it still faults ~32,000 pages a call whatever the multiplier. That is
+  latent there (it decides at its first or second window, 8 KB-65 KB), and a
+  caller in that position has to keep the top size under the knee instead.
+* It works only where glibc moves its thresholds on its own. Under
+  ``MALLOC_TRIM_THRESHOLD_``, ``MALLOC_MMAP_THRESHOLD_`` or the matching
+  ``GLIBC_TUNABLES`` the thresholds are fixed, so a settle changes nothing and
+  the window is as cold as before. Under ``MALLOC_TOP_PAD_`` the heap is
+  already padded and there is nothing to settle. Another libc has no such
+  thresholds: the settle is a no-op there.
+
+The block is never over ``MAX_SETTLE_BYTES``: glibc learns only from a freed
+block of at most 32 MiB, so a larger request would settle nothing and leave
+the window cold. That is refused, at the call and for the last window it can
+reach, rather than clamped, because a clamp is a settle that silently does
+not work, and rather than at the escalation, which a noisy run reaches once
+in a hundred. ``tests/unit/ci/test_benchmark_calibration.py`` asks for exactly
+``MAX_SETTLE_BYTES`` in a fresh process and checks that glibc retained the
+heap, so the number is pinned by what it does, not by the symbol.
+
 The measurement, each choice against a measured failure
 -------------------------------------------------------
 
@@ -179,6 +241,11 @@ The measurement, each choice against a measured failure
   costs ``MIN_SAMPLE_SECONDS``, the per-call figure is what is compared,
   and the sample that settled the count is the first observation — so the
   large side of a restored quadratic runs once per round, not twice.
+* **Settle the allocator, when asked.** Before a window that reaches a new
+  maximum, ``settle_bytes`` of its top size are allocated and freed, so the
+  top size does not pay a fault on EVERY call that the other sizes do not.
+  One call at the top size still pays its heap growth, and the figure (the
+  second-smallest of at least three samples) drops it (above).
 * **Stop at the unmistakable.** Once every size has ``MIN_REPETITIONS``
   samples, a round whose ``ratio_floor`` is already twice the bound ends the
   measurement. Not before: on one sample per size, the figure IS the sample
@@ -200,7 +267,7 @@ import gc
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Sequence, Tuple, TypeVar
+from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
 
 P = TypeVar("P")
 
@@ -238,6 +305,12 @@ PASS_NOISE_ALLOWANCE = 2 * NOISE_ALLOWANCE
 
 #: How many times an undecided window may move up before the call is refused.
 MAX_ESCALATIONS = 3
+
+#: The largest block ``settle_bytes`` may ask for. glibc raises its mmap
+#: threshold only to the size of a freed block of at most 32 MiB
+#: (``DEFAULT_MMAP_THRESHOLD_MAX``); this leaves room for the chunk header and
+#: page rounding.
+MAX_SETTLE_BYTES = 24 << 20
 
 SUPER_LINEAR = "super-linear"
 LINEAR = "linear"
@@ -425,6 +498,38 @@ def _measure_window(
     return _reading(sizes, samples, step)
 
 
+def _settle_allocator(nbytes: int) -> None:
+    """Allocate and free ``nbytes``, so the allocator keeps large blocks.
+
+    A no-op on an allocator with no such thresholds. See the module docstring.
+    """
+    block = bytearray(nbytes)
+    del block
+
+
+def _settle_plan(
+    settle_bytes: Callable[[int], int], small: int, step: int, max_escalations: int
+) -> List[int]:
+    """The bytes to settle before each window, refused if any is over the limit.
+
+    Worked out before the first window runs, for every window the call can
+    reach, so a request the allocator cannot learn from fails the call
+    deterministically instead of an escalation a noisy run sometimes makes.
+    """
+    plan = [
+        max(0, settle_bytes(small * step**escalation * step * step))
+        for escalation in range(max_escalations + 1)
+    ]
+    if max(plan) > MAX_SETTLE_BYTES:
+        raise ValueError(
+            f"settle_bytes asks for {max(plan)} bytes, over the "
+            f"{MAX_SETTLE_BYTES} an allocator can learn from, for a window that "
+            f"reaches size {small * step**(max_escalations + 2)}: lower "
+            f"max_escalations or the block, or measure a larger limit"
+        )
+    return plan
+
+
 def measure_growth(
     fn: Callable[[P], object],
     payload_at: Callable[[int], P],
@@ -433,6 +538,7 @@ def measure_growth(
     step: int = DEFAULT_STEP,
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
+    settle_bytes: Optional[Callable[[int], int]] = None,
 ) -> Growth:
     """The first window from ``small`` upwards that decides.
 
@@ -440,6 +546,11 @@ def measure_growth(
     ``step ** k`` for the smallest ``k <= max_escalations`` whose
     ``verdict`` is not ``UNDECIDED``. If none decides, the last window is
     returned and ``assert_linear_growth`` refuses it.
+
+    ``settle_bytes`` maps a window's top size to the bytes of allocator to
+    settle before that window (``MAX_SETTLE_BYTES`` at most; ValueError
+    otherwise, before anything is measured). ``None``, the default, settles
+    nothing.
     """
     if step < 2:
         raise ValueError(f"step must be at least 2, got {step}")
@@ -451,8 +562,17 @@ def measure_growth(
         )
     if small < 1 or max_escalations < 0:
         raise ValueError("small must be positive and max_escalations not negative")
+    plan = (
+        None
+        if settle_bytes is None
+        else _settle_plan(settle_bytes, small, step, max_escalations)
+    )
+    settled = 0
     growth = None
     for escalation in range(max_escalations + 1):
+        if plan is not None and plan[escalation] > settled:
+            settled = plan[escalation]
+            _settle_allocator(settled)
         growth = _measure_window(
             fn, payload_at, small * step**escalation, step, repetitions
         )
@@ -470,6 +590,7 @@ def assert_linear_growth(
     step: int = DEFAULT_STEP,
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
+    settle_bytes: Optional[Callable[[int], int]] = None,
 ) -> Growth:
     """Fail unless ``fn``'s cost is shown to grow linearly in its input.
 
@@ -491,6 +612,12 @@ def assert_linear_growth(
         label: What was measured, for the failure message.
         repetitions: Samples per size per window, at least
             ``MIN_REPETITIONS``.
+        settle_bytes: For a function that copies its input: maps the top size
+            of a window to the bytes of allocator to settle before it (the
+            sshd reader makes two copies and asks for four times its line).
+            Default ``None``: nothing is settled and the call measures exactly
+            as before. At most ``MAX_SETTLE_BYTES``, else ValueError. See "A
+            first-touch page fault is not growth" in the module docstring.
 
     Returns:
         The measurement, so a caller can print it.
@@ -502,6 +629,7 @@ def assert_linear_growth(
         step=step,
         repetitions=repetitions,
         max_escalations=max_escalations,
+        settle_bytes=settle_bytes,
     )
     bound = growth_bound(step)
     reading = (

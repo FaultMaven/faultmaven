@@ -53,9 +53,13 @@ What it holds down, and why each one:
 from __future__ import annotations
 
 import ast
+import json
 import math
 import os
+import platform
 import re
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import List, Tuple
@@ -3966,6 +3970,270 @@ class TestTheGrowthHelper:
         )
         # Moved up by whole steps of 8 from 1: the window is one of these.
         assert growth.sizes[0] in {8, 64, 512}, growth.describe()
+
+
+#: What glibc keeps of a function's copies in a COLD process (#1991), run
+#: through ``measure_growth`` in a child so that no earlier test has taught the
+#: allocator anything. ``copies_twice`` makes the sshd reader's two copies of a
+#: 4 MiB input; the child reports, in MiB, the least heap glibc held after a
+#: call at the window's top size (``mallinfo2().arena``: the non-mmapped bytes
+#: it has from the kernel), once the first call has grown it. That is the
+#: mechanism itself: unsettled, glibc trims the heap back after every call
+#: and the next call faults it in again (~1800 pages, ~3-7 ms of system time);
+#: settled, it keeps it and the later calls fault nothing. A retained-heap
+#: figure rather than a fault count because a fault count needs the kernel to
+#: hand out 4 KiB pages: under transparent huge pages it fell under the floor
+#: and the first version of this test skipped in 3 of 4 CI executions.
+_RETAINED_HEAP_THROUGH_THE_HELPER = """
+import ctypes, json, sys
+from tests.wallclock.growth import MAX_SETTLE_BYTES, measure_growth
+
+class MallInfo2(ctypes.Structure):
+    _fields_ = [
+        (name, ctypes.c_size_t)
+        for name in (
+            "arena", "ordblks", "smblks", "hblks", "hblkhd",
+            "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost",
+        )
+    ]
+
+libc = ctypes.CDLL(None)
+try:
+    libc.mallinfo2.restype = MallInfo2
+except AttributeError:  # glibc before 2.33
+    print(json.dumps({"unavailable": "mallinfo2 (glibc 2.33)"}))
+    sys.exit(0)
+
+top = 4 << 20
+retained = []
+
+def copies_twice(text):
+    text.lower()[1:]
+    if len(text) == top:
+        retained.append(libc.mallinfo2().arena)
+
+settle = {
+    "cold": None,
+    "settled": lambda size: 4 * size,
+    "largest": lambda size: MAX_SETTLE_BYTES,
+}[sys.argv[1]]
+measure_growth(
+    copies_twice,
+    lambda size: "A" * size,
+    small=top // 64,
+    max_escalations=0,
+    settle_bytes=settle,
+)
+print(json.dumps({"retained_mib": min(retained[1:]) / 2**20}))
+"""
+
+#: What the settle must keep: both copies, which is what makes a call fault
+#: nothing. The measured figures are 3.1 MiB cold and 15.6 MiB settled, on
+#: glibc 2.43 and 2.39, so both sides are about 2x from this line.
+_INPUT_BYTES = 4 << 20
+_COPIES_KEPT_MIB = 2 * _INPUT_BYTES / 2**20
+
+
+def _cannot_check(reason: str):
+    """Skip a check the process cannot make, except on CI, where it fails.
+
+    ‼ A positive control that skips is a control that stops guarding without
+    anyone seeing it, which is what happened here: its first version skipped
+    in 3 of 4 CI executions. CI sets ``CI=true`` on a runner this test was
+    written for (Linux, glibc, default ``MALLOC_*``), so there a check that
+    cannot be made means the runner changed, and that is red.
+    """
+    if os.environ.get("CI"):
+        pytest.fail(f"CI cannot check the allocator settle: {reason}")
+    pytest.skip(reason)
+
+
+def _retained_heap_mib(*modes: str) -> dict:
+    """``{mode: MiB glibc retained}``, one fresh child per mode, run together."""
+    if platform.system() != "Linux":
+        _cannot_check("the allocator settle is glibc's, on Linux")
+    tunables = os.environ.get("GLIBC_TUNABLES", "")
+    if "MALLOC_TOP_PAD_" in os.environ or "top_pad" in tunables:
+        # Every call already has the pad to land in: nothing to settle, and
+        # the cold control reads as retained as the settled run.
+        _cannot_check("MALLOC_TOP_PAD_ pads the heap, so there is nothing to settle")
+    # The child measures nothing of its own: pytest-cov's subprocess hook
+    # would put the coverage tracer's allocations in the figure.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("COV_CORE_", "COVERAGE_"))
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    children = {
+        mode: subprocess.Popen(
+            [sys.executable, "-W", "ignore", "-c", _RETAINED_HEAP_THROUGH_THE_HELPER]
+            + [mode],
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for mode in modes
+    }
+    retained = {}
+    for mode, child in children.items():
+        out, err = child.communicate(timeout=120)
+        assert child.returncode == 0, err
+        reading = json.loads(out.strip().splitlines()[-1])
+        if "unavailable" in reading:
+            _cannot_check(f"this glibc has no {reading['unavailable']}")
+        retained[mode] = reading["retained_mib"]
+    return retained
+
+
+def _thresholds_pinned() -> str:
+    """Which environment settings fix glibc's thresholds, for a failure message."""
+    pinned = [
+        key
+        for key in ("MALLOC_TRIM_THRESHOLD_", "MALLOC_MMAP_THRESHOLD_")
+        if key in os.environ
+    ]
+    if "GLIBC_TUNABLES" in os.environ:
+        pinned.append(f"GLIBC_TUNABLES={os.environ['GLIBC_TUNABLES']}")
+    return ", ".join(pinned) or "none set in the environment"
+
+
+class TestTheAllocatorSettle:
+    """``settle_bytes``: first-touch page faults are not growth (#1991)."""
+
+    @staticmethod
+    def _recorded(monkeypatch, *, decides_from: int):
+        """Replace the window and the settle with recorders: no timing at all.
+
+        A window reads as undecided until its smallest size reaches
+        ``decides_from`` and as linear from there, so the call escalates up
+        to it and the order of ``settle``/``window`` events is the whole story.
+        """
+        from tests.wallclock import growth as growth_module
+
+        events: List[tuple] = []
+
+        def window(fn, payload_at, small, step, repetitions):
+            events.append(("window", small))
+            sizes = (small, small * step, small * step * step)
+            if small >= decides_from:
+                seconds = (1.0, 1.0 + (step - 1.0), 1.0 + (step**2 - 1.0))  # linear
+            else:
+                seconds = (1.0, 1.0, 1.0)  # all fixed cost: undecided
+            return growth_module.Growth(sizes=sizes, seconds=seconds, step=step)
+
+        monkeypatch.setattr(growth_module, "_measure_window", window)
+        monkeypatch.setattr(
+            growth_module, "_settle_allocator", lambda n: events.append(("settle", n))
+        )
+        return events
+
+    @staticmethod
+    def _judge(**settle):
+        from tests.wallclock import assert_linear_growth
+
+        return assert_linear_growth(
+            _untimed, lambda size: size, small=2, label="settle", **settle
+        )
+
+    def test_the_default_settles_nothing(self, monkeypatch):
+        """Every other caller measures as it did before the keyword existed."""
+        import inspect
+
+        from tests.wallclock import assert_linear_growth, measure_growth
+
+        for function in (measure_growth, assert_linear_growth):
+            default = inspect.signature(function).parameters["settle_bytes"].default
+            assert default is None, function
+
+        events = self._recorded(monkeypatch, decides_from=1024)
+        self._judge()
+        assert events == [("window", small) for small in (2, 16, 128, 1024)], events
+
+    def test_it_settles_before_each_window_that_reaches_a_new_maximum(
+        self, monkeypatch
+    ):
+        events = self._recorded(monkeypatch, decides_from=1024)
+        self._judge(settle_bytes=lambda top: 3 * top)
+        # Tops 128, 1024, 8192, 65536: each settled for, before its window.
+        assert events == [
+            ("settle", 384),
+            ("window", 2),
+            ("settle", 3072),
+            ("window", 16),
+            ("settle", 24576),
+            ("window", 128),
+            ("settle", 196608),
+            ("window", 1024),
+        ], events
+
+        events.clear()
+        self._judge(settle_bytes=lambda top: 1000)
+        assert events.count(("settle", 1000)) == 1, events  # no new maximum after it
+
+    def test_a_request_the_allocator_cannot_learn_from_is_refused_up_front(
+        self, monkeypatch
+    ):
+        """Refused for the last window the call can reach, before the first
+        runs, and never clamped: a clamped settle does nothing and the
+        refusal it was meant to prevent comes back unexplained."""
+        from tests.wallclock.growth import MAX_SETTLE_BYTES
+
+        events = self._recorded(monkeypatch, decides_from=1024)
+        last_top = 2 * 8**5
+
+        with pytest.raises(ValueError, match=str(MAX_SETTLE_BYTES + 1)):
+            self._judge(
+                settle_bytes=lambda top: MAX_SETTLE_BYTES + 1 if top == last_top else 1
+            )
+        assert events == [], events
+
+        self._judge(settle_bytes=lambda top: MAX_SETTLE_BYTES)
+        assert ("settle", MAX_SETTLE_BYTES) in events, events
+
+    def test_settling_keeps_the_heap_a_cold_process_gives_back(self):
+        """Through the helper, in two fresh processes: cold, glibc hands the
+        heap back after every call on a 4 MiB input (~3 MiB kept); settled, it
+        keeps both copies (~15.6 MiB) and a call faults nothing.
+
+        The cold figure is the positive control: a cold child that already
+        keeps the copies means the mechanism is not what this thinks it is,
+        and that fails rather than passes. This skips only where the pad makes
+        the control meaningless (``MALLOC_TOP_PAD_``), and fails where the
+        thresholds cannot move (``MALLOC_TRIM_THRESHOLD_``,
+        ``MALLOC_MMAP_THRESHOLD_``, ``GLIBC_TUNABLES``): there ``settle_bytes``
+        cannot work and the growth checks that rely on it are cold again.
+        Mutants: the block removed, or clamped to 1 MiB, keep the cold figure.
+        """
+        heap = _retained_heap_mib("cold", "settled")
+        assert heap["cold"] < _COPIES_KEPT_MIB, (
+            f"the control failed: a cold process already keeps {heap['cold']:.1f} "
+            f"MiB, so there is nothing to tell a settle from (thresholds pinned "
+            f"by: {_thresholds_pinned()})"
+        )
+        assert heap["settled"] >= _COPIES_KEPT_MIB, (
+            f"settle_bytes did not make glibc keep the heap: {heap['settled']:.1f} "
+            f"MiB retained against {heap['cold']:.1f} cold, wanted at least "
+            f"{_COPIES_KEPT_MIB:.1f}. The block is not raising the thresholds "
+            f"(pinned by: {_thresholds_pinned()})"
+        )
+
+    def test_the_largest_request_the_helper_accepts_still_settles(self):
+        """Exactly ``MAX_SETTLE_BYTES``, in a fresh process, still makes glibc
+        keep the heap. The limit is a number glibc decides (it learns only from
+        a freed block of at most 32 MiB), and the symbol alone pins nothing: a
+        limit of 1 GiB passed every test that used the symbol and retained the
+        cold figure here.
+        """
+        heap = _retained_heap_mib("cold", "largest")
+        assert heap["cold"] < _COPIES_KEPT_MIB, heap
+        assert heap["largest"] >= _COPIES_KEPT_MIB, (
+            f"MAX_SETTLE_BYTES settled nothing: glibc kept {heap['largest']:.1f} "
+            f"MiB, the cold figure is {heap['cold']:.1f}. It is over what glibc "
+            f"learns from, or the thresholds are pinned ({_thresholds_pinned()})"
+        )
 
 
 # ------------------------------------------------------------ the workflow
