@@ -37,9 +37,6 @@ class TestPresetDefinitions:
             assert isinstance(
                 preset.defaults, dict
             ), f"Preset {preset_name} defaults not a dict"
-            assert isinstance(
-                preset.required_overrides, dict
-            ), f"Preset {preset_name} required_overrides not a dict"
 
     def test_local_preset_has_zero_config_defaults(self):
         """Test that local preset has zero-config defaults."""
@@ -67,10 +64,10 @@ class TestPresetDefinitions:
 
     def test_local_preset_no_required_keys_for_local_provider(self):
         """Test that local preset has no required keys for local provider."""
-        from faultmaven.config.presets import PRESETS, PresetName
+        from faultmaven.config.presets import PRESETS, PresetName, preset_required_keys
 
         local_preset = PRESETS[PresetName.LOCAL]
-        required = local_preset.required_overrides.get("local", set())
+        required = preset_required_keys(local_preset, "local")
 
         # Local provider should have no required keys for true zero-config
         assert len(required) == 0
