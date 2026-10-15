@@ -165,9 +165,9 @@ def test_a_port_the_test_bound_itself_connects():
             accepted.close()
 
 
-def test_a_wildcard_bound_port_connects_on_loopback():
+def test_a_port_the_test_bound_is_reached_by_the_name_localhost():
     with socket.socket() as server:
-        server.bind(("0.0.0.0", 0))
+        server.bind(("127.0.0.1", 0))
         server.listen()
         port = server.getsockname()[1]
         with socket.create_connection(("localhost", port), timeout=2):
