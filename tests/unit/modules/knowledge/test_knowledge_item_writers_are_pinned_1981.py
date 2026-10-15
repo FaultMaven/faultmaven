@@ -320,6 +320,13 @@ class TestOneCreatorOfAKnowledgeItem:
         # Names the table, writes nothing: the ``has_table_privilege(..., 'UPDATE')``
         # probe the maintenance role check (#1966) reads the table's full name for.
         (REPOSITORY, "may_update", "__table__"),
+        # Names the table, writes nothing: the authored-orphan sweep's
+        # ``row_security_active(<table>)`` proof (#1982) reads its full name.
+        (
+            "faultmaven/bootstrap/kb_orphan_sweep.py",
+            "_read_rows_if_complete",
+            "__table__",
+        ),
     }
 
     def test_no_other_function_writes_one(self):
