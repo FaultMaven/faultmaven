@@ -27,6 +27,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_runbook_kb_dependency,
     check_case_service_available,
 )
+from faultmaven.modules.case.contracts import ReportGenerationRequest
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
@@ -235,7 +236,7 @@ async def get_report_recommendations(
 async def generate_case_reports(
     case_id: str,
     fastapi_request: Request,
-    request_body: Dict[str, Any] = Body(...),
+    request: ReportGenerationRequest,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
@@ -244,12 +245,6 @@ async def generate_case_reports(
     Reports are auto-generated when a case reaches terminal state.
     This endpoint allows regeneration if the original was missing or needs refresh.
     """
-    from faultmaven.modules.case.contracts import (
-        ReportGenerationRequest,
-        ReportType,
-        is_default_case_title,
-    )
-
     case_service = check_case_service_available(case_service)
 
     try:
@@ -280,9 +275,6 @@ async def generate_case_reports(
                 detail="Report generation service not available",
             )
 
-        request = ReportGenerationRequest(
-            report_types=[ReportType(t) for t in request_body["report_types"]]
-        )
         response = await report_service.generate_reports(case, request.report_types)
         return response.model_dump()
 
