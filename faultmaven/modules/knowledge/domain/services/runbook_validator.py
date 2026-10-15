@@ -208,14 +208,20 @@ _ESCAPED_LINE_BREAK_RE = re.compile(r"\\[nr]")
 _KEY_MATERIAL_MIN = 40
 #: A markdown blockquote's markers at the start of a line (``> > ``).
 _BLOCKQUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
-#: The JWT characters a token may run on through, ``<…>`` placeholders
-#: included, and no further: a query string's ``&``, a JSON ``"``.
-_JWT_CHARS = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_=.<>-"
-)
+#: What a JWT's last part runs on through: JWT characters, ``<…>``
+#: placeholders included, and no ``.`` — the detected span already holds the
+#: dotted parts, and a walk over ``.`` read every token of a chain glued by
+#: ``<``/``>`` to the end of the text (quadratic, #2012 delta N3). A query
+#: string's ``&`` and a JSON ``"`` end it.
+_JWT_TAIL_RE = re.compile(r"[A-Za-z0-9_=<>-]*+")
+#: A line after a BEGIN marker that is wholly key material: base64 runs of 16
+#: or more, JSON ``\n`` escapes and spaces, and nothing else (#2012 delta N2:
+#: a path, a hash or a long word on a prose line is not key material).
+_KEY_LINE_RE = re.compile(r"[ \t]*+(?:(?:\\[nr]|[A-Za-z0-9+/=]{16,}+)++[ \t]*+)++")
 #: What a shape's secret portion may be and still be a placeholder (#2012
 #: review F3). Stricter than ``_PLACEHOLDER_VALUE_RE``, which judges a quoted
-#: keyed value: a shell variable only as ``$UPPER_NAME``; the ``your-``,
+#: keyed value: a shell variable only as ``$UPPER_NAME`` or an all-letter
+#: ``$lower_name`` (``$user:$password@`` is the shell idiom); the ``your-``,
 #: ``example`` and ``placeholder`` words only with no digit in them; and of
 #: the references only the closed forms (``_CLOSED_REFERENCE_RE``). So
 #: ``$uperS3cret``, ``example-Pr0d-pass``, ``:hunter2x`` and ``$(s3cretpw`` are
@@ -225,7 +231,7 @@ _SHAPE_PLACEHOLDER_RE = re.compile(
         <[^>]*>
       | \$\{[^}]*\}
       | \{\{[^}]*\}\}
-      | (?-i:\$[A-Z_][A-Z0-9_]*)
+      | (?-i:\$[A-Z_][A-Z0-9_]*|\$[a-z_][a-z_]*)
       | your[-_][A-Za-z_-]*
       | change[-_]?me
       | example[A-Za-z_-]*
@@ -249,9 +255,9 @@ def _secret_portion(entity_type: str, content: str, span: RedactionSpan) -> str:
     A credential URL's userinfo password (between the first ``:`` after
     ``//`` and the last ``@``; empty when there is none); the value after an
     AWS secret key's separator; a fixed-prefix token's text after its prefix;
-    a JWT's first three dot-separated parts, read on through ``_JWT_CHARS`` so
-    a ``.<signature>`` glued to it is its own (and a query string's ``&``, a
-    JSON ``"`` or a trailing ``.xxx`` is not). A bearer or basic credential's
+    a JWT's first three dot-separated parts, its last part read on through
+    ``_JWT_TAIL_RE`` so a ``<signature>`` glued to it is its own (and a query
+    string's ``&``, a JSON ``"`` or a trailing ``.xxx`` is not). A bearer or basic credential's
     span is the credential already, as is any type this does not know (a
     pattern added later).
     """
@@ -263,9 +269,7 @@ def _secret_portion(entity_type: str, content: str, span: RedactionSpan) -> str:
     if entity_type == "AWS_SECRET_KEY":
         return re.split(r"[=:]", text, maxsplit=1)[-1].strip().strip("'\"")
     if entity_type == "JWT_TOKEN":
-        end = span.end
-        while end < len(content) and content[end] in _JWT_CHARS:
-            end += 1
+        end = _JWT_TAIL_RE.match(content, span.end).end()
         return ".".join(content[span.start : end].split(".")[:3])
     prefix = _TOKEN_PREFIX_RE.match(text)
     return text[prefix.end() :] if prefix else text
@@ -289,32 +293,39 @@ def _key_material(text: str) -> int:
 
 def _key_material_after_begin(content: str, position: int) -> int:
     """The key material from ``position`` (the end of a BEGIN marker) on: the
-    rest of its line, then each line after it up to the END line or the first
-    line that holds none (#2012 review F9). A blockquote's ``>`` markers are
-    stripped and a ``#`` comment line skipped, so a truncated key quoted in
-    markdown or carrying a comment is read past the BEGIN line the sanitizer
-    stops at. Stops once there is enough to decide."""
+    rest of its line, then each line after it, up to the END line or the first
+    line that is not wholly key material (``_KEY_LINE_RE``; #2012 review F9,
+    delta N2). A blockquote's ``>`` markers are stripped and a ``#`` comment
+    line skipped, so a truncated key quoted in markdown or carrying a comment
+    is read past the BEGIN line the sanitizer stops at. A line holding another
+    BEGIN marker, commented or not, ends the walk, so a run of markers is read
+    once each, not to the end of the text (delta N1). Stops once there is
+    enough to decide."""
     total = 0
     first = True
     while True:
         newline = content.find("\n", position)
         line_end = len(content) if newline == -1 else newline
         line = content[position:line_end]
-        comment = False
         if not first:
             line = _BLOCKQUOTE_RE.sub("", line, count=1)
-            comment = line.lstrip().startswith("#")
-        if not comment:
-            end_marker = line.find("-----END")
-            if end_marker != -1:
-                return total + _key_material(line[:end_marker])
-            material = _key_material(line)
-            if material == 0 and not first:
+            if "-----BEGIN" in line:
                 return total
-            total += material
-            if total >= _KEY_MATERIAL_MIN or newline == -1:
-                return total
-        elif newline == -1:
+            if line.lstrip().startswith("#"):
+                if newline == -1:
+                    return total
+                position = newline + 1
+                continue
+        end_marker = line.find("-----END")
+        if end_marker != -1:
+            line = line[:end_marker]
+        if line.strip() and not _KEY_LINE_RE.fullmatch(line):
+            return total
+        material = _key_material(line)
+        if material == 0 and not first:
+            return total
+        total += material
+        if total >= _KEY_MATERIAL_MIN or newline == -1 or end_marker != -1:
             return total
         first = False
         position = newline + 1

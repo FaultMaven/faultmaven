@@ -359,6 +359,17 @@ PLACEHOLDERS = [
     "> -----BEGIN " + "PRIVATE KEY-----\n> MIIEpAIBAAKCAQEA...\n> -----END "
     "PRIVATE KEY-----",
     "gl" + "pat-" + "X" * 20,
+    # Delta of bf689426a: lowercase shell variables are the shell idiom (N4),
+    # and prose after a BEGIN marker is not key material (N2).
+    'psql "postgresql://$user:$password@$host/$db"',
+    "Check it starts with -----BEGIN " + "PRIVATE KEY-----\nStore it at "
+    "/etc/kubernetes/pki/apiserver.key and reference\n it from "
+    "/etc/kubernetes/manifests/kube-apiserver.yaml",
+    "The header must read -----BEGIN RSA " + "PRIVATE KEY-----\nVerify: sha256sum "
+    "server.key should print "
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "If the PEM begins -----BEGIN EC " + "PRIVATE KEY-----\nthe misconfiguration "
+    "is in the authentication/authorization configuration",
 ]
 #: Shapes no shape pattern detects at all (Fable's "ok" rows).
 UNDETECTED = [
