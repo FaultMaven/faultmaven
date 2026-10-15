@@ -226,7 +226,7 @@ def _looks_like_a_chroma_store(path: Path) -> bool:
     are accepted, and nothing else:
 
     * it holds ``chroma.sqlite3`` — every persist directory does, at the
-      ``>= 0.5.3`` floor this project pins; or
+      ``>= 1.0.0`` floor this project pins; or
     * it is empty — a store the bootstrap has created and nothing has written
       to yet, which is a legitimate thing to be asked to remove.
 

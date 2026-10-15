@@ -775,6 +775,20 @@ class ModelLoadingException(LLMException):
         )
 
 
+class CallShapeUnsupported(LLMException):
+    """A provider's transport cannot carry this CALL's shape (#2016).
+
+    Raised before any request, e.g. by the raw llama.cpp ``/completion``
+    fallback for a call that carries a conversation. It describes the call on
+    this transport and says nothing about the provider's health, so the
+    registry records no failure for it and moves on to the next provider, which
+    may carry the call. Always non-retryable.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, retryable=False)
+
+
 class ToolCallingUnsupportedError(LLMException):
     """Raised when a model/provider does not support tool/function calling.
 

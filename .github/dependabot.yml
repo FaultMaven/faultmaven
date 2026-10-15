@@ -48,7 +48,7 @@ updates:
     directories:
       # ONE entry on purpose. A "/" entry was removed after the first run
       # (#1177 + #1178, 2026-08-25): it did NOT bump pyproject.toml's
-      # `chromadb >= 0.5.3` floor — every candidate already satisfies it — but
+      # `chromadb >= 1.0.0` floor — every candidate already satisfies it — but
       # the pip ecosystem at "/" still discovers requirements/*.txt, so it
       # raised a PR touching the SAME three lockfiles as this entry. Two
       # identical PRs, and with open-pull-requests-limit: 2 they consumed the

@@ -464,8 +464,8 @@ class LLMSettings(BaseSettings):
     local_model: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
     # Operator declaration of the endpoint's tool-calling support (#1356).
     # Unset = derive it from the transport: the OpenAI-compatible
-    # /v1/chat/completions path is assumed capable, Ollama's /api/generate
-    # never is (that protocol has no tool_calls field). Set false when the
+    # /v1/chat/completions path is assumed capable, Ollama's native /api/chat
+    # transport never is (it does not carry tool calls). Set false when the
     # serving stack was built without tool support, so the engine stops paying
     # for a tool call it cannot satisfy on every turn; true is honoured only
     # where the transport can carry it.
