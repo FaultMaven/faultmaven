@@ -708,10 +708,10 @@ def _scrub_title_source(text: Optional[str], sanitizer) -> str:
     3. ``_sanitize_title_content`` — email, phone, IPv4, URL and path, which
        the sanitizer's pattern set does not all cover.
 
-    The database-URL pattern's ``[^@]+`` can cross whitespace to a later
-    ``@``, so ``postgresql://db:5432 is down, email me@example.com`` becomes
-    one ``[database_url]``: over-redaction, the safe direction (#1980 owns the
-    pattern set).
+    The pattern set is the sanitizer's own (#1980): a database URL is a
+    secret only with a user before its host, and its user part never runs
+    across whitespace, so ``postgresql://db:5432 is down, email
+    me@example.com`` keeps the URL and step 3 marks the email.
 
     Presidio is NOT consulted here; it runs once, on the final candidate
     (``_passes_disclosure_gate``). An analyzer-only entity in a source therefore

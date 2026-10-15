@@ -170,7 +170,9 @@ def _gate_failures(caplog) -> list[logging.LogRecord]:
     [
         pytest.param(
             f"db login fails with password={SECRET} on replica",
-            "Db Login Fails with [password] on Replica",
+            # The key stays in clear: a keyed secret's span is its value
+            # (#1980 review ruling, value-only substitution).
+            "Db Login Fails with Password=[password] on Replica",
             id="T1-password",
         ),
         pytest.param(
@@ -266,7 +268,7 @@ def test_the_description_is_scrubbed_before_a_title_is_built_from_it():
 
     title = get_extractive_fallback_title("", "", case, 8, sanitizer=SANITIZER)
 
-    assert title == "Login Fails with [password] for Every Replica"
+    assert title == "Login Fails with Password=[password] for Every Replica"
 
 
 async def test_the_no_model_path_gates_the_description_too():
@@ -280,7 +282,7 @@ async def test_the_no_model_path_gates_the_description_too():
     )
 
     assert (title, source) == (
-        "Login Fails with [password] for Every Replica",
+        "Login Fails with Password=[password] for Every Replica",
         "extractive",
     )
 
@@ -655,12 +657,12 @@ async def test_an_analyzer_entity_in_the_candidate_titles_nothing(reported, capl
             "8.8.8.8 unreachable from the bastion host",
             "[ip] unreachable from the bastion host",
         ),
-        # ...and the database-URL pattern's ``[^@]+`` crossing whitespace to a
-        # later ``@`` over-redacts: the safe direction, and the pattern set is
-        # #1980's.
+        # ...and a database URL with no credentials is no secret: its user
+        # part never runs across whitespace to a later ``@`` (#1980), so the
+        # URL stays and the email gets ``_sanitize_title_content``'s marker.
         (
             "postgresql://db:5432 is down, email me@example.com when fixed",
-            "[database_url] when fixed",
+            "postgresql://db:5432 is down, email [email] when fixed",
         ),
         # A placeholder already in a source, in any letter case, becomes the
         # type marker.
@@ -752,9 +754,9 @@ async def test_no_fragment_reaches_the_title_prompt(sanitize_pii):
 
 
 # The review's fuzz (p2), bounded and seeded: per class the sanitizer detects,
-# no run of 6+ characters of the secret survives the source scrub. A trial the
-# sanitizer itself misses on the raw text is the pattern set's (#1980), not
-# this gate's, and is skipped — but each class must exercise real trials.
+# no run of 6+ characters of the secret survives the source scrub. The
+# sanitizer misses no trial on the raw text either: its pattern set (#1980)
+# detects every one of these classes whole.
 _FUZZ_TRIALS = 250
 _B64 = string.ascii_letters + string.digits + "/+"
 _PW = string.ascii_letters + string.digits + "!#$%&*?=^~"
@@ -795,16 +797,16 @@ def _leaks(secret: str, text: str, run: int = 6) -> bool:
 )
 def test_no_run_of_a_detected_secret_survives_the_source_scrub_fuzz(make):
     rng = random.Random(f"1967-{make.__name__}")
-    exercised, leaked = 0, []
+    missed, leaked = [], []
     for _ in range(_FUZZ_TRIALS):
         secret, text = make(rng)
         if _leaks(secret, SANITIZER.apply_regex_redaction(text, {})):
-            continue  # a sanitizer miss on the raw text: #1980's
-        exercised += 1
+            missed.append(text)
+            continue
         scrubbed = _scrub_title_source(text, SANITIZER)
         if _leaks(secret, scrubbed):
             leaked.append((text, scrubbed))
-    assert exercised >= _FUZZ_TRIALS // 2, exercised
+    assert missed == [], missed[:3]
     assert leaked == [], leaked[:3]
 
 
@@ -928,7 +930,7 @@ async def test_the_hint_is_scrubbed_before_it_reaches_the_prompt(sanitize_pii):
 
     prompt = model.generate.await_args.kwargs["prompt"]
     assert SECRET not in prompt
-    assert "the db [password] is the one being rejected" in prompt
+    assert "the db password=[password] is the one being rejected" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1012,8 @@ def test_the_title_route_control_names_the_case():
         response = client.post(f"/api/v1/cases/{case.case_id}/title", json={})
 
     assert response.status_code == 200, response.text
-    assert response.json()["title"] == "Db Login Fails with [password] on Replica"
+    assert (
+        response.json()["title"] == "Db Login Fails with Password=[password] on Replica"
+    )
     assert case.title == response.json()["title"]
     service.update_case.assert_awaited_once()
