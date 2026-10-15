@@ -282,7 +282,9 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     def is_docstring(node: ast.AST) -> bool:
         if not docstrings:
             docstrings.append(_docstrings(tree))
-        return node in docstrings[0]
+        # Only PROSE is exempt: a one-token docstring is a name a caller can
+        # read back through ``__doc__`` and resolve (#2023 narrow re-check).
+        return node in docstrings[0] and len(node.value.split()) > 1
 
     private = private_names()
     # Strings may name neither module's privates, except the dispatch its own.
@@ -580,7 +582,16 @@ PLANTED = {
     "    return inspect.getmodule(type(v))._mint(raw, 'case', True)\n",
     "r2_vars_of_module": "import inspect\ndef relabel(v, raw):\n"
     "    return vars(inspect.getmodule(type(v)))['_mi' 'nt'](raw, 'case', True)\n",
+    # A one-token docstring is a name read back through ``__doc__`` (#2023).
+    "doc_resolve": "import pkgutil\ndef t():\n"
+    f'    """{_MODULE}:_mint"""\n'
+    "x = pkgutil.resolve_name(t.__doc__)('raw', 'case', True)\n",
 }
+
+
+def test_a_prose_docstring_naming_the_mint_stays_exempt():
+    source = f'def t():\n    """Calls {_MODULE}:_mint for the case."""\n'
+    assert not violations(source, "faultmaven/planted.py")
 
 
 @pytest.mark.parametrize("snippet", sorted(PLANTED))

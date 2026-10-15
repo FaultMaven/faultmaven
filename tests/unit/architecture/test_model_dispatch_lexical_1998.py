@@ -227,7 +227,7 @@ def _rebinding_violations(
                     (line, "A5", f"a dispatch name rebound by key: {key.value}")
                 )
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node not in docstrings and (
+            if not (node in docstrings and len(node.value.split()) > 1) and (
                 node.value == _DISPATCH_MODULE
                 or node.value.startswith(_DISPATCH_MODULE + ".")
             ):
@@ -316,7 +316,7 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
             ):
                 found.append((line, "A3", f"{_DISPATCHER} rebound by attribute"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node in docstrings:
+            if node in docstrings and len(node.value.split()) > 1:
                 continue
             if private and _names(node.value, {_SEND}):
                 found.append((line, "A2", f"{_SEND} named in a string"))
@@ -574,6 +574,13 @@ R7_REACH = {
         p = Duck()
         """),
 }
+
+
+# A one-token docstring is a name read back through ``__doc__`` (#2023).
+PLANTED["doc __doc__ names _generate"] = (
+    'def n():\n    """_generate"""\n'
+    "r = await getattr(provider, n.__doc__)(prompt=raw)\n"
+)
 
 
 @pytest.mark.parametrize("name", sorted(PLANTED))
