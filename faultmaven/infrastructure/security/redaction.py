@@ -30,6 +30,7 @@ import bisect
 import hashlib
 import hmac
 import re
+import string
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -100,8 +101,10 @@ class RedactionPattern:
       non-whitespace, which is scanned whole. ``"keyed"``: starting where a
       trigger starts, and ending on that line or the next. ``"line"``: an
       empty match at the start of a line holding a trigger, its span read
-      from there to the end of the next line. ``"text"``: anywhere, across
-      lines too.
+      from there to the end of the next line. ``"block"``: a match starting
+      at the start of a line holding a trigger and ending in a YAML block
+      indicator, its span the block's lines below it, however many
+      (``_keyed_block_scalar``). ``"text"``: anywhere, across lines too.
 
     A token pattern's lookarounds read at most three characters past its
     run; the masked rounds rely on it (``_detect``).
@@ -181,6 +184,17 @@ _REFERENCE = (
     r"|%\([A-Za-z_][A-Za-z0-9_]*\)s)"
 )
 _NOT_A_REFERENCE = _not_the_whole_value(_REFERENCE)
+_WHOLE_REFERENCE = re.compile(_REFERENCE, re.IGNORECASE)
+
+
+def is_reference(value: str) -> bool:
+    """Whether ``value``, whole, refers to a secret instead of holding one
+    (``_REFERENCE``, read as the keyed patterns read it): what a keyed value
+    may be and not be redacted. The runbook validator reads a detected
+    secret's value with it too (#2012)."""
+    return _WHOLE_REFERENCE.fullmatch(value) is not None
+
+
 #: Values that say a key's state, not its secret: the closed list a keyed
 #: value is never read as (#1980 review rulings). Each entry is there for a
 #: line of the negative corpora that needs it (`test_secret_patterns_1980`'s
@@ -260,6 +274,22 @@ _KEY_QUOTE = r"""["']?+"""
 #: nothing.
 _ESCAPED_CONTROL = r"(?-i:\\[ntr])"
 _ESCAPE = rf"(?<={_ESCAPED_CONTROL})|(?<=%[0-9A-Fa-f]{{2}})"
+#: A YAML block-scalar indicator (`|`, `>`, a chomping `-`/`+` and an
+#: indentation digit, in either order), and what may end its line: a comment
+#: (YAML's ` #`, whatever follows it) or the line's end. Read only after
+#: `key:` (#2025): `--password | tee` and `token=>` are not blocks.
+_BLOCK_INDICATOR = r"[|>](?:[-+][1-9]?|[1-9][-+]?)?"
+#: Up to two node properties before the indicator, a tag or an anchor
+#: (`password: !!binary |`, `password: &pw |`, `db_password: !vault |`),
+#: each ended by blanks. A property is read to the next blank or `:`, so a
+#: scan that tries every `:` reads each character once (`: !` glued to `:`
+#: again and again would be re-read to the end of the run per `:`).
+_NODE_PROPERTIES = r"(?:[!&][^\s:]*+[ \t]++){0,2}+"
+_BLOCK_START = rf"{_NODE_PROPERTIES}{_BLOCK_INDICATOR}"
+_BLOCK_LINE_REST = r"(?:[ \t]++#|[ \t]*+(?![^\r\n]))"
+#: After `key:`, a block indicator is not the value (``_keyed_block_scalar``
+#: reads the block), so `password: |` keeps its indicator and stays YAML.
+_NOT_A_BLOCK_INDICATOR = rf"(?!{_BLOCK_START}{_BLOCK_LINE_REST})"
 
 
 def _keys(keywords: str) -> Tuple[str, str, str]:
@@ -292,6 +322,13 @@ def _keyed_secret(keywords: str, value_guard: str = "") -> str:
        #654).
     3. A command-line flag (``--password value``): a value not shaped like a
        word (``_PROSE_VALUE``), and not a separator (`` : `` is spelling 1's).
+       The empty ``flag`` group marks it: a match that took it stands only
+       when the word holding the key starts with ``-`` (``_flag_in_a_word``,
+       #2025), so ``--db-password x`` is a flag and the command names
+       ``get-login-password`` and ``rotate-secret`` are not.
+
+    After ``:`` a YAML block indicator is not a value (``password: |``):
+    ``_keyed_block_scalar`` reads the block.
 
     "Bare" means not preceded by a letter, digit or underscore — or preceded
     by an escaped newline/tab/return or a percent-encoded byte — so
@@ -300,11 +337,13 @@ def _keyed_secret(keywords: str, value_guard: str = "") -> str:
     and ``failed_password`` a compound one.
     """
     key, bare, compound = _keys(keywords)
-    separator = rf"{_KEY_QUOTE}(?:{_ASSIGN}{_NEXT_LINE}|{_COLON})"
+    separator = (
+        rf"{_KEY_QUOTE}(?:{_ASSIGN}{_NEXT_LINE}|{_COLON}{_NOT_A_BLOCK_INDICATOR})"
+    )
     return (
         rf"(?:{bare}{separator}"
         rf"|{compound}{separator}{_NOT_A_COUNT}"
-        rf"|(?<=-){key}[ \t]++(?![:=])(?-i:(?!{_PROSE_VALUE})))"
+        rf"|(?<=-){key}(?P<flag>)[ \t]++(?![:=])(?-i:(?!{_PROSE_VALUE})))"
         rf"{value_guard}{_VALUE}"
     )
 
@@ -327,6 +366,54 @@ def _keyed_on_next_line(keywords: str, value_guard: str = "") -> str:
         rf"(?:{bare}|{compound}(?P<compound>)){_KEY_QUOTE}{_COLON}"
         rf"\r?\n(?P=indent)[ \t]++(?!#){_NOT_A_YAML_KEY_OR_ITEM}"
         rf"(?(compound){_NOT_A_COUNT}){value_guard}{_VALUE})"
+    )
+
+
+#: Lines of only blanks, each followed by another line; a block body's
+#: indentation: deeper than the key's line (``indent``), and for a list item's
+#: key (`- password: |`, ``item``) deeper than the key itself, so the item's
+#: sibling keys (`  user: bob`) are not its body; and a body line, not blank.
+_BLANK_LINES = r"(?:\r?\n[ \t]*+(?=\r?\n))*+"
+_DEEPER = r"(?P=indent)(?(item)[ \t]{2})[ \t]++"
+_BODY_LINE = rf"\r?\n{_DEEPER}[^ \t\r\n][^\r\n]*+"
+
+
+def _keyed_block_scalar(keywords: str) -> str:
+    """``key: |`` (or ``>``, with a chomping ``-``/``+`` and an indentation
+    digit, after up to two node properties, a tag or an anchor, and with an
+    optional comment): the value is the YAML block below it (#2025). The body
+    is every following line indented deeper than the key's line — for a
+    ``- key: |`` list item, deeper than the key itself; a run of blank lines
+    belongs to it only when a deeper line follows the run, and it ends at the
+    first other line or at the end of the text.
+    An empty block (the indicator, then a sibling or the end) reads nothing.
+
+    The span runs from the first body line's first non-blank character to the
+    end of the last body line, so one placeholder stands at the first line's
+    indentation, the text stays YAML, and a second pass reads a block whose
+    whole body is a reference (``_REFERENCE``): exempt, so one pass is
+    idempotent. Same keys as ``_keyed_secret``, after ``:`` only.
+
+    Linear: the key line is matched atomically, committing to the first key
+    whose indicator ends the line (after a ``#`` everything is comment), and
+    every quantifier over the body is possessive. Whether the key is a list
+    item's is decided there too, by the first body line's indentation (a body
+    at the dash's own depth is read as the dash's), and never revisited: a
+    second pass reading a placeholder body must not fall back to the dash's
+    depth and take the item's siblings. The match consumes the body,
+    so a scan resumes after it, and a key line inside a body (whose own block
+    lies inside the outer one) is not read again.
+    """
+    _key, bare, compound = _keys(keywords)
+    return (
+        r"(?<![^\n])(?P<indent>[ \t]*+)"
+        rf"(?>(?P<item>-[ \t](?=[^ \t]))?"
+        rf"(?>[^\r\n]*?(?:{bare}|{compound}){_KEY_QUOTE}{_COLON}"
+        rf"{_BLOCK_START}{_BLOCK_LINE_REST})[^\r\n]*+"
+        rf"{_BLANK_LINES}\r?\n{_DEEPER})"
+        rf"(?!{_REFERENCE}[ \t]*+(?![^\r\n])"
+        rf"(?!{_BLANK_LINES}\r?\n{_DEEPER}[^ \t\r\n]))"
+        rf"(?P<secret>[^ \t\r\n][^\r\n]*+(?:{_BLANK_LINES}{_BODY_LINE})*+)"
     )
 
 
@@ -391,12 +478,13 @@ def _keyed(
     keywords: str,
     triggers: Tuple[str, ...],
     value_guard: str = "",
-) -> Tuple[RedactionPattern, RedactionPattern]:
+) -> Tuple[RedactionPattern, RedactionPattern, RedactionPattern]:
     """A family of secret-naming keys, case-insensitive: its value on the
-    key's line (``_keyed_secret``), and its value on the next line after
-    ``key:`` (``_keyed_on_next_line``). ``triggers`` must each be the start of
-    a keyword (every keyword starts with one): the first starts at a trigger,
-    the second at the start of a line holding one."""
+    key's line (``_keyed_secret``), its value on the next line after ``key:``
+    (``_keyed_on_next_line``), and the YAML block after ``key: |``
+    (``_keyed_block_scalar``). ``triggers`` must each be the start of a
+    keyword (every keyword starts with one): the first starts at a trigger,
+    the other two at the start of a line holding one."""
     return (
         _pattern(
             entity_type,
@@ -412,6 +500,14 @@ def _keyed(
             _I,
             triggers,
             scope="line",
+            names_a_value=True,
+        ),
+        _pattern(
+            entity_type,
+            _keyed_block_scalar(keywords),
+            _I,
+            triggers,
+            scope="block",
             names_a_value=True,
         ),
     )
@@ -474,6 +570,16 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
         r"(?:xox[a-z]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,})",
         0,
         ("xox", "xapp-"),
+    ),
+    # GitLab personal, impersonation, project and group access tokens: the
+    # `glpat-` prefix (docs.gitlab.com/security/tokens/#token-prefixes), and
+    # a 20-character token (docs.gitlab.com/user/profile/personal_access_tokens/),
+    # longer when routable. GitLab's other prefixes document no shape.
+    _pattern(
+        "GITLAB_TOKEN",
+        rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE})glpat-[0-9A-Za-z_-]{{20,}}+",
+        0,
+        ("glpat-",),
     ),
     # OpenAI-style keys, `sk-proj-…`/`sk-ant-…` included, and `pk-` keys.
     # Not after a letter: `task-0123…abcdef` is a task id, not a key (a
@@ -689,18 +795,88 @@ def _within(hits: List[int], lines: Optional[List[Tuple[int, int]]]) -> List[int
     return inside
 
 
+#: What a command-line word is made of: a flag (`--db-password`) or a
+#: hyphenated command name (`get-login-password`), and nothing else, so a
+#: flag glued after punctuation (`"--password x"`, `;--password`, `$(--`)
+#: is still a word that starts with `-`.
+_WORD_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
+
+
+def _run_start(text: str, position: int, walked: List[int]) -> int:
+    """Where the run of word characters (``_WORD_CHARS``) holding
+    ``position`` starts.
+
+    ``walked`` is ``[position, run start]`` of the last call, and positions
+    only grow, so the walk back stops where the last one began: each
+    character is read once per scan, as ``_token_matches`` reads each run
+    once."""
+    floor, floor_start = walked
+    start = position
+    while start > floor and start and text[start - 1] in _WORD_CHARS:
+        start -= 1
+    if start == floor and floor >= 0:
+        start = floor_start
+    walked[0], walked[1] = position, start
+    return start
+
+
+def _flag_in_a_word(match: "re.Match[str]", text: str, walked: List[int]) -> bool:
+    """Whether ``match`` read the command-line flag spelling (its ``flag``
+    group took part) of a key whose word does not start with ``-``: a
+    hyphenated command name (``get-login-password --region``,
+    ``rotate-secret \\``), not a flag (#2025). ``--db-password x`` is one, and
+    so is ``"--password x"``: the word is ``_WORD_CHARS``, not the whole run
+    of non-whitespace. A key right after ``--`` is a long option wherever the
+    word starts (``me@example.com--token x``), so the verdict does not change
+    when what is glued before it is redacted or marked (a title's
+    ``[email]--token x``)."""
+    start = match.start()
+    return (
+        match.start("flag") != -1
+        and text[max(start - 2, 0) : start] != "--"
+        and text[_run_start(text, start, walked)] != "-"
+    )
+
+
+def _finditer(
+    pattern: RedactionPattern, text: str, pos: int = 0, endpos: Optional[int] = None
+) -> Iterable["re.Match[str]"]:
+    """``pattern.regex.finditer(text, pos, endpos)``, less the matches
+    ``_flag_in_a_word`` drops. After a dropped match the scan resumes one past
+    its start, so a match it covered is found, as a scan from each hit finds
+    it (``_keyed_matches``)."""
+    end = len(text) if endpos is None else endpos
+    if "flag" not in pattern.regex.groupindex:
+        return pattern.regex.finditer(text, pos, end)
+    matches = []
+    walked = [-1, -1]
+    while pos <= end:
+        match = pattern.regex.search(text, pos, end)
+        if match is None:
+            break
+        if _flag_in_a_word(match, text, walked):
+            pos = match.start() + 1
+            continue
+        matches.append(match)
+        pos = max(match.end(), match.start() + 1)
+    return matches
+
+
 def _keyed_matches(
     pattern: RedactionPattern, text: str, hits: List[int]
 ) -> List["re.Match[str]"]:
     """``finditer`` for a keyed pattern, trying only where its match can
     start — each hit, in order: leftmost first, and the next try from where
-    the last match ended, as ``finditer`` does."""
+    the last match ended, as ``finditer`` does. A match ``_flag_in_a_word``
+    drops is no match: the next hit is tried, even inside it."""
     matches = []
     resume = 0
+    flagged = "flag" in pattern.regex.groupindex
+    walked = [-1, -1]
     for start in hits:
         if start >= resume:
             match = pattern.regex.match(text, start)
-            if match:
+            if match and not (flagged and _flag_in_a_word(match, text, walked)):
                 matches.append(match)
                 resume = match.end()
     return matches
@@ -709,6 +885,44 @@ def _keyed_matches(
 #: What every line pattern's match holds: `:`, blanks, a newline, and the next
 #: line's indentation.
 _KEY_LINE_END = re.compile(r":[ \t]*\r?\n[ \t]")
+#: What every block pattern's match holds: `:`, a block indicator, and a
+#: comment or the line's end. Neither can a stand-in make.
+_BLOCK_LINE_END = re.compile(rf":[ \t]*+{_BLOCK_START}(?:[ \t]++#|[ \t]*+\r?\n)")
+#: The same, ending the line ``_block_matches`` is given.
+_BLOCK_KEY_LINE = re.compile(rf":[ \t]*+{_BLOCK_START}(?:[ \t]++#|[ \t]*+\r?$)")
+
+
+def _block_matches(
+    pattern: RedactionPattern, text: str, hits: List[int]
+) -> List["re.Match[str]"]:
+    """``finditer`` for a block pattern: tried once at the start of each line
+    holding a hit that ends in a block indicator after ``:``, and only from
+    where the last match ended — a match consumes its block, and a key line
+    inside a block is part of that block's value. Hits are in order, so the
+    text is read once."""
+    matches = []
+    resume = 0
+    line_start = -1
+    searched = 0
+    for hit in hits:
+        if hit < resume:
+            continue
+        newline = text.rfind("\n", searched, hit)
+        start = newline + 1 if newline != -1 else max(line_start, 0)
+        searched = hit
+        if start == line_start:
+            continue
+        line_start = start
+        end = text.find("\n", hit)
+        if end == -1:
+            continue
+        searched = end
+        if _BLOCK_KEY_LINE.search(text, start, end):
+            match = pattern.regex.match(text, start)
+            if match:
+                matches.append(match)
+                resume = match.end()
+    return matches
 
 
 def _line_matches(
@@ -819,9 +1033,15 @@ def _detect(
     # and the windows of a masked round, are found once.
     shared_hits: Dict[Tuple[str, ...], List[int]] = {}
     before = _with_line_before(text, lines)
-    # A line pattern needs a line ending in `:` before an indented one; no
-    # stand-in can make one, so a text without one skips them every round.
+    # A line pattern needs a line ending in `:` before an indented one, a
+    # block pattern a line ending in `: |`; no stand-in can make either, so a
+    # text without one skips them every round.
     key_line: Optional[bool] = None
+    block_line: Optional[bool] = None
+    # A block pattern's key line can lie any number of lines above the lines
+    # a masked round touched, so it is tried at every hit, every round: the
+    # rounds are capped, so that stays linear.
+    all_hits: Dict[Tuple[str, ...], List[int]] = {}
     for priority, pattern in enumerate(patterns):
         if only is not None and priority not in only:
             continue
@@ -830,12 +1050,17 @@ def _detect(
                 key_line = _KEY_LINE_END.search(text) is not None
             if not key_line:
                 continue
+        if pattern.scope == "block":
+            if block_line is None:
+                block_line = _BLOCK_LINE_END.search(text) is not None
+            if not block_line:
+                continue
         located = view is not None and (pattern.triggers or pattern.hint)
         if located and not _present(pattern, view, found):
             continue
         scanned.add(priority)
         if not located or pattern.scope == "text":
-            if lines is not None and pattern.scope != "text":
+            if lines is not None and pattern.scope not in ("text", "block"):
                 windows = (
                     _with_line_before_and_after(text, lines)
                     if pattern.scope in ("keyed", "line")
@@ -844,12 +1069,19 @@ def _detect(
                 matches: Iterable["re.Match[str]"] = [
                     match
                     for start, end in windows
-                    for match in pattern.regex.finditer(text, start, end)
+                    for match in _finditer(pattern, text, start, end)
                 ]
             else:
-                matches = pattern.regex.finditer(text)
+                matches = _finditer(pattern, text)
         else:
-            if pattern.scope in ("keyed", "line") and pattern.hint is None:
+            if pattern.scope == "block":
+                hits = all_hits.get(pattern.triggers) if pattern.hint is None else None
+                if hits is None:
+                    hits = _hits(pattern, view)
+                    if pattern.hint is None:
+                        all_hits[pattern.triggers] = hits
+                matches = _block_matches(pattern, text, hits)
+            elif pattern.scope in ("keyed", "line") and pattern.hint is None:
                 hits = shared_hits.get(pattern.triggers)
                 if hits is None:
                     hits = _within(_hits(pattern, view), before)

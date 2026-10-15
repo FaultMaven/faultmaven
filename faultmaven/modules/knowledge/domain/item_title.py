@@ -4,8 +4,10 @@ A title is shown to every reader of the tier its item lives in (team and global
 included), in every list, and nothing ever reverses it. It is also free text
 someone typed (an upload's ``title`` form field, a manual runbook's title) or a
 model wrote (a draft built from a case). So it passes through the deployment's
-sanitizer, the one the body passes through when a document is updated, before
-any row or vector carries it.
+sanitizer before any row or vector carries it. The body does not: a body is
+procedure text, which redaction cut (``get-login-password <PASSWORD_…>``), so a
+body holding a credential is refused instead and never rewritten
+(``enforce_runbook_security``, #2012). A title is a label, and is redacted.
 
 Until #1981 only ``update_document`` did. A runbook created with a title like
 ``Fix login (password=hunter2)`` stored and displayed it verbatim, while the

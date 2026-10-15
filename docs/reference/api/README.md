@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.2.0
+**Version:** 14.3.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -3127,10 +3127,16 @@ document; global-scope editing is platform-corpus authoring (operator
 only, per the global-tier policy). A refusal over a document the caller
 cannot even see answers 404 rather than 403 (#867).
 
-A new ``title`` is redacted with the deployment's sanitizer, as is new
-``content``. If that check cannot run the update answers **503**, a
-retryable server-side condition, with a generic detail, and nothing is
-saved (#1981).
+A new ``title`` is redacted with the deployment's sanitizer. If that check
+cannot run the update answers **503**, a retryable server-side condition,
+with a generic detail, and nothing is saved (#1981).
+
+New ``content`` is stored as sent, line endings normalised, and never
+rewritten. Content holding a credential (a private key, a credential URL, a
+provider token, an AWS key, a JWT, a bearer or basic credential) or a
+destructive command is refused with **422**, naming each one's line and
+type but not its text, and nothing is saved (#2012). A placeholder such as
+``<password>`` or ``${DB_PASS}`` is not refused.
 
 **Tags:** `knowledge_base`
 

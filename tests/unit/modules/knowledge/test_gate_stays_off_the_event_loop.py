@@ -33,6 +33,10 @@ _SYNC_GATE = {
     "score_validated",
     "validate_and_score",
     "enforce_runbook_quality",
+    # The security half (#2012): the whole body through the secret patterns,
+    # on every non-shipped publish and every edit.
+    "enforce_runbook_security",
+    "find_security_hazards",
     "validate_file",
     "score_file",
 }

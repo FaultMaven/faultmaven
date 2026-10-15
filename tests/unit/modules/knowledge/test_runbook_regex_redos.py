@@ -171,6 +171,44 @@ def test_validation_of_bracket_heavy_content_grows_linearly():
     )
 
 
+def test_security_hazards_on_commented_begin_markers_grow_linearly():
+    """The private-key look-ahead (#2012 F9) on a run of commented BEGIN lines.
+
+    It skipped every ``#`` line, a commented BEGIN marker included, so each
+    detection read to the end of the text: 2.2s at 68 KB, 39.8s at 272 KB
+    (#2012 delta N1). A line holding another BEGIN marker now ends the walk.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        find_security_hazards,
+    )
+
+    assert_linear_growth(
+        find_security_hazards,
+        _repeated("# -----BEGIN RSA " + "PRIVATE KEY-----\n"),
+        small=64,
+        label="find_security_hazards on commented BEGIN markers",
+    )
+
+
+def test_security_hazards_on_a_glued_jwt_chain_grow_linearly():
+    """A JWT's tail walk (#2012 F2) on a chain of tokens glued by ``<``.
+
+    The walk ran over ``.`` and ``<``/``>``, so every token read to the end of
+    the text: 8.8s at 42 KB, 100s at 168 KB (#2012 delta N3). It now runs
+    over the last part's characters only.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        find_security_hazards,
+    )
+
+    assert_linear_growth(
+        find_security_hazards,
+        _repeated("eyJhbGc.eyJzdWI.c2ln<"),
+        small=64,
+        label="find_security_hazards on a glued JWT chain",
+    )
+
+
 def test_the_link_pattern_matches_exactly_what_the_unbounded_one_did():
     """Equivalence against the ORIGINAL pattern, over the shipped corpus.
 

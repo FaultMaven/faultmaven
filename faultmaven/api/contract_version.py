@@ -2113,4 +2113,17 @@ asked to accept, and it belongs to a person.
 # nothing about whether the case exists; an anonymous caller is still 401. MINOR
 # because every request that worked still works and the only change for the rest
 # is an error moving from 500 to 422 (#2005).
-API_CONTRACT_VERSION = "14.2.0"
+#
+# 14.3.0 — MINOR. A runbook body is refused, never rewritten, when it holds a
+# credential (#2012). `PUT /api/v1/knowledge/documents/{document_id}` used to
+# run a new `content` through the sanitizer and answer 200 with the rewritten
+# text (internal addresses became `<IP_ADDRESS_…>`, commands were cut). It now
+# stores the content as sent, line endings normalised, and answers **422** when
+# the content holds a private key, a credential URL, a provider token, an AWS
+# key, a JWT, a bearer or basic credential, or a destructive command; nothing
+# is saved. On the wire the 422's `detail` is one string, as on the upload
+# route: the app's handler answers a dict detail with its `message`, so that
+# message names each finding's type and line, never its text. No schema moves. MINOR because a request that succeeded can
+# now be refused: the dashboard keeps the edit and shows the message. A
+# placeholder (`<password>`, `${DB_PASS}`) is not refused.
+API_CONTRACT_VERSION = "14.3.0"

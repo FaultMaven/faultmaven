@@ -20,13 +20,20 @@ repo's suite (the repos cannot import one another).
 """
 
 import asyncio
+import bisect
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
 from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.security.redaction import (
+    SECRET_PATTERNS,
+    RedactionSpan,
+    find_redaction_spans,
+    is_reference,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     ValidationResult,
@@ -87,7 +94,8 @@ from faultmaven.utils.line_endings import normalize_line_endings
 # Security hazard detection (same shape as kb-toolkit's validator). Hazards
 # BLOCK (errors). A secret value that is WHOLLY a placeholder / template-or-shell
 # var stays non-blocking (warning). NOTE: duplicated cross-repo; Phase 1 extracts
-# a shared module.
+# a shared module. The shape-detected secrets (``_SHAPE_PATTERNS``, #2012) are
+# FaultMaven's own: the sanitizer's pattern set, which the toolkit cannot import.
 # =============================================================================
 
 # Anchored: the WHOLE value must BE a placeholder form, so a real secret that
@@ -141,6 +149,285 @@ _DD_DEVICE_RE = re.compile(
 
 def _value_is_placeholder(value: str) -> bool:
     return bool(_PLACEHOLDER_VALUE_RE.match(value))
+
+
+# --- Secrets detected by their shape (#2012) ---------------------------------
+#
+# A runbook body is authored procedure text and is never rewritten. A body
+# holding a live credential is refused instead (``enforce_runbook_security``),
+# and the credential is found by the sanitizer's own shapes: every
+# ``SECRET_PATTERNS`` entry that does not name a value (``names_a_value`` is
+# False) — private keys, credential URLs, provider tokens, AWS keys, JWTs,
+# bearer and basic credentials. Selected by that attribute, so a pattern added
+# to the set later is covered here too. The keyed families (``password: x``,
+# ``--token x``) are NOT used on bodies: on the 91 shipped runbooks 16 of their
+# 17 spans were false positives (CLI flags, ``\`` continuations, ``$VAR"``).
+#
+# Each detection is filtered by its SECRET PORTION before it becomes an error:
+# a portion that is a placeholder (``_value_is_placeholder``) or a reference
+# (``is_reference``) is a warning, so ``postgres://user:<password>@db``,
+# ``ghp_XXXX…`` and a ``-----BEGIN PRIVATE KEY-----`` line in prose do not
+# block. A message names the line and the type, never the matched text.
+_SHAPE_PATTERNS = tuple(p for p in SECRET_PATTERNS if not p.names_a_value)
+#: Each shape on its own, so a detection keeps its own type, and its own
+#: portion is judged, where another shape's span overlaps it (an AWS key id as
+#: a URL's user, a token as its password).
+_EACH_SHAPE = tuple((p,) for p in _SHAPE_PATTERNS)
+
+#: What a refusal calls each type, and the placeholder it suggests.
+_SHAPE_NAMES: Dict[str, Tuple[str, str]] = {
+    "PRIVATE_KEY": ("a private key", "<PRIVATE_KEY>"),
+    "DATABASE_URL": ("a database URL with credentials", "<DB_PASSWORD>"),
+    "CREDENTIAL_URL": ("a URL with a password", "<PASSWORD>"),
+    "GITHUB_TOKEN": ("a GitHub token", "<GITHUB_TOKEN>"),
+    "GITLAB_TOKEN": ("a GitLab token", "<GITLAB_TOKEN>"),
+    "SLACK_TOKEN": ("a Slack token", "<SLACK_TOKEN>"),
+    "API_KEY": ("an API key", "<API_KEY>"),
+    "AWS_ACCESS_KEY": ("an AWS access key ID", "<AWS_ACCESS_KEY_ID>"),
+    "AWS_SECRET_KEY": ("an AWS secret access key", "<AWS_SECRET_ACCESS_KEY>"),
+    "JWT_TOKEN": ("a JWT", "<JWT>"),
+    "BEARER_TOKEN": ("a bearer token", "<TOKEN>"),
+    "BASIC_AUTH": ("basic-auth credentials", "<BASE64_CREDENTIALS>"),
+    "K8S_SECRET": ("a Kubernetes secret", "<K8S_SECRET>"),
+}
+#: A fixed-prefix token's prefix: its secret is what follows.
+_TOKEN_PREFIX_RE = re.compile(
+    r"gh[pousr]_|github_pat_|glpat-|xox[a-z]-|xapp-|sk-|pk-|akia|asia"
+    r"|k8s[_-]?secret[_-]?|api[_-]?key[_-]?",
+    re.IGNORECASE,
+)
+#: The end of a PEM marker line (``-{5}`` rather than five literal dashes: a
+#: dash run is the frontmatter grammar's, and lives in one place).
+_PEM_MARKER_END_RE = re.compile(r"PRIVATE KEY(?: BLOCK)?-{5}", re.IGNORECASE)
+#: Key material: the base64 runs of 16 or more characters, summed (#2012
+#: review F4), so a key wrapped at any width, split into spaced groups or
+#: written with JSON ``\n`` escapes is counted whole. A real key holds
+#: hundreds; the illustrative ``MIIEpAIBAAKCAQEA...`` sums to 16.
+_KEY_RUN_RE = re.compile(r"[A-Za-z0-9+/=]{16,}")
+_ESCAPED_LINE_BREAK_RE = re.compile(r"\\[nr]")
+_KEY_MATERIAL_MIN = 40
+#: A markdown blockquote's markers at the start of a line (``> > ``).
+_BLOCKQUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+#: What a JWT's last part runs on through: JWT characters, ``<…>``
+#: placeholders included, and no ``.`` — the detected span already holds the
+#: dotted parts, and a walk over ``.`` read every token of a chain glued by
+#: ``<``/``>`` to the end of the text (quadratic, #2012 delta N3). A query
+#: string's ``&`` and a JSON ``"`` end it.
+_JWT_TAIL_RE = re.compile(r"[A-Za-z0-9_=<>-]*+")
+#: A line after a BEGIN marker that is wholly key material: base64 runs of 16
+#: or more, JSON ``\n`` escapes and spaces, and nothing else (#2012 delta N2:
+#: a path, a hash or a long word on a prose line is not key material).
+_KEY_LINE_RE = re.compile(r"[ \t]*+(?:(?:\\[nr]|[A-Za-z0-9+/=]{16,}+)++[ \t]*+)++")
+#: What a shape's secret portion may be and still be a placeholder (#2012
+#: review F3). Stricter than ``_PLACEHOLDER_VALUE_RE``, which judges a quoted
+#: keyed value: a shell variable only as ``$UPPER_NAME`` or an all-letter
+#: ``$lower_name`` (``$user:$password@`` is the shell idiom); the ``your-``,
+#: ``example`` and ``placeholder`` words only with no digit in them; and of
+#: the references only the closed forms (``_CLOSED_REFERENCE_RE``). So
+#: ``$uperS3cret``, ``example-Pr0d-pass``, ``:hunter2x`` and ``$(s3cretpw`` are
+#: secrets: a real secret can start with ``$`` (#1980).
+_SHAPE_PLACEHOLDER_RE = re.compile(
+    r"""^\s*(?:
+        <[^>]*>
+      | \$\{[^}]*\}
+      | \{\{[^}]*\}\}
+      | (?-i:\$[A-Z_][A-Z0-9_]*|\$[a-z_][a-z_]*)
+      | your[-_][A-Za-z_-]*
+      | change[-_]?me
+      | example[A-Za-z_-]*
+      | placeholder[A-Za-z_-]*
+      | redacted
+      | x{3,}
+      | todo
+      | \.\.\.
+      | \*+
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_CLOSED_REFERENCE_RE = re.compile(r"<[^<>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|\[[^\]]*\]")
+#: How many line numbers one message lists before it says how many more.
+_MAX_LINES_LISTED = 10
+
+
+def _secret_portion(entity_type: str, content: str, span: RedactionSpan) -> str:
+    """The part of a detection that is the credential itself.
+
+    A credential URL's userinfo password (between the first ``:`` after
+    ``//`` and the last ``@``; empty when there is none); the value after an
+    AWS secret key's separator; a fixed-prefix token's text after its prefix;
+    a JWT's first three dot-separated parts, its last part read on through
+    ``_JWT_TAIL_RE`` so a ``<signature>`` glued to it is its own (and a query
+    string's ``&``, a JSON ``"`` or a trailing ``.xxx`` is not). A bearer or basic credential's
+    span is the credential already, as is any type this does not know (a
+    pattern added later).
+    """
+    text = content[span.start : span.end]
+    if entity_type in ("DATABASE_URL", "CREDENTIAL_URL"):
+        userinfo = text.split("//", 1)[-1]
+        userinfo = userinfo[: userinfo.rfind("@")]
+        return userinfo.split(":", 1)[1] if ":" in userinfo else ""
+    if entity_type == "AWS_SECRET_KEY":
+        return re.split(r"[=:]", text, maxsplit=1)[-1].strip().strip("'\"")
+    if entity_type == "JWT_TOKEN":
+        end = _JWT_TAIL_RE.match(content, span.end).end()
+        return ".".join(content[span.start : end].split(".")[:3])
+    prefix = _TOKEN_PREFIX_RE.match(text)
+    return text[prefix.end() :] if prefix else text
+
+
+def _is_placeholder(value: str) -> bool:
+    """Whether a shape's secret portion is a placeholder (F3): one of the
+    strict spellings, or a closed reference (``<…>``, ``${…}``, ``{{…}}``, a
+    ``[…]`` marker) that the sanitizer reads as one."""
+    stripped = value.strip()
+    return _SHAPE_PLACEHOLDER_RE.match(value) is not None or (
+        _CLOSED_REFERENCE_RE.fullmatch(stripped) is not None and is_reference(stripped)
+    )
+
+
+def _key_material(text: str) -> int:
+    """How much base64 ``text`` holds as key material (``_KEY_RUN_RE``)."""
+    text = _ESCAPED_LINE_BREAK_RE.sub(" ", text)
+    return sum(len(run) for run in _KEY_RUN_RE.findall(text))
+
+
+def _key_material_after_begin(content: str, position: int) -> int:
+    """The key material from ``position`` (the end of a BEGIN marker) on: the
+    rest of its line, then each line after it, up to the END line or the first
+    line that is not wholly key material (``_KEY_LINE_RE``; #2012 review F9,
+    delta N2). A blockquote's ``>`` markers are stripped and a ``#`` comment
+    line skipped, so a truncated key quoted in markdown or carrying a comment
+    is read past the BEGIN line the sanitizer stops at. A line holding another
+    BEGIN marker, commented or not, ends the walk, so a run of markers is read
+    once each, not to the end of the text (delta N1). Stops once there is
+    enough to decide."""
+    total = 0
+    first = True
+    while True:
+        newline = content.find("\n", position)
+        line_end = len(content) if newline == -1 else newline
+        line = content[position:line_end]
+        if not first:
+            line = _BLOCKQUOTE_RE.sub("", line, count=1)
+            if "-----BEGIN" in line:
+                return total
+            if line.lstrip().startswith("#"):
+                if newline == -1:
+                    return total
+                position = newline + 1
+                continue
+        end_marker = line.find("-----END")
+        if end_marker != -1:
+            line = line[:end_marker]
+        if line.strip() and not _KEY_LINE_RE.fullmatch(line):
+            return total
+        material = _key_material(line)
+        if material == 0 and not first:
+            return total
+        total += material
+        if total >= _KEY_MATERIAL_MIN or newline == -1 or end_marker != -1:
+            return total
+        first = False
+        position = newline + 1
+
+
+def _shape_is_real(entity_type: str, content: str, span: RedactionSpan) -> bool:
+    """Whether a shape detection holds a credential, not a placeholder."""
+    if entity_type == "PRIVATE_KEY":
+        # Key material between the BEGIN line and the END line (or the end of
+        # the span), and on the lines a truncated key runs on through (F9): a
+        # BEGIN line alone, ``...`` or ``<base64 key material>`` is
+        # documentation.
+        text = content[span.start : span.end]
+        begin = _PEM_MARKER_END_RE.search(text)
+        body_start = begin.end() if begin else 0
+        body_end = text.find("-----END", body_start)
+        body = text[body_start : body_end if body_end != -1 else len(text)]
+        if _key_material(body) >= _KEY_MATERIAL_MIN:
+            return True
+        return (
+            begin is not None
+            and _key_material_after_begin(content, span.start + begin.end())
+            >= _KEY_MATERIAL_MIN
+        )
+    portion = _secret_portion(entity_type, content, span)
+    if not portion:
+        return False  # a URL with a user and no password holds no credential
+    if entity_type == "JWT_TOKEN":
+        # A ``<payload>``/``<signature>`` part is an illustration.
+        return not any(_is_placeholder(part) for part in portion.split(".") if part)
+    return not _is_placeholder(portion)
+
+
+def _shape_findings(content: str) -> Dict[Tuple[str, bool], Set[int]]:
+    """``{(entity_type, real): {line numbers}}`` for every shape detection.
+
+    The shapes together give the spans the sanitizer would redact, merged, as
+    its own rounds find them (a token glued to another once that one is
+    masked). Each shape on its own gives the detections inside them, each
+    judged by its own type: a URL's placeholder password does not excuse an
+    AWS key id written as its user. A merged span is reported once, under its
+    own type, unless that detection is a placeholder and another inside it is
+    real: then under the real one's type, on the real one's line.
+    """
+    merged = find_redaction_spans(content, _SHAPE_PATTERNS)
+    if not merged:
+        # Nothing for any shape alone either: a shape's own spans all grow
+        # from a first-round match, and the set's first round holds it too.
+        # So a clean body costs one pass, not one per shape.
+        return {}
+    ends = [span.end for span in merged]
+    members: List[List[Tuple[str, RedactionSpan]]] = [[] for _ in merged]
+    loose: List[Tuple[str, RedactionSpan]] = []
+    for single in _EACH_SHAPE:
+        for span in find_redaction_spans(content, single):
+            index = bisect.bisect_right(ends, span.start)
+            if index < len(merged) and merged[index].start < span.end:
+                members[index].append((single[0].entity_type, span))
+            else:  # a shape's own masked rounds found one the set's did not
+                loose.append((single[0].entity_type, span))
+    newlines = [m.start() for m in re.finditer("\n", content)]
+    findings: Dict[Tuple[str, bool], Set[int]] = {}
+
+    def record(entity_type: str, real: bool, start: int) -> None:
+        line = bisect.bisect_left(newlines, start) + 1
+        findings.setdefault((entity_type, real), set()).add(line)
+
+    for head, inside in zip(merged, members):
+        real_at: Dict[str, int] = {}
+        judged = set()
+        for entity_type, span in inside:
+            judged.add(entity_type)
+            if _shape_is_real(entity_type, content, span):
+                real_at[entity_type] = min(
+                    real_at.get(entity_type, span.start), span.start
+                )
+        if head.entity_type not in judged and _shape_is_real(
+            head.entity_type, content, head
+        ):
+            real_at[head.entity_type] = head.start
+        if head.entity_type in real_at:
+            record(head.entity_type, True, head.start)
+        elif real_at:
+            for entity_type, start in real_at.items():
+                record(entity_type, True, start)
+        else:
+            record(head.entity_type, False, head.start)
+    for entity_type, span in loose:
+        record(entity_type, _shape_is_real(entity_type, content, span), span.start)
+    return findings
+
+
+def _line_list(lines: Iterable[int]) -> str:
+    """``line 4`` / ``lines 4, 9 and 12`` / ``lines 1, 2, … and 40 more``."""
+    ordered = sorted(lines)
+    if len(ordered) == 1:
+        return f"line {ordered[0]}"
+    shown = [str(n) for n in ordered[:_MAX_LINES_LISTED]]
+    more = len(ordered) - len(shown)
+    if more:
+        return f"lines {', '.join(shown)} and {more} more"
+    return f"lines {', '.join(shown[:-1])} and {shown[-1]}"
 
 
 def _rm_target_is_catastrophic(target: str) -> bool:
@@ -252,9 +539,33 @@ def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
     Hardcoded credentials and destructive commands are errors; a secret whose
     value is wholly a placeholder/template-var is a warning. One message per
     pattern (deduped), so N identical matches don't produce N messages.
+
+    A shape-detected secret (``_SHAPE_PATTERNS``, #2012) is one message per
+    type, naming its line numbers and never its text, and an error only when
+    its secret portion is not a placeholder. The errors are exactly what
+    :func:`enforce_runbook_security` refuses.
     """
     errors: List[str] = []
     warnings: List[str] = []
+
+    findings = _shape_findings(content)
+    for (entity_type, real), lines in sorted(
+        findings.items(), key=lambda item: (min(item[1]), item[0][0])
+    ):
+        name, placeholder = _SHAPE_NAMES.get(
+            entity_type, (f"a {entity_type} secret", f"<{entity_type}>")
+        )
+        where = f"{name} on {_line_list(lines)} ({entity_type})"
+        if real:
+            errors.append(
+                f"Security: hardcoded credential: {where}. Replace it with a "
+                f"placeholder such as {placeholder}, and rotate the credential."
+            )
+        else:
+            warnings.append(
+                f"Security: {where} is a placeholder or holds no credential "
+                f"(not blocking)"
+            )
 
     for rx, message in _SECRET_PATTERNS:
         values = [m.group(1) for m in rx.finditer(content)]
@@ -1227,17 +1538,22 @@ class RunbookQualityError(ValidationException):
 def enforce_runbook_quality(content: str) -> None:
     """Refuse content that would not pass the runbook quality gate.
 
-    The single enforcement point for :meth:`KnowledgeService.upload_document`,
-    whose caller is the ``POST /knowledge/documents`` upload route. It is
-    deliberately NOT the gate for
-    the whole knowledge base: ``ingest_runbook`` sits one level below and is the
-    real convergence point, reached by three other paths that each bring their
-    own guarantee — the KB pack bootstrap and the ``kb_seed`` maintenance job
-    (validated at pack BUILD time in kb-toolkit, and made cheap by shipping
-    pre-chunked vectors, so re-validating 91 runbooks on every boot would be
-    paid for nothing) and conversion ``verify_draft`` (which validates the draft
-    before promoting it). Moving the gate down would tax those three to cover
-    a caller that is already covered here.
+    The single enforcement point of the FULL gate, for
+    :meth:`KnowledgeService.upload_document`, whose caller is the
+    ``POST /knowledge/documents`` upload route. The full gate is deliberately
+    not run where every write converges: ``ingest_runbook`` sits one level
+    below, reached by paths that each bring their own structural guarantee —
+    the KB pack bootstrap and the ``kb_seed`` maintenance job (validated at
+    pack BUILD time in kb-toolkit, and made cheap by shipping pre-chunked
+    vectors, so re-validating 91 runbooks on every boot would be paid for
+    nothing) and conversion ``verify_draft`` (which validates the draft before
+    promoting it).
+
+    Its SECURITY half is different, and is enforced at the convergence point
+    (#2012): :func:`enforce_runbook_security` runs in ``ingest_runbook`` for
+    every non-shipped write and in ``update_document_metadata`` for every new
+    body, because a draft validated before a secret check existed, or an edit
+    that no gate validates, must not publish a credential.
 
     Raises:
         RunbookQualityError: the content fails structural validation. Nothing is
@@ -1246,6 +1562,37 @@ def enforce_runbook_quality(content: str) -> None:
     result = RunbookValidator().validate_content(content)
     if not result.passed:
         raise RunbookQualityError(errors=result.errors, warnings=result.warnings)
+
+
+def enforce_runbook_security(content: str) -> None:
+    """Refuse a runbook body that holds a secret or a destructive command:
+    exactly what :func:`find_security_hazards` reports as errors (#2012).
+
+    A body is authored procedure text, and no path rewrites it by redaction:
+    redacting the 91 shipped bodies rewrote 20 of them, cutting commands
+    (``get-login-password --region`` became ``get-login-password <PASSWORD_…>``).
+    So a body holding a live credential is refused, never published and never
+    rewritten, and the author replaces it with a placeholder. The refusal
+    names each credential's line and type and never its text. Placeholders
+    (``<password>``, ``${DB_PASS}``, ``ghp_XXXX…``) are warnings and never
+    block.
+
+    Called before the first write by ``KnowledgeService.ingest_runbook`` for
+    every non-shipped runbook (upload, ``verify_draft`` and the drafts it
+    publishes: template, conversion and case drafts) and by
+    ``update_document_metadata`` for a new body. The shipped pack is exempt
+    (``shipped=True``, ``bootstrap/kb_init.py`` only): vendored, reviewed
+    source, and its 91 bodies hold no error here (pinned).
+
+    Line endings are normalised for the check only, so a line number is the
+    one the author sees.
+
+    Raises:
+        RunbookQualityError: the body holds a hazard (422). Nothing is written.
+    """
+    errors, warnings = find_security_hazards(normalize_line_endings(content))
+    if errors:
+        raise RunbookQualityError(errors=errors, warnings=warnings)
 
 
 # =============================================================================
@@ -1647,3 +1994,10 @@ async def aenforce_runbook_quality(content: str) -> None:
     """:func:`enforce_runbook_quality`, off the event loop. See above."""
     async with _gate_semaphore():
         await asyncio.to_thread(enforce_runbook_quality, content)
+
+
+async def aenforce_runbook_security(content: str) -> None:
+    """:func:`enforce_runbook_security`, off the event loop: it scans the
+    whole body (up to ``MAX_UPLOAD_SIZE_MB``) with the secret patterns."""
+    async with _gate_semaphore():
+        await asyncio.to_thread(enforce_runbook_security, content)
