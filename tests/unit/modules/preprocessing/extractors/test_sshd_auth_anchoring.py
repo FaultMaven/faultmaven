@@ -1027,8 +1027,16 @@ def adversarial_length(name: str, repetitions: int) -> int:
 
 #: Bytes of allocator the growth check settles per byte of line (#1991).
 #: ``read_sshd_auth_line`` copies a line twice per call (``lower()`` and the
-#: slice behind the syslog header), so twice the copies: a block three times
-#: the line cleared 4 MB and 8 MB lines, one times the line did not.
+#: slice behind the syslog header), so it needs a block about the size of the
+#: line: 1x already cleared every shape but ``timestamps`` when measured, 0.9x
+#: did not, and a review measured the least that works at ~1.5x. 4x keeps the
+#: margin at ~2.7x or more.
+#:
+#: ``timestamps`` is not covered and no multiplier covers it: its own
+#: allocations peak at 38x its line (150 MiB on 4 MB), past what an allocator
+#: can learn from, so on a 4 MB line it faults ~32,000 pages a call whatever
+#: this says. It is latent: that shape decides at its first or second window
+#: (8 KB-65 KB), nowhere near.
 _SETTLE_PER_LINE_BYTE = 4
 
 

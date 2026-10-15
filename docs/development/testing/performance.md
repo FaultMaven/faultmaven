@@ -95,7 +95,7 @@ lives in **`tests/wallclock/`**:
 | `tests/wallclock/calibration.py` | the machine-throughput measurement (#908/#1555) |
 | `tests/wallclock/budgets.py` | the `Budget` dataclasses, the 2-3x band, `asserted_target` |
 | `tests/wallclock/assertions.py` | `assert_latency_within`, `assert_throughput_at_least` |
-| `tests/wallclock/growth.py` | `assert_linear_growth`: is a cost linear in its input (#1579) |
+| `tests/wallclock/growth.py` | `assert_linear_growth`: is a cost linear in its input (#1579); its optional `settle_bytes` keeps first-touch page faults out of the figures of a function that copies a long input (#1991) |
 | `tests/wallclock/virtual_time.py` | `VirtualTimeLoop`, `virtual_now`: deadlines without a wall clock (#1579) |
 
 Four of the 27 comparisons that used to be in `tests/performance/` were
@@ -164,7 +164,7 @@ question. None of them is a raw threshold.
 | The question | Instrument | Example |
 |---|---|---|
 | Is this fast enough? (a latency or a rate, with a product target) | a row in `tests/performance/budgets.py` and `assert_latency_within` / `assert_throughput_at_least` in `tests/performance/` | `test_extraction_speed.py` |
-| Is this linear in its input? (ReDoS, an accidental rescan) | `assert_linear_growth` — CPU time at `n`, `8n`, `64n`, judged on the ratio of the cost differences so the fixed per-call cost cancels; linear reads ~8, quadratic ~64, the bound is ~22.6. It passes only if every reading its noise allowance permits is under the bound, fails only if every one is over it, and otherwise moves the window up; a call still undecided is refused, never passed | `test_runbook_regex_redos.py` |
+| Is this linear in its input? (ReDoS, an accidental rescan) | `assert_linear_growth` — CPU time at `n`, `8n`, `64n`, judged on the ratio of the cost differences so the fixed per-call cost cancels; linear reads ~8, quadratic ~64, the bound is ~22.6. It passes only if every reading its noise allowance permits is under the bound, fails only if every one is over it, and otherwise moves the window up; a call still undecided is refused, never passed. A function that copies a long input (megabytes) passes `settle_bytes=` — a window's top size to the bytes of allocator to settle, for example four times the input for two copies — so that glibc stops handing the copies back after every call and the top size does not read as a super-linear step (thread CPU time counts the page faults; #1991). The default settles nothing; the request is capped (24 MiB) and refused over it. `tests/wallclock/growth.py` has the measurement | `test_runbook_regex_redos.py`; with `settle_bytes`, `test_sshd_auth_anchoring.py` |
 | Did this happen before that deadline? (retry ladders, turn budgets) | `VirtualTimeLoop` via the module's `event_loop_policy` fixture, elapsed read with `virtual_now()` | `test_llm_ladder_turn_budget.py` |
 | Did this run concurrently? | a count of calls in flight, or the order of start/end events | `test_observability_core.py` |
 | Did this wait? (a backoff, a rate-limit sleep) | record the sleeps the code asks for | `test_llm_providers.py` |

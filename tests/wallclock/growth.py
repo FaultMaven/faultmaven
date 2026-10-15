@@ -189,14 +189,42 @@ in the estimator can cure it, because every sample of that size pays it.
 A caller whose function copies its input says how many bytes to settle
 (``settle_bytes``, size of a window's top to bytes). The helper then allocates
 and frees one block of that size before each window that reaches a new
-maximum, which raises both thresholds past every copy: a 3x block cleared a
-4 MB line and an 8 MB one, 1x did not. The default settles nothing, so every
-other caller measures as it always did. The block is never over
-``MAX_SETTLE_BYTES``: glibc learns only from a block under 32 MiB, so a larger
-request would settle nothing and leave the window cold. That is refused, at
-the call and for the last window it can reach, rather than clamped, because a
-clamp is a settle that silently does not work, and rather than at the
-escalation, which a noisy run reaches once in a hundred.
+maximum, which raises both thresholds (mmap to the block, trim to twice it)
+past every copy. The default settles nothing, so every other caller measures
+as it always did.
+
+How many bytes is the caller's to say, because only it knows how big its own
+working set is: for a synthetic ``text.lower()[1:]`` a block of 3x the input
+cleared 4 MB and 8 MB inputs where 1x did not; for the sshd reader 1x already
+clears every shape but one on the box it was measured on (0.9x does not).
+
+What it does and does not do:
+
+* It raises thresholds; it does not grow the heap. The first call at a window's
+  top size still grows the heap and faults its pages in once (992 to 1792
+  pages, measured), and the calls after it reuse them and fault none. That
+  one sample is dropped by the figure, the second-smallest of at least
+  ``MIN_REPETITIONS``: one inflated sample cannot set it.
+* It cannot cover a function whose OWN allocations outgrow any block it may
+  ask for. The sshd ``timestamps`` shape peaks at 38x its line, so on a 4 MB
+  line it still faults ~32,000 pages a call whatever the multiplier. That is
+  latent there (it decides at its first or second window, 8 KB-65 KB), and a
+  caller in that position has to keep the top size under the knee instead.
+* It works only where glibc moves its thresholds on its own. Under
+  ``MALLOC_TRIM_THRESHOLD_``, ``MALLOC_MMAP_THRESHOLD_`` or the matching
+  ``GLIBC_TUNABLES`` the thresholds are fixed, so a settle changes nothing and
+  the window is as cold as before. Under ``MALLOC_TOP_PAD_`` the heap is
+  already padded and there is nothing to settle. Another libc has no such
+  thresholds: the settle is a no-op there.
+
+The block is never over ``MAX_SETTLE_BYTES``: glibc learns only from a freed
+block of at most 32 MiB, so a larger request would settle nothing and leave
+the window cold. That is refused, at the call and for the last window it can
+reach, rather than clamped, because a clamp is a settle that silently does
+not work, and rather than at the escalation, which a noisy run reaches once
+in a hundred. ``tests/unit/ci/test_benchmark_calibration.py`` asks for exactly
+``MAX_SETTLE_BYTES`` in a fresh process and checks that glibc retained the
+heap, so the number is pinned by what it does, not by the symbol.
 
 The measurement, each choice against a measured failure
 -------------------------------------------------------
@@ -214,8 +242,10 @@ The measurement, each choice against a measured failure
   and the sample that settled the count is the first observation — so the
   large side of a restored quadratic runs once per round, not twice.
 * **Settle the allocator, when asked.** Before a window that reaches a new
-  maximum, ``settle_bytes`` of its top size are allocated and freed, so no
-  size pays first-touch page faults the others do not (above).
+  maximum, ``settle_bytes`` of its top size are allocated and freed, so the
+  top size does not pay a fault on EVERY call that the other sizes do not.
+  One call at the top size still pays its heap growth, and the figure (the
+  second-smallest of at least three samples) drops it (above).
 * **Stop at the unmistakable.** Once every size has ``MIN_REPETITIONS``
   samples, a round whose ``ratio_floor`` is already twice the bound ends the
   measurement. Not before: on one sample per size, the figure IS the sample
