@@ -116,3 +116,15 @@ def test_get_preset_info_reports_every_registry_provider():
     assert set(info) == set(PROVIDER_SCHEMA)
     assert info["gemini"] == ["GEMINI_API_KEY"]
     assert info["local"] == ["LOCAL_LLM_MODEL", "LOCAL_LLM_URL"]
+
+
+def test_the_override_allow_lists_name_every_providers_key_and_model_field():
+    from faultmaven.config.llm_config_overrides import (
+        _ALLOWED_OVERRIDES,
+        _API_KEY_FIELDS,
+    )
+
+    keyed = {n for n, sc in PROVIDER_SCHEMA.items() if sc.get("api_key_var")}
+    assert _API_KEY_FIELDS == {PROVIDER_SCHEMA[n]["api_key_var"].lower() for n in keyed}
+    assert {f"{n}_model" for n in PROVIDER_SCHEMA} <= set(_ALLOWED_OVERRIDES)
+    assert _API_KEY_FIELDS <= set(_ALLOWED_OVERRIDES)

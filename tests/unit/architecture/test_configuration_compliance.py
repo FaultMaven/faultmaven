@@ -583,9 +583,12 @@ class TestConfigurationArchitectureCompliance:
             reset_settings()
             settings = get_settings()
 
-            # Should get correct API key for provider
-            api_key = settings.llm.get_api_key()
-            assert api_key == "test-key-123"
+            # The key is reached through the registry-derived field name
+            # (the per-provider ``get_api_key`` table was removed, #2006).
+            from faultmaven.config.llm_validation import api_key_field
+
+            field, _ = api_key_field("openai")
+            assert getattr(settings.llm, field).get_secret_value() == "test-key-123"
 
             # Should get correct model for provider
             model = settings.llm.get_model()
