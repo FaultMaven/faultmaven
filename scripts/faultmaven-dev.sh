@@ -277,10 +277,10 @@ start_app() {
     # keep-alive, log level), so a local process logs like the image does.
     # run_server reads host/port/reload/workers from settings, so they are set
     # explicitly: HOST/PORT/RELOAD keep this launch what the uvicorn CLI line
-    # was (0.0.0.0:$port, no reloader) even when .env configures only a
-    # provider the zero-config check does not recognise, which would apply the
-    # "local" preset (127.0.0.1:8000 with reload, #1984); WORKERS=1 overrides
-    # a WORKERS in .env, which would fork workers the PID file cannot track.
+    # was (0.0.0.0:$port, no reloader) even when .env configures no LLM
+    # provider at all, which applies the zero-config "local" preset
+    # (127.0.0.1:8000 with reload); WORKERS=1 overrides a WORKERS in .env,
+    # which would fork workers the PID file cannot track.
     HOST=0.0.0.0 PORT="$port" RELOAD=false WORKERS=1 TIMEOUT_KEEP_ALIVE="$keepalive" python -m faultmaven.server > "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
