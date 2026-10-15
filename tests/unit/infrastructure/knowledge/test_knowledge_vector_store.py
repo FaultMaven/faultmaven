@@ -482,7 +482,9 @@ class _FakeCollection:
         # the metadata-based where filter; enumeration derives it from the id.
         self._ids = {cid: parent for cid, parent in chunks}
 
-    def get(self, where=None, include=None):
+    def get(self, where=None, include=None, ids=None):
+        if ids is not None and not where:
+            return {"ids": [cid for cid in ids if cid in self._ids]}
         if where and "parent_document_id" in where:
             cond = where["parent_document_id"]
             if isinstance(cond, dict) and "$in" in cond:
@@ -955,33 +957,35 @@ class TestDeleteDocumentsByParentId:
         assert _Failing.calls == attempts
 
 
-class TestDeleteDocumentsByParents:
-    """Batch delete — one round-trip for many orphaned parents (reconcile path)."""
+class TestDeleteObservedChunkIds:
+    """Id delete with no metadata condition — the reconcile path (#2017)."""
 
     @pytest.mark.asyncio
-    async def test_deletes_all_named_parents_in_one_call(self):
+    async def test_deletes_exactly_the_named_ids(self):
         coll = _FakeCollection(
             [
                 ("kb_a_chunk_0", "kb_a"),
                 ("kb_b_chunk_0", "kb_b"),
-                ("kb_b_chunk_1", "kb_b"),
+                ("kb_b_chunk_1", None),
                 ("kb_keep_chunk_0", "kb_keep"),
             ]
         )
         store = KnowledgeVectorStore(_FakeClient(coll))
-        deleted = await store.delete_documents_by_parents(["kb_a", "kb_b"])
-        assert deleted == 3
+        deleted = await store.delete_observed_chunk_ids(
+            ["kb_a_chunk_0", "kb_b_chunk_0", "kb_b_chunk_1"]
+        )
+        assert sorted(deleted) == ["kb_a_chunk_0", "kb_b_chunk_0", "kb_b_chunk_1"]
         assert coll._ids == {"kb_keep_chunk_0": "kb_keep"}
 
     @pytest.mark.asyncio
-    async def test_empty_batch_is_zero_and_no_io(self):
+    async def test_empty_batch_is_empty_and_no_io(self):
         coll = _FakeCollection([("kb_a_chunk_0", "kb_a")])
         store = KnowledgeVectorStore(_FakeClient(coll))
-        assert await store.delete_documents_by_parents([]) == 0
+        assert await store.delete_observed_chunk_ids([]) == []
         assert coll._ids == {"kb_a_chunk_0": "kb_a"}  # untouched
 
 
-class TestListParentDocumentIds:
+class TestListAllChunkIdsByParent:
     @pytest.mark.asyncio
     async def test_returns_distinct_parents(self):
         coll = _FakeCollection(
@@ -992,7 +996,10 @@ class TestListParentDocumentIds:
             ]
         )
         store = KnowledgeVectorStore(_FakeClient(coll))
-        assert await store.list_parent_document_ids() == {"kb_a", "kb_b"}
+        assert await store.list_all_chunk_ids_by_parent() == {
+            "kb_a": ["kb_a_chunk_0", "kb_a_chunk_1"],
+            "kb_b": ["kb_b_chunk_0"],
+        }
 
     @pytest.mark.asyncio
     async def test_derives_parent_from_id_without_metadata(self):
@@ -1001,7 +1008,9 @@ class TestListParentDocumentIds:
         # matching the retrieval path's fallback and keeping reconcile complete.
         coll = _FakeCollection([("kb_x_chunk_0", None), ("kb_x_chunk_1", None)])
         store = KnowledgeVectorStore(_FakeClient(coll))
-        assert await store.list_parent_document_ids() == {"kb_x"}
+        assert await store.list_all_chunk_ids_by_parent() == {
+            "kb_x": ["kb_x_chunk_0", "kb_x_chunk_1"]
+        }
 
     @pytest.mark.asyncio
     async def test_missing_collection_is_empty_set(self):
@@ -1012,7 +1021,7 @@ class TestListParentDocumentIds:
                 raise NotFoundError("collection not found")
 
         store = KnowledgeVectorStore(_NoCollectionClient())
-        assert await store.list_parent_document_ids() == set()
+        assert await store.list_all_chunk_ids_by_parent() == {}
 
     @pytest.mark.asyncio
     async def test_non_notfound_error_propagates(self):
@@ -1024,4 +1033,4 @@ class TestListParentDocumentIds:
 
         store = KnowledgeVectorStore(_BrokenClient())
         with pytest.raises(RuntimeError):
-            await store.list_parent_document_ids()
+            await store.list_all_chunk_ids_by_parent()
