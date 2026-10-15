@@ -567,11 +567,26 @@ class TestDIContainerErrorHandling:
                 "VECTOR_STORAGE_TYPE": "chromadb",
                 "CHROMADB_URL": "http://localhost:8001",
                 "SKIP_SERVICE_CHECKS": "false",
+                # Checks on and protection on (the Cloud job) would also have
+                # the sanitizer health-check Presidio at its in-cluster URL.
+                "PROTECTION_ENABLED": "false",
+                "SANITIZE_PII": "false",
             },
         ):
-            with patch(
-                "faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore",
-                side_effect=Exception("ChromaDB unavailable"),
+            with (
+                patch(
+                    "faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore",
+                    side_effect=Exception("ChromaDB unavailable"),
+                ),
+                # The URL above names a server nothing here runs. Without this
+                # the factory and the KB ingestion service each dial
+                # localhost:8001 to find that out; the network guard refuses
+                # it, and a test of "the container survives an unreachable
+                # store" must not depend on a real refusal.
+                patch(
+                    "chromadb.HttpClient",
+                    side_effect=ConnectionError("ChromaDB unavailable"),
+                ),
             ):
 
                 await container.initialize()

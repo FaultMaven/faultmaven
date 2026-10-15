@@ -633,6 +633,13 @@ def _served_under(**overrides):
         os.environ.clear()
         os.environ.update(preserved)
         os.environ.update(PINNED_ENVIRONMENT)
+        # No Redis, stated: emptying the environment also drops the session's
+        # ``REDIS_HOST=""`` (tests/conftest.py), and the settings default names
+        # the in-cluster service. The started app's rate limiter then dialled
+        # ``faultmaven-redis-master:6379`` whenever it rebuilt its client (a
+        # cached client from another test's event loop going dead), which the
+        # network guard refuses. Empty means FakeRedis, with no connection.
+        os.environ["REDIS_HOST"] = ""
         for key, value in overrides.items():
             if value is None:
                 os.environ.pop(key, None)

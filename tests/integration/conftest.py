@@ -156,6 +156,9 @@ def _reset_outcomes() -> None:
 # copies run for these tests; a nested snapshot and restore is the same restore.
 pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
 
+# Same reason, for the report of a connection the network guard refused.
+pytest_runtest_makereport = root_conftest.pytest_runtest_makereport
+
 
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""

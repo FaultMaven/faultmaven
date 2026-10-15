@@ -8,10 +8,30 @@ Tests the complete shim system working together:
 """
 
 import asyncio
+import contextlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# The real engines load a spaCy model and, when none is installed (none is in
+# any FaultMaven image), download it: a network call from a test that only
+# reads ``pii_enabled``. The network guard refuses it; these doubles make it
+# not happen.
+
+
+def _no_presidio_engines():
+    """Presidio's analyzer and anonymizer, stood in for the length of the block."""
+    stack = contextlib.ExitStack()
+    for name in ("AnalyzerEngine", "AnonymizerEngine"):
+        stack.enter_context(
+            patch(
+                f"faultmaven.infrastructure.shims.security.{name}",
+                MagicMock(),
+                create=True,
+            )
+        )
+    return stack
 
 
 class TestShimPackageImports:
@@ -84,14 +104,20 @@ class TestEnvironmentVariableToggling:
             redactor1 = PIIRedactor()
             assert redactor1.pii_enabled is False
 
-        with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
+        with (
+            patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}),
+            _no_presidio_engines(),
+        ):
             redactor2 = PIIRedactor()
             assert redactor2.pii_enabled is True
 
     def test_both_shims_enabled(self):
         """Test both shims enabled simultaneously."""
-        with patch.dict(
-            os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "true"}
+        with (
+            patch.dict(
+                os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "true"}
+            ),
+            _no_presidio_engines(),
         ):
             from faultmaven.infrastructure.shims import PIIRedactor, get_tracing_status
 

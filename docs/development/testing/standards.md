@@ -46,8 +46,11 @@ These tests hit a live LLM provider API (Anthropic by default). They are **opt-i
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export FM_TEST_ALLOW_LIVE_NETWORK=1   # lifts the test session's network guard
 pytest -m real_llm
 ```
+
+Every other test runs under `tests/network_guard.py`, which refuses any connection a test did not start itself (a port it bound, or the PostgreSQL / Redis the job configures), so these are the only tests that can reach a provider; the variable is read once when the session starts and cannot be set by a test.
 
 Tests skip cleanly (not fail) when the API key is absent — a developer without provider access can still run the rest of the suite.
 
