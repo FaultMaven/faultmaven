@@ -826,10 +826,15 @@ def _flag_in_a_word(match: "re.Match[str]", text: str, walked: List[int]) -> boo
     hyphenated command name (``get-login-password --region``,
     ``rotate-secret \\``), not a flag (#2025). ``--db-password x`` is one, and
     so is ``"--password x"``: the word is ``_WORD_CHARS``, not the whole run
-    of non-whitespace."""
+    of non-whitespace. A key right after ``--`` is a long option wherever the
+    word starts (``me@example.com--token x``), so the verdict does not change
+    when what is glued before it is redacted or marked (a title's
+    ``[email]--token x``)."""
+    start = match.start()
     return (
         match.start("flag") != -1
-        and text[_run_start(text, match.start(), walked)] != "-"
+        and text[max(start - 2, 0) : start] != "--"
+        and text[_run_start(text, start, walked)] != "-"
     )
 
 

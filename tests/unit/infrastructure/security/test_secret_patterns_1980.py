@@ -1744,7 +1744,8 @@ def _reference_matches(pattern, view: str) -> list:
         if match is None:
             break
         word = re.search(r"[A-Za-z0-9_.-]*\Z", view[: match.start()]).group()
-        if match.start("flag") != -1 and not word.startswith("-"):
+        long_option = view[max(match.start() - 2, 0) : match.start()] == "--"
+        if match.start("flag") != -1 and not (long_option or word.startswith("-")):
             pos = match.start() + 1
             continue
         matches.append(match)
@@ -1837,6 +1838,7 @@ def test_both_paths_are_idempotent_over_the_full_generator(sanitizer):
         "password=$1234567890 in the dump",
         "PWD=/home/runner_me@example.com",
         "PWD=/srv/x10.0.0.5 on the box",
+        "me@example.com--token Zk91abc",
     ],
 )
 def test_a_value_the_title_scrub_rewrites_stays_scrubbed(sanitizer, text):
@@ -2292,6 +2294,13 @@ _GLUED_FLAGS = [
     "`--password hunter2Zq`",
     "ARGS=--password hunter2Zq",
     "x=$(--password hunter2Zq)",
+    # A long option glued after a word: `--` makes it one, so the title
+    # scrub's `[email]--token` reads it as the raw text did.
+    "me@example.com--token hunter2Zq",
+    # A single-dash flag after punctuation: only the word rule reads these.
+    'ARGS="-password hunter2Zq"',
+    "(-password hunter2Zq)",
+    "x=$(-password hunter2Zq)",
 ]
 
 
