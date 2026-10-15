@@ -346,8 +346,8 @@ async def test_llm_provider_probe_never_generates(monkeypatch):
     router = _router(providers=["gemini"])
     _use_container(monkeypatch, _FakeContainer(llm_provider=router))
     await ComponentHealthMonitor()._check_llm_provider_health()
-    router.generate.assert_not_called()
     router.route.assert_not_called()
+    router.registry.route_request.assert_not_called()
 
 
 # --------------------------------------------------------------------------

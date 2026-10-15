@@ -223,7 +223,7 @@ class TestDependencyInjectionArchitecture:
 
         # Infrastructure Layer (external systems)
         class MockLLMProvider:
-            def generate(self, prompt):
+            def route(self, prompt):
                 return f"Generated: {prompt}"
 
         # Core/Domain Layer (business logic)
@@ -232,7 +232,7 @@ class TestDependencyInjectionArchitecture:
                 self.llm = llm_provider
 
             def reason(self, problem):
-                return self.llm.generate(f"Solve: {problem}")
+                return self.llm.route(f"Solve: {problem}")
 
         # Service Layer (orchestration)
         class MockAgentService:

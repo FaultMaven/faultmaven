@@ -107,7 +107,7 @@ async def generate_with_truncation_retry(
         call: Coroutine function taking the generation cap to use and returning
             the response. Callers close over everything else (prompt, model,
             temperature) so this helper stays agnostic to how the call is made
-            — router ``route``, provider ``generate``, both work.
+            — router ``route``, ``dispatch.send_to_model``, both work.
         max_tokens: The cap for the first attempt.
         ceiling: Highest cap the retry may use. Defaults to ``2 *`` the
             EFFECTIVE first cap (see ``min_output_tokens``), i.e. exactly one

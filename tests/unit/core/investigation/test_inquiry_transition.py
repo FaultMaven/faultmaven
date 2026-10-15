@@ -45,7 +45,7 @@ from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 
 
 class MockLLMProvider(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return "{}"
 
     async def generate_stream(self, prompt, **kwargs):
@@ -73,7 +73,7 @@ class MockLLMProvider(ILLMProvider):
 @pytest.fixture
 def mock_llm():
     llm = MockLLMProvider()
-    llm.generate = AsyncMock()
+    llm.route = AsyncMock()
     return llm
 
 
@@ -137,7 +137,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -171,7 +171,7 @@ class TestInquiryTransitionLogic:
                 "state_updates": {},
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -203,7 +203,7 @@ class TestInquiryTransitionLogic:
                 "state_updates": {},
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case, "How do I upload evidence to a case?", redaction_ctx=None
@@ -243,7 +243,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -290,7 +290,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case, "Our checkout is slow sometimes.", redaction_ctx=None
@@ -329,7 +329,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
+        mock_llm.route.return_value = mock_response_turn1
 
         result1 = await engine.process_turn(
             inquiry_case, "Our API is acting weird.", redaction_ctx=None
@@ -363,7 +363,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn2
+        mock_llm.route.return_value = mock_response_turn2
 
         result2 = await engine.process_turn(
             case_after_turn1,
@@ -405,7 +405,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -457,7 +457,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -504,7 +504,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response
+        mock_llm.route.return_value = mock_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -565,7 +565,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
+        mock_llm.route.return_value = mock_response_turn1
 
         result1 = await engine.process_turn(
             inquiry_case,
@@ -590,7 +590,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn2
+        mock_llm.route.return_value = mock_response_turn2
 
         with patch.object(
             response_application, "inquiry_handshake_deferred_total"
@@ -655,7 +655,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
+        mock_llm.route.return_value = mock_response_turn1
 
         result1 = await engine.process_turn(
             inquiry_case, "Our API is returning 503 errors.", redaction_ctx=None
@@ -679,7 +679,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn2
+        mock_llm.route.return_value = mock_response_turn2
 
         result2 = await engine.process_turn(
             case_after_turn1,
@@ -744,7 +744,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
+        mock_llm.route.return_value = mock_response_turn1
 
         result1 = await engine.process_turn(
             inquiry_case,
@@ -808,7 +808,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
+        mock_llm.route.return_value = mock_response_turn1
         result1 = await engine.process_turn(
             inquiry_case, "API is returning 503s", redaction_ctx=None
         )
@@ -828,7 +828,7 @@ class TestInquiryTransitionLogic:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn2
+        mock_llm.route.return_value = mock_response_turn2
         result2 = await engine.process_turn(case_after_turn1, "yes", redaction_ctx=None)
 
         case_after_turn2 = result2["case_updated"]
@@ -966,7 +966,7 @@ class TestGate1PresentsItsStatement:
         inquiry_case.inquiry.problem_statement_confirmed = False
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Kubernetes RBAC denies a request when no rule matches.",
                 "state_updates": {},
@@ -1044,7 +1044,7 @@ class TestGate1PresentsItsStatement:
         inquiry_case.inquiry.problem_statement_confirmed = False
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Starting the investigation.",
                 "state_updates": {
@@ -1085,7 +1085,7 @@ class TestGate1PresentsItsStatement:
         inquiry_case.current_turn = 2
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Confirmed — starting the investigation.",
                 "state_updates": {
@@ -1127,7 +1127,7 @@ class TestGate1PresentsItsStatement:
         inquiry_case.current_turn = 2
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Noted — the primary is affected too.",
                 "state_updates": {
@@ -1166,7 +1166,7 @@ class TestGate1PresentsItsStatement:
         inquiry_case.inquiry.problem_statement_confirmed = False
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Let's investigate.",
                 "state_updates": {
@@ -1255,7 +1255,7 @@ class TestEngineOwnedGate1OnFirstDetect:
                 ],
             }
         )
-        mock_llm.generate.return_value = llm_response
+        mock_llm.route.return_value = llm_response
 
         result = await engine.process_turn(
             inquiry_case,
@@ -1385,7 +1385,7 @@ class TestProblemStatementSingleWriter:
             investigation_tools=MagicMock(),
         )
 
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": (
                     "Which service is returning the errors, and when did they start?"

@@ -182,9 +182,7 @@ class TestToolAugmentedGenerate:
         schema_response = _make_schema_response(
             {"agent_response": "Found SSH failures", "next_action": "continue"}
         )
-        mock_provider.generate = AsyncMock(
-            side_effect=[search_response, schema_response]
-        )
+        mock_provider.route = AsyncMock(side_effect=[search_response, schema_response])
 
         mock_registry = _make_mock_registry()
         mock_registry.execute_tool.return_value = ToolResult(
@@ -221,7 +219,7 @@ class TestToolAugmentedGenerate:
         assert isinstance(result, SampleResponse)
         assert result.agent_response == "Found SSH failures"
         assert result.next_action == "continue"
-        assert mock_provider.generate.call_count == 2
+        assert mock_provider.route.call_count == 2
         mock_registry.execute_tool.assert_called_once_with(
             "search_file",
             {"query": "ssh failed"},
@@ -245,9 +243,7 @@ class TestToolAugmentedGenerate:
             {"agent_response": "Forced output", "next_action": "continue"}
         )
 
-        mock_provider.generate = AsyncMock(
-            side_effect=search_responses + [forced_schema]
-        )
+        mock_provider.route = AsyncMock(side_effect=search_responses + [forced_schema])
 
         mock_registry = _make_mock_registry()
         mock_registry.execute_tool.return_value = ToolResult(
@@ -273,11 +269,11 @@ class TestToolAugmentedGenerate:
         )
 
         # Assert: 4 search iterations + 1 forced final = 5 LLM calls
-        assert mock_provider.generate.call_count == 5
+        assert mock_provider.route.call_count == 5
         assert result.agent_response == "Forced output"
 
         # Verify the last call used tool_choice="required"
-        last_call_kwargs = mock_provider.generate.call_args_list[-1]
+        last_call_kwargs = mock_provider.route.call_args_list[-1]
         # keyword args
         assert last_call_kwargs.kwargs.get("tool_choice") == "required"
 
@@ -303,7 +299,7 @@ class TestToolAugmentedGenerate:
             {"agent_response": "Analysis complete", "next_action": "continue"}
         )
 
-        mock_provider.generate = AsyncMock(
+        mock_provider.route = AsyncMock(
             side_effect=[da_response_1, da_response_2, schema_response]
         )
 
@@ -345,9 +341,7 @@ class TestToolAugmentedGenerate:
         schema_response = _make_schema_response(
             {"agent_response": "done", "next_action": "continue"}
         )
-        mock_provider.generate = AsyncMock(
-            side_effect=[search_response, schema_response]
-        )
+        mock_provider.route = AsyncMock(side_effect=[search_response, schema_response])
 
         # Return a tool result exceeding TOOL_RESULT_MAX_CHARS
         long_result = "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 1000)
@@ -373,7 +367,7 @@ class TestToolAugmentedGenerate:
 
         # Assert: Check that the tool result message was truncated
         # The second generate call should have the truncated tool result
-        second_call = mock_provider.generate.call_args_list[1]
+        second_call = mock_provider.route.call_args_list[1]
         messages = second_call.kwargs.get("messages") or second_call[1].get("messages")
         tool_msg = [m for m in messages if m.get("role") == "tool"][0]
         assert len(
@@ -391,9 +385,7 @@ class TestToolAugmentedGenerate:
         schema_response = _make_schema_response(
             {"agent_response": "Handled error", "next_action": "continue"}
         )
-        mock_provider.generate = AsyncMock(
-            side_effect=[search_response, schema_response]
-        )
+        mock_provider.route = AsyncMock(side_effect=[search_response, schema_response])
 
         mock_registry = _make_mock_registry()
         mock_registry.execute_tool.return_value = ToolResult(
@@ -417,7 +409,7 @@ class TestToolAugmentedGenerate:
 
         # Assert: Error message passed as tool result, loop continues
         assert result.agent_response == "Handled error"
-        second_call = mock_provider.generate.call_args_list[1]
+        second_call = mock_provider.route.call_args_list[1]
         messages = second_call.kwargs.get("messages") or second_call[1].get("messages")
         tool_msg = [m for m in messages if m.get("role") == "tool"][0]
         assert "Error: File not found" in tool_msg["content"]
@@ -431,9 +423,7 @@ class TestToolAugmentedGenerate:
             {"agent_response": "done", "next_action": "continue"}
         )
         # First call: no tool calls. Second: still loops, returns schema
-        mock_provider.generate = AsyncMock(
-            side_effect=[no_tool_response, schema_response]
-        )
+        mock_provider.route = AsyncMock(side_effect=[no_tool_response, schema_response])
 
         engine = _make_engine(mock_provider=mock_provider)
         tool_context = MagicMock()
@@ -452,7 +442,7 @@ class TestToolAugmentedGenerate:
 
         # Assert
         assert result.agent_response == "done"
-        assert mock_provider.generate.call_count == 2
+        assert mock_provider.route.call_count == 2
 
     async def test_no_tool_calls_on_forced_schema_escalates_to_fallback(self):
         """When LLM ignores tool_choice=required under forced-schema, raise
@@ -464,7 +454,7 @@ class TestToolAugmentedGenerate:
         # Arrange — every iteration returns text only, no tool calls
         mock_provider = AsyncMock()
         no_tool_responses = [_make_no_tool_call_response() for _ in range(5)]
-        mock_provider.generate = AsyncMock(side_effect=no_tool_responses)
+        mock_provider.route = AsyncMock(side_effect=no_tool_responses)
 
         engine = _make_engine(mock_provider=mock_provider)
         tool_context = MagicMock()
@@ -503,7 +493,7 @@ class TestToolAugmentedGenerate:
             tool_calls=None,
         )
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(side_effect=[first, second])
+        mock_provider.route = AsyncMock(side_effect=[first, second])
 
         engine = _make_engine(mock_provider=mock_provider)
         tool_context = MagicMock()
@@ -521,7 +511,7 @@ class TestToolAugmentedGenerate:
 
         # Assert
         assert result.agent_response == "recovered"
-        assert mock_provider.generate.call_count == 2
+        assert mock_provider.route.call_count == 2
 
     async def test_recovery_appends_user_nudge_after_text_response(self):
         """When iter N returns text (no tool calls), the loop appends both the
@@ -533,7 +523,7 @@ class TestToolAugmentedGenerate:
             {"agent_response": "ok", "next_action": "continue"}
         )
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(side_effect=[no_tool, schema_resp])
+        mock_provider.route = AsyncMock(side_effect=[no_tool, schema_resp])
 
         engine = _make_engine(mock_provider=mock_provider)
         tool_context = MagicMock()
@@ -548,7 +538,7 @@ class TestToolAugmentedGenerate:
             tool_context=tool_context,
         )
 
-        second_call = mock_provider.generate.call_args_list[1]
+        second_call = mock_provider.route.call_args_list[1]
         messages = second_call.kwargs.get("messages") or second_call[1].get("messages")
         # Last two messages should be the assistant text, then a user nudge
         assert messages[-2]["role"] == "assistant"
@@ -572,7 +562,7 @@ class TestToolAugmentedGenerate:
         )
 
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(
+        mock_provider.route = AsyncMock(
             side_effect=[search_response, TimeoutError("Fireworks 180s timeout")]
         )
 
@@ -599,7 +589,7 @@ class TestToolAugmentedGenerate:
                 tool_context=tool_context,
             )
         # Sanity: provider was called twice (iter 0 search + iter 1 timeout)
-        assert mock_provider.generate.call_count == 2
+        assert mock_provider.route.call_count == 2
 
     async def test_inline_json_with_empty_agent_response_escalates(self):
         """Defensive guard: prose embedding a structurally-valid JSON block
@@ -627,7 +617,7 @@ class TestToolAugmentedGenerate:
             tool_calls=None,
         )
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(side_effect=[first, second])
+        mock_provider.route = AsyncMock(side_effect=[first, second])
 
         engine = _make_engine(mock_provider=mock_provider)
         tool_context = MagicMock()
@@ -713,7 +703,7 @@ class TestGenerateStructuredOutputRouting:
                 )
             ],
         )
-        engine.deps.llm_provider.generate = AsyncMock(return_value=schema_response)
+        engine.deps.llm_provider.route = AsyncMock(return_value=schema_response)
 
         # Act - no investigation_tools or tool_context
         result = await engine.generator.generate_structured_output(
@@ -735,7 +725,7 @@ class TestGenerateStructuredOutputRouting:
         schema_response = _make_schema_response(
             {"agent_response": "tool augmented", "next_action": "continue"}
         )
-        mock_provider.generate = AsyncMock(return_value=schema_response)
+        mock_provider.route = AsyncMock(return_value=schema_response)
         # supports_tool_calling is a sync method on real providers
         mock_provider.supports_tool_calling = Mock(return_value=True)
 
@@ -799,7 +789,7 @@ class TestGenerateStructuredOutputRouting:
                 )
             ],
         )
-        mock_provider.generate = AsyncMock(return_value=fallback_response)
+        mock_provider.route = AsyncMock(return_value=fallback_response)
         mock_provider.get_structured_output_strategy = MagicMock(
             return_value=StructuredOutputStrategy(
                 capability=StructuredOutputCapability.FUNCTION_CALLING,
@@ -837,7 +827,7 @@ class TestGenerateStructuredOutputRouting:
         assert isinstance(result, SampleResponse)
         assert result.agent_response == "fell back ok"
         engine.generator._tool_augmented_generate.assert_awaited_once()
-        mock_provider.generate.assert_awaited()
+        mock_provider.route.assert_awaited()
 
 
 # =========================================================================
@@ -1319,7 +1309,7 @@ class TestToolLoopSpendBound:
             return resp
 
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(side_effect=_generate)
+        mock_provider.route = AsyncMock(side_effect=_generate)
         mock_registry = _make_mock_registry()
         mock_registry.execute_tool.return_value = ToolResult(success=True, data="r")
         engine = _make_engine(mock_provider=mock_provider, mock_registry=mock_registry)
@@ -1469,7 +1459,10 @@ def _recording_provider(result_after: int, provider_name=None):
     provider = AsyncMock()
     if provider_name is not None:
         provider.provider_name = provider_name
-    provider.generate = AsyncMock(side_effect=_generate)
+    # The engine reaches this double through the router (``route``) or, as a
+    # dedicated DA provider, through the model dispatch (``_generate``): one
+    # mock records either path.
+    provider.route = provider._generate = AsyncMock(side_effect=_generate)
     return provider, calls
 
 
@@ -1640,7 +1633,10 @@ def _diagnosis_turn_provider(provider_name: str):
 
     provider = AsyncMock()
     provider.provider_name = provider_name
-    provider.generate = AsyncMock(side_effect=_generate)
+    # The engine reaches this double through the router (``route``) or, as a
+    # dedicated DA provider, through the model dispatch (``_generate``): one
+    # mock records either path.
+    provider.route = provider._generate = AsyncMock(side_effect=_generate)
     return provider, calls
 
 
@@ -2050,7 +2046,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
                 tool_context=MagicMock(),
                 base_prompt_builder=builder,
             )
-        provider.generate.assert_not_called()
+        provider._generate.assert_not_called()
 
     async def test_the_fitted_head_leaves_room_for_the_elision_marker(
         self, monkeypatch
@@ -2283,7 +2279,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
         provider = AsyncMock()
         provider.provider_name = provider_name
         provider.supports_tool_calling = MagicMock(return_value=True)
-        provider.generate = AsyncMock(side_effect=_generate)
+        provider._generate = AsyncMock(side_effect=_generate)
         return provider, calls
 
     def _truncation_engine(self, monkeypatch, window: int, result_after: int):
@@ -2646,7 +2642,7 @@ class TestDaProviderRouting:
         schema_response = _make_schema_response(
             {"agent_response": "Found it", "next_action": "done"}
         )
-        da_prov.generate = AsyncMock(return_value=schema_response)
+        da_prov._generate = AsyncMock(return_value=schema_response)
 
         registry = _make_mock_registry()
         engine = _make_engine(
@@ -2666,9 +2662,9 @@ class TestDaProviderRouting:
         )
 
         # da_provider should have been called
-        da_prov.generate.assert_called()
+        da_prov._generate.assert_called()
         # default llm_provider should NOT have been called
-        default_provider.generate.assert_not_called()
+        default_provider.route.assert_not_called()
 
     async def test_tool_loop_falls_back_to_llm_provider(self):
         """When da_provider is None, llm_provider is used."""
@@ -2677,7 +2673,7 @@ class TestDaProviderRouting:
         schema_response = _make_schema_response(
             {"agent_response": "Found it", "next_action": "done"}
         )
-        default_provider.generate = AsyncMock(return_value=schema_response)
+        default_provider.route = AsyncMock(return_value=schema_response)
 
         registry = _make_mock_registry()
         engine = _make_engine(
@@ -2697,14 +2693,15 @@ class TestDaProviderRouting:
         )
 
         # llm_provider should have been called (fallback)
-        default_provider.generate.assert_called()
+        default_provider.route.assert_called()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestDirectDaCallCarriesNoRouterKnobs:
     """#2002: the tool loop reaches a dedicated DA provider (a concrete
-    provider, not the router) by calling ``provider.generate()`` directly. The
+    provider, not the router) through the model dispatch (``send_to_model``),
+    which calls its ``_generate``. The
     router-level knobs ``case_id``, ``bypass_cache`` and ``provider_override``
     mean nothing there, and used to land in the provider's request body.
 
@@ -2749,7 +2746,9 @@ class TestDirectDaCallCarriesNoRouterKnobs:
     @staticmethod
     def _answering_provider():
         provider = AsyncMock()
-        provider.generate = AsyncMock(
+        # Answers on either path: the router's ``route`` or, as the DA
+        # provider, the dispatch's ``_generate``.
+        provider.route = provider._generate = AsyncMock(
             return_value=_make_schema_response(
                 {"agent_response": "Found it", "next_action": "done"}
             )
@@ -2767,9 +2766,9 @@ class TestDirectDaCallCarriesNoRouterKnobs:
             da_provider=da_prov, da_model=da_model, llm_provider=router
         )
 
-        da_prov.generate.assert_called()
-        router.generate.assert_not_called()
-        for call in da_prov.generate.call_args_list:
+        da_prov._generate.assert_called()
+        router.route.assert_not_called()
+        for call in da_prov._generate.call_args_list:
             sent = call.kwargs
             assert set(self.ROUTER_KNOBS).isdisjoint(sent), sorted(sent)
             assert self.CASE_ID not in str(sent)
@@ -2780,8 +2779,10 @@ class TestDirectDaCallCarriesNoRouterKnobs:
                 assert sent["model"] == da_model
             else:
                 # No DA model: the structured-output override's model is a
-                # DIFFERENT provider's name and must not be sent either.
-                assert "model" not in sent
+                # DIFFERENT provider's name and must not be sent either. The
+                # caller passes none; the dispatch hands ``_generate`` its
+                # default, ``None``.
+                assert sent["model"] is None
 
     async def test_the_truncation_retry_call_carries_no_router_knobs(self):
         """The tool loop's SECOND call, the one ``generate_with_truncation_retry``
@@ -2804,7 +2805,7 @@ class TestDirectDaCallCarriesNoRouterKnobs:
             {"agent_response": "Found it", "next_action": "done"}
         )
         da_prov = AsyncMock()
-        da_prov.generate = AsyncMock(side_effect=[cut, answered])
+        da_prov._generate = AsyncMock(side_effect=[cut, answered])
 
         await self._call_tool_loop(
             da_provider=da_prov,
@@ -2812,8 +2813,8 @@ class TestDirectDaCallCarriesNoRouterKnobs:
             llm_provider=self._answering_provider(),
         )
 
-        assert da_prov.generate.await_count == 2, "the truncation retry did not run"
-        first, second = (call.kwargs for call in da_prov.generate.call_args_list)
+        assert da_prov._generate.await_count == 2, "the truncation retry did not run"
+        first, second = (call.kwargs for call in da_prov._generate.call_args_list)
         assert (
             second["max_tokens"] > first["max_tokens"]
         ), "the retry did not raise the cap"
@@ -2824,7 +2825,7 @@ class TestDirectDaCallCarriesNoRouterKnobs:
 
     async def test_a_real_openai_adapter_as_da_provider_sends_none_in_its_body(self):
         """End to end, the shape Fable reproduced for #1998: the real
-        ``OpenAIProvider.generate`` as ``DA_PROVIDER``, transport captured.
+        ``OpenAIProvider._generate`` as ``DA_PROVIDER``, transport captured.
         Two layers hold this (the caller omits the knobs; the provider
         discards any it is still handed), so it goes red only if BOTH fail —
         the layers are pinned one at a time by the tests around it."""
@@ -2870,8 +2871,8 @@ class TestDirectDaCallCarriesNoRouterKnobs:
 
         await self._call_tool_loop(da_provider=None, da_model=None, llm_provider=router)
 
-        router.generate.assert_called()
-        sent = router.generate.call_args.kwargs
+        router.route.assert_called()
+        sent = router.route.call_args.kwargs
         assert sent["case_id"] == self.CASE_ID
         assert sent["provider_override"] == "openai"
         assert sent["cache_prompt"] is True
@@ -2894,7 +2895,7 @@ class TestProactiveVectorizationGate:
         schema_response = _make_schema_response(
             {"agent_response": "ok", "next_action": "continue"}
         )
-        mock_provider.generate = AsyncMock(return_value=schema_response)
+        mock_provider.route = AsyncMock(return_value=schema_response)
 
         engine = _make_engine(
             mock_provider=mock_provider,
@@ -3475,7 +3476,7 @@ class TestToolLoopTruncationLadder:
         )
 
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(side_effect=[cut, whole])
+        mock_provider.route = AsyncMock(side_effect=[cut, whole])
         engine = _make_engine(
             mock_provider=mock_provider, mock_registry=_make_mock_registry()
         )
@@ -3488,7 +3489,7 @@ class TestToolLoopTruncationLadder:
         )
 
         assert result.agent_response == "complete"
-        caps = [c.kwargs["max_tokens"] for c in mock_provider.generate.await_args_list]
+        caps = [c.kwargs["max_tokens"] for c in mock_provider.route.await_args_list]
         assert caps == [
             STRUCTURED_OUTPUT_MAX_TOKENS,
             STRUCTURED_OUTPUT_MAX_TOKENS * 2,
@@ -3499,7 +3500,7 @@ class TestToolLoopTruncationLadder:
         whole = _make_schema_response({"agent_response": "complete"})
 
         mock_provider = AsyncMock()
-        mock_provider.generate = AsyncMock(return_value=whole)
+        mock_provider.route = AsyncMock(return_value=whole)
         engine = _make_engine(
             mock_provider=mock_provider, mock_registry=_make_mock_registry()
         )
@@ -3511,7 +3512,7 @@ class TestToolLoopTruncationLadder:
             tool_context=MagicMock(),
         )
 
-        assert mock_provider.generate.await_count == 1
+        assert mock_provider.route.await_count == 1
 
     async def test_the_retry_is_metered_too(self):
         """Both attempts are real billed calls when a dedicated DA provider is used.
@@ -3527,7 +3528,7 @@ class TestToolLoopTruncationLadder:
 
         da_provider = AsyncMock()
         da_provider.provider_name = "openai"
-        da_provider.generate = AsyncMock(side_effect=[cut, whole])
+        da_provider._generate = AsyncMock(side_effect=[cut, whole])
         engine = _make_engine(
             mock_registry=_make_mock_registry(), da_provider=da_provider
         )

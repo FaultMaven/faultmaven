@@ -23,7 +23,8 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
 - `llm_model_content_violations_total{provider,argument,kind,content}` — provider
   calls whose model-bound content was not minted by the redaction module, or
   that passed a keyword outside the boundary's closed set (#1998). Recorded at
-  `BaseLLMProvider.generate`, once per (argument, kind) per call, with a
+  the model dispatch (`infrastructure/llm/dispatch.send_to_model`, every
+  send's one way to a provider), once per (argument, kind) per call, with a
   WARNING log line naming the same (never the content). `content="raw"`: the
   call was reported and sent. Non-zero names a send path that has not moved to
   the minting helpers yet

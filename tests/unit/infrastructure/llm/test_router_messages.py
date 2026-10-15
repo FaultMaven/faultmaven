@@ -1,7 +1,7 @@
 """Tests for LLMRouter messages passthrough and cache bypass.
 
 Verifies that:
-- The `messages` kwarg flows from generate() → route() → registry.route_request()
+- The `messages` kwarg flows from route() → registry.route_request()
 - Cache is bypassed when messages is provided (multi-turn not cacheable)
 - Cache works normally when messages is None (single-shot)
 - All kwargs (tools, tool_choice, response_format, messages) pass through correctly
@@ -147,12 +147,13 @@ class TestCacheBypassWithMessages:
         mock_registry.route_request.assert_not_called()
 
 
-class TestGenerateForwardsMessages:
-    """Verify generate() (ILLMProvider interface) forwards messages to route()."""
+class TestRouteForwardsTheToolLoopCall:
+    """The engine's tool loop calls ``route()`` (ILLMProvider) with an empty
+    prompt and the whole tool-call history; all of it reaches the registry."""
 
     @pytest.mark.asyncio
-    async def test_generate_extracts_and_forwards_messages(self, router, mock_registry):
-        """generate(**kwargs) should extract messages and pass to route()."""
+    async def test_the_tool_loop_call_reaches_the_registry(self, router, mock_registry):
+        """route() with the tool loop's shape forwards messages and tools."""
         messages = [
             {"role": "user", "content": "search for errors"},
             {
@@ -169,7 +170,7 @@ class TestGenerateForwardsMessages:
             {"role": "tool", "tool_call_id": "call_1", "content": "found 3 errors"},
         ]
 
-        await router.generate(
+        await router.route(
             prompt="",
             messages=messages,
             tools=[
@@ -186,13 +187,3 @@ class TestGenerateForwardsMessages:
         assert call_kwargs.kwargs.get("messages") == messages
         assert call_kwargs.kwargs.get("tools") is not None
         assert call_kwargs.kwargs.get("tool_choice") == "auto"
-
-    @pytest.mark.asyncio
-    async def test_generate_without_messages_wraps_prompt(self, router, mock_registry):
-        """generate() without messages passes prompt normally."""
-        await router.generate(prompt="What is 2+2?", max_tokens=100)
-
-        call_kwargs = mock_registry.route_request.call_args
-        assert call_kwargs.kwargs.get("messages") is None
-        # Prompt should be the sanitized version passed through
-        assert "prompt" in call_kwargs.kwargs or len(call_kwargs.args) > 0

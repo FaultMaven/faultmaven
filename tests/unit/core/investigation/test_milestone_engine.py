@@ -31,7 +31,7 @@ _FILE_ID = "file_0123456789ab"
 
 
 class MockLLMProvider(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         # Default mock response - should be overridden in tests if needed
         return "{}"
 
@@ -62,7 +62,7 @@ class MockLLMProvider(ILLMProvider):
 @pytest.fixture
 def mock_llm():
     llm = MockLLMProvider()
-    llm.generate = AsyncMock()
+    llm.route = AsyncMock()
     return llm
 
 
@@ -331,14 +331,14 @@ class TestMilestoneEngine:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(
             base_case, "Verify the symptom", redaction_ctx=None
         )
 
         # Verify LLM called
-        mock_llm.generate.assert_called_once()
+        mock_llm.route.assert_called_once()
 
         # Verify metadata
         metadata = result["metadata"]
@@ -363,7 +363,7 @@ class TestMilestoneEngine:
 
         # Content is irrelevant to the assertion — only that a flat hypothesis is
         # added and the graph stays empty.
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Here is a hypothesis.",
                 "evidence_trail": {
@@ -431,7 +431,7 @@ class TestMilestoneEngine:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(case, "Help me", redaction_ctx=None)
 
@@ -455,7 +455,7 @@ class TestMilestoneEngine:
                 "state_updates": {"outcome": "conversation"},
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(base_case, "Chat", redaction_ctx=None)
 
@@ -582,7 +582,7 @@ class TestMilestoneEngine:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(base_case, "Check logs", redaction_ctx=None)
 
@@ -620,7 +620,7 @@ class TestMilestoneEngine:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         # Should process without error
         result = await engine.process_turn(
@@ -675,7 +675,7 @@ class TestMilestoneEngine:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         # User confirms the pending transition
         # This should NOT fail with reasoning validation error
@@ -721,7 +721,7 @@ class TestMilestoneEngine:
         # The model proposes NOTHING — which is the point. The case carries a
         # qualifying causal_absence row, so the backstop opens the handshake
         # regardless of what the model did or did not emit.
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Good — the pool timeout change held.",
                 "state_updates": {"outcome": "conversation"},
@@ -742,14 +742,14 @@ class TestMilestoneEngine:
 
         # ===== TURN N+1: User confirms the transition =====
 
-        mock_llm.generate.reset_mock()
+        mock_llm.route.reset_mock()
         mock_response_content_confirm = json.dumps(
             {
                 "agent_response": "Case resolved.",
                 "state_updates": {"outcome": "conversation"},
             }
         )
-        mock_llm.generate.return_value = mock_response_content_confirm
+        mock_llm.route.return_value = mock_response_content_confirm
 
         # User confirms by clicking the DECIDE pair the engine just emitted,
         # whose Yes card names the offer it presents (#1812).
@@ -864,7 +864,7 @@ class TestMilestoneEngine:
         assert updated_case.progress.symptom_verified is False
 
         # 4. LLM should NOT be called (deterministic response)
-        assert not mock_llm.generate.called
+        assert not mock_llm.route.called
 
         # 5. Canonical CLOSE confirm/decline pair emitted (alignment with
         #    agent-initiated path: every propose_transition surface offers
@@ -930,7 +930,7 @@ class TestMilestoneEngine:
         assert updated_case.progress.solution_verified is False
 
         # 4. LLM should NOT be called (deterministic response)
-        assert not mock_llm.generate.called
+        assert not mock_llm.route.called
 
         # 5. Canonical CLOSE confirm/decline pair emitted (alignment).
         suggestions = result["suggested_follow_ups"]
@@ -1003,7 +1003,7 @@ class TestMilestoneEngine:
 
         # Refused at the boundary — no LLM call, no synthetic message, no state
         # change. The old path spent a turn and could mint a statement.
-        assert not mock_llm.generate.called
+        assert not mock_llm.route.called
         assert inquiry_case.state == CaseState.INQUIRY
         assert inquiry_case.inquiry.problem_statement_confirmed is False
 
@@ -1038,7 +1038,7 @@ class TestMilestoneEngine:
                 redaction_ctx=None,
             )
 
-        assert not mock_llm.generate.called
+        assert not mock_llm.route.called
         assert base_case.state == CaseState.INVESTIGATING
         assert base_case.pending_transition is None
 
@@ -1072,7 +1072,7 @@ class TestMilestoneEngine:
         assert updated_case.pending_transition is not None
         assert updated_case.pending_transition["to_state"] == "closed"
         # LLM should NOT be called (deterministic response)
-        assert not mock_llm.generate.called
+        assert not mock_llm.route.called
 
 
 class TestInquiryConfirmation:
@@ -1108,7 +1108,7 @@ class TestInquiryConfirmation:
                 "state_updates": {},
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(
             case, "yes, that's correct", redaction_ctx=None
@@ -1146,7 +1146,7 @@ class TestInquiryConfirmation:
                 "state_updates": {},
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         result = await engine.process_turn(case, "yes", redaction_ctx=None)
 
@@ -1183,7 +1183,7 @@ class TestInquiryConfirmation:
         case.inquiry.proposed_problem_statement = "API returning 503 errors"
 
         # LLM emits its OWN confirm/decline suggestions (the case_d22 shape).
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "I understand the problem to be... Is that accurate?",
                 "state_updates": {},
@@ -1255,7 +1255,7 @@ class TestInquiryConfirmation:
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         # Bare: the LLM's flag commits Gate 1 only on a bare consent token
         # (#1794); "yes, proceed" is read the same way and commits nothing.
@@ -2058,7 +2058,7 @@ class TestContradictingIntentCancelsPendingTransition:
                 "state_updates": {"outcome": "conversation"},
             }
         )
-        mock_llm.generate.return_value = mock_response_content
+        mock_llm.route.return_value = mock_response_content
 
         # User submits a contradicting status_transition intent
         result = await engine.process_turn(
@@ -2181,7 +2181,7 @@ class TestRootCauseConclusionPersistence:
         base_case.progress.root_cause_method = "direct_analysis"
         base_case.progress.cause_state = CauseState.IDENTIFIED
 
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Root cause identified.",
                 "evidence_trail": {
@@ -2236,7 +2236,7 @@ class TestRootCauseConclusionPersistence:
 
         assert base_case.root_cause_conclusion is None
 
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Still investigating.",
                 "state_updates": {"outcome": "conversation"},
@@ -2368,7 +2368,7 @@ class TestNeedsInfoFollowupProposesClose:
 
     def _make_engine(self):
         mock_llm = MockLLMProvider()
-        mock_llm.generate = AsyncMock()
+        mock_llm.route = AsyncMock()
         mock_repo = MagicMock()
         mock_repo.save = AsyncMock(side_effect=lambda c, **_: c)
         return MilestoneEngine(
@@ -2544,7 +2544,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
 
     def _make_engine(self):
         mock_llm = MockLLMProvider()
-        mock_llm.generate = AsyncMock()
+        mock_llm.route = AsyncMock()
         mock_repo = MagicMock()
         mock_repo.save = AsyncMock(side_effect=lambda c, **_: c)
         return MilestoneEngine(
@@ -2716,7 +2716,7 @@ class TestVerificationStatusRecordedOnTurn:
         self, mock_llm, mock_repo, base_case
     ):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+        mock_llm.route.return_value = self._NO_PROGRESS_RESPONSE
 
         case = self._stalled_insufficient_case(base_case)
         result = await engine.process_turn(case, "Any ideas?", redaction_ctx=None)
@@ -2731,7 +2731,7 @@ class TestVerificationStatusRecordedOnTurn:
         self, mock_llm, mock_repo, base_case
     ):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+        mock_llm.route.return_value = self._NO_PROGRESS_RESPONSE
 
         # base_case as-is: no hypotheses/evidence, turn 0 → NOT_YET_PRODUCTIVE, not
         # INSUFFICIENT_EVIDENCE. The key is still threaded, valued None (no fire).
@@ -2752,7 +2752,7 @@ class TestVerificationStatusRecordedOnTurn:
         from faultmaven.modules.case.contracts import VerificationStatus
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+        mock_llm.route.return_value = self._NO_PROGRESS_RESPONSE
 
         case = self._stalled_insufficient_case(base_case)
         await engine.process_turn(case, "Any ideas?", redaction_ctx=None)
@@ -2784,7 +2784,7 @@ class TestRestatementStallNotice:
         self, mock_llm, mock_repo, base_case
     ):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = self._RESTATED
+        mock_llm.route.return_value = self._RESTATED
         base_case.current_turn = 9
         base_case.turns_without_progress = 2
 
@@ -2801,7 +2801,7 @@ class TestRestatementStallNotice:
     @pytest.mark.asyncio
     async def test_no_notice_below_the_threshold(self, mock_llm, mock_repo, base_case):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        mock_llm.generate.return_value = self._RESTATED
+        mock_llm.route.return_value = self._RESTATED
         base_case.current_turn = 9
         base_case.turns_without_progress = 1
 

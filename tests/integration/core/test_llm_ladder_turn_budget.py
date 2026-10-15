@@ -446,7 +446,7 @@ class _HangingProvider(BaseExternalClient):
         await asyncio.sleep(self.hang_seconds)
         return "never reached"
 
-    async def generate(self, configured_timeout, clamp):
+    async def route(self, configured_timeout, clamp):
         """``clamp=True`` is what ``LLMRouter._resolve_timeout`` now does."""
         timeout = (
             clamp_to_turn_budget(configured_timeout) if clamp else configured_timeout
@@ -462,7 +462,7 @@ async def _turn_against_provider(*, hang, turn_seconds, base_delay, clamp):
 
     async def op():
         attempts["n"] += 1
-        return await provider.generate(hang, clamp)
+        return await provider.route(hang, clamp)
 
     handler = LLMErrorHandler(RetryConfig(base_delay_seconds=base_delay))
     with bind_turn_deadline(turn_seconds):
@@ -527,14 +527,14 @@ class TestTheCutShortCallStillReachesTheBreaker:
         for _ in range(3):
             with bind_turn_deadline(2.0):
                 with pytest.raises(Exception):
-                    await provider.generate(5.0, clamp=True)
+                    await provider.route(5.0, clamp=True)
         assert provider.circuit_breaker.failure_count >= 3
         assert provider.circuit_breaker.state == "open"
 
         reached = provider.calls_reaching_the_provider
         started = virtual_now()
         with pytest.raises(Exception):
-            await provider.generate(5.0, clamp=True)
+            await provider.route(5.0, clamp=True)
         assert (
             provider.calls_reaching_the_provider == reached
         ), "an open breaker let the call through to the provider"

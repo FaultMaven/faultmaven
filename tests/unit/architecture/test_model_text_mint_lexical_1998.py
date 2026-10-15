@@ -28,10 +28,10 @@ repository, with a raw-text scan behind it:
 * R5: no ``__setattr__`` call writes a ``redacted`` attribute — the slot every
   forgery has to set;
 * R6: no ``__class__`` is assigned, and no class declares a ``redacted`` slot —
-  the two halves of swapping a look-alike's class;
-* R7, in ``faultmaven/`` only (tests patch it legitimately): nothing assigns
-  ``generate`` or ``_generate`` on an object or a class, so no instance can
-  step around the provider boundary (``provider.generate = provider._generate``).
+  the two halves of swapping a look-alike's class.
+
+Which code may reach a provider's ``_generate`` is a separate rule, kept in
+``test_model_dispatch_lexical_1998.py``.
 
 An exemption covers one hit: a (file, rule, line text) entry, so a second
 hit of the same rule in the same file is a violation.
@@ -84,18 +84,7 @@ RULE_EXEMPTIONS: Dict[Tuple[str, str, str], str] = {
         "sets a mock's __class__ to GoogleCSEProvider so the tool's isinstance "
         "dispatch takes the CSE branch; the file mints nothing"
     ),
-    (
-        "faultmaven/container/base.py",
-        "R7",
-        'llm_provider.generate = MagicMock(return_value="Mock LLM response")',
-    ): (
-        "the container's minimal test stub: a MagicMock, not a BaseLLMProvider, "
-        "so there is no boundary to step around"
-    ),
 }
-
-#: The method names R7 protects.
-_BOUNDARY_METHODS = frozenset({"generate", "_generate"})
 
 #: The raw-text scan's patterns all contain one of these, so a file without
 #: any is skipped by that scan. The AST walk has no such gate: a string
@@ -242,7 +231,6 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
         return node in docstrings[0]
 
     private = private_names()
-    in_package = path.startswith("faultmaven/")
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Import):
@@ -321,28 +309,6 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "R5", f"__setattr__ writing {_SLOT}"))
             if name in {"setattr", "__setattr__"} and "__class__" in strings:
                 found.append((line, "R6", "a __class__ assignment by setattr"))
-            if (
-                in_package
-                and name in {"setattr", "__setattr__"}
-                and _BOUNDARY_METHODS & set(strings)
-            ):
-                found.append((line, "R7", "the provider boundary replaced by setattr"))
-        if in_package and isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                for element in ast.walk(target):
-                    if (
-                        isinstance(element, ast.Attribute)
-                        and element.attr in _BOUNDARY_METHODS
-                        and isinstance(element.ctx, ast.Store)
-                    ):
-                        found.append(
-                            (
-                                line,
-                                "R7",
-                                f"the provider boundary replaced: .{element.attr}",
-                            )
-                        )
     return sorted(set(found))
 
 
@@ -515,13 +481,6 @@ PLANTED = {
     "    return inspect.getmodule(type(v))._mint(raw, 'case', True)\n",
     "r2_vars_of_module": "import inspect\ndef relabel(v, raw):\n"
     "    return vars(inspect.getmodule(type(v)))['_mi' 'nt'](raw, 'case', True)\n",
-    # R7: the boundary replaced on an instance or a class.
-    "r7_instance_override": "provider.generate = provider._generate\n",
-    "r7_private_override": "provider._generate = send_raw\n",
-    "r7_class_override": "OpenAIProvider.generate = OpenAIProvider._generate\n",
-    "r7_setattr": "setattr(provider, 'generate', send_raw)\n",
-    "r7_object_setattr": "object.__setattr__(provider, '_generate', send_raw)\n",
-    "r7_tuple_target": "provider.generate, other = send_raw, 1\n",
 }
 
 
@@ -532,13 +491,6 @@ def test_a_planted_violation_is_caught(snippet, tmp_path):
     assert violations(
         planted.read_text(encoding="utf-8"), "faultmaven/planted.py"
     ), snippet
-
-
-def test_the_override_rule_is_the_packages_only():
-    """Tests patch ``generate`` legitimately; R7 reads ``faultmaven/`` alone."""
-    source = PLANTED["r7_instance_override"]
-    assert {hit[1] for hit in violations(source, "faultmaven/planted.py")} == {"R7"}
-    assert not violations(source, "tests/unit/test_planted.py")
 
 
 def test_a_relative_import_of_the_private_name_is_caught():

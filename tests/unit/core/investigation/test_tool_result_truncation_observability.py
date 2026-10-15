@@ -92,7 +92,7 @@ def _schema_response() -> LLMResponse:
 def _engine_returning(data: str, called_tool: str = "search_file"):
     """An engine whose single tool call returns ``data``, then the schema."""
     provider = AsyncMock()
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         side_effect=[_tool_call_response(called_tool), _schema_response()]
     )
 
@@ -232,7 +232,7 @@ async def test_instrumentation_does_not_change_what_the_model_receives():
     )
     await _run(engine)
 
-    second_call = engine.deps.llm_provider.generate.call_args_list[1]
+    second_call = engine.deps.llm_provider.route.call_args_list[1]
     messages = second_call.kwargs["messages"]
     tool_msg = [m for m in messages if m.get("role") == "tool"][0]
     assert tool_msg["content"] == (

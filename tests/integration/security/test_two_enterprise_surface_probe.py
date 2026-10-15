@@ -4990,7 +4990,7 @@ class _RecordingTitleModel:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def generate(self, **kwargs: Any):
+    async def route(self, **kwargs: Any):
         from faultmaven.infrastructure.llm.providers.base import (
             LLMResponse,
             StopReason,

@@ -354,7 +354,7 @@ class LocalProvider(BaseLLMProvider):
         }
 
         # The native API takes generation options only. Router-level knobs
-        # (``case_id``, and ``cache_prompt``, which ``generate`` leaves for the
+        # (``case_id``, and ``cache_prompt``, which ``_generate`` leaves for the
         # llama.cpp transport) are not Ollama options and must not land in
         # ``options``.
         self._discard_router_kwargs(kwargs, model=model)

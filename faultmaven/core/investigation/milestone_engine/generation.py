@@ -51,6 +51,7 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.json_response import (
     json_payload_text,
 )
@@ -673,7 +674,7 @@ class StructuredOutputGenerator:
                 window_tokens=tool_loop_budget.hard(max_tokens),
             )
             # A dedicated DA provider is a CONCRETE provider (not the router),
-            # reached by ``provider.generate()`` directly. The router-level
+            # sent to directly through the model dispatch. The router-level
             # knobs ``case_id`` (the router's cache key) and ``provider_override``
             # (the router's fallback-chain pick) mean nothing to it and would
             # otherwise land in its request body (#2002), so they are set on
@@ -741,7 +742,12 @@ class StructuredOutputGenerator:
                         tools=tools_for_call,
                         window_tokens=tool_loop_budget.hard(cap),
                     )
-                result = await provider.generate(**call_kwargs)
+                if direct_provider:
+                    # A concrete provider: the dispatch checks the call and
+                    # hands its ``_generate`` plain values (#1998).
+                    result = await send_to_model(provider, **call_kwargs)
+                else:
+                    result = await provider.route(**call_kwargs)
                 if self.deps.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
                     # so this call bypassed the registry metering chokepoint.
@@ -1823,7 +1829,7 @@ class StructuredOutputGenerator:
                     generate_params["response_format"] = strategy.response_format
 
             try:
-                response = await self.deps.llm_provider.generate(**generate_params)
+                response = await self.deps.llm_provider.route(**generate_params)
             except Exception as gen_exc:
                 # Some providers can see the cut themselves and raise before
                 # there is any body to parse — Gemini does this on

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
@@ -374,7 +375,7 @@ class TestAnthropicGenerateMessages:
         mock_session = _mock_aiohttp_session(response_data)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("Test prompt")
+            result = await send_to_model(provider, prompt="Test prompt")
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -397,7 +398,9 @@ class TestAnthropicGenerateMessages:
         mock_session = _mock_aiohttp_session(response_data)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("ignored prompt", messages=messages)
+            result = await send_to_model(
+                provider, prompt="ignored prompt", messages=messages
+            )
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -425,7 +428,9 @@ async def _sent_body(provider, messages, **kwargs) -> dict:
     }
     mock_session = _mock_aiohttp_session(response_data)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("ignored prompt", messages=messages, **kwargs)
+        await send_to_model(
+            provider, prompt="ignored prompt", messages=messages, **kwargs
+        )
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 

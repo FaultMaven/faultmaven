@@ -75,7 +75,7 @@ def _schema_response() -> LLMResponse:
 
 def _engine(first_response: LLMResponse, tool_result: ToolResult):
     provider = AsyncMock()
-    provider.generate = AsyncMock(side_effect=[first_response, _schema_response()])
+    provider.route = AsyncMock(side_effect=[first_response, _schema_response()])
     registry = MagicMock()
     registry.get_all_tools.return_value = []
     registry.execute_tool = AsyncMock(return_value=tool_result)
@@ -155,7 +155,7 @@ class TestToolCallAttempts:
         """The schema tool is the response channel, not an investigation tool;
         it is measured by the schema counter, never double-counted here."""
         provider = AsyncMock()
-        provider.generate = AsyncMock(side_effect=[_schema_response()])
+        provider.route = AsyncMock(side_effect=[_schema_response()])
         registry = MagicMock()
         registry.get_all_tools.return_value = []
         registry.execute_tool = AsyncMock()
@@ -364,7 +364,7 @@ class TestNonToolStructuredPathIsCounted:
         )
 
         provider = MagicMock()
-        provider.generate = AsyncMock(
+        provider.route = AsyncMock(
             return_value=LLMResponse(
                 content=content,
                 confidence=0.9,

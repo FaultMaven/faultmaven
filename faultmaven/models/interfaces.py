@@ -185,28 +185,26 @@ class ILLMProvider(ABC):
     """
 
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> "LLMResponse":
-        """Generate a response using the configured LLM provider.
+    async def route(self, prompt: Optional[str] = None, **kwargs) -> "LLMResponse":
+        """Send one model call through the configured providers.
 
-        This method sends a prompt to the LLM provider and returns the generated
-        response. The implementation handles provider-specific request formatting,
-        authentication, error handling, and response parsing.
+        The router's call surface (``LLMRouter.route``): it checks the call's
+        model-bound content, applies the ``SANITIZE_PII`` pass, answers from
+        its response cache when it can, and otherwise hands the call to the
+        provider registry, whose every send goes through
+        ``faultmaven.infrastructure.llm.dispatch`` (#1998). There is no
+        ``generate``: a concrete provider has no public send method either.
 
-        Returns an ``LLMResponse``, not a bare string. The annotation said
-        ``str`` for years while every implementation and the router returned the
-        dataclass, which is how callers ended up hedging with
-        ``hasattr(response, "content")`` and why response-level signals had no
-        agreed home. The type is quoted and imported only under TYPE_CHECKING so
-        naming it here adds no runtime import from models into infrastructure.
+        Returns an ``LLMResponse``, not a bare string. The type is quoted and
+        imported only under TYPE_CHECKING so naming it here adds no runtime
+        import from models into infrastructure.
 
         Args:
-            prompt: The input text prompt for generation. Must be non-empty string.
-                   Length limits vary by provider (typically 8K-32K tokens).
-            **kwargs: Provider-specific parameters such as:
-                     - temperature: Response randomness (0.0-2.0)
-                     - max_tokens: Maximum response length
-                     - model: Specific model to use (overrides default)
-                     - timeout: Request timeout in seconds
+            prompt: The input prompt, minted by the redaction module, or
+                ``None`` when ``messages`` carries the call.
+            **kwargs: The router's keywords (``LLMRouter.route``'s signature),
+                among them ``messages``, ``max_tokens``, ``temperature``,
+                ``model``, ``tools``, ``tool_choice`` and ``response_format``.
 
         Returns:
             ``LLMResponse`` carrying the generated ``content`` plus the
@@ -218,34 +216,13 @@ class ILLMProvider(ABC):
 
         Raises:
             LLMProviderException: When provider request fails (auth, network, etc.)
-            ValidationException: When prompt is invalid or too long
             TimeoutException: When request exceeds configured timeout
             RateLimitException: When provider rate limits are exceeded
 
         Example:
-            Basic text generation:
-
-            >>> provider = OpenAIProvider()
-            >>> response = await provider.generate("Explain quantum computing")
-            >>> print(len(response.content))
-            1247
+            >>> response = await router.route(prompt=minted_prompt, max_tokens=500)
             >>> response.is_truncated
             False
-
-            Advanced generation with parameters:
-
-            >>> response = await provider.generate(
-                "Write a Python function for sorting",
-                temperature=0.1,
-                max_tokens=500
-            )
-            >>> "def " in response.content
-            True
-
-        Note:
-            Implementations should sanitize prompts to remove PII before sending
-            to external providers. Rate limiting and cost management should be
-            handled transparently.
         """
         pass
 

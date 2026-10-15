@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.metering import record_provider_call
 
 from .anthropic import AnthropicProvider
@@ -281,6 +282,7 @@ class ProviderRegistry:
 
         self.settings = settings
         self._providers: Dict[str, BaseLLMProvider] = {}
+        self._provider_classes: Dict[str, Type[BaseLLMProvider]] = {}
         self._fallback_chain: List[str] = []
         self._initialized = False
 
@@ -617,7 +619,22 @@ class ProviderRegistry:
             self.logger.info(f"Provider fallback chain: {' -> '.join(chain)}")
 
     def register_provider(self, name: str, provider_class: Type[BaseLLMProvider]):
-        """Register a custom provider class"""
+        """Register a custom provider class.
+
+        ``provider_class`` must be a :class:`BaseLLMProvider` subclass:
+        anything else is refused with ``TypeError``. This is hygiene, and it
+        closes nothing the dispatch leaves open: every send reaches a provider
+        through :func:`~faultmaven.infrastructure.llm.dispatch.send_to_model`,
+        which checks the call's values whatever the provider's class (#1998).
+        """
+        if not (
+            isinstance(provider_class, type)
+            and issubclass(provider_class, BaseLLMProvider)
+        ):
+            raise TypeError(
+                f"register_provider({name!r}): {provider_class!r} is not a "
+                "BaseLLMProvider subclass"
+            )
         self._provider_classes[name] = provider_class
         self.logger.info(f"Registered custom provider class: {name}")
 
@@ -647,6 +664,22 @@ class ProviderRegistry:
         except Exception as e:
             self.logger.warning(f"Failed to create test provider '{name}': {e}")
             return None
+
+    async def send_connection_check(self, provider: BaseLLMProvider) -> LLMResponse:
+        """Send the admin connection check's one fixed prompt to ``provider``.
+
+        Through the model dispatch like every send (#1998), and outside the
+        routing chokepoint on purpose: the check targets one provider by name,
+        possibly one outside the active set (``create_provider_for_test``), and
+        must not move its health state. It is the one billed call nothing
+        meters: a 50-token "Say hello" an operator triggers (#640 spec §7).
+        """
+        return await send_to_model(
+            provider,
+            prompt="Say hello",
+            max_tokens=50,
+            temperature=0.0,
+        )
 
     def get_available_providers(self) -> List[str]:
         """Get list of available provider names"""
@@ -877,7 +910,8 @@ class ProviderRegistry:
                 max_model_loading_retries = 2
                 for retry_attempt in range(max_model_loading_retries + 1):
                     try:
-                        response = await provider.generate(
+                        response = await send_to_model(
+                            provider,
                             prompt=prompt,
                             model=model,
                             max_tokens=max_tokens,

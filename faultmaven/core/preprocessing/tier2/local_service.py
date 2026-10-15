@@ -92,7 +92,7 @@ class LocalTier2Service:
         try:
 
             async def _analyze(cap: int):
-                return await self.llm_client.generate(
+                return await self.llm_client.route(
                     messages=messages,
                     max_tokens=cap,
                 )
@@ -104,11 +104,11 @@ class LocalTier2Service:
                 label="tier-2 deep analysis",
             )
             # ``llm_client`` is an ILLMProvider — the router, per
-            # ``create_deep_analysis_service`` — so ``generate`` returns an
+            # ``create_deep_analysis_service`` — so ``route`` returns an
             # ``LLMResponse``. This used to hedge with
             # ``hasattr(response, "content") else str(response)``, tolerating a
             # bare string the DI cannot actually produce. The hedge is gone
-            # because the contract is now stated (``ILLMProvider.generate ->
+            # because the contract is now stated (``ILLMProvider.route ->
             # LLMResponse``) and because a response-level signal cannot be read
             # off a stand-in that only pretends to be one; anything genuinely
             # unexpected still lands in the except below and degrades to raw

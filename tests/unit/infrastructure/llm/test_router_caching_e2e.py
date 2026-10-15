@@ -106,7 +106,8 @@ _OPENAI_RESP = {
 class TestCachePromptEndToEnd:
     async def test_cache_prompt_reaches_anthropic_body(self, anthropic_provider):
         # router.route(cache_prompt=True) -> call_external -> registry.route_request
-        # -> AnthropicProvider.generate -> HTTP body carries the cache breakpoint.
+        # -> send_to_model -> AnthropicProvider._generate -> HTTP body carries the
+        # cache breakpoint.
         registry = _registry_with(anthropic_provider, "anthropic")
         mock_session = _mock_aiohttp_session(_ANTHROPIC_RESP)
 
@@ -244,8 +245,8 @@ class TestCachePromptForwarding:
             from faultmaven.infrastructure.llm.router import LLMRouter
 
             router = LLMRouter()
-            # generate() is the ILLMProvider entrypoint the engine calls.
-            await router.generate(prompt=None, messages=_MESSAGES, cache_prompt=True)
+            # route() is the ILLMProvider entrypoint the engine calls.
+            await router.route(prompt=None, messages=_MESSAGES, cache_prompt=True)
 
         assert mock_registry.route_request.call_args.kwargs.get("cache_prompt") is True
 
@@ -397,24 +398,4 @@ class TestBypassCache:
         # One key, replaced — not a second entry alongside the bad one.
         assert len(router.cache.cache) == 1
         # Exactly the two calls that were meant to reach the provider.
-        assert registry.route_request.await_count == 2
-
-    async def test_generate_forwards_bypass_cache(self):
-        """``generate()`` is the ILLMProvider entrypoint the engine calls; a
-        flag dropped there would be silently ignored at the only site that
-        sets it."""
-        registry = _mock_registry()
-
-        with patch(
-            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
-        ):
-            from faultmaven.infrastructure.llm.router import LLMRouter
-
-            router = LLMRouter()
-            await router.generate(prompt="why is node-3 NotReady?", model="gpt-4o")
-            second = await router.generate(
-                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
-            )
-
-        assert second.cached is not True
         assert registry.route_request.await_count == 2

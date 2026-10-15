@@ -1004,7 +1004,7 @@ async def mock_llm_provider_integration():
                 "analysis_type": "general",
             }
 
-    llm.generate = AsyncMock(side_effect=mock_generate)
+    llm.route = AsyncMock(side_effect=mock_generate)
     return llm
 
 

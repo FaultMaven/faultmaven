@@ -81,7 +81,7 @@ class TestStickyRouting:
         gemini = registry._providers["gemini"]
 
         # First request succeeds with gemini
-        gemini.generate = AsyncMock(
+        gemini._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,
@@ -100,11 +100,11 @@ class TestStickyRouting:
         assert registry._provider_states["gemini"].health == ProviderHealth.HEALTHY
 
         # Second request should try gemini FIRST (sticky)
-        gemini.generate.reset_mock()
+        gemini._generate.reset_mock()
         response2 = await registry.route_request("test prompt 2")
 
         # Verify gemini was called (sticky routing)
-        assert gemini.generate.called
+        assert gemini._generate.called
         assert response2.provider == "gemini"
         assert registry._sticky_provider == "gemini"
 
@@ -119,10 +119,10 @@ class TestStickyRouting:
         registry._provider_states["gemini"].health = ProviderHealth.HEALTHY
 
         # Gemini fails
-        gemini.generate = AsyncMock(side_effect=Exception("Gemini down"))
+        gemini._generate = AsyncMock(side_effect=Exception("Gemini down"))
 
         # Fireworks succeeds
-        fireworks.generate = AsyncMock(
+        fireworks._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,
@@ -216,7 +216,7 @@ class TestRecoveryBehavior:
         gemini_state._recovery_cooldown = 60.0
 
         # Fireworks succeeds
-        fireworks.generate = AsyncMock(
+        fireworks._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,
@@ -230,7 +230,7 @@ class TestRecoveryBehavior:
         response = await registry.route_request("test prompt")
 
         # Verify gemini was NOT tried (should_attempt returns False)
-        assert not gemini.generate.called
+        assert not gemini._generate.called
         assert response.provider == "fireworks"
 
     def test_recovery_after_cooldown_transitions_to_unknown(self):
@@ -262,7 +262,7 @@ class TestRecoveryBehavior:
         gemini_state._recovery_cooldown = 60.0
 
         # Gemini succeeds on retry
-        gemini.generate = AsyncMock(
+        gemini._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,
@@ -290,7 +290,7 @@ class TestLowConfidenceFallback:
         fireworks = registry._providers["fireworks"]
 
         # Both return low confidence (below 0.8 threshold)
-        gemini.generate = AsyncMock(
+        gemini._generate = AsyncMock(
             return_value=LLMResponse(
                 content="gemini response",
                 confidence=0.6,
@@ -301,7 +301,7 @@ class TestLowConfidenceFallback:
             )
         )
 
-        fireworks.generate = AsyncMock(
+        fireworks._generate = AsyncMock(
             return_value=LLMResponse(
                 content="fireworks response",
                 confidence=0.7,  # Better than gemini
@@ -337,7 +337,7 @@ class TestAllProvidersDown:
             state._recovery_cooldown = 60.0
 
         # Gemini succeeds on forced retry
-        gemini.generate = AsyncMock(
+        gemini._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,
@@ -351,7 +351,7 @@ class TestAllProvidersDown:
         response = await registry.route_request("test prompt")
 
         # Verify gemini was tried despite being UNHEALTHY (forced retry)
-        assert gemini.generate.called
+        assert gemini._generate.called
         assert response.provider == "gemini"
 
     @pytest.mark.asyncio
@@ -361,8 +361,8 @@ class TestAllProvidersDown:
         fireworks = registry._providers["fireworks"]
 
         # Both fail completely
-        gemini.generate = AsyncMock(side_effect=Exception("Gemini error"))
-        fireworks.generate = AsyncMock(side_effect=Exception("Fireworks error"))
+        gemini._generate = AsyncMock(side_effect=Exception("Gemini error"))
+        fireworks._generate = AsyncMock(side_effect=Exception("Fireworks error"))
 
         with pytest.raises(Exception, match="Fireworks error"):
             await registry.route_request("test prompt")
@@ -410,7 +410,7 @@ class TestAllProvidersDown:
             state.last_failure_time = time.monotonic()
             state._recovery_cooldown = 60.0
 
-        registry._providers["gemini"].generate = AsyncMock(
+        registry._providers["gemini"]._generate = AsyncMock(
             return_value=LLMResponse(
                 content="response",
                 confidence=0.9,

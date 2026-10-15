@@ -406,7 +406,6 @@ LLM_TITLE_MAX_TOKENS = (
     128  # Prevent truncation (Gemini may emit reasoning tokens before the title)
 )
 LLM_TITLE_TEMPERATURE = 0.2  # More deterministic generation
-LLM_TITLE_TOP_P = 0.9  # Focused sampling
 
 # Context extraction settings
 MAX_USER_MESSAGES_FOR_CONTEXT = 12  # Cap message count to reduce noise
@@ -1516,11 +1515,10 @@ async def _generate_title_with_llm(
         prompt = await case_redacted(prompt, redaction_ctx)
 
         # Generate title using LLM with optimized settings
-        response = await llm_provider.generate(
+        response = await llm_provider.route(
             prompt=prompt,
             max_tokens=LLM_TITLE_MAX_TOKENS,
             temperature=LLM_TITLE_TEMPERATURE,
-            top_p=LLM_TITLE_TOP_P,
         )
 
         # A title cut at the output cap is a mid-word title, and it is

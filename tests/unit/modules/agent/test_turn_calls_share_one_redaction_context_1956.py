@@ -109,10 +109,6 @@ class _RecordingRouter:
         self.calls.append(kwargs)
         return _response(self.content)
 
-    async def generate(self, **kwargs):
-        self.calls.append(kwargs)
-        return _response(self.content)
-
 
 def _sent(call: dict[str, Any]) -> str:
     if "messages" in call:
@@ -779,7 +775,7 @@ class TestConcurrentTurnsKeepTheRegistry:
         class _Router:
             calls: list = []
 
-            async def generate(self, **kwargs):
+            async def route(self, **kwargs):
                 self.calls.append(kwargs)
                 title_started.set()
                 await turn_saved.wait()

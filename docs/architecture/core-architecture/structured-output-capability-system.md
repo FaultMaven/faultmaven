@@ -87,7 +87,7 @@ response_format = create_response_format_json_schema(schema_model)
 schema_json = json.dumps(schema_model.model_json_schema(), indent=2)
 prompt_with_schema = f"{prompt}\n\nSchema: {schema_json}"
 
-response = await self.llm_provider.generate(
+response = await self.llm_provider.route(
     prompt=prompt_with_schema,
     response_format=response_format,
 )
@@ -135,7 +135,7 @@ else:
         "response_format": strategy.response_format
     }
 
-response = await self.llm_provider.generate(**generate_params)
+response = await self.llm_provider.route(**generate_params)
 
 # For function calling, extract from tool_calls
 if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
@@ -226,7 +226,7 @@ class NewProvider(BaseLLMProvider):
             return StructuredOutputCapability.BEST_EFFORT
 
     async def _generate(self, prompt, **kwargs):
-        # BaseLLMProvider.generate checks the call's content and calls this.
+        # dispatch.send_to_model checks the call's content and calls this.
         # The strategy methods are inherited from BaseLLMProvider
         # and automatically use your overridden capability detection!
 
@@ -342,7 +342,7 @@ class SimplifiedResponse(BaseModel):
     data: dict    # Flexible structure if needed
 
 # 2. Monitor token usage
-response = await provider.generate(...)
+response = await send_to_model(provider, ...)
 logger.info(f"Tokens used: {response.tokens_used}")
 if response.tokens_used > threshold:
     alert_high_token_usage()

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.cohere_provider import CohereProvider
@@ -116,7 +117,7 @@ async def test_5xx_is_retryable(provider_class, base_url, model):
     provider = provider_class(_config(provider_class.__name__, base_url, model))
     with patch("aiohttp.ClientSession", return_value=_mock_error_session(503)):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.status_code == 503
     assert exc_info.value.retryable is True
 
@@ -128,7 +129,7 @@ async def test_4xx_is_non_retryable(provider_class, base_url, model):
     provider = provider_class(_config(provider_class.__name__, base_url, model))
     with patch("aiohttp.ClientSession", return_value=_mock_error_session(400)):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.status_code == 400
     assert exc_info.value.retryable is False
 
@@ -145,7 +146,7 @@ async def test_429_is_retryable(provider_class, base_url, model):
     provider = provider_class(_config(provider_class.__name__, base_url, model))
     with patch("aiohttp.ClientSession", return_value=_mock_error_session(429)):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.status_code == 429
     assert exc_info.value.retryable is True
 
@@ -166,7 +167,7 @@ async def test_timeout_carries_504_and_is_retryable(provider_class, base_url, mo
     provider = provider_class(_config(provider_class.__name__, base_url, model))
     with patch("aiohttp.ClientSession", return_value=_mock_timeout_session()):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.status_code == 504
     assert exc_info.value.retryable is True
     assert "timed out" in str(exc_info.value).lower()
@@ -237,7 +238,7 @@ async def test_transport_failure_is_typed_and_retryable(
         "aiohttp.ClientSession", return_value=_mock_transport_error_session(error)
     ):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.retryable is True
     assert "connection error" in str(exc_info.value).lower()
 
@@ -258,6 +259,6 @@ async def test_transport_handler_does_not_swallow_http_errors(
     provider = provider_class(_config(provider_class.__name__, base_url, model))
     with patch("aiohttp.ClientSession", return_value=_mock_error_session(400)):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
     assert exc_info.value.status_code == 400
     assert exc_info.value.retryable is False

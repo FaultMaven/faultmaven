@@ -150,7 +150,7 @@ def _tool_path_wire_schema(model: Any) -> Dict[str, Any]:
     """What the TOOL-AUGMENTED path puts on the wire for Gemini.
 
     ``_build_schema_tool`` (strict rewrite) → the Gemini adapter's own
-    resolver, which is exactly what ``GeminiProvider.generate`` applies to
+    resolver, which is exactly what ``GeminiProvider._generate`` applies to
     ``FunctionDeclaration.parameters``.
     """
     tool = _build_schema_tool(model, _StrictProvider())[0]

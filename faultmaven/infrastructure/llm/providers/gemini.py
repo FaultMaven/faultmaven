@@ -293,7 +293,8 @@ class GeminiProvider(BaseLLMProvider):
 
           The router raises on INFERENCE-without-floor, but the router is not
           the only door: ``milestone_engine`` binds a concrete provider and
-          calls ``generate()`` on it directly, bypassing that check entirely.
+          sends to it directly (``dispatch.send_to_model``), bypassing that
+          check entirely.
           An invariant enforced at one of two entry points is not enforced, so
           the mechanism it guards refuses on its own here.
         """
@@ -406,7 +407,7 @@ class GeminiProvider(BaseLLMProvider):
         """Record (once per provider instance) that 3.7-surface calls drop the
         classic sampling params.
 
-        ``temperature`` arrives on every call (it is a ``generate()`` parameter
+        ``temperature`` arrives on every call (it is a ``_generate()`` parameter
         with a default), so this is expected on every single 3.7-surface
         request — per-call logging would be volume proportional to request
         rate for a fact that cannot change between calls. Once per instance,

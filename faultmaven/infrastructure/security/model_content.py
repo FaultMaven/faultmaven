@@ -1,9 +1,9 @@
 """Model-bound content: the one type a provider accepts, and the only ways in (#1998).
 
 The invariant: every model call, through the router or straight to a provider,
-carries model-bound content only as values this module minted. The provider
-boundary, ``BaseLLMProvider.generate``, checks it at runtime, on the value, so
-no spelling of a send can get raw text past it.
+carries model-bound content only as values this module minted. The one
+dispatch every send passes, ``faultmaven.infrastructure.llm.dispatch``, checks
+it at runtime, on the value, so no spelling of a send can get raw text past it.
 
 A minted value is a :class:`ModelText`, a ``str`` subclass that records where
 it came from (``source``) and whether the context that minted it redacted
@@ -584,7 +584,7 @@ BAD_ID = "bad_id"  # an identifier channel outside IDENTIFIER_RE
 BAD_ROLE = "bad_role"  # a message role outside the grammar
 UNKNOWN_KEY = "unknown_key"  # a key the grammar does not allow for that role
 NOT_MODEL_OUTPUT = "not_model_output"  # arguments or metadata not from model_output
-UNKNOWN_KWARG = "unknown_kwarg"  # a generate() keyword outside the closed set
+UNKNOWN_KWARG = "unknown_kwarg"  # a send keyword outside the closed set
 
 #: The message grammar: the keys each role may carry. ``content`` is minted
 #: text or ``None`` on every role. An assistant message may carry the model's

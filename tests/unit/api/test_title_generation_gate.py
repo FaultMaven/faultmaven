@@ -76,7 +76,7 @@ def mock_request():
     request.app.state.sanitizer = regex_only_sanitizer()
     request.app.state.redis_client = None
     request.app.state.llm_provider = AsyncMock()
-    request.app.state.llm_provider.generate = AsyncMock(
+    request.app.state.llm_provider.route = AsyncMock(
         return_value=LLMResponse(
             content="Database Connection Issues",
             confidence=0.95,

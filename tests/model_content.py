@@ -9,12 +9,23 @@ profile. A test of redaction itself uses the real minting functions instead.
 
 ``forged`` is here for the same reason: a boundary test needs a ``ModelText``
 the module never minted, and building one is a spelling no other file may use.
+
+:class:`FakeProvider` is the shared concrete provider double: a real
+``BaseLLMProvider`` whose ``_generate`` records each call and answers from a
+script. A test that sends to it goes through
+``faultmaven.infrastructure.llm.dispatch.send_to_model``, so the model
+boundary runs exactly as it does for a shipped adapter.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
+from faultmaven.infrastructure.llm.providers.base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+)
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.infrastructure.security.model_content import (
     SOURCE_CASE,
@@ -91,3 +102,81 @@ def _vetted_call(call: Any) -> Any:
 def forged(text: str) -> ModelText:
     """A ``ModelText`` built without the token: its slots were never set."""
     return str.__new__(ModelText, text)
+
+
+def fake_response(content: str = "ok", **fields: Any) -> LLMResponse:
+    """An ``LLMResponse`` as a provider would return it, ``content`` and all."""
+    values: Dict[str, Any] = {
+        "content": content,
+        "confidence": 1.0,
+        "provider": "fake",
+        "model": "fake-model",
+        "tokens_used": 1,
+        "response_time_ms": 1,
+    }
+    values.update(fields)
+    return LLMResponse(**values)
+
+
+class FakeProvider(BaseLLMProvider):
+    """A concrete provider whose ``_generate`` records every call (#1998).
+
+    ``responses`` is the script: each call takes the next item, raising it if
+    it is an exception; past its end every call answers ``fake_response()``.
+    ``calls`` holds each call's keywords as ``_generate`` received them — the
+    plain values the dispatch hands an adapter.
+    """
+
+    def __init__(
+        self,
+        responses: Optional[Iterable[Any]] = None,
+        *,
+        name: str = "fake",
+        models: Optional[List[str]] = None,
+    ) -> None:
+        models = list(models or ["fake-model"])
+        super().__init__(
+            ProviderConfig(
+                name=name,
+                api_key="test-key-not-real",
+                models=models,
+                default_model=models[0],
+            )
+        )
+        self._name = name
+        self._script = list(responses or [])
+        self.calls: List[Dict[str, Any]] = []
+
+    @property
+    def provider_name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return True
+
+    def get_supported_models(self) -> List[str]:
+        return list(self.config.models)
+
+    async def _generate(
+        self,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        max_tokens: int = 1000,
+        temperature: float = 0.7,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                **kwargs,
+            }
+        )
+        if self._script:
+            item = self._script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        return fake_response()

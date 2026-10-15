@@ -235,7 +235,7 @@ async def test_the_llm_path_does_not_persist_a_mid_phrase_clip():
         stop_reason = StopReason.STOP
 
     provider = AsyncMock()
-    provider.generate = AsyncMock(return_value=_Resp())
+    provider.route = AsyncMock(return_value=_Resp())
 
     # Routing sends short signals to the fast extractive path, so the LLM would
     # never be consulted on _RUN_1 alone — the signal has to clear
@@ -331,7 +331,7 @@ async def test_the_llm_over_cap_refusal_is_observable(caplog):
         stop_reason = StopReason.STOP
 
     provider = AsyncMock()
-    provider.generate = AsyncMock(return_value=_Resp())
+    provider.route = AsyncMock(return_value=_Resp())
     long_signals = _RUN_1 + " " + _RUN_2 + " " + _RUN_1
 
     with caplog.at_level(

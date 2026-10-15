@@ -269,7 +269,7 @@ class TestCreateDaProvider:
 
         with (
             patch(
-                "faultmaven.infrastructure.llm.providers.get_registry",
+                "faultmaven.infrastructure.llm.providers.registry.get_registry",
                 return_value=mock_registry,
             ),
             patch(
@@ -304,7 +304,7 @@ class TestCreateDaProvider:
 
         with (
             patch(
-                "faultmaven.infrastructure.llm.providers.get_registry",
+                "faultmaven.infrastructure.llm.providers.registry.get_registry",
                 return_value=mock_registry,
             ),
             patch(
@@ -326,7 +326,7 @@ class TestCreateDaProvider:
 
         with (
             patch(
-                "faultmaven.infrastructure.llm.providers.get_registry",
+                "faultmaven.infrastructure.llm.providers.registry.get_registry",
                 return_value=mock_registry,
             ),
             patch(

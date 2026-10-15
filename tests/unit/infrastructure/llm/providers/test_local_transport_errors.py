@@ -28,6 +28,7 @@ import aiohttp
 import pytest
 
 from faultmaven.exceptions import LLMErrorCategory, LLMException, declared_llm_category
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
 
@@ -102,7 +103,7 @@ async def test_timeout_is_typed_and_retryable(label, base_url, model, endpoint):
     provider = LocalProvider(_config(base_url, model))
     with patch("aiohttp.ClientSession", return_value=session):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert posted and posted[0].endswith(endpoint), (label, posted)
     assert exc_info.value.status_code == 504, label
@@ -120,7 +121,7 @@ async def test_disconnect_is_typed_and_retryable(label, base_url, model, endpoin
     provider = LocalProvider(_config(base_url, model))
     with patch("aiohttp.ClientSession", return_value=session):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert posted and posted[0].endswith(endpoint), (label, posted)
     assert exc_info.value.retryable is True, label
@@ -141,7 +142,7 @@ async def test_http_error_is_still_untouched(label, base_url, model, endpoint):
     provider = LocalProvider(_config(base_url, model))
     with patch("aiohttp.ClientSession", return_value=session):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert posted and posted[0].endswith(endpoint), (label, posted)
     assert exc_info.value.status_code == 400, label
@@ -179,7 +180,7 @@ async def test_llamacpp_fallback_transport_is_typed_and_retryable():
     provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
     with patch("aiohttp.ClientSession", side_effect=_session_factory):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     # BOTH transports were actually exercised, in order. Without this the
     # assertion below could be satisfied by the first transport alone.
@@ -231,7 +232,7 @@ async def test_each_transport_classifies_from_the_error_body(
     provider = LocalProvider(_config(base_url, model))
     with patch("aiohttp.ClientSession", return_value=session):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert posted and posted[0].endswith(endpoint), (label, posted)
     assert exc_info.value.category is expected, (label, exc_info.value.category)
@@ -259,7 +260,7 @@ async def test_the_llamacpp_fallback_transport_classifies_too():
     provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
     with patch("aiohttp.ClientSession", side_effect=_session_factory):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     # BOTH transports were actually exercised, in order.
     assert len(posted) == 2, posted
@@ -311,7 +312,7 @@ async def test_unreachable_server_on_a_404_shaped_port_is_not_retried_twice():
     provider = LocalProvider(_config("http://localhost:4040/v1", "vllm-model"))
     with patch("aiohttp.ClientSession", side_effect=_session_factory):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     # The premise of the test: the port really is in the text the old check read.
     assert "4040" in str(exc_info.value), str(exc_info.value)
@@ -349,7 +350,7 @@ async def test_control_a_real_404_still_reaches_the_fallback():
     provider = LocalProvider(_config("http://localhost:4040/v1", "vllm-model"))
     with patch("aiohttp.ClientSession", side_effect=_session_factory):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert len(posted) == 2, posted
     assert posted[1].endswith("/completion"), posted
@@ -382,7 +383,7 @@ async def test_one_message_shape_across_all_three_transports():
         provider = LocalProvider(_config(base_url, model))
         with patch("aiohttp.ClientSession", return_value=session):
             with pytest.raises(LLMException) as exc_info:
-                await provider.generate("hello")
+                await send_to_model(provider, prompt="hello")
         message = str(exc_info.value)
         assert message.startswith("Local LLM ("), message
         seen.add(message.split(")")[0] + ")")
@@ -421,7 +422,7 @@ async def test_a_5xx_whose_body_mentions_404_does_not_reach_the_fallback():
     provider = LocalProvider(_config("http://localhost:8000/v1", "vllm-model"))
     with patch("aiohttp.ClientSession", side_effect=_session_factory):
         with pytest.raises(LLMException) as exc_info:
-            await provider.generate("hello")
+            await send_to_model(provider, prompt="hello")
 
     assert len(posted) == 1, (
         f"a 503 whose body mentions 404 was sent down the llama.cpp fallback: "

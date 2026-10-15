@@ -6,7 +6,8 @@ the router layer, never forwarded on a routed call) and ``cache_prompt``,
 ``reasoning_intent`` and ``min_output_tokens`` (forwarded to the provider,
 which translates or pops them). The router is not the only caller:
 ``milestone_engine`` binds a concrete provider when ``DA_PROVIDER`` is set and
-calls ``provider.generate()`` directly. ``BaseLLMProvider._merge_extra_kwargs``
+sends to it directly (``dispatch.send_to_model``), which reports a router
+keyword but, warn-only, still hands it on. ``BaseLLMProvider._merge_extra_kwargs``
 is the provider-side choke point for that path.
 
 The same seam carries a second rule, found in review: the router forwards
@@ -17,16 +18,16 @@ the local OpenAI-compatible transport; ``format: "json"`` on EVERY Ollama
 call). Every kwarg a provider puts in a body must be one the API accepts, and
 an unset one is never a value.
 
-Four layers are pinned here:
+Three layers are pinned here:
 
 1. ``ROUTER_CONSUMED_KWARGS`` + ``FORWARDED_KNOB_KWARGS`` +
    ``PROVIDER_API_KWARGS`` are exactly ``route()``'s signature, so a parameter
-   cannot be added to the router without being classified.
-2. ``LLMRouter.generate`` forwards exactly that surface, reading its keys from
-   the constants rather than a copy of its own.
-3. The discard helper's own observable: ``kwargs`` after it holds no router-level
+   cannot be added to the router without being classified. ``route()`` is the
+   router's one call surface (#1998 removed ``LLMRouter.generate``, which used
+   to filter its keywords through that union).
+2. The discard helper's own observable: ``kwargs`` after it holds no router-level
    key, whether the knob was set or ``None``.
-4. Every adapter and transport, DIRECT (the way the DA tool loop calls a
+3. Every adapter and transport, DIRECT (the way the DA tool loop calls a
    provider) and ROUTED (a real ``LLMRouter`` -> real ``ProviderRegistry`` ->
    adapter), with the HTTP boundary a double and sockets blocked: no knob name
    and no knob SENTINEL VALUE anywhere in the request (url, headers, params,
@@ -44,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import (
     FORWARDED_KNOB_KWARGS,
     PROVIDER_API_KWARGS,
@@ -121,51 +123,6 @@ class TestTheConstantsAreRoutesSignature:
         assert set(_CONSUMED_BY_THE_ROUTER) == set(ROUTER_CONSUMED_KWARGS)
         assert set(_FORWARDED_TO_THE_PROVIDER) == set(FORWARDED_KNOB_KWARGS)
         assert set(_KNOB_VALUES) == set(ROUTER_LEVEL_KWARGS)
-
-
-# --- 2. generate() forwards exactly that surface -----------------------------
-
-
-@pytest.fixture
-def router():
-    registry = MagicMock()
-    registry.get_available_providers.return_value = ["openai"]
-    registry.get_fallback_chain.return_value = ["openai"]
-    with patch(
-        "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
-    ):
-        yield LLMRouter()
-
-
-class TestGenerateForwardsTheRouteSurface:
-    @pytest.mark.asyncio
-    async def test_every_route_keyword_given_to_generate_reaches_route(self, router):
-        """Iterates ``route()``'s REAL signature: a keyword ``route`` gains and
-        ``generate`` does not forward fails here by name."""
-        router.route = AsyncMock(return_value="response")
-        sent = {name: f"value-for-{name}" for name in _route_keywords()}
-
-        await router.generate("a prompt", **sent)
-
-        router.route.assert_awaited_once_with(prompt="a prompt", **sent)
-
-    @pytest.mark.asyncio
-    async def test_a_key_route_does_not_take_is_not_forwarded(self, router):
-        router.route = AsyncMock(return_value="response")
-
-        await router.generate("a prompt", model="m", not_a_route_keyword=1)
-
-        router.route.assert_awaited_once_with(prompt="a prompt", model="m")
-
-    @pytest.mark.asyncio
-    async def test_absent_keys_take_routes_own_defaults(self, router):
-        """``generate`` no longer restates route()'s defaults (1000 / 0.7 /
-        False); an omitted key must reach ``route`` omitted."""
-        router.route = AsyncMock(return_value="response")
-
-        await router.generate("a prompt")
-
-        router.route.assert_awaited_once_with(prompt="a prompt")
 
 
 # --- Doubles and values -------------------------------------------------------
@@ -335,10 +292,10 @@ def _requests_sent(session) -> list:
 
 
 async def _direct(target: Target, make_session, prompt, kwargs) -> list:
-    """``provider.generate`` called directly: the door the router does not guard."""
+    """A direct send to a concrete provider: the door the router does not guard."""
     session = _session_for(target, make_session)
     with patch("aiohttp.ClientSession", return_value=session):
-        await _provider(target).generate(prompt, **kwargs)
+        await send_to_model(_provider(target), prompt=prompt, **kwargs)
     return _requests_sent(session)
 
 
@@ -411,7 +368,7 @@ def test_every_registered_provider_has_a_target():
     )
 
 
-# --- 3. The discard helper's own observable -----------------------------------
+# --- 2. The discard helper's own observable -----------------------------------
 
 
 class TestTheDiscardHelper:
@@ -442,7 +399,7 @@ class TestTheDiscardHelper:
         assert payload == {"model": "m", "stop": ["x"]}
 
 
-# --- 4a. DIRECT: every adapter, every knob -----------------------------------
+# --- 3a. DIRECT: every adapter, every knob -----------------------------------
 
 
 @pytest.mark.asyncio
@@ -453,8 +410,8 @@ async def test_direct_call_sends_no_router_knob(
     mock_aiohttp_session, label, knob, shape
 ):
     """Each adapter, called directly the way the DA tool loop calls it, with
-    each router-level knob alone. ``provider.generate`` is the door that
-    bypasses the router, so nothing upstream is allowed to have stripped it."""
+    each router-level knob alone. A direct send is the door that bypasses the
+    router, so nothing upstream is allowed to have stripped it."""
     spec = _SHAPES[shape]
 
     requests = await _direct(
@@ -510,7 +467,7 @@ async def test_direct_call_with_every_knob_unset_sends_no_null(
     _assert_no_knob_anywhere(requests, set(_KNOB_VALUES), label)
 
 
-# --- 4b. ROUTED: real router -> real registry -> adapter ---------------------
+# --- 3b. ROUTED: real router -> real registry -> adapter ---------------------
 
 _ROUTED_ALL_KNOBS = {
     "prompt": "Say hello",
@@ -669,8 +626,9 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
     session = mock_aiohttp_session(_OPENAI_RESP)
 
     with patch("aiohttp.ClientSession", return_value=session):
-        await provider.generate(
-            "",
+        await send_to_model(
+            provider,
+            prompt="",
             messages=[{"role": "user", "content": "hi"}],
             case_id="case_abc123",
             max_tokens=10,
@@ -680,7 +638,7 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
     assert sorted(request["json"]) == ["max_tokens", "messages", "model", "temperature"]
 
 
-# --- 5. What a routed call hands the provider, and what still reaches the wire
+# --- 4. What a routed call hands the provider, and what still reaches the wire
 #
 # Two pins from #2013's delta review, in the seam #1998 unified: the closed
 # keyword set at the provider boundary (``GENERATE_KWARGS``) leaves
@@ -742,18 +700,19 @@ def _every_route_keyword() -> dict:
 
 @pytest.mark.asyncio
 async def test_a_routed_call_never_hands_the_provider_a_router_consumed_keyword():
-    """Every ``route()`` keyword in, through a real router and registry: the
-    provider's ``generate`` receives the forwarded groups and nothing the
-    router consumes. The discard sits behind this claim; this pins the claim."""
+    """Every ``route()`` keyword in, through a real router, registry and
+    dispatch: the provider's ``_generate`` receives the forwarded groups and
+    nothing the router consumes. The discard sits behind this claim; this pins
+    the claim."""
     provider = _RecordingProvider.build()
     received = {}
-    boundary = provider.generate
+    transport = provider._generate
 
-    async def generate(prompt, **kwargs):
+    async def recording(prompt=None, **kwargs):
         received.update(kwargs)
-        return await boundary(prompt, **kwargs)
+        return await transport(prompt=prompt, **kwargs)
 
-    provider.generate = generate  # the instance, not the class: the boundary still runs
+    provider._generate = recording  # the instance's transport, behind the dispatch
     registry = ProviderRegistry(settings=None)
     registry._providers = {"recording": provider}
     registry._fallback_chain = ["recording"]
@@ -775,7 +734,7 @@ async def test_a_routed_call_never_hands_the_provider_a_router_consumed_keyword(
         f"route() forwarded router-consumed keywords: "
         f"{sorted(set(received) & ROUTER_CONSUMED_KWARGS)}"
     )
-    # The registry passes model/max_tokens/temperature by keyword too.
+    # The dispatch passes model/max_tokens/temperature by keyword too.
     assert set(received) == FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS
 
 

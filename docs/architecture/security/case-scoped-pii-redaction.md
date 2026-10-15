@@ -138,7 +138,7 @@ Both values are read from `ProtectionSettings` in the constructor. The construct
 
 ### Model Calls on a Turn's Behalf
 
-Every send site redacts what it sends through the turn's context, at the send: `messages = await case_redacted_messages(..., redaction_ctx)`, then `route(messages=messages)`. A repo-wide AST guard (`tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py`) classifies every `.route(`/`.generate(` call as redacted at the site or allowlisted with a reason, and fails on anything else.
+Every send site redacts what it sends through the turn's context, at the send: `messages = await case_redacted_messages(..., redaction_ctx)`, then `route(messages=messages)`. A repo-wide AST guard (`tests/unit/architecture/test_llm_send_sites_are_case_redacted_1956.py`) classifies every `.route(` and `send_to_model(` call (the model dispatch, #1998) as redacted at the site or allowlisted with a reason, and fails on anything else.
 
 | Call | Carries | Reversed |
 | --- | --- | --- |

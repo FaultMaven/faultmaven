@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.cohere_provider import CohereProvider
 
@@ -46,7 +47,7 @@ class TestCohereProviderBasics:
 
 
 class TestCohereProviderGenerate:
-    """Test CohereProvider.generate() method"""
+    """Test CohereProvider._generate(), reached through send_to_model"""
 
     @pytest.fixture
     def cohere_config(self):
@@ -80,7 +81,7 @@ class TestCohereProviderGenerate:
         mock_response.__aexit__.return_value = None
 
         with patch("aiohttp.ClientSession.post", return_value=mock_response):
-            result = await provider.generate("Test prompt")
+            result = await send_to_model(provider, prompt="Test prompt")
 
         assert isinstance(result, LLMResponse)
         assert result.content == "Cohere test response"
@@ -130,7 +131,7 @@ class TestCohereProviderGenerate:
         ]
 
         with patch("aiohttp.ClientSession.post", return_value=mock_response):
-            result = await provider.generate("Weather?", tools=tools)
+            result = await send_to_model(provider, prompt="Weather?", tools=tools)
 
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].function["name"] == "get_weather"
@@ -148,7 +149,7 @@ class TestCohereProviderGenerate:
 
         with patch("aiohttp.ClientSession.post", return_value=mock_response):
             with pytest.raises(Exception) as exc_info:
-                await provider.generate("Test")
+                await send_to_model(provider, prompt="Test")
 
         assert "401" in str(exc_info.value)
         assert "Invalid API key" in str(exc_info.value)
@@ -173,7 +174,7 @@ class TestCohereProviderGenerate:
         with patch(
             "aiohttp.ClientSession.post", return_value=mock_response
         ) as mock_post:
-            await provider.generate("Test", tools=tools)
+            await send_to_model(provider, prompt="Test", tools=tools)
 
             # Verify the call was made
             assert mock_post.called

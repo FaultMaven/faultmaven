@@ -39,15 +39,15 @@ from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
-from .prompt_cache import CACHE_BOUNDARY
-from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
-from .providers.base import (
-    FORWARDED_KNOB_KWARGS,
-    PROVIDER_API_KWARGS,
-    ROUTER_CONSUMED_KWARGS,
+from .dispatch import (
     SEND_SITE,
     find_send_site,
+    model_call_violations,
+    refuse_if_refusing,
 )
+from .prompt_cache import CACHE_BOUNDARY
+from .providers import LLMResponse, ReasoningIntent, StopReason
+from .providers.registry import get_registry
 
 # Opik native tracing for LLM calls.
 #
@@ -514,6 +514,16 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Validate prompt or messages
         if prompt is None and not messages:
             raise TypeError("Either prompt or messages must be provided")
+
+        # The model boundary's check, at entry, on the caller's own values and
+        # without unwrapping them (#1998): under refusal a raw call stops here,
+        # before the SANITIZE_PII pass below sees its content. The registry
+        # hands the re-minted values to ``dispatch.send_to_model``, which runs
+        # the same check again and is the one that REPORTS a violation (warn
+        # mode), naming the caller through SEND_SITE — so a raw routed call is
+        # reported once. ``route()``'s signature is closed, so only the content
+        # arguments need checking here.
+        refuse_if_refusing("router", model_call_violations(prompt, messages, {}))
 
         # Normalize the reasoning knobs up front, loudly — a typo'd intent or a
         # nonsensical floor is a caller bug and must fail at the call site, not
@@ -1004,61 +1014,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
         except Exception as e:
             self.logger.warning(f"Failed to update Opik span: {e}")
-
-    async def generate(self, prompt: Optional[str] = None, **kwargs) -> LLMResponse:
-        """
-        ILLMProvider interface implementation - delegates to route()
-
-        This method provides the standard ILLMProvider interface while leveraging
-        all the existing functionality of the router including caching, sanitization,
-        fallback strategies, and provider registry management.
-
-        Args:
-            prompt: Input prompt for text generation (optional if messages is provided in kwargs)
-            **kwargs: Additional parameters including:
-                - model: Specific model to use (optional)
-                - max_tokens: Maximum tokens to generate (default: 1000)
-                - temperature: Sampling temperature (default: 0.7)
-                - data_type: Type of data being processed (optional)
-                - response_format: Structured output format (optional)
-                - tools: Tool/function definitions (optional)
-                - tool_choice: Tool choice strategy (optional)
-                - messages: Multi-turn message list (optional)
-                - case_id, provider_override, cache_prompt, bypass_cache:
-                  router-level knobs (see ``route``)
-                - reasoning_intent: Caller-declared reasoning need (#1118, optional)
-                - min_output_tokens: Visible-output floor (#1117, optional)
-                The accepted keys are ``ROUTER_CONSUMED_KWARGS``,
-                ``FORWARDED_KNOB_KWARGS`` and ``PROVIDER_API_KWARGS``; any
-                other key is ignored.
-
-        Returns:
-            LLMResponse with generated content
-
-        Raises:
-            TypeError: If prompt is None
-            Exception: If all providers fail to generate a response
-        """
-        # Forward exactly the keywords route() takes, and no others. The key
-        # set is read from the three constants that declare route()'s call
-        # surface (providers/base.py) rather than spelled out here, so this
-        # method cannot gain a knob the providers' discard list lacks (#2002);
-        # a test pins that the union equals route()'s signature. Defaults for
-        # absent keys are route()'s own (max_tokens=1000, temperature=0.7,
-        # cache_prompt/bypass_cache=False). Anything else is ignored, as before.
-        route_kwargs = {
-            key: value
-            for key, value in kwargs.items()
-            if key in ROUTER_CONSUMED_KWARGS
-            or key in FORWARDED_KNOB_KWARGS
-            or key in PROVIDER_API_KWARGS
-        }
-
-        # Call existing route method with all the robust functionality
-        response = await self.route(prompt=prompt, **route_kwargs)
-
-        # Return the full LLMResponse (milestone_engine expects this)
-        return response
 
     def get_provider_status(self):
         """Get status of all providers"""

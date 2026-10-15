@@ -5,20 +5,13 @@ This module defines the abstract base class that all LLM providers must implemen
 ensuring consistent behavior and configuration across all provider implementations.
 """
 
-import asyncio
 import json
 import logging
-import os
-import sys
 import time
-import warnings
 from abc import ABC, abstractmethod
-from collections import Counter
-from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
-from types import FrameType
-from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -26,106 +19,9 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
     create_strategy_for_capability,
 )
-from faultmaven.infrastructure.security.model_content import (
-    UNKNOWN_KWARG,
-    ContentViolation,
-    key_names,
-    message_violations,
-    plain_messages,
-    plain_text,
-    text_violation,
-)
-from faultmaven.infrastructure.shims.metrics import llm_model_content_violations
 
-#: Whether the provider boundary REFUSES model-bound content the redaction
-#: module did not mint (``TypeError`` before any network I/O) instead of
-#: reporting it and sending. Off while callers migrate (#1998 P1/P2); P3 turns
-#: refusal on and deletes this switch with :class:`RawModelContentWarning`.
-#: A module constant on purpose: no deployment can configure it (fm#990).
-REFUSE_RAW_MODEL_CONTENT = False
-
-
-class RawModelContentWarning(UserWarning):
-    """A model call carried content the redaction module did not mint (#1998)."""
-
-
-class SendSite(NamedTuple):
-    """The line a model call was made from, for the boundary's warning.
-
-    A file name, a line number, a module name and that module's globals — the
-    dict ``warnings.warn`` itself would hand ``warn_explicit``, so the default
-    once-per-location filter applies. Never a frame or its locals: nothing a
-    request carries is held here.
-    """
-
-    filename: str
-    lineno: int
-    module: str
-    module_globals: Dict[str, Any]
-
-
-#: ``faultmaven/infrastructure/llm/`` and asyncio, as path prefixes, and the
-#: one transport module outside the llm package a send passes through:
-#: ``BaseExternalClient.call_external``, which awaits the registry inline when
-#: the call has no timeout.
-_LLM_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
-_ASYNCIO_DIR = os.path.dirname(os.path.abspath(asyncio.__file__)) + os.sep
-_TRANSPORT_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(_LLM_PACKAGE_DIR)), "base_client.py"
-)
-
-#: The send site of the routed call in progress, recorded by ``LLMRouter.route``
-#: before ``call_external`` runs the registry in a task of its own (on 3.11,
-#: ``asyncio.wait_for`` wraps it in one), across which no frame reaches the
-#: caller. A task copies the context it is created in, so the boundary reads it.
-#: ``route`` resets it when the call returns. A task spawned INSIDE that window
-#: (a background flush, say) inherits the value, so a send that task makes
-#: later, from a stack whose frames cannot name it either, is labelled with the
-#: routed call's site: it only ever affects a label, never what is checked.
-SEND_SITE: ContextVar[Optional[SendSite]] = ContextVar("llm_send_site", default=None)
-
-
-def _site_of(frame: FrameType) -> SendSite:
-    return SendSite(
-        frame.f_code.co_filename,
-        frame.f_lineno,
-        frame.f_globals.get("__name__", "?"),
-        frame.f_globals,
-    )
-
-
-def _walk_to_caller(
-    frame: FrameType,
-) -> "tuple[Optional[SendSite], FrameType]":
-    """The nearest frame from ``frame`` up outside ``infrastructure/llm/`` (and
-    the transport module), and the outermost frame inside it the walk passed.
-
-    The first is ``None`` when an asyncio frame comes first: the stack ends at
-    a task boundary, and whatever lies beyond it (the event loop's driver) is
-    not the caller.
-    """
-    outermost = frame
-    cursor: Optional[FrameType] = frame
-    while cursor is not None:
-        filename = os.path.abspath(cursor.f_code.co_filename)
-        if filename.startswith(_ASYNCIO_DIR):
-            return None, outermost
-        if not filename.startswith(_LLM_PACKAGE_DIR) and filename != _TRANSPORT_FILE:
-            return _site_of(cursor), outermost
-        outermost = cursor
-        cursor = cursor.f_back
-    return None, outermost
-
-
-def find_send_site(frame: FrameType) -> Optional[SendSite]:
-    """The nearest frame from ``frame`` up outside ``infrastructure/llm/``,
-    or ``None`` when a task boundary comes first."""
-    return _walk_to_caller(frame)[0]
-
-
-# The keywords ``LLMRouter.route`` / ``LLMRouter.generate`` accept, in three
-# groups by what happens to them. Together they are the ONE place the router's
-# call surface is declared: ``generate`` filters its kwargs through the union,
+# The keywords ``LLMRouter.route`` accepts, in three groups by what happens to
+# them. Together they are the ONE place the router's call surface is declared:
 # a provider's ``_merge_extra_kwargs`` discards ``ROUTER_LEVEL_KWARGS``, and
 # ``tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py``
 # pins that the union is exactly ``route()``'s signature, so a new parameter
@@ -133,9 +29,10 @@ def find_send_site(frame: FrameType) -> Optional[SendSite]:
 #
 # ROUTER-CONSUMED: used by the router layer (``route()``, or the registry's
 # ``route_request`` for ``provider_override``) and never forwarded to a
-# provider on a routed call. Only a caller that reaches ``provider.generate()``
-# directly can hand them to a provider, and ``milestone_engine`` can: with
-# ``DA_PROVIDER`` set it binds a concrete provider (#2002).
+# provider on a routed call. Only a caller that sends to a concrete provider
+# directly (``dispatch.send_to_model``) can hand them to one, and
+# ``milestone_engine`` does: with ``DA_PROVIDER`` set it binds a concrete
+# provider (#2002). The dispatch reports them (#1998).
 ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     {
         "case_id",
@@ -145,7 +42,7 @@ ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     }
 )
 
-# FORWARDED-KNOB: forwarded by the router to the provider's ``generate()``,
+# FORWARDED-KNOB: forwarded by the router to the provider's ``_generate()``,
 # which translates or pops them (OpenAI/Gemini translate ``reasoning_intent``,
 # Anthropic acts on ``cache_prompt``, llama.cpp sends ``cache_prompt`` under
 # its own name). They are not request fields in general, so a provider that
@@ -163,7 +60,7 @@ FORWARDED_KNOB_KWARGS: FrozenSet[str] = frozenset(
 ROUTER_LEVEL_KWARGS: FrozenSet[str] = ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KWARGS
 
 # PROVIDER-API: the other ``route()`` parameters, forwarded to the provider's
-# ``generate()`` (``prompt`` is positional and not listed). They are the
+# ``_generate()`` (``prompt`` is its own parameter and not listed). They are the
 # generic request vocabulary, not a promise about any one wire format: they
 # are request fields for the chat/completions-style APIs, while a transport
 # without that field names (llama.cpp ``/completion``, Ollama ``/api/generate``
@@ -183,8 +80,8 @@ PROVIDER_API_KWARGS: FrozenSet[str] = frozenset(
 )
 
 # PROVIDER-OPTION: keywords a provider reads by name that the router never
-# passes — only a direct caller of ``generate()`` can. Disjoint from the three
-# groups above.
+# passes — only a direct send (``dispatch.send_to_model``) can. Disjoint from
+# the three groups above.
 PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
     {
         "system",  # Anthropic; content, checked as such (CONTENT_KWARGS)
@@ -201,10 +98,10 @@ PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
     }
 )
 
-# The closed set a provider's ``generate()`` accepts beyond ``prompt``: what
-# the router forwards plus what an adapter reads by name (#1998). Anything
-# else — ``ROUTER_CONSUMED_KWARGS`` included, which a routed call never
-# forwards — is reported at the boundary, because the adapters that merge
+# The closed set ``dispatch.send_to_model`` accepts beyond ``prompt``: what the
+# router forwards plus what an adapter's ``_generate`` reads by name (#1998).
+# Anything else — ``ROUTER_CONSUMED_KWARGS`` included, which a routed call
+# never forwards — is reported at the dispatch, because the adapters that merge
 # leftover keywords into the request body would otherwise send it.
 GENERATE_KWARGS: FrozenSet[str] = (
     FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS | PROVIDER_OPTION_KWARGS
@@ -671,17 +568,6 @@ class ProviderConfig:
 class BaseLLMProvider(ABC):
     """Abstract base class for all LLM providers"""
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        # generate() is the model boundary (#1998): a subclass anywhere — an
-        # adapter, a deployment's own provider, a test double — that defined
-        # its own would step around it.
-        if "generate" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} defines generate(): implement _generate. "
-                "generate() is the model boundary every call passes (#1998)"
-            )
-
     def __init__(self, config: ProviderConfig):
         self.config = config
         self.start_time = None
@@ -692,63 +578,6 @@ class BaseLLMProvider(ABC):
     def provider_name(self) -> str:
         """Return the unique name of this provider"""
         pass
-
-    async def generate(
-        self,
-        prompt: Optional[str],
-        model: Optional[str] = None,
-        max_tokens: int = 1000,
-        temperature: float = 0.7,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        """Generate a response: the model boundary every call passes (#1998).
-
-        Every send ends here — through the router's registry, or straight to a
-        concrete provider (the engine's dedicated DA provider, the connection
-        check). So this is where model-bound content is checked, on the value,
-        before any network I/O:
-
-        * ``prompt`` is a minted ``ModelText`` or ``None``;
-        * ``messages`` follows the message grammar
-          (:func:`~faultmaven.infrastructure.security.model_content.message_violations`);
-        * the content keywords (:data:`CONTENT_KWARGS`) are minted text;
-        * every keyword is one an adapter reads (:data:`GENERATE_KWARGS`).
-
-        A violation is reported (:meth:`_report_raw_model_content`) and, while
-        :data:`REFUSE_RAW_MODEL_CONTENT` is off, the call proceeds. The adapter's
-        :meth:`_generate` then receives plain values: exact ``str`` text and
-        plain message dicts.
-
-        Adapters implement :meth:`_generate`, never this method.
-
-        Args:
-            prompt: Input prompt (``None`` when ``messages`` carries the call)
-            model: Specific model to use (optional)
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            **kwargs: ``messages``, ``tools``, ``tool_choice`` and the other
-                keywords in :data:`GENERATE_KWARGS`
-
-        Returns:
-            LLMResponse with generated content
-        """
-        violations = self._model_content_violations(prompt, kwargs)
-        if violations:
-            self._report_raw_model_content(violations)
-        # ``kwargs`` is this call's own dict: unwrapping in place mutates
-        # nothing the caller holds (plain_messages copies what it changes).
-        if "messages" in kwargs:
-            kwargs["messages"] = plain_messages(kwargs["messages"])
-        for key in CONTENT_KWARGS:
-            if key in kwargs:
-                kwargs[key] = plain_text(kwargs[key])
-        return await self._generate(
-            plain_text(prompt),
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            **kwargs,
-        )
 
     @abstractmethod
     async def _generate(
@@ -761,111 +590,23 @@ class BaseLLMProvider(ABC):
     ) -> LLMResponse:
         """Send one request to this provider's API.
 
-        Called only by :meth:`generate`, after the boundary check, with plain
-        values: ``prompt`` and every message's text are exact ``str``.
+        A provider has no public send method (#1998). This is called only by
+        :func:`~faultmaven.infrastructure.llm.dispatch.send_to_model`, after
+        its check of the call's model-bound content, with plain values:
+        ``prompt`` and every message's text are exact ``str``, and every
+        keyword is one in :data:`GENERATE_KWARGS`.
 
         Args:
-            prompt: Input prompt
+            prompt: Input prompt (``None`` when ``messages`` carries the call)
             model: Specific model to use (optional)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
-            **kwargs: The keywords in :data:`GENERATE_KWARGS` the caller passed
+            **kwargs: ``messages``, ``tools``, ``tool_choice`` and the other
+                keywords in :data:`GENERATE_KWARGS` the caller passed
 
         Returns:
             LLMResponse with generated content
         """
-
-    def _model_content_violations(
-        self, prompt: Any, kwargs: Dict[str, Any]
-    ) -> List[ContentViolation]:
-        """Every way this call's content is not what the boundary accepts."""
-        found: List[ContentViolation] = []
-        if prompt is not None:
-            violation = text_violation(prompt, "prompt", "prompt")
-            if violation is not None:
-                found.append(violation)
-        if "messages" in kwargs and kwargs["messages"] is not None:
-            found.extend(message_violations(kwargs["messages"]))
-        for key in CONTENT_KWARGS:
-            if key in kwargs and kwargs[key] is not None:
-                violation = text_violation(kwargs[key], key, key)
-                if violation is not None:
-                    found.append(violation)
-        for key in sorted(kwargs):
-            if key not in GENERATE_KWARGS:
-                found.append(
-                    ContentViolation("kwargs", UNKNOWN_KWARG, key_names([key]))
-                )
-        return found
-
-    def _report_raw_model_content(self, violations: List[ContentViolation]) -> None:
-        """Report a call whose content the boundary does not accept.
-
-        One log line, one metric increment per distinct (argument, kind), and
-        one :class:`RawModelContentWarning`, all naming where and what kind —
-        never the content; a keyword's name only as an identifier
-        (:func:`~faultmaven.infrastructure.security.model_content.key_names`).
-        Both name the call's send site (:meth:`_send_site`). With
-        :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse instead: ``TypeError``
-        before any transport call.
-        """
-        counts = Counter((v.argument, v.kind) for v in violations)
-        kwargs_named = sorted(v.where for v in violations if v.kind == UNKNOWN_KWARG)
-        summary = "; ".join(
-            f"{argument} {kind}"
-            + (f" ({','.join(kwargs_named)})" if kind == UNKNOWN_KWARG else "")
-            for argument, kind in sorted(counts)
-        )
-        if REFUSE_RAW_MODEL_CONTENT:
-            raise TypeError(
-                f"{self.provider_name}: model-bound content not minted by the "
-                f"redaction module: {summary}"
-            )
-        for argument, kind in sorted(counts):
-            llm_model_content_violations.labels(
-                provider=self.provider_name,
-                argument=argument,
-                kind=kind,
-                content="raw",
-            ).inc()
-        site = self._send_site()
-        self.logger.warning(
-            "Model-bound content not minted by the redaction module reached the "
-            "%s provider boundary and was sent (#1998), from %s:%d: %s",
-            self.provider_name,
-            site.module,
-            site.lineno,
-            "; ".join(
-                f"{argument} {kind} x{count}"
-                for (argument, kind), count in sorted(counts.items())
-            )
-            + (f" [kwargs: {','.join(kwargs_named)}]" if kwargs_named else ""),
-        )
-        warnings.warn_explicit(
-            f"model-bound content not minted by the redaction module: {summary}",
-            RawModelContentWarning,
-            site.filename,
-            site.lineno,
-            module=site.module,
-            registry=site.module_globals.setdefault("__warningregistry__", {}),
-            module_globals=site.module_globals,
-        )
-
-    @staticmethod
-    def _send_site() -> SendSite:
-        """Where the reported call was made: the line a reader can act on.
-
-        The nearest frame above ``generate`` outside ``infrastructure/llm/``
-        and asyncio. A routed call reaches the boundary in a task of its own,
-        whose stack holds only the registry; it gets the site the router
-        recorded on entry (:data:`SEND_SITE`). Failing both — a send its
-        caller made the root of a task (``asyncio.wait_for(router.route(...))``
-        on 3.11), so no frame reaches it — it names the outermost
-        ``infrastructure/llm/`` frame of that task (the registry's dispatch),
-        never the event loop.
-        """
-        site, outermost = _walk_to_caller(sys._getframe(2))  # from generate()
-        return site or SEND_SITE.get() or _site_of(outermost)
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -984,7 +725,7 @@ class BaseLLMProvider(ABC):
         """Pop the router-level reasoning knobs this provider cannot act on.
 
         ``reasoning_intent`` (#1118) and ``min_output_tokens`` (#1117) travel
-        to every provider as ``generate()`` kwargs. Providers with a reasoning
+        to every provider as ``_generate()`` kwargs. Providers with a reasoning
         control (OpenAI ``reasoning_effort``, Gemini ``thinkingLevel``)
         translate the intent themselves; every other provider calls this at
         the top of ``_generate()`` — mirroring the ``cache_prompt`` pattern —
@@ -1083,8 +824,9 @@ class BaseLLMProvider(ABC):
         payload field.
 
         NOTE: ``registry.route_request`` is deliberately NOT the chokepoint —
-        ``milestone_engine`` and ``admin_config`` call ``provider.generate()``
-        directly, so a registry-level pop would miss them.
+        ``milestone_engine`` and ``admin_config`` send to a concrete provider
+        directly (``dispatch.send_to_model``), so a registry-level pop would
+        miss them.
         """
         self._discard_router_kwargs(kwargs, model=model)
         payload.update({k: v for k, v in kwargs.items() if v is not None})

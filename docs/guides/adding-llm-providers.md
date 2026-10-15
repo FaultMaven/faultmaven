@@ -106,7 +106,7 @@ Three rules govern it, and a new provider must honour all three:
 
 1. **Hard model constraints override caller intent.** The forced `"none"` for tools on gpt-5.6 stays exactly as it is; intent never produces a request the API would reject.
 2. **An intent that cannot be applied is logged, never silently dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. Say what actually happened: `_caps_reasoning_effort` returning False means *this provider/model does not take the parameter*, **not** *this model does not reason* (OpenRouter returns False for models that all reason). An intent that *was* delivered is not reported as a failure.
-3. **`INFERENCE` requires `min_output_tokens`** (#1117). It lifts starvation guards, and the output floor is what makes that safe. `route()` raises `ValueError` without it — and a provider whose guard is being lifted must **refuse on its own** too, because `milestone_engine` binds a concrete provider and calls `generate()` directly, bypassing the router. Refusal restores the *shape default*; it must never impose a restriction the default did not apply.
+3. **`INFERENCE` requires `min_output_tokens`** (#1117). It lifts starvation guards, and the output floor is what makes that safe. `route()` raises `ValueError` without it — and a provider whose guard is being lifted must **refuse on its own** too, because `milestone_engine` binds a concrete provider and sends to it directly (`dispatch.send_to_model`), bypassing the router. Refusal restores the *shape default*; it must never impose a restriction the default did not apply.
 
 #### Merging caller kwargs — use the base helper
 
@@ -116,7 +116,7 @@ Providers that build an OpenAI-style payload must merge leftover kwargs with:
 self._merge_extra_kwargs(payload, kwargs, model=effective_model)
 ```
 
-**Never** hand-roll `payload.update({k: v for k, v in kwargs.items() if v is not None})`. Routing-level knobs — `ROUTER_LEVEL_KWARGS` in `providers/base.py`, the union of `ROUTER_CONSUMED_KWARGS` (`case_id`, `bypass_cache`, `provider_override`, `data_type`: used by the router, never forwarded on a routed call) and `FORWARDED_KNOB_KWARGS` (`cache_prompt`, `reasoning_intent`, `min_output_tokens`: forwarded to `generate()`, which translates or pops them) — are not API fields; a provider that merges them raw sends them as body fields and is rejected by any OpenAI-compatible endpoint. That includes calls that never touch the router: `milestone_engine` binds a concrete provider when `DA_PROVIDER` is set and called `generate()` with `case_id` and `provider_override` (#2002; the caller now omits them, the discard is the provider-side defence). The helper discards the whole set (logging any intent it cannot act on) and then merges what remains. Pop a knob yourself only if your provider genuinely translates it.
+**Never** hand-roll `payload.update({k: v for k, v in kwargs.items() if v is not None})`. Routing-level knobs — `ROUTER_LEVEL_KWARGS` in `providers/base.py`, the union of `ROUTER_CONSUMED_KWARGS` (`case_id`, `bypass_cache`, `provider_override`, `data_type`: used by the router, never forwarded on a routed call) and `FORWARDED_KNOB_KWARGS` (`cache_prompt`, `reasoning_intent`, `min_output_tokens`: forwarded to `_generate()`, which translates or pops them) — are not API fields; a provider that merges them raw sends them as body fields and is rejected by any OpenAI-compatible endpoint. That includes calls that never touch the router: `milestone_engine` binds a concrete provider when `DA_PROVIDER` is set and sent it `case_id` and `provider_override` (#2002; the caller now omits them, the discard is the provider-side defence). The helper discards the whole set (logging any intent it cannot act on) and then merges what remains. Pop a knob yourself only if your provider genuinely translates it.
 
 `tests/unit/infrastructure/llm/test_router_knobs_never_reach_a_provider.py` derives its matrix from `PROVIDER_SCHEMA` and fails for any registered provider whose request body carries one of those knobs, and it pins that the three constants in `providers/base.py` are exactly `LLMRouter.route`'s signature. The same file drives a real `LLMRouter` → `ProviderRegistry` → adapter and asserts that no key left at `None` reaches a body (an adapter that tests key presence must test truthiness instead). A new `route()` keyword must be listed in `ROUTER_CONSUMED_KWARGS` or `FORWARDED_KNOB_KWARGS` (both discarded by every provider that does not translate them) or in `PROVIDER_API_KWARGS` (forwarded). A newly registered provider also needs a response double in that file's `_RESPONSE_BY_PROVIDER`. `tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` covers the reasoning knobs' translation and logging.
 
@@ -349,7 +349,7 @@ class ProviderRegistry:
 async def route_request(self, prompt: str, confidence_threshold: float = 0.8):
     for provider_name in self._fallback_chain:
         try:
-            response = await provider.generate(prompt)
+            response = await send_to_model(provider, prompt=prompt)
             if response.confidence >= confidence_threshold:
                 return response  # Success
         except Exception:
@@ -610,8 +610,9 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
     ) -> LLMResponse:
         """Send one request to the Cohere API.
 
-        Called by ``BaseLLMProvider.generate`` after its model-content check,
-        with plain ``str`` text and plain message dicts.
+        Called by ``dispatch.send_to_model`` after its model-content check,
+        with plain ``str`` text and plain message dicts, every argument by
+        keyword.
         """
 
         self._start_timing()
@@ -930,8 +931,9 @@ class CustomProvider(BaseLLMProvider, ILLMProvider):
     async def _generate(self, prompt: Optional[str], **kwargs) -> LLMResponse: ...
 
     # BaseLLMProvider provides:
-    # - generate(): the model boundary (#1998) — checks model-bound content,
-    #   then calls _generate with plain values. Never override it.
+    # No public send method: every call reaches _generate through
+    # infrastructure/llm/dispatch.send_to_model (#1998), which checks
+    # model-bound content first.
     # - Timing utilities (_start_timing, _get_response_time_ms)
     # - Model selection (get_effective_model)
     # - Response validation (_validate_response_content)
@@ -960,7 +962,7 @@ service = AgentService(
 
 **Required Methods Summary**:
 
-- ✅ `async def _generate()` - Core LLM generation (returns `LLMResponse`, with `stop_reason` populated). Implement `_generate`, never `generate`: `BaseLLMProvider.generate` is the model boundary every call passes (#1998). It checks that the prompt, the messages and the content keywords were minted by `faultmaven/infrastructure/security/model_content.py`, and that every keyword is in its closed set (`GENERATE_KWARGS` — add a keyword your provider reads there), then hands `_generate` plain values
+- ✅ `async def _generate()` - Core LLM generation (returns `LLMResponse`, with `stop_reason` populated). A provider has no public send method: every call reaches `_generate` through `faultmaven/infrastructure/llm/dispatch.py`'s `send_to_model` (#1998), which checks that the prompt, the messages and the content keywords were minted by `faultmaven/infrastructure/security/model_content.py`, and that every keyword is in its closed set (`GENERATE_KWARGS` — add a keyword your provider reads there), then hands `_generate` plain values by keyword
 - ✅ `def is_available()` - Configuration validation (returns `bool`)
 - ✅ `def get_supported_models()` - Model listing (returns `List[str]`)
 - ✅ `property provider_name` - Unique identifier (returns `str`)
@@ -972,7 +974,7 @@ service = AgentService(
 
 **Error Handling**:
 
-All HTTP errors from `generate()` should raise `LLMException` with `status_code`:
+All HTTP errors from `_generate()` should raise `LLMException` with `status_code`:
 
 ```python
 from faultmaven.exceptions import LLMException
