@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.1.0
+**Version:** 14.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2236,7 +2236,7 @@ This endpoint allows regeneration if the original was missing or needs refresh.
 
 **Request body** (required):
 
-- `application/json` — `object`
+- `application/json` — [`ReportGenerationRequest`](#reportgenerationrequest)
 
 **Responses:**
 

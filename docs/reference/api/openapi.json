@@ -6987,7 +6987,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.1.0"
+    "version": "14.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10889,9 +10889,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Request Body",
-                "type": "object"
+                "$ref": "#/components/schemas/ReportGenerationRequest"
               }
             }
           },

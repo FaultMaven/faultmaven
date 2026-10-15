@@ -2103,4 +2103,14 @@ asked to accept, and it belongs to a person.
 # declare no response model, so `content` going from nullable to always-present
 # is invisible to a generated type, and a client already shows a 409's or a
 # 422's detail.
-API_CONTRACT_VERSION = "14.1.0"
+#
+# 14.2.0: `POST /cases/{case_id}/reports` declares its body (`ReportGenerationRequest`,
+# `report_types`: 1-3 of the report types), so the contract carries the shape a
+# client sends and a malformed body (a missing `report_types`, an unknown type,
+# an empty or longer-than-3 list, a bare string, a body that is not an object)
+# answers 422 naming the field where it answered 500. A 422 on this route now
+# comes before the case lookup, for every authenticated caller alike, so it says
+# nothing about whether the case exists; an anonymous caller is still 401. MINOR
+# because every request that worked still works and the only change for the rest
+# is an error moving from 500 to 422 (#2005).
+API_CONTRACT_VERSION = "14.2.0"

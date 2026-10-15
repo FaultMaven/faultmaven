@@ -13,42 +13,36 @@ from typing import Any, Dict, Optional
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.search_file_tool import enumerate_readable_files
 
 logger = logging.getLogger(__name__)
 
 
-def _format_searchable_alternatives(
+def _deep_analysis_alternatives(
     all_evidence: list[Any],
     excluded_evidence_id: str,
     case: Any,
 ) -> str:
-    """Build a redirect hint listing file-backed evidence_ids in this case.
+    """Phrase the readable-file list for ``deep_analysis``'s miss answers (#2009).
 
-    ISS-025: when the LLM picks a non-file-backed evidence_id (an
-    ENGINE_INFERENCE row), the tool error should point
-    it at the actual searchable upload(s) so the next iteration
-    succeeds.
+    The list is ``enumerate_readable_files``'s, the one ``search_file`` and
+    ``case_evidence_search`` phrase from. ``deep_analysis`` reads an upload no
+    evidence row records by its ``file_id`` (the fallback below), so it names
+    those too.
     """
-    alternatives = []
-    for ev in all_evidence:
-        ev_id = getattr(ev, "evidence_id", None)
-        if not ev_id or ev_id == excluded_evidence_id:
-            continue
-        if getattr(ev, "source_file_id", None) is None:
-            continue
-        file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
-        if file_meta is None:
-            continue
-        # display_name, not filename: this hint goes back to the LLM and
-        # a minted pasted-content-<ts>.txt gets cited from there (#666).
-        filename = file_meta.display_name or "(unnamed)"
-        alternatives.append(f"{ev_id} ({filename})")
-
-    if not alternatives:
-        return ""
-    return (
-        " Available file-backed evidence in this case: " + ", ".join(alternatives) + "."
-    )
+    files = enumerate_readable_files(all_evidence, excluded_evidence_id, case)
+    recorded = [f"{f.id} ({f.filename})" for f in files if f.recorded]
+    unrecorded = [f"{f.id} ({f.filename})" for f in files if not f.recorded]
+    hint = ""
+    if recorded:
+        hint += " Available file-backed evidence in this case: " + ", ".join(recorded)
+        hint += "."
+    if unrecorded:
+        hint += (
+            " Uploaded files with no evidence row (analyze them by passing the "
+            "file_id as evidence_id): " + ", ".join(unrecorded) + "."
+        )
+    return hint
 
 
 class DeepAnalysisTool(AgentTool):
@@ -174,9 +168,7 @@ class DeepAnalysisTool(AgentTool):
                 # evidence_ids to deep_analysis, get an opaque storage
                 # error, and give up on follow-up questions.
                 if getattr(evidence, "source_file_id", None) is None:
-                    alts = _format_searchable_alternatives(
-                        all_evidence, evidence_id, case
-                    )
+                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
                     return ToolResult(
                         success=False,
                         data=None,
@@ -192,9 +184,7 @@ class DeepAnalysisTool(AgentTool):
                 file_meta = case.find_uploaded_file(evidence.source_file_id)
                 file_ref = file_meta.storage_ref if file_meta else None
                 if not file_ref:
-                    alts = _format_searchable_alternatives(
-                        all_evidence, evidence_id, case
-                    )
+                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
                     return ToolResult(
                         success=False,
                         data=None,
@@ -237,9 +227,7 @@ class DeepAnalysisTool(AgentTool):
                 # analyzes the WRONG file (the bug this fallback closes).
                 file_meta = case.find_uploaded_file(evidence_id)
                 if file_meta is None or not getattr(file_meta, "storage_ref", None):
-                    alts = _format_searchable_alternatives(
-                        all_evidence, evidence_id, case
-                    )
+                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
                     return ToolResult(
                         success=False,
                         data=None,
