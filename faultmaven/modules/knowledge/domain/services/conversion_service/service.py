@@ -101,6 +101,8 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    RunbookQualityError,
+    aenforce_runbook_security,
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.draft_content import (
@@ -1884,6 +1886,13 @@ class ConversionService:
         known once the job row is loaded, so this gate lives here rather than at
         the route. Defaults ``False`` (fail-closed) so a caller that forgets to
         pass it can never publish global content by omission (#770, R4).
+
+        A draft whose body holds a credential is not published
+        (``RunbookQualityError``, 422, #2012): refused before anything is
+        written, on the draft's own text so the lines it names are the
+        author's, and again by ``ingest_runbook`` on the text it publishes. The
+        draft stays a draft. That covers a draft whose ``validation_passed`` was
+        recorded before the secret check existed.
         """
         if not self._db_session_factory:
             return None
@@ -1959,6 +1968,12 @@ class ConversionService:
             runbook_id = dm.runbook_id
             enterprise_id = job.enterprise_id
             scope = job.scope
+
+        # A body holding a credential is not published (#2012), checked on the
+        # draft's own text so the refusal names the lines its author sees: the
+        # frontmatter is rewritten below, which moves them. ``ingest_runbook``
+        # checks the text it is handed again, for every caller.
+        await aenforce_runbook_security(read_content)
 
         # The verified frontmatter, written into the draft's text (#1950). The
         # validation gate above passed, so the frontmatter parses. This text can
@@ -2064,6 +2079,11 @@ class ConversionService:
                 team_id=team_id,
                 verified_by=user_id,
             )
+        except RunbookQualityError:
+            # The body holds a credential (#2012): refused before anything was
+            # written, and the draft stays a draft. A client-side outcome
+            # (422), so not logged as an ingestion failure.
+            raise
         except Exception as e:
             # `ingest_runbook` cleaned up its own SQL row before raising. The
             # draft stays in DRAFT state; the caller gets a 500 and can retry.

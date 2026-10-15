@@ -12452,7 +12452,7 @@
         ]
       },
       "put": {
-        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA new ``title`` is redacted with the deployment's sanitizer, as is new\n``content``. If that check cannot run the update answers **503**, a\nretryable server-side condition, with a generic detail, and nothing is\nsaved (#1981).",
+        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA new ``title`` is redacted with the deployment's sanitizer. If that check\ncannot run the update answers **503**, a retryable server-side condition,\nwith a generic detail, and nothing is saved (#1981).\n\nNew ``content`` is stored as sent, line endings normalised, and never\nrewritten. Content holding a credential (a private key, a credential URL, a\nprovider token, an AWS key, a JWT, a bearer or basic credential) or a\ndestructive command is refused with **422**, naming each one's line and\ntype but not its text, and nothing is saved (#2012). A placeholder such as\n``<password>`` or ``${DB_PASS}`` is not refused.",
         "operationId": "update_document_api_v1_knowledge_documents__document_id__put",
         "parameters": [
           {

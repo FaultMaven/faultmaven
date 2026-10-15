@@ -39,6 +39,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import pathlib
 import random
 import re
 import string
@@ -939,14 +940,16 @@ def test_ordinary_text_is_unchanged_but_for_the_justified_spans(sanitizer, text)
 
 def _without(listed: str, entry: str) -> tuple:
     """The sanitizer set with ``entry`` cut from the closed list ``listed``
-    (the regex source of ``_NON_SECRET_WORDS`` or of the count guard)."""
+    (the regex source of ``_NON_SECRET_WORDS`` or of the count guard). A
+    YAML block's body has one exemption, a whole reference (#2025), so the
+    block patterns hold no closed list to cut."""
     entries = listed.split("|")
     assert entry in entries
     rest = "|".join(e for e in entries if e != entry) or "(?!)"
     variant = []
     for pattern in SANITIZER_PATTERNS:
         source = pattern.regex.pattern
-        if pattern.names_a_value:
+        if pattern.names_a_value and pattern.scope != "block":
             assert listed in source, pattern.entity_type
             source = source.replace(listed, rest)
         variant.append(
@@ -1709,6 +1712,30 @@ def _generated(rng: random.Random) -> str:
     return text
 
 
+def _reference_matches(pattern, view: str) -> list:
+    """Every match of ``pattern`` on ``view``, as ``finditer`` reads them,
+    except a command-line flag match (its ``flag`` group took part) whose
+    token does not start with ``-``: dropped, and the scan goes on one past
+    its start (#2025). The token is found by walking back to whitespace from
+    scratch each time, nothing cached."""
+    if "flag" not in pattern.regex.groupindex:
+        return list(pattern.regex.finditer(view))
+    matches = []
+    pos = 0
+    while pos <= len(view):
+        match = pattern.regex.search(view, pos)
+        if match is None:
+            break
+        token = view[: match.start()].split()[-1:] if match.start() else []
+        glued = token and not view[match.start() - 1].isspace()
+        if match.start("flag") != -1 and not (glued and token[0].startswith("-")):
+            pos = match.start() + 1
+            continue
+        matches.append(match)
+        pos = max(match.end(), match.start() + 1)
+    return matches
+
+
 def _reference_spans(text: str, patterns) -> list:
     """An independent finder: every pattern on the whole text, every round,
     no triggers, no scopes, no windows."""
@@ -1716,7 +1743,7 @@ def _reference_spans(text: str, patterns) -> list:
 
     def scan(view: str) -> None:
         for priority, pattern in enumerate(patterns):
-            for match in pattern.regex.finditer(view):
+            for match in _reference_matches(pattern, view):
                 start, end = match.span(pattern.span_group)
                 if start == -1:
                     start, end = match.span()
@@ -1870,6 +1897,33 @@ _HOSTILE = {
         16,
         1,
     ),
+    # #2025: YAML blocks, each a key line and a body the match consumes; one
+    # body of n lines; indicators with no body (each line a try that fails
+    # at once); one line of commented indicators, which the atomic key line
+    # commits on at the first (a lazy prefix re-read the comment per key);
+    # blank runs a body does not take.
+    "block-bodies": (lambda n: "password: |\n  Tr0ub4dor&3\n  line2\n" * n, 64, 1),
+    "block-one-body": (lambda n: "token: |\n" + "  line of the body\n" * n, 64, 1),
+    "block-empty-indicators": (lambda n: "secret: >-\n" * n, 64, 1),
+    "block-comment-keys": (lambda n: "password: | # " * n + "\nnext: 1\n", 128, 1),
+    "block-blank-runs": (
+        lambda n: ("password: |\n  x" + "\n" * 8 + "y: 1\n") * n,
+        32,
+        1,
+    ),
+    # #2025 (A4): command names read as flags and dropped, each a scan that
+    # resumes one past the dropped match; with an `İ` there is no index-mapped
+    # view, so the whole-text fallback does the dropping.
+    "flag-command-names": (
+        lambda n: "aws ecr get-login-password --region us-east-1 " * n,
+        64,
+        1,
+    ),
+    "flag-command-names-unmapped": (
+        lambda n: "İ " + "x-password --password " * n,
+        64,
+        1,
+    ),
 }
 
 
@@ -1928,3 +1982,301 @@ def test_the_line_bounds_read_the_text_once():
     lines = redaction._lines_of(_CountingText(text), spans)
     assert lines == [(0, len(text))]
     assert _CountingText.covered <= 2 * len(text), _CountingText.covered
+
+
+# ---------------------------------------------------------------------------
+# 8. YAML block scalars and command names (#2025)
+# ---------------------------------------------------------------------------
+#
+# Invariant: a secret written as a YAML block scalar under a keyed family key
+# is redacted whole on the sanitizer and preprocessor paths; one pass is
+# idempotent; every pattern stays linear-time; no case #2021's corpora detect
+# is lost (sections 1-7 above, unchanged). Main redacted only the indicator:
+# `password: |\n  hunter2\n  line2\nnext: 1\n` was the one span `|`.
+
+#: ``(id, text, [(type, span)])``: the block body is the span, from the first
+#: body line's first non-blank character to the last body line's end.
+_BLOCK_ROWS = [
+    ("literal", "password: |\n  hunter2\n  line2\nnext: 1\n", [("PASSWORD", "hunter2\n  line2")]),
+    ("literal-strip", "password: |-\n  hunter2\nnext: 1", [("PASSWORD", "hunter2")]),
+    ("folded", "password: >\n  hunter2\n  more\n", [("PASSWORD", "hunter2\n  more")]),
+    ("folded-strip", "secret: >-\n  s3cr3t-value\nnext: 1\n", [("SECRET", "s3cr3t-value")]),
+    ("indent-digit", "password: |2\n    hunter2\n", [("PASSWORD", "hunter2")]),
+    ("keep", "password: |+\n  hunter2\n\nnext: 1", [("PASSWORD", "hunter2")]),
+    ("strip-digit", "password: |-2\n   hunter2\n", [("PASSWORD", "hunter2")]),
+    ("digit-strip", "token: >2-\n   abc123def\n", [("TOKEN", "abc123def")]),
+    ("then-sibling", "  db:\n    password: |\n      hunter2\n    user: app\n", [("PASSWORD", "hunter2")]),
+    ("end-of-text", "password: |\n  hunter2", [("PASSWORD", "hunter2")]),
+    ("blank-inside", "password: |\n  a\n\n\n  b", [("PASSWORD", "a\n\n\n  b")]),
+    ("blank-then-sibling", "password: |\n  a\n\n\nnext: b", [("PASSWORD", "a")]),
+    ("blank-first", "password: |\n\n  hunter2\n", [("PASSWORD", "hunter2")]),
+    ("blank-of-spaces", "password: |\n  a\n   \n  b\nnext: 1", [("PASSWORD", "a\n   \n  b")]),
+    ("list-item", "- password: |\n    hunter2\n- name: x\n", [("PASSWORD", "hunter2")]),
+    ("crlf", "password: |\r\n  hunter2\r\n  line2\r\nnext: 1\r\n", [("PASSWORD", "hunter2\r\n  line2")]),
+    ("comment", "password: | # the db password\n  hunter2\n", [("PASSWORD", "hunter2")]),
+    ("quoted-key", '"password": |\n  hunter2\n', [("PASSWORD", "hunter2")]),
+    ("compound-key", "  db_password: >-\n    Tr0ub4dor&3\n", [("PASSWORD", "Tr0ub4dor&3")]),
+    ("tab-indented", "password: |\n\thunter2\n\tline2\n", [("PASSWORD", "hunter2\n\tline2")]),
+    ("provider-token", "token: >-\n  " + _GH + "\nother: x\n", [("GITHUB_TOKEN", _GH)]),
+    ("k8s-string-data", "stringData:\n  api_key: |\n    k3y-value-1\n", [("API_KEY", "k3y-value-1")]),
+    # Declared trade: the body is every line deeper than the key's LINE, and
+    # a list item's sibling key is deeper than the dash: over-redacted.
+    ("list-item-sibling", "- password: |\n    hunter2\n  user: bob\n", [("PASSWORD", "hunter2\n  user: bob")]),
+]  # fmt: skip
+
+#: An indicator with no body below it reads nothing (main took the indicator).
+_EMPTY_BLOCKS = [
+    "password: |\nnext: 1\n",
+    "password: |",
+    "password: |\n",
+    "password: |\n\n\nnext: 1",
+    "password: >-\n   \n",
+    "  password: |\n  next: 1\n",
+]
+#: A body that, whole, refers to a secret: what a pass writes, so the second
+#: pass changes nothing.
+_REFERENCE_BODIES = [
+    "password: |\n  <PASSWORD_0123456789abcdef>\n",
+    "password: |\n  [REDACTED:password]\nnext: 1",
+    "token: >-\n  ${DB_TOKEN}\n",
+    "password: |\n\n  <GITHUB_TOKEN_0123456789abcdef>\r\n",
+]
+#: A3: only after `:` is an indicator a block; after `=`, `=>` or a flag it
+#: is the value as before, and so is one with more on its line.
+_NOT_BLOCKS = [
+    ("--password | tee out", [("PASSWORD", "|")]),
+    ("token=>", [("TOKEN", ">")]),
+    ("password= |\n  hunter2", [("PASSWORD", "|")]),
+    ("password: > 8 chars", [("PASSWORD", ">")]),
+]
+
+
+@pytest.mark.parametrize(
+    "text,expected", [r[1:] for r in _BLOCK_ROWS], ids=[r[0] for r in _BLOCK_ROWS]
+)
+def test_a_yaml_block_is_one_span_of_its_body(text, expected):
+    assert _spans(text, SECRET_PATTERNS) == expected
+    assert _spans(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected", [r[1:] for r in _BLOCK_ROWS], ids=[r[0] for r in _BLOCK_ROWS]
+)
+def test_no_line_of_a_block_survives_either_path(sanitizer, text, expected):
+    """The body is gone on the sanitizer and the preprocessor paths, the key
+    and its indicator stay (still YAML), and one pass is a fixed point."""
+    body_lines = {
+        line.strip()
+        for _, value in expected
+        for line in value.split("\n")
+        if line.strip()
+    }
+    key_line = next(line for line in text.splitlines() if re.search(r":\s*[|>]", line))
+    once_s = sanitizer.apply_regex_redaction(text, {})
+    once_p = redact_sensitive_content(text)[0]
+    for once in (once_s, once_p):
+        assert key_line in once.splitlines(), once
+        assert not body_lines & {line.strip() for line in once.splitlines()}, once
+    assert sanitizer.apply_regex_redaction(once_s, {}) == once_s
+    assert redact_sensitive_content(once_p)[0] == once_p
+
+
+@pytest.mark.parametrize("text", _EMPTY_BLOCKS)
+def test_an_empty_block_reads_nothing(text):
+    assert _spans(text) == []
+
+
+@pytest.mark.parametrize("text", _REFERENCE_BODIES)
+def test_a_block_whose_body_is_a_reference_is_not_a_secret(text):
+    assert _spans(text) == []
+
+
+def test_a_block_of_two_references_is_a_secret():
+    """Only a WHOLE body that is one reference is exempt."""
+    text = "password: |\n  ${A}\n  ${B}\n"
+    assert _spans(text) == [("PASSWORD", "${A}\n  ${B}")]
+
+
+@pytest.mark.parametrize("text,expected", _NOT_BLOCKS)
+def test_after_equals_or_a_flag_an_indicator_is_the_value_as_before(text, expected):
+    assert _spans(text) == expected
+
+
+def test_a_key_line_inside_a_block_is_not_read_again():
+    """The block's match consumes its body, and a key line inside it (whose own
+    block lies inside the outer one) is skipped: a ladder of ever-deeper key
+    lines is one try per round, not one per line, so its cost stays linear in
+    the text (each line re-reading the rest of the ladder is ~n^1.5)."""
+    text = (
+        "".join(" " * i + "password: |\n" for i in range(40)) + " " * 40 + "hunter2\n"
+    )
+    block = next(
+        p for p in SECRET_PATTERNS if p.scope == "block" and p.entity_type == "PASSWORD"
+    )
+
+    class _Counting:
+        def __init__(self, regex):
+            self.regex, self.tries = regex, 0
+
+        def match(self, *args):
+            self.tries += 1
+            return self.regex.match(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.regex, name)
+
+    counting = _Counting(block.regex)
+    (span,) = find_redaction_spans(text, (dataclasses.replace(block, regex=counting),))
+    assert text[span.start : span.end].endswith("hunter2")
+    assert text[: span.start] == "password: |\n "
+    # One try in the first round, one in the masked round that confirms it.
+    assert counting.tries <= 2, counting.tries
+
+
+_INDICATORS = [
+    "|",
+    "|-",
+    "|+",
+    ">",
+    ">-",
+    ">+",
+    "|2",
+    "|-2",
+    "|2-",
+    ">1",
+    "| # note",
+    ">- #x",
+]
+
+
+def _block_generated(rng: random.Random) -> str:
+    """YAML-ish documents: keyed and plain keys with block indicators, bodies
+    of values and atoms at random depths, blank lines, siblings, CRLF."""
+    lines = []
+    for _ in range(rng.randint(1, 4)):
+        indent = rng.choice(["", "  ", "    ", "\t", "- ", "  - "])
+        key = rng.choice(_KEYS + ["name", "config", "data"])
+        quote = rng.choice(["", "", '"'])
+        sep = rng.choice([" ", "", "  "])
+        lines.append(f"{indent}{quote}{key}{quote}:{sep}{rng.choice(_INDICATORS)}")
+        deeper = indent.replace("-", " ") + rng.choice([" ", "  ", "    ", "\t"])
+        for _ in range(rng.randint(0, 3)):
+            roll = rng.random()
+            if roll < 0.15:
+                lines.append("")
+            elif roll < 0.25:
+                lines.append(rng.choice(["  ", " \t"]))
+            elif roll < 0.35:
+                lines.append(indent + rng.choice(_KEYS) + ": " + rng.choice(_VALS))
+            else:
+                lines.append(deeper + rng.choice(_VALS + _GEN_ATOMS))
+    newline = rng.choice(["\n", "\n", "\r\n"])
+    text = newline.join(lines)
+    return text + newline if rng.random() < 0.5 else text
+
+
+def test_blocks_are_idempotent_on_both_paths():
+    sanitizer = DataSanitizer()
+    rng = random.Random("2025-blocks-idempotent")
+    changed = []
+    for _ in range(3000):
+        text = _block_generated(rng)
+        once = sanitizer.apply_regex_redaction(text, {})
+        if sanitizer.apply_regex_redaction(once, {}) != once:
+            changed.append(("sanitizer", text))
+        document = redact_sensitive_content(text)[0]
+        if redact_sensitive_content(document)[0] != document:
+            changed.append(("preprocessor", text))
+    assert changed == [], changed[:3]
+
+
+def test_blocks_agree_with_the_reference_and_the_ungated_scan():
+    """The gated finder (hits, line prechecks, resumes, every hit retried in a
+    masked round) finds what the independent reference and the ungated
+    whole-text scan find, an `İ` prefix included (no index-mapped view)."""
+    rng = random.Random("2025-blocks-reference")
+    differ = []
+    for i in range(1500):
+        text = _block_generated(rng)
+        if i % 5 == 0:
+            text = "İ\n" + text
+        gated = find_redaction_spans(text, SANITIZER_PATTERNS)
+        if gated != _reference_spans(text, SANITIZER_PATTERNS):
+            differ.append(("reference", text))
+        if gated != find_redaction_spans(text, _UNGATED):
+            differ.append(("ungated", text))
+    assert differ == [], differ[:3]
+
+
+#: A4: a keyword inside a hyphenated command name is no flag. The token
+#: holding the key must start with `-`.
+_COMMAND_NAMES = [
+    "aws ecr get-login-password --region us-east-1",
+    "aws eks get-token --cluster-name my-cluster",
+    "aws secretsmanager rotate-secret \\",
+    "aws sts get-session-token --serial-number arn:aws:iam::1:mfa/u",
+    "gcloud auth application-default print-access-token > /dev/null",
+    "İ aws ecr get-login-password --region us-east-1",
+]
+_FLAGS = [
+    ("--db-password hunter2", "hunter2"),
+    ("--password hunter2", "hunter2"),
+    ("--api-key sk_live_9x", "sk_live_9x"),
+    ("mysql --password=hunter2", "hunter2"),
+    ("x-password --password Tr0ub4dor&3", "Tr0ub4dor&3"),
+    ("pg_dump --db-password Tr0ub4dor&3 -h db", "Tr0ub4dor&3"),
+    ("İ --password Tr0ub4dor&3", "Tr0ub4dor&3"),
+]
+
+
+@pytest.mark.parametrize("text", _COMMAND_NAMES)
+def test_a_command_name_is_not_a_flag(text):
+    assert _spans(text) == []
+    assert find_redaction_spans(text, _UNGATED) == []
+
+
+@pytest.mark.parametrize("text,value", _FLAGS)
+def test_a_flag_still_takes_its_value(sanitizer, text, value):
+    assert [v for _, v in _spans(text)] == [value]
+    assert find_redaction_spans(text, _UNGATED) == find_redaction_spans(
+        text, SANITIZER_PATTERNS
+    )
+    assert value not in sanitizer.apply_regex_redaction(text, {})
+
+
+_PACK = (
+    pathlib.Path(__file__).resolve().parents[4] / "resources/knowledge/pack/runbooks"
+)
+#: What the keyed families read in the 91 shipped bodies: main read 17 lines,
+#: 16 of them false positives; the 8 command names (A4) are gone. The keyed
+#: families are not run on runbook bodies (#2012); this pins their precision
+#: on real procedure text, which the conversion preprocessor and logs see.
+_KEYED_ON_THE_PACK = [
+    ("aws-iam-role-assumption-failure.md", 417, "TOKEN", "file://token.jwt"),
+    ("aws-secrets-manager-throttling.md", 197, "TOKEN", 'os.environ["AWS_SESSION_TOKEN"]}'),
+    ("azure-vm-boot-failure.md", 58, "PASSWORD", "P@ssw0rd1234!"),
+    ("datadog-agent-no-metrics.md", 102, "API_KEY", ".*/api_key:"),
+    ("datadog-agent-no-metrics.md", 145, "API_KEY", '$DD_API_KEY"'),
+    ("efs-mount-failure.md", 51, "TOKEN", '$TOKEN"'),
+    ("eks-cluster-authentication.md", 26, "TOKEN", "AccessDenied:"),
+    ("k8s-rbac-forbidden.md", 369, "TOKEN", "false`"),
+    ("prometheus-high-cardinality.md", 141, "API_KEY", "..."),
+]  # fmt: skip
+
+
+def test_the_keyed_families_read_nine_spans_of_the_shipped_bodies():
+    keyed = tuple(p for p in SECRET_PATTERNS if p.names_a_value)
+    bodies = sorted(_PACK.rglob("*.md"))
+    assert len(bodies) == 91
+    found = sorted(
+        (
+            path.name,
+            text.count("\n", 0, span.start) + 1,
+            span.entity_type,
+            text[span.start : span.end],
+        )
+        for path in bodies
+        for text in [path.read_text(encoding="utf-8")]
+        for span in find_redaction_spans(text, keyed)
+    )
+    assert found == _KEYED_ON_THE_PACK

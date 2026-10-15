@@ -10,7 +10,8 @@ Core Responsibilities:
 - Knowledge document management via interfaces
 - Semantic search operations using IVectorStore
 - Knowledge ingestion through IKnowledgeIngester
-- Content validation and sanitization via ISanitizer
+- Runbook body security checks (a body holding a credential is refused, never
+  rewritten, #2012) and title and query sanitization via ISanitizer
 - Distributed tracing via ITracer
 
 Key Improvements over Original:
@@ -59,6 +60,7 @@ from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_quality,
+    aenforce_runbook_security,
 )
 from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
@@ -1331,19 +1333,26 @@ class KnowledgeService:
                 is user- or model-supplied text, shown to every reader of its
                 tier and never reversed, so it is redacted here, once, before
                 the row or the vectors carry it (#1981) — the rule
-                :meth:`update_document` already applies. A shipped title is
-                vendored, reviewed source: it is stored as written, so that a
+                :meth:`update_document` already applies. Its BODY is never
+                rewritten: a body holding a credential is refused
+                (:func:`enforce_runbook_security`, #2012), here, before
+                anything is written. A shipped title and body are vendored,
+                reviewed source: stored as written, unchecked, so that a
                 redaction outage that begins after a healthy start (Presidio
                 going down mid-seed under a fail-closed posture) cannot stop
                 the platform corpus from seeding, and the pack's own titles
                 are never rewritten. A seed that STARTS with the analyzer down
                 runs regex-only and does not raise either way. Defaults to
-                False: a caller that says nothing gets the scrub.
+                False: a caller that says nothing gets the scrub and the check.
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success). On
             ChromaDB failure the method raises after deleting the SQL row, so
             a successful return always means both stores are populated.
+
+        Raises:
+            RunbookQualityError: a non-shipped body holds a secret or a
+                destructive command (422). Nothing has been written.
         """
         # Lazy imports keep this method self-contained against the knowledge
         # vertical (avoids top-level cycles between service and persistence).
@@ -1360,14 +1369,22 @@ class KnowledgeService:
 
         now = datetime.now(timezone.utc)
 
-        # The title, before any row or vector carries it (#1981). A title that
-        # cannot be scrubbed (``RedactionUnavailableError`` under a fail-closed
-        # posture) is not written, and nothing has been written yet.
         if not shipped:
             from faultmaven.infrastructure.persistence.models import (
                 KnowledgeItemModel,
             )
 
+            # The body, before any row or vector carries it (#2012): one
+            # holding a credential is refused, never rewritten. Every
+            # non-shipped publish converges here — upload, and ``verify_draft``
+            # for a template, conversion or case draft, including a draft
+            # whose ``validation_passed`` predates the secret check.
+            await aenforce_runbook_security(content)
+
+            # The title, before any row or vector carries it (#1981). A title
+            # that cannot be scrubbed (``RedactionUnavailableError`` under a
+            # fail-closed posture) is not written, and nothing has been written
+            # yet.
             title = await sanitize_item_title(
                 self._sanitizer, title, KnowledgeItemModel.title
             )
@@ -2728,6 +2745,12 @@ class KnowledgeService:
         changed, and only then persists the row. Returns the updated DTO, or
         ``None`` when the document is not found.
 
+        A new ``content`` is stored as sent, line endings normalised, and is
+        refused with ``RunbookQualityError`` (422) before anything is written
+        when it holds a credential or a destructive command
+        (:func:`enforce_runbook_security`, #2012). It is never rewritten. A
+        new ``title`` is redacted (#1981).
+
         **The SQL row moves last, on purpose** (#952). Two stores cannot be
         committed atomically, so the question is only which inconsistent state
         a failure can leave — and the two are not equally bad:
@@ -2835,10 +2858,6 @@ class KnowledgeService:
             # to a freshly re-read row at commit time. Computing them once is
             # what keeps those two from drifting.
             updates = {}
-            if kwargs.get("title"):
-                updates["title"] = await sanitize_item_title(
-                    self._sanitizer, kwargs["title"], KnowledgeItemModel.title
-                )
             if kwargs.get("content"):
                 # Normalised here too (#1403). This is the ONLY write path that
                 # reaches ChromaDB with caller-supplied content and NO runbook
@@ -2849,10 +2868,20 @@ class KnowledgeService:
                 # below. Under CRLF that put ``\r`` into the embedded text and
                 # moved the chunk boundaries — measured across the shipped
                 # corpus as 16 extra chunks and 1284 of 1297 chunks carrying a
-                # ``\r``. Applied before ``asanitize`` so the sanitiser and the
-                # chunker see the same bytes.
-                updates["content"] = await self._sanitizer.asanitize(
-                    normalize_line_endings(kwargs["content"])
+                # ``\r``.
+                content = normalize_line_endings(kwargs["content"])
+                # The security half of the gate, before the first write
+                # (#2012): a body holding a credential is refused (422), and
+                # the body is otherwise stored as the author wrote it. It used
+                # to be run through the sanitizer instead, which rewrote 20 of
+                # the 91 shipped bodies — IP addresses, and commands cut
+                # (``get-login-password <PASSWORD_…> "$REGION"``) — on every
+                # edit, and redacted nothing on create.
+                await aenforce_runbook_security(content)
+                updates["content"] = content
+            if kwargs.get("title"):
+                updates["title"] = await sanitize_item_title(
+                    self._sanitizer, kwargs["title"], KnowledgeItemModel.title
                 )
             if "tags" in kwargs:
                 updates["tags"] = [str(t) for t in (kwargs["tags"] or [])]
@@ -3000,6 +3029,10 @@ class KnowledgeService:
                 ),
             }
 
+        except RunbookQualityError:
+            # A refused body is a client-side outcome (422), not a fault:
+            # re-raised without the ERROR line, as ``upload_document`` does.
+            raise
         except Exception as e:
             logger.error(f"Failed to update document {document_id}: {e}")
             raise

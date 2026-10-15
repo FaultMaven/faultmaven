@@ -334,9 +334,9 @@ class KnowledgeIngester:
             if not content:
                 raise ValueError(f"Could not extract text from {file_path}")
 
-            # Sanitize content
-            sanitized_content = await self.sanitizer.asanitize(content)
-            # And the title, which every reader of the tier sees (#1981)
+            # The title, which every reader of the tier sees (#1981). The body
+            # is not rewritten: a runbook body is procedure text, and redaction
+            # cut its commands (#2012).
             sanitized_title = await sanitize_item_title(self.sanitizer, title)
 
             # Create document object
@@ -344,7 +344,7 @@ class KnowledgeIngester:
             document = KnowledgeBaseDocument(
                 document_id=document_id,
                 title=sanitized_title,
-                content=sanitized_content,
+                content=content,
                 document_type=document_type,
                 tags=tags or [],
                 source_url=source_url,
@@ -806,12 +806,9 @@ class KnowledgeIngester:
         try:
             self.logger.info(f"Starting ingestion of document {document.document_id}")
 
-            # Sanitize content (already done in API, but double-check)
-            sanitized_content = await self.sanitizer.asanitize(document.content)
-
-            # Update document with sanitized content
-            document.content = sanitized_content
-            # And its title, which every reader of the tier sees (#1981)
+            # The title, which every reader of the tier sees (#1981). The body
+            # is not rewritten: a runbook body is procedure text, and redaction
+            # cut its commands (#2012).
             document.title = await sanitize_item_title(self.sanitizer, document.title)
 
             # Process and store in chunks

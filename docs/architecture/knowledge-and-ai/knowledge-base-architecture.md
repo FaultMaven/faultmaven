@@ -529,7 +529,7 @@ Managed through the Knowledge module (`/api/v1/knowledge/`):
 - `POST /documents` — Upload document (SQLite record + chunked vector indexing). Accepts `text/markdown` and `text/plain` only; other content types are rejected with 415.
 - `GET /documents` — List documents — reads from SQLite. **Note:** `domain=`, `service=`, and `severity=` filter query params are specified but not yet implemented; all documents in scope are returned.
 - `GET /documents/{id}` — Get specific document (SQLite + file from disk)
-- `PUT /documents/{id}` — Update document metadata in-place (`update_document_metadata`: loads the row, applies updates, persists, and re-indexes ChromaDB on content change).
+- `PUT /documents/{id}` — Update document metadata in-place (`update_document_metadata`: loads the row, applies updates, persists, and re-indexes ChromaDB on content change). New content is stored as sent, line endings normalised, and never rewritten; content holding a credential or a destructive command is refused with 422 naming each one's line and type, and nothing is saved (#2012, [Case-Scoped PII Redaction](../security/case-scoped-pii-redaction.md) §Knowledge Item Titles).
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB
 - `POST /search` — Semantic search (vector embeddings + hybrid reranker) across user's authorized scopes
 - `POST /documents/search` — Full-text keyword search over document **title and content**, on word boundaries (#1288). Scored `0.7 * title + 0.3 * content` on a 0–1 scale; documents matching neither field are not returned. Distinct from `/search` — no vector retrieval.

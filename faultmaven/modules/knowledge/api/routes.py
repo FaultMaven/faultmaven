@@ -89,10 +89,23 @@ RUNBOOK_QUALITY_HELP = (
 )
 
 
-def runbook_quality_detail(error: RunbookQualityError) -> dict:
+#: What an author has to do when an edit's body is refused for holding a
+#: credential (#2012), rendered into the update route's 422 body.
+RUNBOOK_SECURITY_HELP = (
+    "Replace each credential with a placeholder such as <PASSWORD> or "
+    "${DB_PASSWORD}, and rotate it: it has been exposed. Remove any "
+    "destructive command. The runbook is unchanged."
+)
+
+
+def runbook_quality_detail(
+    error: RunbookQualityError, help_text: str = RUNBOOK_QUALITY_HELP
+) -> dict:
     """Render a gate refusal as the structured 422 body.
 
-    The gate runs in ONE place (``KnowledgeService.upload_document``).
+    The full gate runs in ONE place (``KnowledgeService.upload_document``); its
+    security half also refuses an edit's body (``update_document_metadata``,
+    #2012), with ``help_text`` saying what to change.
     ``RunbookQualityError`` carries ``errors``/``warnings`` for exactly this —
     the generic ``ValidationException`` handler would flatten them into
     ``str(exc)`` and lose the per-error structure a client renders.
@@ -101,7 +114,7 @@ def runbook_quality_detail(error: RunbookQualityError) -> dict:
         "message": "Runbook does not meet quality standards",
         "errors": error.errors,
         "warnings": error.warnings,
-        "help": RUNBOOK_QUALITY_HELP,
+        "help": help_text,
     }
 
 
@@ -1047,10 +1060,16 @@ async def update_document(
     only, per the global-tier policy). A refusal over a document the caller
     cannot even see answers 404 rather than 403 (#867).
 
-    A new ``title`` is redacted with the deployment's sanitizer, as is new
-    ``content``. If that check cannot run the update answers **503**, a
-    retryable server-side condition, with a generic detail, and nothing is
-    saved (#1981).
+    A new ``title`` is redacted with the deployment's sanitizer. If that check
+    cannot run the update answers **503**, a retryable server-side condition,
+    with a generic detail, and nothing is saved (#1981).
+
+    New ``content`` is stored as sent, line endings normalised, and never
+    rewritten. Content holding a credential (a private key, a credential URL, a
+    provider token, an AWS key, a JWT, a bearer or basic credential) or a
+    destructive command is refused with **422**, naming each one's line and
+    type but not its text, and nothing is saved (#2012). A placeholder such as
+    ``<password>`` or ``${DB_PASS}`` is not refused.
     """
     logger = logging.getLogger(__name__)
 
@@ -1082,6 +1101,16 @@ async def update_document(
         # The redaction (#1981) could not run: the global handler's generic
         # 503, not the blanket 500 below. Nothing was saved.
         raise
+    except RunbookQualityError as quality_error:
+        # The body holds a credential or a destructive command (#2012):
+        # refused before anything was written. The structured 422 the upload
+        # route answers; the blanket handler below would make it a 500.
+        raise HTTPException(
+            status_code=422,
+            detail=runbook_quality_detail(
+                quality_error, help_text=RUNBOOK_SECURITY_HELP
+            ),
+        ) from quality_error
     except KnowledgeBaseError as e:
         # Re-indexing failed, so the edit was NOT saved: the row is committed
         # only after the vectors are in place (#952), which is what lets this
