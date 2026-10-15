@@ -1019,6 +1019,27 @@ def adversarial_line(name: str, repetitions: int) -> str:
     return prefix + unit * repetitions + suffix
 
 
+def adversarial_length(name: str, repetitions: int) -> int:
+    """``len(adversarial_line(name, repetitions))``, without building the line."""
+    prefix, unit, suffix, _ = ADVERSARIAL_SHAPES[name]
+    return len(prefix) + len(unit) * repetitions + len(suffix)
+
+
+#: Bytes of allocator the growth check settles per byte of line (#1991).
+#: ``read_sshd_auth_line`` copies a line twice per call (``lower()`` and the
+#: slice behind the syslog header), so it needs a block about the size of the
+#: line: 1x already cleared every shape but ``timestamps`` when measured, 0.9x
+#: did not, and a review measured the least that works at ~1.5x. 4x keeps the
+#: margin at ~2.7x or more.
+#:
+#: ``timestamps`` is not covered and no multiplier covers it: its own
+#: allocations peak at 38x its line (150 MiB on 4 MB), past what an allocator
+#: can learn from, so on a 4 MB line it faults ~32,000 pages a call whatever
+#: this says. It is latent: that shape decides at its first or second window
+#: (8 KB-65 KB), nowhere near.
+_SETTLE_PER_LINE_BYTE = 4
+
+
 ADVERSARIAL_LINES = {
     name: adversarial_line(name, shape[3]) for name, shape in ADVERSARIAL_SHAPES.items()
 }
@@ -1036,16 +1057,24 @@ class TestAdversarialLines:
         would sit for minutes before failing. Several shapes cost the reader
         almost nothing until they are long, and for those the helper moves the
         window up until the work shows. Mutation-checked — a host pattern of
-        ``\\S*\\S*[^\\s:]`` reads at least 47 on the three shapes it makes
-        quadratic; fixed, every shape reads between 6 and 10 at the window
-        it decides on (linear reads ~8), idle or on a 2x oversubscribed box
-        (bound ~22.6).
+        ``\\S*\\S*[^\\s:]`` reads at least 44 on the three shapes it makes
+        quadratic (30 of 30 runs red); fixed, every shape reads between 4 and
+        12 at the window it decides on (linear reads ~8), 200 runs of each,
+        idle and under 8-way CPU load (bound ~22.6).
+
+        The windows are the ones it always had. What made a window's top size
+        2-3x dearer than its neighbours (and the slot-lookalikes call "could
+        not decide" at its 4 MB window, 7-11 runs in 100) was not memory but
+        the allocator's page faults: the helper settles it before each window
+        (``settle_bytes``, #1991; see ``tests/wallclock/growth.py``).
         """
         assert_linear_growth(
             read_sshd_auth_line,
             lambda repetitions: adversarial_line(name, repetitions),
             small=max(1, ADVERSARIAL_SHAPES[name][3] // 512),
             label=f"read_sshd_auth_line on {name}",
+            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            * adversarial_length(name, repetitions),
         )
 
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
@@ -1065,6 +1094,16 @@ class TestAdversarialLines:
         """The line that raised RecursionError in the round-2 review."""
         line = "Sep 20 10:00:00 web1 bob: " + "a sshd " * 340 + "password"
         assert read_sshd_auth_line(line).read is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(ADVERSARIAL_SHAPES))
+def test_adversarial_length_is_the_length_of_the_line(name):
+    """The size the growth check settles for is the size of the line it builds."""
+    for repetitions in (1, 7, 1000):
+        assert adversarial_length(name, repetitions) == len(
+            adversarial_line(name, repetitions)
+        )
 
 
 @pytest.mark.unit
