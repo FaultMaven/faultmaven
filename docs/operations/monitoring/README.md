@@ -25,7 +25,10 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   that passed a keyword outside the boundary's closed set (#1998). Recorded at
   the model dispatch (`infrastructure/llm/dispatch.send_to_model`, every
   send's one way to a provider), once per (argument, kind) per call, with a
-  WARNING log line naming the same (never the content). `content="raw"`: the
+  WARNING log line naming the same (never the content). `provider` is the
+  adapter's class name (`OpenAIProvider`, ...), read without running provider
+  code, or `router` for what `LLMRouter.route` reports itself (a value it drops
+  before the registry, a call it answers from its cache). `content="raw"`: the
   call was reported and sent. Non-zero names a send path that has not moved to
   the minting helpers yet
 - `sla_status{component}` (3=meeting, 2=at_risk, 1=breached, 0=unknown),

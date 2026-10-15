@@ -20,6 +20,7 @@ still passes. The router itself is never a ``_generate`` target.
 
 from __future__ import annotations
 
+import socket
 import sys
 import warnings
 from typing import Any, Dict, List
@@ -39,7 +40,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
-from faultmaven.infrastructure.security.model_content import provenance
+from faultmaven.infrastructure.security.model_content import plain, provenance
 from tests.model_content import forged, vetted, vetted_messages
 from tests.utils import regex_only_sanitizer, sanitize_pii_pinned
 
@@ -82,6 +83,18 @@ class _RecordingProvider(BaseLLMProvider):
 
     def get_supported_models(self) -> List[str]:
         return [MODEL]
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Nothing here may open a socket: every provider is a double."""
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a router test reached the network")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
 
 
 @pytest.fixture
@@ -132,6 +145,26 @@ def boundary(monkeypatch):
         yield seen, metric
 
 
+#: The reasoning artifacts a tool loop echoes (#2023 review, I1). No address in
+#: them: a pass that changed one would break Anthropic's signature.
+_METADATA = {
+    "assistant_content": [
+        {"type": "thinking", "thinking": "consider it", "signature": "c2lnbmF0dXJl"},
+        {"type": "tool_use", "id": "call_1", "name": "search_file", "input": {}},
+    ]
+}
+
+
+def _metadata_strings(value: Any) -> List[Any]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *_metadata_strings(v)]]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _metadata_strings(v)]
+    return []
+
+
 def _minted_messages() -> List[Dict[str, Any]]:
     return vetted_messages(
         [
@@ -148,8 +181,13 @@ def _minted_messages() -> List[Dict[str, Any]]:
                             "name": "search_file",
                             "arguments": f'{{"q": "{IP}"}}',
                         },
+                        # Gemini 2.5's per-call reasoning signature.
+                        "provider_metadata": {"thought_signature": "CikBjz1rX"},
                     }
                 ],
+                # Anthropic's thinking blocks, echoed in place of the content
+                # (I1: the SANITIZE_PII pass must keep them minted).
+                "provider_metadata": _METADATA,
             },
             {
                 "role": "tool",
@@ -205,8 +243,18 @@ async def test_minted_messages_reach_the_provider_minted(
     assert all(provenance(m["content"]) is not None for m in messages)
     arguments = messages[2]["tool_calls"][0]["function"]["arguments"]
     assert provenance(arguments)[0] == "model_output"
+    # I1: the reasoning artifacts, on the message and on the call, are still
+    # minted model output after the pass — every leaf and every key.
+    metadata = _metadata_strings(messages[2]["provider_metadata"]) + _metadata_strings(
+        messages[2]["tool_calls"][0]["provider_metadata"]
+    )
+    assert metadata and all(
+        (provenance(value) or ("?",))[0] == "model_output" for value in metadata
+    )
     if sanitize_pii:
         assert all(provenance(m["content"])[1] is True for m in messages)
+    # The artifacts reach the transport as they came, plain.
+    assert provider.sent[0]["messages"][2]["provider_metadata"] == _METADATA
     # The transport sees plain values, redacted or not per the flag.
     for message in provider.sent[0]["messages"]:
         assert type(message["content"]) is str
@@ -241,6 +289,22 @@ async def test_raw_content_is_still_sanitized_and_still_reported(
     [call] = metric.labels.call_args_list
     assert call.kwargs["argument"] == "messages.content"
     assert call.kwargs["kind"] == "raw"
+
+
+@pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
+async def test_raw_reasoning_artifacts_are_still_reported(
+    router, boundary, sanitize_pii
+):
+    """I1's other half: the pass keeps the provenance it was handed, and mints
+    none. Raw metadata — unchanged by the sanitizer — is still reported."""
+    seen, metric = boundary
+    messages = _minted_messages()
+    messages[2]["provider_metadata"] = {"assistant_content": [{"text": "raw"}]}
+    with sanitize_pii_pinned(sanitize_pii), pytest.warns(RawModelContentWarning):
+        await router.route(messages=messages, max_tokens=50)
+    assert {c.kwargs["argument"] for c in metric.labels.call_args_list} == {
+        "messages.provider_metadata"
+    }
 
 
 async def test_what_the_router_keeps_is_plain_text(router, provider):
@@ -382,3 +446,140 @@ async def test_refusal_still_routes_minted_content(
         await router.route(prompt=vetted(f"host {IP} is down"), max_tokens=50)
         await router.route(messages=_minted_messages(), max_tokens=50)
     assert len(provider.sent) == 2
+
+
+# ---------------------------------------------------------------------------
+# #2023 review: what the dispatch never sees, a refusal's cost, attribution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
+async def test_a_dropped_raw_prompt_is_reported_once_in_warn_mode(
+    router, provider, boundary, sanitize_pii
+):
+    """I5: the router drops a falsy prompt before the registry, so no dispatch
+    sees it. ``route(prompt="", messages=minted)`` is what the engine's routed
+    tool loop sends; refusal refuses it at entry, and warn mode reports it —
+    here, once, naming the caller."""
+    import inspect
+
+    seen, metric = boundary
+    with sanitize_pii_pinned(sanitize_pii), pytest.warns(RawModelContentWarning) as rec:
+        line = inspect.currentframe().f_lineno + 1
+        await router.route(prompt="", messages=_minted_messages(), max_tokens=50)
+    [warning] = _raw_warnings(rec)
+    assert "prompt raw" in str(warning.message)
+    assert (warning.filename, warning.lineno) == (__file__, line)
+    [label] = [c.kwargs for c in metric.labels.call_args_list]
+    assert (label["provider"], label["argument"]) == ("router", "prompt")
+    assert provider.sent, "the call was still sent (warn mode)"
+
+
+async def test_a_cache_hit_on_raw_content_is_reported_in_warn_mode(router, provider):
+    """I5: a call answered from the cache reaches no dispatch; the router
+    reports what it would have refused."""
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as rec:
+        await router.route(prompt="raw text", model=MODEL, max_tokens=50)
+        await router.route(prompt="raw text", model=MODEL, max_tokens=50)
+    assert len(provider.sent) == 1, "the second call is answered from the cache"
+    assert len(_raw_warnings(rec)) == 2, "once by the dispatch, once on the cache hit"
+
+
+@pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
+async def test_a_minted_routed_call_is_reported_nowhere(router, provider, sanitize_pii):
+    """No false report from the new paths: minted content, with and without a
+    cache hit, and an empty message list, report nothing."""
+    with (
+        sanitize_pii_pinned(sanitize_pii),
+        warnings.catch_warnings(record=True) as recorded,
+    ):
+        warnings.simplefilter("always")
+        await router.route(prompt=vetted("cache me"), model=MODEL, max_tokens=50)
+        await router.route(prompt=vetted("cache me"), model=MODEL, max_tokens=50)
+        await router.route(prompt=vetted("x"), messages=[], max_tokens=50)
+    assert not _raw_warnings(recorded)
+
+
+async def test_refusals_leave_provider_health_and_the_breaker_untouched(
+    router, provider, monkeypatch
+):
+    """O1: a refusal is the request's fault. Five refused calls — at the
+    dispatch, inside the registry's fallback loop, and at the router's entry —
+    record no provider failure and open no breaker, and the next minted call is
+    routed."""
+    from faultmaven.infrastructure.llm.providers.registry import (
+        ProviderRegistry,
+        ProviderState,
+    )
+    from tests.model_content import FakeProvider
+
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+    second = FakeProvider(name="second")
+    registry = ProviderRegistry(settings=None)
+    registry._providers = {PROVIDER: provider, "second": second}
+    registry._fallback_chain = [PROVIDER, "second"]
+    registry._provider_states = {
+        PROVIDER: ProviderState(name=PROVIDER),
+        "second": ProviderState(name="second"),
+    }
+    registry._initialized = True
+    for _ in range(5):
+        with pytest.raises(dispatch.RawModelContentRefused):
+            await registry.route_request(prompt="raw 10.9.8.7", max_tokens=5)
+        with pytest.raises(dispatch.RawModelContentRefused):
+            await router.route(prompt="raw 10.9.8.7", max_tokens=5)
+    states = {
+        n: (s.health.value, s.consecutive_failures)
+        for n, s in registry._provider_states.items()
+    }
+    assert all(failures == 0 for _, failures in states.values()), states
+    assert registry._get_routing_order(), "a refusal emptied the routing order"
+    assert not second.calls, "a refused call was retried on the next provider"
+
+    # A refusal that happens INSIDE call_external — content minted at entry,
+    # raw after the pass (a re-mint that lost provenance) — is not counted
+    # against the router's breaker either (``retryable`` is False).
+    async def losing_pass(value, sanitizer):
+        return plain(value)
+
+    with pytest.MonkeyPatch.context() as scoped:
+        scoped.setattr(
+            "faultmaven.infrastructure.llm.router.sanitizer_pass", losing_pass
+        )
+        scoped.setattr(
+            "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
+        )
+        for _ in range(5):
+            with pytest.raises(dispatch.RawModelContentRefused):
+                await router.route(prompt=vetted("x"), max_tokens=5)
+    states = {
+        n: (s.health.value, s.consecutive_failures)
+        for n, s in registry._provider_states.items()
+    }
+    assert all(failures == 0 for _, failures in states.values()), states
+    assert router.circuit_breaker is not None
+    assert router.circuit_breaker.failure_count == 0, "a refusal tripped the breaker"
+    assert not second.calls
+    await router.route(prompt=vetted("ok"), max_tokens=5)
+    assert provider.sent
+
+
+async def test_a_route_override_is_not_the_send_site(router, provider):
+    """O4: a subclass's ``route`` that only delegates (the cloud's tenant
+    router) is a hop, never the caller: the warning names the line that called
+    the override."""
+    import inspect
+
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    class _Tenant(LLMRouter):
+        async def route(self, *args, **kwargs):
+            return await super().route(*args, **kwargs)  # never the send site
+
+    tenant = _Tenant.__new__(_Tenant)
+    tenant.__dict__.update(router.__dict__)
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as rec:
+        line = inspect.currentframe().f_lineno + 1
+        await tenant.route(prompt="raw text", max_tokens=50)
+    [warning] = _raw_warnings(rec)
+    assert (warning.filename, warning.lineno) == (__file__, line)

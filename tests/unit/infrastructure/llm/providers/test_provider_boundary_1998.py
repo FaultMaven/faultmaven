@@ -326,6 +326,20 @@ VIOLATIONS: Dict[str, tuple] = {
         },
         ("messages.provider_metadata", "not_model_output"),
     ),
+    # λ: a tool result's content is model-bound like any other.
+    "raw_tool_result_content": (
+        {
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "search_file",
+                    "content": SECRET,
+                }
+            ]
+        },
+        ("messages.content", "raw"),
+    ),
     # Identifier channels carry no text.
     "text_in_tool_call_id": (
         {
@@ -427,7 +441,8 @@ async def test_a_violation_is_reported_and_sent(cls, case, metric, caplog):
         {"argument": item["argument"], "kind": item["kind"]} for item in labels
     ]
     assert all(item["content"] == "raw" for item in labels)
-    assert all(item["provider"] == adapter.provider_name for item in labels)
+    # The label is the class's own name: read without running provider code.
+    assert all(item["provider"] == type(adapter).__name__ for item in labels)
     assert metric.labels.return_value.inc.call_count == len(labels)
 
     lines = [r.getMessage() for r in caplog.records if "#1998" in r.getMessage()]
@@ -691,7 +706,7 @@ async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
     sample = registry.get_sample_value(
         "llm_model_content_violations_total",
         {
-            "provider": _adapter(cls).provider_name,
+            "provider": cls.__name__,
             "argument": "prompt",
             "kind": "raw",
             "content": "raw",
@@ -918,3 +933,190 @@ def test_register_provider_takes_only_a_provider_class():
             registry.register_provider("duck", not_a_provider)
     registry.register_provider("fake", FakeProvider)
     assert registry._provider_classes == {"fake": FakeProvider}
+
+
+# ---------------------------------------------------------------------------
+# #2023 review fixes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
+async def test_raw_messages_beside_a_minted_prompt_are_reported(cls, metric):
+    """ρ: the messages are checked whatever the prompt is. Every grammar case
+    above sends ``prompt=None``; the engine's routed tool loop sends a prompt
+    beside its messages."""
+    transport = AsyncMock(return_value=_response())
+    with (
+        patch.object(cls, "_generate", transport),
+        pytest.warns(RawModelContentWarning) as recorded,
+    ):
+        await send_to_model(
+            _adapter(cls),
+            prompt=vetted("q"),
+            messages=[{"role": "user", "content": SECRET}],
+        )
+    assert "messages.content raw" in str(recorded[0].message)
+
+
+class _Flip(list):
+    """A list that iterates as minted once, then raw (#2023 review)."""
+
+    calls = 0
+
+    def __iter__(self):
+        type(self).calls += 1
+        good = [{"role": "user", "content": vetted("hello")}]
+        bad = [{"role": "user", "content": SECRET}]
+        return iter(good if type(self).calls == 1 else bad)
+
+
+class _LyingMessage(dict):
+    def get(self, key, default=None):
+        return vetted("hello") if key == "content" else dict.get(self, key, default)
+
+
+class _SubStr(str):
+    pass
+
+
+class _KwargName(str):
+    def __hash__(self):
+        return str.__hash__(self)
+
+    def __eq__(self, other):
+        return str.__eq__(self, other)
+
+
+#: I2: values that could answer the check one way and the adapter another.
+#: Only exact builtins pass, so each is a violation before any of its methods
+#: runs.
+_LYING = {
+    "list subclass messages": (
+        {"messages": _Flip([{"role": "user", "content": SECRET}])},
+        ("messages", "bad_shape"),
+    ),
+    "dict subclass message": (
+        {"messages": [_LyingMessage(role="user", content=SECRET)]},
+        ("messages", "bad_shape"),
+    ),
+    "str subclass role": (
+        {"messages": [{"role": _SubStr("user"), "content": vetted("x")}]},
+        ("messages.role", "bad_role"),
+    ),
+    "str subclass message key": (
+        {"messages": [{"role": "user", _SubStr("content"): vetted("x")}]},
+        ("messages", "bad_shape"),
+    ),
+    "str subclass keyword name": (
+        {_KwargName("system"): SECRET},
+        ("kwargs", "bad_shape"),
+    ),
+    "dict subclass tool call": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "tool_calls": [
+                        _LyingMessage(_tool_call(vetted("{}", "model_output")))
+                    ],
+                }
+            ]
+        },
+        ("messages.tool_calls", "bad_shape"),
+    ),
+    "a non-builtin metadata leaf": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {
+                        vetted("k", "model_output"): __import__("decimal").Decimal(1)
+                    },
+                }
+            ]
+        },
+        ("messages.provider_metadata", "bad_shape"),
+    ),
+    "a str subclass metadata leaf": (
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": vetted("", "model_output"),
+                    "provider_metadata": {vetted("k", "model_output"): _SubStr(SECRET)},
+                }
+            ]
+        },
+        ("messages.provider_metadata", "bad_shape"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_LYING))
+async def test_a_lying_container_is_refused_before_the_transport(
+    case, metric, monkeypatch
+):
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+    _Flip.calls = 0
+    overrides, (argument, kind) = _LYING[case]
+    cls = next(c for c in ADAPTER_CLASSES if c.__name__ == "OpenAIProvider")
+    transport = AsyncMock(return_value=_response())
+    call = {"prompt": None, **overrides}
+    with patch.object(cls, "_generate", transport):
+        with pytest.raises(TypeError, match=f"{argument} {kind}"):
+            await send_to_model(_adapter(cls), **call)
+    transport.assert_not_called()
+    assert _Flip.calls == 0, "the check iterated the caller's list subclass"
+
+
+def test_the_grammar_tables_are_read_only():
+    """I3: a public table the check reads cannot be widened at runtime."""
+    from faultmaven.infrastructure.security.model_content import (
+        FUNCTION_KEYS,
+        MESSAGE_KEYS,
+        TOOL_CALL_KEYS,
+    )
+
+    with pytest.raises(TypeError):
+        MESSAGE_KEYS["user"] = MESSAGE_KEYS["user"] | {"x"}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        MESSAGE_KEYS["developer"] = frozenset({"role", "content"})  # type: ignore[index]
+    assert type(TOOL_CALL_KEYS) is frozenset and type(FUNCTION_KEYS) is frozenset
+    assert type(base.GENERATE_KWARGS) is frozenset
+    assert type(base.CONTENT_KWARGS) is tuple
+
+
+async def test_a_refusal_is_its_own_type_and_not_retryable(metric, monkeypatch):
+    """O1: a refusal is the request's fault, never a provider's."""
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+    with pytest.raises(dispatch.RawModelContentRefused) as raised:
+        await send_to_model(_adapter(ADAPTER_CLASSES[0]), prompt=SECRET)
+    assert isinstance(raised.value, TypeError)
+    assert raised.value.retryable is False
+
+
+async def test_no_provider_code_runs_before_a_refusal(metric, monkeypatch):
+    """O6: the dispatch labels its report with the class's own name. A provider
+    property (``provider_name`` is one on every adapter) would run while the
+    dispatch's frame holds the raw call, and could read it from there."""
+    import sys
+
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+    seen: List[Any] = []
+
+    class _Probe(ADAPTER_CLASSES[0]):
+        @property
+        def provider_name(self):
+            seen.append(dict(sys._getframe(1).f_locals))
+            return "probe"
+
+        def __getattribute__(self, name):
+            seen.append(name)
+            return object.__getattribute__(self, name)
+
+    probe = _Probe.__new__(_Probe)
+    with pytest.raises(dispatch.RawModelContentRefused, match="^_Probe: "):
+        await send_to_model(probe, prompt=SECRET, messages=[{"role": "x"}])
+    assert seen == [], f"provider code ran before the refusal: {seen}"

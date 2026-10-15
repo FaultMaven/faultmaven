@@ -11,13 +11,19 @@ first checks the call's model-bound content:
 * the content keywords (``CONTENT_KWARGS``) are minted text;
 * every keyword is one an adapter reads (``GENERATE_KWARGS``).
 
-The check reads the values it is handed, not an attribute of the provider, so
-nothing a provider class or instance defines — an override, a mixin, a
-patched attribute, a duck-typed class — changes what is checked: the dispatch
-never calls anything on the provider but ``_generate``. Calling ``_generate``
-(or an adapter's own transport callables) from anywhere else is a private-name
-call, and ``tests/unit/architecture/test_model_dispatch_lexical_1998.py``
-flags it, as it flags anything that rebinds :func:`send_to_model`.
+The check reads the values it is handed, never an attribute of the provider,
+so nothing a provider class or instance defines — an override, a mixin, a
+patched attribute, a property, a duck-typed class — changes what is checked or
+sees the call before it: the dispatch runs no provider code but ``_generate``,
+and only after the check. Its reports name the provider by its class's own
+name, read without invoking anything on it. The values it accepts are exact
+builtins (``list``, ``dict``, ``str``, ``ModelText``), so no method of the
+caller's containers runs during the check either, and the adapter reads what
+was checked. Calling ``_generate`` (or an adapter's own transport callables)
+from anywhere else is a private-name call, and
+``tests/unit/architecture/test_model_dispatch_lexical_1998.py`` flags it, as
+it flags anything that rebinds :func:`send_to_model` or a name this module
+binds.
 
 The router keeps ``route()`` as its API. ``route()`` runs the same check at
 entry, on the caller's values and without unwrapping them, so a refusal comes
@@ -51,6 +57,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     LLMResponse,
 )
 from faultmaven.infrastructure.security.model_content import (
+    BAD_SHAPE,
     UNKNOWN_KWARG,
     ContentViolation,
     key_names,
@@ -73,6 +80,19 @@ REFUSE_RAW_MODEL_CONTENT = False
 
 class RawModelContentWarning(UserWarning):
     """A model call carried content the redaction module did not mint (#1998)."""
+
+
+class RawModelContentRefused(TypeError):
+    """A model call refused under :data:`REFUSE_RAW_MODEL_CONTENT` (#1998).
+
+    A fault of the request, not of a provider: the registry re-raises it
+    without counting a provider failure, and ``retryable`` is ``False`` so
+    ``BaseExternalClient.call_external`` neither retries it nor counts it
+    against the router's circuit breaker (request-scoped). Refusing a raw call
+    must never make the next minted call fail.
+    """
+
+    retryable = False
 
 
 class SendSite(NamedTuple):
@@ -120,11 +140,33 @@ def _site_of(frame: FrameType) -> SendSite:
     )
 
 
+_ROUTER_MODULE = "faultmaven.infrastructure.llm.router"
+
+
+def _is_route_override(frame: FrameType) -> bool:
+    """Whether ``frame`` runs ``route`` on an ``LLMRouter`` subclass defined
+    outside this package (the cloud's tenant router): a hop on the way to the
+    router, never the line that made the call.
+
+    The receiver is the frame's first argument, its type matched by ``__mro__``
+    (no ``isinstance``, which a metaclass can answer). The router class is read
+    from ``sys.modules``, so this module never imports the router.
+    """
+    code = frame.f_code
+    if code.co_name != "route" or code.co_argcount < 1:
+        return False
+    router_module = sys.modules.get(_ROUTER_MODULE)
+    router = getattr(router_module, "LLMRouter", None)
+    receiver = frame.f_locals.get(code.co_varnames[0])
+    return router is not None and router in type(receiver).__mro__
+
+
 def _walk_to_caller(
     frame: FrameType,
 ) -> "tuple[Optional[SendSite], FrameType]":
     """The nearest frame from ``frame`` up outside ``infrastructure/llm/`` (and
-    the transport module), and the outermost frame inside it the walk passed.
+    the transport module, and any ``route`` override of the router), and the
+    outermost frame inside it the walk passed.
 
     The first is ``None`` when an asyncio frame comes first: the stack ends at
     a task boundary, and whatever lies beyond it (the event loop's driver) is
@@ -136,7 +178,11 @@ def _walk_to_caller(
         filename = os.path.abspath(cursor.f_code.co_filename)
         if filename.startswith(_ASYNCIO_DIR):
             return None, outermost
-        if not filename.startswith(_LLM_PACKAGE_DIR) and filename != _TRANSPORT_FILE:
+        if (
+            not filename.startswith(_LLM_PACKAGE_DIR)
+            and filename != _TRANSPORT_FILE
+            and not _is_route_override(cursor)
+        ):
             return _site_of(cursor), outermost
         outermost = cursor
         cursor = cursor.f_back
@@ -157,8 +203,16 @@ def model_call_violations(
     ``kwargs`` is every keyword but ``prompt`` (``messages`` may be among them:
     it is a member of the closed set). The same check ``LLMRouter.route`` runs
     at entry, on a routed call's values.
+
+    A keyword name that is not an exact ``str`` (a ``str`` subclass can answer
+    ``in`` and ``==`` differently each time it is asked) is a violation, and
+    the keywords are then not looked at again: every lookup below would run
+    its code.
     """
     found: List[ContentViolation] = []
+    if any(type(key) is not str for key in kwargs):
+        found.append(ContentViolation("kwargs", BAD_SHAPE, "kwargs"))
+        kwargs = {}
     if prompt is not None:
         violation = text_violation(prompt, "prompt", "prompt")
         if violation is not None:
@@ -187,18 +241,40 @@ def _summary(violations: List[ContentViolation]) -> str:
 
 
 def refuse_if_refusing(target: str, violations: List[ContentViolation]) -> None:
-    """With :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse: ``TypeError``, naming
-    where and what kind — never the content. Off, return."""
+    """With :data:`REFUSE_RAW_MODEL_CONTENT` on, refuse: :class:`RawModelContentRefused`
+    (a ``TypeError``), naming where and what kind — never the content. Off,
+    return."""
     if violations and REFUSE_RAW_MODEL_CONTENT:
-        raise TypeError(
+        raise RawModelContentRefused(
             f"{target}: model-bound content not minted by the redaction "
             f"module: {_summary(violations)}"
         )
 
 
+#: ``type.__name__`` itself: a class's name read from the type slot, so no
+#: metaclass attribute and no provider code runs to produce a label.
+_TYPE_NAME = type.__dict__["__name__"]
+
+
 def _provider_label(provider: Any) -> str:
-    name = getattr(provider, "provider_name", None)
-    return name if isinstance(name, str) else type(provider).__name__
+    """The provider's class name, for a report: read without invoking anything
+    on the provider. ``provider_name`` is a property on every adapter, and a
+    property runs while this frame still holds the call's content."""
+    return _TYPE_NAME.__get__(type(provider))
+
+
+def report_raw_model_content(
+    target: str, violations: List[ContentViolation], frame: FrameType
+) -> None:
+    """Report, from outside the dispatch, violations no dispatch will see.
+
+    ``LLMRouter.route`` uses this for what it drops before the registry (a
+    falsy prompt, falsy messages) and for a call it answers from its cache:
+    in warn mode those are reported here, once, naming the call's site from
+    ``frame``; under refusal ``route()`` has already refused them at entry.
+    """
+    if violations:
+        _report_raw_model_content(target, violations, _send_site(frame))
 
 
 def _report_raw_model_content(

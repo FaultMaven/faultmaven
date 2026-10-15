@@ -28,19 +28,39 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   ``_generate`` sends through (``_post_chat_completion``, ``_call_ollama_api``,
   ...), as attributes or strings, under the same exemption. Their names are
   read from the adapters' own ASTs, so the list cannot go stale.
+* A5 — what ``send_to_model`` reads, rebound. Outside ``dispatch.py`` the
+  dispatch module is never imported whole and its dotted path appears in no
+  string (``importlib``, ``sys.modules``, a ``patch`` target); and no
+  attribute store or delete, no subscript store into a namespace, no
+  ``setattr``/``delattr`` and no ``__dict__.update`` targets a name
+  ``dispatch.py`` binds — its functions, its constants and the names it
+  imports, read from its own AST, less the standard library's and
+  ``logger``. So ``dispatch.model_call_violations = lambda *a: []``,
+  ``setattr(d, "refuse_if_refusing", ...)`` and ``d.CONTENT_KWARGS = ()``
+  are flagged however the module object was reached
+  (``sys.modules[send_to_model.__module__]``, ``inspect.getmodule``). The
+  tables the check reads in the security module are read-only
+  (``MappingProxyType``, ``frozenset``).
+* T — nothing outside ``tests/`` imports ``tests``: the test minter
+  (``tests.model_content.vetted``) mints raw text without a redaction pass,
+  and is exempt from the mint check for that reason only.
 
 The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
 rules like any other caller.
 
 Out of scope, as for the mint check: reflection through a name computed at
-runtime (``getattr(p, "_gen" + "erate")``).
+runtime (``getattr(p, "_gen" + "erate")``), and reflection by ENUMERATION —
+finding a callable by iterating a namespace and matching on a property of its
+name or value (``[f for n, f in vars(cls).items() if n.endswith("generate")]``).
+Both spell nothing a lexical rule can see; both are deliberate acts.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import sys
 import textwrap
 import unicodedata
 import warnings
@@ -99,6 +119,138 @@ def transport_names() -> frozenset:
             if isinstance(node, ast.AsyncFunctionDef) and node.name != _SEND:
                 names.add(node.name)
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def dispatch_names() -> frozenset:
+    """A5: every name ``dispatch.py`` binds at top level — what ``send_to_model``
+    reads — read from its AST: its defs and classes, its assignments, and what
+    it imports, less what it imports from the standard library and its
+    ``logger``, which carry no check."""
+    names: Set[str] = set()
+    for node in _parse((_ROOT / _DISPATCH).read_text(encoding="utf-8")).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] not in sys.stdlib_module_names:
+                    names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] not in sys.stdlib_module_names:
+                names.update(alias.asname or alias.name for alias in node.names)
+    return frozenset(names - {"logger"})
+
+
+#: Calls that write into a namespace by name: ``setattr(obj, name, ...)`` and
+#: ``delattr(obj, name)``, the name second; ``obj.__setattr__(name, ...)``
+#: bound, the name first (``object.__setattr__(obj, name, ...)`` second).
+_NAMED_WRITERS = frozenset({"setattr", "delattr"})
+_BOUND_WRITERS = frozenset({"__setattr__", "__delattr__"})
+#: Mapping methods that write a key: on a module's ``__dict__`` or ``vars()``.
+_MAPPING_WRITERS = frozenset(
+    {"update", "setdefault", "__setitem__", "pop", "__delitem__"}
+)
+
+
+def _written_name(node: ast.Call) -> object:
+    """The constant name a namespace-writing call targets, else ``None``."""
+    func, args = node.func, node.args
+    index = None
+    if isinstance(func, ast.Name) and func.id in _NAMED_WRITERS:
+        index = 1
+    elif isinstance(func, ast.Attribute) and func.attr in _BOUND_WRITERS:
+        unbound = isinstance(func.value, ast.Name) and func.value.id in {
+            "object",
+            "type",
+        }
+        index = 1 if unbound else 0
+    if index is not None and len(args) > index:
+        arg = args[index]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+    return None
+
+
+def _tests_module(name: str) -> bool:
+    return name == "tests" or name.startswith("tests.")
+
+
+def _rebinding_violations(
+    tree: ast.AST, path: str, docstrings: Set[ast.AST]
+) -> List[Tuple[int, str, str]]:
+    """A5 and T, for a file outside ``dispatch.py`` (A5) and ``tests/`` (T)."""
+    found: List[Tuple[int, str, str]] = []
+    guarded = dispatch_names()
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", 0)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _DISPATCH_MODULE:
+                    found.append((line, "A5", "the dispatch imported whole"))
+                if _tests_module(alias.name):
+                    found.append((line, "T", f"tests imported: {alias.name}"))
+        elif isinstance(node, ast.ImportFrom):
+            module = _module_of(node, path)
+            for alias in node.names:
+                if f"{module}.{alias.name}" == _DISPATCH_MODULE:
+                    found.append((line, "A5", "the dispatch imported whole"))
+            if node.level == 0 and _tests_module(module):
+                found.append((line, "T", f"tests imported: {module}"))
+        elif isinstance(node, ast.Attribute):
+            if node.attr in guarded and isinstance(node.ctx, (ast.Store, ast.Del)):
+                found.append((line, "A5", f"a dispatch name rebound: {node.attr}"))
+        elif isinstance(node, ast.Subscript):
+            key = node.slice
+            if (
+                isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(key, ast.Constant)
+                and key.value in guarded
+            ):
+                found.append(
+                    (line, "A5", f"a dispatch name rebound by key: {key.value}")
+                )
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node not in docstrings and (
+                node.value == _DISPATCH_MODULE
+                or node.value.startswith(_DISPATCH_MODULE + ".")
+            ):
+                found.append((line, "A5", "the dispatch named in a string"))
+        elif isinstance(node, ast.Call):
+            name = _written_name(node)
+            if name in guarded:
+                found.append((line, "A5", f"a dispatch name set by name: {name}"))
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in _MAPPING_WRITERS:
+                keys = {k.arg for k in node.keywords} | {
+                    a.value
+                    for a in node.args[:1]
+                    if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                }
+                if keys & guarded:
+                    found.append(
+                        (
+                            line,
+                            "A5",
+                            f"a dispatch name written: {sorted(keys & guarded)}",
+                        )
+                    )
+            callee = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", None)
+            )
+            if callee in {"import_module", "__import__"} and node.args:
+                first = node.args[0]
+                if (
+                    isinstance(first, ast.Constant)
+                    and isinstance(first.value, str)
+                    and _tests_module(first.value)
+                ):
+                    found.append((line, "T", f"tests imported: {first.value}"))
+    return found
 
 
 def _docstrings(tree: ast.AST) -> Set[ast.AST]:
@@ -191,6 +343,8 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                     found.append(
                         (line, "A3", f"{_DISPATCHER} bound by import from {module}")
                     )
+    if rebindable:
+        found.extend(_rebinding_violations(tree, path, docstrings))
     return sorted(set(found))
 
 
@@ -308,6 +462,34 @@ PLANTED = {
     "A3 module as the name": "import mine as send_to_model\n",
     "A3 global": "def f():\n    global send_to_model\n    send_to_model = 1\n",
     "A3 except": "try:\n    pass\nexcept E as send_to_model:\n    pass\n",
+    # A5: what send_to_model reads, rebound (#2023 review).
+    "A5 validator rebound": (
+        "from faultmaven.infrastructure.llm import dispatch\n"
+        "dispatch.model_call_violations = lambda *a: []\n"
+    ),
+    "A5 the dispatch imported whole": "import faultmaven.infrastructure.llm.dispatch\n",
+    "A5 the dispatch imported whole, aliased": (
+        "from faultmaven.infrastructure.llm import dispatch as d\n"
+    ),
+    "A5 setattr": "setattr(d, 'refuse_if_refusing', lambda *a: None)\n",
+    "A5 delattr": "delattr(d, 'CONTENT_KWARGS')\n",
+    "A5 object.__setattr__": "object.__setattr__(d, 'GENERATE_KWARGS', frozenset())\n",
+    "A5 bound __setattr__": "d.__setattr__('REFUSE_RAW_MODEL_CONTENT', False)\n",
+    "A5 content kwargs emptied": "d.CONTENT_KWARGS = ()\n",
+    "A5 an imported validator rebound": "d.message_violations = lambda m: []\n",
+    "A5 via __module__": (
+        "import sys\nsys.modules[send_to_model.__module__].model_call_violations = f\n"
+    ),
+    "A5 vars() store": "vars(inspect.getmodule(send_to_model))['plain_text'] = f\n",
+    "A5 __dict__.update": "sys.modules[m].__dict__.update(text_violation=f)\n",
+    "A5 patch target": "patch('faultmaven.infrastructure.llm.dispatch.text_violation')\n",
+    "A5 sys.modules by name": (
+        "import sys\nm = sys.modules['faultmaven.infrastructure.llm.dispatch']\n"
+    ),
+    # T: the test minter imported from production code.
+    "T from tests import": "from tests.model_content import vetted\n",
+    "T import tests": "import tests.model_content\n",
+    "T import_module": "importlib.import_module('tests.model_content')\n",
     # A4: an adapter's transport reached around _generate.
     "A4 OpenAI transport": "r = await provider._post_chat_completion(payload)\n",
     "A4 local transport": "r = await provider._call_ollama_api(raw)\n",
@@ -405,6 +587,15 @@ def test_the_exemption_is_by_file_not_by_def_name():
     assert not violations(source, _DISPATCH)
 
 
+def test_a_relative_whole_import_of_the_dispatch_is_caught():
+    """``from . import dispatch`` from the router's own package resolves to the
+    dispatch module; from anywhere else it is some other module."""
+    source = "from . import dispatch\n"
+    in_llm = "faultmaven/infrastructure/llm/router_like.py"
+    assert {hit[1] for hit in violations(source, in_llm)} == {"A5"}
+    assert not violations(source, "faultmaven/planted.py")
+
+
 def test_the_dispatch_may_bind_its_own_name():
     assert not violations(
         "async def send_to_model(provider, **kw):\n    return 1\n", _DISPATCH
@@ -426,6 +617,18 @@ ALLOWED = {
     "a docstring naming both": '"""Calls send_to_model, which calls _generate."""\n',
     "a longer identifier": "x = self._generate_title_with_llm()\n",
     "a computed name (out of scope)": "getattr(p, '_gen' + 'erate')\n",
+    # A5 is narrow: reading a dispatch name, or the name as plain data, is not
+    # a rebinding (the reviewer's first draft flagged plain string equality).
+    "importing dispatch names": (
+        "from faultmaven.infrastructure.llm.dispatch import (\n"
+        "    RawModelContentRefused, model_call_violations, send_to_model,\n)\n"
+    ),
+    "a dispatch name read as an attribute": "x = dispatch_like.CONTENT_KWARGS\n",
+    "a dispatch name as a dict key": "row = {'plain_text': 1}\nrow['plain_text']\n",
+    "a dispatch name compared": "ok = name == 'model_call_violations'\n",
+    "a dict update with other keys": "kwargs.update(messages=m, tools=t)\n",
+    "the logger rebound": "module.logger = other\n",
+    "a module named like tests": "from faultmaven.tests_support import x\n",
 }
 
 

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from faultmaven.infrastructure.security.case_redaction import (
@@ -65,12 +66,14 @@ SOURCE_CASE = "case"
 SOURCE_MODEL_BOUNDARY = "model_boundary"
 SOURCE_MODEL_OUTPUT = "model_output"
 SOURCE_NON_CASE = "non_case"
-_SOURCE_RANK = {
-    SOURCE_CASE: 3,
-    SOURCE_MODEL_BOUNDARY: 2,
-    SOURCE_MODEL_OUTPUT: 1,
-    SOURCE_NON_CASE: 0,
-}
+_SOURCE_RANK = MappingProxyType(
+    {
+        SOURCE_CASE: 3,
+        SOURCE_MODEL_BOUNDARY: 2,
+        SOURCE_MODEL_OUTPUT: 1,
+        SOURCE_NON_CASE: 0,
+    }
+)
 
 #: The token construction requires. Module-private: no other module may name it.
 _MINT_TOKEN = object()
@@ -438,6 +441,7 @@ def _remint_messages(original: List[Any], sanitized: List[Any]) -> List[Any]:
         after = dict(after)
         if "content" in before and "content" in after:
             after["content"] = _remint_text(before["content"], after["content"])
+        _remint_metadata(before, after)
         calls_before, calls_after = before.get("tool_calls"), after.get("tool_calls")
         if (
             isinstance(calls_before, list)
@@ -452,9 +456,19 @@ def _remint_messages(original: List[Any], sanitized: List[Any]) -> List[Any]:
     return out
 
 
+def _remint_metadata(before: Dict[str, Any], after: Dict[str, Any]) -> None:
+    """Keep ``before``'s minted reasoning artifacts where the pass left them as
+    they were (the sanitizer passes them through verbatim, #654)."""
+    key = "provider_metadata"
+    if key in before and key in after and _plain_leaves(before[key]) == after[key]:
+        after[key] = before[key]
+
+
 def _remint_call(before: Any, after: Any) -> Any:
     if not (isinstance(before, dict) and isinstance(after, dict)):
         return after
+    after = dict(after)
+    _remint_metadata(before, after)
     function_before, function_after = before.get("function"), after.get("function")
     if not (isinstance(function_before, dict) and isinstance(function_after, dict)):
         return after
@@ -592,12 +606,14 @@ UNKNOWN_KWARG = "unknown_kwarg"  # a send keyword outside the closed set
 #: ``str``, leaf or key, is minted model output); a tool result names its call
 #: (``tool_call_id``) and the function that produced it (``name``, which the
 #: Gemini adapter needs for ``functionResponse.name``).
-MESSAGE_KEYS = {
-    "system": frozenset({"role", "content"}),
-    "user": frozenset({"role", "content"}),
-    "assistant": frozenset({"role", "content", "tool_calls", "provider_metadata"}),
-    "tool": frozenset({"role", "content", "tool_call_id", "name"}),
-}
+MESSAGE_KEYS = MappingProxyType(
+    {
+        "system": frozenset({"role", "content"}),
+        "user": frozenset({"role", "content"}),
+        "assistant": frozenset({"role", "content", "tool_calls", "provider_metadata"}),
+        "tool": frozenset({"role", "content", "tool_call_id", "name"}),
+    }
+)
 #: A tool call on an assistant message, and its function.
 TOOL_CALL_KEYS = frozenset({"id", "type", "function", "provider_metadata"})
 FUNCTION_KEYS = frozenset({"name", "arguments"})
@@ -632,17 +648,25 @@ def key_names(keys: Any) -> str:
 
 
 def message_violations(messages: Any) -> List[ContentViolation]:
-    """Every way ``messages`` departs from the boundary's message grammar."""
-    if not isinstance(messages, list):
+    """Every way ``messages`` departs from the boundary's message grammar.
+
+    The containers, every key and every role must be EXACT builtins (``list``,
+    ``dict``, ``str``): a subclass can iterate, ``get`` or hash one way for
+    this check and another for the adapter that reads the same object next
+    (a ``list`` whose ``__iter__`` yields checked messages once, a role whose
+    ``__hash__`` rewrites a message already checked). An exact builtin runs no
+    caller code, so what was checked is what is sent.
+    """
+    if type(messages) is not list:
         return [ContentViolation("messages", BAD_SHAPE, "messages")]
     found: List[ContentViolation] = []
     for index, message in enumerate(messages):
         at = f"messages[{index}]"
-        if not isinstance(message, dict):
+        if type(message) is not dict or any(type(k) is not str for k in message):
             found.append(ContentViolation("messages", BAD_SHAPE, at))
             continue
         role = message.get("role")
-        allowed = MESSAGE_KEYS.get(role) if isinstance(role, str) else None
+        allowed = MESSAGE_KEYS.get(role) if type(role) is str else None
         if allowed is None:
             found.append(ContentViolation("messages.role", BAD_ROLE, at))
             continue
@@ -684,26 +708,39 @@ def _identifier_violation(
     return ContentViolation(argument, BAD_ID, where)
 
 
+#: The leaf types a reasoning artifact may hold (exact types only).
+_METADATA_LEAVES = (str, ModelText, int, float, bool, type(None))
+
+
 def _metadata_violations(
     value: Any, argument: str, where: str
 ) -> List[ContentViolation]:
     """Every ``str`` in a reasoning artifact — leaf or dict key — must be minted
     model output.
 
+    Only exact builtins are walked or accepted: ``dict``, ``list`` and
+    ``tuple`` containers, and ``str``/``ModelText``, ``int``, ``float``,
+    ``bool`` and ``None`` leaves. Anything else, a subclass of one of them
+    included, is ``bad_shape``: its methods could answer this walk one way and
+    the adapter's serialisation another. Types are compared by identity, so no
+    metaclass runs either.
+
     Out of scope, as a deliberate encoding rather than a channel: text spelled
-    as numbers (a list of code points). Numbers, booleans and ``None`` are not
-    text; any other object cannot be serialised into a request at all.
+    as numbers (a list of code points).
     """
     found: List[ContentViolation] = []
     stack = [value]
     while stack:
         item = stack.pop()
-        if isinstance(item, dict):
+        kind = type(item)
+        if kind is dict:
             stack.extend(item.keys())
             stack.extend(item.values())
-        elif isinstance(item, (list, tuple)):
+        elif kind is list or kind is tuple:
             stack.extend(item)
-        elif isinstance(item, str):
+        elif not any(kind is leaf for leaf in _METADATA_LEAVES):
+            found.append(ContentViolation(argument, BAD_SHAPE, where))
+        elif kind is str or kind is ModelText:
             violation = text_violation(item, argument, where)
             if violation is not None:
                 found.append(violation)
@@ -713,12 +750,12 @@ def _metadata_violations(
 
 
 def _tool_call_violations(calls: Any, at: str) -> List[ContentViolation]:
-    if not isinstance(calls, list):
+    if type(calls) is not list:
         return [ContentViolation("messages.tool_calls", BAD_SHAPE, f"{at}.tool_calls")]
     found: List[ContentViolation] = []
     for index, call in enumerate(calls):
         where = f"{at}.tool_calls[{index}]"
-        if not isinstance(call, dict):
+        if type(call) is not dict or any(type(k) is not str for k in call):
             found.append(ContentViolation("messages.tool_calls", BAD_SHAPE, where))
             continue
         extra = [key for key in call if key not in TOOL_CALL_KEYS]
@@ -744,7 +781,7 @@ def _tool_call_violations(calls: Any, at: str) -> List[ContentViolation]:
                 )
             )
         function = call.get("function")
-        if not isinstance(function, dict):
+        if type(function) is not dict or any(type(k) is not str for k in function):
             found.append(
                 ContentViolation("messages.tool_calls", BAD_SHAPE, f"{where}.function")
             )

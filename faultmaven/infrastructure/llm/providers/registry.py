@@ -18,7 +18,10 @@ from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
-from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.dispatch import (
+    RawModelContentRefused,
+    send_to_model,
+)
 from faultmaven.infrastructure.llm.metering import record_provider_call
 
 from .anthropic import AnthropicProvider
@@ -1001,6 +1004,11 @@ class ProviderRegistry:
 
                     continue
 
+            except RawModelContentRefused:
+                # The request's fault, not the provider's (#1998): no failure
+                # is recorded and no other provider is tried with the same
+                # content.
+                raise
             except Exception as e:
                 # Record failure for health tracking
                 state.record_failure()

@@ -44,6 +44,7 @@ from .dispatch import (
     find_send_site,
     model_call_violations,
     refuse_if_refusing,
+    report_raw_model_content,
 )
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason
@@ -517,13 +518,24 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         # The model boundary's check, at entry, on the caller's own values and
         # without unwrapping them (#1998): under refusal a raw call stops here,
-        # before the SANITIZE_PII pass below sees its content. The registry
+        # before the SANITIZE_PII pass below sees its content. ``route()``'s
+        # signature is closed, so only the content arguments need checking.
+        #
+        # In warn mode each violation is reported exactly once. The registry
         # hands the re-minted values to ``dispatch.send_to_model``, which runs
-        # the same check again and is the one that REPORTS a violation (warn
-        # mode), naming the caller through SEND_SITE — so a raw routed call is
-        # reported once. ``route()``'s signature is closed, so only the content
-        # arguments need checking here.
-        refuse_if_refusing("router", model_call_violations(prompt, messages, {}))
+        # the same check again and reports what reaches it, naming the caller
+        # through SEND_SITE. What never reaches it is reported here: a value
+        # this router drops before the registry (a falsy prompt or falsy
+        # messages — the engine's routed tool loop sends ``prompt=""``), and,
+        # on a cache hit below, everything else.
+        entry_violations = model_call_violations(prompt, messages, {})
+        refuse_if_refusing("router", entry_violations)
+        dropped_violations = model_call_violations(
+            prompt if prompt is not None and not prompt else None,
+            messages if messages is not None and not messages else None,
+            {},
+        )
+        report_raw_model_content("router", dropped_violations, sys._getframe())
 
         # Normalize the reasoning knobs up front, loudly — a typo'd intent or a
         # nonsensical floor is a caller bug and must fail at the call site, not
@@ -660,6 +672,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     model=cached_response.model,
                     status="cached",
                 ).inc()
+                # Answered without a send: no dispatch reports this call.
+                report_raw_model_content(
+                    "router",
+                    [v for v in entry_violations if v not in dropped_violations],
+                    sys._getframe(),
+                )
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
