@@ -84,7 +84,7 @@ dependencies = [
     "python-json-logger>=2.0.7",
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
-    "chromadb>=0.5.3",
+    "chromadb>=1.0.0",
     # Floored at the release the lockfiles pin and the image is built with.
     # The security floor is 5.6.0: below it, loading a model from a path that
     # exists on local disk runs that directory's Python even with

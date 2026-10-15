@@ -13,7 +13,7 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | Gemini | Yes | BEST_EFFORT | Full capability |
 | Cohere | Yes | BEST_EFFORT | Full capability |
 | HuggingFace | No | BEST_EFFORT | No DA tool use, degraded investigation |
-| Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible path; never on Ollama's native `/api/generate` |
+| Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible path; never on Ollama's native `/api/chat` transport |
 | OpenRouter | Inherited | Inherited | Depends on underlying model |
 
 ## Role Routing
@@ -453,10 +453,12 @@ capability answer and the request that gets sent cannot disagree. The hostname
 is never consulted: `http://ollama:11434/v1` is Ollama's OpenAI-compatible
 endpoint and is treated as one.
 
-- **Ollama native `/api/generate`** (selected by an `/api` or `/api/generate`
-  suffix): `supports_tool_calling()` is always `False`. The protocol has no
-  `tool_calls` field, so this is not model-dependent and an operator declaration
-  cannot override it. The startup gate refuses to boot here unless
+- **Ollama native `/api/chat`** (selected by an `/api`, `/api/chat` or
+  `/api/generate` suffix; FaultMaven always posts to `/api/chat`, which carries
+  the conversation): `supports_tool_calling()` is always `False`. The transport
+  sends no `tools` and parses no `tool_calls`, so this is not model-dependent
+  and an operator declaration cannot override it (#2016 declined native tool
+  calling). The startup gate refuses to boot here unless
   `ALLOW_TOOLLESS_INVESTIGATION=true`.
 - **OpenAI-compatible `/v1/chat/completions`** (a bare host, or a `/v1` or
   `/v1/chat/completions` suffix — the suffix is stripped before the request URL

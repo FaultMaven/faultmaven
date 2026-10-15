@@ -27,12 +27,12 @@ from .base import (
 
 # The two protocols a self-hosted endpoint can speak to FaultMaven.
 TRANSPORT_OPENAI_COMPATIBLE = "openai_compatible"  # POST {root}/v1/chat/completions
-TRANSPORT_OLLAMA_NATIVE = "ollama_native"  # POST {root}/api/generate
+TRANSPORT_OLLAMA_NATIVE = "ollama_native"  # POST {root}/api/chat
 
 # Path suffixes an operator may legitimately paste into LOCAL_LLM_URL. Both the
 # bare API root and the full endpoint path are accepted for each protocol,
 # because both are what the upstream projects print in their own docs.
-_OLLAMA_NATIVE_SUFFIXES = ("/api/generate", "/api")
+_OLLAMA_NATIVE_SUFFIXES = ("/api/chat", "/api/generate", "/api")
 _OPENAI_COMPATIBLE_SUFFIXES = ("/v1/chat/completions", "/v1")
 
 
@@ -62,7 +62,8 @@ def resolve_local_transport(base_url: Optional[str]) -> tuple[str, str]:
     A bare host resolves to the OpenAI-compatible protocol: that is what
     ``.env.example`` documents, what every serving stack except Ollama offers,
     and what Ollama also serves on the same port. Selecting Ollama's native
-    ``/api/generate`` is therefore explicit — point at ``/api``.
+    ``/api/chat`` is therefore explicit — point at ``/api``. FaultMaven posts to
+    ``/api/chat`` whichever of the three suffixes was pasted.
     """
     raw = (base_url or "").strip().rstrip("/")
     lowered = raw.lower()
@@ -116,7 +117,8 @@ class LocalProvider(BaseLLMProvider):
     #
     # 1. The TRANSPORT, as named by the URL PATH — ``resolve_local_transport``,
     #    the same function ``_generate()`` dispatches on, so the two can never
-    #    disagree. Ollama's native ``/api/generate`` has no ``tool_calls`` field
+    #    disagree. FaultMaven's Ollama native transport (``/api/chat``) does not parse a
+    #    ``tool_calls`` field
     #    at all, so NO model can do tool calling over it — a protocol-level
     #    fact, not a model-level one, and not a fact about the hostname. Every
     #    other path reaches ``/v1/chat/completions``, which does carry them.
@@ -168,7 +170,7 @@ class LocalProvider(BaseLLMProvider):
         """Whether this local endpoint can do tool calling for *model*.
 
         The rule and the reasoning behind it are in the note above. In short:
-        the Ollama ``/api/generate`` transport is never capable and no
+        the Ollama native transport (``/api/chat``) is never capable and no
         declaration can make it so — the protocol has nowhere to put a tool
         call — and the OpenAI-compatible transport is capable unless the
         operator declares otherwise.
@@ -182,8 +184,8 @@ class LocalProvider(BaseLLMProvider):
                 self._declared_tool_calling_warned = True
                 self.logger.warning(
                     "LOCAL_LLM_TOOL_CALLING=true is not honoured for %r: this "
-                    "URL names Ollama's native /api/generate API, whose response "
-                    "has no tool_calls field, so tool calling is impossible "
+                    "URL names Ollama's native /api API, whose transport here "
+                    "does not carry tool calls, so tool calling is unavailable "
                     "there for every model. Drop the /api suffix from "
                     "LOCAL_LLM_URL — the same port also serves the "
                     "OpenAI-compatible API, which does carry tool calls.",
@@ -294,6 +296,19 @@ class LocalProvider(BaseLLMProvider):
             if getattr(openai_error, "status_code", None) != 404:
                 # Not a wrong-endpoint error — the fallback cannot help.
                 raise openai_error
+            # The raw endpoint takes one prompt. A call carrying a conversation
+            # is refused HERE, before the POST and outside the composite
+            # below, so it reaches the caller as itself: non-retryable, naming
+            # the fix, not re-typed as a two-format failure (#2016).
+            if kwargs.get("messages"):
+                raise LLMException(
+                    f"The server at {root} answered 404 on "
+                    f"/v1/chat/completions and serves only /completion, which "
+                    f"takes a single prompt; this call carries a conversation "
+                    f"(messages). Point LOCAL_LLM_URL at an endpoint that "
+                    f"serves /v1/chat/completions.",
+                    retryable=False,
+                ) from openai_error
             try:
                 return await self._call_llamacpp_api(
                     prompt, effective_model, max_tokens, temperature, **kwargs
@@ -347,13 +362,24 @@ class LocalProvider(BaseLLMProvider):
     async def _call_ollama_api(
         self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
     ) -> LLMResponse:
-        """Call Ollama-style API"""
+        """Call Ollama's native chat API (``POST {root}/api/chat``).
+
+        The conversation is ``messages`` when the caller gave a non-empty list,
+        otherwise the prompt as one user message: the rule
+        ``_call_openai_compatible_api`` applies (#2016). ``/api/generate``,
+        which this used to post to, takes only a prompt and dropped the
+        conversation.
+        """
 
         _transport, root = self._transport()
 
+        messages = kwargs.pop("messages", None)
+        if not messages:
+            messages = [{"role": "user", "content": prompt}]
+
         payload = {
             "model": model,
-            "prompt": prompt,
+            "messages": messages,
             "stream": False,
             "options": {"num_predict": max_tokens, "temperature": temperature},
         }
@@ -364,9 +390,10 @@ class LocalProvider(BaseLLMProvider):
         # ``options``.
         self._discard_router_kwargs(kwargs, model=model)
 
-        # /api/generate takes a prompt plus generation options: tools,
-        # tool_choice and messages are /api/chat fields, not options.
-        for not_an_option in ("messages", "tools", "tool_choice"):
+        # ``tools`` and ``tool_choice`` are /api/chat body fields, not
+        # options, and this transport does not do tool calling (its capability
+        # stays False), so they are dropped rather than sent.
+        for not_an_option in ("tools", "tool_choice"):
             kwargs.pop(not_an_option, None)
 
         # Structured output (Ollama uses "format": "json"): only when one was
@@ -378,7 +405,7 @@ class LocalProvider(BaseLLMProvider):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{root}/api/generate",
+                f"{root}/api/chat",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
@@ -394,7 +421,7 @@ class LocalProvider(BaseLLMProvider):
                 data = await response.json()
 
                 # Extract response content
-                content = data.get("response")
+                content = (data.get("message") or {}).get("content")
                 if not content:
                     raise LLMException("Ollama API returned no response content")
 

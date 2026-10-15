@@ -17,8 +17,8 @@ compose examples and Helm chart.
 Capability is now decided by ``resolve_local_transport``, the SINGLE predicate
 ``generate()`` also dispatches on, reading the URL **path**:
 
-* ``/api`` or ``/api/generate`` → Ollama's native protocol, which has no
-  ``tool_calls`` field: never capable, and no declaration can override it;
+* ``/api``, ``/api/chat`` or ``/api/generate`` → Ollama's native transport,
+  which sends no tools and parses no ``tool_calls``: never capable, and no declaration can override it;
 * a bare host, ``/v1`` or ``/v1/chat/completions`` → the OpenAI-compatible
   protocol: capable unless the operator declares otherwise. The suffix is
   stripped before the request URL is built, so no form doubles the path.
@@ -104,6 +104,11 @@ def _provider(model: str, base_url: str, tool_calling=None) -> LocalProvider:
         ("http://ollama:11434/api", TRANSPORT_OLLAMA_NATIVE, "http://ollama:11434"),
         (
             "http://ollama:11434/api/generate",
+            TRANSPORT_OLLAMA_NATIVE,
+            "http://ollama:11434",
+        ),
+        (
+            "http://ollama:11434/api/chat",
             TRANSPORT_OLLAMA_NATIVE,
             "http://ollama:11434",
         ),
@@ -214,13 +219,13 @@ def test_ollama_native_transport_is_never_capable(model, base_url):
 @pytest.mark.unit
 @pytest.mark.llm
 def test_operator_cannot_declare_tool_calling_onto_the_native_transport(caplog):
-    """``/api/generate`` has nowhere to put a tool call. An operator declaring
+    """The native transport sends no tool call. An operator declaring
     otherwise is refused (and told why) rather than believed."""
     provider = _provider("qwen3-32b", OLLAMA_NATIVE_URL, tool_calling=True)
     with caplog.at_level(logging.WARNING):
         assert provider.supports_tool_calling() is False
     assert "not honoured" in caplog.text
-    assert "/api/generate" in caplog.text
+    assert "/api" in caplog.text
 
 
 @pytest.mark.unit
@@ -351,17 +356,26 @@ async def test_every_openai_compatible_url_form_posts_to_the_same_endpoint(base_
 @pytest.mark.llm
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "base_url", ["http://127.0.0.1:9999/api", "http://127.0.0.1:9999/api/generate"]
+    "base_url",
+    [
+        "http://127.0.0.1:9999/api",
+        "http://127.0.0.1:9999/api/generate",
+        "http://127.0.0.1:9999/api/chat",
+    ],
 )
 async def test_every_ollama_native_url_form_posts_to_the_same_endpoint(base_url):
     provider = _provider("llama3.2", base_url)
     session = _recording_session()
     session.post.return_value.json = AsyncMock(
-        return_value={"response": "ok", "eval_count": 3, "done_reason": "stop"}
+        return_value={
+            "message": {"role": "assistant", "content": "ok"},
+            "eval_count": 3,
+            "done_reason": "stop",
+        }
     )
     with patch("aiohttp.ClientSession", return_value=session):
         await send_to_model(provider, prompt="hello")
-    assert session.post.call_args[0][0] == "http://127.0.0.1:9999/api/generate"
+    assert session.post.call_args[0][0] == "http://127.0.0.1:9999/api/chat"
 
 
 @pytest.mark.unit
