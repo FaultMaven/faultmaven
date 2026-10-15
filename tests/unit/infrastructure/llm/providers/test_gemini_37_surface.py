@@ -32,6 +32,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import (
     ProviderConfig,
     ReasoningIntent,
@@ -73,7 +74,7 @@ async def _sent_body(mock_factory, provider, **generate_kwargs):
     (tests/unit/infrastructure/llm/conftest.py) — never a local copy."""
     mock_session = mock_factory(_OK_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("Test", **generate_kwargs)
+        await send_to_model(provider, prompt="Test", **generate_kwargs)
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 
@@ -578,7 +579,7 @@ class TestFunctionCallIdAdoption:
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            response = await provider.generate("q", max_tokens=500)
+            response = await send_to_model(provider, prompt="q", max_tokens=500)
         assert response.tool_calls[0].id == "fc-api-1"
 
     async def test_absent_id_still_synthesized(self, mock_aiohttp_session):
@@ -598,7 +599,7 @@ class TestFunctionCallIdAdoption:
         provider = GeminiProvider(_config("gemini-3.5-flash"))
         mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            response = await provider.generate("q", max_tokens=500)
+            response = await send_to_model(provider, prompt="q", max_tokens=500)
         assert response.tool_calls[0].id.startswith("call_")
 
 

@@ -65,7 +65,7 @@ class StubLLM(ILLMProvider):
     def __init__(self) -> None:
         self.payload = "{}"
 
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return self.payload
 
     async def generate_stream(self, prompt, **kwargs):

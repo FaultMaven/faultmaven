@@ -88,7 +88,7 @@ class _LLM(ILLMProvider):
         self.state_updates = state_updates or {}
         self.calls = 0
 
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         self.calls += 1
         return json.dumps(
             {
@@ -101,7 +101,7 @@ class _LLM(ILLMProvider):
         yield "mock"
 
     async def generate_with_history(self, messages, **kwargs):
-        return await self.generate("")
+        return await self.route("")
 
     def get_structured_output_strategy(self, schema):
         return StructuredOutputStrategy(

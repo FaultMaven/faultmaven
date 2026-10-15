@@ -381,7 +381,7 @@ class TestTheHeadingNamesTheTurnThatWroteTheNotice:
 
 
 class _StubLLM(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return "{}"
 
     async def generate_stream(self, prompt, **kwargs):
@@ -423,7 +423,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
     @pytest.mark.asyncio
     async def test_strip_then_gate_then_llm_turn(self):
         llm = _StubLLM()
-        llm.generate = AsyncMock()
+        llm.route = AsyncMock()
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c, **_: c)
         repo.get = AsyncMock()
@@ -444,7 +444,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         # Turn 1: an unjustified milestone claim is stripped, and the engine
         # records why.
         case.current_turn = 1
-        llm.generate.return_value = _llm_reply(
+        llm.route.return_value = _llm_reply(
             milestones={"symptom_verified": True}, outcome="milestone_completed"
         )
         case = (await engine.process_turn(case, "it still fails", redaction_ctx=None))[
@@ -453,24 +453,24 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         assert _STRIPPED in (case.turn_history[-1].system_feedback or "")
 
         # Turn 2: the user opens a close from the dropdown. No prompt is built.
-        llm.generate.reset_mock()
+        llm.route.reset_mock()
         case.current_turn = 2
         case = (
             await engine.process_turn(case, "", **DROPDOWN_CLOSE, redaction_ctx=None)
         )["case_updated"]
-        assert llm.generate.call_count == 0
+        assert llm.route.call_count == 0
         assert case.pending_transition
 
         # Turn 3: the user declines with a question, which is processed as a
         # normal turn. Its prompt carries the notice from turn 1.
         case.current_turn = 3
-        llm.generate.return_value = _llm_reply()
+        llm.route.return_value = _llm_reply()
         case = (
             await engine.process_turn(
                 case, "no — what should I check next?", redaction_ctx=None
             )
         )["case_updated"]
-        prompts = [c.kwargs["prompt"] for c in llm.generate.call_args_list]
+        prompts = [c.kwargs["prompt"] for c in llm.route.call_args_list]
         assert prompts and any(_STRIPPED in p for p in prompts)
         assert any(
             "SYSTEM FEEDBACK FROM TURN 1 (not shown to you until now)" in p

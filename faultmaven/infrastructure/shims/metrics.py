@@ -579,6 +579,21 @@ llm_unpriced_calls = Counter(
     labelnames=["provider", "model"],
 )
 
+# Model-bound content the provider boundary did not accept (#1998): a call
+# whose prompt, messages or content keywords were not minted by the redaction
+# module, or that passed a keyword outside the closed set. One increment per
+# (argument, kind) per call. content="raw": reported and SENT (warn-only, while
+# callers migrate); the refusal that replaces it raises before any I/O. Non-zero
+# in production = a send path that has not moved to the minting helpers yet.
+llm_model_content_violations = Counter(
+    "llm_model_content_violations_total",
+    "Provider calls carrying model-bound content the redaction module did not "
+    "mint, by argument (prompt|messages.content|...|kwargs) and kind "
+    "(raw|forged|not_text|bad_shape|bad_id|bad_role|unknown_key|"
+    "not_model_output|unknown_kwarg). content=raw: reported and sent.",
+    labelnames=["provider", "argument", "kind", "content"],
+)
+
 # The gap between llm_provider_calls_total and the calls the LLM usage ledger
 # persisted (#640). The ledger's writes fail OPEN — a failed write never fails a
 # call — so this counter is what keeps the gap observable instead of silent.

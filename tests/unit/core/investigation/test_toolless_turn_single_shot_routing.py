@@ -87,7 +87,7 @@ class TestRoutingPredicate:
 
 
 def _engine_with_recording_provider():
-    """A provider whose generate() records its kwargs and answers a minimal
+    """A provider whose route() records its kwargs and answers a minimal
     valid Diagnosis body through the JSON (non-tool) path."""
     provider = MagicMock()
     provider.provider_name = "openai"
@@ -105,7 +105,7 @@ def _engine_with_recording_provider():
     )
     provider.supports_tool_calling = MagicMock(return_value=True)
     body = '{"agent_response": "ok", "state_updates": {}}'
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         return_value=LLMResponse(
             content=body,
             confidence=0.9,
@@ -137,7 +137,7 @@ async def test_single_shot_call_carries_intent_and_floor_when_declared():
         reasoning_intent=ReasoningIntent.INFERENCE,
         min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
     )
-    kwargs = provider.generate.call_args.kwargs
+    kwargs = provider.route.call_args.kwargs
     assert kwargs["reasoning_intent"] is ReasoningIntent.INFERENCE
     assert kwargs["min_output_tokens"] == TOOLLESS_INFERENCE_OUTPUT_FLOOR
     assert "tools" not in kwargs
@@ -150,7 +150,7 @@ async def test_single_shot_call_sends_no_intent_when_not_declared():
     await engine.generator.generate_structured_output(
         "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
     )
-    kwargs = provider.generate.call_args.kwargs
+    kwargs = provider.route.call_args.kwargs
     assert "reasoning_intent" not in kwargs
     assert "min_output_tokens" not in kwargs
 
@@ -254,7 +254,7 @@ async def test_single_shot_path_prunes_an_invalid_list_entry_instead_of_failing_
         '"suggested_follow_ups": [{"label": "Run df", "action_type": "RUN", '
         '"evidence_need_id": "eneed_06943c2b1feb"}]}'
     )
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         return_value=LLMResponse(
             content=body,
             confidence=0.9,

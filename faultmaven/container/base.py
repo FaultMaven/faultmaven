@@ -64,7 +64,7 @@ class BaseDIContainer:
 
         # Infrastructure layer mocks
         llm_provider = MagicMock()
-        llm_provider.generate = MagicMock(return_value="Mock LLM response")
+        llm_provider.route = MagicMock(return_value="Mock LLM response")
         llm_provider.generate_response = MagicMock(return_value="Mock LLM response")
         self._register_service("llm_provider", llm_provider)
 

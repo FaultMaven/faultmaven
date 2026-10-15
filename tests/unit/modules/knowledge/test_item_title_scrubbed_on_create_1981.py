@@ -112,11 +112,13 @@ pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
 #: ``(label, the secret, a title carrying it)``. The first four are the
 #: sanitizer's secret set as a title can hold it (an error message pasted into
-#: one). The last two ABUT: the sanitizer's ``password`` pattern needs a word
-#: boundary, which a digit or hex digit before the ``p`` removes until the IP or
-#: MAC pattern (later in its list) has replaced the address, so ONE pass leaves
-#: ``password=hunter2`` in place and a second takes it out. A title scrubbed once
-#: and the same title scrubbed twice then differ.
+#: one). The last two ABUT: a key glued after an address. On main the
+#: ``password`` pattern needed a word boundary, which the digit or hex digit
+#: before the ``p`` removed until the IP or MAC pattern had replaced the
+#: address, so ONE pass left ``password=hunter2`` in place and a second took
+#: it out, and a title scrubbed once and the same title scrubbed twice
+#: differed. Since #1980 one pass takes it (the finder's masked rounds); the
+#: shapes stay, since the helper's fixed point must not rest on that.
 SECRET_TITLES = [
     ("password", "hunter2", "Login fails after rotation (password=hunter2)"),
     (
@@ -400,9 +402,9 @@ class TestUploadDocument:
             ).scalars()
         indexed = service._index_document_in_vector_store.await_args.args[0]
         _assert_scrubbed(item_title, secret)
-        # ONE text everywhere, and the same text a one-off scrub gives: the
-        # sanitizer is not idempotent (see SECRET_TITLES), so five copies made
-        # by a different number of passes would not agree.
+        # ONE text everywhere, and the same text a one-off scrub gives: each
+        # copy is scrubbed to a fixed point, so five copies agree whatever the
+        # sanitizer's own idempotence (see SECRET_TITLES).
         copies = {
             "draft": draft_title,
             "filename": filename,
@@ -1525,7 +1527,9 @@ class TestTheColumnCutComesAfterTheScrub:
     KEY = "sk-" + KEY_BLOCK * 4
 
     def _straddling(self, length: int) -> str:
-        return "x" * (length - 3 - 21) + self.KEY + " tail"
+        # The key after a space: a letter glued before `sk-` is a task id's
+        # shape (`task-0123…`), not a key, since #1980.
+        return "x" * (length - 3 - 21 - 1) + " " + self.KEY + " tail"
 
     @pytest.mark.parametrize("length", [255, 512], ids=["String(255)", "String(512)"])
     async def test_the_helper_scrubs_before_it_cuts(self, length):
@@ -1659,18 +1663,20 @@ class TestTheColumnCutComesAfterTheScrub:
 
 
 class TestTheDeepestChainSettlesWithSlack:
-    """``password`` waits on the IP, which waits on the MAC: three changing
-    passes and one more to see nothing change, four calls. A bound of four had
-    no slack at all; it is six."""
+    """``password`` waits on the IP, which waits on the MAC. Main's patterns
+    settled one layer per call: three changing calls and one more to see
+    nothing change, four, against a bound of six. Since #1980 the regex half
+    settles the chain inside one call: one changing call and one to see
+    nothing change, two."""
 
     CHAIN = "Login fails (00:1A:2B:3C:4D:5510.0.0.5password=hunter2)"
 
-    async def test_it_settles_in_four_calls_inside_the_bound(self):
+    async def test_it_settles_in_two_calls_inside_the_bound(self):
         counting = _CountingSanitizer(regex_only_sanitizer())
 
         result = await sanitize_item_title(counting, self.CHAIN)
 
-        assert "hunter2" not in result and counting.calls == 4
+        assert "hunter2" not in result and counting.calls == 2
         assert counting.calls < MAX_SCRUB_PASSES
 
     async def test_the_chain_survives_the_real_paths_too(self, session_factory):
@@ -1706,7 +1712,8 @@ class TestTheHelper:
     @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
     async def test_it_is_idempotent_on_its_own_output(self, label, secret, title):
         """The property the copies rest on: scrubbing the result again changes
-        nothing. The sanitizer alone does not have it (see ``SECRET_TITLES``)."""
+        nothing — held by the helper's loop, whatever the sanitizer's own
+        idempotence (``test_it_runs_the_sanitizer_to_a_fixed_point``)."""
         sanitizer = regex_only_sanitizer()
 
         once = await sanitize_item_title(sanitizer, title)

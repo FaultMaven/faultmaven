@@ -118,9 +118,14 @@ class AnthropicProvider(BaseLLMProvider):
     # one WARNING per pair per process (#1756).
     _THINKING_SUBSTITUTION_LOGGED: set[tuple[str, str]] = set()
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "anthropic"
+
     @property
     def provider_name(self) -> str:
-        return "anthropic"
+        return self.LABEL
 
     @classmethod
     def _claude_version(cls, model: str) -> tuple[str, tuple[int, int]] | None:
@@ -345,7 +350,7 @@ class AnthropicProvider(BaseLLMProvider):
         # No model-specific logic needed - all Claude models have the same capability
         return StructuredOutputCapability.FUNCTION_CALLING
 
-    async def generate(
+    async def _generate(
         self,
         prompt: str,
         model: Optional[str] = None,
@@ -843,7 +848,7 @@ class AnthropicProvider(BaseLLMProvider):
             elif role == "assistant":
                 # When the original response carried thinking blocks, the
                 # raw content array was captured verbatim (see
-                # provider_metadata.assistant_content in generate()). Echo it
+                # provider_metadata.assistant_content in _generate()). Echo it
                 # as-is: Anthropic validates thinking/redacted_thinking block
                 # signatures and rejects the request if any block is missing
                 # or altered. Rebuilding from `content` + `tool_calls` would
@@ -925,7 +930,7 @@ def _mark_cache_boundary(messages: list) -> None:
     The investigation prompt reaches this provider as ONE user text block whose
     first part — the standing instructions, up to ``CACHE_BOUNDARY`` — renders
     the same bytes on every turn, and whose rest is this turn's case. The
-    system breakpoint in ``generate()`` caches the tools and the system
+    system breakpoint in ``_generate()`` caches the tools and the system
     instruction only; this one extends the cached prefix through the boundary
     line, so the next turn reads the instructions from the cache too.
 

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import (
     ProviderConfig,
     StructuredOutputCapability,
@@ -227,7 +228,7 @@ async def test_generate_applies_ref_resolution_to_response_schema(provider):
     }
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("Test", response_format=response_format)
+        await send_to_model(provider, prompt="Test", response_format=response_format)
 
     call_kwargs = mock_session.post.call_args
     request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")

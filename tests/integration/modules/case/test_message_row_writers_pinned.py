@@ -427,7 +427,7 @@ class TestSystemNoticeRow:
         spy = _SaveSpy(repository)
 
         llm = MagicMock()
-        llm.generate = AsyncMock(return_value=MagicMock())
+        llm.route = AsyncMock(return_value=MagicMock())
         engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
         request = CaseConversionRequest(
             case_id=case.case_id,
@@ -564,7 +564,7 @@ class TestNewRowsGoLast:
         conversion = MagicMock()
         conversion.convert_from_case = AsyncMock(side_effect=RuntimeError("boom"))
         llm = MagicMock()
-        llm.generate = AsyncMock(return_value=MagicMock())
+        llm.route = AsyncMock(return_value=MagicMock())
         engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
         await engine.runbooks._run_runbook_conversion(
             conversion,

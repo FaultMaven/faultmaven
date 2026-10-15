@@ -31,6 +31,11 @@ from faultmaven.core.investigation.confidence_repair import (
 )
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
+from faultmaven.infrastructure.security.redaction import (
+    SECRET_PATTERNS,
+    RedactionSpan,
+    redact_spans,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     PreprocessingResult,
@@ -106,51 +111,52 @@ def cleanup_text(text: str) -> str:
 
 
 # =============================================================================
-# PII Redaction (regex layer — Presidio optional)
+# Secret redaction (the sanitizer's regex layer)
 # =============================================================================
-
-_REDACTION_PATTERNS = [
-    (
-        "api_key",
-        r"(?i)(?:api[_-]?key|apikey)\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]{20,})['\"]?",
-    ),
-    ("aws_key", r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
-    ("jwt", r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
-    ("private_key", r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----"),
-    (
-        "db_connection_string",
-        r"(?i)(?:postgres(?:ql)?|mysql|mongodb|redis)://[^\s'\"]+",
-    ),
-    ("password", r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\"]{6,}['\"]?"),
-]
 
 
 def redact_sensitive_content(text: str) -> tuple[str, RedactionReport]:
-    """Stage 3: Detect and redact sensitive content before LLM."""
-    redactions: list[RedactionEntry] = []
-    total = 0
+    """Stage 3: Detect and redact secrets before the text reaches a model.
 
-    for redaction_type, pattern in _REDACTION_PATTERNS:
-        matches = list(re.finditer(pattern, text))
-        if matches:
-            count = len(matches)
-            total += count
-            # Determine context from first match location
-            first_match = matches[0]
-            start = max(0, first_match.start() - 30)
-            end = min(len(text), first_match.end() + 30)
-            context_snippet = text[start:end]
+    Detection is the sanitizer's own secret pattern set (``SECRET_PATTERNS``,
+    #1980): a document is scanned for exactly the secrets case content is.
+    The sanitizer's network-address patterns (internal IPs, MACs) are not
+    applied here: they are identifiers, not secrets, and on this path they
+    are the model-boundary redaction's, under ``SANITIZE_PII`` (#1901). The
+    replacement differs too, and deliberately. This stage runs on every
+    conversion, whatever ``SANITIZE_PII`` says, and what it writes is meant
+    to be read: ``[REDACTED:<type>]`` tells the model, and then the runbook's
+    author, that a value of that kind was removed and must be filled in
+    (document-to-runbook-conversion.md §2.4), and ``redaction_report`` counts
+    the markers by type for the user. A keyed ``<TYPE_digest>`` pseudonym
+    answers a different need — matching one value across a case — and is
+    what the model-boundary redaction adds under ``SANITIZE_PII``.
+    """
+    counts: dict[str, int] = {}
+    first_start: dict[str, int] = {}
 
-            # Determine where it was found
-            if "```" in text[max(0, first_match.start() - 50) : first_match.start()]:
-                context = "Found in code blocks"
-            else:
-                context = "Found in text content"
+    def _marker(span: RedactionSpan, _value: str) -> str:
+        redaction_type = span.entity_type.lower()
+        counts[redaction_type] = counts.get(redaction_type, 0) + 1
+        first_start.setdefault(redaction_type, span.start)
+        return f"[REDACTED:{redaction_type}]"
 
-            redactions.append(
-                RedactionEntry(type=redaction_type, count=count, context=context)
-            )
-            text = re.sub(pattern, f"[REDACTED:{redaction_type}]", text)
+    redacted = redact_spans(text, SECRET_PATTERNS, _marker)
+
+    def _found_in(start: int) -> str:
+        if "```" in text[max(0, start - 50) : start]:
+            return "Found in code blocks"
+        return "Found in text content"
+
+    redactions = [
+        RedactionEntry(
+            type=redaction_type,
+            count=count,
+            context=_found_in(first_start[redaction_type]),
+        )
+        for redaction_type, count in counts.items()
+    ]
+    total = sum(counts.values())
 
     warning = None
     if total > 0:
@@ -159,7 +165,7 @@ def redact_sensitive_content(text: str) -> tuple[str, RedactionReport]:
             "Review generated runbooks for [REDACTED] placeholders."
         )
 
-    return text, RedactionReport(
+    return redacted, RedactionReport(
         redactions=redactions, warning=warning, total_redacted=total
     )
 

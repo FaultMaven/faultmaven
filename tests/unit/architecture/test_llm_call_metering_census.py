@@ -5,18 +5,21 @@ never reaches ``record_provider_call`` is spend no row, no counter and no log
 line will ever show. Metering happens at ONE chokepoint,
 ``ProviderRegistry.route_request``, which every call through the container's
 ``LLMRouter`` reaches. A call that goes to a concrete provider directly
-bypasses it, and must meter itself.
+(``dispatch.send_to_model``) bypasses it, and must meter itself.
 
-So this census collects every place the package reaches a provider's billed
-method, in every shape the codebase writes one:
+So this census collects every place the package reaches a billed send, in
+every shape the codebase writes one:
 
-* ``<x>.generate(...)`` and ``<x>.route_request(...)``;
-* ``<x>.generate`` / ``<x>.route_request`` read WITHOUT being called — a bound
-  method stored (``gen = p.generate``), passed (``call_func=...``) or bound
-  (``partial(p.generate)``, under any name ``partial`` is imported as). An
-  assignment target is not a read;
-* ``getattr(<x>, "generate")`` (and ``"route_request"``), called on the spot or
-  not, and ``methodcaller("generate")``;
+* ``send_to_model(...)`` — the model dispatch, the one way to a provider
+  (#1998) — called, or read without being called (passed, bound with
+  ``partial``, stored);
+* ``<x>._generate`` and ``<x>.route_request``, called or read WITHOUT being
+  called — a bound method stored, passed (``call_func=...``) or bound
+  (``partial(...)``, under any name ``partial`` is imported as). An assignment
+  target is not a read;
+* ``getattr(<x>, "_generate")`` (and ``"route_request"``,
+  ``"send_to_model"``), called on the spot or not, and
+  ``methodcaller("_generate")``;
 * ``generate_with_truncation_retry(...)`` — the retry helper, whose callable
   argument makes the call.
 
@@ -36,6 +39,8 @@ one classification:
   both fail when the meter is put behind ``if False:``.
 * ``CHOKEPOINT`` — ``ProviderRegistry.route_request`` itself, and the router
   handing it to ``call_external``.
+* ``DISPATCH`` — ``send_to_model``'s own call of a provider's ``_generate``:
+  metered by whoever called the dispatch, and every caller is declared here.
 * ``UNMETERED`` — with the reason. Only the connection test.
 
 A new site, a moved one or a changed count fails until it is declared. The
@@ -47,10 +52,11 @@ What this does NOT see, stated so nobody mistakes it for more:
 * a receiver swapped to a concrete provider inside a function declared
   ``ROUTER``, with the count unchanged — ``ROUTER`` is taken on trust;
 * a provider's private transport reached from outside the provider
-  (``OpenAIProvider._post_chat_completion`` and its siblings), or raw HTTP to a
-  provider's API from anywhere else;
-* a billed provider method not named ``generate`` — every provider bills
-  through ``generate`` today (``BaseLLMProvider``), and a future one (a
+  (``OpenAIProvider._post_chat_completion`` and its siblings) — refused by the
+  dispatch's lexical rule (A4, ``test_model_dispatch_lexical_1998.py``) — or
+  raw HTTP to a provider's API from anywhere else;
+* a billed provider method not named ``_generate`` — every provider bills
+  through ``_generate`` today (``BaseLLMProvider``), and a future one (a
   streaming method, say) is NOT classified free in advance: it must be added to
   the collected names when it is written;
 * a ``getattr`` or ``methodcaller`` whose name is not a literal, and the retry
@@ -76,14 +82,16 @@ _ROOT = Path(__file__).resolve().parents[3]
 #: Where the rule can be violated: every billed call is made from the package.
 _PACKAGE = _ROOT / "faultmaven"
 
-#: The provider methods that bill.
-_BILLED = frozenset({"generate", "route_request"})
+#: The provider methods that bill, and the dispatch every send goes through.
+_BILLED = frozenset({"_generate", "route_request"})
+_DISPATCH = "send_to_model"
 _RETRY = "generate_with_truncation_retry"
 _METER = "record_provider_call"
 
 ROUTER = "ROUTER"
 METERS_ITSELF = "METERS_ITSELF"
 CHOKEPOINT = "CHOKEPOINT"
+DISPATCH = "DISPATCH"
 UNMETERED = "UNMETERED"
 
 _GENERATION = "faultmaven/core/investigation/milestone_engine/generation.py"
@@ -92,19 +100,26 @@ _TIER2 = "faultmaven/core/preprocessing/tier2/local_service.py"
 #: (file, function) -> (sites, classification, reason). The reason is required
 #: for UNMETERED and says, for the others, what the receiver is.
 SITES: dict[tuple[str, str], tuple[int, str, str]] = {
-    # The chokepoint: every router call's provider.generate().
+    # The chokepoint: every router call's send.
     (
         "faultmaven/infrastructure/llm/providers/registry.py",
         "ProviderRegistry.route_request",
-    ): (1, CHOKEPOINT, "the registry's own provider.generate()"),
+    ): (1, CHOKEPOINT, "the registry's own send_to_model(provider)"),
     # ...and the router handing it on, as a bound method, to call_external.
     ("faultmaven/infrastructure/llm/router.py", "LLMRouter.route"): (
         1,
         CHOKEPOINT,
         "the chokepoint handed to call_external",
     ),
+    # The dispatch: the one call of a provider's _generate.
+    ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (
+        1,
+        DISPATCH,
+        "provider._generate after the check; metered by its declared callers",
+    ),
     # The engine's tool loop: a dedicated DA provider is concrete, so the
-    # closure meters it; with none set, the provider is the router.
+    # closure sends through the dispatch and meters it; with none set, the
+    # call is router.route (not collected: it reaches the chokepoint).
     (_GENERATION, "StructuredOutputGenerator._tool_augmented_generate"): (
         1,
         METERS_ITSELF,
@@ -114,16 +129,7 @@ SITES: dict[tuple[str, str], tuple[int, str, str]] = {
         _GENERATION,
         "StructuredOutputGenerator._tool_augmented_generate._tool_loop_call",
     ): (1, METERS_ITSELF, "meters a dedicated DA provider's call"),
-    (
-        _GENERATION,
-        "StructuredOutputGenerator._generate_structured_output_inner.llm_operation",
-    ): (1, ROUTER, "self.deps.llm_provider"),
     # Outside the engine.
-    ("faultmaven/modules/case/api/title_generation.py", "_generate_title_with_llm"): (
-        1,
-        ROUTER,
-        "app.state.llm_provider",
-    ),
     (
         "faultmaven/modules/knowledge/domain/services/conversion_service/pipeline.py",
         "_analyze_document",
@@ -136,10 +142,16 @@ SITES: dict[tuple[str, str], tuple[int, str, str]] = {
         "faultmaven/modules/agent/tools/document_qa_tool.py",
         "DocumentQATool.answer_question",
     ): (1, ROUTER, "retry helper over self._llm_router.route"),
-    (_TIER2, "LocalTier2Service.analyze"): (1, ROUTER, "retry helper over _analyze"),
-    (_TIER2, "LocalTier2Service.analyze._analyze"): (1, ROUTER, "self.llm_client"),
-    # The one billed call nothing meters.
-    ("faultmaven/api/routes/admin_config.py", "check_llm_connection"): (
+    (_TIER2, "LocalTier2Service.analyze"): (
+        1,
+        ROUTER,
+        "retry helper over self.llm_client.route",
+    ),
+    # The one billed call nothing meters: the admin connection check's send.
+    (
+        "faultmaven/infrastructure/llm/providers/registry.py",
+        "ProviderRegistry.send_connection_check",
+    ): (
         1,
         UNMETERED,
         "one 50-token 'Say hello' an operator triggers; metering it is filed "
@@ -160,17 +172,20 @@ def _literal_billed(node: ast.Call, index: int) -> bool:
     return (
         len(node.args) > index
         and isinstance(node.args[index], ast.Constant)
-        and node.args[index].value in _BILLED
+        and node.args[index].value in _BILLED | {_DISPATCH}
     )
 
 
 def _is_site(node: ast.AST, parents: dict) -> bool:
-    """Whether ``node`` reaches a provider's billed method in a collected shape."""
+    """Whether ``node`` reaches a billed send in a collected shape."""
     if isinstance(node, ast.Attribute):
-        # ``x.generate`` read, whether called on the spot or not; a store or a
-        # del is not a read. The call form is counted HERE, once — its Call
-        # node is not counted again below.
-        return node.attr in _BILLED and isinstance(node.ctx, ast.Load)
+        # ``x._generate`` / ``dispatch.send_to_model`` read, whether called on
+        # the spot or not; a store or a del is not a read. The call form is
+        # counted HERE, once — its Call node is not counted again below.
+        return node.attr in _BILLED | {_DISPATCH} and isinstance(node.ctx, ast.Load)
+    if isinstance(node, ast.Name):
+        # ``send_to_model`` imported by name: read, called or not.
+        return node.id == _DISPATCH and isinstance(node.ctx, ast.Load)
     if not isinstance(node, ast.Call):
         return False
     name = _names(node.func)
@@ -259,28 +274,31 @@ class TestTheDetector:
     @pytest.mark.parametrize(
         "snippet",
         [
-            "async def f(provider):\n    return await provider.generate(prompt='x')",
+            "async def f(provider):\n"
+            "    return await send_to_model(provider, prompt='x')",
             "async def f(self, params):\n"
-            "    return await self.llm_provider.generate(**params)",
-            "async def f(self):\n    return await self.deps.llm_provider.generate()",
+            "    return await dispatch.send_to_model(self.provider, **params)",
+            "async def f(provider):\n    return await provider._generate(prompt='x')",
+            "def f(p):\n    return partial(send_to_model, p)",
+            "async def f(p):\n    return await getattr(dispatch, 'send_to_model')(p)",
             "async def f(registry):\n    return await registry.route_request('x')",
             "async def f(call):\n"
             "    return await generate_with_truncation_retry(call, max_tokens=5)",
             "async def f(truncation, call):\n"
             "    return await truncation.generate_with_truncation_retry(call)",
-            "async def f(p):\n    return await getattr(p, 'generate')(prompt='x')",
-            "def f(p):\n    return functools.partial(p.generate, prompt='x')",
-            "def f(p):\n    return partial(p.generate, prompt='x')",
+            "async def f(p):\n    return await getattr(p, '_generate')(prompt='x')",
+            "def f(p):\n    return functools.partial(p._generate, prompt='x')",
+            "def f(p):\n    return partial(p._generate, prompt='x')",
             "async def f(p):\n"
-            "    return await asyncio.wait_for(p.generate(prompt='x'), 5)",
+            "    return await asyncio.wait_for(send_to_model(p, prompt='x'), 5)",
             # A billed method read without being called: stored, passed, bound.
-            "async def f(p):\n    gen = p.generate\n    return await gen(prompt='x')",
+            "async def f(p):\n    gen = p._generate\n    return await gen(prompt='x')",
             "async def f(self):\n"
             "    return await self.call_external(call_func=self.registry.route_request)",
             "from functools import partial as bind\n"
-            "def f(p):\n    return bind(p.generate, prompt='x')",
-            "def f(p):\n    m = getattr(p, 'generate')\n    return m",
-            "def f():\n    return operator.methodcaller('generate', prompt='x')",
+            "def f(p):\n    return bind(p._generate, prompt='x')",
+            "def f(p):\n    m = getattr(p, '_generate')\n    return m",
+            "def f():\n    return operator.methodcaller('_generate', prompt='x')",
             "def f():\n    return methodcaller('route_request', 'x')",
         ],
     )
@@ -290,18 +308,21 @@ class TestTheDetector:
     @pytest.mark.parametrize(
         "snippet",
         [
-            # Defining generate is not calling it.
-            "class P:\n    async def generate(self, prompt):\n        return 1",
+            # Defining the send is not calling it.
+            "class P:\n    async def _generate(self, prompt):\n        return 1",
+            "async def send_to_model(provider, **kw):\n    return 1",
             # A string that mentions the shape.
-            "def f():\n    return 'await provider.generate(prompt=x)'",
-            '"""Example:\n    >>> await llm_provider.generate(prompt="x")\n"""',
+            "def f():\n    return 'await send_to_model(provider, prompt=x)'",
+            '"""Example:\n    >>> await send_to_model(provider, prompt="x")\n"""',
+            # A public generate is no longer a send: nothing calls it.
+            "async def f(p):\n    return await p.generate(prompt='x')",
             # The router's own entry point, and other methods that bill nothing.
             "async def f(router):\n    return await router.route(prompt='x')",
             "def f(fn):\n    return partial(fn, prompt='x')",
             "async def f(p):\n    return await getattr(p, 'is_available')()",
             # Writing the attribute is not reading the method.
-            "def f(p, mock):\n    p.generate = mock",
-            "def f(p):\n    del p.generate",
+            "def f(p, mock):\n    p._generate = mock",
+            "def f(p):\n    del p._generate",
         ],
     )
     def test_non_calls_are_not_collected(self, snippet):
@@ -310,7 +331,7 @@ class TestTheDetector:
     def test_a_site_is_attributed_to_its_innermost_function(self):
         src = (
             "class C:\n    async def m(self, p):\n"
-            "        async def inner():\n            return await p.generate()\n"
+            "        async def inner():\n            return await send_to_model(p)\n"
             "        return await generate_with_truncation_retry(inner)"
         )
         assert call_sites(src) == Counter({"C.m.inner": 1, "C.m": 1})
@@ -319,7 +340,7 @@ class TestTheDetector:
 class TestTheMeterCheck:
     def test_a_call_to_the_meter_counts(self):
         fn = _parse(
-            "async def f(p):\n    r = await p.generate()\n"
+            "async def f(p):\n    r = await send_to_model(p)\n"
             "    record_provider_call('x', 'm', r, 1.0)\n    return r"
         ).body[0]
         assert _meters(fn)
@@ -327,7 +348,7 @@ class TestTheMeterCheck:
     def test_a_nested_closure_that_meters_counts(self):
         fn = _parse(
             "async def f(p):\n    async def call():\n"
-            "        r = await p.generate()\n"
+            "        r = await send_to_model(p)\n"
             "        metering.record_provider_call('x', 'm', r, 1.0)\n"
             "        return r\n"
             "    return await generate_with_truncation_retry(call)"
@@ -337,7 +358,7 @@ class TestTheMeterCheck:
     def test_a_mention_is_not_a_call(self):
         fn = _parse(
             "async def f(p):\n    meter = record_provider_call\n"
-            "    return await p.generate()"
+            "    return await send_to_model(p)"
         ).body[0]
         assert not _meters(fn)
 
@@ -398,7 +419,10 @@ def test_the_chokepoint_is_one_method_and_every_classification_is_known():
         ),
         ("faultmaven/infrastructure/llm/router.py", "LLMRouter.route"),
     }
-    assert set(kinds) <= {ROUTER, METERS_ITSELF, CHOKEPOINT, UNMETERED}
+    assert {k for k, v in SITES.items() if v[1] == DISPATCH} == {
+        ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"),
+    }
+    assert set(kinds) <= {ROUTER, METERS_ITSELF, CHOKEPOINT, DISPATCH, UNMETERED}
     for key, (_count, kind, reason) in SITES.items():
         assert reason.strip(), f"{key} has no reason"
         if kind == UNMETERED:

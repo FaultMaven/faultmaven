@@ -145,7 +145,7 @@ def _engine(generate, *, registry=None):
             extra_config={},
         )
     )
-    provider.generate = AsyncMock(side_effect=generate)
+    provider.route = AsyncMock(side_effect=generate)
     repo = MagicMock()
     repo.save = AsyncMock()
     return MilestoneEngine(

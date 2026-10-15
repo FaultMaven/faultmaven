@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import (
     LLMResponse,
     ProviderConfig,
@@ -81,7 +82,7 @@ class TestOpenAIGenerateMessages:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("Test prompt")
+            result = await send_to_model(provider, prompt="Test prompt")
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -102,7 +103,7 @@ class TestOpenAIGenerateMessages:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("ignored", messages=messages)
+            result = await send_to_model(provider, prompt="ignored", messages=messages)
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -120,8 +121,9 @@ class TestOpenAIGenerateMessages:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             # Pass messages and verify no double-inclusion
-            result = await provider.generate(
-                "ignored",
+            result = await send_to_model(
+                provider,
+                prompt="ignored",
                 messages=messages,
             )
 
@@ -163,7 +165,7 @@ class TestOpenAIGenerateMessages:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("", messages=messages)
+            result = await send_to_model(provider, prompt="", messages=messages)
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -176,7 +178,7 @@ class TestOpenAIGenerateMessages:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await provider.generate("Hello")
+            result = await send_to_model(provider, prompt="Hello")
 
             assert isinstance(result, LLMResponse)
             assert result.content == "Test response"
@@ -235,7 +237,7 @@ class TestOpenAITokenLimitParam:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", max_tokens=512)
+            await send_to_model(provider, prompt="hi", max_tokens=512)
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body[expected_param] == 512
@@ -252,7 +254,9 @@ class TestOpenAITokenLimitParam:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", max_tokens=512, max_completion_tokens=999)
+            await send_to_model(
+                provider, prompt="hi", max_tokens=512, max_completion_tokens=999
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["max_tokens"] == 512
@@ -271,7 +275,7 @@ class TestOpenAITokenLimitParam:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", max_tokens=256)
+            await send_to_model(provider, prompt="hi", max_tokens=256)
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["max_tokens"] == 256
@@ -298,7 +302,9 @@ class TestOpenAIReasoningEffortCap:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             # A structured call (response_format present) → effort is capped.
-            await provider.generate("hi", response_format={"type": "json_object"})
+            await send_to_model(
+                provider, prompt="hi", response_format={"type": "json_object"}
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "low"
@@ -309,7 +315,9 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", response_format={"type": "json_object"})
+            await send_to_model(
+                provider, prompt="hi", response_format={"type": "json_object"}
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
@@ -321,7 +329,7 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi")  # no tools, no response_format
+            await send_to_model(provider, prompt="hi")  # no tools, no response_format
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
@@ -337,8 +345,9 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate(
-                "hi",
+            await send_to_model(
+                provider,
+                prompt="hi",
                 tools=[
                     {"type": "function", "function": {"name": "f", "parameters": {}}}
                 ],
@@ -356,8 +365,9 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate(
-                "hi",
+            await send_to_model(
+                provider,
+                prompt="hi",
                 response_format={"type": "json_object"},
                 reasoning_effort="high",
             )
@@ -390,7 +400,9 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", response_format={"type": "json_object"})
+            await send_to_model(
+                provider, prompt="hi", response_format={"type": "json_object"}
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
@@ -409,7 +421,9 @@ class TestOpenAIReasoningEffortCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", response_format={"type": "json_object"})
+            await send_to_model(
+                provider, prompt="hi", response_format={"type": "json_object"}
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
@@ -485,7 +499,7 @@ class TestOpenAIDefaultReasoningFamily:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", temperature=0.2)
+            await send_to_model(provider, prompt="hi", temperature=0.2)
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "temperature" not in request_body
@@ -495,8 +509,9 @@ class TestOpenAIDefaultReasoningFamily:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate(
-                "hi",
+            await send_to_model(
+                provider,
+                prompt="hi",
                 tools=[
                     {"type": "function", "function": {"name": "f", "parameters": {}}}
                 ],
@@ -515,7 +530,9 @@ class TestOpenAIDefaultReasoningFamily:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", response_format={"type": "json_object"})
+            await send_to_model(
+                provider, prompt="hi", response_format={"type": "json_object"}
+            )
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "low"
@@ -529,8 +546,9 @@ class TestOpenAIDefaultReasoningFamily:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate(
-                "hi",
+            await send_to_model(
+                provider,
+                prompt="hi",
                 temperature=0.2,
                 tools=[
                     {"type": "function", "function": {"name": "f", "parameters": {}}}
@@ -559,8 +577,9 @@ class TestOpenAIDefaultReasoningFamily:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate(
-                "hi",
+            await send_to_model(
+                provider,
+                prompt="hi",
                 tools=[
                     {"type": "function", "function": {"name": "f", "parameters": {}}}
                 ],
@@ -595,7 +614,7 @@ class TestDefaultReasoningPlainCallCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi")  # no tools, no response_format
+            await send_to_model(provider, prompt="hi")  # no tools, no response_format
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "none"
@@ -609,7 +628,7 @@ class TestDefaultReasoningPlainCallCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi")
+            await send_to_model(provider, prompt="hi")
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
@@ -621,7 +640,7 @@ class TestDefaultReasoningPlainCallCap:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await provider.generate("hi", reasoning_effort="low")
+            await send_to_model(provider, prompt="hi", reasoning_effort="low")
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "low"

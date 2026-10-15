@@ -357,52 +357,10 @@ class TestRealSecurityPerformanceValidation:
 
     @pytest.fixture
     def data_sanitizer(self):
-        """Create optimized mock DataSanitizer for performance testing."""
-        import re
-        from unittest.mock import Mock
-
-        # Create a fast mock that simulates realistic sanitization behavior
-        # without making HTTP calls to Presidio services
-        mock_sanitizer = Mock()
-
-        def fast_sanitize(text: str) -> str:
-            """Fast mock sanitization that applies regex patterns without HTTP calls."""
-            if not text or not isinstance(text, str):
-                return text
-
-            sanitized_text = text
-
-            # Apply the same pattern replacements as the real sanitizer, but faster
-            pattern_replacements = [
-                (r"sk-[0-9a-zA-Z]{32,}", "[API_KEY_REDACTED]"),
-                (r"AKIA[0-9A-Z]{16}", "[AWS_ACCESS_KEY_REDACTED]"),
-                (
-                    r"(mongodb|postgresql|mysql)://[^@]+@[^/\s]+",
-                    "[DATABASE_URL_REDACTED]",
-                ),
-                (
-                    r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
-                    "[JWT_TOKEN_REDACTED]",
-                ),
-                (
-                    r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b",
-                    "[IP_ADDRESS_REDACTED]",
-                ),
-                (r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", "[MAC_ADDRESS_REDACTED]"),
-            ]
-
-            # Fast regex processing without external HTTP calls
-            for pattern_str, replacement in pattern_replacements:
-                pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
-                sanitized_text = pattern.sub(replacement, sanitized_text)
-
-            return sanitized_text
-
-        # Configure the mock
-        mock_sanitizer.sanitize.side_effect = fast_sanitize
-        mock_sanitizer.is_sensitive.return_value = False
-
-        return mock_sanitizer
+        """The real sanitizer: regex-only here, since tests skip the Presidio
+        health checks, so nothing reaches the network. (A mock that carried
+        its own copy of the patterns stood here; #1980 keeps one set.)"""
+        return DataSanitizer()
 
     def test_real_large_document_sanitization(self, data_sanitizer):
         """A 1000-line document keeps its structure through sanitization.

@@ -109,7 +109,7 @@ def is_output_truncation_error(error: BaseException) -> bool:
     category is never DERIVED: a cut answer arrives as an ordinary HTTP 200
     with a short body, so no error body ever reports one, and the party that
     watched it happen is the only party that can say so. Gemini raises on
-    ``finishReason=MAX_TOKENS`` from inside ``generate()``, before any body
+    ``finishReason=MAX_TOKENS`` from inside ``_generate()``, before any body
     exists to inspect, and passes
     ``category=LLMErrorCategory.OUTPUT_TRUNCATION``; the parse-time site has
     the body and uses the sharper positional test in

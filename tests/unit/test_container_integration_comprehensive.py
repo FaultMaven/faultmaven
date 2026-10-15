@@ -96,7 +96,7 @@ def mock_services():
 
     # Mock LLM Provider
     llm_provider = Mock()
-    llm_provider.generate = AsyncMock(
+    llm_provider.route = AsyncMock(
         return_value=Mock(
             content="Mock LLM response", confidence=0.85, model="mock-model"
         )

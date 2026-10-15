@@ -62,7 +62,7 @@ def _stab_verified(case) -> bool:
 
 
 class _MockLLM(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return "{}"
 
     async def generate_stream(self, prompt, **kwargs):
@@ -86,7 +86,7 @@ class _MockLLM(ILLMProvider):
 @pytest.fixture
 def mock_llm():
     llm = _MockLLM()
-    llm.generate = AsyncMock()
+    llm.route = AsyncMock()
     return llm
 
 
@@ -210,7 +210,7 @@ class TestRejectionWhenPrerequisiteMissing:
         assert _stab_accepted(case) is False
         assert _stab_verified(case) is False
 
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
 
@@ -239,7 +239,7 @@ class TestRejectionWhenPrerequisiteMissing:
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
 
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
 
@@ -267,7 +267,7 @@ class TestRejectionWhenPrerequisiteMissing:
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
         # The engine commits nothing itself (#1882); the turn's one commit runs
@@ -301,7 +301,7 @@ class TestPrerequisiteSatisfiedPasses:
         Both get set."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_accepted": True, "mitigation_verified": True}
         )
 
@@ -330,7 +330,7 @@ class TestPrerequisiteSatisfiedPasses:
         case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
 
@@ -349,7 +349,7 @@ class TestPrerequisiteSatisfiedPasses:
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
-        mock_llm.generate.return_value = _llm_response_setting_milestones(
+        mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_accepted": True}
         )
 

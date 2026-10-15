@@ -39,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import (
     ProviderConfig,
     ReasoningIntent,
@@ -51,6 +52,7 @@ from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvid
 from faultmaven.infrastructure.llm.providers.openrouter_provider import (
     OpenRouterProvider,
 )
+from tests.model_content import vetted
 
 
 def _config(name, model, base_url):
@@ -101,7 +103,7 @@ _RESPONSE_FORMAT = {
 
 
 async def _sent_body(make_session, provider, response_data, **generate_kwargs):
-    """Run generate() against a mocked HTTP boundary; return the sent body.
+    """Send through the dispatch against a mocked HTTP boundary; return the body.
 
     ``make_session`` is the shared ``mock_aiohttp_session`` factory fixture
     (tests/unit/infrastructure/llm/conftest.py) — passed in rather than
@@ -109,7 +111,7 @@ async def _sent_body(make_session, provider, response_data, **generate_kwargs):
     """
     mock_session = make_session(response_data)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await provider.generate("Test", **generate_kwargs)
+        await send_to_model(provider, prompt=vetted("Test"), **generate_kwargs)
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 
@@ -404,8 +406,8 @@ class TestGeminiIntentTranslation:
     ):
         """The provider fails CLOSED on its own. The router raises on
         INFERENCE-without-floor, but the router is not the only door:
-        ``milestone_engine`` binds a concrete provider and calls generate() on
-        it directly, so an invariant enforced only in the router is not
+        ``milestone_engine`` binds a concrete provider and sends to it
+        directly, so an invariant enforced only in the router is not
         enforced at all. Without a floor the cap must stay."""
         provider = _gemini_provider("gemini-3.5-flash")
         with caplog.at_level(logging.WARNING):
@@ -690,7 +692,7 @@ class TestNoMechanismProviders:
 @pytest.mark.llm
 class TestShapeDefaultEffortIsOnePolicy:
     """#13: the shape→effort policy had two implementations in different
-    vocabulary — two guarded assignments in ``generate()`` and a ternary in
+    vocabulary — two guarded assignments in ``_generate()`` and a ternary in
     ``_apply_reasoning_intent``. They agreed, but the next family verified
     for "none" on structured calls would be added to one and not the other,
     and the stale copy would still look correct because the intent tests pin
@@ -800,15 +802,18 @@ class TestEveryRegisteredProviderHandlesTheKnobs:
         """
         import inspect
 
+        from faultmaven.infrastructure.llm.providers.base import BaseLLMProvider
         from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
         missing = []
         for name, schema in PROVIDER_SCHEMA.items():
             cls = schema["provider_class"]
-            source = inspect.getsource(cls)
-            # Subclasses inherit the parent's generate() (OpenRouter/OpenAI).
-            if "async def generate" not in source:
-                source += inspect.getsource(cls.__mro__[1])
+            # The class whose _generate this provider runs (OpenRouter inherits
+            # OpenAI's), never the base: the base DEFINES both discard helpers,
+            # so reading its source would pass every provider (#2015).
+            definer = next(k for k in cls.__mro__ if "_generate" in vars(k))
+            assert definer is not BaseLLMProvider, f"{name} implements no _generate"
+            source = inspect.getsource(definer)
             handles_knobs = (
                 # Discards them via the shared mechanism…
                 "_merge_extra_kwargs" in source
@@ -1066,7 +1071,7 @@ class TestLlamaCppTransportKeepsCachePrompt:
         return LocalProvider(_config("local", "llama3", "http://localhost:8080"))
 
     async def _llamacpp_body(self, make_session, **generate_kwargs):
-        """Drive generate() so it falls through to the llama.cpp transport."""
+        """Send so the call falls through to the llama.cpp transport."""
         from unittest.mock import AsyncMock, MagicMock
 
         openai_attempt = AsyncMock()
@@ -1091,7 +1096,9 @@ class TestLlamaCppTransportKeepsCachePrompt:
         session.__aexit__ = AsyncMock(return_value=False)
 
         with patch("aiohttp.ClientSession", return_value=session):
-            await self._llamacpp_provider().generate("Test", **generate_kwargs)
+            await send_to_model(
+                self._llamacpp_provider(), prompt="Test", **generate_kwargs
+            )
 
         # The second post is the llama.cpp /completion call.
         last = session.post.call_args_list[-1]

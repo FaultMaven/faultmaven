@@ -1,9 +1,9 @@
 """Central LLM spend metering.
 
 Every billed provider API call funnels through :func:`record_provider_call`,
-which is invoked once per real ``provider.generate()`` at the routing chokepoint
-(``registry.route_request``) — *including* fallback / low-confidence attempts the
-caller ends up discarding. That is the whole point: the fallback multiplier is
+which is invoked once per real provider send (``dispatch.send_to_model``) at
+the routing chokepoint (``registry.route_request``) — *including* fallback /
+low-confidence attempts the caller ends up discarding. That is the whole point: the fallback multiplier is
 the single most likely cause of a token-cost spike, and metering only the winning
 response (as a naive router-level hook would) makes it invisible.
 
@@ -176,7 +176,7 @@ def record_provider_call(
     Args:
         provider: Provider name (e.g. "anthropic"). Bounded label.
         model: Model id actually used. Bounded-ish label.
-        response: The ``LLMResponse`` returned by ``provider.generate()``.
+        response: The ``LLMResponse`` the provider's send returned.
         latency_ms: Wall-clock latency of the call.
         outcome: "kept" (returned to caller) or "low_confidence" (billed then
             discarded by the fallback chain — pure waste worth alerting on).

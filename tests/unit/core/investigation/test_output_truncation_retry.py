@@ -12,7 +12,7 @@ Every previous attempt at (1) was tested one level too high: at the classifier,
 asserting booleans about error strings. That is exactly where this bug hid.
 Both real truncation sites word the failure in vocabulary the classifier was
 never checking — the provider says ``finishReason=MAX_TOKENS`` from inside
-``generate()`` (so the parse block never sees it), and CPython's JSON decoder
+``_generate()`` (so the parse block never sees it), and CPython's JSON decoder
 says ``Expecting ',' delimiter`` or ``Unterminated string starting at`` (never
 ``truncated``, never ``EOF while parsing``). A green classifier test sat above a
 ladder that never moved a single rung.
@@ -69,7 +69,7 @@ COMPLETE = '{"agent_response": "the kubelet on node-3 is out of disk"}'
 # A bigger cap cannot fix this, so it must NOT consume the truncation ladder.
 MALFORMED = '{"agent_response": tru}'
 
-# What Gemini raises from inside generate() when a structured request hits the
+# What Gemini raises from inside _generate() when a structured request hits the
 # output cap: there is no body to parse, so the parse block never runs. The
 # DECLARED category is the signal the ladder reads (#509) — a cut answer is an
 # HTTP 200 with a short body, so no error body ever reports one and the party
@@ -216,7 +216,7 @@ async def test_an_overflow_wearing_truncation_wording_still_fails_with_token_lim
 
     engine = _make_engine()
     generate = AsyncMock(side_effect=[both, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     with pytest.raises(MilestoneEngineError) as exc_info:
         await engine.generator._generate_structured_output_inner(
@@ -259,7 +259,7 @@ async def test_parse_truncation_raises_the_cap_and_bypasses_the_cache():
     """
     engine = _make_engine()
     generate = AsyncMock(side_effect=[TRUNCATED, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -276,12 +276,12 @@ async def test_parse_truncation_raises_the_cap_and_bypasses_the_cache():
 @pytest.mark.asyncio
 async def test_provider_reported_truncation_raises_the_cap_too():
     """The site the fix was missing entirely. Gemini raises from inside
-    ``generate()``, so the failure never reaches the parse block where the cap
+    ``_generate()``, so the failure never reaches the parse block where the cap
     used to be raised — it was classified as an ordinary retryable error and
     repeated at the same size until the attempts ran out."""
     engine = _make_engine()
     generate = AsyncMock(side_effect=[GEMINI_TRUNCATION, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -301,7 +301,7 @@ async def test_malformed_json_does_not_spend_the_truncation_ladder():
     JSON, and every rung spent here is a rung a real truncation cannot use."""
     engine = _make_engine()
     generate = AsyncMock(side_effect=[MALFORMED, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     with pytest.raises(MilestoneEngineError):
         await engine.generator._generate_structured_output_inner(
@@ -325,7 +325,7 @@ async def test_at_the_ceiling_it_stops_climbing_and_asks_for_the_degrade():
     minimal-prompt recovery keys on — the NO-COLLAPSE guarantee (#662)."""
     engine = _make_engine()
     generate = AsyncMock(side_effect=[TRUNCATED, TRUNCATED, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     with pytest.raises(MilestoneEngineError) as exc_info:
         await engine.generator._generate_structured_output_inner(
@@ -354,7 +354,7 @@ async def test_ceiling_truncation_degrades_to_the_minimal_prompt():
     case = MagicMock()
     case.case_id = "case_test"
     generate = AsyncMock(side_effect=[TRUNCATED, TRUNCATED, COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     with patch(
         "faultmaven.core.investigation.prompts.templates.fallback.get_fallback_prompt_for_case",
@@ -382,7 +382,7 @@ async def test_the_degrade_is_metered_as_truncation_not_overflow():
     engine = _make_engine()
     case = MagicMock()
     case.case_id = "case_test"
-    engine.deps.llm_provider.generate = AsyncMock(
+    engine.deps.llm_provider.route = AsyncMock(
         side_effect=[TRUNCATED, TRUNCATED, COMPLETE]
     )
     metric = MagicMock()
@@ -510,7 +510,7 @@ async def test_a_body_that_parses_is_kept_even_when_the_provider_reports_a_cut()
     generate = AsyncMock(
         return_value=_llm_response(trailing_prose_cut, StopReason.MAX_TOKENS)
     )
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -549,7 +549,7 @@ async def test_the_stop_reason_rescues_a_cut_the_positional_test_declines():
             _llm_response(COMPLETE, StopReason.STOP),
         ]
     )
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -581,7 +581,7 @@ async def test_a_malformed_body_without_a_reported_cut_still_does_not_ladder():
             _llm_response(COMPLETE, StopReason.STOP),
         ]
     )
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     with pytest.raises(MilestoneEngineError):
         await engine.generator._generate_structured_output_inner(
@@ -599,7 +599,7 @@ async def test_a_complete_response_is_not_diverted_into_the_ladder():
 
     engine = _make_engine()
     generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.STOP))
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -621,7 +621,7 @@ async def test_an_unknown_stop_reason_is_not_treated_as_a_cut():
 
     engine = _make_engine()
     generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.UNKNOWN))
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -660,7 +660,7 @@ async def test_a_fenced_truncated_body_still_spends_the_ladder():
     """
     engine = _make_engine()
     generate = AsyncMock(side_effect=[FENCED_TRUNCATED, FENCED_COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema
@@ -682,7 +682,7 @@ async def test_a_fenced_complete_body_needs_no_ladder():
     """
     engine = _make_engine()
     generate = AsyncMock(side_effect=[FENCED_COMPLETE])
-    engine.deps.llm_provider.generate = generate
+    engine.deps.llm_provider.route = generate
 
     result = await engine.generator._generate_structured_output_inner(
         prompt="why is node-3 NotReady?", schema_model=_Schema

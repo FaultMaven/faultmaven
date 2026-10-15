@@ -38,6 +38,7 @@ from faultmaven.config.investigation_capability import (
     resolve_investigation_capability,
     validate_investigation_tooling,
 )
+from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.local_provider import (
     TRANSPORT_OLLAMA_NATIVE,
@@ -48,6 +49,16 @@ from faultmaven.infrastructure.llm.providers.local_provider import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+from tests.utils import sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
+
 
 # A vLLM / llama.cpp / TGI style OpenAI-compatible endpoint.
 OPENAI_COMPATIBLE_URL = "http://vllm.internal:8000/v1"
@@ -332,7 +343,7 @@ async def test_every_openai_compatible_url_form_posts_to_the_same_endpoint(base_
     provider = _provider("qwen3-32b", base_url)
     session = _recording_session()
     with patch("aiohttp.ClientSession", return_value=session):
-        await provider.generate("hello")
+        await send_to_model(provider, prompt="hello")
     assert session.post.call_args[0][0] == "http://127.0.0.1:9999/v1/chat/completions"
 
 
@@ -349,7 +360,7 @@ async def test_every_ollama_native_url_form_posts_to_the_same_endpoint(base_url)
         return_value={"response": "ok", "eval_count": 3, "done_reason": "stop"}
     )
     with patch("aiohttp.ClientSession", return_value=session):
-        await provider.generate("hello")
+        await send_to_model(provider, prompt="hello")
     assert session.post.call_args[0][0] == "http://127.0.0.1:9999/api/generate"
 
 

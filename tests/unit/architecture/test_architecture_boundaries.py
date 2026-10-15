@@ -168,9 +168,7 @@ class TestDependencyInjection:
 
         # Test that getter methods return objects with required interfaces
         llm_provider = container.get_llm_provider()
-        assert hasattr(llm_provider, "generate_response") or hasattr(
-            llm_provider, "generate"
-        )
+        assert hasattr(llm_provider, "route")
 
         sanitizer = container.get_sanitizer()
         assert hasattr(sanitizer, "sanitize")
@@ -212,10 +210,8 @@ class TestInterfaceCompliance:
         container = private_base_container
         llm_provider = container.get_llm_provider()
 
-        # Should have generate method (real or mock)
-        assert hasattr(llm_provider, "generate") or hasattr(
-            llm_provider, "generate_response"
-        )
+        # The router's call surface, ILLMProvider.route (real or mock)
+        assert hasattr(llm_provider, "route")
 
     def test_sanitizer_interface(self, private_base_container):
         """Test sanitizer implements required interface"""

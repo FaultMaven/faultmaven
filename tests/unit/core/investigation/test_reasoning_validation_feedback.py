@@ -185,7 +185,7 @@ class TestRestatementIsNotJudged:
 
 
 class _MockLLM(ILLMProvider):
-    async def generate(self, prompt, **kwargs):
+    async def route(self, prompt=None, **kwargs):
         return "{}"
 
     async def generate_stream(self, prompt, **kwargs):
@@ -209,7 +209,7 @@ class _MockLLM(ILLMProvider):
 @pytest.fixture
 def mock_llm():
     llm = _MockLLM()
-    llm.generate = AsyncMock()
+    llm.route = AsyncMock()
     return llm
 
 
@@ -288,7 +288,7 @@ class TestStripReachesNextPrompt:
     ):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
 
-        mock_llm.generate.return_value = _claims_symptom_verified_unjustified()
+        mock_llm.route.return_value = _claims_symptom_verified_unjustified()
         first = await engine.process_turn(
             _investigating_case(), "it still fails", redaction_ctx=None
         )
@@ -300,8 +300,8 @@ class TestStripReachesNextPrompt:
             f"EVIDENCE VALIDATION: {_NOTICE}"
         )
 
-        mock_llm.generate.reset_mock()
-        mock_llm.generate.return_value = json.dumps(
+        mock_llm.route.reset_mock()
+        mock_llm.route.return_value = json.dumps(
             {
                 "agent_response": "Let's check the unit file.",
                 "state_updates": {"outcome": "conversation"},
@@ -309,7 +309,7 @@ class TestStripReachesNextPrompt:
         )
         await engine.process_turn(case, "what next?", redaction_ctx=None)
 
-        prompts = [c.kwargs["prompt"] for c in mock_llm.generate.call_args_list]
+        prompts = [c.kwargs["prompt"] for c in mock_llm.route.call_args_list]
         assert prompts, "the second turn made no LLM call"
         assert any(_NOTICE in p for p in prompts)
 
@@ -319,7 +319,7 @@ class TestStripReachesNextPrompt:
         case = _investigating_case()
         case.progress.problem_status = ProblemStatus.VERIFIED
 
-        mock_llm.generate.return_value = _claims_symptom_verified_unjustified()
+        mock_llm.route.return_value = _claims_symptom_verified_unjustified()
         result = await engine.process_turn(case, "it still fails", redaction_ctx=None)
         updated = result["case_updated"]
 

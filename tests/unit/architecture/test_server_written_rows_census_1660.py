@@ -192,8 +192,11 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ): (1, _PERSISTENCE),
     (
         "faultmaven/infrastructure/llm/providers/anthropic.py",
-        "AnthropicProvider.generate",
+        "AnthropicProvider._generate",
     ): (1, _WIRE),
+    # The model dispatch (#1998): checks the call's messages against the
+    # model-content grammar, then unwraps them for the adapter.
+    ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (2, _WIRE),
     # #1748: the terminal follow-up counter compares a turn's text with the
     # confirming turn's own message, to keep a resubmission out of a metric.
     (

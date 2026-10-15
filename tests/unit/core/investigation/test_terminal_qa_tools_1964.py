@@ -135,7 +135,7 @@ class ScriptedProvider:
     def get_structured_output_capability(self) -> StructuredOutputCapability:
         return StructuredOutputCapability.FUNCTION_CALLING
 
-    async def generate(self, **kwargs: Any) -> LLMResponse:
+    async def route(self, **kwargs: Any) -> LLMResponse:
         self.requests.append(kwargs)
         return self.script.pop(0)
 

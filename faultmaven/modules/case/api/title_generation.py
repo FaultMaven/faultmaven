@@ -406,7 +406,6 @@ LLM_TITLE_MAX_TOKENS = (
     128  # Prevent truncation (Gemini may emit reasoning tokens before the title)
 )
 LLM_TITLE_TEMPERATURE = 0.2  # More deterministic generation
-LLM_TITLE_TOP_P = 0.9  # Focused sampling
 
 # Context extraction settings
 MAX_USER_MESSAGES_FOR_CONTEXT = 12  # Cap message count to reduce noise
@@ -708,10 +707,10 @@ def _scrub_title_source(text: Optional[str], sanitizer) -> str:
     3. ``_sanitize_title_content`` — email, phone, IPv4, URL and path, which
        the sanitizer's pattern set does not all cover.
 
-    The database-URL pattern's ``[^@]+`` can cross whitespace to a later
-    ``@``, so ``postgresql://db:5432 is down, email me@example.com`` becomes
-    one ``[database_url]``: over-redaction, the safe direction (#1980 owns the
-    pattern set).
+    The pattern set is the sanitizer's own (#1980): a database URL is a
+    secret only with a user before its host, and its user part never runs
+    across whitespace, so ``postgresql://db:5432 is down, email
+    me@example.com`` keeps the URL and step 3 marks the email.
 
     Presidio is NOT consulted here; it runs once, on the final candidate
     (``_passes_disclosure_gate``). An analyzer-only entity in a source therefore
@@ -1516,11 +1515,10 @@ async def _generate_title_with_llm(
         prompt = await case_redacted(prompt, redaction_ctx)
 
         # Generate title using LLM with optimized settings
-        response = await llm_provider.generate(
+        response = await llm_provider.route(
             prompt=prompt,
             max_tokens=LLM_TITLE_MAX_TOKENS,
             temperature=LLM_TITLE_TEMPERATURE,
-            top_p=LLM_TITLE_TOP_P,
         )
 
         # A title cut at the output cap is a mid-word title, and it is

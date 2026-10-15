@@ -449,6 +449,100 @@ def generate_user_id() -> str:
     return f"user_{uuid4().hex[:12]}"
 
 
+#: The loopback names a test's own mock server listens on.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@contextmanager
+def sockets_refused(*, own_loopback: bool = False) -> Iterator[None]:
+    """Refuse every outbound connection for the block, by every connect path.
+
+    ``socket.connect``, ``connect_ex``, ``socket.create_connection`` and
+    ``socket.getaddrinfo`` (an HTTP client's attempt starts with name
+    resolution) all raise. The patches live on a ``pytest.MonkeyPatch`` of
+    their own, so a test's ``monkeypatch.undo()`` cannot lift them: #2023's
+    review found test blocks on the test's own ``monkeypatch`` that an undo
+    removed, letting a real provider reach a model server on the host.
+
+    ``own_loopback`` admits a loopback connection to a port a socket in this
+    process bound inside the block — a test's own mock server — and nothing
+    else.
+
+    Every refused attempt is recorded, and the block FAILS at exit if there was
+    one: code under test may swallow the refusal (a provider error handler, a
+    health probe), and an attempt is a defect whether or not it surfaced.
+    """
+    import socket
+
+    import pytest
+
+    patcher = pytest.MonkeyPatch()
+    bound: set = set()
+    attempts: List[str] = []
+    real_bind = socket.socket.bind
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    real_getaddrinfo = socket.getaddrinfo
+
+    def own(address: Any) -> bool:
+        return (
+            own_loopback
+            and isinstance(address, tuple)
+            and len(address) >= 2
+            and address[0] in _LOOPBACK
+            and address[1] in bound
+        )
+
+    def refused(address: Any) -> ConnectionRefusedError:
+        attempts.append(repr(address))
+        return ConnectionRefusedError(
+            111, f"network refused in tests (#1998): {address!r}"
+        )
+
+    def bind(self, address):
+        real_bind(self, address)
+        try:
+            bound.add(self.getsockname()[1])
+        except (OSError, IndexError, TypeError):
+            pass
+
+    def connect(self, address):
+        if own(address):
+            return real_connect(self, address)
+        raise refused(address)
+
+    def connect_ex(self, address):
+        if own(address):
+            return real_connect_ex(self, address)
+        raise refused(address)
+
+    def create_connection(address, *args, **kwargs):
+        if own(address):
+            return real_create_connection(address, *args, **kwargs)
+        raise refused(address)
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        if own_loopback and host in _LOOPBACK:
+            return real_getaddrinfo(host, port, *args, **kwargs)
+        attempts.append(f"getaddrinfo{(host, port)!r}")
+        raise socket.gaierror(
+            socket.EAI_NONAME, f"name resolution refused in tests (#1998): {host!r}"
+        )
+
+    if own_loopback:
+        patcher.setattr(socket.socket, "bind", bind)
+    patcher.setattr(socket.socket, "connect", connect)
+    patcher.setattr(socket.socket, "connect_ex", connect_ex)
+    patcher.setattr(socket, "create_connection", create_connection)
+    patcher.setattr(socket, "getaddrinfo", getaddrinfo)
+    try:
+        yield
+    finally:
+        patcher.undo()
+    assert not attempts, f"a test attempted network connections: {attempts}"
+
+
 @contextmanager
 def sanitize_pii_pinned(value: bool) -> Iterator[None]:
     """Pin ``SANITIZE_PII`` for the block, whatever the CI job exports.

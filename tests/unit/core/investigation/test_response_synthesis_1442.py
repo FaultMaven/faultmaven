@@ -125,7 +125,7 @@ def _single_shot_engine(content: dict, stop_reason: StopReason) -> MilestoneEngi
     )
 
     provider = MagicMock()
-    provider.generate = AsyncMock(
+    provider.route = AsyncMock(
         return_value=_llm(json.dumps(content), stop_reason=stop_reason)
     )
     provider.get_structured_output_strategy = MagicMock(
@@ -215,7 +215,7 @@ def _schema_call(data: dict, *, stop_reason: StopReason) -> LLMResponse:
 
 async def _tool_loop(response: LLMResponse):
     provider = AsyncMock()
-    provider.generate = AsyncMock(return_value=response)
+    provider.route = AsyncMock(return_value=response)
     repo = MagicMock()
     repo.save = AsyncMock()
     engine = MilestoneEngine(
@@ -486,7 +486,7 @@ def _schema_tool_provider():
 
     provider = MagicMock()
     provider.provider_name = "anthropic"
-    provider.generate = AsyncMock(side_effect=_generate)
+    provider.route = AsyncMock(side_effect=_generate)
     provider.get_structured_output_strategy = MagicMock(
         return_value=StructuredOutputStrategy(
             capability=StructuredOutputCapability.FUNCTION_CALLING,
@@ -564,7 +564,7 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
 
     # Positive control: the call went out as a schema-tool call on the path
     # named, so the site under test really read a TOOL_CALLS response.
-    sent = provider.generate.await_args.kwargs
+    sent = provider.route.await_args.kwargs
     offered = [t["function"]["name"] for t in sent.get("tools") or []]
     assert offered, "the schema tool was never offered"
     assert ("search_file" in offered) is (site == "tool_loop")
