@@ -746,16 +746,19 @@ class TestReconcileVectors:
     @staticmethod
     def _service(*, chroma_parents, delete_batches):
         async def _list():
-            return set(chroma_parents)
+            return {p: [f"{p}_chunk_{n}" for n in range(3)] for p in chroma_parents}
 
-        async def _delete_batch(parent_ids, collection_name=None):
-            ids = list(parent_ids)
-            delete_batches.append(ids)
-            return 3 * len(ids)  # pretend 3 chunks per parent
+        async def _delete_observed(chunk_ids, collection_name=None):
+            ids = list(chunk_ids)
+            # Record the parents the observed ids belong to, in first-seen order.
+            delete_batches.append(
+                list(dict.fromkeys(c.rsplit("_chunk_", 1)[0] for c in ids))
+            )
+            return ids
 
         vector_store = MagicMock()
-        vector_store.list_parent_document_ids = AsyncMock(side_effect=_list)
-        vector_store.delete_documents_by_parents = AsyncMock(side_effect=_delete_batch)
+        vector_store.list_all_chunk_ids_by_parent = AsyncMock(side_effect=_list)
+        vector_store.delete_observed_chunk_ids = AsyncMock(side_effect=_delete_observed)
         svc = MagicMock()
         svc._vector_store = vector_store
         return svc
@@ -932,7 +935,7 @@ class TestReconcileVectors:
         """A store that can't enumerate (e.g. the ChromaDBVectorStore fallback)
         degrades to a clean no-op — and warns, since drift goes uncleaned."""
         svc = MagicMock()
-        svc._vector_store = object()  # no list_parent_document_ids
+        svc._vector_store = object()  # no list_all_chunk_ids_by_parent
         cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa"})
         )
@@ -1196,11 +1199,11 @@ class TestCrossStoreRepairSeam:
 
         async def _list():
             # Only 'a' has vectors; 'b's Chroma write crashed mid-ingest.
-            return {"kb_aaaaaaaaaaaa"}
+            return {"kb_aaaaaaaaaaaa": ["kb_aaaaaaaaaaaa_chunk_0"]}
 
         vector_store = MagicMock()
-        vector_store.list_parent_document_ids = AsyncMock(side_effect=_list)
-        vector_store.delete_documents_by_parents = AsyncMock(return_value=0)
+        vector_store.list_all_chunk_ids_by_parent = AsyncMock(side_effect=_list)
+        vector_store.delete_observed_chunk_ids = AsyncMock(return_value=[])
         svc = MagicMock()
         svc._vector_store = vector_store
         svc.reindex_missing_vectors = AsyncMock(side_effect=_reindex)

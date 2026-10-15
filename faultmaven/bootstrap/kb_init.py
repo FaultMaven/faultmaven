@@ -582,7 +582,7 @@ async def _reconcile_vectors(
     if vector_store is None:
         logger.debug("Reconcile skipped: no vector store wired.")
         return nothing
-    if not hasattr(vector_store, "list_parent_document_ids"):
+    if not hasattr(vector_store, "list_all_chunk_ids_by_parent"):
         # A store that can't enumerate (e.g. the generic ChromaDBVectorStore
         # fallback when the KB client failed to init) silently leaves drift in
         # place — surface that loudly, it is a degraded configuration, not a no-op.
@@ -594,10 +594,12 @@ async def _reconcile_vectors(
         return nothing
 
     try:
-        chroma_parents = await vector_store.list_parent_document_ids()
+        chunk_ids_by_parent = await vector_store.list_all_chunk_ids_by_parent()
     except Exception as exc:
         logger.warning(f"Reconcile skipped: could not list vector parents: {exc}")
         return nothing
+
+    chroma_parents = set(chunk_ids_by_parent)
 
     async with db_session_factory() as session:
         rows = (
@@ -641,16 +643,25 @@ async def _reconcile_vectors(
     if not orphaned_vectors and not unpublished_with_vectors:
         return ReconcileResult([], [], orphaned_rows)
 
+    # Delete the chunk ids the listing OBSERVED, not "whatever carries these
+    # parents' metadata": the listing derives parents from ids, so a chunk with
+    # no ``parent_document_id`` key is listed and must be deleted by the same
+    # key (#2017). A parent is reported only if the delete returned cleanly.
+    observed = [
+        chunk_id
+        for parent in orphaned_vectors + unpublished_with_vectors
+        for chunk_id in chunk_ids_by_parent[parent]
+    ]
     try:
-        deleted = await vector_store.delete_documents_by_parents(
-            orphaned_vectors + unpublished_with_vectors
-        )
+        deleted = await vector_store.delete_observed_chunk_ids(observed)
     except Exception as exc:
         logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
         return ReconcileResult([], [], orphaned_rows)
 
+    # A chunk absent from the delete's answer was already gone when it ran. One
+    # still in the store after the pass cannot occur: the delete addressed it by id.
     logger.info(
-        f"Reconcile: deleted {deleted} vector chunk(s) across "
+        f"Reconcile: deleted {len(deleted)} vector chunk(s) across "
         f"{len(orphaned_vectors)} built-in parent(s) with no knowledge_items row "
         f"and {len(unpublished_with_vectors)} unpublished built-in parent(s)."
     )

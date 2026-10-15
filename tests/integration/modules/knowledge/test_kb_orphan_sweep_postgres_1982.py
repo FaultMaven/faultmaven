@@ -268,6 +268,51 @@ async def test_the_maintenance_role_sweeps_every_enterprise(pg, tmp_path):
     _assert_every_enterprise_swept(result, present)
 
 
+async def _session_state(factory):
+    """The pooled connection's identity and its ``row_security`` setting."""
+    async with factory() as session:
+        return tuple(
+            (
+                await session.execute(
+                    text("SELECT pg_backend_pid(), current_setting('row_security')")
+                )
+            ).one()
+        )
+
+
+@pytest.mark.parametrize("mode", [kb_orphan_sweep.SWEEP_REPORT_ONLY, "armed"])
+async def test_the_sweeps_row_security_off_does_not_outlive_its_transaction(
+    pg, tmp_path, mode
+):
+    """#2022: the second guard's own observable. ``SET LOCAL`` ends with the
+    sweep's transaction; a plain ``SET`` would leave ``row_security = off`` on
+    the pooled connection, and the next session on the pool would read every
+    enterprise's rows. Guard 1 returns first for any role RLS would affect, so
+    only a role that reaches the ``SET`` (the maintenance role) shows it. The
+    pid is asserted equal so the "next session" is the same connection."""
+    client = chroma_client(tmp_path / "chroma")
+    sc.add_chunks(client, sc.DOCS)
+    svc = SimpleNamespace(_vector_store=KnowledgeVectorStore(client))
+    async with production_sessions(pg.maintenance_url, sc.ST) as factory:
+        before = await _session_state(factory)
+        result = await kb_orphan_sweep.sweep_authored_orphans(
+            svc,
+            factory,
+            max_parents=25,
+            mode=(
+                kb_orphan_sweep.SWEEP_ARMED
+                if mode == "armed"
+                else kb_orphan_sweep.SWEEP_REPORT_ONLY
+            ),
+        )
+        after = await _session_state(factory)
+
+    assert result.proven is True  # the SET ran: the read was issued under it
+    assert after[0] == before[0], "the next session is not the swept connection"
+    assert before[1] == "on"
+    assert after[1] == "on", after
+
+
 @pytest.mark.parametrize("bind", [sc.ST, sc.E1], ids=["bound-standalone", "bound-e1"])
 async def test_the_app_role_proves_nothing_and_sweeps_nothing(pg, tmp_path, bind):
     """RLS filters the app role's read to the bound enterprise (plus the global

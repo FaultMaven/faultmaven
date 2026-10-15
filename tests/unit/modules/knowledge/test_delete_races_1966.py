@@ -71,11 +71,16 @@ class _KbStore:
     ) -> int:
         return self.parents.pop(parent_document_id, 0)
 
-    async def list_parent_document_ids(self) -> set:
-        return set(self.parents)
+    async def list_all_chunk_ids_by_parent(self) -> dict:
+        return {
+            p: [f"{p}_chunk_{n}" for n in range(c)] for p, c in self.parents.items()
+        }
 
-    async def delete_documents_by_parents(self, parent_ids, collection_name=None):
-        return sum(self.parents.pop(p, 0) for p in list(parent_ids))
+    async def delete_observed_chunk_ids(self, chunk_ids, collection_name=None):
+        ids = list(chunk_ids)
+        for parent in {c.rsplit("_chunk_", 1)[0] for c in ids}:
+            self.parents.pop(parent, None)
+        return ids
 
 
 @pytest.fixture(
