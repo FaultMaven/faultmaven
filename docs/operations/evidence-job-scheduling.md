@@ -243,6 +243,113 @@ described above, so treat it as the intended rule rather than a live one.
 
 ---
 
+### 1b. KB Authored-Orphan Sweep (`kb_seed` and the KB bootstrap, #1982)
+
+**Purpose:** Find authored KB vectors whose `knowledge_items` row is gone and,
+once an operator arms it, delete them. Typically these were stranded by a
+vector delete that failed before #1966. Retrieval never checks for a row, so
+such a chunk stays searchable for good. The sweep runs inside every KB
+bootstrap pass: at web startup under a single-tenant provider, and in `kb_seed`,
+which is the only path under `TENANT_PROVIDER=multi`, where CD runs it after
+every deploy. Design: [ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).
+
+**Report-only unless armed.** The gate is `storage_cleanup`'s, exactly:
+
+| `KB_ORPHAN_SWEEP_ENABLED` | effective dry run | what the sweep does |
+|---|---|---|
+| `false` (default) | `true` (default) | reports what an armed run would delete; deletes nothing |
+| `true` | `true` | the same |
+| `true` | `false` | **deletes** |
+| `false` | `false` | off (nothing listed) |
+
+The effective dry run is `kb_seed --dry-run` / `--no-dry-run` when given, else
+`KB_ORPHAN_SWEEP_DRY_RUN`. For `kb_seed` the flag governs only the sweep:
+seeding always runs. `--no-dry-run` asks for deletion but cannot grant it.
+
+> **⛔ Hard precondition for arming: one ChromaDB per database.** The
+> `faultmaven_kb` collection is not deployment-scoped. If two databases (a
+> staging and a production namespace, or a restore beside the original) share
+> one ChromaDB, each sees the other's chunks:
+> - chunks stamped with the Standalone enterprise, which every database has;
+> - chunks stamped with an enterprise it does not list, or none.
+>
+> It cannot see the other database's rows, so the other database's **live**
+> documents read as orphans. Neither the reference-set check nor the cap can
+> tell them apart. Measured: database A's armed run deleted 10 of B's live
+> chunks. A report-only run is harmless there, and its would-delete list is how
+> you notice.
+
+**What an armed run deletes, and what it never does.** An armed run deletes an
+authored chunk only when all of these hold:
+- it is stamped with an enterprise from `enterprises`;
+- its parent has **no row in any enterprise**;
+- the row read is proven complete by **both** guards:
+  - `NOT row_security_active('knowledge_items')`;
+  - the read runs under `SET LOCAL row_security = off`, so a policy-filtered
+    read errors instead of filtering;
+- that enterprise passes the reference-set check;
+- the run's total is within `KB_REPAIR_MAX_ROWS`, all or nothing.
+
+The guards hold under the maintenance role, the table owner and a superuser,
+and never under the app role. It never deletes built-ins, never deletes a SQL
+row, and never deletes a mis-stamped chunk of a live document.
+
+**Canary protocol (before arming).**
+1. Run on the defaults, so the sweep is report-only. Read the counts on the
+   `BootstrapResult(...)` line and the per-enterprise
+   `would_delete_documents` in the `kb_seed` result.
+2. Confirm the database has its own ChromaDB.
+3. Watch the selection path the way storage cleanup's canary does: a run that
+   reports `authored_orphans_would_delete=0` has rehearsed nothing. On a
+   non-production install:
+   - author TWO throwaway personal runbooks in the same enterprise;
+   - delete only one of their `knowledge_items` rows, as the table owner,
+     leaving its vectors;
+   - confirm the next report lists that id under its enterprise. With only one
+     authored runbook in the enterprise, deleting its row leaves no overlap for
+     the reference-set check, so the enterprise reads `disjoint` and its
+     orphan is not listed (nothing is deleted either way).
+4. Then set `KB_ORPHAN_SWEEP_ENABLED=true` and `KB_ORPHAN_SWEEP_DRY_RUN=false`.
+   For a single run, keep the settings and pass `kb_seed --no-dry-run` with
+   `KB_ORPHAN_SWEEP_ENABLED=true`.
+
+**Disjoint enterprises are acknowledged one at a time.** An enterprise none of
+whose authored vectors has a row is skipped, and counted as
+`authored_orphans_disjoint`. That shape is also what a partial read, a
+keyspace change or a shared ChromaDB produces. The seeding still completes and
+the other enterprises are still swept. After a report-only run has listed that
+enterprise's documents and you have confirmed they were all deleted, run:
+
+```bash
+python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance \
+  --no-dry-run --allow-disjoint-enterprise <enterprise_id>
+```
+
+Under single-tenant, drop `--cross-tenant-maintenance`. Repeat the flag for
+each enterprise. `unattributed` names the bucket of chunks whose stamp names no
+listed enterprise. `kb_seed` refuses `--allow-disjoint-reference-set`: one flag
+acknowledging every bucket at once is how a shared-ChromaDB probe lost another
+database's chunks.
+
+**Signals.** These sit on the `BootstrapResult(...)` line, which CD keeps, and
+in the `kb_seed` result's `authored_orphans`.
+
+| Key | Meaning |
+|-----|---------|
+| `authored_orphans_mode` | `report_only` (default), `armed` or `off` |
+| `authored_orphans_would_delete` | documents an armed run deletes, given this run's decisions |
+| `authored_orphans_deleted` | documents whose chunks this run deleted (armed only) |
+| `authored_orphans_unproven` | documents left unclassified: the row read is filtered by RLS. Expected under the app role (single-tenant PostgreSQL); a pass as the owner or under the maintenance role classifies them |
+| `authored_orphans_disjoint` | documents in an enterprise none of whose authored vectors has a row (WARNING names it) |
+| `authored_orphans_capped` | above `KB_REPAIR_MAX_ROWS` in total; nothing deleted (ERROR) |
+| `authored_orphans_misstamped` | documents with chunks stamped one enterprise while the document lives in another; kept (WARNING) |
+| `authored_orphans_unremoved` | a delete raised; retried next pass. Not `…failed`: CD's gate reads the line's last `failed=` |
+
+The job's status stays `completed` for every sweep outcome. The seeding
+succeeded, and these counts are the report.
+
+---
+
 ### 2. Retry Queue Monitoring (Future)
 
 **Purpose:** Monitor retry queue depth and success rates
@@ -284,7 +391,7 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 |-------|---------|-------------------------------|
 | `tenant_neutral` | No tenanted DB access | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
+| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770, and classifies — and, once armed, deletes — every enterprise's authored KB vectors whose row is gone, #1982) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a
@@ -303,7 +410,11 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
    (`faultmaven_maintenance`, provisioned by `faultmaven-enterprise-infra`):
    `BYPASSRLS` + non-superuser + non-owner, SELECT-only grants plus a single
    explicit write surface — `INSERT, DELETE ON knowledge_items` for `kb_seed`
-   (#770). The runner probe-verifies the role and refuses anything else —
+   (#770). `kb_seed`'s authored-orphan sweep (#1982) writes no SQL: it reads
+   `enterprises` and `knowledge_items` and, once armed, deletes only ChromaDB
+   vectors, because this role's read is proven unfiltered (both guards: see
+   [1b](#1b-kb-authored-orphan-sweep-kb_seed-and-the-kb-bootstrap-1982)).
+   The runner probe-verifies the role and refuses anything else —
    including the regular app role, whose RLS-scoped *partial* view is exactly
    the delete-other-tenants hazard.
 
