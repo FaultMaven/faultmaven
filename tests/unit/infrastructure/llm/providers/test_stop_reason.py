@@ -363,7 +363,11 @@ class TestLocalProvider:
         provider = LocalProvider(
             _config("local", "http://ollama:11434/api", "llama3.2")
         )
-        body = {"response": "partial", "eval_count": 7, "done_reason": "length"}
+        body = {
+            "message": {"role": "assistant", "content": "partial"},
+            "eval_count": 7,
+            "done_reason": "length",
+        }
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
             result = await send_to_model(provider, prompt="hi")

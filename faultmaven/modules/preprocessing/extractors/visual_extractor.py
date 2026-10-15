@@ -26,7 +26,7 @@ class VisualEvidenceExtractor:
     Configuration:
     - Uses MULTIMODAL_PROVIDER from .env (defaults to CHAT_PROVIDER if not set)
     - Supported providers: openai (GPT-4V/GPT-4o), anthropic (Claude 3.5), gemini (Gemini 1.5 Pro)
-    - Access via: settings.llm.get_multimodal_provider(), get_multimodal_api_key(), get_multimodal_model()
+    - Access via: settings.llm.get_multimodal_provider(), get_multimodal_model()
     """
 
     @property

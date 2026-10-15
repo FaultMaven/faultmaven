@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
-from faultmaven.exceptions import ModelLoadingException
+from faultmaven.exceptions import CallShapeUnsupported, ModelLoadingException
 from faultmaven.infrastructure.llm.dispatch import (
     RawModelContentRefused,
     send_to_model,
@@ -177,6 +177,9 @@ PROVIDER_SCHEMA = {
         # A local provider is configured by naming its server, not by a key.
         "endpoint_var": "LOCAL_LLM_URL",
         "model_var": "LOCAL_LLM_MODEL",
+        # A server's model has no meaningful default, so naming the server is
+        # not enough: a deployment must also say which model it serves.
+        "required_vars": ("LOCAL_LLM_URL", "LOCAL_LLM_MODEL"),
         "default_base_url": "http://localhost:5000",
         "default_model": "llama2-7b",
         "available_models": [],  # Dynamic — depends on what the user has pulled
@@ -1009,6 +1012,19 @@ class ProviderRegistry:
                 # is recorded and no other provider is tried with the same
                 # content.
                 raise
+            except CallShapeUnsupported as e:
+                # This CALL's shape on this transport, not the provider's
+                # health (#2016): no failure is recorded. Unlike a refused
+                # content grammar, another provider may carry the call, so
+                # the chain continues; a real failure already seen outranks
+                # the refusal when the chain is exhausted.
+                self.logger.warning(
+                    f"{provider_name} cannot carry this call shape and was "
+                    f"skipped without a health penalty: {e}"
+                )
+                if last_error is None or isinstance(last_error, CallShapeUnsupported):
+                    last_error = e
+                continue
             except Exception as e:
                 # Record failure for health tracking
                 state.record_failure()
@@ -1159,6 +1175,20 @@ def configuration_env_var(provider_name: str) -> str:
             "nor endpoint_var, so nothing says how an operator configures it."
         )
     return env_var
+
+
+def required_env_vars(provider_name: str) -> tuple:
+    """The variables an operator must set for ``provider_name`` to work.
+
+    A keyed provider needs exactly its configuration variable (its API key). An
+    entry that needs more declares ``required_vars`` (the local provider: a
+    server URL and the model it serves). Every consumer that asks "what does
+    this provider need" asks here, so a ninth provider is one registry entry.
+    """
+    declared = PROVIDER_SCHEMA[provider_name].get("required_vars")
+    if declared:
+        return tuple(declared)
+    return (configuration_env_var(provider_name),)
 
 
 def configured_provider_names(environ: Mapping[str, str]) -> List[str]:

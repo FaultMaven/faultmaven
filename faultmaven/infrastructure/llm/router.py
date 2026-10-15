@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
-from faultmaven.exceptions import LLMOutputFloorError
+from faultmaven.exceptions import CallShapeUnsupported, LLMOutputFloorError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.model_content import (
@@ -942,6 +942,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # Not a provider failure either: the request's own content was
             # refused (#1998). No error metric, no SLA failure, no "all
             # providers failed" — a refusal says nothing about any provider.
+            raise
+        except CallShapeUnsupported:
+            # Not a provider failure: no provider in the chain can carry this
+            # call's shape (#2016). The refusal surfaces itself, with no error
+            # metric or SLA failure.
             raise
         except LLMOutputFloorError:
             # Not a provider failure — the provider answered; the answer is one

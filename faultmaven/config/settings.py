@@ -464,8 +464,8 @@ class LLMSettings(BaseSettings):
     local_model: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
     # Operator declaration of the endpoint's tool-calling support (#1356).
     # Unset = derive it from the transport: the OpenAI-compatible
-    # /v1/chat/completions path is assumed capable, Ollama's /api/generate
-    # never is (that protocol has no tool_calls field). Set false when the
+    # /v1/chat/completions path is assumed capable, Ollama's native /api/chat
+    # transport never is (it does not carry tool calls). Set false when the
     # serving stack was built without tool support, so the engine stops paying
     # for a tool call it cannot satisfy on every turn; true is honoured only
     # where the transport can carry it.
@@ -639,18 +639,6 @@ class LLMSettings(BaseSettings):
             )
         return v
 
-    def get_api_key(self) -> Optional[str]:
-        """Get API key for current provider"""
-        key_map = {
-            LLMProvider.OPENAI: self.openai_api_key,
-            LLMProvider.ANTHROPIC: self.anthropic_api_key,
-            LLMProvider.FIREWORKS: self.fireworks_api_key,
-            LLMProvider.COHERE: self.cohere_api_key,
-            LLMProvider.LOCAL: None,  # Local doesn't use API key
-        }
-        key = key_map.get(self.provider)
-        return key.get_secret_value() if key else None
-
     def get_model(self, task: str = "chat") -> str:
         """Get model for current provider and specific task
 
@@ -705,19 +693,6 @@ class LLMSettings(BaseSettings):
     def get_multimodal_provider(self) -> LLMProvider:
         """Get multimodal provider (falls back to chat provider if not set)"""
         return self.multimodal_provider or self.provider
-
-    def get_multimodal_api_key(self) -> Optional[str]:
-        """Get API key for multimodal provider"""
-        provider = self.get_multimodal_provider()
-        key_map = {
-            LLMProvider.OPENAI: self.openai_api_key,
-            LLMProvider.ANTHROPIC: self.anthropic_api_key,
-            LLMProvider.FIREWORKS: self.fireworks_api_key,
-            LLMProvider.COHERE: self.cohere_api_key,
-            LLMProvider.LOCAL: None,
-        }
-        key = key_map.get(provider)
-        return key.get_secret_value() if key else None
 
     def get_multimodal_model(self) -> str:
         """Get model for multimodal provider using task-specific configuration"""
@@ -831,23 +806,6 @@ class LLMSettings(BaseSettings):
             LLMProvider.LOCAL: self.local_url,
         }
         return url_map.get(provider, "")
-
-    def get_synthesis_api_key(self) -> Optional[str]:
-        """Get API key for synthesis provider"""
-        provider = self.get_synthesis_provider()
-        key_map = {
-            LLMProvider.OPENAI: self.openai_api_key,
-            LLMProvider.ANTHROPIC: self.anthropic_api_key,
-            LLMProvider.FIREWORKS: self.fireworks_api_key,
-            LLMProvider.COHERE: self.cohere_api_key,
-            LLMProvider.GEMINI: self.gemini_api_key,
-            LLMProvider.HUGGINGFACE: self.huggingface_api_key,
-            LLMProvider.OPENROUTER: self.openrouter_api_key,
-            LLMProvider.GROQ: self.groq_api_key,
-            LLMProvider.LOCAL: None,
-        }
-        key = key_map.get(provider)
-        return key.get_secret_value() if key else None
 
     def get_synthesis_base_url(self) -> str:
         """Get base URL for synthesis provider"""

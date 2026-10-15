@@ -146,7 +146,11 @@ _ANTHROPIC_RESP = {
     "usage": {"input_tokens": 5, "output_tokens": 5},
 }
 _HF_RESP = [{"generated_text": "ok"}]
-_OLLAMA_RESP = {"response": "ok", "eval_count": 1, "done_reason": "stop"}
+_OLLAMA_RESP = {
+    "message": {"role": "assistant", "content": "ok"},
+    "eval_count": 1,
+    "done_reason": "stop",
+}
 _LLAMACPP_RESP = {"content": "ok", "tokens_predicted": 1, "stopped_eos": True}
 
 
@@ -315,6 +319,15 @@ async def _routed(target: Target, make_session, kwargs) -> list:
     return _requests_sent(session)
 
 
+def _skip_if_refused_by_design(label, shape):
+    """The raw llama.cpp ``/completion`` fallback takes one prompt, so it refuses
+    a call carrying ``messages`` before any request (#2016); the knob matrix has
+    no body to inspect there. The refusal is pinned in
+    test_local_messages_transport_2016.py."""
+    if label == "local-llamacpp" and shape == "tool_loop":
+        pytest.skip("refused before any request (#2016)")
+
+
 # --- Assertions ---------------------------------------------------------------
 
 
@@ -410,6 +423,7 @@ async def test_direct_call_sends_no_router_knob(
     """Each adapter, called directly the way the DA tool loop calls it, with
     each router-level knob alone. A direct send is the door that bypasses the
     router, so nothing upstream is allowed to have stripped it."""
+    _skip_if_refused_by_design(label, shape)
     spec = _SHAPES[shape]
 
     requests = await _direct(
@@ -434,6 +448,7 @@ async def test_direct_call_sends_no_router_knob(
 async def test_direct_call_sends_no_router_knob_when_all_are_given(
     mock_aiohttp_session, label, shape
 ):
+    _skip_if_refused_by_design(label, shape)
     spec = _SHAPES[shape]
 
     requests = await _direct(
@@ -509,12 +524,11 @@ async def test_routed_call_sends_no_unset_value(mock_aiohttp_session, label, sha
     """The router forwards ``response_format``, ``tools``, ``tool_choice`` and
     ``messages`` as ``None`` on a call that did not set them. A plain routed
     call must carry no null and no structured-output request at all."""
+    _skip_if_refused_by_design(label, shape)
     spec = _SHAPES[shape]
-    # The router turns an empty prompt into ``None``, and a messages-only call
-    # reaches the transports that take no ``messages`` field (HuggingFace,
-    # Ollama ``/api/generate``, llama.cpp ``/completion``) as ``prompt: null``.
-    # That is a separate defect (those transports drop the messages), filed on
-    # its own and deliberately not pinned here: this shape carries a prompt.
+    # The router turns an empty prompt into ``None``. A messages-only call is
+    # pinned for the local transports in test_local_messages_transport_2016.py;
+    # this shape carries a prompt.
     kwargs = {
         "prompt": spec["prompt"] or "Investigate the case",
         "max_tokens": 9000,
@@ -596,7 +610,7 @@ async def test_local_llamacpp_fallback_consumes_cache_prompt(mock_aiohttp_sessio
 
 @pytest.mark.asyncio
 async def test_ollama_options_hold_generation_options_only(mock_aiohttp_session):
-    """``/api/generate`` takes a prompt and generation options. The DA tool-loop
+    """``/api/chat`` takes messages and generation options. The DA tool-loop
     shape (messages, tools, tool_choice) must not land in ``options``."""
     spec = _SHAPES["tool_loop"]
 

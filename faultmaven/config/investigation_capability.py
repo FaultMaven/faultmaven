@@ -306,9 +306,9 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
         remedy = (
             "For a self-hosted endpoint the fix is on your side of the wire, "
             "and there are exactly two ways to get here. (1) LOCAL_LLM_URL ends "
-            "in /api or /api/generate, which names Ollama's native API — that "
-            "protocol has no tool_calls in its response, so no model can do "
-            "tool calling over it. Drop the suffix (use http://HOST:11434, or "
+            "in /api, /api/chat or /api/generate, which names Ollama's native API — "
+            "FaultMaven's transport for it does not carry tool calls, so no "
+            "model can do tool calling over it. Drop the suffix (use http://HOST:11434, or "
             "http://HOST:11434/v1): the same port also serves the "
             "OpenAI-compatible API, which does carry tool calls. (2) You set "
             "LOCAL_LLM_TOOL_CALLING=false — clear it if the serving stack does "

@@ -27,7 +27,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,6 @@ class PresetDefinition:
     name: str
     description: str
     defaults: Dict[str, Any]
-    required_overrides: Dict[str, Set[str]] = field(
-        default_factory=dict
-    )  # provider -> required keys
     optional_dependencies: List[str] = field(default_factory=list)
 
 
@@ -98,16 +95,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             # Session - relaxed timeouts for development
             "SESSION_TIMEOUT_MINUTES": "60",
         },
-        required_overrides={
-            # Provider-specific required keys
-            "openai": {"OPENAI_API_KEY"},
-            "anthropic": {"ANTHROPIC_API_KEY"},
-            "fireworks": {"FIREWORKS_API_KEY"},
-            "groq": {"GROQ_API_KEY"},
-            "cohere": {"COHERE_API_KEY"},
-            # Local provider has no required keys
-            "local": set(),
-        },
         optional_dependencies=[
             "Ollama (http://localhost:11434) for local LLM",
         ],
@@ -144,14 +131,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "ENABLE_DETAILED_TRACING": "false",
             # Session
             "SESSION_TIMEOUT_MINUTES": "30",
-        },
-        required_overrides={
-            "openai": {"OPENAI_API_KEY"},
-            "anthropic": {"ANTHROPIC_API_KEY"},
-            "fireworks": {"FIREWORKS_API_KEY"},
-            "groq": {"GROQ_API_KEY"},
-            "cohere": {"COHERE_API_KEY"},
-            "local": {"LOCAL_LLM_URL", "LOCAL_LLM_MODEL"},
         },
         optional_dependencies=[
             "Redis (localhost:6379) for session storage",
@@ -191,14 +170,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             # Session - standard timeouts
             "SESSION_TIMEOUT_MINUTES": "30",
         },
-        required_overrides={
-            "openai": {"OPENAI_API_KEY"},
-            "anthropic": {"ANTHROPIC_API_KEY"},
-            "fireworks": {"FIREWORKS_API_KEY"},
-            "groq": {"GROQ_API_KEY"},
-            "cohere": {"COHERE_API_KEY"},
-            "local": {"LOCAL_LLM_URL", "LOCAL_LLM_MODEL"},
-        },
         optional_dependencies=[
             "Redis for session storage and caching",
             "ChromaDB for vector storage",
@@ -216,9 +187,45 @@ PRESETS[PresetName.MINIMAL] = PRESETS[PresetName.LOCAL]
 # =============================================================================
 
 
-def get_current_preset_name() -> Optional[str]:
-    """Get the currently configured preset name from environment."""
-    preset_name = os.getenv("CONFIG_PRESET", "").lower().strip()
+def _settings_view() -> Dict[str, str]:
+    """The variables the settings are about to read (see ``environment_settings_read``).
+
+    Every decision in this module taken before the settings exist reads this one
+    view, not ``os.environ``: the settings read the process environment OVER the
+    dotenv file in the working directory, so a decision from the environment
+    alone disagrees with them for any value set only in that file (#2008).
+    Imported at call time: settings import this module's package.
+    """
+    from faultmaven.config.settings import environment_settings_read
+
+    return environment_settings_read()
+
+
+def preset_required_keys(preset: PresetDefinition, provider: str) -> Set[str]:
+    """The variables ``preset`` leaves an operator to supply for ``provider``.
+
+    What a provider needs comes from the provider registry; what the preset
+    already supplies comes from its defaults. The difference is what is
+    missing, so no per-preset table can disagree with either (#2006). An
+    unknown provider needs nothing from this check; the settings reject it.
+    """
+    from faultmaven.infrastructure.llm.providers.registry import (
+        PROVIDER_SCHEMA,
+        required_env_vars,
+    )
+
+    if provider not in PROVIDER_SCHEMA:
+        return set()
+    return set(required_env_vars(provider)) - set(preset.defaults)
+
+
+def get_current_preset_name(
+    environ: Optional[Mapping[str, str]] = None,
+) -> Optional[str]:
+    """Get the currently configured preset name, as the settings will read it."""
+    if environ is None:
+        environ = _settings_view()
+    preset_name = environ.get("CONFIG_PRESET", "").lower().strip()
     if not preset_name:
         return None
     return preset_name
@@ -272,7 +279,8 @@ def apply_preset_defaults():
 
     Call this function early in application startup, before settings are loaded.
     """
-    preset_name = get_current_preset_name()
+    environ = _settings_view()
+    preset_name = get_current_preset_name(environ)
     if not preset_name:
         # No preset specified, use pure environment variable mode
         return
@@ -288,12 +296,15 @@ def apply_preset_defaults():
 
     applied_count = 0
     for key, value in preset.defaults.items():
-        if os.getenv(key) is None:
+        # "Already set" is asked of the view the settings read: a value only in
+        # the working directory's .env is set, and writing the preset default
+        # into os.environ would make that default beat the operator's file.
+        if key not in environ:
             os.environ[key] = str(value)
             applied_count += 1
             logger.debug(f"  Set {key}={value} (from preset)")
         else:
-            logger.debug(f"  Keeping {key}={os.getenv(key)} (env var override)")
+            logger.debug(f"  Keeping {key} (operator override)")
 
     logger.info(f"Applied {applied_count} defaults from preset '{preset.name}'")
 
@@ -307,7 +318,8 @@ def validate_preset_requirements() -> List[str]:
     """
     errors = []
 
-    preset_name = get_current_preset_name()
+    environ = _settings_view()
+    preset_name = get_current_preset_name(environ)
     if not preset_name:
         return errors
 
@@ -316,18 +328,16 @@ def validate_preset_requirements() -> List[str]:
         return errors
 
     # Get the active LLM provider
-    provider = os.getenv(
-        "CHAT_PROVIDER", preset.defaults.get("CHAT_PROVIDER", "")
+    provider = (
+        environ.get("CHAT_PROVIDER") or preset.defaults.get("CHAT_PROVIDER", "")
     ).lower()
 
-    if provider in preset.required_overrides:
-        required_keys = preset.required_overrides[provider]
-        for key in required_keys:
-            if not os.getenv(key):
-                errors.append(
-                    f"Missing required configuration '{key}' for provider '{provider}' "
-                    f"in preset '{preset.name}'"
-                )
+    for key in sorted(preset_required_keys(preset, provider)):
+        if not environ.get(key):
+            errors.append(
+                f"Missing required configuration '{key}' for provider '{provider}' "
+                f"in preset '{preset.name}'"
+            )
 
     return errors
 
@@ -359,6 +369,10 @@ def get_preset_info(preset_name: Optional[str] = None) -> Dict[str, Any]:
             "available_presets": [p.value for p in PresetName],
         }
 
+    from faultmaven.infrastructure.llm.providers.registry import (
+        get_valid_provider_names,
+    )
+
     return {
         "active": True,
         "name": preset.name,
@@ -366,7 +380,8 @@ def get_preset_info(preset_name: Optional[str] = None) -> Dict[str, Any]:
         "defaults_count": len(preset.defaults),
         "optional_dependencies": preset.optional_dependencies,
         "required_for_providers": {
-            provider: list(keys) for provider, keys in preset.required_overrides.items()
+            provider: sorted(preset_required_keys(preset, provider))
+            for provider in get_valid_provider_names()
         },
     }
 
@@ -492,6 +507,7 @@ __all__ = [
     "PresetName",
     "PresetDefinition",
     "PRESETS",
+    "preset_required_keys",
     "get_current_preset_name",
     "get_preset",
     "get_preset_defaults",
