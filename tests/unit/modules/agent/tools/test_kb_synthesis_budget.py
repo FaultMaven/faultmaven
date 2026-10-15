@@ -38,6 +38,7 @@ from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
 )
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit]
 
@@ -268,7 +269,10 @@ async def test_synthesis_prompt_tells_the_model_its_allowance():
 
     tool = DocumentQATool(vector_store, router, UnifiedKBConfig())
     await tool.answer_question(
-        question="Why was it OOMKilled?", scope_id=None, k=5, redaction_ctx=None
+        question="Why was it OOMKilled?",
+        scope_id=None,
+        k=5,
+        redaction_ctx=disabled_redaction(),
     )
 
     router.route.assert_awaited()
@@ -309,7 +313,10 @@ async def test_case_evidence_answers_are_not_told_the_kb_relay_allowance():
 
     tool = DocumentQATool(vector_store, router, CaseEvidenceConfig())
     await tool.answer_question(
-        question="What errors?", scope_id="case_1", k=5, redaction_ctx=None
+        question="What errors?",
+        scope_id="case_1",
+        k=5,
+        redaction_ctx=disabled_redaction(),
     )
 
     prompt = router.route.await_args.kwargs["messages"][-1]["content"]

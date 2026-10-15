@@ -36,11 +36,20 @@ registry hands the result here. The router itself is never a ``_generate``
 target: this module unwraps, so a router behind it would see every minted
 call as raw.
 
+Production code reaches a router through :func:`route_model_call`, never
+through ``router.route`` itself (#1998 P2): the seam runs the same content
+check BEFORE any router, real or a test's double, so every test that drives a
+send site exercises the check, and a raw send is reported at the line that
+made it. ``test_model_dispatch_lexical_1998.py`` (rule S) flags ``.route``
+read anywhere else.
+
 A violation is reported — one WARNING line, the
 ``llm_model_content_violations`` metric and one :class:`RawModelContentWarning`,
 none of which carries content — and, while :data:`REFUSE_RAW_MODEL_CONTENT` is
 off, the call proceeds. ``_generate`` then receives plain values: exact ``str``
-text and plain message dicts.
+text and plain message dicts. A violation is reported ONCE per call: what the
+seam reported, the router and this dispatch do not report again
+(:data:`REPORTED_UPSTREAM`).
 """
 
 from __future__ import annotations
@@ -53,7 +62,7 @@ import warnings
 from collections import Counter
 from contextvars import ContextVar
 from types import FrameType
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Coroutine, Dict, FrozenSet, List, NamedTuple, Optional, Tuple
 
 from faultmaven.infrastructure.llm.providers.base import (
     CONTENT_KWARGS,
@@ -134,6 +143,19 @@ _TRANSPORT_FILE = os.path.join(
 #: later, from a stack whose frames cannot name it either, is labelled with the
 #: routed call's site: it only ever affects a label, never what is checked.
 SEND_SITE: ContextVar[Optional[SendSite]] = ContextVar("llm_send_site", default=None)
+
+#: The ``(argument, kind)`` pairs :func:`route_model_call` already reported for
+#: the routed call in progress, set by the coroutine it returns around
+#: ``router.route``. ``route()``'s own reports (what it drops, a cache hit) and
+#: :func:`send_to_model` report only what is not in it, so a raw send is
+#: reported once, at the line that made it, however many layers and fallback
+#: providers it passes. Refusal never reads it: a refused call is refused
+#: wherever it is checked. Like :data:`SEND_SITE`, a task spawned inside the
+#: window inherits the value, so a send that task makes later would not
+#: report those same pairs again; it is still checked, and still refused.
+REPORTED_UPSTREAM: ContextVar[FrozenSet[Tuple[str, str]]] = ContextVar(
+    "llm_reported_upstream", default=frozenset()
+)
 
 
 def _site_of(frame: FrameType) -> SendSite:
@@ -308,9 +330,22 @@ def report_raw_model_content(
     falsy prompt, falsy messages) and for a call it answers from its cache:
     in warn mode those are reported here, once, naming the call's site from
     ``frame``; under refusal ``route()`` has already refused them at entry.
+    What :func:`route_model_call` already reported for the call is not
+    reported again (:data:`REPORTED_UPSTREAM`).
     """
+    violations = _not_reported_upstream(violations)
     if violations:
         _report_raw_model_content(target, violations, _send_site(frame))
+
+
+def _not_reported_upstream(
+    violations: List[ContentViolation],
+) -> List[ContentViolation]:
+    """``violations`` less the ``(argument, kind)`` pairs the seam reported."""
+    upstream = REPORTED_UPSTREAM.get()
+    if not upstream:
+        return violations
+    return [v for v in violations if (v.argument, v.kind) not in upstream]
 
 
 def _report_raw_model_content(
@@ -405,9 +440,11 @@ async def send_to_model(
     violations = model_call_violations(prompt, kwargs.get("messages"), kwargs)
     if violations:
         refuse_if_refusing(_provider_label(provider), violations)
-        _report_raw_model_content(
-            _provider_label(provider), violations, _send_site(sys._getframe())
-        )
+        unreported = _not_reported_upstream(violations)
+        if unreported:
+            _report_raw_model_content(
+                _provider_label(provider), unreported, _send_site(sys._getframe())
+            )
     # ``kwargs`` is this call's own dict: unwrapping in place mutates nothing
     # the caller holds (plain_messages copies what it changes), and keeps each
     # key where the caller put it.
@@ -427,3 +464,65 @@ async def send_to_model(
         temperature=kwargs.pop("temperature", 0.7),
         **kwargs,
     )
+
+
+#: ``prompt`` not passed: forwarded to the router only when the caller wrote it.
+_UNSET: Any = object()
+
+
+def route_model_call(
+    router: Any, *, prompt: Any = _UNSET, **kwargs: Any
+) -> Coroutine[Any, Any, LLMResponse]:
+    """Send one routed model call: check its content, then ``router.route``.
+
+    The one way production code reaches a router (#1998 P2): every send site
+    writes ``await route_model_call(router, messages=..., ...)`` where it
+    used to write ``await router.route(messages=..., ...)``. The keywords are
+    ``route()``'s, passed through unchanged; ``prompt`` reaches the router only
+    when the caller passed it.
+
+    It checks the call's model-bound content — ``prompt`` and ``messages``,
+    the same check ``route()`` runs at entry (:func:`model_call_violations`)
+    — before any router runs, real or a test's double: a test that replaces
+    the router still exercises the check, at the line it drives. Content only:
+    the other keywords are ``route()``'s own, a closed signature, not a
+    provider's. A violation is refused under :data:`REFUSE_RAW_MODEL_CONTENT`
+    (raised here, before the router is called) and otherwise reported, here,
+    naming the caller's line.
+
+    A plain function returning the coroutine, not an ``async def``: the send
+    site is read from the caller's frame while it is on the stack. Under
+    ``asyncio.wait_for`` the coroutine becomes the root of a task of its own,
+    from which no frame reaches the caller, and the report would name this
+    module. The coroutine records that site (:data:`SEND_SITE`) and what was
+    reported (:data:`REPORTED_UPSTREAM`) around ``router.route``, so the
+    router's own reports and :func:`send_to_model` name the same line and
+    report only what this did not.
+    """
+    site = _send_site(sys._getframe())
+    violations = model_call_violations(
+        None if prompt is _UNSET else prompt, kwargs.get("messages"), {}
+    )
+    if violations:
+        refuse_if_refusing("router", violations)
+        _report_raw_model_content("router", violations, site)
+    if prompt is not _UNSET:
+        kwargs["prompt"] = prompt
+    return _routed(
+        router, site, frozenset((v.argument, v.kind) for v in violations), kwargs
+    )
+
+
+async def _routed(
+    router: Any,
+    site: SendSite,
+    reported: FrozenSet[Tuple[str, str]],
+    kwargs: Dict[str, Any],
+) -> LLMResponse:
+    site_token = SEND_SITE.set(site)
+    reported_token = REPORTED_UPSTREAM.set(reported)
+    try:
+        return await router.route(**kwargs)
+    finally:
+        REPORTED_UPSTREAM.reset(reported_token)
+        SEND_SITE.reset(site_token)

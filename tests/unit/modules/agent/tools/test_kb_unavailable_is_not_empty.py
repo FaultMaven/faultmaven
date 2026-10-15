@@ -35,6 +35,7 @@ from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit]
 
@@ -87,6 +88,7 @@ def _context() -> ToolContext:
         session_id="session-1",
         enterprise_id="org-1",
         kb_scope_filter=build_kb_scope_filter("user-1", []),
+        redaction_ctx=disabled_redaction(),
     )
 
 

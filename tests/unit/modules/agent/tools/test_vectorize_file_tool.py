@@ -18,6 +18,7 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VectorizeFileTool,
     append_vectorization_advisory,
 )
+from tests.model_content import disabled_redaction
 
 
 def _make_evidence(
@@ -76,6 +77,7 @@ def _make_context(case_id: str = "case_123", evidence_items=None):
         enterprise_id="org_1",
         user_id="user_1",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
 
 

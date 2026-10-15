@@ -46,6 +46,21 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
 * T — nothing outside ``tests/`` imports ``tests``: the test minter
   (``tests.model_content.vetted``) mints raw text without a redaction pass,
   and is exempt from the mint check for that reason only.
+* S — a router is reached only through the seam,
+  ``dispatch.route_model_call`` (#1998 P2), which checks the call's content
+  before any router runs, a test's double included. So ``route`` read as an
+  attribute (``router.route(...)``, ``send = router.route``,
+  ``partial(router.route, ...)``, ``super().route``) is flagged anywhere but
+  ``dispatch.py``, and so is the name ``"route"`` handed to
+  ``operator.methodcaller`` or ``operator.attrgetter`` (alone or as a dotted
+  path's end). A STORE into ``.route`` is not a send (the container's mock
+  router assigns one) and is not flagged. Neither is ``"route"`` as a bare
+  string: FastAPI's routing context and the API vocabulary use it for other
+  things (``getattr(ctx, "route", None)``), and a string reaches a router
+  only through a reflection this rule already names or a computed one, which
+  is out of scope. The three knowledge-authoring send sites still call
+  ``.route`` until #1998 P2b moves them onto the seam; they are allowed BY
+  FILE in ``ROUTE_ALLOWED_UNTIL_P2B``, which P2b deletes.
 
 The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
@@ -97,6 +112,19 @@ _DISPATCH_MODULE = "faultmaven.infrastructure.llm." + "dispatch"
 # the module docstring is not the only place they appear.
 _SEND = "_gen" + "erate"
 _DISPATCHER = "send_to" + "_model"
+#: Rule S: the router's send method.
+_ROUTE = "route"
+#: The reflections that name a method or attribute by a string (rule S).
+_REFLECTORS = frozenset({"methodcaller", "attrgetter"})
+#: The knowledge-authoring send sites that still call ``.route``. #1998 P2b
+#: moves them onto ``route_model_call`` and deletes this allow-list.
+ROUTE_ALLOWED_UNTIL_P2B = frozenset(
+    {
+        "faultmaven/modules/knowledge/domain/services/conversion_service/pipeline.py",
+        "faultmaven/modules/knowledge/domain/services/conversion_service/service.py",
+        "faultmaven/modules/knowledge/domain/services/document_preprocessor.py",
+    }
+)
 
 
 def exempt(path: str) -> bool:
@@ -293,11 +321,49 @@ def _module_of(node: ast.ImportFrom, path: str) -> str:
     return ".".join(base + ([node.module] if node.module else []))
 
 
+def route_reached(path: str) -> bool:
+    """Whether ``path`` may read a router's ``route`` (rule S): the seam's own
+    file, and until #1998 P2b the three knowledge send sites."""
+    return path == _DISPATCH or path in ROUTE_ALLOWED_UNTIL_P2B
+
+
+def _route_violations(tree: ast.AST) -> List[Tuple[int, str, str]]:
+    """S: ``route`` read as an attribute, or named to a reflection."""
+    found: List[Tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", 0)
+        # The parser normalises identifiers (NFKC): ``router.ｒoute`` reads
+        # ``route`` here.
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == _ROUTE
+            and isinstance(node.ctx, ast.Load)
+        ):
+            found.append((line, "S", "a router's route reached outside the seam"))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            callee = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", None)
+            )
+            if callee in _REFLECTORS and any(
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and _names(arg.value, {_ROUTE})
+                for arg in node.args
+            ):
+                found.append((line, "S", f"route named to {callee}"))
+    return found
+
+
 def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     """``(line, rule, what)`` for every spelled way ``source`` reaches past the
     dispatch. ``path`` is repo-relative: it decides the exemptions."""
     found: List[Tuple[int, str, str]] = []
     tree = _parse(source)
+    if not route_reached(path):
+        found.extend(_route_violations(tree))
     docstrings = _docstrings(tree)
     private = not exempt(path)
     transports = transport_names()
@@ -508,6 +574,19 @@ PLANTED = {
     "A4 OpenAI transport": "r = await provider._post_chat_completion(payload)\n",
     "A4 local transport": "r = await provider._call_ollama_api(raw)\n",
     "A4 transport by string": "f = getattr(provider, '_call_llamacpp_api')\n",
+    # S: a router reached around the seam (#1998 P2).
+    "S router.route(...)": "r = await router.route(prompt=raw)\n",
+    "S self-attribute chain": "r = await self.deps.llm_provider.route(**params)\n",
+    "S uncalled reference": "send = router.route\n",
+    "S partial over the method": (
+        "send = functools.partial(router.route, prompt=raw)\n"
+    ),
+    "S super().route": "r = await super().route(prompt=raw)\n",
+    "S NFKC identifier": "r = await router.ｒoute(prompt=raw)\n",
+    "S methodcaller": "r = await operator.methodcaller('route', prompt=raw)(router)\n",
+    "S methodcaller, NFKC string": "f = methodcaller('ｒoute')\n",
+    "S attrgetter": "send = operator.attrgetter('route')(router)\n",
+    "S attrgetter, dotted": "send = attrgetter('deps.llm_provider.route')(self)\n",
 }
 
 #: rev2015e-probes/r7_reach.py: every way the #2015 review replaced
@@ -617,6 +696,23 @@ def test_a_relative_whole_import_of_the_dispatch_is_caught():
     assert not violations(source, "faultmaven/planted.py")
 
 
+def test_the_seam_may_call_route():
+    """S exempts the seam's own file: it is what calls ``router.route``."""
+    assert violations("r = await router.route(**kwargs)\n", _DISPATCH) == []
+    assert {
+        hit[1]
+        for hit in violations("r = await router.route(**kwargs)\n", "faultmaven/x.py")
+    } == {"S"}
+
+
+def test_the_route_allow_list_names_live_send_sites():
+    """Each file allowed until #1998 P2b still reads ``.route``: a stale entry
+    would admit a new send in that file with nothing to remove."""
+    for rel in sorted(ROUTE_ALLOWED_UNTIL_P2B):
+        tree = _parse((_ROOT / rel).read_text(encoding="utf-8"))
+        assert _route_violations(tree), rel
+
+
 def test_the_dispatch_may_bind_its_own_name():
     assert not violations(
         "async def send_to_model(provider, **kw):\n    return 1\n", _DISPATCH
@@ -633,7 +729,18 @@ ALLOWED = {
         "from faultmaven.infrastructure.llm.dispatch import send_to_model as s\n"
         "s = mine\n"
     ),
-    "route": "r = await router.route(prompt=p)\n",
+    "the seam": "r = await route_model_call(router, prompt=p)\n",
+    "the seam under wait_for": (
+        "r = await asyncio.wait_for(route_model_call(router, prompt=p), 5)\n"
+    ),
+    # S reads loads only: the container's mock router assigns its route.
+    "a store into route (container/base.py)": (
+        "llm_provider.route = MagicMock(return_value='x')\n"
+    ),
+    # No bare string rule (#1998 P2 ruling): FastAPI's routing context.
+    "route as a string": "r = getattr(ctx, 'route', None)\nscope['route']\n",
+    "a longer attribute": "x = registry.route_request\ny = app.routes\n",
+    "another name to a reflection": "f = operator.attrgetter('router')\n",
     "a public provider attribute": "provider.generate = mine\n",
     "a docstring naming both": '"""Calls send_to_model, which calls _generate."""\n',
     "a longer identifier": "x = self._generate_title_with_llm()\n",

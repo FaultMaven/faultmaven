@@ -18,6 +18,7 @@ from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
+from tests.model_content import disabled_redaction
 
 
 def _make_tool(chunks):
@@ -49,7 +50,7 @@ class TestRelaySynthesisPrompt:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         # The user-role synthesis prompt is the last message sent to the LLM.

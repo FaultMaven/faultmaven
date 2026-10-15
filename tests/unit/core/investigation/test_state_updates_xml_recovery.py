@@ -34,6 +34,7 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.infrastructure.llm.providers import StopReason
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
+from tests.model_content import disabled_redaction, vetted
 
 pytestmark = pytest.mark.unit
 
@@ -408,7 +409,7 @@ async def test_single_shot_path(counters, state_updates, stop_reason, expected, 
         llm_provider=provider, repository=repo, investigation_tools=MagicMock()
     )
     parsed = await engine.generator._generate_structured_output_inner(
-        "p", TerminalResponse
+        "p", TerminalResponse, redaction_ctx=disabled_redaction()
     )
     assert parsed.state_updates.final_summary_update == expected
     assert counters.repairs() == [_repair(repair)]
@@ -441,10 +442,11 @@ async def _tool_loop(*responses: LLMResponse):
         }
     ]
     return await engine.generator._tool_augmented_generate(
-        prompt="p",
+        prompt=vetted("p"),
         schema_model=TerminalResponse,
         investigation_tools=tools,
         tool_context=MagicMock(),
+        redaction_ctx=disabled_redaction(),
     )
 
 

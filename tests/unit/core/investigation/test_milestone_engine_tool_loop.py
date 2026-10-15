@@ -23,13 +23,18 @@ from faultmaven.core.investigation.milestone_engine.structured_output import (
     _parse_nested_json,
 )
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
-    _build_assistant_message,
     _build_da_system_instruction,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
+from faultmaven.infrastructure.security.model_content import (
+    SOURCE_MODEL_OUTPUT,
+    model_output,
+    provenance,
+)
 from faultmaven.models.interfaces import ToolResult
+from tests.model_content import disabled_redaction, vetted
 
 # =========================================================================
 # Test schema model
@@ -209,10 +214,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Investigate SSH issues",
+            prompt=vetted("Investigate SSH issues"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -262,10 +268,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Investigate",
+            prompt=vetted("Investigate"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert: 4 search iterations + 1 forced final = 5 LLM calls
@@ -320,10 +327,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Analyze",
+            prompt=vetted("Analyze"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -359,10 +367,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert: Check that the tool result message was truncated
@@ -401,10 +410,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert: Error message passed as tool result, loop continues
@@ -434,10 +444,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -466,10 +477,11 @@ class TestToolAugmentedGenerate:
         # Act & Assert
         with pytest.raises(ToolCallingUnsupportedError):
             await engine.generator._tool_augmented_generate(
-                prompt="Search",
+                prompt=vetted("Search"),
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
                 tool_context=tool_context,
+                redaction_ctx=disabled_redaction(),
             )
 
     async def test_inline_json_text_parsed_as_schema_under_forced_schema(self):
@@ -503,10 +515,11 @@ class TestToolAugmentedGenerate:
 
         # Act
         result = await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -532,10 +545,11 @@ class TestToolAugmentedGenerate:
         ]
 
         await engine.generator._tool_augmented_generate(
-            prompt="Search",
+            prompt=vetted("Search"),
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         second_call = mock_provider.route.call_args_list[1]
@@ -583,10 +597,11 @@ class TestToolAugmentedGenerate:
         # non-tool fallback path.
         with pytest.raises(ToolCallingUnsupportedError):
             await engine.generator._tool_augmented_generate(
-                prompt="Search",
+                prompt=vetted("Search"),
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
                 tool_context=tool_context,
+                redaction_ctx=disabled_redaction(),
             )
         # Sanity: provider was called twice (iter 0 search + iter 1 timeout)
         assert mock_provider.route.call_count == 2
@@ -627,10 +642,11 @@ class TestToolAugmentedGenerate:
 
         with pytest.raises(ToolCallingUnsupportedError):
             await engine.generator._tool_augmented_generate(
-                prompt="Search",
+                prompt=vetted("Search"),
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
                 tool_context=tool_context,
+                redaction_ctx=disabled_redaction(),
             )
 
 
@@ -709,6 +725,7 @@ class TestGenerateStructuredOutputRouting:
         result = await engine.generator.generate_structured_output(
             prompt="Test prompt",
             schema_model=SampleResponse,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -742,6 +759,7 @@ class TestGenerateStructuredOutputRouting:
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert
@@ -820,6 +838,7 @@ class TestGenerateStructuredOutputRouting:
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
             tool_context=tool_context,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Assert — the request did NOT 500; the fallback path produced a
@@ -887,7 +906,10 @@ class TestBuildToolContext:
         mock_case.enterprise_id = "ent_123"
 
         result = await engine.generator.build_tool_context(
-            mock_case, user_id="user_abc", redaction_ctx=None, given_tools=NO_TOOLS
+            mock_case,
+            user_id="user_abc",
+            redaction_ctx=disabled_redaction(),
+            given_tools=NO_TOOLS,
         )
 
         assert result.session_id == "case_001"
@@ -905,15 +927,19 @@ class TestBuildToolContext:
         mock_case.enterprise_id = "ent_456"
 
         result = await engine.generator.build_tool_context(
-            mock_case, user_id=None, redaction_ctx=None, given_tools=NO_TOOLS
+            mock_case,
+            user_id=None,
+            redaction_ctx=disabled_redaction(),
+            given_tools=NO_TOOLS,
         )
 
         assert result.user_id == "system"
 
 
 @pytest.mark.unit
-class TestBuildAssistantMessage:
-    """Tests for _build_assistant_message()."""
+class TestTheToolCallEchoIsModelOutput:
+    """The tool loop echoes a tool-calling reply back as ``model_output``
+    (#1998): the OpenAI-format assistant message, minted as model output."""
 
     def test_builds_openai_format_assistant_message(self):
         """Verifies OpenAI-format assistant message from LLMResponse."""
@@ -933,13 +959,17 @@ class TestBuildAssistantMessage:
             ],
         )
 
-        result = _build_assistant_message(response)
+        result = model_output(response)
 
         assert result["role"] == "assistant"
         assert result["content"] == "Let me search."
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["id"] == "call_1"
         assert result["tool_calls"][0]["function"]["name"] == "search_file"
+        arguments = result["tool_calls"][0]["function"]["arguments"]
+        assert arguments == '{"query": "error"}'
+        for minted in (result["content"], arguments):
+            assert provenance(minted) == (SOURCE_MODEL_OUTPUT, False)
 
     def test_no_tool_calls_omits_key(self):
         """Without tool_calls, the key should not be in the message."""
@@ -953,7 +983,7 @@ class TestBuildAssistantMessage:
             tool_calls=None,
         )
 
-        result = _build_assistant_message(response)
+        result = model_output(response)
 
         assert result["role"] == "assistant"
         assert result["content"] == "Just text"
@@ -977,7 +1007,7 @@ class TestBuildAssistantMessage:
             ],
         )
 
-        result = _build_assistant_message(response)
+        result = model_output(response)
 
         assert result["content"] == ""
 
@@ -1317,12 +1347,13 @@ class TestToolLoopSpendBound:
         token = active_token_tracker.set(tracker)
         try:
             await engine.generator._tool_augmented_generate(
-                prompt="Investigate",
+                prompt=vetted("Investigate"),
                 schema_model=SampleResponse,
                 investigation_tools=[
                     {"type": "function", "function": {"name": "search_file"}}
                 ],
                 tool_context=MagicMock(),
+                redaction_ctx=disabled_redaction(),
             )
         finally:
             active_token_tracker.reset(token)
@@ -1549,8 +1580,19 @@ def _main_bound(messages: list, budget: int, provider: str, model) -> list:
 
 def _shape(sent: list, history: list) -> list:
     """What a call sent, as positions in the full history (MARKER for the
-    elision marker), so two runs compare by decision, not by object."""
+    elision marker), so two runs compare by decision, not by object.
+
+    A message is matched by identity, or else by value: the model dispatch
+    hands a concrete provider plain copies of the minted messages (#1998), so
+    what a DA provider received is equal to, not the same object as, what the
+    history holds."""
     index = {id(m): i for i, m in enumerate(history)}
+
+    def position(m) -> int:
+        if id(m) in index:
+            return index[id(m)]
+        return next(i for i, h in enumerate(history) if h == m)
+
     return [
         (
             "MARKER"
@@ -1558,7 +1600,7 @@ def _shape(sent: list, history: list) -> list:
                 m == "MARKER"
                 or (isinstance(m, dict) and m.get("content") == _MARKER_TEXT)
             )
-            else index[id(m)]
+            else position(m)
         )
         for m in sent
     ]
@@ -1698,10 +1740,11 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         engine.generator._bound_tool_loop_messages = spy
 
         await engine.generator._tool_augmented_generate(
-            prompt="B" * (4 * 32_000),
+            prompt=vetted("B" * (4 * 32_000)),
             schema_model=InvestigationResponse_Diagnosis,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         resolved = resolve_model_budget(provider_name, da_model)
@@ -1754,10 +1797,11 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         engine.generator._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
 
         await engine.generator._tool_augmented_generate(
-            prompt="BASE " + "b" * 400,
+            prompt=vetted("BASE " + "b" * 400),
             schema_model=SampleResponse,
             investigation_tools=[heavy],
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         tool_calls = calls[: StructuredOutputGenerator.MAX_TOOL_ITERATIONS]
@@ -1809,10 +1853,11 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         engine.generator._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
 
         await engine.generator._tool_augmented_generate(
-            prompt="BASE " + "b" * 400,
+            prompt=vetted("BASE " + "b" * 400),
             schema_model=SampleResponse,
             investigation_tools=[heavy],
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         final = calls[-1]
@@ -1986,11 +2031,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
             return _sized_text("RESIZED", target_tokens - 200)
 
         await engine.generator._tool_augmented_generate(
-            prompt=base,
+            prompt=vetted(base),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Positive control: the chat-sized base alone overflows the DA budget.
@@ -2015,11 +2061,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
         builder = MagicMock()
 
         await engine.generator._tool_augmented_generate(
-            prompt="BASE small",
+            prompt=vetted("BASE small"),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         builder.assert_not_called()
@@ -2040,11 +2087,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
         builder = {"none": None, "still_too_big": too_big, "raises": broken}[rebuild]
         with pytest.raises(ToolCallingUnsupportedError, match=_FIT_REFUSAL):
             await engine.generator._tool_augmented_generate(
-                prompt=_chat_sized_base(20_000),
+                prompt=vetted(_chat_sized_base(20_000)),
                 schema_model=SampleResponse,
                 investigation_tools=engine.generator.build_da_tool_schemas(),
                 tool_context=MagicMock(),
                 base_prompt_builder=builder,
+                redaction_ctx=disabled_redaction(),
             )
         provider._generate.assert_not_called()
 
@@ -2067,11 +2115,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
             return "R" * (4 * target_tokens)  # exactly target_tokens tokens
 
         await engine.generator._tool_augmented_generate(
-            prompt="B" * 4 * 20_000,
+            prompt=vetted("B" * 4 * 20_000),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=exact,
+            redaction_ctx=disabled_redaction(),
         )
 
         budget = engine.generator._resolve_tool_loop_budget("local").hard(8_000)
@@ -2104,6 +2153,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         assert isinstance(result, SampleResponse)
@@ -2153,11 +2203,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
         builder = MagicMock()
 
         await engine.generator._tool_augmented_generate(
-            prompt=base,
+            prompt=vetted(base),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         builder.assert_not_called()
@@ -2190,11 +2241,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
         builder = MagicMock()
 
         await engine.generator._tool_augmented_generate(
-            prompt=base,
+            prompt=vetted(base),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         builder.assert_not_called()
@@ -2231,11 +2283,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
             return "R" * (4 * target_tokens)  # len // 4: exactly the target
 
         await engine.generator._tool_augmented_generate(
-            prompt="B" * (4 * 32_000),  # the chat path's full-size base
+            prompt=vetted("B" * (4 * 32_000)),  # the chat path's full-size base
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=exact,
+            redaction_ctx=disabled_redaction(),
         )
 
         assert len(calls) == 4
@@ -2309,10 +2362,11 @@ class TestToolLoopBaseFitsTheReceivingModel:
         engine, calls = self._truncation_engine(monkeypatch, window, result_after=4)
 
         await engine.generator._tool_augmented_generate(
-            prompt="BASE small",
+            prompt=vetted("BASE small"),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         first, retry = calls[-2], calls[-1]
@@ -2349,10 +2403,11 @@ class TestToolLoopBaseFitsTheReceivingModel:
 
         with pytest.raises(ToolCallingUnsupportedError):
             await engine.generator._tool_augmented_generate(
-                prompt=base,
+                prompt=vetted(base),
                 schema_model=SampleResponse,
                 investigation_tools=tools,
                 tool_context=MagicMock(),
+                redaction_ctx=disabled_redaction(),
             )
         # Positive control: the first attempt was sent, cut, and the retry at
         # 16,000 was never sent.
@@ -2378,6 +2433,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             8_000,
             base_prompt_builder=lambda **kw: _sized_text("RESIZED", 2_000),
             token_cache=cache,
+            redaction_ctx=disabled_redaction(),
         )
         # Positive control: the base was replaced.
         assert out[1] is not head[1] and out[1]["content"].startswith("RESIZED")
@@ -2390,7 +2446,9 @@ class TestToolLoopBaseFitsTheReceivingModel:
         """The rebuilt text is raw case content going to a provider reached
         without the router's sanitizer, so it passes the case redaction."""
         engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
-        redaction_ctx = MagicMock()
+        # A real context (the minting helpers take no other, #1998) whose pass
+        # is recognisable.
+        redaction_ctx = disabled_redaction()
         redaction_ctx.asanitize = AsyncMock(
             side_effect=lambda text: text.replace("alice@example.com", "[EMAIL_1]")
         )
@@ -2399,7 +2457,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             return "RESIZED alice@example.com " + _sized_text("", target_tokens - 300)
 
         await engine.generator._tool_augmented_generate(
-            prompt=_chat_sized_base(20_000),
+            prompt=vetted(_chat_sized_base(20_000)),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
@@ -2437,11 +2495,12 @@ class TestToolLoopBaseFitsTheReceivingModel:
             return get_prompt_for_case(case, "why slow?", **kw)
 
         await engine.generator._tool_augmented_generate(
-            prompt=chat_base,
+            prompt=vetted(chat_base),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
+            redaction_ctx=disabled_redaction(),
         )
 
         # Positive control: the chat-sized head does not fit beside the tools.
@@ -2655,10 +2714,11 @@ class TestDaProviderRouting:
         tool_ctx = MagicMock()
 
         await engine.generator._tool_augmented_generate(
-            prompt="test",
+            prompt=vetted("test"),
             schema_model=SampleResponse,
             investigation_tools=tool_defs,
             tool_context=tool_ctx,
+            redaction_ctx=disabled_redaction(),
         )
 
         # da_provider should have been called
@@ -2686,10 +2746,11 @@ class TestDaProviderRouting:
         tool_ctx = MagicMock()
 
         await engine.generator._tool_augmented_generate(
-            prompt="test",
+            prompt=vetted("test"),
             schema_model=SampleResponse,
             investigation_tools=tool_defs,
             tool_context=tool_ctx,
+            redaction_ctx=disabled_redaction(),
         )
 
         # llm_provider should have been called (fallback)
@@ -2736,11 +2797,12 @@ class TestDirectDaCallCarriesNoRouterKnobs:
         case.case_id = self.CASE_ID
         case.evidence = []
         await engine.generator._tool_augmented_generate(
-            prompt="test",
+            prompt=vetted("test"),
             schema_model=SampleResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             case=case,
+            redaction_ctx=disabled_redaction(),
         )
 
     @staticmethod
@@ -2912,12 +2974,13 @@ class TestProactiveVectorizationGate:
         engine, case = await self._setup_engine_with_case()
 
         await engine.generator._tool_augmented_generate(
-            prompt="test",
+            prompt=vetted("test"),
             schema_model=SampleResponse,
             investigation_tools=[],
             tool_context=MagicMock(),
             case=case,
             force_tool_use=True,
+            redaction_ctx=disabled_redaction(),
         )
 
         engine.vectorizer.start_proactive_vectorization.assert_awaited_once()
@@ -2926,12 +2989,13 @@ class TestProactiveVectorizationGate:
         engine, case = await self._setup_engine_with_case()
 
         await engine.generator._tool_augmented_generate(
-            prompt="test",
+            prompt=vetted("test"),
             schema_model=SampleResponse,
             investigation_tools=[],
             tool_context=MagicMock(),
             case=case,
             force_tool_use=False,
+            redaction_ctx=disabled_redaction(),
         )
 
         engine.vectorizer.start_proactive_vectorization.assert_not_called()
@@ -3482,10 +3546,11 @@ class TestToolLoopTruncationLadder:
         )
 
         result = await engine.generator._tool_augmented_generate(
-            prompt="Investigate",
+            prompt=vetted("Investigate"),
             schema_model=SampleResponse,
             investigation_tools=self._tools(),
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         assert result.agent_response == "complete"
@@ -3506,10 +3571,11 @@ class TestToolLoopTruncationLadder:
         )
 
         await engine.generator._tool_augmented_generate(
-            prompt="Investigate",
+            prompt=vetted("Investigate"),
             schema_model=SampleResponse,
             investigation_tools=self._tools(),
             tool_context=MagicMock(),
+            redaction_ctx=disabled_redaction(),
         )
 
         assert mock_provider.route.await_count == 1
@@ -3537,10 +3603,11 @@ class TestToolLoopTruncationLadder:
             "faultmaven.core.investigation.milestone_engine.generation.record_provider_call"
         ) as record:
             await engine.generator._tool_augmented_generate(
-                prompt="Investigate",
+                prompt=vetted("Investigate"),
                 schema_model=SampleResponse,
                 investigation_tools=self._tools(),
                 tool_context=MagicMock(),
+                redaction_ctx=disabled_redaction(),
             )
 
         assert record.call_count == 2

@@ -57,6 +57,7 @@ from faultmaven.modules.case.api.title_generation import (
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.model_content import disabled_redaction
 from tests.utils import regex_only_sanitizer, sanitize_pii_pinned
 
 pytestmark = pytest.mark.unit
@@ -278,7 +279,14 @@ async def test_the_no_model_path_gates_the_description_too():
     )
 
     title, source = await _generate_title_with_llm(
-        "", case, 8, None, "", None, redaction_ctx=None, sanitizer=SANITIZER
+        "",
+        case,
+        8,
+        None,
+        "",
+        None,
+        redaction_ctx=disabled_redaction(),
+        sanitizer=SANITIZER,
     )
 
     assert (title, source) == (

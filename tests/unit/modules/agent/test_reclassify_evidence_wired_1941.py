@@ -30,6 +30,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.reclassifica
 )
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
+from tests.model_content import disabled_redaction
 
 from .conftest import (
     MockCaseRepository,
@@ -111,6 +112,7 @@ def _context(case) -> ToolContext:
         enterprise_id=case.enterprise_id,
         user_id=OWNER,
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
 
 

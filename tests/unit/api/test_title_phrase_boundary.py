@@ -31,6 +31,7 @@ from faultmaven.modules.case.api.title_generation import (
     is_title_valid,
     truncate_title_at_phrase_boundary,
 )
+from tests.model_content import disabled_redaction
 from tests.utils import regex_only_sanitizer
 
 # Every title source and candidate passes the real sanitizer (#1967).
@@ -249,7 +250,7 @@ async def test_the_llm_path_does_not_persist_a_mid_phrase_clip():
         max_words=MAX_TITLE_WORDS_DEFAULT,
         user_signals=long_signals,
         llm_provider=provider,
-        redaction_ctx=None,
+        redaction_ctx=disabled_redaction(),
         sanitizer=SANITIZER,
     )
 
@@ -343,7 +344,7 @@ async def test_the_llm_over_cap_refusal_is_observable(caplog):
             max_words=MAX_TITLE_WORDS_DEFAULT,
             user_signals=long_signals,
             llm_provider=provider,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
             sanitizer=SANITIZER,
         )
 

@@ -29,11 +29,12 @@ from faultmaven.exceptions import (
     ServiceUnavailableException,
     ValidationException,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
-    case_redacted,
     load_case_redaction,
 )
+from faultmaven.infrastructure.security.model_content import case_redacted
 from faultmaven.models.interfaces_case import ICaseService
 
 # ``_is_default_case_title``: the alias and why it bounds auto-titling are
@@ -1515,7 +1516,8 @@ async def _generate_title_with_llm(
         prompt = await case_redacted(prompt, redaction_ctx)
 
         # Generate title using LLM with optimized settings
-        response = await llm_provider.route(
+        response = await route_model_call(
+            llm_provider,
             prompt=prompt,
             max_tokens=LLM_TITLE_MAX_TOKENS,
             temperature=LLM_TITLE_TEMPERATURE,

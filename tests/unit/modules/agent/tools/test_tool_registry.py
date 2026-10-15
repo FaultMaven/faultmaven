@@ -19,6 +19,7 @@ from faultmaven.modules.agent.tools.base import (
     ToolContext,
     tool_registry,
 )
+from tests.model_content import disabled_redaction
 
 # =============================================================================
 # Test Fixtures
@@ -81,6 +82,7 @@ def sample_context():
         enterprise_id="org_test",
         user_id="user_test",
         case_repository=AsyncMock(),
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -105,6 +107,7 @@ class TestToolContext:
             case_id="case_456",
             enterprise_id="ent_789",
             user_id="user_abc",
+            redaction_ctx=disabled_redaction(),
         )
 
         assert context.session_id == "session_123"
@@ -126,6 +129,7 @@ class TestToolContext:
             case_repository=case_repository,
             execution_id="exec_111",
             metadata={"key": "value"},
+            redaction_ctx=disabled_redaction(),
         )
 
         assert context.case_repository is case_repository
@@ -154,6 +158,7 @@ class TestToolContext:
             enterprise_id="e",
             user_id="u",
             given_tools=frozenset({"search_file"}),
+            redaction_ctx=disabled_redaction(),
         )
         assert stated.with_execution_id("exec_1").given_tools == {"search_file"}
 

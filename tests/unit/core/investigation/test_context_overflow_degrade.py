@@ -29,6 +29,7 @@ from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
 from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -155,6 +156,7 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
             force_tool_use=True,
             case=case,
             user_message="what is wrong?",
+            redaction_ctx=disabled_redaction(),
         )
 
     assert result is degraded
@@ -198,6 +200,7 @@ async def test_double_overflow_propagates_without_infinite_retry():
                 schema_model=MagicMock(),
                 case=case,
                 user_message="what is wrong?",
+                redaction_ctx=disabled_redaction(),
             )
 
     assert exc_info.value.error_code == TOKEN_LIMIT
@@ -226,6 +229,7 @@ async def test_non_overflow_failure_does_not_trigger_fallback_retry():
                 schema_model=MagicMock(),
                 case=case,
                 user_message="what is wrong?",
+                redaction_ctx=disabled_redaction(),
             )
 
     assert exc_info.value.error_code == "QUOTA_EXHAUSTED"
@@ -251,6 +255,7 @@ async def test_no_user_message_skips_recovery_and_raises():
                 schema_model=MagicMock(),
                 case=case,
                 user_message=None,
+                redaction_ctx=disabled_redaction(),
             )
 
     assert exc_info.value.error_code == TOKEN_LIMIT
@@ -302,7 +307,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
     ):
         with pytest.raises(MilestoneEngineError) as exc_info:
             await engine.generator._generate_structured_output_inner(
-                prompt="hi", schema_model=_Schema
+                prompt="hi", schema_model=_Schema, redaction_ctx=disabled_redaction()
             )
 
     raised = exc_info.value
@@ -372,6 +377,7 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
             schema_model=MagicMock(),
             case=case,
             user_message="what is wrong?",
+            redaction_ctx=disabled_redaction(),
         )
 
     retry_prompt = inner.await_args_list[1].args[0]
@@ -433,6 +439,7 @@ async def test_output_truncation_also_takes_the_degrade_path():
             schema_model=MagicMock(),
             case=case,
             user_message="what is wrong?",
+            redaction_ctx=disabled_redaction(),
         )
 
     assert result is degraded
@@ -522,6 +529,7 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
             schema_model=MagicMock(),
             case=case,
             user_message="what is wrong?",
+            redaction_ctx=disabled_redaction(),
         )
 
     metric.labels.assert_called_once_with(reason="input_overflow")

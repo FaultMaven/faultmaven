@@ -353,7 +353,8 @@ def pydantic_to_openai_tools(
 
     Example:
         >>> tools = pydantic_to_openai_tools(ConsultantResponse)
-        >>> response = await llm_provider.route(
+        >>> response = await route_model_call(
+        ...     llm_provider,
         ...     prompt=prompt,
         ...     tools=tools,
         ...     tool_choice="required"
@@ -422,7 +423,8 @@ def create_json_mode_format() -> Dict[str, str]:
 
     Example:
         >>> response_format = create_json_mode_format()
-        >>> response = await llm_provider.route(
+        >>> response = await route_model_call(
+        ...     llm_provider,
         ...     prompt=prompt,
         ...     response_format=response_format
         ... )

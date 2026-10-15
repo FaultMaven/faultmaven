@@ -27,6 +27,7 @@ from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit]
 
@@ -70,7 +71,7 @@ async def test_build_tool_context_carries_no_kb_context_metadata():
     context = await _generator().build_tool_context(
         _a_case_that_names_its_service(),
         user_id="u_1",
-        redaction_ctx=None,
+        redaction_ctx=disabled_redaction(),
         given_tools=NO_TOOLS,
     )
 
@@ -95,7 +96,7 @@ async def test_the_kb_tool_sends_no_context_metadata_to_hybrid_search():
         scope_id=None,
         k=5,
         filters={"$or": [{"scope": "global"}]},
-        redaction_ctx=None,
+        redaction_ctx=disabled_redaction(),
     )
 
     kwargs = vector_store.hybrid_search.await_args.kwargs

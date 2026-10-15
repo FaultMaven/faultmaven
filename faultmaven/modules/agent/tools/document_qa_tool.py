@@ -17,15 +17,14 @@ from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
 )
-from faultmaven.infrastructure.security.case_redaction import (
-    case_redacted_messages,
-)
+from faultmaven.infrastructure.security.model_content import case_redacted_messages
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -387,7 +386,8 @@ Answer:"""
         )
 
         async def _synthesize(cap: int):
-            return await self._llm_router.route(
+            return await route_model_call(
+                self._llm_router,
                 model=synthesis_model,
                 messages=messages,
                 max_tokens=cap,

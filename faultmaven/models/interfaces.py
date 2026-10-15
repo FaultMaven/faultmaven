@@ -219,8 +219,15 @@ class ILLMProvider(ABC):
             TimeoutException: When request exceeds configured timeout
             RateLimitException: When provider rate limits are exceeded
 
+        Production code calls it through the routed seam,
+        ``faultmaven.infrastructure.llm.dispatch.route_model_call``, which
+        checks the content first, whatever router (or test double) is behind
+        it (#1998 P2).
+
         Example:
-            >>> response = await router.route(prompt=minted_prompt, max_tokens=500)
+            >>> response = await route_model_call(
+            ...     router, prompt=minted_prompt, max_tokens=500
+            ... )
             >>> response.is_truncated
             False
         """

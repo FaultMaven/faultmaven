@@ -19,6 +19,7 @@ from faultmaven.modules.agent.tools.read_file_tool import (
     ReadFileTool,
 )
 from faultmaven.modules.case.contracts import UploadedFile
+from tests.model_content import disabled_redaction
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -95,6 +96,7 @@ def _make_context(case_id: str = "case_test", evidence_items=None):
         user_id="user_test",
         in_memory_case=case,
         execution_id="exec_test",
+        redaction_ctx=disabled_redaction(),
     )
 
 
@@ -165,6 +167,7 @@ class TestReadFileExecution:
             case_id="case_test",
             enterprise_id="o",
             user_id="u",
+            redaction_ctx=disabled_redaction(),
         )
         result = await read_file_tool.execute_with_context(
             params={"evidence_id": "ev_test123"},

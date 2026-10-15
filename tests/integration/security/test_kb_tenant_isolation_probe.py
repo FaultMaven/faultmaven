@@ -175,6 +175,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     resolve_shared_kb_ids,
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -512,6 +513,9 @@ def _tool_context(**overrides) -> ToolContext:
         # What case_retrieval_scope builds for user A's unshared case in a
         # deployment with no team shares (#1919).
         "kb_scope_filter": build_kb_scope_filter(USER_A, []),
+        # The turn's case redaction context, required (#1998): one that
+        # redacts nothing, as SANITIZE_PII=false builds.
+        "redaction_ctx": disabled_redaction(),
     }
     base.update(overrides)
     return ToolContext(**base)

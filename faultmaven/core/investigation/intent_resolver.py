@@ -18,10 +18,9 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
-from faultmaven.infrastructure.security.case_redaction import (
-    case_redacted_messages,
-)
+from faultmaven.infrastructure.security.model_content import case_redacted_messages
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +205,8 @@ class IntentResolver:
             if override:
                 route_kwargs["provider_override"] = override
 
-            response = await self.llm_router.route(
+            response = await route_model_call(
+                self.llm_router,
                 messages=messages,
                 model=classifier_model,
                 # See CLASSIFIER_MAX_TOKENS / CLASSIFIER_MIN_OUTPUT_TOKENS:

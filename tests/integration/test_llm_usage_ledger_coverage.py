@@ -76,6 +76,7 @@ from faultmaven.modules.case.contracts import TurnOutcome
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnProgress
+from tests.model_content import disabled_redaction, vetted
 from tests.utils import reset_settings_singleton, seed_users, sockets_refused
 
 
@@ -402,12 +403,13 @@ class TestAnEngineTurn:
 
         async def body():
             await engine.generator._tool_augmented_generate(
-                prompt="Investigate",
+                prompt=vetted("Investigate"),
                 schema_model=_Answer,
                 investigation_tools=[
                     {"type": "function", "function": {"name": "search_file"}}
                 ],
                 tool_context=MagicMock(),
+                redaction_ctx=disabled_redaction(),
             )
 
         _stand_in(engine, body)
@@ -611,7 +613,7 @@ class TestOutsideATurn:
             _case(),
             "who won the 1998 world cup?",
             OutOfBandKind.OFF_TOPIC,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
         await drain_pending_usage_writes()
 

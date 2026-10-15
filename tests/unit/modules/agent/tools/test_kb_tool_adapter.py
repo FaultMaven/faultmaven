@@ -13,6 +13,7 @@ from faultmaven.modules.agent.tools.kb_tool_adapter import (
     CaseEvidenceQAAdapter,
     KBToolAdapter,
 )
+from tests.model_content import disabled_redaction
 
 #: A case scope as ``case_retrieval_scope`` builds it for a shared case.
 CASE_SCOPE = {
@@ -31,6 +32,7 @@ def context():
         enterprise_id="org_1",
         user_id="user_42",
         kb_scope_filter=CASE_SCOPE,
+        redaction_ctx=disabled_redaction(),
     )
 
 

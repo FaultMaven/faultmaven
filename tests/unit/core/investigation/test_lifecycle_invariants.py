@@ -49,6 +49,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     earned_edge_refusal,
 )
+from tests.model_content import vetted
 
 
 def _make_investigating_case() -> Case:
@@ -1443,7 +1444,7 @@ class TestINV09_TerminalCasesImmutable:
         redaction = CaseRedactionContext(case.case_id, None, enabled=False)
 
         await engine.generator._tool_augmented_generate(
-            "p",
+            vetted("p"),
             TerminalResponse,
             engine.generator.build_da_tool_schemas(allowed=TERMINAL_QA_TOOLS),
             await engine.generator.build_tool_context(

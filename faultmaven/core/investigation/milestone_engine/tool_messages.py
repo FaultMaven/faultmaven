@@ -1,4 +1,7 @@
-"""Wire-shape builders for the tool-augmented generation loop: the schema tool definition, the assistant message that carries a tool call, and the DA system instruction."""
+"""Wire-shape builders for the tool-augmented generation loop: the schema tool definition and the DA system instruction.
+
+The assistant message that echoes a tool call back is ``model_output`` (``faultmaven.infrastructure.security.model_content``, #1998): it mints what it echoes, so the model boundary accepts it.
+"""
 
 import inspect
 import logging
@@ -362,40 +365,3 @@ def _build_da_system_instruction(
         "- Reference evidence by its label or by description, never by "
         "ev_ IDs."
     )
-
-
-def _build_assistant_message(response: Any) -> dict:
-    """Convert LLMResponse to OpenAI-format assistant message.
-
-    Round-trips two kinds of provider-specific artifacts when present:
-    1. Per-tool-call `provider_metadata` (e.g. signatures bound to a
-       specific functionCall).
-    2. Response-level `provider_metadata` (e.g. Gemini 3.x's full
-       `assistant_parts` array, which carries thoughtSignatures attached
-       to text/thought/functionCall parts that must all round-trip
-       together — skipping any one produces a 400 on the next turn).
-
-    Both are absent for providers/models that don't emit reasoning
-    artifacts (Gemini 2.5, OpenAI Chat Completions, etc.) — the keys
-    are omitted entirely so downstream serializers see no change.
-    """
-    tool_calls_list = []
-    for tc in response.tool_calls or []:
-        entry = {
-            "id": tc.id,
-            "type": tc.type,
-            "function": tc.function,
-        }
-        if getattr(tc, "provider_metadata", None):
-            entry["provider_metadata"] = tc.provider_metadata
-        tool_calls_list.append(entry)
-
-    msg = {
-        "role": "assistant",
-        "content": response.content or "",
-    }
-    if tool_calls_list:
-        msg["tool_calls"] = tool_calls_list
-    if getattr(response, "provider_metadata", None):
-        msg["provider_metadata"] = response.provider_metadata
-    return msg

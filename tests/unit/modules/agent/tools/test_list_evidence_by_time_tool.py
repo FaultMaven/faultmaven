@@ -13,6 +13,7 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.list_evidence_by_time_tool import (
     ListEvidenceByTimeTool,
 )
+from tests.model_content import disabled_redaction
 
 
 def _ctx() -> ToolContext:
@@ -21,6 +22,7 @@ def _ctx() -> ToolContext:
         case_id="case_123",
         enterprise_id="org_1",
         user_id="user_1",
+        redaction_ctx=disabled_redaction(),
     )
 
 

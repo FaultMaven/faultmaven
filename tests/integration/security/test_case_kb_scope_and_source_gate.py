@@ -87,6 +87,7 @@ from faultmaven.modules.knowledge.contracts import RESTRICTED_SOURCE_ACCESS
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -391,7 +392,7 @@ async def _pull(kb_client, world: _World, case: Case) -> Set[str]:
     context = await StructuredOutputGenerator(
         deps=_deps(world), vectorizer=None
     ).build_tool_context(
-        case, user_id=TEAMMATE, redaction_ctx=None, given_tools=NO_TOOLS
+        case, user_id=TEAMMATE, redaction_ctx=disabled_redaction(), given_tools=NO_TOOLS
     )
     router = _CapturingRouter()
     adapter = KBToolAdapter(

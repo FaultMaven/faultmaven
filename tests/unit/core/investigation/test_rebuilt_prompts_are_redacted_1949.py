@@ -13,10 +13,11 @@ per sanitizer instance at construction, so instances built across a Presidio
 outage can still differ.)
 
 Every site where case content becomes model-bound text now goes through one
-helper, ``case_redaction.case_redacted`` (moved there from ``generation`` by
-#1956, so every send site outside the engine shares it). Each test below drives one site with a
-fake provider (no live LLM call) and a redaction double whose output is
-recognisable, and asserts what the provider RECEIVED:
+helper, ``model_content.case_redacted`` (moved out of ``generation`` by
+#1956, and minting since #1998, so every send site shares it). Each test
+below drives one site with a fake provider (no live LLM call) and a
+redaction double whose output is recognisable, and asserts what the provider
+RECEIVED:
 
 - the starting prompt, on the tool-loop and the single-shot path;
 - the ``ToolCallingUnsupportedError`` full-evidence fallback (the defect),
@@ -41,13 +42,20 @@ from pydantic import BaseModel
 
 from faultmaven.core.investigation.milestone_engine import generation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.text_budget import (
+    _TOOL_LOOP_ELISION_MARKER,
+    _ToolLoopBudget,
+)
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.dispatch import model_call_violations
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
     StructuredOutputStrategy,
 )
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+from faultmaven.infrastructure.security.model_content import provenance
 from faultmaven.models.interfaces import ToolResult
 
 RAW = "alice@example.com"
@@ -58,11 +66,13 @@ class _Schema(BaseModel):
     agent_response: str = "ok"
 
 
-class _MarkingRedaction:
-    """Stands in for ``CaseRedactionContext``: rewrites the one entity to a
-    recognisable pseudonym and records every text it was handed."""
+class _MarkingRedaction(CaseRedactionContext):
+    """A ``CaseRedactionContext`` (the minting helpers take no other, #1998)
+    that rewrites the one entity to a recognisable pseudonym and records every
+    text it was handed."""
 
     def __init__(self) -> None:
+        super().__init__(case_id="case-1949", sanitizer=None, enabled=True)
         self.seen: list[str] = []
 
     async def asanitize(self, text: str) -> str:
@@ -348,6 +358,130 @@ class TestToolResultsAreRedactedBeforeTheModelSeesThem:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["content"] == f"10:00 conn refused for {PSEUDONYM}"
         assert RAW not in "\n".join(m["content"] or "" for m in snapshots[1])
+
+
+def _violations(call_kwargs: dict) -> list:
+    """The model boundary's own verdict on what a call carried (#1998)."""
+    return model_call_violations(
+        call_kwargs.get("prompt"), call_kwargs.get("messages"), {}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestEverySendIsMinted:
+    """#1998 P2a: every routed send the engine makes carries minted content
+    only, by the model boundary's own check: the DA system instruction, the
+    base prompt, the model's tool calls echoed back, each tool result (cut to
+    the cap or not), the recovery echo and nudge, the elision marker; and on
+    the single-shot path the prompt plus the schema instruction."""
+
+    async def test_the_tool_loop_sends_only_minted_messages(self):
+        sent: list[dict] = []
+
+        async def generate(**kwargs):
+            sent.append({**kwargs, "messages": list(kwargs["messages"])})
+            if len(sent) == 1:
+                return _search_call()
+            if len(sent) == 2:
+                return _no_tool_call()
+            return _schema_call()
+
+        registry = MagicMock()
+        registry.get_all_tools.return_value = []
+        # Past the 8,000-character cap: the loop cuts it after redaction.
+        registry.execute_tool = AsyncMock(
+            return_value=ToolResult(success=True, data=f"{RAW} " + "x" * 9_000)
+        )
+        engine = _engine(generate, registry=registry)
+        await engine.generator.generate_structured_output(
+            f"PROMPT {RAW}",
+            _Schema,
+            investigation_tools=[_SEARCH_TOOL],
+            tool_context=MagicMock(),
+            redaction_ctx=_MarkingRedaction(),
+        )
+
+        assert len(sent) == 3
+        for call in sent:
+            assert _violations(call) == [], call
+            # The loop sends messages alone: no ``prompt=""`` beside them.
+            assert "prompt" not in call
+        # Positive controls: each kind of message was sent.
+        last = sent[-1]["messages"]
+        roles = [m["role"] for m in last]
+        assert roles[:2] == ["system", "user"]
+        assert any(m.get("tool_calls") for m in last), "no echoed tool call"
+        [tool] = [m for m in last if m["role"] == "tool"]
+        assert tool["content"].startswith(PSEUDONYM)
+        assert tool["content"].endswith("\n[truncated]"), "the result was not cut"
+        assert last[-1]["role"] == "user" and "_Schema" in last[-1]["content"]
+
+    async def test_the_elision_marker_is_minted(self):
+        sent: list[dict] = []
+
+        async def generate(**kwargs):
+            sent.append({**kwargs, "messages": list(kwargs["messages"])})
+            return _search_call() if len(sent) == 1 else _schema_call()
+
+        registry = MagicMock()
+        registry.get_all_tools.return_value = []
+        registry.execute_tool = AsyncMock(
+            return_value=ToolResult(success=True, data="a result")
+        )
+        engine = _engine(generate, registry=registry)
+        # A soft cap every history outgrows: the loop elides the exchange.
+        engine.generator._resolve_tool_loop_budget = lambda _name: _ToolLoopBudget(
+            soft=1, window=None
+        )
+        await engine.generator.generate_structured_output(
+            "PROMPT",
+            _Schema,
+            investigation_tools=[_SEARCH_TOOL],
+            tool_context=MagicMock(),
+            redaction_ctx=_MarkingRedaction(),
+        )
+
+        assert any(
+            m["content"] == _TOOL_LOOP_ELISION_MARKER for m in sent[-1]["messages"]
+        ), "nothing was elided"
+        for call in sent:
+            assert _violations(call) == [], call
+
+    async def test_the_single_shot_prompt_and_schema_instruction_are_minted(self):
+        sent: list[dict] = []
+
+        async def generate(**kwargs):
+            sent.append(kwargs)
+            return LLMResponse(
+                content=json.dumps({"agent_response": "ok"}),
+                confidence=0.9,
+                provider="test",
+                model="test-model",
+                tokens_used=10,
+                response_time_ms=1,
+            )
+
+        engine = _engine(generate)
+        # A provider that needs the schema in the prompt text.
+        engine.deps.llm_provider.get_structured_output_strategy = MagicMock(
+            return_value=StructuredOutputStrategy(
+                capability=StructuredOutputCapability.BEST_EFFORT,
+                mode=StructuredOutputMode.JSON_OBJECT,
+                include_schema_in_prompt=True,
+                response_format={"type": "json_object"},
+                extra_config={},
+            )
+        )
+        await engine.generator.generate_structured_output(
+            f"PROMPT {RAW}", _Schema, redaction_ctx=_MarkingRedaction()
+        )
+
+        [call] = sent
+        assert _violations(call) == []
+        assert call["prompt"].startswith(f"PROMPT {PSEUDONYM}\n\n")
+        assert "You MUST respond with valid JSON" in call["prompt"]
+        assert provenance(call["prompt"]) == ("case", True)
 
 
 # ---------------------------------------------------------------------------

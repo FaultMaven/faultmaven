@@ -54,6 +54,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.model_content import disabled_redaction
 
 # ============================================================
 # Fixtures
@@ -187,7 +188,7 @@ class TestSQLiteLastSuggestionsRoundTrip:
         matched = await resolver.resolve(
             user_message="Application logs",
             last_suggestions=reloaded.last_suggestions,
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         assert matched == {

@@ -22,6 +22,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.case import Case
+from tests.model_content import disabled_redaction
 
 
 def _case_with_orphan_file() -> Case:
@@ -62,6 +63,7 @@ def _ctx(case: Case) -> ToolContext:
         enterprise_id="org_123",
         user_id="user_123",
         in_memory_case=case,
+        redaction_ctx=disabled_redaction(),
     )
 
 

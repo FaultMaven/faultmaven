@@ -114,6 +114,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
+from tests.model_content import disabled_redaction
 
 pytestmark = pytest.mark.unit
 
@@ -1133,6 +1134,7 @@ def _empty_search(g: frozenset[str], case):
         user_id=case.user_id,
         in_memory_case=case,
         given_tools=g,
+        redaction_ctx=disabled_redaction(),
     )
     try:
         with patch(_EMBEDDER, new=AsyncMock(return_value=[0.1] * 8)):

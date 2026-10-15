@@ -60,6 +60,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     UploadedFile,
 )
+from tests.model_content import disabled_redaction, vetted
 
 pytestmark = pytest.mark.unit
 
@@ -315,11 +316,12 @@ async def test_a_terminal_loop_offered_a_withheld_tool_fails_before_any_call(sta
 
     with pytest.raises(MilestoneEngineError, match="deep_analysis"):
         await engine.generator._tool_augmented_generate(
-            prompt="p",
+            prompt=vetted("p"),
             schema_model=TerminalResponse,
             investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             case=case,
+            redaction_ctx=disabled_redaction(),
         )
     assert provider.requests == []
 
@@ -440,11 +442,12 @@ async def test_t8_an_investigating_turn_runs_only_what_it_offered(name):
         agent_response: str = ""
 
     await engine.generator._tool_augmented_generate(
-        prompt="p",
+        prompt=vetted("p"),
         schema_model=SampleResponse,
         investigation_tools=_SEARCH_FILE_SCHEMA,
         tool_context=MagicMock(),
         case=None,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert registry.executed == []
@@ -469,11 +472,12 @@ async def test_t8_an_offered_tool_still_runs():
         agent_response: str = ""
 
     await engine.generator._tool_augmented_generate(
-        prompt="p",
+        prompt=vetted("p"),
         schema_model=SampleResponse,
         investigation_tools=_SEARCH_FILE_SCHEMA,
         tool_context=MagicMock(),
         case=None,
+        redaction_ctx=disabled_redaction(),
     )
 
     assert registry.executed == ["search_file"]

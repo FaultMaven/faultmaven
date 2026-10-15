@@ -27,6 +27,7 @@ from faultmaven.modules.agent.tools.document_qa_tool import (
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
+from tests.model_content import disabled_redaction
 
 
 def _make_chunks(titles, score=0.6):
@@ -127,7 +128,7 @@ class TestAnswerFromKBRelaysProseWithSources:
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         # The synthesizer was consulted, and its prose is relayed verbatim.
@@ -148,7 +149,7 @@ class TestAnswerFromKBRelaysProseWithSources:
             question="coredns cache",
             scope_id=None,
             filters={"$or": [{"scope": "global"}]},
-            redaction_ctx=None,
+            redaction_ctx=disabled_redaction(),
         )
 
         # The tool hands the engine a single prose blob with a citation line —
@@ -183,7 +184,7 @@ class TestTruncatedSynthesis:
         )
 
         result = await tool.answer_question(
-            "why", scope_id="u1", k=5, redaction_ctx=None
+            "why", scope_id="u1", k=5, redaction_ctx=disabled_redaction()
         )
 
         assert llm_router.route.call_count == 2
@@ -204,7 +205,7 @@ class TestTruncatedSynthesis:
         )
 
         result = await tool.answer_question(
-            "why", scope_id="u1", k=5, redaction_ctx=None
+            "why", scope_id="u1", k=5, redaction_ctx=disabled_redaction()
         )
 
         assert result["truncated"] is False
@@ -215,7 +216,7 @@ class TestTruncatedSynthesis:
         tool, llm_router = _make_tool(_make_chunks(["Runbook A"]))
 
         result = await tool.answer_question(
-            "why", scope_id="u1", k=5, redaction_ctx=None
+            "why", scope_id="u1", k=5, redaction_ctx=disabled_redaction()
         )
 
         assert llm_router.route.call_count == 1
@@ -231,7 +232,7 @@ class TestTruncatedSynthesis:
         tool, llm_router = _make_tool([])
 
         result = await tool.answer_question(
-            "why", scope_id="u1", k=5, redaction_ctx=None
+            "why", scope_id="u1", k=5, redaction_ctx=disabled_redaction()
         )
 
         assert result["truncated"] is False

@@ -43,6 +43,7 @@ from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.kb_tool_adapter import CaseEvidenceQAAdapter
+from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit]
 
@@ -257,6 +258,7 @@ def _context() -> ToolContext:
         user_id="user-1",
         session_id="session-1",
         enterprise_id="org-1",
+        redaction_ctx=disabled_redaction(),
     )
 
 
