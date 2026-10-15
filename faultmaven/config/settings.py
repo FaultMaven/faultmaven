@@ -1196,7 +1196,10 @@ class DatabaseSettings(BaseSettings):
         description=(
             "Max orphaned KB rows to repair per boot before treating the set as a "
             "bulk-loss anomaly (repair nothing + warn; recover via a full pack "
-            "re-ingest). Must be >= 1 — 0/negative would silently disable repair, "
+            "re-ingest). Also caps, all or nothing, how many authored documents "
+            "the authored-orphan sweep may delete vectors for per run (#1982), "
+            "so one armed run's own deletes stay inside what repair re-embeds. "
+            "Must be >= 1 — 0/negative would silently disable repair, "
             "so it is rejected at startup."
         ),
     )
@@ -1212,6 +1215,32 @@ class DatabaseSettings(BaseSettings):
             "budget defer to the next boot. Lower it if a tight k8s startupProbe "
             "leaves too little time for the model load + re-embed. Must be >= 1 — "
             "0/negative would silently disable repair, so it is rejected at startup."
+        ),
+    )
+
+    # Authored-orphan sweep (#1982): the storage_cleanup gate, exactly. A dry
+    # run reports what an armed run deletes; deletion needs ENABLED and a run
+    # that is not a dry run (kb_seed --dry-run/--no-dry-run overrides DRY_RUN).
+    kb_orphan_sweep_enabled: bool = Field(
+        default=False,
+        validation_alias="KB_ORPHAN_SWEEP_ENABLED",
+        description=(
+            "When True, the KB bootstrap (web startup, kb_seed) may DELETE "
+            "authored KB vectors whose knowledge_items row is gone, if "
+            "KB_ORPHAN_SWEEP_DRY_RUN is also off. Default False — opt in only "
+            "after a report-only canary. Hard precondition: one ChromaDB per "
+            "database — the faultmaven_kb collection is not deployment-scoped, "
+            "and another database's live documents in it read as orphans here."
+        ),
+    )
+    kb_orphan_sweep_dry_run: bool = Field(
+        default=True,
+        validation_alias="KB_ORPHAN_SWEEP_DRY_RUN",
+        description=(
+            "When True (default), the authored-orphan sweep reports, per "
+            "enterprise, the documents an armed run would delete and deletes "
+            "nothing. Flip to False (with KB_ORPHAN_SWEEP_ENABLED) only after "
+            "the report-only canary, and only with one ChromaDB per database."
         ),
     )
 
