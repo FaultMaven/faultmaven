@@ -1284,6 +1284,232 @@ class TestEveryTextDerivedFromATitleIsScrubbed:
         assert len(stored) == 255
 
 
+def _modes_json(modes: list[tuple[str, str, str, list[str]]]) -> str:
+    """An analysis of several failure modes: ``(id, title, service, symptoms)``.
+
+    Distinct ``(service, symptom_class)`` so none is collapsed into another by
+    the partition, and distinct titles so none mints another's id.
+    """
+    return json.dumps(
+        {
+            "is_actionable": True,
+            "failure_modes": [
+                {
+                    "id": mode_id,
+                    "title": title,
+                    "domain": "database",
+                    "service": service,
+                    "symptom_class": symptoms,
+                    "severity": "high",
+                    "symptoms_summary": "Failing",
+                    "resolution_summary": "Fix it",
+                }
+                for mode_id, title, service, symptoms in modes
+            ],
+            "source_assessment": {
+                "content_type": "troubleshooting_guide",
+                "actionability_rating": "high",
+                "missing_information": [],
+            },
+        }
+    )
+
+
+class _StagedRouter:
+    """Answers by stage (temperature): the analysis once, a runbook per mode."""
+
+    def __init__(self, analysis: str):
+        self.analysis = analysis
+        self.calls: list[dict] = []
+
+    async def route(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("temperature") == 0.2:
+            return _model_response(self.analysis)
+        return _model_response(valid_runbook("Generated Runbook For The Mode"))
+
+
+class TestEveryFailureModeIsScrubbedNotJustTheFirst:
+    """A document is analysed into SEVERAL failure modes and every one of them is
+    named, slugged and listed. The scrub covers all of them.
+
+    Mutation: ``for failure_mode in failure_modes[:1]:`` in
+    ``_scrub_failure_mode_titles``. Every surface of mode 2 and 3 then carries
+    its secret: the draft's ``runbook_id``, ``conversion_drafts``,
+    ``conversion_jobs.analysis_result`` and ``GET /knowledge/drafts``.
+    """
+
+    #: Mode 1 is clean on purpose: a scrub that handled only the first mode, or
+    #: only a mode that needed it, would still pass on it.
+    MODES = [
+        ("m1", "Replica lag after failover", "postgresql", ["replication_lag"]),
+        ("m2", "Login fails (password=SECOND9)", "redis", ["connection_refused"]),
+        (
+            "m3",
+            "Pool exhausted at postgresql://app:Winter2024x@db.internal:5432/orders",
+            "kafka",
+            ["timeout"],
+        ),
+        ("m4", "Calls 401 with sk-" + KEY_BLOCK * 4, "nginx", ["latency"]),
+        ("m5", "Login fails (10.0.0.5password=SECOND9)", "etcd", ["disk_full"]),
+    ]
+    SECRETS = ["SECOND9", "Winter2024x", KEY_BLOCK]
+
+    @pytest.mark.parametrize("count", [3, 5], ids=["three-modes", "five-modes"])
+    async def test_every_surface_of_every_mode_is_clean(
+        self, session_factory, tmp_path, count
+    ):
+        router = _StagedRouter(_modes_json(self.MODES[:count]))
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=session_factory,
+            sanitizer=regex_only_sanitizer(),
+        )
+        source = tmp_path / "notes.md"
+        source.write_text("# Notes\n\nSeveral things fail.\n")
+
+        with (
+            patch.object(
+                conversion._preprocessor,
+                "preprocess",
+                return_value=_preprocessed(source.read_text()),
+            ),
+            _data_dir(tmp_path),
+        ):
+            result = await conversion.convert_document(
+                file_path=source,
+                content_type="text/markdown",
+                original_filename="notes.md",
+                scope="global",
+                user_id="admin1",
+                enterprise_id=None,
+            )
+
+        assert len(result.drafts) == count, "control: every mode became a draft"
+        surfaces = {
+            "response": result.model_dump_json(),
+            "prompts": str(router.calls),
+            "listing": json.dumps(await conversion.list_all_drafts("another-user")),
+        }
+        async with session_factory() as session:
+            surfaces["draft rows"] = json.dumps(
+                [
+                    list(row)
+                    for row in (
+                        await session.execute(
+                            select(
+                                ConversionDraftModel.title,
+                                ConversionDraftModel.runbook_id,
+                            )
+                        )
+                    ).all()
+                ]
+            )
+            surfaces["job analysis"] = json.dumps(
+                (
+                    await session.execute(select(ConversionJobModel.analysis_result))
+                ).scalar_one()
+            )
+        for surface, text in surfaces.items():
+            for secret in self.SECRETS:
+                assert secret.lower() not in text.lower(), (surface, secret)
+        # The id is a slug: `password-second9` has no `=` for a pattern to find.
+        for draft in result.drafts:
+            for secret in self.SECRETS:
+                assert _squash(secret) not in _squash(
+                    draft.runbook_id
+                ), draft.runbook_id
+
+
+class TestAMalformedAnalysisLogsNoTitle:
+    """A pydantic ``ValidationError`` quotes the failing failure-mode dict
+    (``input_value={'title': 'db password=hu...``), so logging its text puts
+    about 14 characters of a raw model title into the log. The parse failure
+    logs the exception's CLASS only, as ``_convert_single_failure_mode`` does
+    (#836).
+
+    Mutation: ``logger.error(f"Failed to parse analysis response: {e}")``.
+    """
+
+    #: `title` is the FIRST key and the secret near its start: pydantic quotes only
+    #: the head and tail of the dict, so this is what its error text shows.
+    TITLE = "db password=hunter2 login fails on replica"
+
+    @staticmethod
+    def _malformed() -> str:
+        """A failure mode with a title and NO ``severity``: required, so the
+        model's own dict is quoted in the error."""
+        return json.dumps(
+            {
+                "is_actionable": True,
+                "failure_modes": [
+                    {
+                        "title": TestAMalformedAnalysisLogsNoTitle.TITLE,
+                        "id": "pg-login",
+                        "domain": "database",
+                        "service": "postgresql",
+                        "symptom_class": ["connection_refused"],
+                        "symptoms_summary": "Login fails",
+                        "resolution_summary": "Rotate",
+                    }
+                ],
+                "source_assessment": {
+                    "content_type": "troubleshooting_guide",
+                    "actionability_rating": "high",
+                    "missing_information": [],
+                },
+            }
+        )
+
+    async def test_no_record_carries_any_of_the_title(self, tmp_path, caplog):
+        from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+            ConversionRejectedError,
+        )
+
+        router = _StagedRouter(self._malformed())
+        conversion = ConversionService(
+            llm_router=router,
+            settings=_settings(),
+            db_session_factory=None,
+            sanitizer=regex_only_sanitizer(),
+        )
+        source = tmp_path / "notes.md"
+        source.write_text("# Notes\n\nThe replica login fails.\n")
+
+        with (
+            patch.object(
+                conversion._preprocessor,
+                "preprocess",
+                return_value=_preprocessed(source.read_text()),
+            ),
+            _data_dir(tmp_path),
+            caplog.at_level(logging.DEBUG),
+        ):
+            with pytest.raises(ConversionRejectedError) as raised:
+                await conversion.convert_document(
+                    file_path=source,
+                    content_type="text/markdown",
+                    original_filename="notes.md",
+                    scope="global",
+                    user_id="admin1",
+                    enterprise_id=None,
+                )
+
+        # Control: the failure is the validation error this test means, and it
+        # IS logged (so an empty log cannot pass), by class.
+        assert type(raised.value.__cause__).__name__ == "ValidationError"
+        assert "password=hu" in str(raised.value.__cause__), "control: it quotes"
+        logged = [r.getMessage() for r in caplog.records]
+        assert any(
+            "Failed to parse analysis response (ValidationError)" in m for m in logged
+        )
+        everything = " ".join(logged) + " " + str([r.__dict__ for r in caplog.records])
+        for fragment in ("hunter2", "password=hu", "db password"):
+            assert fragment not in everything, fragment
+        assert str(raised.value) == "LLM analysis response could not be parsed"
+
+
 class TestTheColumnCutComesAfterTheScrub:
     """A secret that straddles a column's length is cut into a FRAGMENT no
     pattern matches (the first 21 characters of a 32-character key), so cutting

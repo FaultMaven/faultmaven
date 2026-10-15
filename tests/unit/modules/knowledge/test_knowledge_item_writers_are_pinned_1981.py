@@ -25,10 +25,47 @@ pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
+#: What slugs a title, directly or through a wrapper that reads one. A caller of
+#: ANY of these is fed a title, and a new one fed a raw title is the leak.
+SLUG_MINTS = {
+    "generate_runbook_id",
+    "runbook_id_from_parts",
+    # The case path's wrappers: each mints from, or claims a slot for, an id
+    # slugged from the title the model wrote.
+    "mint_case_runbook_id",
+    "case_disambiguated_runbook_id",
+    "claim_case_draft_slot",
+}
+
+
+def slug_mint_callers(tree: ast.AST) -> set[tuple[str, str]]:
+    """``(enclosing function, name)`` of every call to a slug mint or a wrapper."""
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name not in SLUG_MINTS:
+            continue
+        scope, cursor = "<module>", node
+        while cursor in parents:
+            cursor = parents[cursor]
+            if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope = cursor.name
+                break
+        found.add((scope, name))
+    return found
+
+
 class TestEveryCallerOfTheSlugMintIsAudited:
     """``generate_runbook_id`` and ``runbook_id_from_parts`` slug whatever title
-    they are given. Each caller below is fed a title that is already scrubbed;
-    a new caller fails here until its author shows the same.
+    they are given, and so do the case path's wrappers around them
+    (``mint_case_runbook_id``, ``case_disambiguated_runbook_id``,
+    ``claim_case_draft_slot``). Each caller below is fed a title that is already
+    scrubbed; a new caller of ANY of them fails here until its author shows the
+    same.
 
     =====================================  ====================================
     caller                                 the title it is fed
@@ -37,10 +74,13 @@ class TestEveryCallerOfTheSlugMintIsAudited:
     ``draft_slots`` (the taken-id refusal) scrubbed by ``_scrub_failure_mode_
     ``service._prepare_conversion``        titles`` right after the analysis,
                                            before the partition
-    ``case_authoring.mint_case_...``       the frontmatter the model wrote,
-                                           scrubbed and rewritten by
-                                           ``_scrub_content_title`` before the
-                                           mint
+    ``service._convert_single_...``        the case draft's frontmatter,
+    (``mint_case_runbook_id``,             scrubbed and rewritten by
+    ``claim_case_draft_slot``)             ``_scrub_content_title`` first
+    ``draft_slots.claim_case_...``         the minted id (above) and the stem
+    (``case_disambiguated_...``)
+    ``case_authoring.mint_case_...``       the frontmatter it is handed: the
+                                           scrubbed text above
     ``case_authoring.usable_title``        a predicate over the title; the
                                            result is never stored
     ``case_authoring.case_stem_...``       the case id, not a title
@@ -51,18 +91,19 @@ class TestEveryCallerOfTheSlugMintIsAudited:
     =====================================  ====================================
     """
 
-    NAMES = {"generate_runbook_id", "runbook_id_from_parts"}
-
     ALLOWED = {
-        ("faultmaven/modules/knowledge/domain/models/conversion.py", "generate_runbook_id"),
-        ("faultmaven/modules/knowledge/domain/case_authoring.py", "case_stem_runbook_id"),
-        ("faultmaven/modules/knowledge/domain/case_authoring.py", "usable_title"),
-        ("faultmaven/modules/knowledge/domain/case_authoring.py", "mint_case_runbook_id"),
-        ("faultmaven/modules/knowledge/domain/case_authoring.py", "case_disambiguated_runbook_id"),
-        ("faultmaven/modules/knowledge/domain/services/conversion_service/failure_modes.py", "_partition_failure_modes"),
-        ("faultmaven/modules/knowledge/domain/services/conversion_service/draft_slots.py", "_refuse_modes_whose_id_is_taken"),
-        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "_prepare_conversion"),
-        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "create_runbook_from_template"),
+        ("faultmaven/modules/knowledge/domain/models/conversion.py", "generate_runbook_id", "runbook_id_from_parts"),
+        ("faultmaven/modules/knowledge/domain/case_authoring.py", "case_stem_runbook_id", "runbook_id_from_parts"),
+        ("faultmaven/modules/knowledge/domain/case_authoring.py", "usable_title", "runbook_id_from_parts"),
+        ("faultmaven/modules/knowledge/domain/case_authoring.py", "mint_case_runbook_id", "runbook_id_from_parts"),
+        ("faultmaven/modules/knowledge/domain/case_authoring.py", "case_disambiguated_runbook_id", "runbook_id_from_parts"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/failure_modes.py", "_partition_failure_modes", "generate_runbook_id"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/draft_slots.py", "_refuse_modes_whose_id_is_taken", "generate_runbook_id"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/draft_slots.py", "claim_case_draft_slot", "case_disambiguated_runbook_id"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "_prepare_conversion", "generate_runbook_id"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "_convert_single_failure_mode", "mint_case_runbook_id"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "_convert_single_failure_mode", "claim_case_draft_slot"),
+        ("faultmaven/modules/knowledge/domain/services/conversion_service/service.py", "create_runbook_from_template", "runbook_id_from_parts"),
     }  # fmt: skip
 
     def test_the_callers_are_the_audited_ones(self):
@@ -71,28 +112,20 @@ class TestEveryCallerOfTheSlugMintIsAudited:
             tree = _parse(path)
             if tree is None:
                 continue
-            parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                name = (
-                    func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-                )
-                if name not in self.NAMES:
-                    continue
-                scope, cursor = "<module>", node
-                while cursor in parents:
-                    cursor = parents[cursor]
-                    if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        scope = cursor.name
-                        break
-                found.add((path.relative_to(REPO_ROOT).as_posix(), scope))
+            where = path.relative_to(REPO_ROOT).as_posix()
+            found |= {(where, scope, name) for scope, name in slug_mint_callers(tree)}
         assert found, "the walk found nothing: this guard is vacuous"
         assert found == self.ALLOWED, (
             f"a new caller of the slug mint: {sorted(found - self.ALLOWED)}; "
             f"a vanished one: {sorted(self.ALLOWED - found)}"
         )
+
+    @pytest.mark.parametrize("name", sorted(SLUG_MINTS))
+    def test_a_new_caller_of_each_mint_and_wrapper_is_seen(self, name):
+        source = f"async def a_new_path(x):\n    return await {name}(x)\n"
+        assert slug_mint_callers(ast.parse(source)) == {("a_new_path", name)}
+        method = f"def a_new_path(self, x):\n    return self.{name}(x)\n"
+        assert slug_mint_callers(ast.parse(method)) == {("a_new_path", name)}
 
 
 # ---------------------------------------------------------------------------
@@ -384,11 +417,55 @@ class TestOneCreatorOfAKnowledgeItem:
             assert residual in doc, residual
 
 
+def update_fields_calls(tree: ast.AST) -> list[tuple[str, set[str] | None]]:
+    """``(enclosing function, literal field names)`` of every ``update_fields``
+    call; the names are ``None`` when the fields are not a literal dict.
+
+    The fields are read from where they are PASSED: the second positional
+    argument, or the ``fields=`` keyword. A call with neither (``**kwargs``), a
+    dict that spreads another (``{**other, ...}``), and anything but a dict
+    literal are all "not a literal", which the pin below treats as a caller it
+    must name. RESIDUAL: ``update_fields(id, **{"fields": ...})`` is a dict
+    literal spread into keywords, which reads as no ``fields`` and so as
+    "not a literal" too: flagged, not missed.
+    """
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", None) == "update_fields"
+        ):
+            continue
+        scope, cursor = "<module>", node
+        while cursor in parents:
+            cursor = parents[cursor]
+            if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope = cursor.name
+                break
+        fields = node.args[1] if len(node.args) >= 2 else None
+        for keyword in node.keywords:
+            if keyword.arg == "fields":
+                fields = keyword.value
+        if isinstance(fields, ast.Dict) and None not in fields.keys:
+            names = {
+                key.value
+                for key in fields.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            # A computed key (`{name: v}`) is not a name the walk can read.
+            calls.append((scope, names if len(names) == len(fields.keys) else None))
+        else:
+            calls.append((scope, None))
+    return calls
+
+
 class TestTheOnlyTitleUpdaterIsUpdateDocumentMetadata:
     """``repo.update_fields(item_id, fields)`` writes ANY listed column,
     ``title`` included. Every caller either hands it a literal dict that does
     not name ``title``, or is ``update_document_metadata``, the one function that
-    puts a scrubbed, column-cut title into the fields it passes."""
+    puts a scrubbed, column-cut title into the fields it passes. The fields are
+    read whether they are passed positionally or as ``fields=``."""
 
     ALLOWED_VARIABLE_FIELDS = {
         ("faultmaven/modules/knowledge/domain/services/knowledge_service.py", "update_document_metadata")
@@ -400,32 +477,44 @@ class TestTheOnlyTitleUpdaterIsUpdateDocumentMetadata:
             tree = _parse(path)
             if tree is None:
                 continue
-            parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-            for node in ast.walk(tree):
-                if not (
-                    isinstance(node, ast.Call)
-                    and getattr(node.func, "attr", None) == "update_fields"
-                    and len(node.args) >= 2
-                ):
-                    continue
-                scope, cursor = "<module>", node
-                while cursor in parents:
-                    cursor = parents[cursor]
-                    if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        scope = cursor.name
-                        break
-                where = path.relative_to(REPO_ROOT).as_posix()
-                fields = node.args[1]
-                if isinstance(fields, ast.Dict):
-                    keys = {
-                        k.value
-                        for k in fields.keys
-                        if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                    }
-                    literal_keys.append((where, scope, keys))
-                else:
+            where = path.relative_to(REPO_ROOT).as_posix()
+            for scope, names in update_fields_calls(tree):
+                if names is None:
                     variable.add((where, scope))
+                else:
+                    literal_keys.append((where, scope, names))
         return literal_keys, variable
+
+    @pytest.mark.parametrize(
+        "call,expected",
+        [
+            ("repo.update_fields(i, {'is_published': False})", {"is_published"}),
+            ("repo.update_fields(i, {'title': t})", {"title"}),
+            ("repo.update_fields(i, fields={'is_published': False})", {"is_published"}),
+            ("repo.update_fields(i, fields={'a': 1, 'title': t}, commit=False)", {"a", "title"}),
+            ("repo.update_fields(item_id=i, fields={'title': t})", {"title"}),
+            ("repo.update_fields(i, fields)", None),
+            ("repo.update_fields(i, fields=fields)", None),
+            ("repo.update_fields(i, **kw)", None),
+            ("repo.update_fields(i, {**other, 'a': 1})", None),
+            ("repo.update_fields(i, {name: v})", None),
+            ("repo.update_fields(i, fields=dict(title=t))", None),
+        ],
+    )  # fmt: skip
+    def test_the_fields_are_read_wherever_they_are_passed(self, call, expected):
+        tree = ast.parse(f"async def f(repo, i):\n    await {call}\n")
+        ((scope, names),) = update_fields_calls(tree)
+        assert (scope, names) == ("f", expected)
+
+    def test_a_keyword_form_title_write_is_not_skipped(self):
+        """The shape the first version of this pin missed: ``fields=`` as a
+        keyword was skipped by a ``len(node.args) >= 2`` filter."""
+        tree = ast.parse(
+            "async def delete_document(repo, i, t):\n"
+            "    await repo.update_fields(i, fields={'is_published': False, 'title': t})\n"
+        )
+        ((_, names),) = update_fields_calls(tree)
+        assert "title" in names
 
     def test_only_update_document_metadata_writes_a_title_through_it(self):
         literal_keys, variable = self._callers()
