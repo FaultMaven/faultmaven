@@ -34,9 +34,14 @@ from .base import (
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini LLM provider implementation"""
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "gemini"
+
     @property
     def provider_name(self) -> str:
-        return "gemini"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Check if Gemini provider is properly configured"""

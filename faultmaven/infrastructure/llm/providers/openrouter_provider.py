@@ -26,9 +26,14 @@ from .openai_provider import OpenAIProvider
 class OpenRouterProvider(OpenAIProvider):
     """OpenRouter gateway provider (OpenAI-compatible wire protocol)."""
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "openrouter"
+
     @property
     def provider_name(self) -> str:
-        return "openrouter"
+        return self.LABEL
 
     @classmethod
     def _uses_completion_tokens_param(cls, model_name: str) -> bool:

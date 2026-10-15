@@ -8,7 +8,9 @@ first checks the call's model-bound content:
 * ``prompt`` is a minted ``ModelText`` or ``None``;
 * ``messages`` follows the message grammar
   (:func:`~faultmaven.infrastructure.security.model_content.message_violations`);
-* the content keywords (``CONTENT_KWARGS``) are minted text;
+* the content keywords (``CONTENT_KWARGS``) are minted text, and every element
+  of the content-list keywords (``CONTENT_LIST_KWARGS``: ``stop_sequences``)
+  is too;
 * every keyword is one an adapter reads (``GENERATE_KWARGS``).
 
 The check reads the values it is handed, never an attribute of the provider,
@@ -22,8 +24,10 @@ caller's containers runs during the check either, and the adapter reads what
 was checked. Calling ``_generate`` (or an adapter's own transport callables)
 from anywhere else is a private-name call, and
 ``tests/unit/architecture/test_model_dispatch_lexical_1998.py`` flags it, as
-it flags anything that rebinds :func:`send_to_model` or a name this module
-binds.
+it flags the direct spellings that rebind :func:`send_to_model` or a name this
+module binds. The boundary prevents ACCIDENTAL raw sends: bypass requires a
+deliberate act — a flagged spelling, computed reflection, or runtime mutation
+of a first-party module's namespace — and those are out of scope.
 
 The router keeps ``route()`` as its API. ``route()`` runs the same check at
 entry, on the caller's values and without unwrapping them, so a refusal comes
@@ -53,6 +57,7 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 from faultmaven.infrastructure.llm.providers.base import (
     CONTENT_KWARGS,
+    CONTENT_LIST_KWARGS,
     GENERATE_KWARGS,
     LLMResponse,
 )
@@ -224,9 +229,25 @@ def model_call_violations(
             violation = text_violation(kwargs[key], key, key)
             if violation is not None:
                 found.append(violation)
+    for key in CONTENT_LIST_KWARGS:
+        if key in kwargs and kwargs[key] is not None:
+            found.extend(_text_list_violations(kwargs[key], key))
     for key in sorted(kwargs):
         if key not in GENERATE_KWARGS:
             found.append(ContentViolation("kwargs", UNKNOWN_KWARG, key_names([key])))
+    return found
+
+
+def _text_list_violations(value: Any, key: str) -> List[ContentViolation]:
+    """A content-list keyword: an exact ``list`` or ``tuple`` of minted text."""
+    kind = type(value)
+    if kind is not list and kind is not tuple:
+        return [ContentViolation(key, BAD_SHAPE, key)]
+    found: List[ContentViolation] = []
+    for index, item in enumerate(value):
+        violation = text_violation(item, key, f"{key}[{index}]")
+        if violation is not None:
+            found.append(violation)
     return found
 
 
@@ -251,16 +272,31 @@ def refuse_if_refusing(target: str, violations: List[ContentViolation]) -> None:
         )
 
 
-#: ``type.__name__`` itself: a class's name read from the type slot, so no
-#: metaclass attribute and no provider code runs to produce a label.
+#: ``type``'s own slots: a class's name, its MRO and its namespace, read through
+#: the type object itself, so no metaclass attribute and no provider code runs
+#: to produce a label.
 _TYPE_NAME = type.__dict__["__name__"]
+_TYPE_MRO = type.__dict__["__mro__"]
+_TYPE_NAMESPACE = type.__dict__["__dict__"]
 
 
 def _provider_label(provider: Any) -> str:
-    """The provider's class name, for a report: read without invoking anything
-    on the provider. ``provider_name`` is a property on every adapter, and a
-    property runs while this frame still holds the call's content."""
-    return _TYPE_NAME.__get__(type(provider))
+    """The provider's label for a report, read without invoking anything on it.
+
+    The ``LABEL`` class constant every adapter declares (``"openai"``, the
+    value ``provider_name`` returns and ``llm_requests_total`` /
+    ``llm_provider_calls_total`` carry), read from the first class in the MRO
+    whose own namespace holds an exact ``str`` under that name. A provider with
+    none (a test double, a duck) is labelled with its class's name.
+    ``provider_name`` itself is never read: it is a property, and a property
+    runs while this frame still holds the call's content.
+    """
+    cls = type(provider)
+    for klass in _TYPE_MRO.__get__(cls):
+        label = _TYPE_NAMESPACE.__get__(klass).get("LABEL")
+        if type(label) is str:
+            return label
+    return _TYPE_NAME.__get__(cls)
 
 
 def report_raw_model_content(
@@ -380,6 +416,10 @@ async def send_to_model(
     for key in CONTENT_KWARGS:
         if key in kwargs:
             kwargs[key] = plain_text(kwargs[key])
+    for key in CONTENT_LIST_KWARGS:
+        value = kwargs.get(key)
+        if type(value) is list or type(value) is tuple:
+            kwargs[key] = type(value)(plain_text(item) for item in value)
     return await provider._generate(
         prompt=plain_text(prompt),
         model=kwargs.pop("model", None),

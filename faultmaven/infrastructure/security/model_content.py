@@ -38,8 +38,10 @@ and ``tests/unit/architecture/test_model_text_mint_lexical_1998.py`` refuses,
 outside this module and the test minter ``tests/model_content.py``, every
 spelled way of reaching the constructor, the token or the module's internals.
 ``str.__new__`` can still build an instance without the token, so the
-boundary also refuses a value whose slots were never set. Reaching the module
-by a name computed at runtime is a deliberate act and is out of scope.
+boundary also refuses a value whose slots were never set. Bypass requires a
+deliberate act — a flagged spelling, computed reflection, or runtime mutation
+of a first-party module's namespace (this one's or the dispatch's) — and those
+are out of scope: the boundary prevents ACCIDENTAL raw sends.
 
 The old helpers in :mod:`faultmaven.infrastructure.security.case_redaction`
 (same names, plain return values, ``None`` context allowed) keep their

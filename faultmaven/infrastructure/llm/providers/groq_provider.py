@@ -45,9 +45,14 @@ class GroqProvider(BaseLLMProvider):
     Source: https://console.groq.com/docs/structured-outputs (verified 2025-02-01)
     """
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "groq"
+
     @property
     def provider_name(self) -> str:
-        return "groq"
+        return self.LABEL
 
     def get_structured_output_capability(
         self, model: Optional[str] = None

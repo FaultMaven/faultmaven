@@ -91,9 +91,14 @@ class LocalProvider(BaseLLMProvider):
         """This endpoint's ``(transport, root)`` — see ``resolve_local_transport``."""
         return resolve_local_transport(self.config.base_url)
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "local"
+
     @property
     def provider_name(self) -> str:
-        return "local"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Check if local provider is properly configured"""

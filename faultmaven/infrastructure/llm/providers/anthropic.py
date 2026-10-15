@@ -118,9 +118,14 @@ class AnthropicProvider(BaseLLMProvider):
     # one WARNING per pair per process (#1756).
     _THINKING_SUBSTITUTION_LOGGED: set[tuple[str, str]] = set()
 
+    #: This provider's label: what ``provider_name`` returns, what
+    #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
+    #: the model dispatch reads statically for its own reports (#1998).
+    LABEL = "anthropic"
+
     @property
     def provider_name(self) -> str:
-        return "anthropic"
+        return self.LABEL
 
     @classmethod
     def _claude_version(cls, model: str) -> tuple[str, tuple[int, int]] | None:

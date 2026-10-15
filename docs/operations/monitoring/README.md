@@ -26,9 +26,10 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   the model dispatch (`infrastructure/llm/dispatch.send_to_model`, every
   send's one way to a provider), once per (argument, kind) per call, with a
   WARNING log line naming the same (never the content). `provider` is the
-  adapter's class name (`OpenAIProvider`, ...), read without running provider
-  code, or `router` for what `LLMRouter.route` reports itself (a value it drops
-  before the registry, a call it answers from its cache). `content="raw"`: the
+  adapter's `LABEL` (`openai`, ...: the same value `llm_requests_total` and
+  `llm_provider_calls_total` carry), read from the class without running
+  provider code, or `router` for what `LLMRouter.route` reports itself (a value
+  it drops before the registry, a call it answers from its cache). `content="raw"`: the
   call was reported and sent. Non-zero names a send path that has not moved to
   the minting helpers yet
 - `sla_status{component}` (3=meeting, 2=at_risk, 1=breached, 0=unknown),

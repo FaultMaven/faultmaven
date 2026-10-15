@@ -40,7 +40,9 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   are flagged however the module object was reached
   (``sys.modules[send_to_model.__module__]``, ``inspect.getmodule``). The
   tables the check reads in the security module are read-only
-  (``MappingProxyType``, ``frozenset``).
+  (``MappingProxyType``, ``frozenset``). A5 flags these DIRECT spellings as a
+  courtesy, not as a completeness claim: runtime mutation of a first-party
+  module's namespace is out of scope (below).
 * T — nothing outside ``tests/`` imports ``tests``: the test minter
   (``tests.model_content.vetted``) mints raw text without a redaction pass,
   and is exempt from the mint check for that reason only.
@@ -49,11 +51,22 @@ The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
 rules like any other caller.
 
-Out of scope, as for the mint check: reflection through a name computed at
-runtime (``getattr(p, "_gen" + "erate")``), and reflection by ENUMERATION —
-finding a callable by iterating a namespace and matching on a property of its
-name or value (``[f for n, f in vars(cls).items() if n.endswith("generate")]``).
-Both spell nothing a lexical rule can see; both are deliberate acts.
+This boundary prevents ACCIDENTAL raw sends. Bypass requires a deliberate
+act: a flagged spelling, computed reflection, or runtime mutation of a
+first-party module's namespace. Out of scope, therefore, and nothing else:
+
+* reflection through a name computed at runtime
+  (``getattr(p, "_gen" + "erate")``), and reflection by ENUMERATION — finding
+  a callable by iterating a namespace and matching on a property of its name
+  or value (``[f for n, f in vars(cls).items() if n.endswith("generate")]``);
+* runtime mutation of ``dispatch.py``'s or ``model_content.py``'s namespace,
+  by any means — ``sys.modules[...]``, ``vars()``, ``__dict__``, ``exec``,
+  ``operator.setitem``, ``ModuleType.__setattr__``
+  (``sys.modules[non_case_text.__module__].provenance = ...``). Rewriting a
+  first-party module at runtime is a deliberate act, like computed reflection.
+
+None of these spells anything a lexical rule could see without a data-flow
+analysis, and each is deliberate.
 """
 
 from __future__ import annotations
@@ -690,3 +703,74 @@ def test_every_r7_reach_replacement_is_refused_raw_at_the_dispatch(name, monkeyp
     if hasattr(provider, _SEND):  # the duck has no transport of its own
         asyncio.run(dispatch.send_to_model(provider, prompt=vetted("ok")))
         assert sent == ["ok"] and type(sent[0]) is str
+
+
+# ---------------------------------------------------------------------------
+# D2: the test minter refuses outside pytest, however it was reached
+# ---------------------------------------------------------------------------
+
+#: Run in a ``python -I`` process — no pytest, no PYTHONPATH, as production
+#: runs — reaching the test minter by the four spellings rule T cannot see.
+_OUTSIDE_PYTEST = r"""
+import socket, sys
+def _no(*a, **k):
+    raise RuntimeError("no network")
+socket.socket.connect = _no; socket.create_connection = _no; socket.getaddrinfo = _no
+root = sys.argv[1]
+sys.path.insert(0, root)
+import faultmaven
+assert faultmaven.__file__.startswith(root + "/"), faultmaven.__file__
+assert "_pytest" not in sys.modules
+import importlib, importlib.util, pkgutil, runpy
+
+def by_spec():
+    spec = importlib.util.spec_from_file_location("tm", root + "/tests/model_content.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+spellings = {
+    "import_module": lambda: importlib.import_module(".model_content", "tests"),
+    "pkgutil.resolve_name": lambda: pkgutil.resolve_name("tests:model_content"),
+    "runpy.run_path": lambda: type("M", (), runpy.run_path(root + "/tests/model_content.py")),
+    "spec_from_file_location": by_spec,
+}
+calls = {
+    "vetted": lambda m: m.vetted("raw"),
+    "vetted_messages": lambda m: m.vetted_messages([{"role": "user", "content": "raw"}]),
+    "forged": lambda m: m.forged("raw"),
+    "disabled_redaction": lambda m: m.disabled_redaction(),
+}
+for name, reach in spellings.items():
+    module = reach()
+    for helper, call in calls.items():
+        try:
+            call(module)
+        except RuntimeError as error:
+            assert "runs under pytest only" in str(error), (name, helper, error)
+            print(f"refused {name} {helper}")
+        else:
+            print(f"MINTED {name} {helper}")
+"""
+
+
+def test_the_test_minter_refuses_outside_pytest():
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _OUTSIDE_PYTEST, str(_ROOT)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    lines = result.stdout.splitlines()
+    assert len(lines) == 16, result.stdout
+    assert all(line.startswith("refused ") for line in lines), result.stdout
+
+
+def test_the_test_minter_mints_under_pytest():
+    """The positive control: the same helpers work in a test."""
+    from tests.model_content import vetted
+
+    assert vetted("x") == "x"

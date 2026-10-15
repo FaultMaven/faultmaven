@@ -42,7 +42,17 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, ExternalCallTimeout
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from tests.utils import sockets_refused
 from tests.wallclock import VirtualTimePolicy, virtual_now, virtual_time_module
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
+
 
 # Scaled reserve: big enough that the ladder's early stop is unambiguously
 # earlier than the cancellation even on a loaded runner (every assertion below

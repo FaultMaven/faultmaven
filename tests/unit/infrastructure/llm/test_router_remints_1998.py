@@ -42,7 +42,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
 )
 from faultmaven.infrastructure.security.model_content import plain, provenance
 from tests.model_content import forged, vetted, vetted_messages
-from tests.utils import regex_only_sanitizer, sanitize_pii_pinned
+from tests.utils import regex_only_sanitizer, sanitize_pii_pinned, sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm, pytest.mark.security]
 
@@ -86,15 +86,11 @@ class _RecordingProvider(BaseLLMProvider):
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    """Nothing here may open a socket: every provider is a double."""
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a router test reached the network")
-
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
-    monkeypatch.setattr(socket, "create_connection", refuse)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
 
 
 @pytest.fixture
@@ -583,3 +579,73 @@ async def test_a_route_override_is_not_the_send_site(router, provider):
         await tenant.route(prompt="raw text", max_tokens=50)
     [warning] = _raw_warnings(rec)
     assert (warning.filename, warning.lineno) == (__file__, line)
+
+
+@pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
+async def test_dropped_falsy_messages_are_reported_once_in_warn_mode(
+    router, provider, boundary, sanitize_pii, monkeypatch
+):
+    """η: ``messages=()`` is falsy, so the router drops it before the registry;
+    no dispatch sees the malformed list. Warn mode reports it here, refusal
+    refuses it at entry."""
+    seen, metric = boundary
+    with sanitize_pii_pinned(sanitize_pii), pytest.warns(RawModelContentWarning) as rec:
+        await router.route(prompt=vetted("ok"), messages=(), max_tokens=50)
+    [warning] = _raw_warnings(rec)
+    assert "messages bad_shape" in str(warning.message)
+    [label] = [c.kwargs for c in metric.labels.call_args_list]
+    assert (label["provider"], label["argument"], label["kind"]) == (
+        "router",
+        "messages",
+        "bad_shape",
+    )
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+    with (
+        sanitize_pii_pinned(sanitize_pii),
+        pytest.raises(
+            dispatch.RawModelContentRefused, match="^router: .*messages bad_shape"
+        ),
+    ):
+        await router.route(prompt=vetted("ok"), messages=(), max_tokens=50)
+
+
+async def test_a_refusal_books_no_request_error_and_no_sla_failure(
+    router, provider, monkeypatch
+):
+    """D3: a refusal raised inside ``call_external`` (content minted at entry,
+    raw after a pass that lost provenance) is not a failed provider request:
+    no ``llm_requests{status="error"}``, no SLA failure, no "All providers
+    failed" line."""
+    from faultmaven.infrastructure.llm import router as router_module
+
+    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+
+    async def losing_pass(value, sanitizer):
+        return plain(value)
+
+    sla = []
+    with (
+        patch.object(router_module, "llm_requests") as requests,
+        patch.object(
+            router_module.sla_tracker,
+            "record_request_metrics",
+            side_effect=lambda *a, **k: sla.append((a, k)),
+        ),
+        patch.object(router.logger, "error") as logged,
+    ):
+        with pytest.MonkeyPatch.context() as scoped:
+            scoped.setattr(
+                "faultmaven.infrastructure.llm.router.sanitizer_pass", losing_pass
+            )
+            for _ in range(6):
+                with pytest.raises(dispatch.RawModelContentRefused):
+                    await router.route(prompt=vetted("x"), max_tokens=5)
+        for _ in range(6):  # and at route()'s entry
+            with pytest.raises(dispatch.RawModelContentRefused):
+                await router.route(prompt="raw", max_tokens=5)
+    assert not [
+        c for c in requests.labels.call_args_list if c.kwargs.get("status") == "error"
+    ]
+    assert not [k for _, k in sla if k.get("success") is False]
+    assert not [c for c in logged.call_args_list if "All providers failed" in str(c)]
+    assert not provider.sent

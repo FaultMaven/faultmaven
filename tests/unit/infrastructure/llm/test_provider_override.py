@@ -19,6 +19,16 @@ import pytest
 
 from faultmaven.config.settings import LLMProvider, LLMSettings
 from faultmaven.infrastructure.llm.providers.registry import ProviderRegistry
+from tests.utils import sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
+
 
 # ============================================================
 # Settings layer

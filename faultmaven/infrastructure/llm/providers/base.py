@@ -87,7 +87,7 @@ PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
         "system",  # Anthropic; content, checked as such (CONTENT_KWARGS)
         "preamble",  # Cohere; content, checked as such (CONTENT_KWARGS)
         "reasoning_effort",  # OpenAI family
-        "stop_sequences",  # Anthropic, Gemini, HuggingFace
+        "stop_sequences",  # Anthropic, Gemini, HuggingFace; content (CONTENT_LIST_KWARGS)
         "top_p",  # Gemini, HuggingFace
         "top_k",  # Gemini, HuggingFace
         "repetition_penalty",  # HuggingFace
@@ -109,6 +109,10 @@ GENERATE_KWARGS: FrozenSet[str] = (
 
 #: The keywords that carry text to the model: minted ``ModelText`` only.
 CONTENT_KWARGS = ("system", "preamble")
+
+#: The keywords that carry a list of text to the model: every element a minted
+#: ``ModelText`` (a literal through ``non_case_text``), as for ``system``.
+CONTENT_LIST_KWARGS = ("stop_sequences",)
 
 
 class StopReason(str, Enum):

@@ -6,10 +6,10 @@ This guide documents FaultMaven's **centralized provider registry system** with 
 
 FaultMaven's LLM system is built on **clean architecture principles** with:
 
-- **Interface-Based Design**: All providers implement the `ILLMProvider` interface
+- **Interface-Based Design**: Providers subclass `BaseLLMProvider`; the router implements `ILLMProvider`
 - **Centralized Registry**: Single `PROVIDER_SCHEMA` manages all provider configurations
 - **Automatic Fallback Chains**: Primary → Fireworks → OpenAI → Local (based on available API keys)
-- **Dependency Injection**: LLM providers injected as `ILLMProvider` interface throughout the system
+- **Dependency Injection**: the router is injected as `ILLMProvider` throughout the system
 - **Health Monitoring**: Real-time provider availability and performance tracking
 - **Zero-Configuration Setup**: Providers auto-initialize based on environment variables
 
@@ -279,13 +279,16 @@ FaultMaven's provider system is built around a **centralized registry** that imp
 ### Architecture Components
 
 ```python
-# Interface Definition (models/interfaces.py)
+# The router's interface (models/interfaces.py): what callers hold
 class ILLMProvider(ABC):
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse: ...
+    async def route(self, prompt=None, **kwargs) -> LLMResponse: ...
 
+# A provider (infrastructure/llm/providers/base.py): reached only through
+# infrastructure/llm/dispatch.send_to_model, which checks the call first
+class BaseLLMProvider(ABC):
     @abstractmethod
-    def is_available(self) -> bool: ...
+    async def _generate(self, prompt=None, **kwargs) -> LLMResponse: ...
 
 # Registry Implementation (infrastructure/llm/providers/registry.py)
 class ProviderRegistry:
@@ -296,7 +299,7 @@ class ProviderRegistry:
 registry = get_registry()  # Singleton instance
 
 # Dependency Injection Integration
-container.get_llm_provider()  # Returns ILLMProvider implementation
+container.get_llm_provider()  # Returns the router (ILLMProvider)
 ```
 
 ### Data-Driven Provider Schema
@@ -309,7 +312,7 @@ PROVIDER_SCHEMA = {
         "api_key_var": "ANTHROPIC_API_KEY",
         "model_var": "ANTHROPIC_MODEL",
         "default_model": "claude-sonnet-4-6",
-        "provider_class": AnthropicProvider,  # Implements ILLMProvider
+        "provider_class": AnthropicProvider,  # A BaseLLMProvider
         "confidence_score": 0.85,
         "max_retries": 3,
         "timeout": 30
@@ -544,18 +547,23 @@ OPENAI_API_KEY="sk_backup_key"     # Second fallback
 
 ### Interface Compliance Requirements
 
-All custom providers **must implement** the `ILLMProvider` interface:
+A custom provider subclasses `BaseLLMProvider` (`infrastructure/llm/providers/base.py`). It does NOT implement `ILLMProvider`: that is the router's interface (`route`), and a provider has no public send method. Every call reaches the provider's `_generate` through `infrastructure/llm/dispatch.send_to_model` (#1998).
 
 ### Step 1: Create Provider Class
 
-**Interface Requirements**: All providers must implement `ILLMProvider` from `models/interfaces.py`:
+**Interface Requirements**: the abstract members of `BaseLLMProvider`:
 
 ```python
-# models/interfaces.py (existing interface definition)
-class ILLMProvider(ABC):
+# infrastructure/llm/providers/base.py (abstract members)
+class BaseLLMProvider(ABC):
+    @property
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response from LLM"""
+    def provider_name(self) -> str: ...      # return self.LABEL
+
+    @abstractmethod
+    async def _generate(self, prompt=None, model=None, max_tokens=1000,
+                        temperature=0.7, **kwargs) -> LLMResponse:
+        """One request to your API; called only by the dispatch."""
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -571,22 +579,24 @@ Create `faultmaven/infrastructure/llm/providers/cohere_provider.py`:
 ```python
 """
 Cohere LLM provider implementation.
-Implements ILLMProvider interface for dependency injection compatibility.
 """
 
 import aiohttp
 from typing import List, Optional
 
-from faultmaven.models.interfaces import ILLMProvider, LLMResponse
-from .base import BaseLLMProvider, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
-class CohereProvider(BaseLLMProvider, ILLMProvider):
-    """Cohere LLM provider implementing ILLMProvider interface"""
+class CohereProvider(BaseLLMProvider):
+    """Cohere LLM provider"""
+
+    #: The label the model dispatch reads statically for its reports (#1998);
+    #: ``provider_name`` returns it, and responses carry it as ``provider``.
+    LABEL = "cohere"
 
     @property
     def provider_name(self) -> str:
-        return "cohere"
+        return self.LABEL
 
     def is_available(self) -> bool:
         """Interface method: Check if provider is properly configured"""
@@ -723,7 +733,7 @@ PROVIDER_SCHEMA = {
         "model_var": "COHERE_MODEL",
         "default_base_url": "https://api.cohere.ai/v1",
         "default_model": "command-r-plus",
-        "provider_class": CohereProvider,  # Custom class implementing ILLMProvider
+        "provider_class": CohereProvider,  # A BaseLLMProvider subclass
         "max_retries": 3,
         "timeout": 30,
         "confidence_score": 0.8
@@ -761,11 +771,11 @@ __all__ = [
 **Automatic System Integration**: Once registered, the new provider:
 
 1. ✅ **Auto-Discovery**: Initializes based on `COHERE_API_KEY` environment variable
-2. ✅ **Interface Compliance**: Implements `ILLMProvider` for DI container
+2. ✅ **One way in**: Reached only through the model dispatch (`send_to_model`), which checks every call's content
 3. ✅ **Health Monitoring**: Included in system health checks
 4. ✅ **Fallback Integration**: Participates in automatic fallback chains
 5. ✅ **Service Integration**: Works with all existing services (AgentService, etc.)
-6. ✅ **Testing Support**: Can be mocked through `ILLMProvider` interface
+6. ✅ **Testing Support**: Tested through `send_to_model` with `_generate`'s transport a double
 
 ## Schema Configuration Options
 
@@ -843,12 +853,13 @@ print(f'Container Health: {health["status"]}')
 
 ```python
 # Test interface implementation
-import pytest
-from faultmaven.models.interfaces import ILLMProvider
+import inspect
+
+from faultmaven.infrastructure.llm.providers.base import BaseLLMProvider
 from faultmaven.infrastructure.llm.providers.cohere_provider import CohereProvider
 
-def test_cohere_provider_implements_interface():
-    """Test that CohereProvider implements ILLMProvider interface"""
+def test_cohere_provider_implements_the_base():
+    """CohereProvider is a concrete BaseLLMProvider with no public send method"""
     provider_config = ProviderConfig(
         name="cohere",
         api_key="test-key",
@@ -858,9 +869,11 @@ def test_cohere_provider_implements_interface():
 
     provider = CohereProvider(provider_config)
 
-    # Verify interface implementation
-    assert isinstance(provider, ILLMProvider)
-    assert hasattr(provider, 'generate')
+    # Verify the implementation
+    assert isinstance(provider, BaseLLMProvider)
+    assert not inspect.isabstract(CohereProvider)
+    assert not hasattr(provider, 'generate')  # no public send: the dispatch is the way in
+    assert provider.provider_name == CohereProvider.LABEL
     assert hasattr(provider, 'is_available')
     assert hasattr(provider, 'get_supported_models')
 
@@ -893,16 +906,15 @@ curl -X POST http://localhost:8090/api/v1/query/troubleshoot \
 
 ### Interface Compliance (Required)
 
-All custom providers **must implement** the `ILLMProvider` interface:
+All custom providers **must subclass** `BaseLLMProvider` and implement its abstract members (`ILLMProvider` is the router's interface, not a provider's):
 
 ```python
-from faultmaven.models.interfaces import ILLMProvider, LLMResponse
 from abc import ABC, abstractmethod
 
-class ILLMProvider(ABC):
+class BaseLLMProvider(ABC):
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response from LLM - REQUIRED"""
+    async def _generate(self, prompt=None, **kwargs) -> LLMResponse:
+        """One request to the API, called only by the dispatch - REQUIRED"""
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -915,15 +927,17 @@ class ILLMProvider(ABC):
 
 ### Inheritance Pattern (Recommended)
 
-For consistency, inherit from `BaseLLMProvider` which provides common functionality:
+`BaseLLMProvider` also provides common functionality:
 
 ```python
-class CustomProvider(BaseLLMProvider, ILLMProvider):
-    """Custom provider implementing interface with base functionality"""
+class CustomProvider(BaseLLMProvider):
+    """Custom provider with base functionality"""
+
+    LABEL = "custom"  # Unique identifier, read statically by the dispatch
 
     @property
     def provider_name(self) -> str:
-        return "custom"  # Unique identifier
+        return self.LABEL
 
     # Implement required interface methods
     def is_available(self) -> bool: ...
@@ -1131,7 +1145,7 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
 ### Custom Provider Implementation (20% of Cases)
 
 **For unique APIs** (Cohere, AI21, etc.):
-1. ✅ Create provider class implementing `ILLMProvider` interface
+1. ✅ Create a `BaseLLMProvider` subclass (`LABEL`, `_generate`)
 2. ✅ Add to `PROVIDER_SCHEMA` with custom class
 3. ✅ Update package imports
 4. ✅ **Done** - Full system integration automatic

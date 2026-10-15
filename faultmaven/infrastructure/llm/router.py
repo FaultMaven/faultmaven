@@ -41,6 +41,7 @@ from faultmaven.utils.token_estimation import estimate_tokens
 from .cache import LLMResponseCache
 from .dispatch import (
     SEND_SITE,
+    RawModelContentRefused,
     find_send_site,
     model_call_violations,
     refuse_if_refusing,
@@ -937,6 +938,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             return response
 
+        except RawModelContentRefused:
+            # Not a provider failure either: the request's own content was
+            # refused (#1998). No error metric, no SLA failure, no "all
+            # providers failed" — a refusal says nothing about any provider.
+            raise
         except LLMOutputFloorError:
             # Not a provider failure — the provider answered; the answer is one
             # the caller pre-declared unusable. Its dedicated metric was

@@ -61,19 +61,17 @@ from faultmaven.infrastructure.llm.providers.registry import (
 )
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import DataType
+from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
 
 @pytest.fixture(autouse=True)
-def _network_blocked(monkeypatch):
-    """Nothing here may open a socket: the HTTP boundary is a double, and a
-    provider that escaped it would otherwise reach a real endpoint."""
-
-    def _refuse(*args, **kwargs):
-        raise RuntimeError("socket blocked: the HTTP double was bypassed")
-
-    monkeypatch.setattr(socket.socket, "connect", _refuse)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
 
 
 # --- 1. The constants ARE route()'s signature --------------------------------
@@ -806,3 +804,41 @@ async def test_tools_and_tool_choice_reach_the_body(
     else:
         requests = await _routed(target, mock_aiohttp_session, {"prompt": "", **kwargs})
     _TOOLS_ON_THE_WIRE[label](requests[-1]["json"], required)
+
+
+# --- 5. One provider label on every metric (#2023 review, D4) ------------------
+
+
+@pytest.mark.parametrize("label", _LABELS)
+@pytest.mark.asyncio
+async def test_the_violation_label_is_the_llm_requests_label(
+    mock_aiohttp_session, label
+):
+    """The dispatch labels its report with the adapter's ``LABEL``, read without
+    running provider code. Dashboards group ``llm_requests_total`` by the
+    ``provider`` the adapter puts on its response, and
+    ``llm_provider_calls_total`` by the registry's provider name. A raw routed
+    call through each real adapter and transport gives all three the same
+    value. (The metering call sees the response before the registry suffixes
+    a low-confidence answer's provider, which these doubles' answers can be.)"""
+    import warnings
+
+    from faultmaven.infrastructure.llm import dispatch
+
+    target = _BY_LABEL[label]
+    metered = []
+    with (
+        patch.object(dispatch, "llm_model_content_violations") as violations,
+        patch(
+            "faultmaven.infrastructure.llm.providers.registry.record_provider_call",
+            lambda provider, model, response, *a, **k: metered.append(
+                (provider, response.provider)
+            ),
+        ),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        await _routed(target, mock_aiohttp_session, {"prompt": "raw", "max_tokens": 5})
+    [violation] = {c.kwargs["provider"] for c in violations.labels.call_args_list}
+    [(calls_label, requests_label)] = metered
+    assert violation == calls_label == requests_label == target.provider

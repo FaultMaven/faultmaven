@@ -49,6 +49,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     ProviderConfig,
 )
 from tests.model_content import forged, vetted, vetted_messages
+from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm, pytest.mark.security]
 
@@ -109,13 +110,11 @@ def _response() -> LLMResponse:
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a boundary test reached the network")
-
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
-    monkeypatch.setattr(socket, "create_connection", refuse)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
 
 
 @pytest.fixture
@@ -161,6 +160,7 @@ def _minted_call() -> Dict[str, Any]:
         ),
         "system": vetted("system text"),
         "preamble": vetted("preamble text"),
+        "stop_sequences": [vetted("END", "non_case"), vetted("STOP", "non_case")],
         "tools": [{"type": "function", "function": {"name": "search_file"}}],
         "tool_choice": "auto",
         "max_tokens": 64,
@@ -227,6 +227,15 @@ VIOLATIONS: Dict[str, tuple] = {
     ),
     "raw_system": ({"system": SECRET}, ("system", "raw")),
     "raw_preamble": ({"preamble": SECRET}, ("preamble", "raw")),
+    # D5: every stop sequence is text the model is sent, as ``system`` is.
+    "raw_stop_sequence": (
+        {"stop_sequences": [vetted("END", "non_case"), SECRET]},
+        ("stop_sequences", "raw"),
+    ),
+    "stop_sequences_not_a_list": (
+        {"stop_sequences": SECRET},
+        ("stop_sequences", "bad_shape"),
+    ),
     "unknown_kwarg": ({"case_id": "case-123"}, ("kwargs", "unknown_kwarg")),
     # F1: the reasoning artifacts an adapter echoes in place of the content.
     "raw_anthropic_assistant_content": (
@@ -441,8 +450,11 @@ async def test_a_violation_is_reported_and_sent(cls, case, metric, caplog):
         {"argument": item["argument"], "kind": item["kind"]} for item in labels
     ]
     assert all(item["content"] == "raw" for item in labels)
-    # The label is the class's own name: read without running provider code.
-    assert all(item["provider"] == type(adapter).__name__ for item in labels)
+    # The label is the adapter's LABEL, read statically: provider_name's value,
+    # without running provider code.
+    assert all(
+        item["provider"] == adapter.LABEL == adapter.provider_name for item in labels
+    )
     assert metric.labels.return_value.inc.call_count == len(labels)
 
     lines = [r.getMessage() for r in caplog.records if "#1998" in r.getMessage()]
@@ -502,6 +514,7 @@ async def test_the_adapter_receives_exact_str(cls, metric):
     assert (".prompt", SECRET) in strings
     assert (".system", "system text") in strings
     assert (".preamble", "preamble text") in strings
+    assert (".stop_sequences[1]", "STOP") in strings
     assert (".messages[3].content", SECRET) in strings
     assert (".messages[2].tool_calls[0].function.arguments", '{"q": "x"}') in strings
     not_exact = [path for path, value in strings if type(value) is not str]
@@ -647,6 +660,7 @@ def test_the_closed_set_is_a_union_of_disjoint_parts():
     )
     assert not base.GENERATE_KWARGS & base.ROUTER_CONSUMED_KWARGS
     assert set(base.CONTENT_KWARGS) <= base.PROVIDER_OPTION_KWARGS
+    assert set(base.CONTENT_LIST_KWARGS) <= base.PROVIDER_OPTION_KWARGS
     assert len(base.PROVIDER_OPTION_KWARGS) == 11
 
 
@@ -706,7 +720,7 @@ async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
     sample = registry.get_sample_value(
         "llm_model_content_violations_total",
         {
-            "provider": cls.__name__,
+            "provider": cls.LABEL,
             "argument": "prompt",
             "kind": "raw",
             "content": "raw",
@@ -1117,6 +1131,10 @@ async def test_no_provider_code_runs_before_a_refusal(metric, monkeypatch):
             return object.__getattribute__(self, name)
 
     probe = _Probe.__new__(_Probe)
-    with pytest.raises(dispatch.RawModelContentRefused, match="^_Probe: "):
+    # The label is the LABEL the adapter class declares, read from the MRO's
+    # own namespaces: the probe's property never runs.
+    with pytest.raises(
+        dispatch.RawModelContentRefused, match=f"^{ADAPTER_CLASSES[0].LABEL}: "
+    ):
         await send_to_model(probe, prompt=SECRET, messages=[{"role": "x"}])
     assert seen == [], f"provider code ran before the refusal: {seen}"

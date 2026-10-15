@@ -76,7 +76,16 @@ from faultmaven.modules.case.contracts import TurnOutcome
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnProgress
-from tests.utils import reset_settings_singleton, seed_users
+from tests.utils import reset_settings_singleton, seed_users, sockets_refused
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """No connection leaves this file's tests, by any path (#1998): on a
+    MonkeyPatch of its own, so a test's monkeypatch.undo() cannot lift it."""
+    with sockets_refused():
+        yield
+
 
 pytestmark = [pytest.mark.integration]
 

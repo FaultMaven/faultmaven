@@ -10,6 +10,14 @@ profile. A test of redaction itself uses the real minting functions instead.
 ``forged`` is here for the same reason: a boundary test needs a ``ModelText``
 the module never minted, and building one is a spelling no other file may use.
 
+Every minter here — ``vetted``, ``vetted_messages``, ``forged`` and
+``disabled_redaction`` (a context that redacts nothing lets ``case_redacted``
+mint raw text) — refuses to run outside pytest (``_test_runs_only``): rule T of
+``test_model_dispatch_lexical_1998.py`` flags an import of ``tests`` from
+production code, and this guard stops the spellings no lexical rule sees
+(``importlib.import_module(".model_content", "tests")``,
+``pkgutil.resolve_name``, ``runpy.run_path``, ``spec_from_file_location``).
+
 :class:`FakeProvider` is the shared concrete provider double: a real
 ``BaseLLMProvider`` whose ``_generate`` records each call and answers from a
 script. A test that sends to it goes through
@@ -35,15 +43,28 @@ from faultmaven.infrastructure.security.model_content import (
 )
 
 
+def _test_runs_only() -> None:
+    """These helpers mint without a redaction pass: they run under pytest only."""
+    import sys
+
+    if "_pytest" not in sys.modules:
+        raise RuntimeError(
+            "tests.model_content mints model-bound content without redaction; "
+            "it runs under pytest only (#1998)"
+        )
+
+
 def disabled_redaction(
     case_id: str = "case-test-model-content",
 ) -> CaseRedactionContext:
     """A case redaction context that redacts nothing, as ``SANITIZE_PII=false`` builds."""
+    _test_runs_only()
     return CaseRedactionContext(case_id=case_id, sanitizer=None, enabled=False)
 
 
 def vetted(text: str, source: str = SOURCE_CASE) -> ModelText:
     """``text`` minted as if through a disabled case context (``redacted`` False)."""
+    _test_runs_only()
     if not isinstance(text, str):
         raise TypeError(f"vetted takes a str, not {type(text).__name__}")
     return _mint(str.__str__(text), source, False)
@@ -58,6 +79,7 @@ def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ``model_output`` mints them. Every other key is copied as it is, so a test
     can still hand the boundary a grammar violation.
     """
+    _test_runs_only()
     out = []
     for message in messages:
         new = dict(message)
@@ -101,6 +123,7 @@ def _vetted_call(call: Any) -> Any:
 
 def forged(text: str) -> ModelText:
     """A ``ModelText`` built without the token: its slots were never set."""
+    _test_runs_only()
     return str.__new__(ModelText, text)
 
 
