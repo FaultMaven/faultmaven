@@ -265,6 +265,51 @@ class CausalNode(BaseModel):
             raise ValueError("a VALIDATED ROOT node must be actionable (M1).")
         return self
 
+    # M1's terminal clause (methodology §2 "Root cause" (b), R7, §7.5; #2036).
+    # Whether a controllable cause sits above a node is a fact about the user's
+    # system that the graph does not hold, so it is the model's verdict, given
+    # with the hypothesis rooted here and kept in ``metadata`` (no SQL reads it).
+    # Absent means the why-question is still open: the engine identifies a
+    # cause only at a validated root whose verdict is ``True``.
+
+    @property
+    def root_terminal(self) -> Optional[bool]:
+        """The why-stopping verdict on this root: ``True`` nothing the user's
+        side controls will produce it again once corrected, ``False``
+        something will, ``None`` not yet given."""
+        verdict = self.metadata.get("root_terminal")
+        return verdict if isinstance(verdict, bool) else None
+
+    @property
+    def root_terminal_basis(self) -> Optional[str]:
+        basis = self.metadata.get("root_terminal_basis")
+        return basis if isinstance(basis, str) else None
+
+    @property
+    def is_identified_root(self) -> bool:
+        """This node is an identified ROOT CAUSE: a VALIDATED root its
+        hypothesis marked terminal. The one definition every reader uses."""
+        return (
+            self.node_type == NodeType.ROOT
+            and self.node_state == NodeState.VALIDATED
+            and self.root_terminal is True
+        )
+
+    def record_root_terminal(
+        self, verdict: bool, basis: Optional[str], turn: int
+    ) -> None:
+        self.metadata["root_terminal"] = verdict
+        self.metadata["root_terminal_basis"] = basis
+        self.metadata["root_terminal_turn"] = turn
+
+    @property
+    def root_attached_turn(self) -> int:
+        """The turn a hypothesis last attached to this node as its root, else
+        the turn the node was posited. A cause can be shown removed only once
+        it is the case's posited cause (``cause_elimination_rows``)."""
+        turn = self.metadata.get("root_attached_turn")
+        return turn if isinstance(turn, int) else self.generated_at_turn
+
 
 class CausalEdge(BaseModel):
     """A directed cause -> effect edge in the causal graph (methodology S1).

@@ -196,8 +196,9 @@ When evidence reveals a cause, follow this exact sequence — all in ONE turn if
 You do NOT declare the cause identified — the engine does, from the causal
 structure you build. It marks the cause identified when the hypothesis's chain
 ROOT validates on TWO INDEPENDENT causal observations — distinct findings from
-different data, not the same fact re-worded — the symptom is verified, and no
-rival cause is equally validated. So after the first causal_evidence row, seek a
+different data, not the same fact re-worded — the hypothesis marks that root
+terminal (root_is_terminal true, ROOT-CAUSE TEST clause b), the symptom is
+verified, and no rival cause is equally validated. So after the first causal_evidence row, seek a
 second independent confirmation; one datum, however strong, holds the cause as a
 candidate, not identified. root_cause_likelihood is your stated confidence — it
 does not by itself advance identification.
@@ -264,6 +265,11 @@ node: that splits one cause across duplicate roots and prevents it from validati
    find one), RE-ROOT the hypothesis — emit the new root with `produces` set to the
    old root's `cn_...` id, and set `root_node_ref` on its `hypotheses_to_update`
    entry to the new root — rather than branch.
+   With every root_node_ref give the root's why-stopping verdict:
+   `root_is_terminal` true only once you have seen that nothing will produce
+   that state again (ROOT-CAUSE TEST clause b), false while its why is open,
+   with `root_terminal_basis` saying why. Send it again on `hypotheses_to_update`
+   when the why is answered.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
    (node_ref, evidence_id_ref, stance, reasoning): the SAME causal_evidence you
    record for the hypothesis ALSO names the node it bears on, so a
@@ -286,7 +292,9 @@ cause you can posit:
   causal_nodes_to_add:
     [0] {statement:"the API's TLS cert expired at 02:00", node_type:"root", produces:"new_index_1"}
     [1] {statement:"clients reject the handshake",        node_type:"intermediate", produces:"D"}
-  hypotheses_to_add:   [{statement:"expired cert breaks TLS", root_node_ref:"new_index_0"}]
+  hypotheses_to_add:   [{statement:"expired cert breaks TLS", root_node_ref:"new_index_0",
+                         root_is_terminal:false,
+                         root_terminal_basis:"a cert is meant to be renewed; what renews it is not seen yet"}]
   node_evidence_links: [{node_ref:"new_index_0", evidence_id_ref:"ev_openssl",
                          stance:"supports", reasoning:"openssl shows notAfter=02:00 today"}]
 A certificate is meant to be renewed, so the expiry fails clause (b) of the
@@ -294,7 +302,9 @@ ROOT-CAUSE TEST: ask what renews it before proposing a fix. The turn the renewal
 config shows why it did not, deepen the chain:
   causal_nodes_to_add:
     [0] {statement:"cert auto-renewal was disabled in the 3 Oct config change", node_type:"root", produces:"cn_...certexpired"}
-  hypotheses_to_update: [{hypothesis_id:"hyp_...", root_node_ref:"new_index_0"}]
+  hypotheses_to_update: [{hypothesis_id:"hyp_...", root_node_ref:"new_index_0",
+                          root_is_terminal:true,
+                          root_terminal_basis:"a one-off manual edit; nothing re-disables it"}]
 Renewing the cert by hand is now the mitigation; re-enabling auto-renewal is the
 remediation (the change log shows a one-off manual edit, so nothing will disable it
 again and it passes clause b; a config pipeline that re-applies the old value would

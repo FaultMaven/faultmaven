@@ -18,6 +18,9 @@ from faultmaven.core.investigation.confidence_repair import (
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_refutation_refused_total,
 )
+from faultmaven.core.investigation.milestone_engine.chain_emission import (
+    record_root_verdict,
+)
 from faultmaven.core.investigation.milestone_engine.turn_records import _resolve_id_ref
 from faultmaven.modules.case.contracts import (
     Case,
@@ -309,6 +312,7 @@ def _apply_hypothesis_updates(
         if reroot:
             metadata.setdefault("hyp_root_refs", {})[h_id] = reroot
             metadata["hypotheses_updated"].append(h_id)
+        record_root_verdict(metadata, h_id, upd)
 
         # Non-REFUTED state transitions are intentionally not applied here.
         # Likelihood updates are DEFERRED to after the same-turn

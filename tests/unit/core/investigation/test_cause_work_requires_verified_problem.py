@@ -135,7 +135,7 @@ def _hypothesis(**kw) -> HypothesisToAdd:
         category=HypothesisCategory.CODE,
         likelihood=0.6,
         rationale="heap grows with every order",
-        **kw,
+        **{"root_is_terminal": True, **kw},
     )
 
 
@@ -237,6 +237,7 @@ def _seed_root(case: Case) -> str:
     emission can name them without adding nodes."""
     seed_problem_node(case)
     root = CausalNode(
+        metadata={"root_terminal": True},
         node_id="cn_0000000000aa",
         statement=_CAUSE,
         node_type=NodeType.ROOT,
@@ -495,7 +496,9 @@ async def test_a_re_root_on_an_unverified_problem_is_refused():
         case,
         _DSU(
             hypotheses_to_update=[
-                HypothesisUpdate(hypothesis_id=standing, root_node_ref=root_id)
+                HypothesisUpdate(
+                    hypothesis_id=standing, root_node_ref=root_id, root_is_terminal=True
+                )
             ]
         ),
     )

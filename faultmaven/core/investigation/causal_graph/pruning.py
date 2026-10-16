@@ -133,6 +133,8 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
             old_path = hyp.path or []
             hyp.root_node_id = root_id
             hyp.path = path
+            # The cause this hypothesis names is posited from now (#2036).
+            node.metadata["root_attached_turn"] = case.current_turn
             prune_abandoned_nodes(case, old_path)
             adopted.add(hyp.hypothesis_id)
             referenced = _referenced_node_ids(case)  # graph changed — refresh

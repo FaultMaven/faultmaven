@@ -1,4 +1,5 @@
 from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
+from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
@@ -257,6 +258,18 @@ def _build_causal_graph_block(case: Case) -> str:
         "cause identification is HELD until discriminating evidence refutes "
         "the alternatives (at most one can be the real cause)"
     )
+    # M1's terminal clause (#2036): a validated root whose hypothesis has not
+    # marked it terminal holds identification. The S3 question for that node,
+    # rendered on it, is the hold's recovery.
+    _WHY_OPEN = "why_open"
+    recovery_notes[_WHY_OPEN] = (
+        " — its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
+        "what produced this state and whether it returns once corrected. Then "
+        "re-root this hypothesis onto that cause, or mark this root terminal "
+        "(root_is_terminal true, with root_terminal_basis) on its "
+        "hypotheses_to_update entry. The cause is not identified until one of "
+        "them is done"
+    )
     # The two hold populations are disjoint by construction —
     # root_support_block_reasons excludes restating roots, and
     # restatement_held_root_ids requires the grounding bar already MET — so
@@ -264,6 +277,7 @@ def _build_causal_graph_block(case: Case) -> str:
     node_reasons = {
         **block_reasons,
         **dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
+        **dict.fromkeys(held_open_root_ids(case), _WHY_OPEN),
         **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
     }
 

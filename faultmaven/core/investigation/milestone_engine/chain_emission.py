@@ -32,6 +32,19 @@ from .stage_gates import (
 logger = logging.getLogger(__name__)
 
 
+def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> None:
+    """Carry a hypothesis entry's why-stopping verdict (``root_is_terminal``)
+    to chain emission, which records it on the hypothesis's root once that root
+    is resolved: the root is commonly emitted, or re-rooted onto, in the same
+    turn (#2036)."""
+    verdict = getattr(entry, "root_is_terminal", None)
+    if not isinstance(verdict, bool):
+        return
+    basis = getattr(entry, "root_terminal_basis", None)
+    basis = basis.strip() if isinstance(basis, str) and basis.strip() else None
+    metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, basis)
+
+
 def _apply_chain_emission(
     case: "Case",
     updates: Any,
@@ -66,6 +79,7 @@ def _apply_chain_emission(
     deductive = list(getattr(updates, "deductive_validations", None) or [])
     node_links = list(getattr(updates, "node_evidence_links", None) or [])
     root_refs = dict(metadata.get("hyp_root_refs", {}))
+    verdicts = dict(metadata.get("hyp_root_verdicts", {}))
     if cause_work_staged(case):
         # Held on the pending revision at step 2d, replayed on confirmation.
         # A re-root sent through hypotheses_to_update is not staged (updates
@@ -73,15 +87,20 @@ def _apply_chain_emission(
         # without a word: the model sends it again once the problem is
         # verified.
         nodes, edges, deductive, node_links = [], [], [], []
-        if root_refs:
+        if root_refs or verdicts:
             refuse_cause_work(
                 case.case_id,
                 metadata,
                 kind="chain",
-                what=f"{len(root_refs)} hypothesis root refs",
+                what=(
+                    f"{len(root_refs)} hypothesis root refs, {len(verdicts)} "
+                    "root verdicts"
+                ),
             )
-            root_refs = {}
-    elif (nodes or edges or deductive or root_refs) and not cause_work_accepted(case):
+            root_refs, verdicts = {}, {}
+    elif (nodes or edges or deductive or root_refs or verdicts) and not (
+        cause_work_accepted(case)
+    ):
         refuse_cause_work(
             case.case_id,
             metadata,
@@ -89,10 +108,10 @@ def _apply_chain_emission(
             what=(
                 f"a causal chain ({len(nodes)} nodes, {len(edges)} edges, "
                 f"{len(deductive)} deductive validations, {len(root_refs)} "
-                "hypothesis root refs)"
+                f"hypothesis root refs, {len(verdicts)} root verdicts)"
             ),
         )
-        nodes, edges, deductive, root_refs = [], [], [], {}
+        nodes, edges, deductive, root_refs, verdicts = [], [], [], {}, {}
     created = ingest_emitted_chain(
         case,
         nodes,
@@ -159,6 +178,23 @@ def _apply_chain_emission(
             return None
         hyp.root_node_id = root_id
         hyp.path = new_path
+        if old_root != root_id:
+            case.causal_nodes[root_id].metadata[
+                "root_attached_turn"
+            ] = case.current_turn
+            # Deepening the hypothesis past its old root (the new root's path
+            # runs through it) says a cause sits above that node: clause b
+            # fails for it, whatever was recorded before. A move to another
+            # chain says nothing about the old root.
+            stale = case.causal_nodes.get(old_root) if old_root else None
+            if (
+                stale is not None
+                and stale.node_type == NodeType.ROOT
+                and old_root in new_path
+            ):
+                stale.record_root_terminal(
+                    False, f"deepened past, to {root_id}", case.current_turn
+                )
         return old_path if (old_root and old_root != root_id) else []
 
     # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE
@@ -226,6 +262,24 @@ def _apply_chain_emission(
     for old_path in abandoned:
         prune_abandoned_nodes(case, old_path)
 
+    # The why-stopping verdict lands on the root its entry named. A verdict sent
+    # with a re-root the engine declined or refused describes a root this
+    # hypothesis does not have, so it is dropped rather than pinned on the old one.
+    # A hypothesis still flat here may gain its root in the orphan pass
+    # (``_nudge_ambiguous_orphan_chains``); its verdict waits for that.
+    pending: dict[str, tuple] = {}
+    for hyp_id, (verdict, basis) in verdicts.items():
+        hyp = case.hypotheses.get(hyp_id)
+        if hyp is None:
+            continue
+        if not hyp.root_node_id:
+            pending[hyp_id] = (verdict, basis)
+            continue
+        if hyp_id in root_refs and _resolve_root(root_refs[hyp_id]) != hyp.root_node_id:
+            continue
+        _record_verdict_on_root(case, hyp, verdict, basis)
+    metadata["hyp_root_verdicts_pending"] = pending
+
     # B1 (#695): mirror each hypothesis's flat causal SUPPORTS links onto its
     # (now-linked) chain ROOT node. The flat hypothesis_evidence and
     # causal_node_evidence axes are disjoint, so grounding the LLM recorded
@@ -267,13 +321,28 @@ def _apply_chain_emission(
         metadata["deductive_survivor_ids"] = survivor_ids
 
 
+def _record_verdict_on_root(case: "Case", hyp: Any, verdict: bool, basis) -> None:
+    node = case.causal_nodes.get(hyp.root_node_id or "")
+    if node is not None and node.node_type == NodeType.ROOT:
+        node.record_root_terminal(verdict, basis, case.current_turn)
+
+
 def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> None:
     """Run the orphan-chain resolution post-pass. ``resolve_orphan_chains``
     re-attaches any UNAMBIGUOUS double-representation in place (T1); for the
     ambiguous remainder it returns the orphan + its candidate hypotheses,
     which we surface to the LLM next turn via ``system_feedback`` (T2a) so it
-    re-roots or declares the chain separate — the engine does not guess."""
+    re-roots or declares the chain separate — the engine does not guess.
+
+    A verdict sent with a hypothesis that was still flat at chain emission is
+    recorded on the root T1 gave it (#2036)."""
     ambiguous = resolve_orphan_chains(case)
+    for hyp_id, (verdict, basis) in (
+        metadata.pop("hyp_root_verdicts_pending", None) or {}
+    ).items():
+        hyp = case.hypotheses.get(hyp_id)
+        if hyp is not None and hyp.root_node_id:
+            _record_verdict_on_root(case, hyp, verdict, basis)
     if not ambiguous:
         return
     lines = [

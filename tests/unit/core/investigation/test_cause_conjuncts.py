@@ -87,6 +87,7 @@ def _evidence(label: str) -> Evidence:
 
 def _node(node_id, statement, node_type=NodeType.ROOT, *, supports=()) -> CausalNode:
     return CausalNode(
+        metadata={"root_terminal": True},
         node_id=node_id,
         statement=statement,
         node_type=node_type,

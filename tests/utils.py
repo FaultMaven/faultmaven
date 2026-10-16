@@ -711,6 +711,9 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
         root = CausalNode(
             statement=hyp.statement[:500],
             node_type=NodeType.ROOT,
+            # The bridged chain is the hypothesis's whole cause: its root is
+            # terminal (the why-stopping verdict, #2036).
+            metadata={"root_terminal": True},
             category=hyp.category,
             generated_at_turn=hyp.generated_at_turn,
             evidence_links=[

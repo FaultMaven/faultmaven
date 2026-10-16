@@ -87,6 +87,7 @@ def _node(
     if state == NodeState.REFUTED and not refutation_reason:
         refutation_reason = "refuted in test"
     return CausalNode(
+        metadata={"root_terminal": True},
         node_id=node_id,
         statement=f"node {node_id}",
         node_type=node_type,
@@ -153,6 +154,7 @@ def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
 
 def _problem() -> CausalNode:
     return CausalNode(
+        metadata={"root_terminal": True},
         node_id=_nid(0xD),
         statement="D: intermittent latency",
         node_type=NodeType.PROBLEM,
