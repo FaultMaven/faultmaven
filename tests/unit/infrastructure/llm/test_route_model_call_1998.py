@@ -15,8 +15,10 @@ Pinned here, over the real router, registry and dispatch (only the provider's
 * A2 — a raw call is refused once, at the seam, and counted once under the
   ``router`` target: nothing below it runs (the router's entry check, its
   cache, the dispatch);
-* A3 — the seam checks content only: the router's own knobs (``case_id``,
-  ``bypass_cache``) are ``route()``'s closed signature, not provider keywords.
+* A3 — the seam checks content, and passes only ``route()``'s own keywords:
+  the router's knobs (``case_id``, ``bypass_cache``) are ``route()``
+  parameters, while a keyword it does not declare (``system=``) is refused
+  (#2035 review F1).
 """
 
 from __future__ import annotations
@@ -254,8 +256,53 @@ async def test_a_raw_call_is_refused_whatever_the_cache_holds(router, provider, 
 
 
 # ---------------------------------------------------------------------------
-# A3: content only
+# A3: content, and route()'s own keywords only (#2035 review F1)
 # ---------------------------------------------------------------------------
+
+
+def test_the_seams_keyword_set_is_routes_signature():
+    """``ROUTE_KWARGS`` is exactly what ``LLMRouter.route`` declares besides
+    ``prompt``: a keyword added to ``route()`` passes the seam the day it is
+    declared, and nothing else ever does."""
+    import inspect
+
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    declared = set(inspect.signature(LLMRouter.route).parameters) - {"self", "prompt"}
+    assert dispatch.ROUTE_KWARGS == declared
+    assert type(dispatch.ROUTE_KWARGS) is frozenset
+
+
+@pytest.mark.parametrize("keyword", ["system", "preamble", "stop_sequences", "foo"])
+async def test_a_keyword_route_does_not_declare_is_refused_at_the_seam(keyword, metric):
+    """The review's probe: ``system=`` planted at a send site went silently
+    through a router double, while the real router raised a bare ``TypeError``
+    that the site's fail-open handler swallowed. The seam refuses it, minted
+    or not, before any router."""
+    double = AsyncMock()
+    double.route = AsyncMock(return_value=fake_response())
+    with pytest.raises(
+        RawModelContentRefused,
+        match=refusal_pattern("router", f"kwargs unknown_kwarg ({keyword})"),
+    ):
+        route_model_call(
+            double,
+            messages=vetted_messages([{"role": "user", "content": "m"}]),
+            **{keyword: vetted("Classify for: the user's message")},
+        )
+    double.route.assert_not_called()
+    assert _counted(metric) == [("router", "kwargs", "unknown_kwarg")]
+
+
+async def test_every_declared_keyword_passes_the_seam(metric):
+    """The control: each ``route()`` keyword reaches the double unchanged."""
+    double = AsyncMock()
+    double.route = AsyncMock(return_value=fake_response())
+    kwargs = {key: None for key in dispatch.ROUTE_KWARGS}
+    kwargs["messages"] = vetted_messages([{"role": "user", "content": "m"}])
+    await route_model_call(double, prompt=None, **kwargs)
+    assert double.route.await_args.kwargs == {**kwargs, "prompt": None}
+    metric.labels.assert_not_called()
 
 
 async def test_the_router_knobs_are_not_provider_keywords(router, provider, metric):

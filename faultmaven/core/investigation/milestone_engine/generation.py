@@ -735,6 +735,9 @@ class StructuredOutputGenerator:
                         _override_model = _settings.llm.get_structured_output_model()
                         if _override_model:
                             generate_kwargs["model"] = _override_model
+                except RawModelContentRefused:
+                    # A refusal is a programming error, never a fallback (#1998).
+                    raise
                 except Exception:
                     pass
 
@@ -816,6 +819,9 @@ class StructuredOutputGenerator:
                         from faultmaven.config.settings import get_settings
 
                         _turn_ceiling = get_settings().prompt_budget.turn_token_ceiling
+                    except RawModelContentRefused:
+                        # A refusal is a programming error, never a fallback (#1998).
+                        raise
                     except Exception:
                         _turn_ceiling = 150000
                     if (
@@ -895,6 +901,9 @@ class StructuredOutputGenerator:
                                 cut=schema_answer_stop_reason(response)
                                 is StopReason.MAX_TOKENS,
                             )
+                        except RawModelContentRefused:
+                            # A refusal is a programming error, never a fallback (#1998).
+                            raise
                         except Exception as parse_err:
                             logger.warning(
                                 "Tool loop: text content after forced-schema "
@@ -1015,6 +1024,9 @@ class StructuredOutputGenerator:
                     args = (
                         json.loads(args_str) if isinstance(args_str, str) else args_str
                     )
+                except RawModelContentRefused:
+                    # A refusal is a programming error, never a fallback (#1998).
+                    raise
                 except (json.JSONDecodeError, TypeError):
                     args = {}
                     args_well_formed = False
@@ -1729,6 +1741,9 @@ class StructuredOutputGenerator:
                             prompt = await case_redacted(
                                 fallback_prompt_builder(), redaction_ctx
                             )
+                        except RawModelContentRefused:
+                            # A refusal is a programming error, never a fallback (#1998).
+                            raise
                         except Exception as rebuild_exc:  # never break the fallback
                             logger.warning(
                                 "fallback_prompt_builder failed (non-fatal): %s",

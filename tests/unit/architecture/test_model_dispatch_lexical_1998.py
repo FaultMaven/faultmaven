@@ -17,13 +17,17 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
 * A2 — the string ``"_generate"`` (or a dotted path ending in it) anywhere
   but those files: ``getattr(p, "_generate")``, ``operator.methodcaller``,
   ``type(p).__dict__["_generate"]``, a ``patch`` target.
-* A3 — ``send_to_model`` bound to anything but the dispatch's own function,
-  outside ``dispatch.py``: an assignment or deletion (``dispatch.send_to_model =
-  mine``, a module-level ``send_to_model = mine``), a ``def``/``class``/argument
-  of that name, an import that binds the name from elsewhere or under ``as``,
-  and the name as a string (``setattr``, a ``patch`` target). Binding the
-  real function to another local name and rebinding THAT reaches nothing: a
-  replacement still has to reach ``_generate``, which A1 flags.
+* A3 — ``send_to_model`` and the seam ``route_model_call`` bound to anything
+  but the dispatch's own functions, or reached under another name, outside
+  ``dispatch.py``: an assignment or deletion (``dispatch.send_to_model =
+  mine``, a module-level ``route_model_call = mine``), a ``def``/``class``/
+  argument of that name, an import that binds the name from elsewhere, an
+  import of the real one under ``as`` (``route_model_call as _ask``), a
+  reference that is not a call (``ask = route_model_call``,
+  ``partial(send_to_model, p)``), and the name as a string (``setattr``, a
+  ``patch`` target). Each is imported under its own name and only ever called:
+  the propagation census (``test_model_refusal_propagates_1998.py``) finds a
+  send site by those names, and an alias would hide it (#2035 review F2).
 * A4 — the adapters' own transport callables, the coroutines their
   ``_generate`` sends through (``_post_chat_completion``, ``_call_ollama_api``,
   ...), as attributes or strings, under the same exemption. Their names are
@@ -46,6 +50,11 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
 * T — nothing outside ``tests/`` imports ``tests``: the test minter
   (``tests.model_content.vetted``) mints raw text without a redaction pass,
   and is exempt from the mint check for that reason only.
+* S2 — a registry's ``route_request`` (the routing chokepoint the router
+  calls through ``call_external``) is read only in ``router.py``: as an
+  attribute or a string naming it, anywhere else is a send that skips the seam
+  and the router's entry check and is invisible to the census (#2035 review
+  F2). Measured when added: ``router.py`` is the only reader.
 * S — a router is reached only through the seam,
   ``dispatch.route_model_call`` (#1998 P2), which checks the call's content
   before any router runs, a test's double included. So ``route`` read as an
@@ -111,6 +120,13 @@ _DISPATCH_MODULE = "faultmaven.infrastructure.llm." + "dispatch"
 # the module docstring is not the only place they appear.
 _SEND = "_gen" + "erate"
 _DISPATCHER = "send_to" + "_model"
+#: The seam (A3 holds it as it holds the dispatcher).
+_SEAM_NAME = "route_model" + "_call"
+#: A3: the names imported only under their own name and only ever called.
+_BOUND = frozenset({_DISPATCHER, _SEAM_NAME})
+#: Rule S2: the registry's routing chokepoint, and the one file that reads it.
+_ROUTE_REQUEST = "route" + "_request"
+_ROUTER = "faultmaven/infrastructure/llm/router.py"
 #: Rule S: the router's send method.
 _ROUTE = "route"
 #: The reflections that name a method or attribute by a string (rule S).
@@ -358,6 +374,8 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     private = not exempt(path)
     transports = transport_names()
     rebindable = path != _DISPATCH
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    chokepoint = path != _ROUTER
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Attribute):
@@ -365,12 +383,17 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "A1", f"a provider's {_SEND} reached"))
             if private and node.attr in transports:
                 found.append((line, "A4", f"an adapter's transport: {node.attr}"))
+            if rebindable and node.attr in _BOUND:
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    found.append((line, "A3", f"{node.attr} rebound by attribute"))
+                elif id(node) not in called:
+                    found.append((line, "A3", f"{node.attr} referenced, not called"))
             if (
-                rebindable
-                and node.attr == _DISPATCHER
-                and isinstance(node.ctx, (ast.Store, ast.Del))
+                chokepoint
+                and node.attr == _ROUTE_REQUEST
+                and isinstance(node.ctx, ast.Load)
             ):
-                found.append((line, "A3", f"{_DISPATCHER} rebound by attribute"))
+                found.append((line, "S2", f"{_ROUTE_REQUEST} read outside the router"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node in docstrings and len(node.value.split()) > 1:
                 continue
@@ -378,40 +401,42 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "A2", f"{_SEND} named in a string"))
             if private and _names(node.value, transports):
                 found.append((line, "A4", "an adapter's transport named in a string"))
-            if rebindable and _names(node.value, {_DISPATCHER}):
-                found.append((line, "A3", f"{_DISPATCHER} named in a string"))
+            for name in sorted(_names(node.value, _BOUND)) if rebindable else ():
+                found.append((line, "A3", f"{name} named in a string"))
+            if chokepoint and _names(node.value, {_ROUTE_REQUEST}):
+                found.append((line, "S2", f"{_ROUTE_REQUEST} named in a string"))
         elif not rebindable:
             continue
-        elif isinstance(node, ast.Name) and node.id == _DISPATCHER:
+        elif isinstance(node, ast.Name) and node.id in _BOUND:
             if isinstance(node.ctx, (ast.Store, ast.Del)):
-                found.append((line, "A3", f"{_DISPATCHER} rebound"))
+                found.append((line, "A3", f"{node.id} rebound"))
+            elif id(node) not in called:
+                found.append((line, "A3", f"{node.id} referenced, not called"))
         elif (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name == _DISPATCHER
+            and node.name in _BOUND
         ):
-            found.append((line, "A3", f"a def named {_DISPATCHER}"))
-        elif isinstance(node, ast.arg) and node.arg == _DISPATCHER:
-            found.append((line, "A3", f"an argument named {_DISPATCHER}"))
-        elif isinstance(node, ast.ExceptHandler) and node.name == _DISPATCHER:
-            found.append((line, "A3", f"{_DISPATCHER} bound by except"))
-        elif isinstance(node, (ast.Global, ast.Nonlocal)) and _DISPATCHER in node.names:
-            found.append((line, "A3", f"{_DISPATCHER} declared rebindable"))
+            found.append((line, "A3", f"a def named {node.name}"))
+        elif isinstance(node, ast.arg) and node.arg in _BOUND:
+            found.append((line, "A3", f"an argument named {node.arg}"))
+        elif isinstance(node, ast.ExceptHandler) and node.name in _BOUND:
+            found.append((line, "A3", f"{node.name} bound by except"))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and _BOUND & set(node.names):
+            found.append((line, "A3", "a dispatch function declared rebindable"))
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.asname == _DISPATCHER:
-                    found.append((line, "A3", f"a module imported as {_DISPATCHER}"))
+                if alias.asname in _BOUND:
+                    found.append((line, "A3", f"a module imported as {alias.asname}"))
         elif isinstance(node, ast.ImportFrom):
             module = _module_of(node, path)
             for alias in node.names:
                 bound = alias.asname or alias.name
-                canonical = (
-                    module == _DISPATCH_MODULE
-                    and alias.name == _DISPATCHER
-                    and alias.asname is None
-                )
-                if bound == _DISPATCHER and not canonical:
+                from_dispatch = module == _DISPATCH_MODULE
+                if bound in _BOUND and not (from_dispatch and alias.name == bound):
+                    found.append((line, "A3", f"{bound} bound by import from {module}"))
+                elif from_dispatch and alias.name in _BOUND and bound != alias.name:
                     found.append(
-                        (line, "A3", f"{_DISPATCHER} bound by import from {module}")
+                        (line, "A3", f"{alias.name} imported under another name")
                     )
     if rebindable:
         found.extend(_rebinding_violations(tree, path, docstrings))
@@ -578,6 +603,31 @@ PLANTED = {
     "S methodcaller, NFKC string": "f = methodcaller('ｒoute')\n",
     "S attrgetter": "send = operator.attrgetter('route')(router)\n",
     "S attrgetter, dotted": "send = attrgetter('deps.llm_provider.route')(self)\n",
+    # A3 for the seam, and the aliases the census would not see (#2035 F2).
+    "A3 the seam imported under another name": (
+        "from faultmaven.infrastructure.llm.dispatch import route_model_call as _ask\n"
+    ),
+    "A3 the dispatch imported under another name (was B14d)": (
+        "from faultmaven.infrastructure.llm.dispatch import send_to_model as s\n"
+    ),
+    "A3 the seam rebound": "route_model_call = mine\n",
+    "A3 the seam from elsewhere": "from mine import route_model_call\n",
+    "A3 the seam aliased by assignment": "ask = route_model_call\n",
+    "A3 the seam handed on uncalled": (
+        "f = functools.partial(route_model_call, router)\n"
+    ),
+    "A3 the dispatch handed on uncalled": "senders = [send_to_model]\n",
+    "A3 the seam named in a string": "f = getattr(d, 'route_model_call')\n",
+    "A3 a def named like the seam": "def route_model_call(router):\n    return 1\n",
+    # S2: the registry's chokepoint, reached around the seam and the router.
+    "S2 route_request called": (
+        "r = await get_registry().route_request(prompt=p, max_tokens=5)\n"
+    ),
+    "S2 route_request uncalled": "send = registry.route_request\n",
+    "S2 route_request by getattr": "f = getattr(registry, 'route_request')\n",
+    "S2 route_request by methodcaller": (
+        "f = operator.methodcaller('route_request', prompt=p)\n"
+    ),
 }
 
 #: rev2015e-probes/r7_reach.py: every way the #2015 review replaced
@@ -687,6 +737,26 @@ def test_a_relative_whole_import_of_the_dispatch_is_caught():
     assert not violations(source, "faultmaven/planted.py")
 
 
+def test_the_router_alone_may_read_route_request():
+    """S2 exempts ``router.py``: it hands ``route_request`` to
+    ``call_external``. Anywhere else, the same line is flagged."""
+    source = "f = self.registry.route_request\n"
+    assert violations(source, _ROUTER) == []
+    assert {hit[1] for hit in violations(source, "faultmaven/x.py")} == {"S2"}
+
+
+def test_the_seam_and_the_dispatch_are_imported_and_called_by_name():
+    """The canonical spelling the census reads: import by its own name, call."""
+    source = (
+        "from faultmaven.infrastructure.llm.dispatch import route_model_call\n"
+        "from faultmaven.infrastructure.llm.dispatch import send_to_model\n"
+        "async def f(router, provider, p):\n"
+        "    await asyncio.wait_for(route_model_call(router, prompt=p), 5)\n"
+        "    return await send_to_model(provider, prompt=p)\n"
+    )
+    assert violations(source, "faultmaven/x.py") == []
+
+
 def test_the_seam_may_call_route():
     """S exempts the seam's own file: it is what calls ``router.route``."""
     assert violations("r = await router.route(**kwargs)\n", _DISPATCH) == []
@@ -708,10 +778,6 @@ ALLOWED = {
     ),
     "a call": "r = await send_to_model(provider, prompt=p)\n",
     "a call by attribute": "r = await dispatch.send_to_model(provider, prompt=p)\n",
-    "the real one under a local alias, rebound (B14d)": (
-        "from faultmaven.infrastructure.llm.dispatch import send_to_model as s\n"
-        "s = mine\n"
-    ),
     "the seam": "r = await route_model_call(router, prompt=p)\n",
     "the seam under wait_for": (
         "r = await asyncio.wait_for(route_model_call(router, prompt=p), 5)\n"
@@ -722,7 +788,7 @@ ALLOWED = {
     ),
     # No bare string rule (#1998 P2 ruling): FastAPI's routing context.
     "route as a string": "r = getattr(ctx, 'route', None)\nscope['route']\n",
-    "a longer attribute": "x = registry.route_request\ny = app.routes\n",
+    "a longer attribute": "x = registry.route_requests\ny = app.routes\n",
     "another name to a reflection": "f = operator.attrgetter('router')\n",
     "a public provider attribute": "provider.generate = mine\n",
     "a docstring naming both": '"""Calls send_to_model, which calls _generate."""\n',

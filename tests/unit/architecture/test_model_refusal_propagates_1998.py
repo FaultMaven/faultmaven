@@ -29,23 +29,35 @@ would ship the defect silently. This file is the guard:
    called from the census function, and names its target. Negative control:
    the same path, unpatched, with the minted input production builds,
    succeeds.
-3. **The lexical complement** (R4): inside each census function, a broad
-   handler (``except Exception``, ``BaseException``, ``TypeError``, bare)
-   must come after an ``except RawModelContentRefused: raise`` in the same
-   handler list. A handler in a CALLER is the propagation table's to catch.
+3. **The lexical complement** (R4): inside each census function and every
+   def enclosing it (a closure's sends are caught where it is called), a
+   handler whose type catches a refusal must come after an ``except
+   RawModelContentRefused: raise`` in the same handler list. The type is read
+   from the module's namespace and the def's own imports, as the interpreter
+   resolves it (``except _ANY:`` is as broad as ``_ANY``), and one that does
+   not resolve to classes counts as catching. A handler that only cleans up
+   and re-raises keeps nothing and passes. Also flagged: ``suppress()`` of a
+   type that catches a refusal, and a ``finally`` that returns, breaks or
+   continues (#2035 review F3). A handler further up, in a CALLER, is the
+   propagation table's to catch.
 
-One path is pinned as a known gap (strict ``xfail``), by ruling: the turn
-route's post-commit auto-title (``_auto_title_case_if_default``) still
-swallows a refusal, because re-raising it there answers a 500 for a turn that
-already committed, and the turn's ``Idempotency-Key`` is optional, so an
-unkeyed client retry would run the turn twice. Its ``xfail`` flips to a
-failure the day that handler re-raises.
+One path's boundary is side work, by ruling: the turn route's post-commit
+auto-title (``_auto_title_case_if_default``). The turn has already committed
+when it runs, so its handler is the boundary of the auto-title work, not a
+fail-open handler on the turn's path (re-raising there would answer a 500 for
+a committed turn, and the turn's ``Idempotency-Key`` is optional, so an unkeyed
+retry would run it twice). Its terminal record is asserted: an ERROR line
+naming the class, the title left the placeholder (no fallback title written),
+and the auto-title returning normally, so the route answers the committed
+turn.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
+import importlib
 import io
 import json
 import logging
@@ -121,33 +133,36 @@ def _refers(node: ast.AST, docstrings: set) -> bool:
     return False
 
 
-def send_sites(source: str, path: str) -> Dict[str, ast.AST]:
-    """``{"path::Qual.name": def node}`` for every function in ``source`` that
-    names the seam or the dispatch; ``path::<module>`` for a module-level
-    reference. Imports bind the names and are not references."""
+def send_sites(source: str, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
+    """``{"path::Qual.name": defs}`` for every function in ``source`` that names
+    the seam or the dispatch; ``defs`` is the function's def and every def
+    enclosing it, innermost first (a closure's handlers live in the function
+    that calls it). ``path::<module>`` for a module-level reference. Imports
+    bind the names and are not references."""
     tree = _parse(source)
     docstrings = _docstrings(tree)
-    found: Dict[str, ast.AST] = {}
+    found: Dict[str, Tuple[ast.AST, ...]] = {}
 
-    def visit(node: ast.AST, chain: Tuple[str, ...], owner: ast.AST) -> None:
+    def visit(node: ast.AST, chain: Tuple[str, ...], defs: Tuple[ast.AST, ...]):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 continue
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                inner = child if not isinstance(child, ast.ClassDef) else owner
-                visit(child, chain + (child.name,), inner)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, chain + (child.name,), (child,) + defs)
+                continue
+            if isinstance(child, ast.ClassDef):
+                visit(child, chain + (child.name,), defs)
                 continue
             if _refers(child, docstrings):
-                key = f"{path}::{'.'.join(chain) or '<module>'}"
-                found.setdefault(key, owner)
-            visit(child, chain, owner)
+                found.setdefault(f"{path}::{'.'.join(chain) or '<module>'}", defs)
+            visit(child, chain, defs)
 
-    visit(tree, (), tree)
+    visit(tree, (), ())
     return found
 
 
-def _scan() -> Dict[str, ast.AST]:
-    found: Dict[str, ast.AST] = {}
+def _scan() -> Dict[str, Tuple[ast.AST, ...]]:
+    found: Dict[str, Tuple[ast.AST, ...]] = {}
     for rel, path in _files():
         if rel == _DISPATCH:
             continue
@@ -156,7 +171,7 @@ def _scan() -> Dict[str, ast.AST]:
 
 
 # ---------------------------------------------------------------------------
-# 3. The lexical complement: a census function's own broad handlers
+# 3. The lexical complement: a census function's handlers, and its encloser's
 # ---------------------------------------------------------------------------
 
 
@@ -178,38 +193,161 @@ def _is_refusal_reraise(handler: ast.ExceptHandler) -> bool:
     )
 
 
-def _own_nodes(function: ast.AST) -> Iterator[ast.AST]:
-    """Every node of ``function``'s own body, nested defs and lambdas aside."""
-    stack = list(ast.iter_child_nodes(function))
+def _catches_refusal(expr: Optional[ast.AST], namespace: Dict[str, Any]) -> bool:
+    """Whether an ``except`` (or ``suppress``) type catches a refusal: read
+    from the module's own namespace, as the interpreter resolves it, so
+    ``except _ANY:`` with ``_ANY = (Exception,)`` is as broad as the tuple. An
+    expression that is not a name, an attribute or a tuple of them, and a name
+    that does not resolve to classes, count as catching."""
+    if expr is None:
+        return True
+    if isinstance(expr, ast.Tuple):
+        return any(_catches_refusal(e, namespace) for e in expr.elts)
+    if not isinstance(expr, (ast.Name, ast.Attribute)):
+        return True
+    try:
+        value = eval(  # noqa: S307 - a name or attribute chain, no call
+            compile(ast.Expression(body=expr), "<handler>", "eval"),
+            {"__builtins__": builtins, **namespace},
+        )
+    except Exception:
+        return True
+    values = value if isinstance(value, tuple) else (value,)
+    return any(
+        not isinstance(v, type) or issubclass(RawModelContentRefused, v) for v in values
+    )
+
+
+def _skipping_defs(nodes: List[ast.AST]) -> Iterator[ast.AST]:
+    stack = list(nodes)
     while stack:
         node = stack.pop()
         if isinstance(
-            node,
-            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
         ):
             continue
         yield node
         stack.extend(ast.iter_child_nodes(node))
 
 
-def unguarded_handlers(function: ast.AST) -> List[int]:
-    """Lines of the broad handlers in ``function``'s own ``try`` statements
-    that no earlier ``except RawModelContentRefused: raise`` in the same list
-    guards."""
-    found: List[int] = []
+def _own_nodes(function: ast.AST) -> Iterator[ast.AST]:
+    """Every node of ``function``'s own body, nested defs and lambdas aside."""
+    return _skipping_defs(list(ast.iter_child_nodes(function)))
+
+
+def _transparent(handler: ast.ExceptHandler) -> bool:
+    """A handler that cannot keep what it caught: it ends in a bare ``raise``
+    and has no other exit (cleanup, then the same exception on its way)."""
+    body = handler.body
+    if not (body and isinstance(body[-1], ast.Raise) and body[-1].exc is None):
+        return False
+    return not any(
+        isinstance(node, (ast.Return, ast.Break, ast.Continue))
+        or (isinstance(node, ast.Raise) and node is not body[-1])
+        for node in _skipping_defs(list(body))
+    )
+
+
+def _exits(nodes: List[ast.AST], in_loop: bool = False) -> bool:
+    """A ``return``, or a ``break``/``continue`` that leaves the block: in a
+    ``finally``, either one discards the exception in flight."""
+    for node in nodes:
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        if isinstance(node, ast.Return):
+            return True
+        if isinstance(node, (ast.Break, ast.Continue)) and not in_loop:
+            return True
+        loop = isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+        for field, value in ast.iter_fields(node):
+            children = [c for c in (value if isinstance(value, list) else [value])]
+            children = [c for c in children if isinstance(c, ast.AST)]
+            inner = in_loop or (loop and field == "body")
+            if _exits(children, inner):
+                return True
+    return False
+
+
+def _suppresses_refusal(node: ast.AST, namespace: Dict[str, Any]) -> bool:
+    """``with contextlib.suppress(...)`` of a type that catches a refusal."""
+    for item in node.items:
+        call = item.context_expr
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name == "suppress" and any(
+            isinstance(arg, ast.Starred) or _catches_refusal(arg, namespace)
+            for arg in call.args
+        ):
+            return True
+    return False
+
+
+def unguarded_handlers(
+    function: ast.AST, namespace: Dict[str, Any]
+) -> List[Tuple[int, str]]:
+    """``(line, what)`` for everything in ``function``'s own body that can
+    keep a refusal: a handler that catches it with no earlier ``except
+    RawModelContentRefused: raise`` in its list (a handler that only cleans up
+    and re-raises keeps nothing); ``contextlib.suppress`` of a type that
+    catches it; a ``finally`` that returns, breaks or continues."""
+    found: List[Tuple[int, str]] = []
     for node in _own_nodes(function):
-        handlers = getattr(node, "handlers", None)
+        if isinstance(node, (ast.With, ast.AsyncWith)) and _suppresses_refusal(
+            node, namespace
+        ):
+            found.append((node.lineno, "suppress() of a type that catches it"))
         if not isinstance(node, ast.Try) and not (
             sys.version_info >= (3, 11) and isinstance(node, ast.TryStar)
         ):
             continue
+        if node.finalbody and _exits(node.finalbody):
+            found.append((node.finalbody[0].lineno, "a finally that exits"))
         guarded = False
-        for handler in handlers:
+        for handler in node.handlers:
             if _is_refusal_reraise(handler):
                 guarded = True
-            elif not guarded and _handler_names(handler) & (_BROAD | {"<bare>"}):
-                found.append(handler.lineno)
+            elif (
+                not guarded
+                and _catches_refusal(handler.type, namespace)
+                and not _transparent(handler)
+            ):
+                found.append((handler.lineno, "a handler that catches it"))
     return found
+
+
+def _module_namespace(path: str) -> Dict[str, Any]:
+    return vars(importlib.import_module(path.removesuffix(".py").replace("/", ".")))
+
+
+def _with_local_imports(function: ast.AST, namespace: Dict[str, Any]) -> Dict[str, Any]:
+    """``namespace`` plus what ``function`` imports in its own body (an
+    ``except`` naming a class imported inside the def resolves as it does at
+    run time). An import that does not resolve is left out: the name then
+    counts as catching."""
+    local = dict(namespace)
+    for node in _own_nodes(function):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            try:
+                module = importlib.import_module(node.module)
+            except ImportError:
+                continue
+            for alias in node.names:
+                if hasattr(module, alias.name):
+                    local[alias.asname or alias.name] = getattr(module, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                with contextlib.suppress(ImportError):
+                    module = importlib.import_module(alias.name)
+                    local[alias.asname or alias.name.split(".")[0]] = (
+                        module
+                        if alias.asname
+                        else importlib.import_module(alias.name.split(".")[0])
+                    )
+    return local
 
 
 # ---------------------------------------------------------------------------
@@ -441,33 +579,48 @@ async def _title_route_through_the_real_router(refuse: bool):
 
 
 async def _auto_title_after_a_turn(refuse: bool) -> Optional[BaseException]:
-    """The turn route's post-commit auto-title (R2 stop): the boundary is the
-    turn route, after the commit. A refusal that escapes the auto-title is
-    returned; today none escapes (the handler logs a WARNING and swallows it),
-    so the refusal case fails, as its strict ``xfail`` expects, and the day
-    the handler re-raises it passes and the ``xfail`` turns red."""
+    """The turn route's post-commit auto-title, a side-work boundary: its
+    terminal record is the ERROR line naming the class (``exc_info`` carries
+    the refusal), the case title still the placeholder, and the function
+    returning normally, so the route answers the turn it already committed."""
     from faultmaven.modules.case.api import title_generation
 
     case = _titled_case()
+    placeholder = case.title
     case_service = _title_case_service(case)
+    records: List[logging.LogRecord] = []
+    handler = logging.Handler(level=logging.WARNING)
+    handler.emit = records.append  # type: ignore[method-assign]
+    title_log = logging.getLogger(title_generation.__name__)
+    title_log.addHandler(handler)
     try:
         with patch.object(
             title_generation,
             "load_case_redaction",
             new=AsyncMock(return_value=disabled_redaction(case.case_id)),
         ):
-            await title_generation._auto_title_case_if_default(
-                case_id=case.case_id,
-                user_id=USER,
-                case_service=case_service,
-                llm_provider=_router_double(_TITLE),
-                sanitizer=_TitleSanitizer(),
-                redis_client=object(),
+            # Returns normally whatever happens: the turn's response stands.
+            assert (
+                await title_generation._auto_title_case_if_default(
+                    case_id=case.case_id,
+                    user_id=USER,
+                    case_service=case_service,
+                    llm_provider=_router_double(_TITLE),
+                    sanitizer=_TitleSanitizer(),
+                    redis_client=object(),
+                )
+                is None
             )
-    except RawModelContentRefused as escaped:
-        return escaped
+    finally:
+        title_log.removeHandler(handler)
+    errors = [r for r in records if r.levelno >= logging.ERROR]
     if refuse:
-        return None
+        assert case.title == placeholder, "a fallback title was written"
+        case_service.update_case.assert_not_called()
+        [record] = errors
+        assert record.error_type == "RawModelContentRefused", record.__dict__
+        return record.exc_info[1]
+    assert errors == []
     case_service.update_case.assert_awaited()
     assert case.title == _TITLE
     return None
@@ -1049,6 +1202,11 @@ def _chains() -> List[Chain]:
             lambda r: _convert_route(r, PARALLEL_THRESHOLD),
         ),
         Chain(_CONVERT, "job: case conversion (detached)", _case_conversion_job),
+        Chain(
+            _TITLE_SITE,
+            "side work: /turns post-commit auto-title (terminal record)",
+            _auto_title_after_a_turn,
+        ),
     ]
     return chains
 
@@ -1057,26 +1215,10 @@ def _id(chain: Chain) -> str:
     return f"{chain.site.split('::')[1]} <- {chain.path}"
 
 
-#: The R2 stop, a known gap pinned until its handler re-raises.
-_AUTO_TITLE = Chain(
-    _TITLE_SITE, "turn route: post-commit auto-title", _auto_title_after_a_turn
-)
-_R2_STOP = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R2 stop: re-raising answers a 500 for a committed turn, and an "
-        "unkeyed retry (Idempotency-Key is optional) would run it twice"
-    ),
-)
-
-
-CHAINS = _chains() + [_AUTO_TITLE]
-#: The refusal cases; the R2 stop is the one expected to fail.
-REFUSALS = [
-    pytest.param(c, id=_id(c), marks=[_R2_STOP] if c is _AUTO_TITLE else [])
-    for c in CHAINS
-]
-#: The negative controls: every path, minted, succeeds — the R2 stop's too.
+CHAINS = _chains()
+#: The refusal cases: each reaches its boundary.
+REFUSALS = [pytest.param(c, id=_id(c)) for c in CHAINS]
+#: The negative controls: every path, minted, succeeds.
 CONTROLS = [pytest.param(c, id=_id(c)) for c in CHAINS]
 
 #: The census: every send-site function and the caller paths that reach it.
@@ -1102,16 +1244,18 @@ def test_the_census_is_every_send_site_function():
 
 
 def test_every_census_function_guards_its_own_broad_handlers():
-    sites = _scan()
-    unguarded = {
-        site: lines
-        for site, function in sites.items()
-        if (lines := unguarded_handlers(function))
-    }
-    assert not unguarded, (
-        "a broad handler in a send-site function catches a refusal before "
-        "`except RawModelContentRefused: raise` (#1998 P3):\n  "
-        + "\n  ".join(f"{site}: lines {lines}" for site, lines in unguarded.items())
+    """R4, over each census function and every def enclosing it."""
+    problems: Dict[str, List[str]] = {}
+    for site, defs in _scan().items():
+        namespace = _module_namespace(site.split("::")[0])
+        for function in defs:
+            local = _with_local_imports(function, namespace)
+            for line, what in unguarded_handlers(function, local):
+                problems.setdefault(site, []).append(f"{function.name}:{line}: {what}")
+    assert not problems, (
+        "something in a send-site function (or a def enclosing it) can keep a "
+        "refusal (#1998 P3); put `except RawModelContentRefused: raise` first:"
+        "\n  " + "\n  ".join(f"{site}: {found}" for site, found in problems.items())
     )
 
 
@@ -1184,13 +1328,20 @@ def test_what_is_not_a_send_site(name):
     assert send_sites(NOT_SITES[name], "faultmaven/planted.py") == {}
 
 
-def _only_function(source: str) -> ast.AST:
+def _planted(source: str) -> List[Tuple[int, str]]:
+    """The rule over a planted module's ``site`` function, its names resolved
+    in the module's own namespace (the module is executed: defs and aliases)."""
+    namespace: Dict[str, Any] = {
+        "contextlib": contextlib,
+        "RawModelContentRefused": RawModelContentRefused,
+    }
+    exec(compile(source, "planted.py", "exec"), namespace)  # noqa: S102
     [function] = [
         n
         for n in ast.walk(ast.parse(source))
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "site"
     ]
-    return function
+    return unguarded_handlers(function, namespace)
 
 
 _GUARD = "    except RawModelContentRefused:\n        raise\n"
@@ -1226,6 +1377,44 @@ UNGUARDED = {
         "def site():\n    try:\n        settings()\n    except Exception:\n"
         "        pass\n    send()\n"
     ),
+    # #2035 review F3: the forms the name-matching rule missed.
+    "contextlib.suppress(Exception)": (
+        "def site():\n    with contextlib.suppress(Exception):\n        send()\n"
+    ),
+    "suppress of a tuple holding TypeError": (
+        "from contextlib import suppress\n"
+        "def site():\n    with suppress(KeyError, TypeError):\n        send()\n"
+    ),
+    "return in a finally": (
+        "def site():\n    try:\n        send()\n    finally:\n        return None\n"
+    ),
+    "break in a finally": (
+        "def site():\n    for _ in range(2):\n        try:\n            send()\n"
+        "        finally:\n            break\n"
+    ),
+    "continue in a finally": (
+        "def site():\n    for _ in range(2):\n        try:\n            send()\n"
+        "        finally:\n            continue\n"
+    ),
+    "except a module alias of Exception": (
+        "_ANY = (Exception,)\n"
+        "def site():\n    try:\n        send()\n    except _ANY:\n        pass\n"
+    ),
+    "except a name that does not resolve": (
+        "def site(errors):\n    try:\n        send()\n    except errors:\n"
+        "        pass\n"
+    ),
+    "except a call": (
+        "def site():\n    try:\n        send()\n    except caught():\n        pass\n"
+    ),
+    "a typed wrap": (
+        "def site():\n    try:\n        send()\n    except Exception as e:\n"
+        "        raise ValueError('other') from e\n"
+    ),
+    "cleanup with an early return before the raise": (
+        "def site(x):\n    try:\n        send()\n    except Exception:\n"
+        "        if x:\n            return None\n        raise\n"
+    ),
 }
 
 #: name -> a send-site function the rule leaves alone.
@@ -1246,14 +1435,56 @@ GUARDED = {
         "def site():\n    def helper():\n        try:\n            x()\n"
         "        except Exception:\n            pass\n    send()\n"
     ),
+    "suppress of a narrow type": (
+        "def site():\n    with contextlib.suppress(KeyError):\n        send()\n"
+    ),
+    "a finally that only cleans up": (
+        "def site():\n    try:\n        send()\n    finally:\n        cleanup()\n"
+    ),
+    "a loop's break inside a finally": (
+        "def site(items):\n    try:\n        send()\n    finally:\n"
+        "        for item in items:\n            break\n"
+    ),
+    "an alias of narrow types": (
+        "_NARROW = (ValueError, KeyError)\n"
+        "def site():\n    try:\n        send()\n    except _NARROW:\n        pass\n"
+    ),
+    "a narrow class by attribute": (
+        "import json\n"
+        "def site():\n    try:\n        send()\n"
+        "    except json.JSONDecodeError:\n        pass\n"
+    ),
+    "cleanup, then the same exception on its way": (
+        "def site():\n    try:\n        send()\n    except Exception:\n"
+        "        cleanup()\n        raise\n"
+    ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(UNGUARDED))
-def test_the_lexical_rule_flags_an_unguarded_broad_handler(name):
-    assert unguarded_handlers(_only_function(UNGUARDED[name])), name
+def test_the_lexical_rule_flags_what_can_keep_a_refusal(name):
+    assert _planted(UNGUARDED[name]), name
 
 
 @pytest.mark.parametrize("name", sorted(GUARDED))
 def test_the_lexical_rule_allows_a_guarded_or_narrow_handler(name):
-    assert unguarded_handlers(_only_function(GUARDED[name])) == [], name
+    assert _planted(GUARDED[name]) == [], name
+
+
+def test_a_closures_encloser_is_held_to_the_rule():
+    """F3: a closure's sends are caught in the function that calls it, so the
+    census holds every enclosing def to the rule, not the closure alone."""
+    source = (
+        "async def outer(router, p):\n"
+        "    async def _send(cap):\n"
+        "        return await route_model_call(router, prompt=p, max_tokens=cap)\n"
+        "    try:\n"
+        "        return await retry(_send)\n"
+        "    except Exception:\n"
+        "        return None\n"
+    )
+    [(key, defs)] = send_sites(source, "faultmaven/planted.py").items()
+    assert key == "faultmaven/planted.py::outer._send"
+    assert [d.name for d in defs] == ["_send", "outer"]
+    assert unguarded_handlers(defs[0], {}) == []
+    assert unguarded_handlers(defs[1], {}) == [(6, "a handler that catches it")]

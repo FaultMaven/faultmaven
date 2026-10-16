@@ -59,13 +59,16 @@ logs it.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Coroutine, Dict, List
+from typing import Any, Coroutine, Dict, FrozenSet, List
 
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.providers.base import (
     CONTENT_KWARGS,
     CONTENT_LIST_KWARGS,
+    FORWARDED_KNOB_KWARGS,
     GENERATE_KWARGS,
+    PROVIDER_API_KWARGS,
+    ROUTER_CONSUMED_KWARGS,
     LLMResponse,
 )
 from faultmaven.infrastructure.security.model_content import (
@@ -253,6 +256,28 @@ async def send_to_model(
 #: ``prompt`` not passed: forwarded to the router only when the caller wrote it.
 _UNSET: Any = object()
 
+#: The keywords ``LLMRouter.route`` declares besides ``prompt``: the only ones
+#: the seam hands a router. Its three disjoint groups, each pinned to
+#: ``route()``'s signature (``test_router_knobs_never_reach_a_provider.py``),
+#: and the set itself pinned to it (``test_route_model_call_1998.py``). Read
+#: here from the providers' module, so this module never imports the router.
+ROUTE_KWARGS: FrozenSet[str] = (
+    ROUTER_CONSUMED_KWARGS | FORWARDED_KNOB_KWARGS | PROVIDER_API_KWARGS
+)
+
+
+def _route_keyword_violations(kwargs: Dict[str, Any]) -> List[ContentViolation]:
+    """Every keyword the seam would hand a router that ``route()`` does not
+    declare. A keyword name that is not an exact ``str`` is a violation and the
+    names are not looked at again (``model_call_violations`` says why)."""
+    if any(type(key) is not str for key in kwargs):
+        return [ContentViolation("kwargs", BAD_SHAPE, "kwargs")]
+    return [
+        ContentViolation("kwargs", UNKNOWN_KWARG, key_names([key]))
+        for key in sorted(kwargs)
+        if key not in ROUTE_KWARGS
+    ]
+
 
 def route_model_call(
     router: Any, *, prompt: Any = _UNSET, **kwargs: Any
@@ -268,23 +293,30 @@ def route_model_call(
     It checks the call's model-bound content — ``prompt`` and ``messages``,
     the same check ``route()`` runs at entry (:func:`model_call_violations`)
     — before any router runs, real or a test's double: a test that replaces
-    the router still exercises the check, at the line it drives. Content only:
-    the other keywords are ``route()``'s own, a closed signature, not a
-    provider's. A violation is refused here, before the router is called.
+    the router still exercises the check, at the line it drives. And it
+    refuses a keyword ``route()`` does not declare (:data:`ROUTE_KWARGS`,
+    ``unknown_kwarg``): a double would accept ``system=`` or ``preamble=``
+    silently, while the real router raises a bare ``TypeError`` that a
+    fail-open handler takes for an ordinary failure (#2035 review F1). The
+    router's own knobs (``case_id``, ``bypass_cache``) are ``route()``
+    parameters and pass. A violation is refused here, before the router is
+    called.
 
     A plain function returning the router's coroutine, not an ``async def``:
     the refusal is raised at the call itself, on the caller's line, whether or
     not the caller then hands the coroutine to ``asyncio.wait_for``.
 
     Raises:
-        RawModelContentRefused: the call's content was not minted; nothing
-            reached the router.
+        RawModelContentRefused: the call's content was not minted, or it
+            passed a keyword ``route()`` does not declare; nothing reached
+            the router.
     """
     refuse(
         "router",
         model_call_violations(
             None if prompt is _UNSET else prompt, kwargs.get("messages"), {}
-        ),
+        )
+        + _route_keyword_violations(kwargs),
     )
     if prompt is not _UNSET:
         kwargs["prompt"] = prompt

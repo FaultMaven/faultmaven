@@ -1259,7 +1259,10 @@ async def _auto_title_case_if_default(
     name is refused by the substance gate *before* any LLM call.
 
     Every failure is swallowed: this is best-effort naming, and nothing about a
-    turn should be reported as failed because its title could not be made.
+    turn should be reported as failed because its title could not be made. This
+    is the boundary of the auto-title work, not a handler on the turn's path:
+    the turn has already committed. A model-content refusal (#1998) is recorded
+    here at ERROR, under its own class, and no fallback title is written.
     """
     try:
         # DRIVER only (ADR-020 D2): naming the case writes its title, an
@@ -1301,6 +1304,19 @@ async def _auto_title_case_if_default(
             f"Auto-titling timed out for case {case_id} after "
             f"{AUTO_TITLE_TIMEOUT_SECONDS}s",
             extra={"case_id": case_id},
+        )
+    except RawModelContentRefused as refused:
+        # A refused send is a programming error, so it is recorded at ERROR
+        # under its own class (the refusal counter was incremented where it was
+        # raised), never folded into the best-effort WARNING below. The turn
+        # stands: it committed before this ran. No title is written: the
+        # refusal propagates out of ``_generate_title_with_llm`` before any
+        # extractive fallback is built, and nothing is persisted on the way.
+        logger.error(
+            "Auto-titling refused at the model boundary for case %s (#1998)",
+            case_id,
+            exc_info=refused,
+            extra={"case_id": case_id, "error_type": type(refused).__name__},
         )
     except Exception as e:
         # Everything else is a fault worth seeing at default level — including a

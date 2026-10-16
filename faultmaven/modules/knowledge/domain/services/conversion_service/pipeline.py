@@ -3,6 +3,7 @@ the route helper it and the conversion pass share."""
 
 import logging
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
@@ -122,6 +123,9 @@ async def _analyze_document(
                 )
             ),
         )
+    except RawModelContentRefused:
+        # A refusal is a programming error, never a fallback (#1998).
+        raise
     except Exception as e:
         # The exception's CLASS only, as `_convert_single_failure_mode` does
         # (#836). A pydantic ValidationError quotes the failing failure-mode dict
