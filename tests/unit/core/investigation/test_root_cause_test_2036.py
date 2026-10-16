@@ -227,6 +227,34 @@ def test_proposing_a_fix_applies_the_test_first():
     assert "`quadrant`: `remediation` only for a cause that passes the" in step
 
 
+def test_proposing_a_mitigation_asks_its_why_question():
+    # The hold on fresh asks after a proposal would otherwise gag the one
+    # question the test requires.
+    text = _flat(rca_diagnosis_block(DEFAULT_GIVEN))
+    hold = text[text.index("Having proposed the fix, do not pile") :]
+    assert (
+        "The one exception is a fix proposed as a mitigation under the "
+        "ROOT-CAUSE TEST: name its why-question" in hold[:400]
+    )
+
+
+def test_the_single_shot_path_needs_the_test():
+    text = _flat(rca_diagnosis_block(DEFAULT_GIVEN))
+    option_a = text[text.index("**Option A: SINGLE-SHOT**") :]
+    assert "and the cause passes the ROOT-CAUSE TEST" in option_a[:400]
+
+
+def test_a_runbook_cause_that_fails_the_test_does_not_resolve():
+    """The KB-resolution variant copies the Cause into the conclusion and
+    records it gone; for a Cause that names an intercepted state, neither."""
+    text = _flat(treatment_instructions(DEFAULT_GIVEN))
+    rule = text[text.index("When the attributed Cause fails the ROOT-CAUSE TEST") :]
+    rule = rule[: rule.index("REQUIRED EMISSIONS")]
+    assert "emit items 1, 3 and 4 and the `symptom_absence_evidence` row" in rule
+    assert "Skip item 2, the `causal_absence_evidence` row and item 6" in rule
+    assert "ask why the state arose" in rule
+
+
 def test_causal_absence_is_not_recorded_for_a_renewed_state():
     base = _flat(INVESTIGATION_BASE)
     assert (

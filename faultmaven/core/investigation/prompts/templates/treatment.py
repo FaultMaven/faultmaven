@@ -247,6 +247,12 @@ still requires the standard confirmation turn — the engine holds your
 (see `docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
 §1.2 "KB-Resolution Path (Milestone-Collapse Variant)").
 
+When the attributed Cause fails the ROOT-CAUSE TEST (its Statement names a
+state with a cause above it, and the chain has not been deepened past it),
+the fix only intercepted that state: emit items 1, 3 and 4 and the
+`symptom_absence_evidence` row of item 5. Skip item 2, the
+`causal_absence_evidence` row and item 6, and ask why the state arose.
+
 REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
 
 1. **`state_updates.knowledge_resolution`** — the attribution signal:

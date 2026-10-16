@@ -770,7 +770,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
      solution_proposed=True from the standing proposal — you do NOT set it in
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Having proposed the fix, do not pile fresh diagnostic asks onto a fix the
-     user has not tried yet — propose it and wait for the result. The default
+     user has not tried yet — propose it and wait for the result. The one
+     exception is a fix proposed as a mitigation under the ROOT-CAUSE TEST: name
+     its why-question in your reply or as an EVIDENCE suggestion. The default
      two suggestions cover the normal case:
      1. EVIDENCE — "Share the result of the fix": the outcome data (command
         output, post-fix logs or metrics) must come from the user's environment.
@@ -844,7 +846,7 @@ supports a specific claim (symptom, cause, mitigation, or solution).
 **Option A: SINGLE-SHOT** (root cause obvious from evidence)
    Use when: TWO OR MORE independent causal observations in hand (distinct
    findings, not the same fact re-worded), mechanism understood, no
-   conflicting evidence.
+   conflicting evidence, and the cause passes the ROOT-CAUSE TEST.
    In ONE turn: CREATE hypothesis → LINK evidence to its chain root → SET
    state=VALIDATED (the engine derives identification from the validated root)
    → propose solution

@@ -305,7 +305,7 @@ def _build_causal_graph_block(case: Case) -> str:
                 "and point root_node_ref at it; a root another hypothesis "
                 "already owns cannot be reused)"
             )
-        for position, nid in enumerate(chain_ids):
+        for nid in chain_ids:
             n = nodes.get(nid)
             if n is None or n.node_type.value == "problem":
                 continue
@@ -313,9 +313,7 @@ def _build_causal_graph_block(case: Case) -> str:
             # A root this chain was deepened past keeps its stored type (the
             # cluster-origin machinery and a later re-root back onto it read
             # it), but it has a cause above it now, so it is a rung (#2036).
-            below_the_root = (
-                position > 0 and n.node_type.value == "root" and nid not in shown_roots
-            )
+            below_the_root = n.node_type.value == "root" and nid not in shown_roots
             lines.append(
                 _node_line("    ", n, "intermediate" if below_the_root else None)
             )
