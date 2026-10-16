@@ -249,8 +249,10 @@ node: that splits one cause across duplicate roots and prevents it from validati
    produces):
    - `statement`: the condition that holds,
    - `node_type`: `root` (the deepest cause you can currently posit for this
-     hypothesis — its actionable origin: remove it and the problem is gone) or
-     `intermediate` (a state on the way from a root to D),
+     hypothesis. Positing it does not make it the ROOT CAUSE: that takes both
+     clauses of the ROOT-CAUSE TEST, and while its why is still open it is a
+     candidate to keep descending from) or `intermediate` (a state on the way
+     from a root to D),
    - `produces`: the node it DIRECTLY causes — an existing node id, `"D"` for the
      problem, or `"new_index_N"` for another node you emit this turn.
 2. Link the hypothesis to its root — REQUIRED FOR EVERY HYPOTHESIS: set
@@ -258,8 +260,10 @@ node: that splits one cause across duplicate roots and prevents it from validati
    the root node (`new_index_N` or an existing id), the SAME turn. One cause = one
    chain: never leave a root unlinked beside a flat hypothesis for that cause, and
    never start a second parallel chain for a cause a hypothesis already names. When
-   you later discover a DEEPER cause, RE-ROOT the hypothesis — set `root_node_ref`
-   on its `hypotheses_to_update` entry to the new deepest root — rather than branch.
+   you later discover a DEEPER cause (the ROOT-CAUSE TEST's why-question is how you
+   find one), RE-ROOT the hypothesis — emit the new root with `produces` set to the
+   old root's `cn_...` id, and set `root_node_ref` on its `hypotheses_to_update`
+   entry to the new root — rather than branch.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
    (node_ref, evidence_id_ref, stance, reasoning): the SAME causal_evidence you
    record for the hypothesis ALSO names the node it bears on, so a
@@ -277,13 +281,26 @@ node: that splits one cause across duplicate roots and prevents it from validati
    into prose instead of modelling is a factor the record loses — and a fix that
    addressed two conditions will read as a fix for one.
 
-Example (TLS handshake failures):
+Example (TLS handshake failures). The turn the expiry is found, it is the deepest
+cause you can posit:
   causal_nodes_to_add:
     [0] {statement:"the API's TLS cert expired at 02:00", node_type:"root", produces:"new_index_1"}
     [1] {statement:"clients reject the handshake",        node_type:"intermediate", produces:"D"}
   hypotheses_to_add:   [{statement:"expired cert breaks TLS", root_node_ref:"new_index_0"}]
   node_evidence_links: [{node_ref:"new_index_0", evidence_id_ref:"ev_openssl",
                          stance:"supports", reasoning:"openssl shows notAfter=02:00 today"}]
+A certificate is meant to be renewed, so the expiry fails clause (b) of the
+ROOT-CAUSE TEST: ask what renews it before proposing a fix. The turn the renewal
+config shows why it did not, deepen the chain:
+  causal_nodes_to_add:
+    [0] {statement:"cert auto-renewal was disabled in the 3 Oct config change", node_type:"root", produces:"cn_...certexpired"}
+  hypotheses_to_update: [{hypothesis_id:"hyp_...", root_node_ref:"new_index_0"}]
+Renewing the cert by hand is now the mitigation; re-enabling auto-renewal is the
+remediation (the change log shows a one-off manual edit, so nothing will disable it
+again and it passes clause b; a config pipeline that re-applies the old value would
+be the cause above). After that fix,
+the causal_absence row shows auto-renewal enabled and the symptom_absence row the
+handshake succeeding.
 
 Build backward from D, one rung at a time — at minimum the root→D link, adding
 intermediate rungs as evidence warrants. Do NOT invent a full tree, or rungs or
@@ -596,7 +613,12 @@ for the user to execute — their compliance implies acceptance and transitions 
     Then propose that Cause's fix via a SolutionToAdd record — a `mitigation`
     intervention if impact is severe and needs stabilizing now, otherwise a
     `remediation` or `defensive_fix` intervention. Skip independent hypothesis
-    generation.
+    generation. A Cause's Statement gets the ROOT-CAUSE TEST like any root: when
+    it names a state with a controllable cause above it (an expired token its
+    issuer should have renewed, a volume something keeps filling), its
+    Interventions restore that state, so propose
+    them as a mitigation (`solution_type: workaround`), ask why the state arose,
+    and deepen this hypothesis's chain when you know.
   - **Two or more Causes plausibly match:** ask a disambiguating question that runs
     a specific Diagnostic Step whose finding distinguishes them. Do NOT propose
     multiple Causes' fixes simultaneously. Do NOT yet emit `knowledge_match`.
@@ -730,6 +752,12 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - Refute hypotheses that contradict evidence
 
 4. **Propose Solution** — When you've identified the root cause with sufficient confidence:
+   - Apply the ROOT-CAUSE TEST first. While clause (b) is still open, a fix you
+     can propose acts on an intermediate state: propose it as a mitigation
+     (`solution_type: workaround`, the engine's mitigation signal, with
+     `quadrant: mitigation`, or `defensive_fix` when it is kept), ask for what
+     would show why the state arose, and propose the remediation once the cause
+     passes both clauses.
    - State the root cause in one sentence before proposing the fix.
    - Propose a concrete action: specific command(s) or steps for the user to execute.
    - Frame as a direct next step, NOT a question: "Based on this analysis, the fix is
@@ -737,11 +765,14 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - State impact: whether the fix is reversible or not, and its blast radius
      (single pod, cluster, database, shared service).
    - Emit a SolutionToAdd record in solutions_to_add describing the fix (description,
-     solution_type, estimated_impact, risks, commands). The backend derives
+     solution_type, estimated_impact, risks, commands, and `quadrant`: `remediation`
+     only for a cause that passes the ROOT-CAUSE TEST). The backend derives
      solution_proposed=True from the standing proposal — you do NOT set it in
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Having proposed the fix, do not pile fresh diagnostic asks onto a fix the
-     user has not tried yet — propose it and wait for the result. The default
+     user has not tried yet — propose it and wait for the result. The one
+     exception is a fix proposed as a mitigation under the ROOT-CAUSE TEST: name
+     its why-question in your reply or as an EVIDENCE suggestion. The default
      two suggestions cover the normal case:
      1. EVIDENCE — "Share the result of the fix": the outcome data (command
         output, post-fix logs or metrics) must come from the user's environment.
@@ -815,7 +846,7 @@ supports a specific claim (symptom, cause, mitigation, or solution).
 **Option A: SINGLE-SHOT** (root cause obvious from evidence)
    Use when: TWO OR MORE independent causal observations in hand (distinct
    findings, not the same fact re-worded), mechanism understood, no
-   conflicting evidence.
+   conflicting evidence, and the cause passes the ROOT-CAUSE TEST.
    In ONE turn: CREATE hypothesis → LINK evidence to its chain root → SET
    state=VALIDATED (the engine derives identification from the validated root)
    → propose solution

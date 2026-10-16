@@ -267,14 +267,17 @@ def _build_causal_graph_block(case: Case) -> str:
         **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
     }
 
-    def _node_line(indent: str, n) -> str:
+    def _node_line(indent: str, n, node_type: str | None = None) -> str:
         note = recovery_notes.get(node_reasons.get(n.node_id), "")
         return (
-            f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
-            f"{_one_line(n.statement)}{note}"
+            f"{indent}{n.node_id} [{node_type or n.node_type.value}/"
+            f"{n.node_state.value}] {_one_line(n.statement)}{note}"
         )
 
     on_path: set[str] = set()
+    # A node some hypothesis shown here is rooted at stays a root on every path
+    # through it: a re-root may hand an old root to another hypothesis.
+    shown_roots = {h.root_node_id for h in active_h if h.root_node_id}
     lines = [
         "<causal_graph>",
         "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
@@ -307,7 +310,13 @@ def _build_causal_graph_block(case: Case) -> str:
             if n is None or n.node_type.value == "problem":
                 continue
             on_path.add(nid)
-            lines.append(_node_line("    ", n))
+            # A root this chain was deepened past keeps its stored type (the
+            # cluster-origin machinery and a later re-root back onto it read
+            # it), but it has a cause above it now, so it is a rung (#2036).
+            below_the_root = n.node_type.value == "root" and nid not in shown_roots
+            lines.append(
+                _node_line("    ", n, "intermediate" if below_the_root else None)
+            )
         if h.state.value == "refuted" and h.refutation_reason:
             lines.append(f"    Refuted because: {_one_line(h.refutation_reason)}")
     exclusions = exclusion_record(case, list_refuted=False)

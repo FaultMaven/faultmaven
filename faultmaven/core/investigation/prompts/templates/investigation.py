@@ -10,6 +10,7 @@ from .blocks import (
     _OUTCOME_PROMPT_BLOCK,
     _PROMPT_FENCE_RULE,
     _READING_DISCIPLINE_BLOCK,
+    _ROOT_CAUSE_TEST_BLOCK,
 )
 from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, present
 
@@ -140,7 +141,11 @@ an evidence row.
      cause — the specific thing you identified as the cause is verifiably no
      longer present, not merely worked around) → `causal_absence_evidence`.
      This row says the cause is gone, NOT that the reported problem went
-     with it.
+     with it. A fix that only renewed, restarted or refilled a state whose
+     cause sits above it (clause b of the ROOT-CAUSE TEST) leaves that cause
+     in place: symptom_absence only. When the fix also removed that cause
+     (auto-renewal shown enabled, the rotation shown running), the
+     causal_absence row records THAT cause gone.
    RESOLVED needs BOTH rows: the system marks a case RESOLVED only when a
    `causal_absence_evidence` row AND a `symptom_absence_evidence` row
    recorded at or after it are on record — the cause removed, and the
@@ -330,6 +335,10 @@ hypothesis testing, solution validation).
 
 """
     + _EXCLUSION_GROUNDS_BLOCK
+    + """
+
+"""
+    + _ROOT_CAUSE_TEST_BLOCK
     + """
 
 """

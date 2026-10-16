@@ -247,6 +247,12 @@ still requires the standard confirmation turn — the engine holds your
 (see `docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
 §1.2 "KB-Resolution Path (Milestone-Collapse Variant)").
 
+When the attributed Cause fails the ROOT-CAUSE TEST (its Statement names a
+state with a cause above it, and the chain has not been deepened past it),
+the fix only intercepted that state: emit items 1, 3 and 4 and the
+`symptom_absence_evidence` row of item 5. Skip item 2, the
+`causal_absence_evidence` row and item 6, and ask why the state arose.
+
 REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
 
 1. **`state_updates.knowledge_resolution`** — the attribution signal:
@@ -411,7 +417,11 @@ The process:
   cause is gone, not that the reported problem went with it. Source: post-fix
   output the user submitted (a file or pasted data). An out-of-band fix is
   valid, but the user's report of it is a claim: name the check's output in
-  `system_state_report`, and FaultMaven asks for it.
+  `system_state_report`, and FaultMaven asks for it. A fix that only renewed,
+  restarted or refilled a state whose cause sits above it (clause b of the
+  ROOT-CAUSE TEST) leaves that cause in place: record symptom_absence only,
+  and ask why the state arose. When the fix also removed that cause, the
+  causal_absence row records THAT cause gone.
 - **symptom_absence_evidence**: Re-verification row confirming the symptom the
   user reported is gone. A mitigation produces symptom_absence while the cause
   persists.
