@@ -411,7 +411,11 @@ The process:
   cause is gone, not that the reported problem went with it. Source: post-fix
   output the user submitted (a file or pasted data). An out-of-band fix is
   valid, but the user's report of it is a claim: name the check's output in
-  `system_state_report`, and FaultMaven asks for it.
+  `system_state_report`, and FaultMaven asks for it. A fix that only renewed,
+  restarted or refilled a state whose cause sits above it (clause b of the
+  ROOT-CAUSE TEST) leaves that cause in place: record symptom_absence only,
+  and ask why the state arose. When the fix also removed that cause, the
+  causal_absence row records THAT cause gone.
 - **symptom_absence_evidence**: Re-verification row confirming the symptom the
   user reported is gone. A mitigation produces symptom_absence while the cause
   persists.

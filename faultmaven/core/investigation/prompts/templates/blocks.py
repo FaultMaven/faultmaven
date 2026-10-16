@@ -413,6 +413,46 @@ WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION:
   propose resolved on the evidence already on record.\
 """
 
+# The root-cause test, both clauses (methodology §2 "Root cause", R7, §7.5;
+# #2036). The prompt used to state only clause (a), so the model concluded at
+# the first cause whose removal stops the symptom (an expired credential) and
+# proposed resolving on a renewal. One copy, in the investigation base: the
+# sites that decide a node is the root (chain emission and re-rooting, runbook
+# Cause attribution, proposing the remediation, recording causal absence) name
+# it as "the ROOT-CAUSE TEST" rather than restating it. No braces: the base
+# template is .format()-ed.
+_ROOT_CAUSE_TEST_BLOCK = """\
+ROOT-CAUSE TEST (the why-stopping rule):
+A cause is the ROOT CAUSE only when it passes BOTH clauses:
+(a) a specific action on the user's side (their organisation, other teams they
+    can ask included) would eliminate the problem PERMANENTLY, not until the
+    next expiry, restart, refill or recurrence; and
+(b) it is not the consequence of a cause above it that the user's side can
+    control. A cause sits above a state when something will produce the state
+    AGAIN after it is reset: a fixed lifetime that nothing renews, a job that
+    keeps writing the value, a leak that refills the disk. A state set once by
+    a person or by a one-off event, that nothing will re-create, passes (b):
+    correcting it is the remediation, and what might have prevented it is
+    advice, not a rung.
+Expiries, exhausted quotas and pools, full disks, crashed processes and
+drifted configs are states that MAY have a cause above them. Before treating
+one as the root, ask for what would show whether it will recur and why it
+arose: how it was issued or set, its lifetime or limit, and what renews,
+rotates, bounds or reconciles it. When that evidence shows the cause above it,
+RE-ROOT the hypothesis there; the state stays on the chain as a rung.
+A fix that only renews, regenerates, restarts or refills such a state
+INTERCEPTS it. It removes the symptom, not the cause: a mitigation, or a
+defensive fix if it is kept, never the remediation.
+When the data to go further cannot be obtained, stop and say what is missing.
+When nothing on the user's side can eliminate the problem permanently (its
+cause is a vendor's outage or another organisation's system), or the user
+declines to go further, stop at the deepest state they can act on and
+intercept it there: say so, and set `verification_updates.rca_infeasible`
+true with an `rca_infeasible_rationale` saying why. Once the interception is
+verified, FaultMaven offers to close on the symptom's absence instead of waiting
+for a root it cannot reach.\
+"""
+
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
 # Extracted to keep the DECIDE/RUN/EVIDENCE/FREE_SPEECH definitions identical
 # across stages (drift here previously caused subtle inconsistencies in suggestion

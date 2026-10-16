@@ -30,7 +30,8 @@ PRs #487–#507. What is built versus still design-intent:
   preservation** — the engine renders existing `cn_…` ids back into context so
   the LLM *extends* a chain rather than re-emitting a cause as a duplicate node;
   chain-derived `cause_state` (§9.2), never asserted (M4); engine-deterministic
-  failed-fix demotion (M6, §9.3); root-actionability (M1); AND-proof (M7); the
+  failed-fix demotion (M6, §9.3); root-actionability (M1; terminality is taught by
+  the prompt's ROOT-CAUSE TEST, #2036); AND-proof (M7); the
   deductive-exclusion primitive (§7.1.1); and **M5 solution-gating** — a SOLUTION
   is registered only once the cause is *established*, using the **same predicate
   as the resolution gate** (`_cause_identified`: `cause_state == IDENTIFIED`, a
@@ -120,7 +121,7 @@ LLM-owned gate milestone on the LLM's behalf.
 
 | ID | Invariant (must always hold) | Graceful denial (Gate-2 exit) | Planned enforcement |
 |----|------------------------------|-------------------------------|---------------------|
-| **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Schema + engine-guard |
+| **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Actionability: engine, **built** (a VALIDATED root is marked `actionable`). Terminality: a model judgement, since whether a controllable cause sits above a node is a fact about the user's system that the graph does not hold. The investigation base states both clauses of R7 once (`_ROOT_CAUSE_TEST_BLOCK`), and every prompt site that decides a root names it (#2036). Once the model emits the cause above, it re-roots onto it: the root it deepened past keeps its stored type, its confirmation lands on the cluster origin, and the model's view labels it a rung |
 | **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` — two observations, two rows: the cause seen gone (`causal_absence_evidence`) and `D` seen gone at or after it (`symptom_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard, **built**: resolution gate + the §9.5 assurance grades (`CONFIRMED` requires a root-linked counterfactual; the engine mirror caps at `CONFIDENT`/0.8 without one) |
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
