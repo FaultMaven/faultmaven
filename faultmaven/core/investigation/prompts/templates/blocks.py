@@ -439,7 +439,9 @@ drifted configs are states that MAY have a cause above them. Before treating
 one as the root, ask for what would show whether it will recur and why it
 arose: how it was issued or set, its lifetime or limit, and what renews,
 rotates, bounds or reconciles it. When that evidence shows the cause above it,
-RE-ROOT the hypothesis there; the state stays on the chain as a rung.
+RE-ROOT the hypothesis there; the state stays on the chain as a rung. Record
+the verdict as root_is_terminal on the hypothesis rooted there: the engine
+identifies the cause only at a validated root marked true.
 A fix that only renews, regenerates, restarts or refills such a state
 INTERCEPTS it. It removes the symptom, not the cause: a mitigation, or a
 defensive fix if it is kept, never the remediation.

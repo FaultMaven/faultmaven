@@ -885,6 +885,8 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
         current_turn=case.current_turn,
     )
     root_id = created[0]
+    # The hypothesis rooted here marks its root terminal (#2036).
+    case.causal_nodes[root_id].record_root_terminal(True, None, case.current_turn)
     hyp = _hypothesis("hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=root_id)
     hyp.path = [root_id]
     case.hypotheses[hyp.hypothesis_id] = hyp

@@ -101,6 +101,7 @@ def _root(
         for label in labels
     ]
     return CausalNode(
+        metadata={"root_terminal": True},
         node_id=node_id,
         statement=statement,
         node_type=NodeType.ROOT,

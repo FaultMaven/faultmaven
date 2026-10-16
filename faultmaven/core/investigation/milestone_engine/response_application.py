@@ -20,6 +20,7 @@ from faultmaven.core.investigation.milestone_engine.cause_work import (
 from faultmaven.core.investigation.milestone_engine.chain_emission import (
     _apply_chain_emission,
     _nudge_ambiguous_orphan_chains,
+    record_root_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.evidence_need_updates import (
     _apply_evidence_need_updates,
@@ -121,6 +122,20 @@ from .terminal_proposals import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+#: M5's recovery when the cause holds but its why is open (#2036). The
+#: conclusion backstop does not license a fix then, so the generic recovery
+#: would send the model round a loop. At most 500 characters
+#: (``ProposedAction.downgrade_reason``).
+WHY_OPEN_DOWNGRADE_REASON = (
+    "Downgraded from SOLUTION: when proposed, the cause had validated but its "
+    "why was open (ROOT-CAUSE TEST, clause b), so a fix acting on it would only "
+    "intercept a state that comes back. Ask for what produced the state, then "
+    "re-root onto that cause or mark the root terminal (root_is_terminal true, "
+    "with root_terminal_basis) and re-propose the fix. To restore service now, "
+    "propose it as a WORKAROUND mitigation."
+)
 
 
 def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -> None:
@@ -1302,6 +1317,7 @@ class ResponseApplier:
                     metadata.setdefault("hyp_root_refs", {})[
                         h.hypothesis_id
                     ] = h_item.root_node_ref
+                record_root_verdict(metadata, h.hypothesis_id, h_item)
 
         # 3b. Apply the LLM's hypothesis disconfirmation signal (state=REFUTED +
         # reason) and likelihood updates. Emitted by schema+prompt but never
@@ -1465,16 +1481,21 @@ class ResponseApplier:
                     # say (fm#1679). ``ProposedAction.downgrade_reason`` holds
                     # at most 500 characters.
                     downgrade_reason = (
-                        "Downgraded from SOLUTION: when proposed, no root cause "
-                        "was established; a permanent fix needs one, and a "
-                        "diagnostic test is not a fix (M5). To register a real "
-                        "fix, send in ONE response a root_cause_conclusion "
-                        "backed by evidence and the fix as a SolutionToAdd; the "
-                        "conclusion counts once the symptom is verified and no "
-                        "rival cause is contested. If the user already applied "
-                        "that fix, also set solution_accepted from their report "
-                        "rather than asking again. Or propose a WORKAROUND "
-                        "mitigation."
+                        WHY_OPEN_DOWNGRADE_REASON
+                        if case.progress.cause_identification_held_open
+                        else (
+                            "Downgraded from SOLUTION: when proposed, no root "
+                            "cause was established; a permanent fix needs one, "
+                            "and a diagnostic test is not a fix (M5). To register "
+                            "a real fix, send in ONE response a "
+                            "root_cause_conclusion backed by evidence and the "
+                            "fix as a SolutionToAdd; the conclusion counts once "
+                            "the symptom is verified and no rival cause is "
+                            "contested. If the user already applied that fix, "
+                            "also set solution_accepted from their report rather "
+                            "than asking again. Or propose a WORKAROUND "
+                            "mitigation."
+                        )
                     )
 
                 # 3D: Symptom-evidence gate — MITIGATION requires at least one

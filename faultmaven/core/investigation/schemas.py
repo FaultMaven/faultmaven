@@ -854,6 +854,25 @@ class HypothesisToAdd(BaseModel):
             "chain."
         ),
     )
+    root_is_terminal: Optional[bool] = Field(
+        default=None,
+        description=(
+            "The why-stopping verdict on this hypothesis's root (clause b of the "
+            "ROOT-CAUSE TEST). true: nothing the user's side controls will produce "
+            "this state again once it is corrected (a one-off change or defect, "
+            "or a cause out of their reach). false: something will (a lifetime "
+            "nothing renews, a job that rewrites the value), or you have not yet "
+            "seen what produced it. The engine identifies the cause only at a "
+            "validated root marked true."
+        ),
+    )
+    root_terminal_basis: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why the root's verdict holds: what produced the state and why it "
+            "will not return, or what will reproduce it."
+        ),
+    )
 
     # ADD-shaped (fm#1502): the statement, category, rationale and chain are
     # worth more than one bad number, so a percentage is rescaled rather than
@@ -912,6 +931,18 @@ class HypothesisUpdate(BaseModel):
             "being deepened (the chain's new deepest root, leaving its placeholder "
             "root). Not for REFUTED entries."
         ),
+    )
+    root_is_terminal: Optional[bool] = Field(
+        default=None,
+        description=(
+            "The why-stopping verdict on this hypothesis's root (its new root when "
+            "root_node_ref re-roots it): true or false as for hypotheses_to_add; "
+            "null leaves it unchanged. Give it once the why is answered."
+        ),
+    )
+    root_terminal_basis: Optional[str] = Field(
+        default=None,
+        description="Why the root's verdict holds (with root_is_terminal).",
     )
 
     # UPDATE-shaped (fm#1502): ``None`` is "no likelihood change", so the

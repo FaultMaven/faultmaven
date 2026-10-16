@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from faultmaven.modules.case.contracts import HypothesisState, NodeState
 
-from .queries import is_chain_root_validated
+from .queries import is_chain_root_identified, is_chain_root_validated
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
@@ -31,6 +31,29 @@ def any_chain_root_validated(case: Case) -> bool:
         is_chain_root_validated(h, case.causal_nodes)
         for h in _standing_hypotheses(case)
     )
+
+
+def any_chain_root_identified(case: Case) -> bool:
+    """Does some STANDING hypothesis's chain root stand as the identified root
+    cause: validated AND marked terminal (M1, #2036)? This is the chain-mode
+    ``cause_state=IDENTIFIED`` signal."""
+    return any(
+        is_chain_root_identified(h, case.causal_nodes)
+        for h in _standing_hypotheses(case)
+    )
+
+
+def held_open_root_ids(case: Case) -> set[str]:
+    """The STANDING hypotheses' chain roots that are validated but whose
+    why-stopping verdict is not ``True``: causes that hold, whose why is still
+    open. While one stands and no root is identified, identification is held
+    (#2036)."""
+    return {
+        h.root_node_id
+        for h in _standing_hypotheses(case)
+        if is_chain_root_validated(h, case.causal_nodes)
+        and not is_chain_root_identified(h, case.causal_nodes)
+    }
 
 
 class HypothesisProjection(NamedTuple):

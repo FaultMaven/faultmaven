@@ -30,8 +30,9 @@ PRs #487–#507. What is built versus still design-intent:
   preservation** — the engine renders existing `cn_…` ids back into context so
   the LLM *extends* a chain rather than re-emitting a cause as a duplicate node;
   chain-derived `cause_state` (§9.2), never asserted (M4); engine-deterministic
-  failed-fix demotion (M6, §9.3); root-actionability (M1; terminality is taught by
-  the prompt's ROOT-CAUSE TEST, #2036); AND-proof (M7); the
+  failed-fix demotion (M6, §9.3); M1, both clauses: root-actionability, and
+  terminality as the hypothesis's why-stopping verdict the engine requires
+  (#2036); AND-proof (M7); the
   deductive-exclusion primitive (§7.1.1); and **M5 solution-gating** — a SOLUTION
   is registered only once the cause is *established*, using the **same predicate
   as the resolution gate** (`_cause_identified`: `cause_state == IDENTIFIED`, a
@@ -121,7 +122,7 @@ LLM-owned gate milestone on the LLM's behalf.
 
 | ID | Invariant (must always hold) | Graceful denial (Gate-2 exit) | Planned enforcement |
 |----|------------------------------|-------------------------------|---------------------|
-| **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Actionability: engine, **built** (a VALIDATED root is marked `actionable`). Terminality: a model judgement, since whether a controllable cause sits above a node is a fact about the user's system that the graph does not hold. The investigation base states both clauses of R7 once (`_ROOT_CAUSE_TEST_BLOCK`), and every prompt site that decides a root names it (#2036). Once the model emits the cause above, it re-roots onto it: the root it deepened past keeps its stored type, its confirmation lands on the cluster origin, and the model's view labels it a rung |
+| **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Actionability: engine, **built** (a VALIDATED root is marked `actionable`). Terminality: **built** (#2036) as the model's why-stopping verdict and an engine veto. Whether a controllable cause sits above a node is a fact about the user's system that the graph does not hold, so the hypothesis rooted there gives it (`root_is_terminal`, kept on the root node). The engine identifies, concludes, confirms and resolves only at a validated root marked terminal. A validated root whose why is open holds identification (`cause_identification_held_open`), the conclusion and likelihood backstops stand down, and no causal_absence row counts as the cause removed while it holds, or from before the cause was posited (§9.2). The ROOT-CAUSE TEST in the investigation base is the one statement of the rule |
 | **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` — two observations, two rows: the cause seen gone (`causal_absence_evidence`) and `D` seen gone at or after it (`symptom_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard, **built**: resolution gate + the §9.5 assurance grades (`CONFIRMED` requires a root-linked counterfactual; the engine mirror caps at `CONFIDENT`/0.8 without one) |
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
@@ -1636,13 +1637,23 @@ variables, milestones, and confidence stay consistent.
 `cause_state` derivation aligns to chain / node states:
 
 - **IDENTIFIED** — some chain's **root node is validated**, mechanistically (§7.1)
-  or deductively (§7.1.1), **and the validated root is uncontested** (§7.1.2 —
-  several simultaneously-validated distinct roots hold at CANDIDATES pending
-  discrimination). This is mechanistic grade; it unlocks solution work.
+  or deductively (§7.1.1), **its hypothesis has marked it terminal** (M1, R7
+  clause b: `root_is_terminal`, #2036), **and the validated root is
+  uncontested** (§7.1.2 — several simultaneously-validated distinct roots hold
+  at CANDIDATES pending discrimination). This is mechanistic grade; it unlocks
+  solution work. A validated root whose why is still open holds at CANDIDATES
+  (`cause_identification_held_open`): the conclusion mirror and the
+  conclusion/likelihood backstops stand down, the `<causal_graph>` asks that
+  node's why (S3), and no causal_absence row confirms a resolution until a
+  root is identified, so a renewal of the state cannot resolve the case. A
+  causal_absence row also confirms only a cause posited at or before it (the
+  turn its hypothesis attached to that root), the twin of "a cause cannot be
+  shown removed before the problem is verified".
 - **CANDIDATES** — ≥2 ACTIVE chains (preserves the existing ≥2-active derivation,
   [§2.5 decision 4](./investigation-lifecycle-logic.md#25-design-decisions-and-open-follow-ons),
   now counting chains), a live INCONCLUSIVE root, a validated root awaiting
-  symptom verification, or the §7.1.2 MECE-contested hold.
+  symptom verification or a why-stopping verdict, or the §7.1.2
+  MECE-contested hold.
 - **UNKNOWN** — otherwise.
 - **AND gate:** a chain's root cannot be validated until *every* AND-member on its
   path is validated (S1 symmetric proof), so `IDENTIFIED` is never reached on a

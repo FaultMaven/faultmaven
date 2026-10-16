@@ -597,6 +597,13 @@ def cause_elimination_rows(case: "Case") -> list:
       opens a window that can confirm (#1927). M6 demotes on the same
       windows, so the gate and M6 cannot disagree about whether a fix
       failed.
+    - About the case's cause (#2036): none while identification is held on an
+      open root (a validated cause whose why is unanswered is not yet the
+      root cause, so nothing shows the root cause removed), and none recorded
+      before that cause was attached as a hypothesis's root
+      (``_cause_posited_turn``). Twin of the rule that a cause cannot be shown
+      removed before the problem is verified
+      (``_reclassify_premature_causal_absence``).
 
     Content-level bearing on a specific root and the per-root refutation
     window are the stamp's additional, root-scoped concerns
@@ -606,8 +613,11 @@ def cause_elimination_rows(case: "Case") -> list:
     A cause-side observation only: "the config now reads 100", "ExecStart now
     names the installed binary". Whether the reported problem went with the
     cause is the other leg, ``symptom_elimination_rows`` (#1906)."""
+    if getattr(case.progress, "cause_identification_held_open", False):
+        return []
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
+    posited = _cause_posited_turn(case)
     window = confirming_window(case)
     if window is None:
         return []
@@ -618,8 +628,29 @@ def cause_elimination_rows(case: "Case") -> list:
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
         and getattr(e, "evidence_id", None) not in disconfirmation_ids
         and (getattr(e, "collected_at_turn", 0) or 0) >= last_disconfirm
+        and (getattr(e, "collected_at_turn", 0) or 0) >= posited
         and window.holds(getattr(e, "collected_at_turn", 0) or 0)
     ]
+
+
+def _cause_posited_turn(case: "Case") -> int:
+    """The turn from which a causal_absence row can be about the case's cause:
+    when that cause was attached as a hypothesis's root (#2036). The cause is the
+    identified root when one stands, else the latest-attached standing root; with
+    no rooted standing hypothesis, every turn (0).
+
+    A row recorded earlier observed something else gone: a renewed credential or
+    a restarted issuer, before the chain was deepened to what produced it. A
+    mitigation opens no fix window, so without this bound such a row in window 0
+    would confirm the deeper cause's resolution before its fix ran."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    roots = [
+        nodes[h.root_node_id]
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id in nodes
+    ]
+    pool = [n for n in roots if n.is_identified_root] or roots
+    return max((n.root_attached_turn for n in pool), default=0)
 
 
 def fix_application_turn(case: "Case") -> int | None:
@@ -1364,7 +1395,10 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     link; the caller re-persists grade, over-claim flag, and verification
     status so the terminal blob reflects the confirmation.
     """
-    candidate_roots = _validated_roots(case)
+    # Only a root its hypothesis marked terminal can be confirmed as the root
+    # cause (M1, #2036) — on both arms: a confirmed open root would be graded
+    # CONFIRMED and harvested as the cause of a state something re-creates.
+    candidate_roots = [n for n in _validated_roots(case) if n.is_identified_root]
     count_held_ids: set = set()
     if not candidate_roots:
         # §7.1 independent-support bar (INV-29): a sole root held from
@@ -1379,7 +1413,9 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         if count_held_fn is not None:
             count_held_ids = count_held_fn(case)
         candidate_roots = [
-            case.causal_nodes[nid] for nid in count_held_ids if nid in case.causal_nodes
+            case.causal_nodes[nid]
+            for nid in count_held_ids
+            if nid in case.causal_nodes and case.causal_nodes[nid].root_terminal is True
         ]
     if not candidate_roots:
         return False

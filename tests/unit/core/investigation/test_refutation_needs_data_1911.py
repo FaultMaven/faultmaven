@@ -371,6 +371,7 @@ async def test_one_turn_verifies_identifies_and_refutes_a_competitor():
                     likelihood=0.6,
                     rationale="iat/nbf run 247 s ahead on app-02 tokens",
                     root_node_ref="new_index_0",
+                    root_is_terminal=True,
                 ),
                 HypothesisToAdd(
                     statement=_COMPETITOR,
@@ -441,6 +442,7 @@ def test_a_failed_fix_does_not_back_refuting_a_hypothesis_it_did_not_target():
     chain, which the fix's rows are not about, is not disproved by it."""
     case, _root, _hyp = _identified_case()
     other_root = CausalNode(
+        metadata={"root_terminal": True},
         node_id="cn_0000000000bb",
         statement="pgbouncer pool_mode transaction drops prepared statements",
         node_type=NodeType.ROOT,
@@ -506,6 +508,7 @@ def test_a_refutes_link_on_a_rung_of_the_chain_counts():
         ("cn_0000000000a2", NodeType.INTERMEDIATE),
     ):
         case.causal_nodes[node_id] = CausalNode(
+            metadata={"root_terminal": True},
             node_id=node_id,
             statement=f"{node_type.value} of the key chain",
             node_type=node_type,
@@ -556,6 +559,7 @@ def _two_chains_dsu(**extra) -> "_DSU":
                 likelihood=0.5,
                 rationale="iat/nbf skew",
                 root_node_ref="new_index_0",
+                root_is_terminal=True,
             ),
             HypothesisToAdd(
                 statement=_COMPETITOR,
@@ -563,6 +567,7 @@ def _two_chains_dsu(**extra) -> "_DSU":
                 likelihood=0.5,
                 rationale="isolated to app-02",
                 root_node_ref="new_index_1",
+                root_is_terminal=True,
             ),
         ],
         causal_nodes_to_add=[

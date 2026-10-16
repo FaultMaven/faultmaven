@@ -222,6 +222,17 @@ def is_chain_root_validated(
     return _state(root_id, nodes) == NodeState.VALIDATED
 
 
+def is_chain_root_identified(
+    hypothesis: Hypothesis, nodes: dict[str, CausalNode]
+) -> bool:
+    """The chain's root is the identified ROOT CAUSE: VALIDATED (the cause
+    holds and produces D, §7.1) AND marked terminal by the hypothesis's
+    why-stopping verdict (M1, R7 clause b). A validated root whose why is still
+    open is a validated cause on the chain, not yet its root cause (#2036)."""
+    root = nodes.get(hypothesis.root_node_id or "")
+    return root is not None and root.is_identified_root
+
+
 # ---------------------------------------------------------------------------
 # §7.1.1 — deductive validation (proof by exclusion, strict)
 # ---------------------------------------------------------------------------

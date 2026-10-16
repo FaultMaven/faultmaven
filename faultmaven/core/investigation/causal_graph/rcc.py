@@ -28,7 +28,11 @@ from faultmaven.modules.case.contracts import (
 
 from .clusters import mece_contested_root_ids
 from .projection import _STANDING_HYP_STATES, _standing_hypotheses
-from .queries import conjuncts_for_chain, is_chain_root_validated, mechanism_for_chain
+from .queries import (
+    conjuncts_for_chain,
+    is_chain_root_identified,
+    mechanism_for_chain,
+)
 from .similarity import (
     RESTATEMENT_AMBIGUOUS,
     RESTATEMENT_STRONG,
@@ -304,10 +308,12 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         r = case.causal_nodes.get(h.root_node_id or "")
         return r is not None and root_counterfactually_confirmed(r, cat_by_id)
 
+    # The mirror names the identified root cause: a validated root whose why is
+    # still open is not one yet (#2036).
     validated_hyps = [
         h
         for h in _standing_hypotheses(case)
-        if is_chain_root_validated(h, case.causal_nodes)
+        if is_chain_root_identified(h, case.causal_nodes)
     ]
     # ONE confirmation scan feeds the faithfulness check, the root selection,
     # and the mint band below — separate scans of the same predicate would let
@@ -453,7 +459,7 @@ def retract_stale_engine_rcc(case: Case, contested_ids: set | None = None) -> bo
     if (
         prior
         and prior.state in _STANDING_HYP_STATES
-        and is_chain_root_validated(prior, case.causal_nodes)
+        and is_chain_root_identified(prior, case.causal_nodes)
     ):
         if contested_ids is None:
             contested_ids = mece_contested_root_ids(case)

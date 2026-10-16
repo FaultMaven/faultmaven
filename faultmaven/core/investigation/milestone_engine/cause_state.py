@@ -11,7 +11,9 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
     demote_disconfirmed_cause_via_evidence,
 )
 from faultmaven.core.investigation.causal_graph.projection import (
+    any_chain_root_identified,
     any_chain_root_validated,
+    held_open_root_ids,
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.causal_graph.rcc import (
@@ -259,7 +261,9 @@ def _recompute_cause_state_from_chain(
     own (``derive_node_states`` locks it), so no re-assertion is needed to keep it.
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
-    rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
+    rung evidence (``derive_node_states``) and marked terminal by its
+    hypothesis's why-stopping verdict (``any_chain_root_identified``, M1, #2036;
+    a validated root whose why is open holds at CANDIDATES) **AND
     the symptom is verified** (the cause-identification anchor) **AND the
     validated root is UNCONTESTED** (§7.1.2 MECE arbitration: >1 simultaneously-
     validated distinct roots is a coherence violation — hold at CANDIDATES
@@ -371,6 +375,13 @@ def _recompute_cause_state_from_chain(
             },
         )
     p.cause_identification_contested = contested
+    # M1's terminal clause (#2036): a validated root is the identified root
+    # cause only once its hypothesis marks it terminal. A validated root whose
+    # why is open holds identification at CANDIDATES, like the MECE contest.
+    root_identified = any_chain_root_identified(case)
+    p.cause_identification_held_open = bool(held_open_root_ids(case)) and not (
+        root_identified
+    )
     # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
     # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
     # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to
@@ -378,7 +389,7 @@ def _recompute_cause_state_from_chain(
     # RootCauseConclusion is synthesized. This gates CAUSE IDENTIFICATION only —
     # not runbook retrieval / early triage, which engage before the symptom is
     # verified.
-    if root_validated and p.symptom_verified and not contested_ids:
+    if root_identified and p.symptom_verified and not contested_ids:
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
         # Floor them (the LLM's own higher confidence still wins where applied).

@@ -225,6 +225,11 @@ def cause_identification_leg(
     # While identification is MECE-contested, NO backstop proxy counts.
     if getattr(case.progress, "cause_identification_contested", False):
         return None
+    # Nor while it is held on an open root (#2036): the chain has validated a
+    # cause whose why is unanswered, so a conclusion or a likelihood naming that
+    # cause would assert as the root what the chain says is not yet the root.
+    if getattr(case.progress, "cause_identification_held_open", False):
+        return None
 
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None

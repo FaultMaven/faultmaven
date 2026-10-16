@@ -508,10 +508,26 @@ def _withdraw_unlicensed_solution_offers(
     if metadata is not None:
         _add_system_feedback(
             metadata,
-            "SYSTEM: Your pending SOLUTION proposal was withdrawn because "
-            "the root cause it targeted is no longer established. Re-ground "
-            "the root cause with evidence before re-proposing a permanent "
-            "fix, or propose a temporary mitigation (WORKAROUND) instead.",
+            (
+                (
+                    # #2036: the cause holds but its why is open, so the fix acts on
+                    # a state something re-creates.
+                    "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause "
+                    "it targets validated, but its why is open (ROOT-CAUSE TEST, "
+                    "clause b), so the fix would only intercept a state that comes "
+                    "back. Ask for what produced that state; then re-root onto that "
+                    "cause or mark the root terminal (root_is_terminal true, with "
+                    "root_terminal_basis) and re-propose. To restore service now, "
+                    "propose it as a temporary mitigation (WORKAROUND)."
+                )
+                if case.progress.cause_identification_held_open
+                else (
+                    "SYSTEM: Your pending SOLUTION proposal was withdrawn because "
+                    "the root cause it targeted is no longer established. Re-ground "
+                    "the root cause with evidence before re-proposing a permanent "
+                    "fix, or propose a temporary mitigation (WORKAROUND) instead."
+                )
+            ),
             # Prepend (see docstring): truncation keeps the head.
             prepend=True,
         )
