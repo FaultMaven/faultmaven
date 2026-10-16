@@ -1621,6 +1621,27 @@ def pytest_runtest_makereport(item, call):
         )
 
 
+@pytest.fixture(autouse=True)
+def _raw_model_content_fails_its_test(request):
+    """Fail a test that sent model-bound content the redaction module did not
+    mint, even when the code under test swallowed the warning (#1998 P2b).
+
+    The recorder half of ``tests/raw_model_content_guard.py``; the other half
+    is the ``error::...RawModelContentWarning`` line in each pytest config.
+    Autouse and function-scoped, so it is set up before the test's own
+    function-scoped fixtures and torn down after them.
+    ``tests/integration/conftest.py`` re-exports it for runs rooted there.
+    """
+    from tests import raw_model_content_guard
+
+    with raw_model_content_guard.recording(
+        expected=request.node.get_closest_marker(raw_model_content_guard.MARKER)
+        is not None,
+        test=request.node.nodeid,
+    ):
+        yield
+
+
 @pytest.fixture
 def shipped_data_defaults(monkeypatch, tmp_path):
     """The shipped cwd-relative ``./data`` defaults, in a cwd of the test's own.

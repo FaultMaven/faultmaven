@@ -12,7 +12,7 @@ the module never minted, and building one is a spelling no other file may use.
 
 No private minting name is bound at module scope: ``vetted`` imports the
 mint inside itself, after its check. Every minter here — ``vetted``,
-``vetted_messages``, ``forged`` and
+``vetted_messages``, ``vetted_kwargs``, ``forged`` and
 ``disabled_redaction`` (a context that redacts nothing lets ``case_redacted``
 mint raw text) — refuses to run outside pytest (``_test_runs_only``): rule T of
 ``test_model_dispatch_lexical_1998.py`` flags an import of ``tests`` from
@@ -101,6 +101,30 @@ def vetted_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if isinstance(calls, list):
             new["tool_calls"] = [_vetted_call(call) for call in calls]
         out.append(new)
+    return out
+
+
+def vetted_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of a call's keywords with every content channel minted.
+
+    ``prompt``, ``system`` and ``preamble`` when they are a ``str``;
+    ``messages`` through :func:`vetted_messages`; each ``str`` element of
+    ``stop_sequences``. Everything else is copied as it is — a value that is
+    not text, a keyword no adapter reads — so a test can still hand the
+    boundary a violation on purpose (#1998 P2b).
+    """
+    _test_runs_only()
+    out = dict(kwargs)
+    for key in ("prompt", "system", "preamble"):
+        if isinstance(out.get(key), str):
+            out[key] = vetted(out[key])
+    if isinstance(out.get("messages"), list):
+        out["messages"] = vetted_messages(out["messages"])
+    stops = out.get("stop_sequences")
+    if isinstance(stops, (list, tuple)):
+        out["stop_sequences"] = type(stops)(
+            vetted(item) if isinstance(item, str) else item for item in stops
+        )
     return out
 
 

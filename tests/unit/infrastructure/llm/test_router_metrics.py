@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
+from tests.model_content import vetted
 
 
 def _make_response(**overrides):
@@ -81,7 +82,7 @@ class TestSuccessPathMetrics:
 
     @pytest.mark.asyncio
     async def test_success_records_all_metrics(self, router, metrics):
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         metrics.llm_requests.labels.assert_called_once_with(
             provider="openai", model="gpt-4", status="success"
@@ -110,7 +111,7 @@ class TestSuccessPathMetrics:
             return_value=_make_response(tokens_used=0)
         )
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         metrics.llm_tokens.labels.assert_not_called()
         # Other metrics are still recorded
@@ -135,7 +136,7 @@ class TestErrorPathMetrics:
         )
 
         with pytest.raises(RuntimeError, match="all providers down"):
-            await router.route(prompt="test", model="gpt-4")
+            await router.route(prompt=vetted("test"), model="gpt-4")
 
         metrics.llm_requests.labels.assert_called_once_with(
             provider="unknown", model="gpt-4", status="error"
@@ -159,7 +160,7 @@ class TestErrorPathMetrics:
         mock_registry.route_request = AsyncMock(side_effect=RuntimeError("down"))
 
         with pytest.raises(RuntimeError):
-            await router.route(prompt="test")
+            await router.route(prompt=vetted("test"))
 
         metrics.llm_requests.labels.assert_called_once_with(
             provider="unknown", model="unknown", status="error"
@@ -179,7 +180,7 @@ class TestCachedPathMetrics:
             return_value=_make_response(content="cached", cached=True)
         )
 
-        result = await router.route(prompt="test", model="gpt-4")
+        result = await router.route(prompt=vetted("test"), model="gpt-4")
 
         assert result.cached is True
         mock_registry.route_request.assert_not_called()
@@ -211,7 +212,7 @@ class TestStopReasonMetric:
     async def test_the_reason_is_recorded_on_every_call(self, router, metrics):
         from faultmaven.infrastructure.llm.providers import StopReason
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         metrics.llm_stop_reasons.labels.assert_called_once_with(
             provider="openai", model="gpt-4", stop_reason=StopReason.UNKNOWN.value
@@ -227,7 +228,7 @@ class TestStopReasonMetric:
             return_value=_make_response(stop_reason=StopReason.MAX_TOKENS)
         )
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         metrics.llm_stop_reasons.labels.assert_called_once_with(
             provider="openai", model="gpt-4", stop_reason="max_tokens"
@@ -251,7 +252,7 @@ class TestStopReasonMetric:
         )
 
         with caplog.at_level(logging.WARNING):
-            await router.route(prompt="test", model="gpt-4")
+            await router.route(prompt=vetted("test"), model="gpt-4")
 
         assert any("truncated" in r.getMessage().lower() for r in caplog.records)
 
@@ -279,7 +280,7 @@ class TestTruncatedResponsesAreNotCached:
             return_value=_make_response(stop_reason=StopReason.MAX_TOKENS)
         )
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         router.cache.store.assert_not_called()
 
@@ -288,7 +289,7 @@ class TestTruncatedResponsesAreNotCached:
         """Negative control — the cache must not be disabled wholesale."""
         from faultmaven.infrastructure.llm.providers import StopReason
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         router.cache.store.assert_called_once()
         assert (
@@ -312,7 +313,7 @@ class TestTruncatedResponsesAreNotCached:
             return_value=_make_response(stop_reason=StopReason.UNKNOWN)
         )
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         router.cache.store.assert_called_once()
 
@@ -343,7 +344,7 @@ class TestTruncatedResponsesAreNotCached:
         )
 
         with caplog.at_level(logging.WARNING):
-            result = await router.route(prompt="test", model="gpt-4")
+            result = await router.route(prompt=vetted("test"), model="gpt-4")
 
         assert result.content == "cut"
         assert result.is_truncated is True, "the rehydration must survive"
@@ -379,7 +380,9 @@ class TestTruncatedResponsesAreNotCached:
         router.registry.route_request = _route_request
 
         async def _call(cap: int):
-            return await router.route(prompt="test", model="gpt-4", max_tokens=cap)
+            return await router.route(
+                prompt=vetted("test"), model="gpt-4", max_tokens=cap
+            )
 
         result = await generate_with_truncation_retry(_call, max_tokens=1000)
 

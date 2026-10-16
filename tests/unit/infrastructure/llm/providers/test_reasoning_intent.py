@@ -1097,7 +1097,7 @@ class TestLlamaCppTransportKeepsCachePrompt:
 
         with patch("aiohttp.ClientSession", return_value=session):
             await send_to_model(
-                self._llamacpp_provider(), prompt="Test", **generate_kwargs
+                self._llamacpp_provider(), prompt=vetted("Test"), **generate_kwargs
             )
 
         # The second post is the llama.cpp /completion call.

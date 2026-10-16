@@ -35,6 +35,7 @@ Three layers are pinned here:
    options/parameters.
 """
 
+import contextlib
 import inspect
 import json
 import re
@@ -45,7 +46,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.dispatch import (
+    RawModelContentWarning,
+    send_to_model,
+)
 from faultmaven.infrastructure.llm.providers.base import (
     FORWARDED_KNOB_KWARGS,
     PROVIDER_API_KWARGS,
@@ -61,6 +65,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
 )
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import DataType
+from tests.model_content import vetted, vetted_messages
 from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
@@ -293,16 +298,46 @@ def _requests_sent(session) -> list:
     return sent
 
 
+def _minted(kwargs: dict) -> dict:
+    """``kwargs`` with its content minted (#1998): this file is about keywords,
+    and a raw prompt or message would be a second report, unrelated to them."""
+    kwargs = dict(kwargs)
+    if isinstance(kwargs.get("prompt"), str):
+        kwargs["prompt"] = vetted(kwargs["prompt"])
+    if kwargs.get("messages"):
+        kwargs["messages"] = vetted_messages(kwargs["messages"])
+    return kwargs
+
+
+def _reported_if_router_consumed(kwargs: dict):
+    """A router-consumed knob handed straight to a provider is a keyword no
+    adapter reads: the dispatch reports it (``unknown_kwarg``) and, in warn
+    mode (#1998), still hands it on, which is the door these tests pin. The
+    report is expected, so it is asserted, not left to fail the test."""
+    if set(kwargs) & ROUTER_CONSUMED_KWARGS:
+        return pytest.warns(RawModelContentWarning, match="unknown_kwarg")
+    return contextlib.nullcontext()
+
+
 async def _direct(target: Target, make_session, prompt, kwargs) -> list:
     """A direct send to a concrete provider: the door the router does not guard."""
     session = _session_for(target, make_session)
-    with patch("aiohttp.ClientSession", return_value=session):
-        await send_to_model(_provider(target), prompt=prompt, **kwargs)
+    call = _minted({"prompt": prompt, **kwargs})
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        _reported_if_router_consumed(kwargs),
+    ):
+        await send_to_model(_provider(target), **call)
     return _requests_sent(session)
 
 
-async def _routed(target: Target, make_session, kwargs) -> list:
-    """A real ``LLMRouter`` -> real ``ProviderRegistry`` -> the real adapter."""
+async def _routed(target: Target, make_session, kwargs, *, minted=True) -> list:
+    """A real ``LLMRouter`` -> real ``ProviderRegistry`` -> the real adapter.
+
+    ``kwargs``' content is minted unless ``minted`` is False (the one test that
+    needs a raw call's report)."""
+    if minted:
+        kwargs = _minted(kwargs)
     provider = _provider(target)
     registry = ProviderRegistry(settings=None)
     registry._providers = {target.provider: provider}
@@ -637,11 +672,14 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
     )
     session = mock_aiohttp_session(_OPENAI_RESP)
 
-    with patch("aiohttp.ClientSession", return_value=session):
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        pytest.warns(RawModelContentWarning, match=r"unknown_kwarg \(case_id\)"),
+    ):
         await send_to_model(
             provider,
-            prompt="",
-            messages=[{"role": "user", "content": "hi"}],
+            prompt=vetted(""),
+            messages=vetted_messages([{"role": "user", "content": "hi"}]),
             case_id="case_abc123",
             max_tokens=10,
         )
@@ -704,7 +742,7 @@ def _every_route_keyword() -> dict:
         "tools": _TOOLS,
         "tool_choice": "auto",
         "response_format": _JSON_OBJECT,
-        "messages": [{"role": "user", "content": "investigate"}],
+        "messages": vetted_messages([{"role": "user", "content": "investigate"}]),
     }
     assert set(values) == _route_keywords(), "route() gained a keyword: give it a value"
     return values
@@ -739,7 +777,7 @@ async def test_a_routed_call_never_hands_the_provider_a_router_consumed_keyword(
             lambda *a, **k: None,
         ),
     ):
-        await LLMRouter().route(prompt="investigate", **_every_route_keyword())
+        await LLMRouter().route(prompt=vetted("investigate"), **_every_route_keyword())
 
     assert received, "the provider was never reached"
     assert not set(received) & ROUTER_CONSUMED_KWARGS, (
@@ -852,7 +890,12 @@ async def test_the_violation_label_is_the_llm_requests_label(
         warnings.catch_warnings(),
     ):
         warnings.simplefilter("ignore")
-        await _routed(target, mock_aiohttp_session, {"prompt": "raw", "max_tokens": 5})
+        await _routed(
+            target,
+            mock_aiohttp_session,
+            {"prompt": "raw", "max_tokens": 5},
+            minted=False,
+        )
     [violation] = {c.kwargs["provider"] for c in violations.labels.call_args_list}
     [(calls_label, requests_label)] = metered
     assert violation == calls_label == requests_label == target.provider

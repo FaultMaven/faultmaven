@@ -17,6 +17,7 @@ import pytest
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
+from tests.model_content import vetted
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ class TestLocalToolCallParsing:
         with patch("aiohttp.ClientSession", return_value=_mock_session(resp)):
             result = await send_to_model(
                 provider,
-                prompt="investigate",
+                prompt=vetted("investigate"),
                 tools=[{"type": "function"}],
                 tool_choice="required",
             )
@@ -99,6 +100,6 @@ class TestLocalToolCallParsing:
             "usage": {"total_tokens": 5},
         }
         with patch("aiohttp.ClientSession", return_value=_mock_session(resp)):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
         assert result.content == "Hello there"
         assert result.tool_calls is None

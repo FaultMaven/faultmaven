@@ -159,6 +159,12 @@ pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
 # Same reason, for the report of a connection the network guard refused.
 pytest_runtest_makereport = root_conftest.pytest_runtest_makereport
 
+# Same reason, for the recorder that fails a test whose model send was not
+# minted (#1998 P2b, tests/raw_model_content_guard.py). A fixture, so it is
+# re-exported by name; the ``error::`` filter half lives in this directory's
+# own pytest.ini.
+_raw_model_content_fails_its_test = root_conftest._raw_model_content_fails_its_test
+
 
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""

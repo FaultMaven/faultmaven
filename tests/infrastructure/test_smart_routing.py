@@ -22,6 +22,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -101,7 +102,7 @@ class TestStickyRouting:
             )
         )
 
-        response1 = await registry.route_request("test prompt")
+        response1 = await registry.route_request(vetted("test prompt"))
 
         # Verify gemini was used and is now sticky
         assert response1.provider == "gemini"
@@ -110,7 +111,7 @@ class TestStickyRouting:
 
         # Second request should try gemini FIRST (sticky)
         gemini._generate.reset_mock()
-        response2 = await registry.route_request("test prompt 2")
+        response2 = await registry.route_request(vetted("test prompt 2"))
 
         # Verify gemini was called (sticky routing)
         assert gemini._generate.called
@@ -142,7 +143,7 @@ class TestStickyRouting:
             )
         )
 
-        response = await registry.route_request("test prompt")
+        response = await registry.route_request(vetted("test prompt"))
 
         # Verify fallback to fireworks
         assert response.provider == "fireworks"
@@ -236,7 +237,7 @@ class TestRecoveryBehavior:
             )
         )
 
-        response = await registry.route_request("test prompt")
+        response = await registry.route_request(vetted("test prompt"))
 
         # Verify gemini was NOT tried (should_attempt returns False)
         assert not gemini._generate.called
@@ -282,7 +283,7 @@ class TestRecoveryBehavior:
             )
         )
 
-        response = await registry.route_request("test prompt")
+        response = await registry.route_request(vetted("test prompt"))
 
         # Verify recovery to HEALTHY
         assert gemini_state.health == ProviderHealth.HEALTHY
@@ -321,7 +322,9 @@ class TestLowConfidenceFallback:
             )
         )
 
-        response = await registry.route_request("test prompt", confidence_threshold=0.8)
+        response = await registry.route_request(
+            vetted("test prompt"), confidence_threshold=0.8
+        )
 
         # Should return fireworks (best low-confidence)
         assert response.confidence == 0.7
@@ -357,7 +360,7 @@ class TestAllProvidersDown:
             )
         )
 
-        response = await registry.route_request("test prompt")
+        response = await registry.route_request(vetted("test prompt"))
 
         # Verify gemini was tried despite being UNHEALTHY (forced retry)
         assert gemini._generate.called
@@ -374,7 +377,7 @@ class TestAllProvidersDown:
         fireworks._generate = AsyncMock(side_effect=Exception("Fireworks error"))
 
         with pytest.raises(Exception, match="Fireworks error"):
-            await registry.route_request("test prompt")
+            await registry.route_request(vetted("test prompt"))
 
     @pytest.mark.asyncio
     async def test_empty_fallback_chain_raises_a_described_error(self, registry):
@@ -396,7 +399,7 @@ class TestAllProvidersDown:
         registry._provider_states = {}
 
         with pytest.raises(LLMProviderError) as exc_info:
-            await registry.route_request("test prompt")
+            await registry.route_request(vetted("test prompt"))
 
         message = str(exc_info.value)
         assert "No LLM provider is routable" in message
@@ -430,7 +433,7 @@ class TestAllProvidersDown:
             )
         )
 
-        response = await registry.route_request("test prompt")
+        response = await registry.route_request(vetted("test prompt"))
         assert response.provider == "gemini"
 
 

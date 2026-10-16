@@ -3,9 +3,10 @@ the route helper it and the conversion pass share."""
 
 import logging
 
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
-from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+from faultmaven.infrastructure.security.model_content import model_boundary_redacted
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionErrorCode,
@@ -39,26 +40,31 @@ async def _analyze_document(
     settings,
     text: str,
     filename: str,
-    redaction: CaseRedactionContext,
+    *,
+    sanitizer,
 ) -> AnalysisResult:
     """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
-    ``redaction`` is applied to everything sent, once, before the truncation
-    retry's closure, so the retry resends the redacted text (#1901). It is a
-    required argument so a new caller cannot send without deciding. A
-    ``RedactionUnavailableError`` propagates: nothing is sent.
+    Everything sent is minted through the model-boundary redaction over
+    ``sanitizer`` (the DI sanitizer; ``None`` means redaction is disabled at
+    DI level), once, before the truncation retry's closure, so the retry
+    resends the redacted text (#1901). Keyword-only with no default so a new
+    caller cannot send without deciding. A ``RedactionUnavailableError``
+    propagates: nothing is sent.
     """
     knowledge_model = settings.llm.get_knowledge_model()
 
-    messages = await redaction.asanitize_messages(
+    messages = await model_boundary_redacted(
         [
             {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
             {"role": "user", "content": f"Analyze this document:\n\n{text}"},
-        ]
+        ],
+        sanitizer,
     )
 
     async def _analyze(cap: int):
-        return await llm_router.route(
+        return await route_model_call(
+            llm_router,
             messages=messages,
             model=knowledge_model,
             max_tokens=cap,

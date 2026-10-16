@@ -13,7 +13,8 @@ calls, and the function read without being called (stored, passed, bound with
 would hide every later site.
 
 #1998 P1 shipped the function and this census with no sites; P2 declares each
-site as it converts it (P2a: the engine's tool loop and structured output).
+site as it converts it (P2a: the engine's tool loop and structured output;
+P2b: the admin connection check).
 
 What this does NOT see: a call through a name computed at runtime, and tests
 (``tests/`` mints through ``tests/model_content.py``, or calls this freely).
@@ -41,6 +42,7 @@ _DEFINER = "faultmaven/infrastructure/security/model_content.py"
 
 _GENERATION = "faultmaven/core/investigation/milestone_engine/generation.py"
 _TEXT_BUDGET = "faultmaven/core/investigation/milestone_engine/text_budget.py"
+_REGISTRY = "faultmaven/infrastructure/llm/providers/registry.py"
 
 #: (file, function) -> (sites, why the text carries no case content).
 SITES: dict[tuple[str, str], tuple[int, str]] = {
@@ -65,6 +67,10 @@ SITES: dict[tuple[str, str], tuple[int, str]] = {
         "a closed set it checks itself: FIXED_TEXTS (the end markers and code "
         "fences) or the elision notice with only its count in it; anything "
         "else raises (test_fixed_text_like_1998.py)",
+    ),
+    (_REGISTRY, "ProviderRegistry.send_connection_check"): (
+        1,
+        'the admin connection check\'s prompt, the literal "Say hello"',
     ),
 }
 

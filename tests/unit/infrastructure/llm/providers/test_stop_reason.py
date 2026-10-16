@@ -32,6 +32,7 @@ from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
 from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
+from tests.model_content import vetted
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -180,7 +181,7 @@ class TestOpenAICompatibleFamily:
         provider = provider_factory()
         session = _mock_aiohttp_session(self._body(finish_reason))
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is expected
         assert result.is_truncated is (expected is StopReason.MAX_TOKENS)
@@ -198,7 +199,7 @@ class TestOpenAICompatibleFamily:
         )
         session = _mock_aiohttp_session(self._body("length"))
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.is_truncated is True
 
@@ -231,7 +232,7 @@ class TestAnthropic:
             body["stop_reason"] = stop_reason
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is expected
 
@@ -248,7 +249,7 @@ class TestCohere:
         }
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.MAX_TOKENS
 
@@ -271,7 +272,7 @@ class TestGemini:
         }
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.MAX_TOKENS
         assert result.content == "partial answer"
@@ -290,7 +291,7 @@ class TestGemini:
         body = {"candidates": [{"content": {"parts": []}, "finishReason": "SAFETY"}]}
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert "[" not in result.content
         assert result.content == ""
@@ -326,7 +327,9 @@ class TestGemini:
         with patch("aiohttp.ClientSession", return_value=session):
             with pytest.raises(LLMException) as exc:
                 await send_to_model(
-                    provider, prompt="hi", response_format={"type": "json_object"}
+                    provider,
+                    prompt=vetted("hi"),
+                    response_format={"type": "json_object"},
                 )
 
         assert is_output_truncation_error(exc.value)
@@ -351,7 +354,9 @@ class TestGemini:
         with patch("aiohttp.ClientSession", return_value=session):
             with pytest.raises(LLMException):
                 await send_to_model(
-                    provider, prompt="hi", response_format={"type": "json_object"}
+                    provider,
+                    prompt=vetted("hi"),
+                    response_format={"type": "json_object"},
                 )
 
 
@@ -370,7 +375,7 @@ class TestLocalProvider:
         }
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.MAX_TOKENS
 
@@ -382,7 +387,7 @@ class TestLocalProvider:
         }
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi")
+            result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.MAX_TOKENS
 
@@ -408,7 +413,7 @@ class TestLocalProvider:
             ),
         ):
             with patch("aiohttp.ClientSession", return_value=session):
-                result = await send_to_model(provider, prompt="hi")
+                result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.MAX_TOKENS
 
@@ -444,7 +449,7 @@ class TestLocalProvider:
             ),
         ):
             with patch("aiohttp.ClientSession", return_value=session):
-                result = await send_to_model(provider, prompt="hi")
+                result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is StopReason.STOP
         assert result.is_truncated is False

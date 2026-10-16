@@ -23,6 +23,7 @@ from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
 )
 from faultmaven.infrastructure.llm.metering import record_provider_call
+from faultmaven.infrastructure.security.model_content import non_case_text
 
 from .anthropic import AnthropicProvider
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
@@ -679,10 +680,11 @@ class ProviderRegistry:
         possibly one outside the active set (``create_provider_for_test``), and
         must not move its health state. It is the one billed call nothing
         meters: a 50-token "Say hello" an operator triggers (#640 spec §7).
+        The prompt is a fixed literal, minted as non-case text (#1998).
         """
         return await send_to_model(
             provider,
-            prompt="Say hello",
+            prompt=non_case_text("Say hello"),
             max_tokens=50,
             temperature=0.0,
         )

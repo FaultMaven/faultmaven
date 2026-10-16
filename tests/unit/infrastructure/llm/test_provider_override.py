@@ -19,6 +19,7 @@ import pytest
 
 from faultmaven.config.settings import LLMProvider, LLMSettings
 from faultmaven.infrastructure.llm.providers.registry import ProviderRegistry
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -164,7 +165,7 @@ class TestRegistryProviderOverride:
         # who'd be called.
 
         response = await registry.route_request(
-            prompt="test", provider_override="gemini"
+            prompt=vetted("test"), provider_override="gemini"
         )
 
         assert response.provider == "gemini"
@@ -176,7 +177,7 @@ class TestRegistryProviderOverride:
         provider in the chain is used."""
         registry = self._build_registry_with_providers(["fireworks", "gemini"])
 
-        response = await registry.route_request(prompt="test")
+        response = await registry.route_request(prompt=vetted("test"))
 
         # First in chain wins
         assert response.provider == "fireworks"
@@ -197,7 +198,7 @@ class TestRegistryProviderOverride:
         registry = self._build_registry_with_providers(["fireworks", "gemini"])
 
         response = await registry.route_request(
-            prompt="test", provider_override="anthropic"  # not in registry
+            prompt=vetted("test"), provider_override="anthropic"  # not in registry
         )
 
         # Fell back to normal chain — first provider wins
@@ -226,7 +227,9 @@ class TestRegistryProviderOverride:
         # Fireworks would normally succeed via the fallback chain — but
         # provider_override locks us to gemini only.
         with pytest.raises(RuntimeError, match="gemini upstream error"):
-            await registry.route_request(prompt="test", provider_override="gemini")
+            await registry.route_request(
+                prompt=vetted("test"), provider_override="gemini"
+            )
 
 
 @pytest.mark.unit

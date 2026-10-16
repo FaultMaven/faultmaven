@@ -33,6 +33,7 @@ import pytest
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from tests.model_content import vetted, vetted_kwargs
 
 
 def _config(thinking_mode=None, thinking_budget_tokens=None):
@@ -110,7 +111,9 @@ async def _sent_request_body(provider, response_data=None, **generate_kwargs):
     """Run generate() against a mocked transport; return the outgoing JSON body."""
     mock_session = _mock_aiohttp_session(response_data or _TEXT_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test prompt", **generate_kwargs)
+        await send_to_model(
+            provider, **vetted_kwargs({"prompt": "Test prompt", **generate_kwargs})
+        )
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 
@@ -375,7 +378,7 @@ class TestThinkingRoundTrip:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             response = await send_to_model(
-                provider, prompt="Investigate", tools=_TOOLS, max_tokens=8000
+                provider, prompt=vetted("Investigate"), tools=_TOOLS, max_tokens=8000
             )
 
         assert response.provider_metadata == {
@@ -397,7 +400,9 @@ class TestThinkingRoundTrip:
         mock_session = _mock_aiohttp_session(_TEXT_RESP)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            response = await send_to_model(provider, prompt="Hello", max_tokens=1000)
+            response = await send_to_model(
+                provider, prompt=vetted("Hello"), max_tokens=1000
+            )
 
         assert response.provider_metadata is None
 
@@ -446,7 +451,7 @@ class TestThinkingRoundTrip:
         mock_session = _mock_aiohttp_session(_THINKING_TOOL_RESP)
         with patch("aiohttp.ClientSession", return_value=mock_session):
             first = await send_to_model(
-                provider, prompt="Investigate", tools=_TOOLS, max_tokens=8000
+                provider, prompt=vetted("Investigate"), tools=_TOOLS, max_tokens=8000
             )
 
         # Orchestrator carries the assistant turn exactly as the tool loop's

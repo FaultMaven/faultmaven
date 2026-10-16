@@ -21,6 +21,7 @@ from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
+from tests.model_content import vetted, vetted_messages
 
 
 def _mock_aiohttp_session(response_data: dict):
@@ -103,7 +104,7 @@ class TestAnthropicExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(anthropic_provider, prompt="hi")
+            result = await send_to_model(anthropic_provider, prompt=vetted("hi"))
 
         assert result.input_tokens == 1000
         assert result.output_tokens == 200
@@ -128,8 +129,8 @@ class TestAnthropicExtractionAndCaching:
         with patch("aiohttp.ClientSession", return_value=mock_session):
             await send_to_model(
                 anthropic_provider,
-                prompt="ignored",
-                messages=messages,
+                prompt=vetted("ignored"),
+                messages=vetted_messages(messages),
                 cache_prompt=True,
             )
 
@@ -153,7 +154,11 @@ class TestAnthropicExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await send_to_model(anthropic_provider, prompt="ignored", messages=messages)
+            await send_to_model(
+                anthropic_provider,
+                prompt=vetted("ignored"),
+                messages=vetted_messages(messages),
+            )
 
         body = _request_body(mock_session)
         assert body["system"] == "Be helpful."
@@ -167,7 +172,9 @@ class TestAnthropicExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(anthropic_provider, prompt="hi", tools=None)
+            result = await send_to_model(
+                anthropic_provider, prompt=vetted("hi"), tools=None
+            )
 
         assert result.content == "hi"
         assert "tools" not in _request_body(mock_session)
@@ -193,7 +200,7 @@ class TestGeminiExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(gemini_provider, prompt="hi")
+            result = await send_to_model(gemini_provider, prompt=vetted("hi"))
 
         assert result.cache_read_tokens == 300
         assert result.input_tokens == 700  # 1000 prompt - 300 cached
@@ -222,7 +229,7 @@ class TestOpenAIExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(openai_provider, prompt="hi")
+            result = await send_to_model(openai_provider, prompt=vetted("hi"))
 
         # input excludes the cached portion → disjoint from cache_read.
         assert result.input_tokens == 600
@@ -242,7 +249,7 @@ class TestOpenAIExtractionAndCaching:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(openai_provider, prompt="hi")
+            result = await send_to_model(openai_provider, prompt=vetted("hi"))
 
         assert result.input_tokens == 300
         assert result.cache_read_tokens == 0
@@ -257,7 +264,7 @@ class TestOpenAIExtractionAndCaching:
         with patch("aiohttp.ClientSession", return_value=mock_session):
             # cache_prompt=True must be popped, not forwarded — OpenAI rejects
             # unknown body fields with a 400.
-            await send_to_model(openai_provider, prompt="hi", cache_prompt=True)
+            await send_to_model(openai_provider, prompt=vetted("hi"), cache_prompt=True)
 
         body = _request_body(mock_session)
         assert "cache_prompt" not in body

@@ -49,6 +49,7 @@ from faultmaven.infrastructure.llm.providers.local_provider import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -348,7 +349,7 @@ async def test_every_openai_compatible_url_form_posts_to_the_same_endpoint(base_
     provider = _provider("qwen3-32b", base_url)
     session = _recording_session()
     with patch("aiohttp.ClientSession", return_value=session):
-        await send_to_model(provider, prompt="hello")
+        await send_to_model(provider, prompt=vetted("hello"))
     assert session.post.call_args[0][0] == "http://127.0.0.1:9999/v1/chat/completions"
 
 
@@ -374,7 +375,7 @@ async def test_every_ollama_native_url_form_posts_to_the_same_endpoint(base_url)
         }
     )
     with patch("aiohttp.ClientSession", return_value=session):
-        await send_to_model(provider, prompt="hello")
+        await send_to_model(provider, prompt=vetted("hello"))
     assert session.post.call_args[0][0] == "http://127.0.0.1:9999/api/chat"
 
 

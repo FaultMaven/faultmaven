@@ -33,7 +33,6 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     UploadedFileModel,
 )
-from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     CaseConversionRequest,
@@ -447,7 +446,7 @@ class TestAnalysisPhase:
             service._settings,
             "sample text",
             "test.md",
-            model_boundary_redaction(None),
+            sanitizer=None,
         )
 
         assert isinstance(result, AnalysisResult)
@@ -476,7 +475,7 @@ class TestAnalysisPhase:
             service._settings,
             "sample text",
             "test.md",
-            model_boundary_redaction(None),
+            sanitizer=None,
         )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
@@ -499,7 +498,7 @@ class TestAnalysisPhase:
                 service._settings,
                 "sample text",
                 "test.md",
-                model_boundary_redaction(None),
+                sanitizer=None,
             )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR

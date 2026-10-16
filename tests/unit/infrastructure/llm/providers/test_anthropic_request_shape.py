@@ -21,6 +21,7 @@ import pytest
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from tests.model_content import vetted, vetted_kwargs
 
 ONE_TOOL_INSTRUCTION = "Respond by calling the `{name}` tool."
 ANY_TOOL_INSTRUCTION = (
@@ -113,7 +114,9 @@ async def _sent_body(model: str, thinking_mode=None, **generate_kwargs) -> dict:
     generate_kwargs.setdefault("max_tokens", 8000)
     generate_kwargs.setdefault("temperature", 0.2)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test prompt", **generate_kwargs)
+        await send_to_model(
+            provider, **vetted_kwargs({"prompt": "Test prompt", **generate_kwargs})
+        )
     call = mock_session.post.call_args
     return call.kwargs.get("json") or call[1].get("json")
 
@@ -389,6 +392,11 @@ class TestInstructionPlacement:
             {"role": "user", "content": "Pods are crashlooping."}
         ]
 
+    # A list of content blocks as ``system`` is not text the redaction module
+    # can mint, so the dispatch reports it (``system not_text``) and, in warn
+    # mode, still hands it on: this pins the adapter's handling of that shape
+    # on purpose. #1998 P3 refuses it; that PR decides this test's future.
+    @pytest.mark.raw_model_content_expected
     async def test_caller_system_list_is_extended_not_mutated(self):
         caller_system = [{"type": "text", "text": "Caller block."}]
 

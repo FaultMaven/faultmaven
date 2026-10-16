@@ -13,9 +13,10 @@ p)``) or ``getattr(x, "route")``. Each one must be ONE of:
     reach the call — in the calling function or, for a closure, the enclosing
     one; both arms of a branch; a rebinding later in a loop around the call or
     after the closure is defined — is ``await case_redacted(..., ctx)``,
-    ``await case_redacted_messages(..., ctx)`` or
-    ``await <ctx>.asanitize_messages(...)``, with a context that is not a
-    literal ``None``. Nothing mutates the name in between (``.append``,
+    ``await case_redacted_messages(..., ctx)``,
+    ``await model_boundary_redacted(..., sanitizer)`` (the knowledge-authoring
+    paths, #1998 P2b) or ``await <ctx>.asanitize_messages(...)``, with a
+    context (or sanitizer) that is not a literal ``None``. Nothing mutates the name in between (``.append``,
     ``.extend``, ``.insert``, item or attribute assignment, ``+=``). Every
     other keyword is a routing parameter (``model``, ``max_tokens``, ...): no
     second channel (``system=``, ``prompt=`` beside ``messages=``) and no
@@ -52,7 +53,13 @@ _DISPATCH = "send_to_model"
 #: The routed seam, a module function: ``route_model_call(router, **call)``.
 _SEAM = "route_model_call"
 _DISPATCHERS = {_DISPATCH, _SEAM}
-_REDACTING_HELPERS = {"case_redacted", "case_redacted_messages"}
+#: Each takes the content first and its context (for ``model_boundary_redacted``,
+#: the sanitizer the context is built over) second.
+_REDACTING_HELPERS = {
+    "case_redacted",
+    "case_redacted_messages",
+    "model_boundary_redacted",
+}
 _REDACTING_METHODS = {"asanitize_messages"}
 
 #: (path relative to the repo, innermost enclosing function) -> why the site
@@ -61,7 +68,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "faultmaven/infrastructure/llm/providers/registry.py",
         "send_connection_check",
-    ): ("a constant connection-test prompt; no case content"),
+    ): (
+        "a constant connection-test prompt, non_case_text('Say hello'); no case "
+        "content (declared in test_non_case_text_census_1998.py)"
+    ),
     ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (
         "the dispatch's own provider._generate call; every caller of "
         "send_to_model is classified here"
@@ -272,7 +282,9 @@ def _redaction_problem(binding) -> str | None:
     call = value.value
     if isinstance(call.func, ast.Name) and call.func.id in _REDACTING_HELPERS:
         ctx = call.args[1] if len(call.args) > 1 else None
-        ctx = next((k.value for k in call.keywords if k.arg == "ctx"), ctx)
+        ctx = next(
+            (k.value for k in call.keywords if k.arg in ("ctx", "sanitizer")), ctx
+        )
     elif isinstance(call.func, ast.Attribute) and call.func.attr in _REDACTING_METHODS:
         ctx = call.func.value
     else:

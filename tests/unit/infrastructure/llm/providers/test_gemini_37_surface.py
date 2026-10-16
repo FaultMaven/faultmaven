@@ -38,6 +38,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     ReasoningIntent,
 )
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
+from tests.model_content import vetted, vetted_kwargs
 
 
 def _config(model):
@@ -74,7 +75,9 @@ async def _sent_body(mock_factory, provider, **generate_kwargs):
     (tests/unit/infrastructure/llm/conftest.py) — never a local copy."""
     mock_session = mock_factory(_OK_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test", **generate_kwargs)
+        await send_to_model(
+            provider, **vetted_kwargs({"prompt": "Test", **generate_kwargs})
+        )
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 
@@ -579,7 +582,7 @@ class TestFunctionCallIdAdoption:
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            response = await send_to_model(provider, prompt="q", max_tokens=500)
+            response = await send_to_model(provider, prompt=vetted("q"), max_tokens=500)
         assert response.tool_calls[0].id == "fc-api-1"
 
     async def test_absent_id_still_synthesized(self, mock_aiohttp_session):
@@ -599,7 +602,7 @@ class TestFunctionCallIdAdoption:
         provider = GeminiProvider(_config("gemini-3.5-flash"))
         mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            response = await send_to_model(provider, prompt="q", max_tokens=500)
+            response = await send_to_model(provider, prompt=vetted("q"), max_tokens=500)
         assert response.tool_calls[0].id.startswith("call_")
 
 

@@ -49,6 +49,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     ReasoningIntent,
 )
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -97,7 +98,7 @@ def _provider(model: str, reasoning_effort=None) -> OpenAIProvider:
 async def _sent_body(make_session, provider, **generate_kwargs):
     mock_session = make_session(_OPENAI_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test", **generate_kwargs)
+        await send_to_model(provider, prompt=vetted("Test"), **generate_kwargs)
     call_kwargs = mock_session.post.call_args
     return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
 

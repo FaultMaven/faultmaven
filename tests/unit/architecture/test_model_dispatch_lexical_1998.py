@@ -58,9 +58,8 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   string: FastAPI's routing context and the API vocabulary use it for other
   things (``getattr(ctx, "route", None)``), and a string reaches a router
   only through a reflection this rule already names or a computed one, which
-  is out of scope. The three knowledge-authoring send sites still call
-  ``.route`` until #1998 P2b moves them onto the seam; they are allowed BY
-  FILE in ``ROUTE_ALLOWED_UNTIL_P2B``, which P2b deletes.
+  is out of scope. No other file is allowed: since #1998 P2b every send
+  site, the knowledge-authoring ones included, calls the seam.
 
 The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
@@ -116,15 +115,6 @@ _DISPATCHER = "send_to" + "_model"
 _ROUTE = "route"
 #: The reflections that name a method or attribute by a string (rule S).
 _REFLECTORS = frozenset({"methodcaller", "attrgetter"})
-#: The knowledge-authoring send sites that still call ``.route``. #1998 P2b
-#: moves them onto ``route_model_call`` and deletes this allow-list.
-ROUTE_ALLOWED_UNTIL_P2B = frozenset(
-    {
-        "faultmaven/modules/knowledge/domain/services/conversion_service/pipeline.py",
-        "faultmaven/modules/knowledge/domain/services/conversion_service/service.py",
-        "faultmaven/modules/knowledge/domain/services/document_preprocessor.py",
-    }
-)
 
 
 def exempt(path: str) -> bool:
@@ -323,8 +313,8 @@ def _module_of(node: ast.ImportFrom, path: str) -> str:
 
 def route_reached(path: str) -> bool:
     """Whether ``path`` may read a router's ``route`` (rule S): the seam's own
-    file, and until #1998 P2b the three knowledge send sites."""
-    return path == _DISPATCH or path in ROUTE_ALLOWED_UNTIL_P2B
+    file, and no other."""
+    return path == _DISPATCH
 
 
 def _route_violations(tree: ast.AST) -> List[Tuple[int, str, str]]:
@@ -705,14 +695,6 @@ def test_the_seam_may_call_route():
     } == {"S"}
 
 
-def test_the_route_allow_list_names_live_send_sites():
-    """Each file allowed until #1998 P2b still reads ``.route``: a stale entry
-    would admit a new send in that file with nothing to remove."""
-    for rel in sorted(ROUTE_ALLOWED_UNTIL_P2B):
-        tree = _parse((_ROOT / rel).read_text(encoding="utf-8"))
-        assert _route_violations(tree), rel
-
-
 def test_the_dispatch_may_bind_its_own_name():
     assert not violations(
         "async def send_to_model(provider, **kw):\n    return 1\n", _DISPATCH
@@ -853,6 +835,7 @@ spellings = {
 calls = {
     "vetted": lambda m: m.vetted("raw"),
     "vetted_messages": lambda m: m.vetted_messages([{"role": "user", "content": "raw"}]),
+    "vetted_kwargs": lambda m: m.vetted_kwargs({"prompt": "raw"}),
     "forged": lambda m: m.forged("raw"),
     "disabled_redaction": lambda m: m.disabled_redaction(),
 }
@@ -897,7 +880,7 @@ def test_the_test_minter_refuses_outside_pytest():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     lines = result.stdout.splitlines()
-    assert len(lines) == 18, result.stdout
+    assert len(lines) == 22, result.stdout
     assert all(line.startswith("refused ") for line in lines), result.stdout
 
 

@@ -29,8 +29,9 @@ from faultmaven.core.investigation.confidence_repair import (
 from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
-from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
+from faultmaven.infrastructure.security.model_content import model_boundary_redacted
 from faultmaven.infrastructure.security.redaction import (
     SECRET_PATTERNS,
     RedactionSpan,
@@ -800,18 +801,20 @@ class DocumentPreprocessor:
             logger.warning(f"Content triage failed, proceeding anyway: {e}")
             return None
 
-        messages = await model_boundary_redaction(self._sanitizer).asanitize_messages(
+        messages = await model_boundary_redacted(
             [
                 {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": f"Classify this document excerpt:\n\n{sample_text}",
                 },
-            ]
+            ],
+            self._sanitizer,
         )
 
         try:
-            response = await self._llm_router.route(
+            response = await route_model_call(
+                self._llm_router,
                 messages=messages,
                 model=classifier_model,
                 max_tokens=256,
