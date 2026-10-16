@@ -6,9 +6,10 @@ the router layer, never forwarded on a routed call) and ``cache_prompt``,
 ``reasoning_intent`` and ``min_output_tokens`` (forwarded to the provider,
 which translates or pops them). The router is not the only caller:
 ``milestone_engine`` binds a concrete provider when ``DA_PROVIDER`` is set and
-sends to it directly (``dispatch.send_to_model``), which reports a router
-keyword but, warn-only, still hands it on. ``BaseLLMProvider._merge_extra_kwargs``
-is the provider-side choke point for that path.
+sends to it directly (``dispatch.send_to_model``), which REFUSES a router
+keyword before any request (#1998 P3: it is outside the closed set).
+``BaseLLMProvider._merge_extra_kwargs`` is the provider-side discard behind
+that refusal.
 
 The same seam carries a second rule, found in review: the router forwards
 ``response_format``, ``tools``, ``tool_choice`` and ``messages`` as ``None``
@@ -47,7 +48,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentWarning,
+    RawModelContentRefused,
     send_to_model,
 )
 from faultmaven.infrastructure.llm.providers.base import (
@@ -65,8 +66,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
 )
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import DataType
-from tests.model_content import vetted, vetted_messages
-from tests.raw_model_content_guard import report_pattern
+from tests.model_content import refusal_pattern, vetted, vetted_messages
 from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
@@ -301,7 +301,7 @@ def _requests_sent(session) -> list:
 
 def _minted(kwargs: dict) -> dict:
     """``kwargs`` with its content minted (#1998): this file is about keywords,
-    and a raw prompt or message would be a second report, unrelated to them."""
+    and a raw prompt or message would be a second violation, unrelated to them."""
     kwargs = dict(kwargs)
     if isinstance(kwargs.get("prompt"), str):
         kwargs["prompt"] = vetted(kwargs["prompt"])
@@ -310,28 +310,35 @@ def _minted(kwargs: dict) -> dict:
     return kwargs
 
 
-def _reported_if_router_consumed(kwargs: dict):
+def _refused_if_router_consumed(target: Target, kwargs: dict):
     """A router-consumed knob handed straight to a provider is a keyword no
-    adapter reads: the dispatch reports it (``unknown_kwarg``) and, in warn
-    mode (#1998), still hands it on, which is the door these tests pin. The
-    report is expected, so it is asserted — exactly that report and nothing
-    else in it, so raw content in the same call cannot hide inside it."""
+    adapter reads: the dispatch refuses the call (``unknown_kwarg``) before any
+    request (#1998 P3). The refusal is asserted — exactly that refusal and
+    nothing else in it, so raw content in the same call cannot hide inside it."""
     knobs = sorted(set(kwargs) & ROUTER_CONSUMED_KWARGS)
     if knobs:
-        return pytest.warns(
-            RawModelContentWarning,
-            match=report_pattern(f"kwargs unknown_kwarg ({','.join(knobs)})"),
+        return pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern(
+                target.provider, f"kwargs unknown_kwarg ({','.join(knobs)})"
+            ),
         )
     return contextlib.nullcontext()
 
 
+def _forwardable(kwargs: dict) -> dict:
+    """``kwargs`` less the router-consumed knobs: what a direct send may carry."""
+    return {k: v for k, v in kwargs.items() if k not in ROUTER_CONSUMED_KWARGS}
+
+
 async def _direct(target: Target, make_session, prompt, kwargs) -> list:
-    """A direct send to a concrete provider: the door the router does not guard."""
+    """A direct send to a concrete provider: the door the router does not guard.
+    A router-consumed knob is refused there, so its call makes no request."""
     session = _session_for(target, make_session)
     call = _minted({"prompt": prompt, **kwargs})
     with (
         patch("aiohttp.ClientSession", return_value=session),
-        _reported_if_router_consumed(kwargs),
+        _refused_if_router_consumed(target, kwargs),
     ):
         await send_to_model(_provider(target), **call)
     return _requests_sent(session)
@@ -460,7 +467,9 @@ async def test_direct_call_sends_no_router_knob(
 ):
     """Each adapter, called directly the way the DA tool loop calls it, with
     each router-level knob alone. A direct send is the door that bypasses the
-    router, so nothing upstream is allowed to have stripped it."""
+    router, so nothing upstream is allowed to have stripped it: a
+    router-consumed knob is refused before any request (#1998 P3), and a
+    forwarded one reaches the adapter, which translates or pops it."""
     _skip_if_refused_by_design(label, shape)
     spec = _SHAPES[shape]
 
@@ -471,6 +480,9 @@ async def test_direct_call_sends_no_router_knob(
         {**spec["kwargs"], knob: _KNOB_VALUES[knob]},
     )
 
+    if knob in ROUTER_CONSUMED_KWARGS:
+        assert requests == [], f"{label}: a refused call made a request"
+        return
     assert requests, "no request was made"
     _assert_no_knob_anywhere(requests, {knob}, label)
     if (label, knob) in _SENT_UNDER_ITS_OWN_NAME:
@@ -486,16 +498,26 @@ async def test_direct_call_sends_no_router_knob(
 async def test_direct_call_sends_no_router_knob_when_all_are_given(
     mock_aiohttp_session, label, shape
 ):
+    """Every knob at once is refused for its router-consumed ones; the
+    forwarded ones together reach no request under their own names."""
     _skip_if_refused_by_design(label, shape)
     spec = _SHAPES[shape]
 
-    requests = await _direct(
+    refused = await _direct(
         _BY_LABEL[label],
         mock_aiohttp_session,
         spec["prompt"],
         {**spec["kwargs"], **_KNOB_VALUES},
     )
+    requests = await _direct(
+        _BY_LABEL[label],
+        mock_aiohttp_session,
+        spec["prompt"],
+        _forwardable({**spec["kwargs"], **_KNOB_VALUES}),
+    )
 
+    assert refused == [], f"{label}: a refused call made a request"
+    assert requests, "no request was made"
     _assert_no_knob_anywhere(requests, set(_KNOB_VALUES), label)
     _assert_no_none_valued_key(requests, label)
 
@@ -512,8 +534,14 @@ async def test_direct_call_with_every_knob_unset_sends_no_null(
     unset.update({"response_format": None, "tools": None, "tool_choice": None})
     unset.update({"messages": None, "model": None})
 
-    requests = await _direct(_BY_LABEL[label], mock_aiohttp_session, "Say hello", unset)
+    # A router-consumed keyword is refused whatever its value (#1998 P3).
+    refused = await _direct(_BY_LABEL[label], mock_aiohttp_session, "Say hello", unset)
+    requests = await _direct(
+        _BY_LABEL[label], mock_aiohttp_session, "Say hello", _forwardable(unset)
+    )
 
+    assert refused == [], f"{label}: a refused call made a request"
+    assert requests, "no request was made"
     _assert_no_none_valued_key(requests, label)
     _assert_no_knob_anywhere(requests, set(_KNOB_VALUES), label)
 
@@ -656,7 +684,7 @@ async def test_ollama_options_hold_generation_options_only(mock_aiohttp_session)
         _BY_LABEL["local-ollama"],
         mock_aiohttp_session,
         spec["prompt"],
-        {**spec["kwargs"], **_KNOB_VALUES, "response_format": None},
+        _forwardable({**spec["kwargs"], **_KNOB_VALUES, "response_format": None}),
     )
 
     (request,) = requests
@@ -669,26 +697,31 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
     """The reported call, verbatim: the DA tool loop's ``generate_kwargs`` on
     a real ``OpenAIProvider`` (``gpt-4o-mini``, as the probe used). #2002
     measured ``payload keys: ['case_id', 'max_tokens', 'messages', 'model',
-    'temperature']``; the body is now exactly the API fields."""
+    'temperature']``. The call is now refused before any request (#1998 P3),
+    and without the router keyword its body is exactly the API fields."""
     provider = PROVIDER_SCHEMA["openai"]["provider_class"](
         _config("openai", "gpt-4o-mini", "https://api.openai.com/v1")
     )
-    session = mock_aiohttp_session(_OPENAI_RESP)
-
+    call = {
+        "prompt": vetted(""),
+        "messages": vetted_messages([{"role": "user", "content": "hi"}]),
+        "case_id": "case_abc123",
+        "max_tokens": 10,
+    }
+    refused_session = mock_aiohttp_session(_OPENAI_RESP)
     with (
-        patch("aiohttp.ClientSession", return_value=session),
-        pytest.warns(
-            RawModelContentWarning,
-            match=report_pattern("kwargs unknown_kwarg (case_id)"),
+        patch("aiohttp.ClientSession", return_value=refused_session),
+        pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern("openai", "kwargs unknown_kwarg (case_id)"),
         ),
     ):
-        await send_to_model(
-            provider,
-            prompt=vetted(""),
-            messages=vetted_messages([{"role": "user", "content": "hi"}]),
-            case_id="case_abc123",
-            max_tokens=10,
-        )
+        await send_to_model(provider, **call)
+    assert _requests_sent(refused_session) == []
+
+    session = mock_aiohttp_session(_OPENAI_RESP)
+    with patch("aiohttp.ClientSession", return_value=session):
+        await send_to_model(provider, **_forwardable(call))
 
     (request,) = _requests_sent(session)
     assert sorted(request["json"]) == ["max_tokens", "messages", "model", "temperature"]
@@ -872,29 +905,39 @@ async def test_tools_and_tool_choice_reach_the_body(
 async def test_the_violation_label_is_the_llm_requests_label(
     mock_aiohttp_session, label
 ):
-    """The dispatch labels its report with the adapter's ``LABEL``, read without
-    running provider code. Dashboards group ``llm_requests_total`` by the
-    ``provider`` the adapter puts on its response, and
+    """The dispatch labels its refusal with the adapter's ``LABEL``, read
+    without running provider code. Dashboards group ``llm_requests_total`` by
+    the ``provider`` the adapter puts on its response, and
     ``llm_provider_calls_total`` by the registry's provider name: for each real
-    adapter and transport all three are the same value.
+    adapter and transport all three are the same value, and so is the refusal
+    counter's ``target`` and the refusal's own text.
 
-    The dispatch reports a DIRECT send's raw content (the DA tool loop, the
+    The dispatch refuses a DIRECT send's raw content (the DA tool loop, the
     connection check), so its label is read from one. A routed raw call is
-    reported once, at the router's entry, as ``router`` — as the seam's report
-    is (#1998 P2b) — so the registry's two labels are read from a minted routed
-    call. (The metering call sees the response before the registry suffixes
-    a low-confidence answer's provider, which these doubles' answers can be.)"""
+    refused at the seam or the router's entry, as ``router`` (#1998 P3), so the
+    registry's two labels are read from a minted routed call. (The metering
+    call sees the response before the registry suffixes a low-confidence
+    answer's provider, which these doubles' answers can be.)"""
     from faultmaven.infrastructure.llm import dispatch
 
     target = _BY_LABEL[label]
-    session = _session_for(target, mock_aiohttp_session)
+    refused_session = _session_for(target, mock_aiohttp_session)
     with (
         patch.object(dispatch, "llm_model_content_violations") as violations,
-        patch("aiohttp.ClientSession", return_value=session),
-        pytest.warns(RawModelContentWarning, match=report_pattern("prompt raw")),
+        patch("aiohttp.ClientSession", return_value=refused_session),
+        pytest.raises(
+            RawModelContentRefused, match=refusal_pattern(target.provider, "prompt raw")
+        ),
     ):
-        response = await send_to_model(_provider(target), prompt="raw", max_tokens=5)
-    [violation] = {c.kwargs["provider"] for c in violations.labels.call_args_list}
+        await send_to_model(_provider(target), prompt="raw", max_tokens=5)
+    assert _requests_sent(refused_session) == []
+    [violation] = {c.kwargs["target"] for c in violations.labels.call_args_list}
+
+    session = _session_for(target, mock_aiohttp_session)
+    with patch("aiohttp.ClientSession", return_value=session):
+        response = await send_to_model(
+            _provider(target), prompt=vetted("x"), max_tokens=5
+        )
 
     metered = []
     with patch(

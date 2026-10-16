@@ -459,7 +459,7 @@ def test_the_private_names_are_read_from_the_module():
     assert {"_mi" + "nt", _TOKEN} <= names, names
     assert not any(n.startswith("__") for n in names)
     dispatch_names = dispatch_private_names()
-    assert {_DISPATCH_PRIVATE, "_send" + "_site"} <= dispatch_names, dispatch_names
+    assert {_DISPATCH_PRIVATE, "_sum" + "mary"} <= dispatch_names, dispatch_names
 
 
 def test_the_dispatch_may_name_its_own_privates_and_path():

@@ -29,7 +29,10 @@ from faultmaven.core.investigation.confidence_repair import (
 from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.infrastructure.llm.dispatch import (
+    RawModelContentRefused,
+    route_model_call,
+)
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.security.model_content import model_boundary_redacted
 from faultmaven.infrastructure.security.redaction import (
@@ -797,6 +800,9 @@ class DocumentPreprocessor:
                     sample_text = text
 
             classifier_model = self._settings.llm.get_classifier_model()
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.warning(f"Content triage failed, proceeding anyway: {e}")
             return None
@@ -858,6 +864,9 @@ class DocumentPreprocessor:
                 confidence=_triage_confidence(result.get("confidence")),
                 reason=result.get("reason", ""),
             )
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.warning(f"Content triage failed, proceeding anyway: {e}")
             return None

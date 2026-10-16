@@ -636,8 +636,12 @@ FUNCTION_KEYS = frozenset({"name", "arguments"})
 #: The identifier channels — ``tool_call_id``, a tool result's ``name``, a tool
 #: call's ``id`` and its ``function.name`` — are plain ``str`` that carry no
 #: text: provider-issued call ids (``call_…``, ``toolu_…``, ``chatcmpl-tool-…``)
-#: and tool names the code defines. This pattern keeps text out of them.
-IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+#: and tool names the code defines. This pattern keeps text out of them. The
+#: empty string is admitted: an OpenAI-compatible server that issues no call id
+#: (``_extract_tool_calls_from_message``) leaves ``""``, which the tool loop
+#: echoes as the call's ``id`` and its result's ``tool_call_id`` (#1998 P3). It
+#: carries no content and is sent as the server returned it.
+IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]{0,128}")
 
 
 def text_violation(value: Any, argument: str, where: str) -> Optional[ContentViolation]:

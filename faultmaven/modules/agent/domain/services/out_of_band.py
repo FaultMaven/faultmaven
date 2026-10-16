@@ -54,7 +54,10 @@ import re
 from enum import Enum
 from typing import Any, Optional
 
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.infrastructure.llm.dispatch import (
+    RawModelContentRefused,
+    route_model_call,
+)
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
 from faultmaven.modules.agent.domain.services.query_classifier import (
@@ -354,6 +357,9 @@ class OutOfBandTriage:
                 TRIAGE_TIMEOUT_SECONDS,
             )
             return None
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception:
             logger.warning(
                 "Out-of-band triage failed; treating the message as incident work",
@@ -704,6 +710,9 @@ async def answer_out_of_band(
                     route_kwargs,
                     redaction_ctx=redaction_ctx,
                 )
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception:
                 logger.warning(
                     "Out-of-band answer attempt failed (model=%s)", model, exc_info=True
@@ -714,6 +723,9 @@ async def answer_out_of_band(
             logger.warning(
                 "Out-of-band answer unusable (empty or cut) on model=%s", model
             )
+    except RawModelContentRefused:
+        # A refusal is a programming error, never a fallback (#1998).
+        raise
     except Exception:
         logger.warning("Out-of-band answer failed; using the fallback", exc_info=True)
     return fallback_answer(case, kind)

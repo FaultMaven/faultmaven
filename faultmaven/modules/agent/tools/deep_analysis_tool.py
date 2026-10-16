@@ -11,6 +11,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.search_file_tool import enumerate_readable_files
@@ -283,6 +284,9 @@ class DeepAnalysisTool(AgentTool):
                 },
             )
 
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.warning(
                 f"Deep analysis failed for evidence {evidence_id}: {e}",

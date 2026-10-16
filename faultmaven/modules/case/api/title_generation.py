@@ -29,7 +29,10 @@ from faultmaven.exceptions import (
     ServiceUnavailableException,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.infrastructure.llm.dispatch import (
+    RawModelContentRefused,
+    route_model_call,
+)
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
     load_case_redaction,
@@ -1674,6 +1677,9 @@ async def _generate_title_with_llm(
     except _TitleDisclosureGateUnavailable:
         # Fail closed: the gate that would vet the fallback is the one that
         # just failed, so there is nothing safe left to try.
+        raise
+    except RawModelContentRefused:
+        # A refusal is a programming error, never a fallback (#1998).
         raise
     except Exception as e:
         logger.warning(f"LLM title generation failed, trying fallback: {e}")

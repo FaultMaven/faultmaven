@@ -34,6 +34,7 @@ from faultmaven.api.models import (
     TurnTimingStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
+from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,9 @@ async def check_llm_connection(
         )
 
     except HTTPException:
+        raise
+    except RawModelContentRefused:
+        # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
         raise
     except Exception as e:
         elapsed_ms = (

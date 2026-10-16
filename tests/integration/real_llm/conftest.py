@@ -26,6 +26,16 @@ import pytest
 
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from faultmaven.infrastructure.llm.providers.registry import (
+    ProviderRegistry,
+    ProviderState,
+)
+from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.infrastructure.security.case_redaction import (
+    CaseRedactionContext,
+    should_redact,
+)
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 
 # Default model: Haiku 4.5 — cheapest current Anthropic model. Tests use
@@ -56,10 +66,8 @@ def real_llm_provider(anthropic_api_key: str) -> AnthropicProvider:
     """Construct a real Anthropic provider for integration testing.
 
     Default model is Haiku (cheapest); override via REAL_LLM_TEST_MODEL.
-    The provider hits ``https://api.anthropic.com/v1`` directly — no
-    router, no fallback chain, no DI container. The point is to exercise
-    the engine's interaction with a real LLM, not the provider-routing
-    machinery (which has its own tests).
+    The provider hits ``https://api.anthropic.com/v1``; the engine reaches it
+    through :func:`real_llm_router`, never directly.
     """
     model = os.environ.get("REAL_LLM_TEST_MODEL", DEFAULT_REAL_LLM_MODEL)
     config = ProviderConfig(
@@ -71,6 +79,27 @@ def real_llm_provider(anthropic_api_key: str) -> AnthropicProvider:
         timeout=30,
     )
     return AnthropicProvider(config)
+
+
+@pytest.fixture
+def real_llm_router(real_llm_provider: AnthropicProvider, monkeypatch) -> LLMRouter:
+    """A real ``LLMRouter`` whose registry holds only the real provider.
+
+    The engine sends as production does (#1998): through
+    ``dispatch.route_model_call`` to a router, whose registry hands the call to
+    ``dispatch.send_to_model``. A bare provider has no ``route``, and the seam
+    refuses content the redaction module did not mint. No fallback chain: the
+    one provider answers or the call fails.
+    """
+    registry = ProviderRegistry(settings=None)
+    registry._providers = {"anthropic": real_llm_provider}
+    registry._fallback_chain = ["anthropic"]
+    registry._provider_states = {"anthropic": ProviderState(name="anthropic")}
+    registry._initialized = True
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
+    )
+    return LLMRouter()
 
 
 @pytest.fixture
@@ -103,4 +132,17 @@ def fresh_inquiry_case() -> Case:
         description="",
         inquiry=InquiryData(thread_id="thread_realllm"),
         created_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.fixture
+def case_redaction(fresh_inquiry_case: Case) -> CaseRedactionContext:
+    """The turn's case redaction context, built as the engine builds it
+    (``turn_generation._generate_turn_response``): the minting helpers take
+    no other (#1998), and never ``None``."""
+    sanitizer = DataSanitizer()
+    return CaseRedactionContext(
+        case_id=fresh_inquiry_case.case_id,
+        sanitizer=sanitizer,
+        enabled=should_redact(sanitizer),
     )

@@ -37,6 +37,7 @@ from faultmaven.exceptions import (
     walk_cause_chain,
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 
 logger = logging.getLogger(__name__)
 
@@ -922,6 +923,9 @@ class LLMErrorHandler:
                 else:
                     result = await asyncio.wait_for(operation(), timeout=backstop)
                 return result, None
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception as e:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.monotonic() - started
