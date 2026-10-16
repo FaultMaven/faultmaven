@@ -23,8 +23,9 @@ live model call):
 4. **Fail closed.** A redaction that is required and cannot run stops the
    conversion with its class intact and nothing sent — at each call site, on
    the parallel and the sequential failure-mode branch.
-5. **Structurally**, every router call in the conversion code is handed
-   messages that went through a model-boundary redaction.
+5. **Structurally**, every router call in the conversion code goes through
+   the seam (``route_model_call``) and is handed messages minted by the
+   model-boundary redaction (``model_boundary_redacted``, #1998).
 """
 
 from __future__ import annotations
@@ -543,12 +544,10 @@ def _params_annotated(func: ast.AST, annotation: str) -> set[str]:
 
 def _redacted_names(func: ast.AST) -> set[str]:
     """Names ``func`` binds to redacted messages: to
-    ``await <redaction>.asanitize_messages(...)``, where ``<redaction>`` is
-    ``model_boundary_redaction(...)`` or a parameter annotated
-    ``CaseRedactionContext``; or to ``<prepared>.redacted_messages``, where
+    ``await model_boundary_redacted(...)`` (#1998: the model-boundary
+    redaction, minted); or to ``<prepared>.redacted_messages``, where
     ``<prepared>`` is a parameter annotated ``_PreparedConversion`` (whose one
     construction is checked to hold redacted messages)."""
-    params = _params_annotated(func, "CaseRedactionContext")
     prepared = _params_annotated(func, "_PreparedConversion")
     names = set()
     for node in ast.walk(func):
@@ -564,31 +563,34 @@ def _redacted_names(func: ast.AST) -> set[str]:
         ):
             names |= targets
             continue
-        if not isinstance(value, ast.Await):
-            continue
-        call = value.value
-        if not (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "asanitize_messages"
-        ):
-            continue
-        source = call.func.value
         if (
-            isinstance(source, ast.Call)
-            and getattr(source.func, "id", None) == "model_boundary_redaction"
-        ) or (isinstance(source, ast.Name) and source.id in params):
+            isinstance(value, ast.Await)
+            and isinstance(value.value, ast.Call)
+            and getattr(value.value.func, "id", None) == "model_boundary_redacted"
+        ):
             names |= targets
     return names
 
 
+def _sent_through_the_seam(node: ast.Call) -> bool:
+    """``route_model_call(<router handle>, ...)``: the routed seam (#1998 P2b),
+    with the router its one positional argument."""
+    return (
+        getattr(node.func, "id", None) == "route_model_call"
+        and len(node.args) == 1
+        and _is_router(node.args[0])
+    )
+
+
 def test_every_router_call_is_handed_redacted_messages():
-    """Enumerates every call ON a router handle in the conversion code — not
-    a substring of the source — and requires each to be a ``route`` whose
+    """Enumerates every send in the conversion code — a call to the seam,
+    ``route_model_call``, with a router handle, and any call ON a router handle
+    — not a substring of the source, and requires each to be a seam call whose
     ``messages`` is a name its enclosing top-level function bound to a
     model-boundary redaction — directly, or through the ``_PreparedConversion``
-    the send step is handed, whose one construction is checked the same way. A new call site, or one that builds its messages
-    inline, fails here with its location.
+    the send step is handed, whose one construction is checked the same way. A
+    new call site, one that calls the router directly, or one that builds its
+    messages inline, fails here with its location.
 
     Not seen: a router reached through a name other than ``llm_router`` /
     ``self._llm_router``. Neither module stores it under another.
@@ -629,11 +631,13 @@ def test_every_router_call_is_handed_redacted_messages():
                             isinstance(held, ast.Name) and held.id in redacted,
                         )
                     )
-                if not (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and _is_router(node.func.value)
-                ):
+                if not isinstance(node, ast.Call):
+                    continue
+                seam = _sent_through_the_seam(node)
+                direct = isinstance(node.func, ast.Attribute) and _is_router(
+                    node.func.value
+                )
+                if not (seam or direct):
                     continue
                 messages = next(
                     (k.value for k in node.keywords if k.arg == "messages"), None
@@ -641,7 +645,7 @@ def test_every_router_call_is_handed_redacted_messages():
                 sites.append(
                     (
                         f"{path.name}:{name}",
-                        node.func.attr == "route"
+                        seam
                         and not any(k.arg == "prompt" for k in node.keywords)
                         and isinstance(messages, ast.Name)
                         and messages.id in redacted,

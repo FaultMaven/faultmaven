@@ -38,6 +38,7 @@ from faultmaven.infrastructure.llm.providers.openrouter_provider import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+from tests.model_content import vetted
 
 LEGACY = "max_tokens"
 MODERN = "max_completion_tokens"
@@ -148,7 +149,7 @@ class TestTokenParamCorrection:
         )
 
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi", max_tokens=512)
+            result = await send_to_model(provider, prompt=vetted("hi"), max_tokens=512)
 
         assert result.content == "corrected"
         assert len(sent) == 2, "exactly one re-send, never a loop"
@@ -163,7 +164,9 @@ class TestTokenParamCorrection:
         )
 
         with patch("aiohttp.ClientSession", return_value=session):
-            await send_to_model(provider, prompt="hi", max_tokens=512, temperature=0.3)
+            await send_to_model(
+                provider, prompt=vetted("hi"), max_tokens=512, temperature=0.3
+            )
 
         first, second = (
             {k: v for k, v in b.items() if k not in (LEGACY, MODERN)} for b in sent
@@ -179,8 +182,8 @@ class TestTokenParamCorrection:
         )
 
         with patch("aiohttp.ClientSession", return_value=session):
-            await send_to_model(provider, prompt="one", max_tokens=100)
-            await send_to_model(provider, prompt="two", max_tokens=100)
+            await send_to_model(provider, prompt=vetted("one"), max_tokens=100)
+            await send_to_model(provider, prompt=vetted("two"), max_tokens=100)
 
         assert len(sent) == 3, "the second call must not re-pay the correction"
         assert MODERN in sent[2] and LEGACY not in sent[2]
@@ -212,7 +215,7 @@ class TestTokenParamCorrection:
         )
 
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi", max_tokens=64)
+            result = await send_to_model(provider, prompt=vetted("hi"), max_tokens=64)
 
         assert result.content == "legacy"
         assert MODERN in sent[0] and LEGACY not in sent[0]
@@ -225,14 +228,14 @@ class TestTokenParamCorrection:
             [_error(400, _rejects_param(LEGACY, MODERN)), _ok()]
         )
         with patch("aiohttp.ClientSession", return_value=session):
-            await send_to_model(taught, prompt="hi", max_tokens=8)
+            await send_to_model(taught, prompt=vetted("hi"), max_tokens=8)
         assert taught._token_param_learned == {"gpt-6": MODERN}
 
         untaught = OpenAIProvider(_config_for("gpt-6"))
         assert untaught._token_param_learned == {}
         session2, sent2 = _sequenced_session([_ok()])
         with patch("aiohttp.ClientSession", return_value=session2):
-            await send_to_model(untaught, prompt="hi", max_tokens=8)
+            await send_to_model(untaught, prompt=vetted("hi"), max_tokens=8)
         assert LEGACY in sent2[0]
 
 
@@ -249,7 +252,7 @@ class TestTokenParamCorrectionDoesNotOverreach:
         session, sent = _sequenced_session([spec])
         with patch("aiohttp.ClientSession", return_value=session):
             with pytest.raises(LLMException) as excinfo:
-                await send_to_model(provider, prompt="hi", max_tokens=32)
+                await send_to_model(provider, prompt=vetted("hi"), max_tokens=32)
         assert len(sent) == 1, "no re-send may be issued"
         assert excinfo.value.category is expected_category
         return excinfo.value
@@ -341,7 +344,7 @@ class TestTokenParamCorrectionDoesNotOverreach:
 
         with patch("aiohttp.ClientSession", return_value=session):
             with pytest.raises(LLMException) as excinfo:
-                await send_to_model(provider, prompt="hi", max_tokens=32)
+                await send_to_model(provider, prompt=vetted("hi"), max_tokens=32)
 
         assert len(sent) == 2
         raised = excinfo.value
@@ -375,7 +378,7 @@ class TestOpenRouterInheritsTheCorrection:
         )
 
         with patch("aiohttp.ClientSession", return_value=session):
-            result = await send_to_model(provider, prompt="hi", max_tokens=128)
+            result = await send_to_model(provider, prompt=vetted("hi"), max_tokens=128)
 
         assert result.content == "routed"
         assert LEGACY in sent[0] and MODERN not in sent[0]

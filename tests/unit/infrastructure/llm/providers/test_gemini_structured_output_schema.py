@@ -28,6 +28,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     StructuredOutputCapability,
 )
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
+from tests.model_content import vetted
 
 _UNSUPPORTED_KEYS = {
     "$ref",
@@ -228,7 +229,9 @@ async def test_generate_applies_ref_resolution_to_response_schema(provider):
     }
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test", response_format=response_format)
+        await send_to_model(
+            provider, prompt=vetted("Test"), response_format=response_format
+        )
 
     call_kwargs = mock_session.post.call_args
     request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")

@@ -25,13 +25,14 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
+from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
     UploadedFileModel,
 )
-from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
+from faultmaven.infrastructure.security.model_content import model_boundary_redacted
 from faultmaven.modules.auth.contracts import IAccountDirectory, is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
@@ -194,9 +195,9 @@ class _PreparedConversion:
     """One failure mode's generation request, built and REDACTED, not yet sent.
 
     Only :meth:`ConversionService._prepare_conversion` constructs one, and
-    ``redacted_messages`` is what came back from the model-boundary redaction — the send
-    step takes nothing else, so it cannot reach the router with unredacted text
-    (#1901). Preparing every mode before sending any is what makes a refusal
+    ``redacted_messages`` is what came back from the model-boundary redaction
+    (``model_boundary_redacted``: minted, #1998) — the send step takes nothing
+    else, so it cannot reach the router with unredacted text (#1901). Preparing every mode before sending any is what makes a refusal
     fail the whole conversion with nothing sent and nothing written.
     """
 
@@ -372,7 +373,7 @@ class ConversionService:
             self._settings,
             preprocessing.extracted_text,
             original_filename,
-            model_boundary_redaction(self._sanitizer),
+            sanitizer=self._sanitizer,
         )
 
         # Where the model's titles become failure modes: scrubbed HERE, before
@@ -951,11 +952,12 @@ class ConversionService:
         # The output is never reversed: the runbook is meant to be
         # de-identified, so the placeholders the model writes are what is
         # persisted.
-        messages = await model_boundary_redaction(self._sanitizer).asanitize_messages(
+        messages = await model_boundary_redacted(
             [
                 {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
-            ]
+            ],
+            self._sanitizer,
         )
 
         return _PreparedConversion(
@@ -1027,7 +1029,8 @@ class ConversionService:
         try:
 
             async def _convert(cap: int):
-                return await self._llm_router.route(
+                return await route_model_call(
+                    self._llm_router,
                     messages=messages,
                     model=knowledge_model,
                     max_tokens=cap,

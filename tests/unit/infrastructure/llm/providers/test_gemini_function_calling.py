@@ -22,6 +22,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     ToolCall,
 )
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
+from tests.model_content import vetted, vetted_messages
 
 
 @pytest.fixture
@@ -331,7 +332,7 @@ class TestGeminiFunctionCalling:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             await send_to_model(
-                provider, prompt="Test", tools=openai_tools, tool_choice="auto"
+                provider, prompt=vetted("Test"), tools=openai_tools, tool_choice="auto"
             )
 
             call_kwargs = mock_session.post.call_args
@@ -360,7 +361,7 @@ class TestGeminiFunctionCalling:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             await send_to_model(
-                provider, prompt="Test", tools=tools, tool_choice="required"
+                provider, prompt=vetted("Test"), tools=tools, tool_choice="required"
             )
 
             call_kwargs = mock_session.post.call_args
@@ -386,7 +387,7 @@ class TestGeminiFunctionCalling:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             await send_to_model(
-                provider, prompt="Test", tools=tools, tool_choice="auto"
+                provider, prompt=vetted("Test"), tools=tools, tool_choice="auto"
             )
 
             call_kwargs = mock_session.post.call_args
@@ -419,7 +420,7 @@ class TestGeminiFunctionCalling:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(provider, prompt="Test")
+            result = await send_to_model(provider, prompt=vetted("Test"))
 
             assert isinstance(result, LLMResponse)
             assert result.tool_calls is not None
@@ -456,7 +457,7 @@ class TestGeminiFunctionCalling:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = await send_to_model(provider, prompt="Test")
+            result = await send_to_model(provider, prompt=vetted("Test"))
 
             assert result.content == "Let me search."
             assert result.tool_calls is not None
@@ -479,7 +480,9 @@ class TestGeminiFunctionCalling:
         mock_session = _mock_aiohttp_session(mock_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await send_to_model(provider, prompt="ignored", messages=messages)
+            await send_to_model(
+                provider, prompt=vetted("ignored"), messages=vetted_messages(messages)
+            )
 
             call_kwargs = mock_session.post.call_args
             request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -867,7 +870,7 @@ class TestThoughtSignatureRoundTrip:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            resp = await send_to_model(provider, prompt="hi")
+            resp = await send_to_model(provider, prompt=vetted("hi"))
         assert resp.tool_calls and len(resp.tool_calls) == 1
         # Per-tool-call slot intentionally None — signatures live in
         # assistant_parts now.
@@ -892,7 +895,7 @@ class TestThoughtSignatureRoundTrip:
         }
         mock_session = _mock_aiohttp_session(response_data)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            resp = await send_to_model(provider, prompt="hi")
+            resp = await send_to_model(provider, prompt=vetted("hi"))
         assert resp.provider_metadata is None
 
 

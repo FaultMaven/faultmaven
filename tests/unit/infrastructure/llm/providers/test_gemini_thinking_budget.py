@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
+from tests.model_content import vetted
 
 
 class _Schema(BaseModel):
@@ -80,7 +81,7 @@ def _response_format():
 async def _sent_generation_config(provider, **generate_kwargs):
     mock_session = _mock_aiohttp_session(_OK_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        await send_to_model(provider, prompt="Test", **generate_kwargs)
+        await send_to_model(provider, prompt=vetted("Test"), **generate_kwargs)
     call_kwargs = mock_session.post.call_args
     request_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
     return request_body["generationConfig"]

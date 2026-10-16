@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
+from tests.model_content import vetted, vetted_messages
 from tests.utils import sockets_refused
 
 
@@ -68,7 +69,7 @@ class TestRoutePassesMessages:
             {"role": "tool", "tool_call_id": "call_1", "content": "result"},
         ]
 
-        await router.route(prompt="test", messages=messages)
+        await router.route(prompt=vetted("test"), messages=vetted_messages(messages))
 
         mock_registry.route_request.assert_called_once()
         call_kwargs = mock_registry.route_request.call_args
@@ -77,7 +78,7 @@ class TestRoutePassesMessages:
     @pytest.mark.asyncio
     async def test_messages_none_by_default(self, router, mock_registry):
         """When messages not provided, None is passed through."""
-        await router.route(prompt="test")
+        await router.route(prompt=vetted("test"))
 
         call_kwargs = mock_registry.route_request.call_args
         assert call_kwargs.kwargs.get("messages") is None
@@ -87,7 +88,7 @@ class TestRoutePassesMessages:
         """Tools and tool_choice pass through to registry."""
         tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
 
-        await router.route(prompt="test", tools=tools, tool_choice="auto")
+        await router.route(prompt=vetted("test"), tools=tools, tool_choice="auto")
 
         call_kwargs = mock_registry.route_request.call_args
         assert call_kwargs.kwargs.get("tools") == tools
@@ -98,7 +99,7 @@ class TestRoutePassesMessages:
         """response_format passes through to registry."""
         rf = {"type": "json_schema", "json_schema": {"name": "Test", "schema": {}}}
 
-        await router.route(prompt="test", response_format=rf)
+        await router.route(prompt=vetted("test"), response_format=rf)
 
         call_kwargs = mock_registry.route_request.call_args
         assert call_kwargs.kwargs.get("response_format") == rf
@@ -114,7 +115,9 @@ class TestCacheBypassWithMessages:
         router.cache.check = MagicMock(return_value=None)
 
         messages = [{"role": "user", "content": "hello"}]
-        await router.route(prompt="test", model="gpt-4", messages=messages)
+        await router.route(
+            prompt=vetted("test"), model="gpt-4", messages=vetted_messages(messages)
+        )
 
         # Cache.check should NOT be called when messages is provided
         router.cache.check.assert_not_called()
@@ -126,7 +129,7 @@ class TestCacheBypassWithMessages:
         router.cache.check = MagicMock(return_value=None)
         router.cache.store = MagicMock()
 
-        await router.route(prompt="test", model="gpt-4")
+        await router.route(prompt=vetted("test"), model="gpt-4")
 
         # Cache.check SHOULD be called for single-shot requests
         router.cache.check.assert_called_once()
@@ -148,7 +151,7 @@ class TestCacheBypassWithMessages:
         router.cache = MagicMock()
         router.cache.check = MagicMock(return_value=cached)
 
-        result = await router.route(prompt="test", model="gpt-4")
+        result = await router.route(prompt=vetted("test"), model="gpt-4")
 
         assert result.content == "cached"
         assert result.cached is True
@@ -180,8 +183,8 @@ class TestRouteForwardsTheToolLoopCall:
         ]
 
         await router.route(
-            prompt="",
-            messages=messages,
+            prompt=vetted(""),
+            messages=vetted_messages(messages),
             tools=[
                 {
                     "type": "function",

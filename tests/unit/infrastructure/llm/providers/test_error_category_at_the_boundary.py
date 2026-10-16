@@ -41,6 +41,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     extract_provider_error_code,
 )
 from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
+from tests.model_content import vetted
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -384,7 +385,7 @@ async def test_gemini_declares_output_truncation_on_its_own_max_tokens_stop():
             # adapter raise rather than return the partial.
             await send_to_model(
                 provider,
-                prompt="why is node-3 NotReady?",
+                prompt=vetted("why is node-3 NotReady?"),
                 response_format={"type": "json_object"},
             )
 
@@ -420,7 +421,7 @@ async def test_every_provider_classifies_an_overflow_from_its_body(
         return_value=_mock_error_session(400, _OVERFLOW_BODY),
     ):
         with pytest.raises(LLMException) as exc_info:
-            await send_to_model(provider, prompt="hello")
+            await send_to_model(provider, prompt=vetted("hello"))
 
     assert exc_info.value.provider_error_code == "context_length_exceeded"
     assert exc_info.value.category is LLMErrorCategory.CONTEXT_OVERFLOW
@@ -439,7 +440,7 @@ async def test_every_provider_separates_a_rejected_parameter_from_an_overflow(
         return_value=_mock_error_session(400, _PARAM_ERROR_BODY),
     ):
         with pytest.raises(LLMException) as exc_info:
-            await send_to_model(provider, prompt="hello")
+            await send_to_model(provider, prompt=vetted("hello"))
 
     assert exc_info.value.provider_error_code == "unsupported_parameter"
     assert exc_info.value.category is LLMErrorCategory.REQUEST_REJECTED

@@ -47,14 +47,15 @@ A violation is reported — one WARNING line, the
 ``llm_model_content_violations`` metric and one :class:`RawModelContentWarning`,
 none of which carries content — and, while :data:`REFUSE_RAW_MODEL_CONTENT` is
 off, the call proceeds. ``_generate`` then receives plain values: exact ``str``
-text and plain message dicts. A violation is reported ONCE per call: what the
-seam reported, the router and this dispatch do not report again
-(:data:`REPORTED_UPSTREAM`).
+text and plain message dicts. A violation is reported ONCE per call, by the
+first layer that sees it — the seam, the router's entry, or this dispatch — and
+the layers below do not report it again (:data:`REPORTED_UPSTREAM`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -62,7 +63,17 @@ import warnings
 from collections import Counter
 from contextvars import ContextVar
 from types import FrameType
-from typing import Any, Coroutine, Dict, FrozenSet, List, NamedTuple, Optional, Tuple
+from typing import (
+    Any,
+    Coroutine,
+    Dict,
+    FrozenSet,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 from faultmaven.infrastructure.llm.providers.base import (
     CONTENT_KWARGS,
@@ -144,10 +155,11 @@ _TRANSPORT_FILE = os.path.join(
 #: routed call's site: it only ever affects a label, never what is checked.
 SEND_SITE: ContextVar[Optional[SendSite]] = ContextVar("llm_send_site", default=None)
 
-#: The ``(argument, kind)`` pairs :func:`route_model_call` already reported for
-#: the routed call in progress, set by the coroutine it returns around
-#: ``router.route``. ``route()``'s own reports (what it drops, a cache hit) and
-#: :func:`send_to_model` report only what is not in it, so a raw send is
+#: The ``(argument, kind)`` pairs already reported for the routed call in
+#: progress: set by the coroutine :func:`route_model_call` returns around
+#: ``router.route``, and widened by ``route()`` around its registry call with
+#: what its entry check reported (:func:`reported_upstream`). ``route()``'s
+#: entry report and :func:`send_to_model` report only what is not in it, so a raw send is
 #: reported once, at the line that made it, however many layers and fallback
 #: providers it passes. Refusal never reads it: a refused call is refused
 #: wherever it is checked. Like :data:`SEND_SITE`, a task spawned inside the
@@ -324,18 +336,34 @@ def _provider_label(provider: Any) -> str:
 def report_raw_model_content(
     target: str, violations: List[ContentViolation], frame: FrameType
 ) -> None:
-    """Report, from outside the dispatch, violations no dispatch will see.
+    """Report, from outside the dispatch, a call's violations at its entry.
 
-    ``LLMRouter.route`` uses this for what it drops before the registry (a
-    falsy prompt, falsy messages) and for a call it answers from its cache:
-    in warn mode those are reported here, once, naming the call's site from
-    ``frame``; under refusal ``route()`` has already refused them at entry.
-    What :func:`route_model_call` already reported for the call is not
-    reported again (:data:`REPORTED_UPSTREAM`).
+    ``LLMRouter.route`` reports what its entry check found here, in warn mode
+    (under refusal it has already refused them), naming the call's site from
+    ``frame``, and then holds them in :func:`reported_upstream` around the
+    registry, so :func:`send_to_model` does not report them again (#1998 P2b).
+    A router reached through a test's registry double, a cache hit, a falsy
+    value it drops: each is reported, once, whether or not a dispatch is ever
+    reached. What :func:`route_model_call` already reported for the call is
+    not reported again (:data:`REPORTED_UPSTREAM`).
     """
     violations = _not_reported_upstream(violations)
     if violations:
         _report_raw_model_content(target, violations, _send_site(frame))
+
+
+@contextlib.contextmanager
+def reported_upstream(violations: List[ContentViolation]) -> Iterator[None]:
+    """Hold ``violations`` as reported for the call inside: what a layer has
+    reported, the layers below it do not report again (:data:`REPORTED_UPSTREAM`).
+    Refusal never reads it."""
+    token = REPORTED_UPSTREAM.set(
+        REPORTED_UPSTREAM.get() | frozenset((v.argument, v.kind) for v in violations)
+    )
+    try:
+        yield
+    finally:
+        REPORTED_UPSTREAM.reset(token)
 
 
 def _not_reported_upstream(

@@ -76,7 +76,7 @@ from faultmaven.modules.case.contracts import TurnOutcome
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnProgress
-from tests.model_content import disabled_redaction, vetted
+from tests.model_content import disabled_redaction, vetted, vetted_messages
 from tests.utils import reset_settings_singleton, seed_users, sockets_refused
 
 
@@ -317,7 +317,8 @@ def _stand_in(engine, body):
 
 async def _route(router, model: str = MODEL):
     return await router.route(
-        messages=[{"role": "user", "content": "what is failing?"}], model=model
+        messages=vetted_messages([{"role": "user", "content": "what is failing?"}]),
+        model=model,
     )
 
 

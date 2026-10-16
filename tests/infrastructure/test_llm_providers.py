@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestServer
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
 from faultmaven.infrastructure.llm.router import LLMRouter
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -214,7 +215,7 @@ class TestLLMProviderRealBehavior:
                 cached=False,
             )
 
-            result = await router.route("Test prompt for real provider")
+            result = await router.route(vetted("Test prompt for real provider"))
 
             # Validate mocked provider interaction
             assert isinstance(result, LLMResponse)
@@ -236,7 +237,7 @@ class TestLLMProviderRealBehavior:
         provider_state["fireworks_failures"] = 1
 
         # Test requires at least another provider to succeed if strictly false
-        result = await router.route("Test failover with failures")
+        result = await router.route(vetted("Test failover with failures"))
 
         # Validate failover occurred
         assert isinstance(result, LLMResponse)
@@ -264,7 +265,7 @@ class TestLLMProviderRealBehavior:
         _providers_mod.reset_registry()
         router = LLMRouter()
 
-        result = await router.route("Test rate limiting behavior")
+        result = await router.route(vetted("Test rate limiting behavior"))
 
         assert isinstance(result, LLMResponse)
         assert result.content is not None
@@ -298,7 +299,7 @@ class TestLLMProviderRealBehavior:
 
             # Execute multiple concurrent requests
             async def make_concurrent_request(request_id):
-                return await router.route(f"Concurrent request {request_id}")
+                return await router.route(vetted(f"Concurrent request {request_id}"))
 
             tasks = [make_concurrent_request(i) for i in range(10)]
             results = await asyncio.gather(*tasks)
@@ -337,7 +338,7 @@ class TestLLMProviderRealBehavior:
 
             mock_route.side_effect = delayed_response
 
-            result = await router.route("Test with network latency")
+            result = await router.route(vetted("Test with network latency"))
 
             # Validate latency was handled properly
             assert isinstance(result, LLMResponse)
@@ -351,7 +352,7 @@ class TestLLMProviderRealBehavior:
         """Test caching behavior with mocked cache responses."""
         router, server, provider_state = llm_router_with_test_endpoints
 
-        prompt = "Caching test prompt with specific model"
+        prompt = vetted("Caching test prompt with specific model")
         model = "test-model"
 
         # Mock the provider registry to simulate caching
@@ -444,15 +445,15 @@ class TestLLMProviderRealBehavior:
             mock_route.side_effect = responses
 
             # First request - should get fallback response
-            result1 = await router.route("Recovery test 1")
+            result1 = await router.route(vetted("Recovery test 1"))
             assert result1.provider in ["openai", "local"]  # Fallback occurred
 
             # Second request - should get primary provider response
-            result2 = await router.route("Recovery test 2")
+            result2 = await router.route(vetted("Recovery test 2"))
             assert isinstance(result2, LLMResponse)
 
             # Third request - should still get a response
-            result3 = await router.route("Recovery test 3")
+            result3 = await router.route(vetted("Recovery test 3"))
             assert isinstance(result3, LLMResponse)
             assert result3.content is not None
 
@@ -574,7 +575,7 @@ class TestRealProviderIntegration:
             integration_state["auth_failures"] = 1
 
             # Should handle auth error gracefully and fallback
-            result = await router.route("Test authentication handling")
+            result = await router.route(vetted("Test authentication handling"))
 
             # Should fallback to working provider
             assert isinstance(result, LLMResponse)
@@ -624,8 +625,8 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Make requests of varying lengths
-                short_prompt = "Short test"
-                long_prompt = (
+                short_prompt = vetted("Short test")
+                long_prompt = vetted(
                     "This is a much longer prompt that should result in higher token usage "
                     * 5
                 )
@@ -683,7 +684,7 @@ class TestRealProviderIntegration:
 
             # Should handle model errors and fallback
             result = await router.route(
-                "Test model availability", model="unavailable-model"
+                vetted("Test model availability"), model="unavailable-model"
             )
 
             assert isinstance(result, LLMResponse)
@@ -721,7 +722,7 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Test with streaming parameter (if router supports it)
-                result = await router.route("Test streaming response")
+                result = await router.route(vetted("Test streaming response"))
 
                 # Validate response format
                 assert isinstance(result, LLMResponse)
@@ -771,7 +772,9 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Execute concurrent load test
-                tasks = [router.route(f"Load test request {i}") for i in range(20)]
+                tasks = [
+                    router.route(vetted(f"Load test request {i}")) for i in range(20)
+                ]
                 responses = await asyncio.gather(*tasks)
 
                 # Validate load performance

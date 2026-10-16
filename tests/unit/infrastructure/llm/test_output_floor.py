@@ -48,6 +48,7 @@ from faultmaven.infrastructure.llm.providers import (
 )
 from faultmaven.infrastructure.llm.providers.base import ToolCall
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from tests.model_content import vetted
 
 
 def _response(
@@ -102,14 +103,20 @@ class TestFloorPreCall:
         """A total budget below the floor can never satisfy it — the router
         raises max_tokens before the call ever leaves."""
         await router.route(
-            prompt="test", max_tokens=200, min_output_tokens=1500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=200,
+            min_output_tokens=1500,
+            bypass_cache=True,
         )
         call_kwargs = mock_registry.route_request.call_args.kwargs
         assert call_kwargs["max_tokens"] == 1500
 
     async def test_max_tokens_above_floor_untouched(self, router, mock_registry):
         await router.route(
-            prompt="test", max_tokens=4000, min_output_tokens=1500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=4000,
+            min_output_tokens=1500,
+            bypass_cache=True,
         )
         call_kwargs = mock_registry.route_request.call_args.kwargs
         assert call_kwargs["max_tokens"] == 4000
@@ -118,7 +125,7 @@ class TestFloorPreCall:
         """Both knobs travel to the provider layer, where the per-provider
         translation lives."""
         await router.route(
-            prompt="test",
+            prompt=vetted("test"),
             reasoning_intent=ReasoningIntent.EXTRACTION,
             min_output_tokens=500,
             bypass_cache=True,
@@ -129,7 +136,7 @@ class TestFloorPreCall:
 
     async def test_absent_knobs_forward_none(self, router, mock_registry):
         """Default = absent: existing callers see exactly the old behavior."""
-        await router.route(prompt="test", max_tokens=1000, bypass_cache=True)
+        await router.route(prompt=vetted("test"), max_tokens=1000, bypass_cache=True)
         call_kwargs = mock_registry.route_request.call_args.kwargs
         assert call_kwargs["reasoning_intent"] is None
         assert call_kwargs["min_output_tokens"] is None
@@ -137,7 +144,7 @@ class TestFloorPreCall:
 
     async def test_string_intent_normalized_to_enum(self, router, mock_registry):
         await router.route(
-            prompt="test",
+            prompt=vetted("test"),
             reasoning_intent="inference",
             min_output_tokens=500,
             bypass_cache=True,
@@ -153,17 +160,19 @@ class TestFloorPreCall:
         router chokepoint with a ValueError naming what is required."""
         with pytest.raises(ValueError, match="min_output_tokens"):
             await router.route(
-                prompt="test", reasoning_intent=ReasoningIntent.INFERENCE
+                prompt=vetted("test"), reasoning_intent=ReasoningIntent.INFERENCE
             )
         # Same enforcement for the string spelling.
         with pytest.raises(ValueError, match="min_output_tokens"):
-            await router.route(prompt="test", reasoning_intent="inference")
+            await router.route(prompt=vetted("test"), reasoning_intent="inference")
 
     async def test_extraction_needs_no_floor(self, router, mock_registry):
         """The pairing invariant is INFERENCE-only: EXTRACTION requests the
         provider's MINIMUM reasoning, which tightens the starvation guards
         rather than lifting them."""
-        await router.route(prompt="test", reasoning_intent=ReasoningIntent.EXTRACTION)
+        await router.route(
+            prompt=vetted("test"), reasoning_intent=ReasoningIntent.EXTRACTION
+        )
         call_kwargs = mock_registry.route_request.call_args.kwargs
         assert call_kwargs["reasoning_intent"] is ReasoningIntent.EXTRACTION
         assert call_kwargs["min_output_tokens"] is None
@@ -172,12 +181,12 @@ class TestFloorPreCall:
         """A typo'd intent is a caller bug — it must fail loudly, not mutate
         into silent provider behavior."""
         with pytest.raises(ValueError):
-            await router.route(prompt="test", reasoning_intent="thinking-hard")
+            await router.route(prompt=vetted("test"), reasoning_intent="thinking-hard")
 
     @pytest.mark.parametrize("bad_floor", [0, -5])
     async def test_non_positive_floor_rejected(self, router, bad_floor):
         with pytest.raises(ValueError):
-            await router.route(prompt="test", min_output_tokens=bad_floor)
+            await router.route(prompt=vetted("test"), min_output_tokens=bad_floor)
 
 
 @pytest.mark.unit
@@ -200,7 +209,7 @@ class TestFloorPostCall:
         )
         with pytest.raises(LLMOutputFloorError) as exc_info:
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 reasoning_intent=ReasoningIntent.INFERENCE,
                 min_output_tokens=500,
@@ -218,7 +227,10 @@ class TestFloorPostCall:
             return_value=_response("x" * 8000, StopReason.MAX_TOKENS)
         )
         response = await router.route(
-            prompt="test", max_tokens=2000, min_output_tokens=500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=2000,
+            min_output_tokens=500,
+            bypass_cache=True,
         )
         assert response.is_truncated
 
@@ -229,7 +241,10 @@ class TestFloorPostCall:
             return_value=_response("short answer", StopReason.STOP)
         )
         response = await router.route(
-            prompt="test", max_tokens=2000, min_output_tokens=500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=2000,
+            min_output_tokens=500,
+            bypass_cache=True,
         )
         assert response.content == "short answer"
 
@@ -241,7 +256,9 @@ class TestFloorPostCall:
         mock_registry.route_request = AsyncMock(
             return_value=_response("x" * 215, StopReason.MAX_TOKENS)
         )
-        response = await router.route(prompt="test", max_tokens=2000, bypass_cache=True)
+        response = await router.route(
+            prompt=vetted("test"), max_tokens=2000, bypass_cache=True
+        )
         assert response.is_truncated
         assert response.content == "x" * 215
 
@@ -256,7 +273,7 @@ class TestFloorPostCall:
         )
         with pytest.raises(LLMOutputFloorError):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 min_output_tokens=500,
                 bypass_cache=True,
@@ -279,7 +296,10 @@ class TestFloorPostCall:
         ]
         mock_registry.route_request = AsyncMock(return_value=tool_response)
         response = await router.route(
-            prompt="test", max_tokens=2000, min_output_tokens=500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=2000,
+            min_output_tokens=500,
+            bypass_cache=True,
         )
         assert response.tool_calls
 
@@ -326,7 +346,7 @@ class TestFloorComposesWithTruncationRetry:
 
         async def call(cap: int):
             return await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=cap,
                 min_output_tokens=2000,
                 bypass_cache=True,
@@ -506,7 +526,10 @@ class TestFloorMeasuresWithTheRealTokenizer:
             return_value=_response(body, StopReason.MAX_TOKENS)
         )
         response = await router.route(
-            prompt="test", max_tokens=2000, min_output_tokens=600, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=2000,
+            min_output_tokens=600,
+            bypass_cache=True,
         )
         assert response.is_truncated
 
@@ -519,7 +542,7 @@ class TestFloorMeasuresWithTheRealTokenizer:
         )
         with pytest.raises(LLMOutputFloorError):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 min_output_tokens=500,
                 bypass_cache=True,
@@ -549,7 +572,7 @@ class TestFloorOnNoStopSignal:
         )
         with caplog.at_level(logging.WARNING):
             response = await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 min_output_tokens=500,
                 bypass_cache=True,
@@ -565,7 +588,7 @@ class TestFloorOnNoStopSignal:
         )
         with caplog.at_level(logging.WARNING):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 min_output_tokens=500,
                 bypass_cache=True,
@@ -595,7 +618,7 @@ class TestFloorFailureAccounting:
         ):
             with pytest.raises(LLMOutputFloorError):
                 await router.route(
-                    prompt="test",
+                    prompt=vetted("test"),
                     max_tokens=2000,
                     min_output_tokens=500,
                     bypass_cache=True,
@@ -619,10 +642,12 @@ class TestFloorValidation:
     @pytest.mark.parametrize("bad", [1500.5, 500.0, True, False])
     async def test_non_integer_floor_rejected(self, router, bad):
         with pytest.raises(ValueError, match="positive integer"):
-            await router.route(prompt="test", min_output_tokens=bad)
+            await router.route(prompt=vetted("test"), min_output_tokens=bad)
 
     async def test_integer_floor_accepted(self, router, mock_registry):
-        await router.route(prompt="test", min_output_tokens=500, bypass_cache=True)
+        await router.route(
+            prompt=vetted("test"), min_output_tokens=500, bypass_cache=True
+        )
         assert mock_registry.route_request.call_args.kwargs["min_output_tokens"] == 500
 
 
@@ -641,7 +666,7 @@ class TestInferenceHeadroomWarning:
     ):
         with caplog.at_level(logging.WARNING):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=500,
                 reasoning_intent=ReasoningIntent.INFERENCE,
                 min_output_tokens=500,
@@ -654,7 +679,7 @@ class TestInferenceHeadroomWarning:
     async def test_silent_when_headroom_exists(self, router, mock_registry, caplog):
         with caplog.at_level(logging.WARNING):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=4000,
                 reasoning_intent=ReasoningIntent.INFERENCE,
                 min_output_tokens=500,
@@ -759,7 +784,10 @@ class TestFloorOnProvidersWithoutATokenizer:
             return_value=_response(body, StopReason.MAX_TOKENS, provider=provider)
         )
         response = await router.route(
-            prompt="test", max_tokens=4000, min_output_tokens=1000, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=4000,
+            min_output_tokens=1000,
+            bypass_cache=True,
         )
         assert response.is_truncated
 
@@ -775,7 +803,7 @@ class TestFloorOnProvidersWithoutATokenizer:
         )
         with pytest.raises(LLMOutputFloorError):
             await router.route(
-                prompt="test",
+                prompt=vetted("test"),
                 max_tokens=2000,
                 min_output_tokens=500,
                 bypass_cache=True,
@@ -792,7 +820,10 @@ class TestFloorOnProvidersWithoutATokenizer:
             return_value=_response("word " * 2000, StopReason.MAX_TOKENS, provider=None)
         )
         response = await router.route(
-            prompt="test", max_tokens=4000, min_output_tokens=500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=4000,
+            min_output_tokens=500,
+            bypass_cache=True,
         )
         assert response.is_truncated
 
@@ -832,7 +863,10 @@ class TestFloorOnProvidersWithoutATokenizer:
             return_value=_response(prose, StopReason.MAX_TOKENS)
         )
         await router.route(
-            prompt="test", max_tokens=40000, min_output_tokens=10, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=40000,
+            min_output_tokens=10,
+            bypass_cache=True,
         )
         assert len(prose) in tokenized, (
             "the floor check did not tokenize a body inside the bound; this "
@@ -844,7 +878,10 @@ class TestFloorOnProvidersWithoutATokenizer:
             return_value=_response("x" * 32000, StopReason.MAX_TOKENS)
         )
         await router.route(
-            prompt="test", max_tokens=40000, min_output_tokens=500, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=40000,
+            min_output_tokens=500,
+            bypass_cache=True,
         )
         assert max(tokenized, default=0) <= _TOKENIZER_EXACT_MAX_CHARS, (
             f"the floor check handed the tokenizer {max(tokenized)} characters "
@@ -1008,7 +1045,10 @@ class TestLongMixedBodyDoesNotFalsePositive:
             return_value=_response(body, StopReason.MAX_TOKENS, provider="openai")
         )
         response = await router.route(
-            prompt="test", max_tokens=20000, min_output_tokens=4000, bypass_cache=True
+            prompt=vetted("test"),
+            max_tokens=20000,
+            min_output_tokens=4000,
+            bypass_cache=True,
         )
         assert response.is_truncated
 

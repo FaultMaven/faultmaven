@@ -29,6 +29,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
+from tests.model_content import vetted, vetted_kwargs, vetted_messages
 from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
@@ -52,7 +53,9 @@ _CONVERSATION = [
 ]
 _TOOL_LOOP_CONVERSATION = _CONVERSATION + [
     {"role": "assistant", "content": ""},
-    {"role": "tool", "content": "disk full", "tool_name": "emit"},
+    # ``name``, the message grammar's key for the function that produced a
+    # tool result (#1998): the shape the engine can send.
+    {"role": "tool", "content": "disk full", "name": "emit"},
 ]
 
 
@@ -121,7 +124,7 @@ def _native(call_kwargs, **server_kwargs):
         async with _server(**server_kwargs) as (root, seen):
             provider = _provider(f"{root}/api")
             try:
-                response = await send_to_model(provider, **call_kwargs)
+                response = await send_to_model(provider, **vetted_kwargs(call_kwargs))
             except LLMException as exc:
                 return exc, seen
             return response, seen
@@ -214,7 +217,7 @@ def test_native_done_reason_length_is_max_tokens():
 def test_native_every_pasted_suffix_posts_to_api_chat(suffix):
     async def go():
         async with _server() as (root, seen):
-            await send_to_model(_provider(f"{root}{suffix}"), prompt="hi")
+            await send_to_model(_provider(f"{root}{suffix}"), prompt=vetted("hi"))
             return seen
 
     ((path, _body),) = _run(go())
@@ -231,7 +234,7 @@ def _fallback(call_kwargs):
         async with _server() as (root, seen):
             provider = _provider(root)
             try:
-                response = await send_to_model(provider, **call_kwargs)
+                response = await send_to_model(provider, **vetted_kwargs(call_kwargs))
             except LLMException as exc:
                 return exc, seen
             return response, seen
@@ -279,7 +282,11 @@ def test_openai_compatible_transport_still_sends_messages_unchanged():
             # The 200 reply above is empty, so the call errors after the send;
             # the request body is what this pins.
             with pytest.raises(LLMException):
-                await send_to_model(_provider(root), prompt="", messages=_CONVERSATION)
+                await send_to_model(
+                    _provider(root),
+                    prompt=vetted(""),
+                    messages=vetted_messages(_CONVERSATION),
+                )
             return seen
 
     ((path, body),) = _run(go())
@@ -311,7 +318,9 @@ def test_refused_calls_record_no_failure_and_leave_health_unchanged():
             for _ in range(5):
                 with pytest.raises(CallShapeUnsupported):
                     await registry.route_request(
-                        prompt="", messages=_CONVERSATION, confidence_threshold=0.0
+                        prompt=vetted(""),
+                        messages=vetted_messages(_CONVERSATION),
+                        confidence_threshold=0.0,
                     )
             return registry._provider_states["local"], seen
 
@@ -333,7 +342,9 @@ def test_a_second_provider_answers_and_the_local_one_is_still_first_for_prompts(
         ):
             registry = _registry(local=_provider(root), backup=_provider(backup_root))
             answered = await registry.route_request(
-                prompt="", messages=_CONVERSATION, confidence_threshold=0.0
+                prompt=vetted(""),
+                messages=vetted_messages(_CONVERSATION),
+                confidence_threshold=0.0,
             )
             states = dict(registry._provider_states)
             # The local provider is still routable: not penalised, and once it
@@ -344,7 +355,7 @@ def test_a_second_provider_answers_and_the_local_one_is_still_first_for_prompts(
             registry._sticky_provider = "local"
             order = registry._get_routing_order()
             followup = await registry.route_request(
-                prompt="hi", confidence_threshold=0.0
+                prompt=vetted("hi"), confidence_threshold=0.0
             )
             return answered, states, order, followup, seen_local
 
@@ -362,7 +373,9 @@ def test_with_no_other_provider_the_caller_gets_the_typed_refusal():
             registry = _registry(local=_provider(root))
             with pytest.raises(CallShapeUnsupported) as info:
                 await registry.route_request(
-                    prompt="", messages=_CONVERSATION, confidence_threshold=0.0
+                    prompt=vetted(""),
+                    messages=vetted_messages(_CONVERSATION),
+                    confidence_threshold=0.0,
                 )
             return info.value
 

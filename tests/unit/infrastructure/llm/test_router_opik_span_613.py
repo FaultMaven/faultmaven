@@ -26,6 +26,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderState,
 )
 from faultmaven.infrastructure.llm.router import TELEMETRY_PAYLOAD_MAX_CHARS
+from tests.model_content import vetted_kwargs
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -108,7 +109,9 @@ async def _span_update(**route_kwargs) -> dict:
         # cloud profile) ``route`` is wrapped in ``opik.track``, and forcing the
         # gate open above would otherwise drive the real SDK.
         route = getattr(LLMRouter.route, "__wrapped__", LLMRouter.route)
-        await route(LLMRouter(), model="claude-sonnet-4-6", **route_kwargs)
+        await route(
+            LLMRouter(), model="claude-sonnet-4-6", **vetted_kwargs(route_kwargs)
+        )
     assert opik_context.update_current_span.call_count == 1
     return opik_context.update_current_span.call_args.kwargs
 

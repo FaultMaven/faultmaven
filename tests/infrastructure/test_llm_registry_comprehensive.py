@@ -34,6 +34,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     print_provider_options,
     reset_registry,
 )
+from tests.model_content import vetted
 from tests.utils import sockets_refused
 
 
@@ -685,7 +686,7 @@ class TestFallbackChain:
         }
 
         response = await registry.route_request(
-            prompt="Test prompt", max_tokens=100, temperature=0.7
+            prompt=vetted("Test prompt"), max_tokens=100, temperature=0.7
         )
 
         assert response.content == "Test response"
@@ -730,7 +731,7 @@ class TestFallbackChain:
         }
 
         response = await registry.route_request(
-            prompt="Test prompt", max_tokens=100, temperature=0.7
+            prompt=vetted("Test prompt"), max_tokens=100, temperature=0.7
         )
 
         assert response.content == "Test response"
@@ -791,7 +792,7 @@ class TestFallbackChain:
 
             with pytest.raises(Exception, match="Provider failed"):
                 await registry.route_request(
-                    prompt="Test prompt", max_tokens=100, temperature=0.7
+                    prompt=vetted("Test prompt"), max_tokens=100, temperature=0.7
                 )
 
     @pytest.mark.asyncio
@@ -839,7 +840,7 @@ class TestFallbackChain:
         }
 
         response = await registry.route_request(
-            prompt="Test prompt", confidence_threshold=0.8
+            prompt=vetted("Test prompt"), confidence_threshold=0.8
         )
 
         # Should get response from second provider (higher confidence)
@@ -888,7 +889,7 @@ class TestFallbackChain:
         # With tools present, should return first response even at 0.0 confidence
         tools = [{"type": "function", "function": {"name": "test_tool"}}]
         response = await registry.route_request(
-            prompt="Test", confidence_threshold=0.8, tools=tools
+            prompt=vetted("Test"), confidence_threshold=0.8, tools=tools
         )
 
         assert response.confidence == 0.0
@@ -935,7 +936,9 @@ class TestFallbackChain:
             name: ProviderState(name=name) for name in registry._fallback_chain
         }
 
-        response = await registry.route_request(prompt="Test", confidence_threshold=0.8)
+        response = await registry.route_request(
+            prompt=vetted("Test"), confidence_threshold=0.8
+        )
 
         # Should have skipped fireworks (0.3) and used openai (0.9)
         assert response.confidence == 0.9
@@ -971,7 +974,9 @@ class TestFallbackChain:
         # The only provider returns 0.0 which is below threshold.
         # With the fix, this 0.0 response is saved as best_low_confidence
         # and returned instead of raising "All providers failed".
-        response = await registry.route_request(prompt="Test", confidence_threshold=0.8)
+        response = await registry.route_request(
+            prompt=vetted("Test"), confidence_threshold=0.8
+        )
 
         assert response.confidence == 0.0
         assert "(low-confidence)" in response.provider
@@ -1415,7 +1420,7 @@ class TestErrorHandlingAndEdgeCases:
         registry._initialized = True
 
         with pytest.raises(LLMProviderError) as exc_info:
-            await registry.route_request(prompt="Test prompt", max_tokens=100)
+            await registry.route_request(prompt=vetted("Test prompt"), max_tokens=100)
 
         message = str(exc_info.value)
         assert "No LLM provider is routable" in message

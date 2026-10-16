@@ -24,6 +24,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
+from tests.model_content import vetted, vetted_kwargs, vetted_messages
 from tests.utils import sockets_refused
 
 
@@ -134,7 +135,7 @@ class TestCachePromptEndToEnd:
                 # must handle that without crashing.
                 await router.route(
                     prompt=None,
-                    messages=_MESSAGES,
+                    messages=vetted_messages(_MESSAGES),
                     model="claude-sonnet-4-6",
                     cache_prompt=True,
                 )
@@ -164,7 +165,7 @@ class TestCachePromptEndToEnd:
             with patch("aiohttp.ClientSession", return_value=mock_session):
                 await router.route(
                     prompt=None,
-                    messages=_MESSAGES,
+                    messages=vetted_messages(_MESSAGES),
                     model="claude-sonnet-4-6",
                 )
 
@@ -189,7 +190,7 @@ class TestCachePromptEndToEnd:
             with patch("aiohttp.ClientSession", return_value=mock_session):
                 await router.route(
                     prompt=None,
-                    messages=_MESSAGES,
+                    messages=vetted_messages(_MESSAGES),
                     model="gpt-4o",
                     cache_prompt=True,
                 )
@@ -227,7 +228,9 @@ class TestCachePromptForwarding:
             from faultmaven.infrastructure.llm.router import LLMRouter
 
             router = LLMRouter()
-            await router.route(prompt=None, messages=_MESSAGES, cache_prompt=True)
+            await router.route(
+                prompt=None, messages=vetted_messages(_MESSAGES), cache_prompt=True
+            )
 
         assert mock_registry.route_request.call_args.kwargs.get("cache_prompt") is True
 
@@ -255,7 +258,9 @@ class TestCachePromptForwarding:
 
             router = LLMRouter()
             # route() is the ILLMProvider entrypoint the engine calls.
-            await router.route(prompt=None, messages=_MESSAGES, cache_prompt=True)
+            await router.route(
+                prompt=None, messages=vetted_messages(_MESSAGES), cache_prompt=True
+            )
 
         assert mock_registry.route_request.call_args.kwargs.get("cache_prompt") is True
 
@@ -313,7 +318,9 @@ class TestResponseCacheStoreGate:
             from faultmaven.infrastructure.llm.router import LLMRouter
 
             router = LLMRouter()
-            response = await router.route(prompt="why is node-3 NotReady?", **kwargs)
+            response = await router.route(
+                prompt=vetted("why is node-3 NotReady?"), **vetted_kwargs(kwargs)
+            )
 
         # Confidence is above the store threshold in every case — the gate under
         # test is the model/messages shape, not the quality bar.
@@ -331,9 +338,9 @@ class TestResponseCacheStoreGate:
             from faultmaven.infrastructure.llm.router import LLMRouter
 
             router = LLMRouter()
-            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            await router.route(prompt=vetted("why is node-3 NotReady?"), model="gpt-4o")
             second = await router.route(
-                prompt="why is node-3 NotReady?", model="gpt-4o"
+                prompt=vetted("why is node-3 NotReady?"), model="gpt-4o"
             )
 
         assert second.cached is True
@@ -364,9 +371,11 @@ class TestBypassCache:
             from faultmaven.infrastructure.llm.router import LLMRouter
 
             router = LLMRouter()
-            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            await router.route(prompt=vetted("why is node-3 NotReady?"), model="gpt-4o")
             second = await router.route(
-                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
+                prompt=vetted("why is node-3 NotReady?"),
+                model="gpt-4o",
+                bypass_cache=True,
             )
 
         assert second.cached is not True
@@ -388,7 +397,7 @@ class TestBypassCache:
             router = LLMRouter()
             # The poisoned entry: what the first attempt stored before the
             # caller discovered it would not parse.
-            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            await router.route(prompt=vetted("why is node-3 NotReady?"), model="gpt-4o")
             registry.route_request.return_value = LLMResponse(
                 content="the kubelet on node-3 is out of disk",
                 confidence=0.9,
@@ -398,9 +407,13 @@ class TestBypassCache:
                 response_time_ms=10,
             )
             await router.route(
-                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
+                prompt=vetted("why is node-3 NotReady?"),
+                model="gpt-4o",
+                bypass_cache=True,
             )
-            third = await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            third = await router.route(
+                prompt=vetted("why is node-3 NotReady?"), model="gpt-4o"
+            )
 
         assert third.cached is True
         assert third.content == "the kubelet on node-3 is out of disk"
