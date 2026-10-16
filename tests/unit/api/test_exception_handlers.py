@@ -35,6 +35,7 @@ from faultmaven.exceptions import (
     ConflictError,
     LLMException,
     NotFoundError,
+    RawModelContentRefused,
     ServiceError,
     ServiceException,
     ValidationException,
@@ -415,6 +416,7 @@ class TestGetExceptionHandlers:
             ServiceError,
             ServiceException,
             LLMException,
+            RawModelContentRefused,
             OAuthProtocolError,
         }
 

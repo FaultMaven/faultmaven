@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
@@ -99,6 +100,9 @@ class KBToolAdapter(AgentTool):
                 redaction_ctx=context.redaction_ctx,
             )
             return ToolResult(success=True, data=result, error=None)
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.error(f"KB query failed: {e}")
             # Report the failure, and ONLY the failure. The previous text
@@ -196,6 +200,9 @@ class CaseEvidenceQAAdapter(AgentTool):
                 empty_result=self._empty_result(context),
             )
             return ToolResult(success=True, data=result, error=None)
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.error(f"Case evidence search failed: {e}")
             # Same rule as KBToolAdapter above: a failed search says nothing

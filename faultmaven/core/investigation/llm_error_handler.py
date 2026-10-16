@@ -32,6 +32,7 @@ from faultmaven.exceptions import (
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
     LLMErrorCategory,
+    RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
     walk_cause_chain,
@@ -922,6 +923,9 @@ class LLMErrorHandler:
                 else:
                     result = await asyncio.wait_for(operation(), timeout=backstop)
                 return result, None
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception as e:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.monotonic() - started

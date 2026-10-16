@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentWarning,
     send_to_model,
 )
 from faultmaven.infrastructure.llm.providers.base import (
@@ -24,8 +24,7 @@ from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvid
 from faultmaven.infrastructure.llm.providers.openrouter_provider import (
     OpenRouterProvider,
 )
-from tests.model_content import vetted, vetted_messages
-from tests.raw_model_content_guard import report_pattern
+from tests.model_content import refusal_pattern, vetted, vetted_messages
 
 
 @pytest.fixture
@@ -263,18 +262,27 @@ class TestOpenAITokenLimitParam:
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         # ``max_completion_tokens`` is no keyword the dispatch hands on as an
-        # API field, so it is reported (``unknown_kwarg``) and, in warn mode
-        # (#1998), still reaches the adapter: the stray key this test sends on
-        # purpose.
+        # API field: through the dispatch the call is refused before any
+        # request (#1998 P3).
         with (
             patch("aiohttp.ClientSession", return_value=mock_session),
-            pytest.warns(
-                RawModelContentWarning,
-                match=report_pattern("kwargs unknown_kwarg (max_completion_tokens)"),
+            pytest.raises(
+                RawModelContentRefused,
+                match=refusal_pattern(
+                    "openai", "kwargs unknown_kwarg (max_completion_tokens)"
+                ),
             ),
         ):
             await send_to_model(
                 provider, prompt=vetted("hi"), max_tokens=512, max_completion_tokens=999
+            )
+        mock_session.post.assert_not_called()
+
+        # The adapter's own defence behind the refusal: handed the stray key
+        # directly, it still sends one token param.
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider._generate(
+                prompt="hi", max_tokens=512, max_completion_tokens=999
             )
 
             request_body = mock_session.post.call_args.kwargs["json"]

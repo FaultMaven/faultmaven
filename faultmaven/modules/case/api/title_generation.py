@@ -25,11 +25,14 @@ from fastapi import HTTPException, status
 
 from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import (
+    RawModelContentRefused,
     ServiceException,
     ServiceUnavailableException,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.infrastructure.llm.dispatch import (
+    route_model_call,
+)
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
     load_case_redaction,
@@ -1256,7 +1259,10 @@ async def _auto_title_case_if_default(
     name is refused by the substance gate *before* any LLM call.
 
     Every failure is swallowed: this is best-effort naming, and nothing about a
-    turn should be reported as failed because its title could not be made.
+    turn should be reported as failed because its title could not be made. This
+    is the boundary of the auto-title work, not a handler on the turn's path:
+    the turn has already committed. A model-content refusal (#1998) is recorded
+    here at ERROR, under its own class, and no fallback title is written.
     """
     try:
         # DRIVER only (ADR-020 D2): naming the case writes its title, an
@@ -1298,6 +1304,19 @@ async def _auto_title_case_if_default(
             f"Auto-titling timed out for case {case_id} after "
             f"{AUTO_TITLE_TIMEOUT_SECONDS}s",
             extra={"case_id": case_id},
+        )
+    except RawModelContentRefused as refused:
+        # A refused send is a programming error, so it is recorded at ERROR
+        # under its own class (the refusal counter was incremented where it was
+        # raised), never folded into the best-effort WARNING below. The turn
+        # stands: it committed before this ran. No title is written: the
+        # refusal propagates out of ``_generate_title_with_llm`` before any
+        # extractive fallback is built, and nothing is persisted on the way.
+        logger.error(
+            "Auto-titling refused at the model boundary for case %s (#1998)",
+            case_id,
+            exc_info=refused,
+            extra={"case_id": case_id, "error_type": type(refused).__name__},
         )
     except Exception as e:
         # Everything else is a fault worth seeing at default level — including a
@@ -1674,6 +1693,9 @@ async def _generate_title_with_llm(
     except _TitleDisclosureGateUnavailable:
         # Fail closed: the gate that would vet the fallback is the one that
         # just failed, so there is nothing safe left to try.
+        raise
+    except RawModelContentRefused:
+        # A refusal is a programming error, never a fallback (#1998).
         raise
     except Exception as e:
         logger.warning(f"LLM title generation failed, trying fallback: {e}")

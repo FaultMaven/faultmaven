@@ -18,7 +18,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.infrastructure.llm.dispatch import (
+    route_model_call,
+)
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
 
@@ -223,6 +226,9 @@ class IntentResolver:
 
             return self._parse_response(response.content, choices)
 
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception:
             # Classifier failure → default to no match (safe fallback)
             logger.warning(

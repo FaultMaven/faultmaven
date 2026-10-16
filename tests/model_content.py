@@ -29,6 +29,7 @@ boundary runs exactly as it does for a shipped adapter.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from faultmaven.infrastructure.llm.providers.base import (
@@ -149,6 +150,24 @@ def _vetted_call(call: Any) -> Any:
     if isinstance(function.get("arguments"), str):
         function["arguments"] = vetted(function["arguments"], SOURCE_MODEL_OUTPUT)
     return {**call, "function": function}
+
+
+#: What a refusal says after its target; the rest is the violation summary
+#: (``dispatch._summary``): ``"<argument> <kind>"`` pairs joined by ``"; "``,
+#: sorted, an unknown keyword's names in parentheses.
+REFUSAL_TEXT = "model-bound content not minted by the redaction module: "
+
+
+def refusal_pattern(target: str, summary: str) -> str:
+    """A ``pytest.raises(RawModelContentRefused, match=...)`` pattern for EXACTLY
+    this refusal.
+
+    ``target`` is ``"router"`` (the seam, the router's entry) or the provider's
+    label (the dispatch). Anchored at both ends, so an expected refusal
+    (``kwargs unknown_kwarg (case_id)``) cannot also absorb an unexpected
+    violation carried in the same call (``...; prompt raw``).
+    """
+    return "^" + re.escape(f"{target}: {REFUSAL_TEXT}{summary}") + "$"
 
 
 def forged(text: str) -> ModelText:

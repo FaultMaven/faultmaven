@@ -31,6 +31,7 @@ from faultmaven.exceptions import (
     AuthorizationError,
     FaultMavenException,
     NotFoundError,
+    RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
@@ -1137,6 +1138,9 @@ async def generate_case_title(
         # map them to 422/409/404. See api/exception_handlers.py. Without
         # this pass-through, the blanket `except Exception` below would
         # swallow them and re-wrap as 500.
+        raise
+    except RawModelContentRefused:
+        # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
         raise
     except Exception as e:
         logger.error(

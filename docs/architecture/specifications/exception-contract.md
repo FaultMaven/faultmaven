@@ -171,6 +171,7 @@ provider condition presented to the user as a FaultMaven bug.
 
 | Signal | HTTP | `x-error-code` | Retry-After |
 |--------|------|----------------|-------------|
+| a model-content refusal (`RawModelContentRefused`, #1998) on the cause chain | 500 | `SERVICE_ERROR` | — |
 | billing / quota exhausted (`QUOTA_EXHAUSTED`) | 402 | `QUOTA_EXHAUSTED` | — |
 | provider status 429 | 429 | `RATE_LIMIT_EXCEEDED` | 60 |
 | provider status 504 (incl. all provider timeouts) | 504 | `LLM_TIMEOUT` | 30 |
@@ -195,9 +196,23 @@ applies it only on typed evidence:
 
 | Uncaught failure | HTTP | `x-error-code` | Retry-After |
 |------------------|------|----------------|-------------|
+| a model-content refusal on the cause chain | 500 | `SERVICE_ERROR` | — |
 | `QUOTA_EXHAUSTED` declared by type anywhere on the cause chain (no wording fallback) | 402 | `QUOTA_EXHAUSTED` | — |
 | an `LLMException` on the cause chain | the table above | | |
 | anything else | 500 | `SERVICE_ERROR` | — |
+
+**A model-content refusal is FaultMaven's fault, not the provider's** (#1998
+P3). `RawModelContentRefused` means a send site handed the model boundary
+content the redaction module did not mint, and nothing was sent. It declares
+`retryable=False` (so the router's transport neither retries it nor counts it
+against the breaker), which the turn mapping would otherwise read as a
+terminal provider condition (502 `LLM_PROVIDER_ERROR`). Both mappings check
+for it first, and `get_exception_handlers()` registers
+`model_content_refused_handler` for one that reaches a route unwrapped (every
+handler on a send path re-raises it): a 500 `SERVICE_ERROR` with the static
+detail and no `Retry-After`, because the same request is refused again. The
+retry loop does not classify it either: `LLMErrorHandler.with_retry`
+re-raises it, so it stays on the chain instead of becoming an engine code.
 
 For an LLM failure the global answer equals the inline one, less
 `x-correlation-id`. `/turns` keeps calling the helper inline and keeps the

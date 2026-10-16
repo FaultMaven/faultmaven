@@ -1,7 +1,7 @@
 """The model dispatch checks model-bound content for every adapter (#1998).
 
 ``dispatch.send_to_model`` is the one way a call reaches a provider: it checks
-the call's content, reports what it does not accept, and hands the adapter's
+the call's content, refuses what it does not accept, and hands the adapter's
 ``_generate`` plain values. These tests drive every concrete adapter the
 package ships through it, with ``_generate`` replaced by a double — the
 adapter's transport, as far as the dispatch is concerned — and sockets
@@ -9,14 +9,13 @@ blocked, so nothing here can reach a provider.
 
 For each adapter:
 
-* each kind of unaccepted content is reported three ways — a WARNING log line,
-  the ``llm_model_content_violations`` metric (``content="raw"``) and a
-  ``RawModelContentWarning`` — none of which carries the content — and the
-  call is still sent;
-* correctly minted content is not reported, and ``_generate`` receives exact
-  ``str`` values;
-* with ``REFUSE_RAW_MODEL_CONTENT`` on, each violation raises ``TypeError``
-  and the transport is never called.
+* each kind of unaccepted content is refused (``RawModelContentRefused``, a
+  ``TypeError``) before the transport is called, counted once per (argument,
+  kind) by the ``llm_model_content_violations`` counter under the adapter's
+  label, and neither the refusal nor the counter carries the content (#1998
+  P3: there is no warn path);
+* correctly minted content is sent, and ``_generate`` receives exact ``str``
+  values.
 
 And the set of adapters is pinned, none with a public send method: whatever a
 provider class or instance defines besides ``_generate``, the dispatch never
@@ -30,16 +29,15 @@ import inspect
 import logging
 import pkgutil
 import socket
-import warnings
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import faultmaven.infrastructure.llm.providers as providers_package
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm import dispatch
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentWarning,
     send_to_model,
 )
 from faultmaven.infrastructure.llm.providers import base
@@ -48,12 +46,12 @@ from faultmaven.infrastructure.llm.providers.base import (
     LLMResponse,
     ProviderConfig,
 )
-from tests.model_content import forged, vetted, vetted_messages
+from tests.model_content import forged, refusal_pattern, vetted, vetted_messages
 from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm, pytest.mark.security]
 
-#: Content that must never appear in a log line, a warning or a metric label.
+#: Content that must never appear in a refusal, a log line or a metric label.
 SECRET = "alice@example.com 10.9.8.7 SECRET-CONTENT-1998"
 
 #: Every concrete adapter the package ships, by class name.
@@ -226,6 +224,14 @@ VIOLATIONS: Dict[str, tuple] = {
         ("messages.tool_calls.function.arguments", "not_model_output"),
     ),
     "raw_system": ({"system": SECRET}, ("system", "raw")),
+    # A caller's list of content blocks as ``system`` is not text the
+    # redaction module can mint (#1998 P3, the marked test's first half): the
+    # adapter builds its own block list from minted text (``cache_prompt``),
+    # pinned in test_anthropic_request_shape.py.
+    "caller_system_list": (
+        {"system": [{"type": "text", "text": SECRET}]},
+        ("system", "not_text"),
+    ),
     "raw_preamble": ({"preamble": SECRET}, ("preamble", "raw")),
     # D5: every stop sequence is text the model is sent, as ``system`` is.
     "raw_stop_sequence": (
@@ -397,10 +403,6 @@ VIOLATIONS: Dict[str, tuple] = {
         },
         ("messages.tool_calls.function.name", "bad_id"),
     ),
-    "empty_tool_call_id": (
-        {"messages": [{"role": "tool", "tool_call_id": "", "content": vetted("x")}]},
-        ("messages.tool_call_id", "bad_id"),
-    ),
 }
 
 
@@ -433,53 +435,70 @@ def test_every_adapter_implements_only_the_private_send(cls):
 
 @pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
 @pytest.mark.parametrize("case", sorted(VIOLATIONS))
-async def test_a_violation_is_reported_and_sent(cls, case, metric, caplog):
+async def test_a_violation_is_refused_before_the_transport(cls, case, metric, caplog):
     overrides, (argument, kind) = VIOLATIONS[case]
     adapter = _adapter(cls)
     transport = AsyncMock(return_value=_response())
     with (
         patch.object(cls, "_generate", transport),
-        caplog.at_level(logging.WARNING),
-        pytest.warns(RawModelContentWarning) as recorded,
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RawModelContentRefused, match=f"^{adapter.LABEL}: ") as raised,
     ):
         await _send(adapter, _call(**overrides))
 
-    transport.assert_awaited_once()  # warn-only: the call is still sent
+    transport.assert_not_called()
+    assert f"{argument} {kind}" in str(raised.value)
     labels = [c.kwargs for c in metric.labels.call_args_list]
     assert {"argument": argument, "kind": kind} in [
         {"argument": item["argument"], "kind": item["kind"]} for item in labels
     ]
-    assert all(item["content"] == "raw" for item in labels)
     # The label is the adapter's LABEL, read statically: provider_name's value,
     # without running provider code.
     assert all(
-        item["provider"] == adapter.LABEL == adapter.provider_name for item in labels
+        item["target"] == adapter.LABEL == adapter.provider_name for item in labels
     )
+    assert set(labels[0]) == {"target", "argument", "kind"}
     assert metric.labels.return_value.inc.call_count == len(labels)
-
-    lines = [r.getMessage() for r in caplog.records if "#1998" in r.getMessage()]
-    assert len(lines) == 1 and f"{argument} {kind}" in lines[0]
-    assert f"{argument} {kind}" in str(recorded[0].message)
-    # Where and what kind, never the content.
-    for text in lines + [str(w.message) for w in recorded] + [str(labels)]:
+    # One signal: no log line of its own (the boundary that handles the
+    # refusal logs it), and where and what kind, never the content.
+    assert not [r for r in caplog.records if "redaction module" in r.getMessage()]
+    for text in (str(raised.value), str(labels)):
         assert SECRET not in text and "alice@example.com" not in text
 
 
 @pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
-async def test_minted_content_is_not_reported(cls, metric, caplog):
+async def test_minted_content_is_sent(cls, metric):
     transport = AsyncMock(return_value=_response())
-    with (
-        patch.object(cls, "_generate", transport),
-        caplog.at_level(logging.WARNING),
-        warnings.catch_warnings(record=True) as recorded,
-    ):
-        warnings.simplefilter("always")
+    with patch.object(cls, "_generate", transport):
         await _send(_adapter(cls), _minted_call())
 
-    assert not [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
     metric.labels.assert_not_called()
-    assert not [r for r in caplog.records if "#1998" in r.getMessage()]
     transport.assert_awaited_once()
+
+
+@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
+async def test_an_empty_identifier_is_accepted_and_sent_as_it_came(cls, metric):
+    """A3: an OpenAI-compatible server that issues no tool-call id leaves
+    ``""``, which the tool loop echoes as the call's ``id`` and its result's
+    ``tool_call_id``. It carries no content, so it is accepted and the wire is
+    the server's own (#1998 P3; refused as ``bad_id`` before)."""
+    transport = AsyncMock(return_value=_response())
+    messages = vetted_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{**_tool_call('{"q": "x"}'), "id": ""}],
+            },
+            {"role": "tool", "tool_call_id": "", "content": "result"},
+        ]
+    )
+    with patch.object(cls, "_generate", transport):
+        await send_to_model(_adapter(cls), prompt=None, messages=messages)
+
+    metric.labels.assert_not_called()
+    sent = transport.await_args.kwargs["messages"]
+    assert sent[0]["tool_calls"][0]["id"] == "" and sent[1]["tool_call_id"] == ""
 
 
 def _str_values(value: Any, path: str = "") -> List[tuple]:
@@ -523,42 +542,16 @@ async def test_the_adapter_receives_exact_str(cls, metric):
     assert type(call["messages"][1]["content"]).__name__ == "ModelText"
 
 
-@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
-@pytest.mark.parametrize("case", sorted(VIOLATIONS))
-async def test_refusal_raises_before_the_transport(cls, case, metric, monkeypatch):
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    overrides, (argument, kind) = VIOLATIONS[case]
-    transport = AsyncMock(return_value=_response())
-    with patch.object(cls, "_generate", transport):
-        with pytest.raises(TypeError, match=f"{argument} {kind}") as raised:
-            await _send(_adapter(cls), _call(**overrides))
-    transport.assert_not_called()
-    assert SECRET not in str(raised.value)
-
-
-@pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
-async def test_refusal_still_sends_minted_content(cls, metric, monkeypatch):
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    transport = AsyncMock(return_value=_response())
-    with patch.object(cls, "_generate", transport):
-        await _send(_adapter(cls), _minted_call())
-    transport.assert_awaited_once()
-
-
 async def test_a_minted_preamble_reaches_cohere_as_exact_str(metric):
     """MUT-2: Cohere's system prompt is a content keyword: minted, it is
     accepted, and the adapter's ``_generate`` receives an exact ``str``."""
     [cls] = [c for c in ADAPTER_CLASSES if c.__name__ == "CohereProvider"]
     transport = AsyncMock(return_value=_response())
-    with (
-        patch.object(cls, "_generate", transport),
-        warnings.catch_warnings(record=True) as recorded,
-    ):
-        warnings.simplefilter("always")
+    with patch.object(cls, "_generate", transport):
         await send_to_model(
             _adapter(cls), prompt=vetted("q"), preamble=vetted("PREAMBLE")
         )
-    assert not [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
+    metric.labels.assert_not_called()
     preamble = transport.await_args.kwargs["preamble"]
     assert preamble == "PREAMBLE" and type(preamble) is str
 
@@ -566,17 +559,13 @@ async def test_a_minted_preamble_reaches_cohere_as_exact_str(metric):
 async def test_a_prompt_of_none_is_accepted(metric):
     cls = ADAPTER_CLASSES[0]
     transport = AsyncMock(return_value=_response())
-    with (
-        patch.object(cls, "_generate", transport),
-        warnings.catch_warnings(record=True) as recorded,
-    ):
-        warnings.simplefilter("always")
+    with patch.object(cls, "_generate", transport):
         await send_to_model(
             _adapter(cls),
             prompt=None,
             messages=vetted_messages([{"role": "user", "content": "x"}]),
         )
-    assert not [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
+    metric.labels.assert_not_called()
     assert transport.await_args.kwargs["prompt"] is None
 
 
@@ -664,19 +653,6 @@ def test_the_closed_set_is_a_union_of_disjoint_parts():
     assert len(base.PROVIDER_OPTION_KWARGS) == 11
 
 
-async def test_the_warning_points_at_the_caller_of_the_dispatch(metric):
-    """The warning names the line that called ``send_to_model``."""
-    cls = ADAPTER_CLASSES[0]
-    with (
-        patch.object(cls, "_generate", AsyncMock(return_value=_response())),
-        warnings.catch_warnings(record=True) as recorded,
-    ):
-        warnings.simplefilter("always")
-        await send_to_model(_adapter(cls), prompt="raw")  # the line it names
-    [warning] = [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
-    assert warning.filename == __file__
-
-
 def _declared_labelnames() -> List[str]:
     """The label names ``shims/metrics.py`` declares for the boundary metric."""
     import ast
@@ -696,7 +672,7 @@ def _declared_labelnames() -> List[str]:
 
 
 async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
-    """The labels the boundary passes are the ones declared, and it counts.
+    """The labels the refusal passes are the ones declared, and it counts.
 
     The shipped metric is a no-op unless ``ENABLE_METRICS`` was on at import,
     and a mock accepts any label names — so this builds a real Prometheus
@@ -714,17 +690,12 @@ async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
     cls = ADAPTER_CLASSES[0]
     with (
         patch.object(cls, "_generate", AsyncMock(return_value=_response())),
-        pytest.warns(RawModelContentWarning),
+        pytest.raises(RawModelContentRefused),
     ):
         await send_to_model(_adapter(cls), prompt=SECRET)
     sample = registry.get_sample_value(
         "llm_model_content_violations_total",
-        {
-            "provider": cls.LABEL,
-            "argument": "prompt",
-            "kind": "raw",
-            "content": "raw",
-        },
+        {"target": cls.LABEL, "argument": "prompt", "kind": "raw"},
     )
     assert sample == 1.0
 
@@ -735,16 +706,15 @@ async def test_a_real_counter_with_the_declared_labels_counts_it(monkeypatch):
 
 
 async def test_what_a_provider_defines_besides_generate_changes_nothing_checked(
-    metric, monkeypatch
+    metric,
 ):
     """The #2015 round-3 replacements, at runtime: a subclass, a mixin, a
     ``partialmethod``, a ``__getattribute__`` redirect, an instance-dict store,
     a duck-typed class. The dispatch calls nothing on a provider but
-    ``_generate``, so with refusal on raw content is refused before every
-    transport, and minted content reaches each one plain."""
+    ``_generate``, so raw content is refused before every transport, and
+    minted content reaches each one plain."""
     import functools
 
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
     sent: List[Any] = []
 
     class _Adapter(ADAPTER_CLASSES[0]):
@@ -796,37 +766,48 @@ class _Role(str, __import__("enum").Enum):
 
 
 @pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
-async def test_unwrapping_keeps_a_str_subclass_value(cls, metric):
-    """F4: unwrap with ``str.__str__``: ``str(_Role.USER)`` is ``"_Role.USER"``."""
+async def test_a_str_subclass_value_is_raw(cls, metric):
+    """F4: a ``(str, Enum)`` member is a ``str``, not minted text: refused."""
     transport = AsyncMock(return_value=_response())
-    with patch.object(cls, "_generate", transport), warnings.catch_warnings():
-        warnings.simplefilter("ignore", RawModelContentWarning)
+    with (
+        patch.object(cls, "_generate", transport),
+        pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern(cls.LABEL, "messages.content raw; prompt raw"),
+        ),
+    ):
         await send_to_model(
             _adapter(cls),
             prompt=_Role.USER,
             messages=[{"role": "user", "content": _Role.USER}],
         )
-    kwargs = transport.await_args.kwargs
-    assert kwargs["prompt"] == "the enum's value" and type(kwargs["prompt"]) is str
-    assert kwargs["messages"][0]["content"] == "the enum's value"
-    assert type(kwargs["messages"][0]["content"]) is str
+    transport.assert_not_called()
 
 
-async def test_an_unknown_kwarg_name_is_reported_only_as_an_identifier(metric, caplog):
+async def test_a_minted_str_subclass_value_keeps_its_value(metric):
+    """F4: minting reads the value with ``str.__str__``, never ``str()``:
+    ``str(_Role.USER)`` is ``"_Role.USER"``, which would change the wire."""
+    cls = ADAPTER_CLASSES[0]
+    transport = AsyncMock(return_value=_response())
+    with patch.object(cls, "_generate", transport):
+        await send_to_model(_adapter(cls), prompt=vetted(_Role.USER))
+    prompt = transport.await_args.kwargs["prompt"]
+    assert prompt == "the enum's value" and type(prompt) is str
+
+
+async def test_an_unknown_kwarg_name_is_refused_only_as_an_identifier(metric):
     cls = ADAPTER_CLASSES[0]
     with (
         patch.object(cls, "_generate", AsyncMock(return_value=_response())),
-        caplog.at_level(logging.WARNING),
-        pytest.warns(RawModelContentWarning) as recorded,
+        pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern(cls.LABEL, "kwargs unknown_kwarg (?,case_id)"),
+        ) as raised,
     ):
         await send_to_model(
             _adapter(cls), prompt=vetted("x"), **{SECRET: 1, "case_id": "c"}
         )
-    texts = [r.getMessage() for r in caplog.records] + [
-        str(w.message) for w in recorded
-    ]
-    assert any("case_id" in text for text in texts)
-    assert any("?" in text for text in texts)
+    texts = [str(raised.value), str(metric.labels.call_args_list)]
     for text in texts:
         assert SECRET not in text and "alice@example.com" not in text
 
@@ -865,13 +846,9 @@ async def test_minted_reasoning_artifacts_reach_the_adapter_as_they_came(cls, me
         )
     )
     transport = AsyncMock(return_value=_response())
-    with (
-        patch.object(cls, "_generate", transport),
-        warnings.catch_warnings(record=True) as recorded,
-    ):
-        warnings.simplefilter("always")
+    with patch.object(cls, "_generate", transport):
         await send_to_model(_adapter(cls), prompt=None, messages=[echo])
-    assert not [w for w in recorded if issubclass(w.category, RawModelContentWarning)]
+    metric.labels.assert_not_called()
     [sent] = transport.await_args.kwargs["messages"]
     assert sent["provider_metadata"] == metadata
     assert sent["tool_calls"][0]["provider_metadata"] == {"thought_signature": "CikB"}
@@ -883,17 +860,6 @@ async def test_minted_reasoning_artifacts_reach_the_adapter_as_they_came(cls, me
     )
     assert strings and all(type(value) is str for _, value in strings)
     assert sent["provider_metadata"]["assistant_content"][1]["input"]["n"] == 3
-
-
-async def test_a_direct_call_names_its_caller(metric):
-    cls = ADAPTER_CLASSES[0]
-    with (
-        patch.object(cls, "_generate", AsyncMock(return_value=_response())),
-        pytest.warns(RawModelContentWarning) as recorded,
-    ):
-        line = inspect.currentframe().f_lineno + 1
-        await send_to_model(_adapter(cls), prompt="raw")
-    assert (recorded[0].filename, recorded[0].lineno) == (__file__, line)
 
 
 # ---------------------------------------------------------------------------
@@ -955,21 +921,24 @@ def test_register_provider_takes_only_a_provider_class():
 
 
 @pytest.mark.parametrize("cls", ADAPTER_CLASSES, ids=lambda c: c.__name__)
-async def test_raw_messages_beside_a_minted_prompt_are_reported(cls, metric):
+async def test_raw_messages_beside_a_minted_prompt_are_refused(cls, metric):
     """ρ: the messages are checked whatever the prompt is. Every grammar case
     above sends ``prompt=None``; the engine's routed tool loop sends a prompt
     beside its messages."""
     transport = AsyncMock(return_value=_response())
     with (
         patch.object(cls, "_generate", transport),
-        pytest.warns(RawModelContentWarning) as recorded,
+        pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern(cls.LABEL, "messages.content raw"),
+        ),
     ):
         await send_to_model(
             _adapter(cls),
             prompt=vetted("q"),
             messages=[{"role": "user", "content": SECRET}],
         )
-    assert "messages.content raw" in str(recorded[0].message)
+    transport.assert_not_called()
 
 
 class _Flip(list):
@@ -1096,10 +1065,7 @@ _LYING = {
 
 
 @pytest.mark.parametrize("case", sorted(_LYING))
-async def test_a_lying_container_is_refused_before_the_transport(
-    case, metric, monkeypatch
-):
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
+async def test_a_lying_container_is_refused_before_the_transport(case, metric):
     _Flip.calls = _FlipText.calls = _FlipTuple.calls = 0
     overrides, (argument, kind) = _LYING[case]
     cls = next(c for c in ADAPTER_CLASSES if c.__name__ == "OpenAIProvider")
@@ -1130,22 +1096,20 @@ def test_the_grammar_tables_are_read_only():
     assert type(base.CONTENT_KWARGS) is tuple
 
 
-async def test_a_refusal_is_its_own_type_and_not_retryable(metric, monkeypatch):
+async def test_a_refusal_is_its_own_type_and_not_retryable(metric):
     """O1: a refusal is the request's fault, never a provider's."""
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    with pytest.raises(dispatch.RawModelContentRefused) as raised:
+    with pytest.raises(RawModelContentRefused) as raised:
         await send_to_model(_adapter(ADAPTER_CLASSES[0]), prompt=SECRET)
     assert isinstance(raised.value, TypeError)
     assert raised.value.retryable is False
 
 
-async def test_no_provider_code_runs_before_a_refusal(metric, monkeypatch):
-    """O6: the dispatch labels its report with the class's own name. A provider
+async def test_no_provider_code_runs_before_a_refusal(metric):
+    """O6: the dispatch labels its refusal with the class's own name. A provider
     property (``provider_name`` is one on every adapter) would run while the
     dispatch's frame holds the raw call, and could read it from there."""
     import sys
 
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
     seen: List[Any] = []
 
     class _Probe(ADAPTER_CLASSES[0]):
@@ -1161,8 +1125,6 @@ async def test_no_provider_code_runs_before_a_refusal(metric, monkeypatch):
     probe = _Probe.__new__(_Probe)
     # The label is the LABEL the adapter class declares, read from the MRO's
     # own namespaces: the probe's property never runs.
-    with pytest.raises(
-        dispatch.RawModelContentRefused, match=f"^{ADAPTER_CLASSES[0].LABEL}: "
-    ):
+    with pytest.raises(RawModelContentRefused, match=f"^{ADAPTER_CLASSES[0].LABEL}: "):
         await send_to_model(probe, prompt=SECRET, messages=[{"role": "x"}])
     assert seen == [], f"provider code ran before the refusal: {seen}"

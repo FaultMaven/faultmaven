@@ -37,7 +37,7 @@ STATEMENT = (
 @pytest.mark.real_llm
 @pytest.mark.asyncio
 async def test_llm_neither_restates_nor_auto_confirms_on_a_pending_turn(
-    real_llm_provider, stub_repo, fresh_inquiry_case
+    real_llm_router, stub_repo, fresh_inquiry_case, case_redaction
 ):
     """On a Gate-1-pending turn the model leaves presentation to the engine.
 
@@ -58,12 +58,14 @@ async def test_llm_neither_restates_nor_auto_confirms_on_a_pending_turn(
     case.inquiry.proposed_problem_statement = STATEMENT
 
     engine = MilestoneEngine(
-        real_llm_provider,
+        real_llm_router,
         stub_repo,
         investigation_tools=MagicMock(),
     )
 
-    result = await engine.process_turn(case, "ok, what now?", redaction_ctx=None)
+    result = await engine.process_turn(
+        case, "ok, what now?", redaction_ctx=case_redaction
+    )
     case_after = result["case_updated"]
     reply = result["agent_response"]
 

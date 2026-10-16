@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, ToolResult
 
@@ -342,6 +343,9 @@ class AgentToolRegistry:
 
         try:
             return await tool.execute_with_context(params, context)
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' execution failed: {e}")
             return ToolResult(

@@ -14,6 +14,9 @@ This module provides exception handlers for:
   chain; otherwise a static 500 ``SERVICE_ERROR`` — so a route that forgets
   the mapping does not answer a bare 500, and a non-LLM failure is not
   relabelled as the AI provider's (#552)
+- RawModelContentRefused (#1998) → 500 ``SERVICE_ERROR``, on its own or on
+  the cause chain of a ``ServiceException``: a refused model call is a
+  FaultMaven programming error, never the AI provider's failure
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
@@ -59,6 +62,7 @@ from faultmaven.exceptions import (
     ConflictError,
     LLMException,
     NotFoundError,
+    RawModelContentRefused,
     ServiceError,
     ServiceException,
     ValidationException,
@@ -268,6 +272,26 @@ def _llm_http(
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
+def _model_content_refused(exc: BaseException) -> bool:
+    """A model-content refusal (#1998) on the ``__cause__`` chain."""
+    return any(isinstance(c, RawModelContentRefused) for c in walk_cause_chain(exc))
+
+
+def model_content_refused_http_exception(
+    correlation_id: Optional[str] = None,
+) -> HTTPException:
+    """The boundary outcome of a model-content refusal (#1998).
+
+    A send site handed the model boundary content the redaction module did not
+    mint, and nothing was sent. That is a FaultMaven programming error, so it is
+    a 500 ``SERVICE_ERROR`` with the static detail — never an AI-provider
+    status (``RawModelContentRefused`` declares ``retryable=False``, which the
+    turn mapping would otherwise read as ``LLM_PROVIDER_ERROR``) — and no
+    ``Retry-After``: the same request is refused again.
+    """
+    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None, correlation_id)
+
+
 def llm_service_error_http_exception(
     exc: BaseException,
     correlation_id: Optional[str] = None,
@@ -293,6 +317,7 @@ def llm_service_error_http_exception(
 
     Mapping (first match wins)::
 
+        model-content refusal (#1998)          → 500  SERVICE_ERROR             (no retry)
         billing / quota exhausted              → 402  QUOTA_EXHAUSTED           (no retry)
         provider status 429                    → 429  RATE_LIMIT_EXCEEDED       (retry 60)
         provider status 504                    → 504  LLM_TIMEOUT               (retry 30)
@@ -314,6 +339,11 @@ def llm_service_error_http_exception(
     failure (direct, or engine ``UNKNOWN_ERROR`` from the retry loop) is retried
     because a BEST_EFFORT model may emit valid JSON on the next attempt.
     """
+    # 0. A model-content refusal (#1998): FaultMaven's fault, not the
+    #    provider's, and not transient.
+    if _model_content_refused(exc):
+        return model_content_refused_http_exception(correlation_id)
+
     # 1. Permanent billing / quota exhaustion — 402, no Retry-After. Checked
     #    first: it must never be mistaken for a transient 429/5xx.
     if is_quota_exhausted_service_error(exc) or is_billing_error(exc):
@@ -897,6 +927,8 @@ def _is_llm_failure(exc: BaseException) -> bool:
 def global_service_exception_http_exception(exc: BaseException) -> HTTPException:
     """The global handler's mapping — narrower than the ``/turns`` one (#552).
 
+    0. A model-content refusal on the chain (#1998) → 500 ``SERVICE_ERROR``
+       (:func:`model_content_refused_http_exception`).
     1. Billing declared by type anywhere on the chain → 402. The NARROW
        predicate: no English-marker fallback, so a message that merely says
        "billing details" is not told to buy credits.
@@ -906,6 +938,8 @@ def global_service_exception_http_exception(exc: BaseException) -> HTTPException
        ``Retry-After``: a data fault is not transient, and it is not the AI
        provider's.
     """
+    if _model_content_refused(exc):
+        return model_content_refused_http_exception()
     if is_quota_exhausted_service_error(exc):
         return quota_exhausted_http_exception()
     if _is_llm_failure(exc):
@@ -956,6 +990,27 @@ async def service_exception_handler(
     )
 
 
+async def model_content_refused_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """Answer a model-content refusal no route caught (#1998): 500 ``SERVICE_ERROR``.
+
+    A refusal is a programming error that reaches its request boundary
+    unwrapped (every handler on a send path re-raises it), so this is where it
+    is answered and logged: the message names where and what kind, never the
+    content.
+    """
+    logger.error(
+        "Model call refused: %s %s - %s",
+        request.method,
+        request.url.path,
+        str(exc),
+        exc_info=exc,
+    )
+    return await http_exception_handler(request, model_content_refused_http_exception())
+
+
 def get_exception_handlers() -> dict[Type[Exception], Callable]:
     """Get all exception handlers as a dictionary.
 
@@ -972,6 +1027,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,
+        RawModelContentRefused: model_content_refused_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }
 

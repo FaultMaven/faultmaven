@@ -50,7 +50,11 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call, send_to_model
+from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.infrastructure.llm.dispatch import (
+    route_model_call,
+    send_to_model,
+)
 from faultmaven.infrastructure.llm.json_response import (
     json_payload_text,
 )
@@ -731,6 +735,9 @@ class StructuredOutputGenerator:
                         _override_model = _settings.llm.get_structured_output_model()
                         if _override_model:
                             generate_kwargs["model"] = _override_model
+                except RawModelContentRefused:
+                    # A refusal is a programming error, never a fallback (#1998).
+                    raise
                 except Exception:
                     pass
 
@@ -812,6 +819,9 @@ class StructuredOutputGenerator:
                         from faultmaven.config.settings import get_settings
 
                         _turn_ceiling = get_settings().prompt_budget.turn_token_ceiling
+                    except RawModelContentRefused:
+                        # A refusal is a programming error, never a fallback (#1998).
+                        raise
                     except Exception:
                         _turn_ceiling = 150000
                     if (
@@ -829,6 +839,9 @@ class StructuredOutputGenerator:
                         # clear force_schema_next below. We already spent this
                         # generation; the ceiling stops the NEXT round of tools.
                         ceiling_reached = True
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller
@@ -888,6 +901,9 @@ class StructuredOutputGenerator:
                                 cut=schema_answer_stop_reason(response)
                                 is StopReason.MAX_TOKENS,
                             )
+                        except RawModelContentRefused:
+                            # A refusal is a programming error, never a fallback (#1998).
+                            raise
                         except Exception as parse_err:
                             logger.warning(
                                 "Tool loop: text content after forced-schema "
@@ -1008,6 +1024,9 @@ class StructuredOutputGenerator:
                     args = (
                         json.loads(args_str) if isinstance(args_str, str) else args_str
                     )
+                except RawModelContentRefused:
+                    # A refusal is a programming error, never a fallback (#1998).
+                    raise
                 except (json.JSONDecodeError, TypeError):
                     args = {}
                     args_well_formed = False
@@ -1722,6 +1741,9 @@ class StructuredOutputGenerator:
                             prompt = await case_redacted(
                                 fallback_prompt_builder(), redaction_ctx
                             )
+                        except RawModelContentRefused:
+                            # A refusal is a programming error, never a fallback (#1998).
+                            raise
                         except Exception as rebuild_exc:  # never break the fallback
                             logger.warning(
                                 "fallback_prompt_builder failed (non-fatal): %s",
@@ -1830,6 +1852,9 @@ class StructuredOutputGenerator:
                     _override_model = _settings.llm.get_structured_output_model()
                     if _override_model:
                         generate_params["model"] = _override_model
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception:
                 # Settings unavailable (rare; test setup) — proceed with
                 # the default routing rather than failing the turn.
@@ -1856,6 +1881,9 @@ class StructuredOutputGenerator:
                 response = await route_model_call(
                     self.deps.llm_provider, **generate_params
                 )
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception as gen_exc:
                 # Some providers can see the cut themselves and raise before
                 # there is any body to parse — Gemini does this on
@@ -1965,6 +1993,9 @@ class StructuredOutputGenerator:
                 return _synthesize_agent_response(
                     parsed, schema_answer_stop_reason(response)
                 )
+            except RawModelContentRefused:
+                # A refusal is a programming error, never a fallback (#1998).
+                raise
             except Exception as validation_error:
                 # A body that ran out is the recoverable case: raise the cap and
                 # retry. Decided POSITIONALLY against the content we just tried

@@ -23,9 +23,12 @@ from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
+    RawModelContentRefused,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.infrastructure.llm.dispatch import (
+    route_model_call,
+)
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
@@ -844,6 +847,14 @@ class ConversionService:
                 for fm, request in zip(unique_modes, prepared)
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            # A refusal is a programming error, never one mode's failure
+            # (#1998): the first one fails the whole conversion, as it would on
+            # the sequential path.
+            refused = next(
+                (r for r in results if isinstance(r, RawModelContentRefused)), None
+            )
+            if refused is not None:
+                raise refused
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     errors.append(
@@ -1204,6 +1215,9 @@ class ConversionService:
             return ConversionError(
                 failure_mode_id=failure_mode.id, error=str(exc), retryable=False
             )
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             # The exception's CLASS, never its text (#836). Every hand-written
             # failure in this method returns its ``ConversionError`` above, so

@@ -22,7 +22,10 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
-from faultmaven.infrastructure.llm.dispatch import route_model_call
+from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.infrastructure.llm.dispatch import (
+    route_model_call,
+)
 from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
@@ -121,6 +124,9 @@ class LocalTier2Service:
             # are attached below regardless.
             answer = annotate_if_truncated(answer, response)
             tokens_used = getattr(response, "tokens_used", 0)
+        except RawModelContentRefused:
+            # A refusal is a programming error, never a fallback (#1998).
+            raise
         except Exception as e:
             logger.error(f"Local LLM analysis failed: {e}")
             answer = f"LLM analysis failed. Raw excerpts below:\n\n" + "\n---\n".join(

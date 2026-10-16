@@ -392,29 +392,35 @@ class TestInstructionPlacement:
             {"role": "user", "content": "Pods are crashlooping."}
         ]
 
-    # A list of content blocks as ``system`` is not text the redaction module
-    # can mint, so the dispatch reports it (``system not_text``) and, in warn
-    # mode, still hands it on: this pins the adapter's handling of that shape
-    # on purpose. #1998 P3 refuses it; that PR decides this test's future.
-    @pytest.mark.raw_model_content_expected
-    async def test_caller_system_list_is_extended_not_mutated(self):
-        caller_system = [{"type": "text", "text": "Caller block."}]
-
+    async def test_a_cached_system_message_is_extended_by_the_instruction(self):
+        """The production shape of the adapter's list branch (#1998 P3): the
+        engine's system prompt arrives as a ``role: system`` message,
+        ``cache_prompt`` turns it into a cached block list, and the forced-tool
+        instruction is appended to THAT list — never folded into the cached
+        block. A caller's own list as ``system`` is not minted text and is
+        refused at the boundary (``system not_text``,
+        test_provider_boundary_1998.py), so the list this branch extends is
+        always the adapter's own."""
         body = await _sent_body(
             "claude-opus-5-5",
-            system=caller_system,
+            messages=[
+                {"role": "system", "content": "Stable system prompt."},
+                {"role": "user", "content": "Pods are crashlooping."},
+            ],
+            cache_prompt=True,
             tools=[SCHEMA_TOOL],
             tool_choice="required",
         )
 
-        assert caller_system == [{"type": "text", "text": "Caller block."}]
         assert body["system"] == [
-            {"type": "text", "text": "Caller block."},
             {
                 "type": "text",
-                "text": ONE_TOOL_INSTRUCTION.format(
-                    name="InvestigationResponse_Diagnosis"
-                ),
+                "text": "Stable system prompt.",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": ONE_TOOL_INSTRUCTION.format(name=SCHEMA_NAME),
             },
         ]
 

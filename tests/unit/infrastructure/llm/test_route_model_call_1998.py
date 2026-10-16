@@ -1,4 +1,4 @@
-"""The routed seam, ``dispatch.route_model_call`` (#1998 P2).
+"""The routed seam, ``dispatch.route_model_call`` (#1998 P2, P3).
 
 Production code reaches a router only through the seam (rule S of
 ``test_model_dispatch_lexical_1998.py``). It checks the call's content before
@@ -9,35 +9,30 @@ sites never met it while tests replaced the router).
 Pinned here, over the real router, registry and dispatch (only the provider's
 ``_generate`` is a double) and over a router double:
 
-* A1 — the seam is a plain function returning the coroutine, so the report
-  names the CALLER's line, under ``asyncio.wait_for`` too (an ``async def``
-  seam is the root of the task ``wait_for`` makes, and its report named the
-  dispatch);
-* A2 — a raw send is reported ONCE: the router's own reports (a dropped falsy
-  value, a cache hit) and the dispatch report only what the seam did not.
-  Refusal is never subtracted;
-* A3 — the seam checks content only: the router's own knobs (``case_id``,
-  ``bypass_cache``) are ``route()``'s closed signature, not provider keywords.
+* A1 — the seam is a plain function returning the router's coroutine, so a
+  raw call is refused AT the call, before any router runs, under
+  ``asyncio.wait_for`` too;
+* A2 — a raw call is refused once, at the seam, and counted once under the
+  ``router`` target: nothing below it runs (the router's entry check, its
+  cache, the dispatch);
+* A3 — the seam checks content, and passes only ``route()``'s own keywords:
+  the router's knobs (``case_id``, ``bypass_cache``) are ``route()``
+  parameters, while a keyword it does not declare (``system=``) is refused
+  (#2035 review F1).
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
-import warnings
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm import dispatch
 from faultmaven.infrastructure.llm.dispatch import (
-    REPORTED_UPSTREAM,
-    SEND_SITE,
-    RawModelContentRefused,
-    RawModelContentWarning,
     route_model_call,
-    send_to_model,
 )
 from faultmaven.infrastructure.llm.providers.base import (
     BaseLLMProvider,
@@ -49,14 +44,18 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
-from tests.model_content import fake_response, vetted, vetted_messages
+from tests.model_content import (
+    fake_response,
+    refusal_pattern,
+    vetted,
+    vetted_messages,
+)
 from tests.utils import regex_only_sanitizer, sanitize_pii_pinned, sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm, pytest.mark.security]
 
 PROVIDER = "stubprovider"
 MODEL = "stub-model"
-THIS_FILE = __file__
 
 
 class _RecordingProvider(BaseLLMProvider):
@@ -132,86 +131,68 @@ def metric():
         yield metric
 
 
-def _reports(recorded) -> List[tuple]:
-    """``(file, line, message)`` of every RawModelContentWarning recorded."""
+def _counted(metric) -> List[tuple]:
     return [
-        (w.filename, w.lineno, str(w.message))
-        for w in recorded
-        if issubclass(w.category, RawModelContentWarning)
+        (c.kwargs["target"], c.kwargs["argument"], c.kwargs["kind"])
+        for c in metric.labels.call_args_list
     ]
 
 
-def _here() -> int:
-    """The caller's NEXT line: where the call under test is written."""
-    return sys._getframe(1).f_lineno + 1
-
-
 # ---------------------------------------------------------------------------
-# A1: the report names the caller's line
+# A1: refused at the call, before any router
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
-async def test_a_raw_send_is_reported_once_at_the_line_that_made_it(
+async def test_a_raw_send_is_refused_at_the_seam(
     router, provider, metric, sanitize_pii
 ):
     with (
         sanitize_pii_pinned(sanitize_pii),
-        warnings.catch_warnings(record=True) as recorded,
+        pytest.raises(
+            RawModelContentRefused, match=refusal_pattern("router", "prompt raw")
+        ) as raised,
     ):
-        warnings.simplefilter("always")
-        line = _here()
-        await route_model_call(router, prompt="raw 10.1.2.3", max_tokens=5)
-    assert _reports(recorded) == [
-        (
-            THIS_FILE,
-            line,
-            "model-bound content not minted by the redaction module: prompt raw",
-        )
-    ]
-    [call] = metric.labels.call_args_list
-    assert (call.kwargs["argument"], call.kwargs["kind"]) == ("prompt", "raw")
-    assert len(provider.sent) == 1
+        route_model_call(router, prompt="raw 10.1.2.3", max_tokens=5)
+    assert "10.1.2.3" not in str(raised.value)
+    assert _counted(metric) == [("router", "prompt", "raw")]
+    assert provider.sent == []
 
 
-async def test_under_wait_for_the_report_names_the_caller(router):
-    """A1: ``wait_for`` runs the coroutine as the root of a task; the site was
-    read before it, from the caller's frame."""
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        line = _here()
+async def test_under_wait_for_the_refusal_comes_before_the_task(router, provider):
+    """A1: the seam is not a coroutine, so a refusal is raised by the call
+    expression itself, before ``wait_for`` makes a task of anything."""
+    with (
+        patch("asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
+        pytest.raises(RawModelContentRefused, match="prompt raw"),
+    ):
         await asyncio.wait_for(route_model_call(router, prompt="raw", max_tokens=5), 5)
-    [(filename, lineno, _)] = _reports(recorded)
-    assert (filename, lineno) == (THIS_FILE, line)
+    wait_for.assert_not_called()
+    assert provider.sent == []
 
 
 async def test_a_router_double_still_meets_the_check():
     """The point of the seam (O3): a test that replaces the router exercises
-    the check, and the double receives the call's values unchanged."""
+    the check, and the double is never reached by a raw call."""
     double = AsyncMock()
     double.route = AsyncMock(return_value=fake_response())
     messages = [{"role": "user", "content": "raw"}]
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        line = _here()
-        await route_model_call(double, messages=messages, max_tokens=5)
-    [(filename, lineno, message)] = _reports(recorded)
-    assert (filename, lineno) == (THIS_FILE, line)
-    assert message.endswith("messages.content raw")
-    double.route.assert_awaited_once_with(messages=messages, max_tokens=5)
+    with pytest.raises(
+        RawModelContentRefused,
+        match=refusal_pattern("router", "messages.content raw"),
+    ):
+        route_model_call(double, messages=messages, max_tokens=5)
+    double.route.assert_not_called()
 
 
-async def test_minted_content_through_a_double_reports_nothing():
+async def test_minted_content_reaches_a_double_unchanged(metric):
     double = AsyncMock()
     double.route = AsyncMock(return_value=fake_response())
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        await route_model_call(
-            double,
-            messages=vetted_messages([{"role": "user", "content": "minted"}]),
-        )
-        await route_model_call(double, prompt=vetted("minted"), model="m")
-    assert _reports(recorded) == []
+    messages = vetted_messages([{"role": "user", "content": "minted"}])
+    await route_model_call(double, messages=messages, max_tokens=5)
+    double.route.assert_awaited_once_with(messages=messages, max_tokens=5)
+    await route_model_call(double, prompt=vetted("minted"), model="m")
+    metric.labels.assert_not_called()
 
 
 async def test_prompt_reaches_the_router_only_when_passed():
@@ -225,123 +206,115 @@ async def test_prompt_reaches_the_router_only_when_passed():
     assert double.route.await_args.kwargs["prompt"] is None
 
 
-async def test_the_window_closes_with_the_call(router):
-    """``SEND_SITE`` and ``REPORTED_UPSTREAM`` are set for the call only."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RawModelContentWarning)
-        await route_model_call(router, prompt="raw", max_tokens=5)
-    assert SEND_SITE.get() is None
-    assert REPORTED_UPSTREAM.get() == frozenset()
-
-
 # ---------------------------------------------------------------------------
-# A2: reported once; refusal never subtracted
+# A2: refused once, at the seam; nothing below it runs
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
-async def test_raw_messages_are_reported_once_through_the_dispatch(
-    router, metric, sanitize_pii
-):
-    """The dispatch sees the same raw messages after the router's pass, and
-    reports nothing the seam already did."""
+async def test_raw_messages_are_refused_once(router, provider, metric, sanitize_pii):
     with (
         sanitize_pii_pinned(sanitize_pii),
-        warnings.catch_warnings(record=True) as recorded,
+        pytest.raises(
+            RawModelContentRefused,
+            match=refusal_pattern("router", "messages.content raw"),
+        ),
     ):
-        warnings.simplefilter("always")
-        await route_model_call(
+        route_model_call(
             router,
             messages=[{"role": "user", "content": "host 10.1.2.3 is down"}],
             max_tokens=5,
         )
-    assert len(_reports(recorded)) == 1
-    assert metric.labels.call_count == 1
+    assert _counted(metric) == [("router", "messages.content", "raw")]
+    assert provider.sent == []
 
 
-async def test_a_dropped_falsy_prompt_is_reported_once(router, metric):
-    """``route()`` drops ``prompt=""`` before the registry and reports it; the
-    seam already did."""
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        await route_model_call(
+async def test_a_falsy_raw_prompt_is_refused(router, provider, metric):
+    """``route()`` would drop ``prompt=""`` before the registry; the seam
+    refuses it first."""
+    with pytest.raises(
+        RawModelContentRefused, match=refusal_pattern("router", "prompt raw")
+    ):
+        route_model_call(
             router,
             prompt="",
             messages=vetted_messages([{"role": "user", "content": "m"}]),
             max_tokens=5,
         )
-    [(_, _, message)] = _reports(recorded)
-    assert message.endswith(": prompt raw")
-    assert metric.labels.call_count == 1
-
-
-async def test_a_cache_hit_is_reported_once(router, provider, metric):
-    """A call the router answers from its cache reaches no dispatch; the
-    router's own report of it is subtracted too."""
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        await route_model_call(router, prompt="cache me", model=MODEL, max_tokens=5)
-        await route_model_call(router, prompt="cache me", model=MODEL, max_tokens=5)
-    assert len(provider.sent) == 1, "the second call is answered from the cache"
-    assert len(_reports(recorded)) == 2, "one report per call, not per layer"
-    assert metric.labels.call_count == 2
-
-
-async def test_a_new_violation_downstream_is_still_reported(provider):
-    """Only the pairs the seam reported are subtracted: a different kind the
-    dispatch finds is reported."""
-    token = REPORTED_UPSTREAM.set(frozenset({("prompt", "raw")}))
-    try:
-        with warnings.catch_warnings(record=True) as recorded:
-            warnings.simplefilter("always")
-            await send_to_model(
-                provider,
-                prompt="raw",
-                messages=[{"role": "user", "content": "raw too"}],
-            )
-    finally:
-        REPORTED_UPSTREAM.reset(token)
-    [(_, _, message)] = _reports(recorded)
-    assert message.endswith(": messages.content raw")
-
-
-async def test_refusal_is_refused_at_the_seam_before_any_router(monkeypatch):
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    double = AsyncMock()
-    with pytest.raises(RawModelContentRefused, match="prompt raw"):
-        await route_model_call(double, prompt="raw")
-    double.route.assert_not_called()
-
-
-async def test_refusal_is_never_subtracted(monkeypatch, provider):
-    """A raw call the seam reported is still refused downstream: the dispatch
-    reads the reported pairs for its REPORT only."""
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
-    token = REPORTED_UPSTREAM.set(frozenset({("prompt", "raw")}))
-    try:
-        with pytest.raises(RawModelContentRefused, match="prompt raw"):
-            await send_to_model(provider, prompt="raw")
-    finally:
-        REPORTED_UPSTREAM.reset(token)
+    assert _counted(metric) == [("router", "prompt", "raw")]
     assert provider.sent == []
 
 
+async def test_a_raw_call_is_refused_whatever_the_cache_holds(router, provider, metric):
+    """The router's cache answers a minted call it has seen; the same text
+    raw is refused before the cache is consulted."""
+    await route_model_call(router, prompt=vetted("cache me"), model=MODEL, max_tokens=5)
+    with pytest.raises(RawModelContentRefused, match="prompt raw"):
+        route_model_call(router, prompt="cache me", model=MODEL, max_tokens=5)
+    assert len(provider.sent) == 1
+    assert _counted(metric) == [("router", "prompt", "raw")]
+
+
 # ---------------------------------------------------------------------------
-# A3: content only
+# A3: content, and route()'s own keywords only (#2035 review F1)
 # ---------------------------------------------------------------------------
 
 
-async def test_the_router_knobs_are_not_provider_keywords(router):
-    """``case_id`` and ``bypass_cache`` are ``route()``'s own: the seam checks
-    content, and a minted call carrying them reports nothing."""
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        await route_model_call(
-            router,
-            prompt=vetted("minted"),
-            model=MODEL,
-            max_tokens=5,
-            case_id="case-1",
-            bypass_cache=True,
+def test_the_seams_keyword_set_is_routes_signature():
+    """``ROUTE_KWARGS`` is exactly what ``LLMRouter.route`` declares besides
+    ``prompt``: a keyword added to ``route()`` passes the seam the day it is
+    declared, and nothing else ever does."""
+    import inspect
+
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    declared = set(inspect.signature(LLMRouter.route).parameters) - {"self", "prompt"}
+    assert dispatch.ROUTE_KWARGS == declared
+    assert type(dispatch.ROUTE_KWARGS) is frozenset
+
+
+@pytest.mark.parametrize("keyword", ["system", "preamble", "stop_sequences", "foo"])
+async def test_a_keyword_route_does_not_declare_is_refused_at_the_seam(keyword, metric):
+    """The review's probe: ``system=`` planted at a send site went silently
+    through a router double, while the real router raised a bare ``TypeError``
+    that the site's fail-open handler swallowed. The seam refuses it, minted
+    or not, before any router."""
+    double = AsyncMock()
+    double.route = AsyncMock(return_value=fake_response())
+    with pytest.raises(
+        RawModelContentRefused,
+        match=refusal_pattern("router", f"kwargs unknown_kwarg ({keyword})"),
+    ):
+        route_model_call(
+            double,
+            messages=vetted_messages([{"role": "user", "content": "m"}]),
+            **{keyword: vetted("Classify for: the user's message")},
         )
-    assert _reports(recorded) == []
+    double.route.assert_not_called()
+    assert _counted(metric) == [("router", "kwargs", "unknown_kwarg")]
+
+
+async def test_every_declared_keyword_passes_the_seam(metric):
+    """The control: each ``route()`` keyword reaches the double unchanged."""
+    double = AsyncMock()
+    double.route = AsyncMock(return_value=fake_response())
+    kwargs = {key: None for key in dispatch.ROUTE_KWARGS}
+    kwargs["messages"] = vetted_messages([{"role": "user", "content": "m"}])
+    await route_model_call(double, prompt=None, **kwargs)
+    assert double.route.await_args.kwargs == {**kwargs, "prompt": None}
+    metric.labels.assert_not_called()
+
+
+async def test_the_router_knobs_are_not_provider_keywords(router, provider, metric):
+    """``case_id`` and ``bypass_cache`` are ``route()``'s own: the seam checks
+    content, and a minted call carrying them is sent."""
+    await route_model_call(
+        router,
+        prompt=vetted("minted"),
+        model=MODEL,
+        max_tokens=5,
+        case_id="case-1",
+        bypass_cache=True,
+    )
+    metric.labels.assert_not_called()
+    assert len(provider.sent) == 1

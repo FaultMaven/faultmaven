@@ -35,7 +35,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from faultmaven.exceptions import FaultMavenException
+from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
@@ -259,6 +259,9 @@ async def convert_document(
             content={"detail": str(e), "error_code": error_code},
         )
 
+    except RawModelContentRefused:
+        # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
+        raise
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)
         return JSONResponse(

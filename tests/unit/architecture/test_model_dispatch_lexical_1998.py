@@ -17,13 +17,17 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
 * A2 — the string ``"_generate"`` (or a dotted path ending in it) anywhere
   but those files: ``getattr(p, "_generate")``, ``operator.methodcaller``,
   ``type(p).__dict__["_generate"]``, a ``patch`` target.
-* A3 — ``send_to_model`` bound to anything but the dispatch's own function,
-  outside ``dispatch.py``: an assignment or deletion (``dispatch.send_to_model =
-  mine``, a module-level ``send_to_model = mine``), a ``def``/``class``/argument
-  of that name, an import that binds the name from elsewhere or under ``as``,
-  and the name as a string (``setattr``, a ``patch`` target). Binding the
-  real function to another local name and rebinding THAT reaches nothing: a
-  replacement still has to reach ``_generate``, which A1 flags.
+* A3 — ``send_to_model`` and the seam ``route_model_call`` bound to anything
+  but the dispatch's own functions, or reached under another name, outside
+  ``dispatch.py``: an assignment or deletion (``dispatch.send_to_model =
+  mine``, a module-level ``route_model_call = mine``), a ``def``/``class``/
+  argument of that name, an import that binds the name from elsewhere, an
+  import of the real one under ``as`` (``route_model_call as _ask``), a
+  reference that is not a call (``ask = route_model_call``,
+  ``partial(send_to_model, p)``), and the name as a string (``setattr``, a
+  ``patch`` target). Each is imported under its own name and only ever called:
+  the propagation census (``test_model_refusal_propagates_1998.py``) finds a
+  send site by those names, and an alias would hide it (#2035 review F2).
 * A4 — the adapters' own transport callables, the coroutines their
   ``_generate`` sends through (``_post_chat_completion``, ``_call_ollama_api``,
   ...), as attributes or strings, under the same exemption. Their names are
@@ -36,7 +40,7 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   ``dispatch.py`` binds — its functions, its constants and the names it
   imports, read from its own AST, less the standard library's and
   ``logger``. So ``dispatch.model_call_violations = lambda *a: []``,
-  ``setattr(d, "refuse_if_refusing", ...)`` and ``d.CONTENT_KWARGS = ()``
+  ``setattr(d, "refuse", ...)`` and ``d.CONTENT_KWARGS = ()``
   are flagged however the module object was reached
   (``sys.modules[send_to_model.__module__]``, ``inspect.getmodule``). The
   tables the check reads in the security module are read-only
@@ -46,6 +50,11 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
 * T — nothing outside ``tests/`` imports ``tests``: the test minter
   (``tests.model_content.vetted``) mints raw text without a redaction pass,
   and is exempt from the mint check for that reason only.
+* S2 — a registry's ``route_request`` (the routing chokepoint the router
+  calls through ``call_external``) is read only in ``router.py``: as an
+  attribute or a string naming it, anywhere else is a send that skips the seam
+  and the router's entry check and is invisible to the census (#2035 review
+  F2). Measured when added: ``router.py`` is the only reader.
 * S — a router is reached only through the seam,
   ``dispatch.route_model_call`` (#1998 P2), which checks the call's content
   before any router runs, a test's double included. So ``route`` read as an
@@ -60,21 +69,6 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   only through a reflection this rule already names or a computed one, which
   is out of scope. No other file is allowed: since #1998 P2b every send
   site, the knowledge-authoring ones included, calls the seam.
-* W — nothing in ``faultmaven/`` switches off the suite's gate on a raw send
-  (#1998 P2b): ``filterwarnings = error`` in the pytest configs, and the
-  autouse recorder (``tests/raw_model_content_guard.py``). Code under test
-  runs inside both, so a warnings call there could switch them off by
-  accident: ``catch_warnings`` (whose ``record=True`` takes the warning
-  first), ``resetwarnings``, ``logging.captureWarnings`` with anything but a
-  literal ``False`` (it routes warnings to logging), a store into a
-  ``warnings`` module's ``showwarning`` and any use of its ``filters`` list,
-  and a ``simplefilter`` / ``filterwarnings`` that is not provably scoped
-  AWAY from ``RawModelContentWarning`` — scoped means a category the warning
-  is not (it is a ``UserWarning``, so ``Warning``, ``UserWarning`` and the
-  exception bases cover it), or a ``message`` pattern that does not match its
-  text. Aliases are resolved (``from warnings import simplefilter as sf``,
-  ``import warnings as w``). A filter that names ``RawModelContentWarning``
-  on purpose is flagged too; doing it anyway is a deliberate act (D1).
 
 The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
@@ -126,22 +120,17 @@ _DISPATCH_MODULE = "faultmaven.infrastructure.llm." + "dispatch"
 # the module docstring is not the only place they appear.
 _SEND = "_gen" + "erate"
 _DISPATCHER = "send_to" + "_model"
+#: The seam (A3 holds it as it holds the dispatcher).
+_SEAM_NAME = "route_model" + "_call"
+#: A3: the names imported only under their own name and only ever called.
+_BOUND = frozenset({_DISPATCHER, _SEAM_NAME})
+#: Rule S2: the registry's routing chokepoint, and the one file that reads it.
+_ROUTE_REQUEST = "route" + "_request"
+_ROUTER = "faultmaven/infrastructure/llm/router.py"
 #: Rule S: the router's send method.
 _ROUTE = "route"
 #: The reflections that name a method or attribute by a string (rule S).
 _REFLECTORS = frozenset({"methodcaller", "attrgetter"})
-#: Rule W: where it applies, the calls it reads, and what covers the warning.
-_PACKAGE = "faultmaven/"
-_WARNING_FILTERS = frozenset({"simplefilter", "filterwarnings"})
-_WARNING_SWITCHES = frozenset({"catch_warnings", "resetwarnings"})
-_CAPTURE = "captureWarnings"
-#: ``RawModelContentWarning`` and the classes it derives from: a filter naming
-#: one of these reaches it.
-_COVERING = frozenset(
-    {"RawModelContentWarning", "UserWarning", "Warning", "Exception", "BaseException"}
-)
-#: The dispatch's warning, as a message-scoped filter would see it.
-_RAW_REPORT = "model-bound content not minted by the redaction module: prompt raw"
 
 
 def exempt(path: str) -> bool:
@@ -385,6 +374,8 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     private = not exempt(path)
     transports = transport_names()
     rebindable = path != _DISPATCH
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    chokepoint = path != _ROUTER
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Attribute):
@@ -392,12 +383,17 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "A1", f"a provider's {_SEND} reached"))
             if private and node.attr in transports:
                 found.append((line, "A4", f"an adapter's transport: {node.attr}"))
+            if rebindable and node.attr in _BOUND:
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    found.append((line, "A3", f"{node.attr} rebound by attribute"))
+                elif id(node) not in called:
+                    found.append((line, "A3", f"{node.attr} referenced, not called"))
             if (
-                rebindable
-                and node.attr == _DISPATCHER
-                and isinstance(node.ctx, (ast.Store, ast.Del))
+                chokepoint
+                and node.attr == _ROUTE_REQUEST
+                and isinstance(node.ctx, ast.Load)
             ):
-                found.append((line, "A3", f"{_DISPATCHER} rebound by attribute"))
+                found.append((line, "S2", f"{_ROUTE_REQUEST} read outside the router"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node in docstrings and len(node.value.split()) > 1:
                 continue
@@ -405,232 +401,46 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                 found.append((line, "A2", f"{_SEND} named in a string"))
             if private and _names(node.value, transports):
                 found.append((line, "A4", "an adapter's transport named in a string"))
-            if rebindable and _names(node.value, {_DISPATCHER}):
-                found.append((line, "A3", f"{_DISPATCHER} named in a string"))
+            for name in sorted(_names(node.value, _BOUND)) if rebindable else ():
+                found.append((line, "A3", f"{name} named in a string"))
+            if chokepoint and _names(node.value, {_ROUTE_REQUEST}):
+                found.append((line, "S2", f"{_ROUTE_REQUEST} named in a string"))
         elif not rebindable:
             continue
-        elif isinstance(node, ast.Name) and node.id == _DISPATCHER:
+        elif isinstance(node, ast.Name) and node.id in _BOUND:
             if isinstance(node.ctx, (ast.Store, ast.Del)):
-                found.append((line, "A3", f"{_DISPATCHER} rebound"))
+                found.append((line, "A3", f"{node.id} rebound"))
+            elif id(node) not in called:
+                found.append((line, "A3", f"{node.id} referenced, not called"))
         elif (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name == _DISPATCHER
+            and node.name in _BOUND
         ):
-            found.append((line, "A3", f"a def named {_DISPATCHER}"))
-        elif isinstance(node, ast.arg) and node.arg == _DISPATCHER:
-            found.append((line, "A3", f"an argument named {_DISPATCHER}"))
-        elif isinstance(node, ast.ExceptHandler) and node.name == _DISPATCHER:
-            found.append((line, "A3", f"{_DISPATCHER} bound by except"))
-        elif isinstance(node, (ast.Global, ast.Nonlocal)) and _DISPATCHER in node.names:
-            found.append((line, "A3", f"{_DISPATCHER} declared rebindable"))
+            found.append((line, "A3", f"a def named {node.name}"))
+        elif isinstance(node, ast.arg) and node.arg in _BOUND:
+            found.append((line, "A3", f"an argument named {node.arg}"))
+        elif isinstance(node, ast.ExceptHandler) and node.name in _BOUND:
+            found.append((line, "A3", f"{node.name} bound by except"))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and _BOUND & set(node.names):
+            found.append((line, "A3", "a dispatch function declared rebindable"))
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.asname == _DISPATCHER:
-                    found.append((line, "A3", f"a module imported as {_DISPATCHER}"))
+                if alias.asname in _BOUND:
+                    found.append((line, "A3", f"a module imported as {alias.asname}"))
         elif isinstance(node, ast.ImportFrom):
             module = _module_of(node, path)
             for alias in node.names:
                 bound = alias.asname or alias.name
-                canonical = (
-                    module == _DISPATCH_MODULE
-                    and alias.name == _DISPATCHER
-                    and alias.asname is None
-                )
-                if bound == _DISPATCHER and not canonical:
+                from_dispatch = module == _DISPATCH_MODULE
+                if bound in _BOUND and not (from_dispatch and alias.name == bound):
+                    found.append((line, "A3", f"{bound} bound by import from {module}"))
+                elif from_dispatch and alias.name in _BOUND and bound != alias.name:
                     found.append(
-                        (line, "A3", f"{_DISPATCHER} bound by import from {module}")
+                        (line, "A3", f"{alias.name} imported under another name")
                     )
     if rebindable:
         found.extend(_rebinding_violations(tree, path, docstrings))
-    if path.startswith(_PACKAGE):
-        found.extend(_warning_switch_violations(tree))
     return sorted(set(found))
-
-
-def _final_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _argument(call: ast.Call, position: int, keyword: str) -> ast.AST | None:
-    for kw in call.keywords:
-        if kw.arg == keyword:
-            return kw.value
-    if len(call.args) > position and not any(
-        isinstance(a, ast.Starred) for a in call.args[: position + 1]
-    ):
-        return call.args[position]
-    return None
-
-
-def _scoped_away(call: ast.Call, callee: str) -> bool:
-    """Whether a ``simplefilter`` / ``filterwarnings`` call provably cannot
-    reach ``RawModelContentWarning``: a category it is not, or a message
-    pattern its text does not match. A splat proves nothing."""
-    import re
-
-    if any(isinstance(a, ast.Starred) for a in call.args) or any(
-        kw.arg is None for kw in call.keywords
-    ):
-        return False
-    category = _argument(call, 1 if callee == "simplefilter" else 2, "category")
-    if category is not None:
-        name = _final_name(category)
-        if name is not None and name not in _COVERING:
-            return True
-    if callee == "filterwarnings":
-        message = _argument(call, 1, "message")
-        if (
-            isinstance(message, ast.Constant)
-            and isinstance(message.value, str)
-            and message.value
-        ):
-            return re.compile(message.value, re.I).match(_RAW_REPORT) is None
-    return False
-
-
-def _warning_switch_violations(tree: ast.AST) -> List[Tuple[int, str, str]]:
-    """W: a warnings call that could switch off the suite's gate."""
-    aliases = {}
-    warning_modules = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module in {"warnings", "logging"}:
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = alias.name
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "warnings":
-                    warning_modules.add(alias.asname or alias.name)
-    found: List[Tuple[int, str, str]] = []
-    for node in ast.walk(tree):
-        line = getattr(node, "lineno", 0)
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Attribute):
-                callee = func.attr
-            elif isinstance(func, ast.Name):
-                callee = aliases.get(func.id, func.id)
-            else:
-                continue
-            if callee in _WARNING_SWITCHES:
-                found.append((line, "W", f"{callee} in the package"))
-            elif callee == _CAPTURE:
-                switch = _argument(node, 0, "capture")
-                if not (isinstance(switch, ast.Constant) and switch.value is False):
-                    found.append((line, "W", f"{_CAPTURE} routes warnings to logging"))
-            elif callee in _WARNING_FILTERS and not _scoped_away(node, callee):
-                found.append(
-                    (line, "W", f"{callee} not scoped away from the raw-send warning")
-                )
-        elif (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id in warning_modules
-        ):
-            if node.attr == "filters":
-                found.append((line, "W", "the warnings filter list reached"))
-            elif node.attr == "showwarning" and isinstance(
-                node.ctx, (ast.Store, ast.Del)
-            ):
-                found.append((line, "W", "warnings.showwarning replaced"))
-    return found
-
-
-#: Rule W's planted cases: each switches off the suite's gate on a raw send
-#: (#2034 review F5): the review's ten forms and the ones beside them.
-W_FLAGGED = {
-    "simplefilter ignore": "import warnings\nwarnings.simplefilter('ignore')\n",
-    "filterwarnings ignore, category UserWarning": (
-        "import warnings\n" "warnings.filterwarnings('ignore', category=UserWarning)\n"
-    ),
-    "catch_warnings()": (
-        "import warnings\nwith warnings.catch_warnings():\n    send()\n"
-    ),
-    "catch_warnings(record=True)": (
-        "import warnings\n" "with warnings.catch_warnings(record=True):\n    send()\n"
-    ),
-    "resetwarnings": "import warnings\nwarnings.resetwarnings()\n",
-    "filterwarnings ignore, no category": (
-        "import warnings\nwarnings.filterwarnings('ignore')\n"
-    ),
-    "logging.captureWarnings(True)": (
-        "import logging\nlogging.captureWarnings(True)\n"
-    ),
-    "simplefilter by alias": (
-        "from warnings import simplefilter as quiet\nquiet('ignore')\n"
-    ),
-    "filterwarnings by alias": (
-        "from warnings import filterwarnings as fw\n"
-        "fw('ignore', category=UserWarning)\n"
-    ),
-    "catch_warnings by alias": (
-        "from warnings import catch_warnings as cw\nwith cw(record=True):\n"
-        "    send()\n"
-    ),
-    "resetwarnings by alias": (
-        "from warnings import resetwarnings as reset\nreset()\n"
-    ),
-    "captureWarnings by alias": (
-        "from logging import captureWarnings as capture\ncapture(True)\n"
-    ),
-    "the warnings module under an alias": (
-        "import warnings as w\nw.simplefilter('ignore')\n"
-    ),
-    "filterwarnings ignore, category Warning": (
-        "import warnings\nwarnings.filterwarnings('ignore', category=Warning)\n"
-    ),
-    "simplefilter error, no category": (
-        "import warnings\nwarnings.simplefilter('error')\n"
-    ),
-    "filterwarnings by a message that matches the warning": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', message='model-bound content')\n"
-    ),
-    "filterwarnings by module only": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', module='faultmaven.modules')\n"
-    ),
-    "filterwarnings naming the warning itself": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', category=RawModelContentWarning)\n"
-    ),
-    "a splat": "import warnings\nwarnings.simplefilter('ignore', *cats)\n",
-    "captureWarnings with a variable": (
-        "import logging\nlogging.captureWarnings(flag)\n"
-    ),
-    "showwarning replaced": (
-        "import warnings\nwarnings.showwarning = lambda *a, **k: None\n"
-    ),
-    "the filters list mutated": (
-        "import warnings\nwarnings.filters.insert(0, ('ignore', None, Warning, None, 0))\n"
-    ),
-}
-
-#: What rule W leaves alone: filters scoped away from the warning, and names
-#: that only look alike.
-W_ALLOWED = {
-    "filterwarnings by another warning's message": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', message='Pydantic V1 style')\n"
-    ),
-    "simplefilter for another category": (
-        "import warnings\nwarnings.simplefilter('ignore', DeprecationWarning)\n"
-    ),
-    "filterwarnings for another category, by keyword": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', category=DeprecationWarning, module='x')\n"
-    ),
-    "filterwarnings for another category, positionally": (
-        "import warnings\n"
-        "warnings.filterwarnings('ignore', '', exceptions.SAWarning)\n"
-    ),
-    "captureWarnings(False)": "import logging\nlogging.captureWarnings(False)\n",
-    "warnings.warn": "import warnings\nwarnings.warn('x', DeprecationWarning)\n",
-    "a query's filters": "query.filters.append(clause)\n",
-}
 
 
 def _files() -> Iterable[Tuple[str, Path]]:
@@ -648,25 +458,6 @@ def _scan() -> Tuple[dict, int]:
         if hits:
             found[rel] = hits
     return found, files
-
-
-@pytest.mark.parametrize("name", sorted(W_FLAGGED))
-def test_rule_w_flags_a_switch_of_the_warnings_machinery(name):
-    hits = violations(W_FLAGGED[name], "faultmaven/planted.py")
-    assert "W" in {rule for _line, rule, _what in hits}, name
-
-
-@pytest.mark.parametrize("name", sorted(W_ALLOWED))
-def test_rule_w_allows_a_filter_scoped_away_from_the_warning(name):
-    hits = violations(W_ALLOWED[name], "faultmaven/planted.py")
-    assert "W" not in {rule for _line, rule, _what in hits}, (name, hits)
-
-
-def test_rule_w_applies_to_the_package_only():
-    """Scripts and migrations run outside the suite's gate on model sends."""
-    source = W_FLAGGED["simplefilter ignore"]
-    assert violations(source, "faultmaven/planted.py")
-    assert not violations(source, "scripts/planted.py")
 
 
 def test_nothing_outside_the_dispatch_reaches_a_provider():
@@ -775,10 +566,11 @@ PLANTED = {
     "A5 the dispatch imported whole, aliased": (
         "from faultmaven.infrastructure.llm import dispatch as d\n"
     ),
-    "A5 setattr": "setattr(d, 'refuse_if_refusing', lambda *a: None)\n",
+    "A5 setattr": "setattr(d, 'refuse', lambda *a: None)\n",
     "A5 delattr": "delattr(d, 'CONTENT_KWARGS')\n",
     "A5 object.__setattr__": "object.__setattr__(d, 'GENERATE_KWARGS', frozenset())\n",
-    "A5 bound __setattr__": "d.__setattr__('REFUSE_RAW_MODEL_CONTENT', False)\n",
+    "A5 bound __setattr__": "d.__setattr__('refuse', lambda *a: None)\n",
+    "A5 the refusal type rebound": "d.RawModelContentRefused = Warning\n",
     "A5 content kwargs emptied": "d.CONTENT_KWARGS = ()\n",
     "A5 an imported validator rebound": "d.message_violations = lambda m: []\n",
     "A5 via __module__": (
@@ -811,6 +603,31 @@ PLANTED = {
     "S methodcaller, NFKC string": "f = methodcaller('ｒoute')\n",
     "S attrgetter": "send = operator.attrgetter('route')(router)\n",
     "S attrgetter, dotted": "send = attrgetter('deps.llm_provider.route')(self)\n",
+    # A3 for the seam, and the aliases the census would not see (#2035 F2).
+    "A3 the seam imported under another name": (
+        "from faultmaven.infrastructure.llm.dispatch import route_model_call as _ask\n"
+    ),
+    "A3 the dispatch imported under another name (was B14d)": (
+        "from faultmaven.infrastructure.llm.dispatch import send_to_model as s\n"
+    ),
+    "A3 the seam rebound": "route_model_call = mine\n",
+    "A3 the seam from elsewhere": "from mine import route_model_call\n",
+    "A3 the seam aliased by assignment": "ask = route_model_call\n",
+    "A3 the seam handed on uncalled": (
+        "f = functools.partial(route_model_call, router)\n"
+    ),
+    "A3 the dispatch handed on uncalled": "senders = [send_to_model]\n",
+    "A3 the seam named in a string": "f = getattr(d, 'route_model_call')\n",
+    "A3 a def named like the seam": "def route_model_call(router):\n    return 1\n",
+    # S2: the registry's chokepoint, reached around the seam and the router.
+    "S2 route_request called": (
+        "r = await get_registry().route_request(prompt=p, max_tokens=5)\n"
+    ),
+    "S2 route_request uncalled": "send = registry.route_request\n",
+    "S2 route_request by getattr": "f = getattr(registry, 'route_request')\n",
+    "S2 route_request by methodcaller": (
+        "f = operator.methodcaller('route_request', prompt=p)\n"
+    ),
 }
 
 #: rev2015e-probes/r7_reach.py: every way the #2015 review replaced
@@ -920,6 +737,26 @@ def test_a_relative_whole_import_of_the_dispatch_is_caught():
     assert not violations(source, "faultmaven/planted.py")
 
 
+def test_the_router_alone_may_read_route_request():
+    """S2 exempts ``router.py``: it hands ``route_request`` to
+    ``call_external``. Anywhere else, the same line is flagged."""
+    source = "f = self.registry.route_request\n"
+    assert violations(source, _ROUTER) == []
+    assert {hit[1] for hit in violations(source, "faultmaven/x.py")} == {"S2"}
+
+
+def test_the_seam_and_the_dispatch_are_imported_and_called_by_name():
+    """The canonical spelling the census reads: import by its own name, call."""
+    source = (
+        "from faultmaven.infrastructure.llm.dispatch import route_model_call\n"
+        "from faultmaven.infrastructure.llm.dispatch import send_to_model\n"
+        "async def f(router, provider, p):\n"
+        "    await asyncio.wait_for(route_model_call(router, prompt=p), 5)\n"
+        "    return await send_to_model(provider, prompt=p)\n"
+    )
+    assert violations(source, "faultmaven/x.py") == []
+
+
 def test_the_seam_may_call_route():
     """S exempts the seam's own file: it is what calls ``router.route``."""
     assert violations("r = await router.route(**kwargs)\n", _DISPATCH) == []
@@ -941,10 +778,6 @@ ALLOWED = {
     ),
     "a call": "r = await send_to_model(provider, prompt=p)\n",
     "a call by attribute": "r = await dispatch.send_to_model(provider, prompt=p)\n",
-    "the real one under a local alias, rebound (B14d)": (
-        "from faultmaven.infrastructure.llm.dispatch import send_to_model as s\n"
-        "s = mine\n"
-    ),
     "the seam": "r = await route_model_call(router, prompt=p)\n",
     "the seam under wait_for": (
         "r = await asyncio.wait_for(route_model_call(router, prompt=p), 5)\n"
@@ -955,7 +788,7 @@ ALLOWED = {
     ),
     # No bare string rule (#1998 P2 ruling): FastAPI's routing context.
     "route as a string": "r = getattr(ctx, 'route', None)\nscope['route']\n",
-    "a longer attribute": "x = registry.route_request\ny = app.routes\n",
+    "a longer attribute": "x = registry.route_requests\ny = app.routes\n",
     "another name to a reflection": "f = operator.attrgetter('router')\n",
     "a public provider attribute": "provider.generate = mine\n",
     "a docstring naming both": '"""Calls send_to_model, which calls _generate."""\n',
@@ -988,7 +821,7 @@ def test_an_ordinary_use_is_allowed(name):
 
 @pytest.mark.parametrize("name", sorted(R7_REACH))
 def test_every_r7_reach_replacement_is_refused_raw_at_the_dispatch(name, monkeypatch):
-    """With refusal on, raw content sent to each modified provider is refused
+    """Raw content sent to each modified provider is refused
     before its transport, and minted content still reaches the adapter's own
     ``_generate`` — whatever ``generate`` now is."""
     from faultmaven.infrastructure.llm import dispatch
@@ -1015,7 +848,6 @@ def test_every_r7_reach_replacement_is_refused_raw_at_the_dispatch(name, monkeyp
         )
 
     monkeypatch.setattr(OpenAIProvider, _SEND, transport)
-    monkeypatch.setattr(dispatch, "REFUSE_RAW_MODEL_CONTENT", True)
     namespace = {
         "CFG": ProviderConfig(
             name="openai",

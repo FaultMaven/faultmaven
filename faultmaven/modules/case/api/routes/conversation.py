@@ -54,6 +54,7 @@ from faultmaven.exceptions import (
     CASE_TERMINAL,
     NotFoundError,
     PermissionDeniedException,
+    RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
@@ -1032,6 +1033,9 @@ async def submit_turn(
         # llm_service_error_http_exception. Covers billing (→402), rate limits,
         # over-capacity, timeouts, provider 4xx/5xx, and schema-parse failures.
         raise llm_service_error_http_exception(e, correlation_id)
+    except RawModelContentRefused:
+        # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
+        raise
     except Exception as e:
         logger.error(
             f"Unexpected error processing turn: {e}",

@@ -579,19 +579,19 @@ llm_unpriced_calls = Counter(
     labelnames=["provider", "model"],
 )
 
-# Model-bound content the provider boundary did not accept (#1998): a call
-# whose prompt, messages or content keywords were not minted by the redaction
-# module, or that passed a keyword outside the closed set. One increment per
-# (argument, kind) per call. content="raw": reported and SENT (warn-only, while
-# callers migrate); the refusal that replaces it raises before any I/O. Non-zero
-# in production = a send path that has not moved to the minting helpers yet.
+# Model calls REFUSED at the model boundary (#1998): content the redaction
+# module did not mint, or a keyword outside the closed set, once per distinct
+# (argument, kind) per refusal. ``target`` is ``router`` (the seam and the
+# router's entry) or the provider's LABEL (the dispatch). Nothing refused is
+# sent; non-zero in production is a send site that does not mint what it sends.
 llm_model_content_violations = Counter(
     "llm_model_content_violations_total",
-    "Provider calls carrying model-bound content the redaction module did not "
-    "mint, by argument (prompt|messages.content|...|kwargs) and kind "
-    "(raw|forged|not_text|bad_shape|bad_id|bad_role|unknown_key|"
-    "not_model_output|unknown_kwarg). content=raw: reported and sent.",
-    labelnames=["provider", "argument", "kind", "content"],
+    "Model calls refused before any network I/O because their model-bound "
+    "content was not minted by the redaction module, by target "
+    "(router|<provider label>), argument (prompt|messages.content|...|kwargs) "
+    "and kind (raw|forged|not_text|bad_shape|bad_id|bad_role|unknown_key|"
+    "not_model_output|unknown_kwarg).",
+    labelnames=["target", "argument", "kind"],
 )
 
 # The gap between llm_provider_calls_total and the calls the LLM usage ledger
