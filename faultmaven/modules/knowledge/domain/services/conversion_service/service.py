@@ -23,10 +23,10 @@ from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
+    RawModelContentRefused,
     ValidationException,
 )
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry

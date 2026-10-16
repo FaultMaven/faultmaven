@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (

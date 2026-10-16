@@ -22,8 +22,8 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.llm.truncation import (

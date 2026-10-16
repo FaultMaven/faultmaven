@@ -32,12 +32,12 @@ from faultmaven.exceptions import (
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
     LLMErrorCategory,
+    RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
     walk_cause_chain,
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 
 logger = logging.getLogger(__name__)
 

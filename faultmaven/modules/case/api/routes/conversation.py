@@ -54,11 +54,11 @@ from faultmaven.exceptions import (
     CASE_TERMINAL,
     NotFoundError,
     PermissionDeniedException,
+    RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapExceeded,

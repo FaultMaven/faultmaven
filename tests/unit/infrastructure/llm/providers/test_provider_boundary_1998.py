@@ -35,9 +35,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import faultmaven.infrastructure.llm.providers as providers_package
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm import dispatch
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     send_to_model,
 )
 from faultmaven.infrastructure.llm.providers import base
@@ -1098,7 +1098,7 @@ def test_the_grammar_tables_are_read_only():
 
 async def test_a_refusal_is_its_own_type_and_not_retryable(metric):
     """O1: a refusal is the request's fault, never a provider's."""
-    with pytest.raises(dispatch.RawModelContentRefused) as raised:
+    with pytest.raises(RawModelContentRefused) as raised:
         await send_to_model(_adapter(ADAPTER_CLASSES[0]), prompt=SECRET)
     assert isinstance(raised.value, TypeError)
     assert raised.value.retryable is False
@@ -1125,8 +1125,6 @@ async def test_no_provider_code_runs_before_a_refusal(metric):
     probe = _Probe.__new__(_Probe)
     # The label is the LABEL the adapter class declares, read from the MRO's
     # own namespaces: the probe's property never runs.
-    with pytest.raises(
-        dispatch.RawModelContentRefused, match=f"^{ADAPTER_CLASSES[0].LABEL}: "
-    ):
+    with pytest.raises(RawModelContentRefused, match=f"^{ADAPTER_CLASSES[0].LABEL}: "):
         await send_to_model(probe, prompt=SECRET, messages=[{"role": "x"}])
     assert seen == [], f"provider code ran before the refusal: {seen}"

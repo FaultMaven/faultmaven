@@ -61,6 +61,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Coroutine, Dict, List
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.providers.base import (
     CONTENT_KWARGS,
     CONTENT_LIST_KWARGS,
@@ -78,22 +79,6 @@ from faultmaven.infrastructure.security.model_content import (
     text_violation,
 )
 from faultmaven.infrastructure.shims.metrics import llm_model_content_violations
-
-
-class RawModelContentRefused(TypeError):
-    """A model call refused: its content was not minted by the redaction
-    module, or it passed a keyword outside the closed set (#1998).
-
-    A fault of the request, not of a provider: the registry re-raises it
-    without counting a provider failure, and ``retryable`` is ``False`` so
-    ``BaseExternalClient.call_external`` neither retries it nor counts it
-    against the router's circuit breaker (request-scoped). Refusing a raw call
-    must never make the next minted call fail. It is a programming error, so
-    a route answers it as a 500 ``SERVICE_ERROR`` and never as the AI
-    provider's failure (``api/exception_handlers.py``).
-    """
-
-    retryable = False
 
 
 def model_call_violations(

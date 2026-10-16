@@ -17,7 +17,11 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
-from faultmaven.exceptions import CallShapeUnsupported, LLMOutputFloorError
+from faultmaven.exceptions import (
+    CallShapeUnsupported,
+    LLMOutputFloorError,
+    RawModelContentRefused,
+)
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.model_content import (
@@ -38,7 +42,7 @@ from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
-from .dispatch import RawModelContentRefused, model_call_violations, refuse
+from .dispatch import model_call_violations, refuse
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason
 from .providers.registry import get_registry

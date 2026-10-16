@@ -54,8 +54,8 @@ import re
 from enum import Enum
 from typing import Any, Optional
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.llm.providers import ReasoningIntent

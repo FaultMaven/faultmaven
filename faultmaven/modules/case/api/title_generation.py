@@ -25,12 +25,12 @@ from fastapi import HTTPException, status
 
 from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import (
+    RawModelContentRefused,
     ServiceException,
     ServiceUnavailableException,
     ValidationException,
 )
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.security.case_redaction import (

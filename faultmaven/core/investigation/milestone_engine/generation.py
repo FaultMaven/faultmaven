@@ -50,8 +50,8 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
     send_to_model,
 )

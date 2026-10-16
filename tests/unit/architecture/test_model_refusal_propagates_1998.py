@@ -60,9 +60,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.exceptions import ServiceException, walk_cause_chain
+from faultmaven.exceptions import (
+    RawModelContentRefused,
+    ServiceException,
+    walk_cause_chain,
+)
 from faultmaven.infrastructure.llm import dispatch
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.infrastructure.llm.providers.base import (
     BaseLLMProvider,
     LLMResponse,
@@ -438,16 +441,15 @@ async def _title_route_through_the_real_router(refuse: bool):
 
 
 async def _auto_title_after_a_turn(refuse: bool) -> Optional[BaseException]:
-    """The turn route's post-commit auto-title (R2 stop): it still swallows."""
+    """The turn route's post-commit auto-title (R2 stop): the boundary is the
+    turn route, after the commit. A refusal that escapes the auto-title is
+    returned; today none escapes (the handler logs a WARNING and swallows it),
+    so the refusal case fails, as its strict ``xfail`` expects, and the day
+    the handler re-raises it passes and the ``xfail`` turns red."""
     from faultmaven.modules.case.api import title_generation
 
     case = _titled_case()
     case_service = _title_case_service(case)
-    records: List[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
-    title_log = logging.getLogger(title_generation.__name__)
-    title_log.addHandler(handler)
     try:
         with patch.object(
             title_generation,
@@ -462,14 +464,12 @@ async def _auto_title_after_a_turn(refuse: bool) -> Optional[BaseException]:
                 sanitizer=_TitleSanitizer(),
                 redis_client=object(),
             )
-    finally:
-        title_log.removeHandler(handler)
+    except RawModelContentRefused as escaped:
+        return escaped
     if refuse:
-        # What the boundary sees today: nothing raised, a WARNING line. The
-        # census asks for the refusal itself; this returns none, so the case
-        # fails (strict xfail) until the handler re-raises.
         return None
     case_service.update_case.assert_awaited()
+    assert case.title == _TITLE
     return None
 
 

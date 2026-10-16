@@ -35,8 +35,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from faultmaven.exceptions import FaultMavenException
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
+from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,

@@ -789,6 +789,28 @@ class CallShapeUnsupported(LLMException):
         super().__init__(message, retryable=False)
 
 
+class RawModelContentRefused(TypeError):
+    """A model call refused at the model boundary (#1998).
+
+    Its model-bound content was not minted by the redaction module
+    (``infrastructure/security/model_content.py``), or it passed a keyword
+    outside the closed set; nothing was sent. Raised by
+    ``infrastructure/llm/dispatch.refuse`` at the seam, the router's entry and
+    the dispatch, before any network I/O.
+
+    A fault of the request, not of a provider: the registry re-raises it
+    without counting a provider failure, and ``retryable`` is ``False`` so
+    ``BaseExternalClient.call_external`` neither retries it nor counts it
+    against the router's circuit breaker (request-scoped). Refusing a raw call
+    must never make the next minted call fail. It is a programming error, so
+    no handler turns it into a fallback, and a route answers it as a 500
+    ``SERVICE_ERROR``, never as the AI provider's failure
+    (``api/exception_handlers.py``).
+    """
+
+    retryable = False
+
+
 class ToolCallingUnsupportedError(LLMException):
     """Raised when a model/provider does not support tool/function calling.
 

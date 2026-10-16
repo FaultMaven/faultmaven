@@ -34,7 +34,7 @@ from faultmaven.api.models import (
     TurnTimingStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)

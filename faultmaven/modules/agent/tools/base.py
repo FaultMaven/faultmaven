@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, ToolResult
 

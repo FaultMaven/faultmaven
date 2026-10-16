@@ -35,11 +35,11 @@ from faultmaven.exceptions import (
     ConflictError,
     LLMException,
     NotFoundError,
+    RawModelContentRefused,
     ServiceError,
     ServiceException,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable

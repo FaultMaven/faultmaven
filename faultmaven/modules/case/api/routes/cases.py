@@ -31,11 +31,11 @@ from faultmaven.exceptions import (
     AuthorizationError,
     FaultMavenException,
     NotFoundError,
+    RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import ErrorDetail, ErrorResponse, TitleResponse
 from faultmaven.models.api_models import (

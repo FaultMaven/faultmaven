@@ -24,8 +24,8 @@ from unittest.mock import patch
 
 import pytest
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm import dispatch
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
 from faultmaven.infrastructure.llm.providers.base import (
     BaseLLMProvider,
     LLMResponse,
@@ -522,9 +522,9 @@ async def test_refusals_leave_provider_health_and_the_breaker_untouched(
     }
     registry._initialized = True
     for _ in range(5):
-        with pytest.raises(dispatch.RawModelContentRefused):
+        with pytest.raises(RawModelContentRefused):
             await registry.route_request(prompt="raw 10.9.8.7", max_tokens=5)
-        with pytest.raises(dispatch.RawModelContentRefused):
+        with pytest.raises(RawModelContentRefused):
             await router.route(prompt="raw 10.9.8.7", max_tokens=5)
     states = {
         n: (s.health.value, s.consecutive_failures)
@@ -548,7 +548,7 @@ async def test_refusals_leave_provider_health_and_the_breaker_untouched(
             "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
         )
         for _ in range(5):
-            with pytest.raises(dispatch.RawModelContentRefused):
+            with pytest.raises(RawModelContentRefused):
                 await router.route(prompt=vetted("x"), max_tokens=5)
     states = {
         n: (s.health.value, s.consecutive_failures)
@@ -635,10 +635,10 @@ async def test_a_refusal_books_no_request_error_and_no_sla_failure(
                 "faultmaven.infrastructure.llm.router.sanitizer_pass", losing_pass
             )
             for _ in range(6):
-                with pytest.raises(dispatch.RawModelContentRefused):
+                with pytest.raises(RawModelContentRefused):
                     await router.route(prompt=vetted("x"), max_tokens=5)
         for _ in range(6):  # and at route()'s entry
-            with pytest.raises(dispatch.RawModelContentRefused):
+            with pytest.raises(RawModelContentRefused):
                 await router.route(prompt="raw", max_tokens=5)
     assert not [
         c for c in requests.labels.call_args_list if c.kwargs.get("status") == "error"

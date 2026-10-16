@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm import dispatch
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.llm.providers.base import (

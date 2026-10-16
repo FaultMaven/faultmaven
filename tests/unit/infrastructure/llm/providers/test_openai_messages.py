@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     send_to_model,
 )
 from faultmaven.infrastructure.llm.providers.base import (

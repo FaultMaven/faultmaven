@@ -30,8 +30,7 @@ from faultmaven.api.exception_handlers import (
     llm_service_error_http_exception,
     model_content_refused_handler,
 )
-from faultmaven.exceptions import LLMException, ServiceException
-from faultmaven.infrastructure.llm.dispatch import RawModelContentRefused
+from faultmaven.exceptions import LLMException, RawModelContentRefused, ServiceException
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 

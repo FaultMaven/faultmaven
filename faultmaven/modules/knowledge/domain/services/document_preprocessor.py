@@ -29,8 +29,8 @@ from faultmaven.core.investigation.confidence_repair import (
 from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
-    RawModelContentRefused,
     route_model_call,
 )
 from faultmaven.infrastructure.llm.json_response import loads_llm_json

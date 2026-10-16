@@ -17,9 +17,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
-from faultmaven.exceptions import CallShapeUnsupported, ModelLoadingException
-from faultmaven.infrastructure.llm.dispatch import (
+from faultmaven.exceptions import (
+    CallShapeUnsupported,
+    ModelLoadingException,
     RawModelContentRefused,
+)
+from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
 )
 from faultmaven.infrastructure.llm.metering import record_provider_call
