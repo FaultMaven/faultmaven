@@ -44,15 +44,21 @@ def any_chain_root_identified(case: Case) -> bool:
 
 
 def held_open_root_ids(case: Case) -> set[str]:
-    """The STANDING hypotheses' chain roots that are validated but whose
-    why-stopping verdict is not ``True``: causes that hold, whose why is still
-    open. While one stands and no root is identified, identification is held
-    (#2036)."""
+    """The STANDING hypotheses' chain roots whose why is open (#2036): a
+    validated root without a ``True`` verdict (the cause holds; whether
+    something produces it is unanswered), or any root its hypothesis marked
+    ``False`` (the model says something produces it), whatever its evidence.
+    While one stands and no root is identified, identification is held."""
+    nodes = case.causal_nodes
     return {
         h.root_node_id
         for h in _standing_hypotheses(case)
-        if is_chain_root_validated(h, case.causal_nodes)
-        and not is_chain_root_identified(h, case.causal_nodes)
+        if h.root_node_id in nodes
+        and not is_chain_root_identified(h, nodes)
+        and (
+            is_chain_root_validated(h, nodes)
+            or nodes[h.root_node_id].root_terminal is False
+        )
     }
 
 

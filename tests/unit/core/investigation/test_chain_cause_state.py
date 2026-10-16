@@ -1807,9 +1807,34 @@ def test_finalize_truth_surface_is_shared_by_the_api_resolve_path():
     type(case.progress)(**case.progress.model_dump())  # blob reloads
 
 
+def test_finalize_does_not_confirm_a_root_no_hypothesis_judged():
+    """#2036: the why-stopping verdict is a hypothesis's judgement, so a root no
+    hypothesis ever named carries none and is never confirmed as the root cause
+    (nor harvested). The weak-model chain-without-hypothesis shape loses the
+    CONFIRMED grade, not the resolution."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    root = _root(support_label="ev_orphan_sup")
+    root.metadata.clear()
+    case = _case(nodes=[root], evidence=[_evidence("ev_orphan_sup")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    finalize_resolution_truth_surface(case)
+    assert case.progress.cause_assurance != CauseAssuranceGrade.CONFIRMED
+    assert root.node_state != NodeState.VALIDATED
+
+
 def test_finalize_covers_hypothesis_less_confirmed_root():
     """Grade-keyed coherence: the stamp's node-level fallback confirms a
-    hypothesis-less root; the terminal blob must still read IDENTIFIED beside
+    hypothesis-less root that carries a terminal verdict (one a since-retired
+    hypothesis gave it); the terminal blob must still read IDENTIFIED beside
     CONFIRMED (the standing-hypothesis mirror missed this shape)."""
     from faultmaven.core.investigation.terminal_transitions import (
         finalize_resolution_truth_surface,

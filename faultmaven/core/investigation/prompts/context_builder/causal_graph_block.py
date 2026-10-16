@@ -263,7 +263,7 @@ def _build_causal_graph_block(case: Case) -> str:
     # rendered on it, is the hold's recovery.
     _WHY_OPEN = "why_open"
     recovery_notes[_WHY_OPEN] = (
-        " — validated, but its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
+        " — its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
         "what produced this state and whether it returns once corrected. Then "
         "re-root this hypothesis onto that cause, or mark this root terminal "
         "(root_is_terminal true, with root_terminal_basis) on its "

@@ -51,6 +51,7 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
 )
+from faultmaven.core.investigation.schemas import CausalNodeToAdd, HypothesisUpdate
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_resolution_readiness,
@@ -376,21 +377,6 @@ def test_re_rooting_stamps_when_the_cause_was_posited():
     assert orphan.root_attached_turn == 7
 
 
-def test_a_verdict_is_cause_work():
-    """Refused with the rest of the chain before the problem is verified."""
-    case, hyp = _emission_case()
-    case.progress.problem_status = ProblemStatus.UNVERIFIED
-    _emit(
-        case,
-        hyp,
-        nodes=[_node("the AppRole secret_id expired", "D")],
-        ref="new_index_0",
-        entry=SimpleNamespace(root_is_terminal=True, root_terminal_basis="b"),
-        created=True,
-    )
-    assert all(n.root_terminal is None for n in case.causal_nodes.values())
-
-
 # ---------------------------------------------------------------------------
 # What the model is told while held
 # ---------------------------------------------------------------------------
@@ -429,3 +415,211 @@ def test_m5_recovery_names_the_why_when_the_cause_is_held():
     metadata: dict = {}
     assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
     assert "its why is open (ROOT-CAUSE TEST" in metadata["system_feedback"]
+
+
+# ---------------------------------------------------------------------------
+# Through the real apply path (the update channel, the hold's breadth, the
+# orphan pass, the bound's preferences, M5 at proposal time)
+# ---------------------------------------------------------------------------
+
+
+def _engine():
+    from tests.unit.core.investigation.test_m5_recovery_1679 import _make_engine
+
+    return _make_engine()
+
+
+def _turn(case, **fields):
+    import asyncio
+
+    from tests.unit.core.investigation.test_m5_recovery_1679 import _meta, _Updates
+
+    asyncio.run(
+        _engine().responses._apply_investigation_updates(
+            case, _Updates(**fields), _meta()
+        )
+    )
+
+
+def test_a_verdict_only_update_lands_on_the_hypothesis_root():
+    case, root, hyp = _open_chain_case()
+    _turn(
+        case,
+        hypotheses_to_update=[
+            HypothesisUpdate(
+                hypothesis_id=hyp.hypothesis_id,
+                root_is_terminal=True,
+                root_terminal_basis="a one-off manual edit",
+            )
+        ],
+    )
+    assert (root.root_terminal, root.root_terminal_basis) == (
+        True,
+        "a one-off manual edit",
+    )
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+
+def test_a_re_root_update_carries_its_verdict_to_the_new_root():
+    """The deepen turn: the verdict lands on the new root, the root deepened
+    past is marked not terminal, and the new root is dated from this turn."""
+    case, old_root, hyp = _open_chain_case()
+    case.current_turn = 7
+    _turn(
+        case,
+        causal_nodes_to_add=[
+            CausalNodeToAdd(
+                statement="nothing rotates the secret_id",
+                node_type="root",
+                produces=old_root.node_id,
+            )
+        ],
+        hypotheses_to_update=[
+            HypothesisUpdate(
+                hypothesis_id=hyp.hypothesis_id,
+                root_node_ref="new_index_0",
+                root_is_terminal=True,
+                root_terminal_basis="issued by hand with a fixed TTL",
+            )
+        ],
+    )
+    new_root = case.causal_nodes[hyp.root_node_id]
+    assert new_root.node_id != old_root.node_id
+    assert new_root.root_terminal is True
+    assert new_root.root_attached_turn == 7
+    assert old_root.root_terminal is False
+
+
+@pytest.mark.parametrize(
+    "status", [ProblemStatus.UNVERIFIED, ProblemStatus.REVISION_PENDING]
+)
+def test_a_verdict_is_refused_with_the_rest_of_the_cause_work(status):
+    """Before the problem is verified, or while a revision awaits the user, a
+    verdict-only update on an already-rooted hypothesis records nothing."""
+    case, root, hyp = _open_chain_case()
+    case.progress.problem_status = status
+    _turn(
+        case,
+        hypotheses_to_update=[
+            HypothesisUpdate(hypothesis_id=hyp.hypothesis_id, root_is_terminal=True)
+        ],
+    )
+    assert root.root_terminal is None
+
+
+def test_an_explicit_not_terminal_holds_a_root_with_one_support():
+    """The model saying something produces the state holds identification
+    whatever the root's evidence: one support is the #2036 shape too."""
+    case, root, _hyp = _open_chain_case()
+    root.evidence_links = root.evidence_links[:1]
+    root.record_root_terminal(False, "nothing rotates the secret_id", 5)
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state.value != "validated"
+    assert case.progress.cause_identification_held_open is True
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the AppRole secret_id expired",
+        mechanism="the issuer cannot log in to Vault",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+    )
+    assert cause_identification_leg(case) is None
+    _renewal_rows(case, turn=case.current_turn)
+    assert cause_elimination_rows(case) == []
+
+
+def test_a_verdict_waits_for_the_orphan_pass_to_give_its_root():
+    """A hypothesis sent flat, beside a chain that restates it: T1 attaches the
+    chain after chain emission, and the verdict lands there."""
+    from faultmaven.core.investigation.milestone_engine.chain_emission import (
+        _nudge_ambiguous_orphan_chains,
+    )
+
+    case, hyp = _emission_case()
+    case.current_turn = 2  # the restating chain is emitted early...
+    metadata = {"hypotheses_generated": [hyp.hypothesis_id], "hyp_root_refs": {}}
+    record_root_verdict(
+        metadata,
+        hyp.hypothesis_id,
+        SimpleNamespace(root_is_terminal=True, root_terminal_basis="b"),
+    )
+    _apply_chain_emission(
+        case,
+        SimpleNamespace(
+            causal_nodes_to_add=[_node(hyp.statement, "D")],
+            causal_edges_to_add=[],
+            node_evidence_links=[],
+        ),
+        metadata,
+    )
+    assert hyp.root_node_id is None
+    case.current_turn = 5  # ...and T1 attaches it later
+    _nudge_ambiguous_orphan_chains(case, metadata)
+    assert hyp.root_node_id is not None
+    root = case.causal_nodes[hyp.root_node_id]
+    assert root.root_terminal is True
+    assert root.generated_at_turn == 2
+    assert root.root_attached_turn == 5
+
+
+def _two_rooted_hypotheses():
+    """Hypothesis A rooted at turn 3, competitor B rooted at turn 6; fix rows
+    at turn 4."""
+    case, root_a, hyp_a = _chain_case()
+    root_a.metadata["root_attached_turn"] = 3
+    from tests.unit.core.investigation.test_chain_cause_state import _hyp
+
+    root_b = _root("cn_000000000009", statement="a competitor")
+    root_b.metadata["root_attached_turn"] = 6
+    case.causal_nodes[root_b.node_id] = root_b
+    hyp_b = _hyp(root_b.node_id, hypothesis_id="hyp_000000000009")
+    case.hypotheses[hyp_b.hypothesis_id] = hyp_b
+    _renewal_rows(case, turn=4)
+    return case, hyp_a, root_b
+
+
+def test_the_bound_reads_the_identified_root_not_a_later_competitor():
+    """Even when a model-authored conclusion names the competitor: the
+    identified root is the case's cause."""
+    case, _hyp_a, _root_b = _two_rooted_hypotheses()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="a competitor",
+        mechanism="m",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id="hyp_000000000009",
+    )
+    assert [e.collected_at_turn for e in cause_elimination_rows(case)] == [4]
+
+
+def test_the_bound_reads_the_cause_the_conclusion_names():
+    """No identified root: the backstop leg's cause is what the conclusion
+    names, so a competitor rooted later does not move the bound."""
+    case, hyp_a, root_b = _two_rooted_hypotheses()
+    # No verdicts and no support: nothing is identified or held.
+    case.causal_nodes[hyp_a.root_node_id].metadata.pop("root_terminal")
+    case.causal_nodes[hyp_a.root_node_id].evidence_links = []
+    root_b.metadata.pop("root_terminal")
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_identification_held_open is False
+    assert cause_elimination_rows(case) == []  # max: the later competitor
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the root cause",
+        mechanism="m",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id=hyp_a.hypothesis_id,
+    )
+    assert [e.collected_at_turn for e in cause_elimination_rows(case)] == [4]
+
+
+def test_m5_at_proposal_names_the_why_while_held():
+    from tests.unit.core.investigation.test_m5_recovery_1679 import _case, _fix
+
+    case = _case(leading_likelihood=0.9, stale_wc=0.9)
+    case.progress.cause_identification_held_open = True
+    _turn(case, solutions_to_add=_fix())
+    action = case.proposed_actions[-1]
+    assert action.action_type == InvestigationActionType.DIAGNOSTIC
+    assert action.downgrade_reason == WHY_OPEN_DOWNGRADE_REASON

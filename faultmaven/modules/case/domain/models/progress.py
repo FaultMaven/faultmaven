@@ -408,9 +408,9 @@ class InvestigationProgress(BaseModel):
         description=(
             "Whether cause identification is held on an OPEN root (M1 terminal "
             "clause, #2036): a standing chain root is validated but its "
-            "hypothesis has not marked it terminal (the why-stopping question "
-            "is unanswered or answered 'something will produce it again'), and "
-            "no root is identified. While held, cause_state never reads "
+            "hypothesis has not marked it terminal, or its hypothesis marked it "
+            "not terminal ('something will produce it again'), and no root is "
+            "identified. While held, cause_state never reads "
             "IDENTIFIED, the conclusion and likelihood backstops are not "
             "trusted, and no causal_absence row counts as the cause removed. "
             "Recomputed each turn."

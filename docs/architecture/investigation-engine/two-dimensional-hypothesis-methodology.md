@@ -1641,14 +1641,18 @@ variables, milestones, and confidence stay consistent.
   clause b: `root_is_terminal`, #2036), **and the validated root is
   uncontested** (§7.1.2 — several simultaneously-validated distinct roots hold
   at CANDIDATES pending discrimination). This is mechanistic grade; it unlocks
-  solution work. A validated root whose why is still open holds at CANDIDATES
+  solution work. A validated root whose why is still open, or any root its
+  hypothesis marked not terminal, holds at CANDIDATES
   (`cause_identification_held_open`): the conclusion mirror and the
   conclusion/likelihood backstops stand down, the `<causal_graph>` asks that
   node's why (S3), and no causal_absence row confirms a resolution until a
   root is identified, so a renewal of the state cannot resolve the case. A
   causal_absence row also confirms only a cause posited at or before it (the
-  turn its hypothesis attached to that root), the twin of "a cause cannot be
-  shown removed before the problem is verified".
+  turn its hypothesis attached to that root: the identified root, else the
+  one the root-cause conclusion names, else the latest-attached), the twin of
+  "a cause cannot be shown removed before the problem is verified". A
+  hypothesis that deepens past a root marks that root not terminal; a root no
+  hypothesis judged is never confirmed (nor harvested).
 - **CANDIDATES** — ≥2 ACTIVE chains (preserves the existing ≥2-active derivation,
   [§2.5 decision 4](./investigation-lifecycle-logic.md#25-design-decisions-and-open-follow-ons),
   now counting chains), a live INCONCLUSIVE root, a validated root awaiting

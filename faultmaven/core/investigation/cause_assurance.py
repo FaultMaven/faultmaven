@@ -635,21 +635,31 @@ def cause_elimination_rows(case: "Case") -> list:
 
 def _cause_posited_turn(case: "Case") -> int:
     """The turn from which a causal_absence row can be about the case's cause:
-    when that cause was attached as a hypothesis's root (#2036). The cause is the
-    identified root when one stands, else the latest-attached standing root; with
-    no rooted standing hypothesis, every turn (0).
+    when that cause was attached as a hypothesis's root (#2036). The cause is,
+    in order: the identified root; else the root the root-cause conclusion names
+    (the backstop leg's cause); else the latest-attached standing root, the
+    conservative reading when nothing names one. With no rooted standing
+    hypothesis, every turn (0).
 
     A row recorded earlier observed something else gone: a renewed credential or
     a restarted issuer, before the chain was deepened to what produced it. A
     mitigation opens no fix window, so without this bound such a row in window 0
     would confirm the deeper cause's resolution before its fix ran."""
     nodes = getattr(case, "causal_nodes", None) or {}
-    roots = [
-        nodes[h.root_node_id]
-        for h in (getattr(case, "hypotheses", None) or {}).values()
+    hypotheses = getattr(case, "hypotheses", None) or {}
+    standing = {
+        h.hypothesis_id: nodes[h.root_node_id]
+        for h in hypotheses.values()
         if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id in nodes
-    ]
-    pool = [n for n in roots if n.is_identified_root] or roots
+    }
+    pool = [n for n in standing.values() if n.is_identified_root]
+    if not pool:
+        rcc = getattr(case, "root_cause_conclusion", None)
+        named = standing.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+        named_node = nodes.get(getattr(rcc, "names_root_node_id", None) or "")
+        pool = [
+            n for n in (named, named_node) if n is not None and n in standing.values()
+        ] or list(standing.values())
     return max((n.root_attached_turn for n in pool), default=0)
 
 
