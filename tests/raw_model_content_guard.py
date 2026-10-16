@@ -17,14 +17,31 @@ layers make it one:
 Layer 1 alone is not enough. A raised warning is an ``Exception``, and the
 send sites that fail open (the out-of-band triage, the intent resolver,
 tier-2 deep analysis, the document triage) catch ``Exception`` and carry on,
-so the test passes. A record cannot be caught by the code under test.
+so the test passes. A record is not an exception: no ``except`` in the code
+under test catches it.
 
-Inside a test, layer 2 decides: its ``always`` filter comes after pytest
-applied the ini filters, so the warning is recorded, not raised, and the code
-under test runs exactly as it would in production in warn mode. The ini line
-decides wherever the recorder does not reach: at collection (a module that
-sends when imported), in a fixture wider than one test (set up before the
-recorder, torn down after it), and in any run without the recorder.
+What the recorder covers, and only that: a test's setup, call and teardown,
+and the function-scoped fixtures set up inside them, on whatever thread warns
+while they run. Inside that window it decides: its ``always`` filter comes
+after pytest applied the ini filters, so the warning is recorded, not raised,
+and the code under test runs exactly as it would in production in warn mode.
+Outside it, only the ini line applies, and only to a send nothing swallows: a
+fixture wider than one test (set up before the recorder, torn down after it),
+a thread that outlives its test, collection (a module that sends when
+imported), and any run without the recorder. None sends raw content today
+(the whole-suite count is 0 there); #1998 P3's refusal takes over from both
+layers.
+
+What it does not survive is code that changes the warnings machinery itself:
+a filter that ignores the category (``simplefilter("ignore")``,
+``filterwarnings("ignore", category=UserWarning)``), ``resetwarnings``,
+``catch_warnings`` (whose ``record=True`` takes the warning first), or
+``logging.captureWarnings(True)`` (which routes it to logging). Rule W of
+``tests/unit/architecture/test_model_dispatch_lexical_1998.py`` bans those
+spellings in ``faultmaven/``, so none happens by accident. A deliberate
+category-scoped ignore of ``RawModelContentWarning``, a computed spelling, or
+a send from a subprocess (its own interpreter, with no recorder) is out of
+scope, as in #1998's D1: the boundary prevents accidental raw sends.
 
 A test that drives a provider, the registry or the router mints its input
 with the test minter (``tests/model_content.py``: ``vetted``,
@@ -33,8 +50,9 @@ something it reports ON PURPOSE says so: with ``pytest.warns`` (or its own
 ``warnings.catch_warnings(record=True)``), which takes the warning before the
 recorder sees it and also asserts it was reported; or, where the report is not
 what the test asserts, with ``@pytest.mark.raw_model_content_expected``
-(registered in both pytest configs), whose warnings are recorded and not
-failed on.
+(registered in both pytest configs) on the test itself, whose warnings are
+recorded and not failed on. A module's ``pytestmark`` or a class decorator
+does not opt a test out (:func:`marked_expected`).
 
 Whatever the recorder recorded, of any category, is handed back to pytest's
 own recording when the test ends, as ``pytest.warns`` re-emits what it did not
@@ -45,6 +63,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import warnings
 from typing import Iterator, List
 
@@ -57,6 +76,30 @@ MARKER = "raw_model_content_expected"
 
 #: The repository root, to name a send site by its repo-relative path.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+
+
+#: How the dispatch's warning begins; the rest is the violation summary
+#: (``dispatch._summary``): ``"<argument> <kind>"`` pairs joined by ``"; "``,
+#: sorted, an unknown keyword's names in parentheses.
+REPORT_PREFIX = "model-bound content not minted by the redaction module: "
+
+
+def marked_expected(node: pytest.Item) -> bool:
+    """Whether THIS test carries :data:`MARKER`: its own decorator, or a
+    ``pytest.param(..., marks=...)`` of its own case. A module's ``pytestmark``
+    or a class decorator does not count — an opt-out is made one test at a
+    time, never for every test that happens to share a file or a class."""
+    return any(mark.name == MARKER for mark in node.own_markers)
+
+
+def report_pattern(summary: str) -> str:
+    """A ``pytest.warns(match=...)`` pattern for EXACTLY this report.
+
+    Anchored at both ends, so an expected report (``kwargs unknown_kwarg
+    (case_id)``) cannot also absorb an unexpected one carried in the same
+    warning (``...; prompt raw``).
+    """
+    return "^" + re.escape(REPORT_PREFIX + summary) + "$"
 
 
 def _site(warning: warnings.WarningMessage) -> str:

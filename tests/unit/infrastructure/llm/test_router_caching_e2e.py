@@ -24,7 +24,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
 )
-from tests.model_content import vetted, vetted_messages
+from tests.model_content import vetted, vetted_kwargs, vetted_messages
 from tests.utils import sockets_refused
 
 
@@ -319,7 +319,7 @@ class TestResponseCacheStoreGate:
 
             router = LLMRouter()
             response = await router.route(
-                prompt=vetted("why is node-3 NotReady?"), **kwargs
+                prompt=vetted("why is node-3 NotReady?"), **vetted_kwargs(kwargs)
             )
 
         # Confidence is above the store threshold in every case — the gate under

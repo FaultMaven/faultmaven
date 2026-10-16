@@ -66,6 +66,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import DataType
 from tests.model_content import vetted, vetted_messages
+from tests.raw_model_content_guard import report_pattern
 from tests.utils import sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
@@ -313,9 +314,14 @@ def _reported_if_router_consumed(kwargs: dict):
     """A router-consumed knob handed straight to a provider is a keyword no
     adapter reads: the dispatch reports it (``unknown_kwarg``) and, in warn
     mode (#1998), still hands it on, which is the door these tests pin. The
-    report is expected, so it is asserted, not left to fail the test."""
-    if set(kwargs) & ROUTER_CONSUMED_KWARGS:
-        return pytest.warns(RawModelContentWarning, match="unknown_kwarg")
+    report is expected, so it is asserted — exactly that report and nothing
+    else in it, so raw content in the same call cannot hide inside it."""
+    knobs = sorted(set(kwargs) & ROUTER_CONSUMED_KWARGS)
+    if knobs:
+        return pytest.warns(
+            RawModelContentWarning,
+            match=report_pattern(f"kwargs unknown_kwarg ({','.join(knobs)})"),
+        )
     return contextlib.nullcontext()
 
 
@@ -331,13 +337,10 @@ async def _direct(target: Target, make_session, prompt, kwargs) -> list:
     return _requests_sent(session)
 
 
-async def _routed(target: Target, make_session, kwargs, *, minted=True) -> list:
-    """A real ``LLMRouter`` -> real ``ProviderRegistry`` -> the real adapter.
-
-    ``kwargs``' content is minted unless ``minted`` is False (the one test that
-    needs a raw call's report)."""
-    if minted:
-        kwargs = _minted(kwargs)
+async def _routed(target: Target, make_session, kwargs) -> list:
+    """A real ``LLMRouter`` -> real ``ProviderRegistry`` -> the real adapter,
+    with the call's content minted."""
+    kwargs = _minted(kwargs)
     provider = _provider(target)
     registry = ProviderRegistry(settings=None)
     registry._providers = {target.provider: provider}
@@ -674,7 +677,10 @@ async def test_the_issue_probe_shape_sends_exactly_the_api_fields(mock_aiohttp_s
 
     with (
         patch("aiohttp.ClientSession", return_value=session),
-        pytest.warns(RawModelContentWarning, match=r"unknown_kwarg \(case_id\)"),
+        pytest.warns(
+            RawModelContentWarning,
+            match=report_pattern("kwargs unknown_kwarg (case_id)"),
+        ),
     ):
         await send_to_model(
             provider,
@@ -869,33 +875,36 @@ async def test_the_violation_label_is_the_llm_requests_label(
     """The dispatch labels its report with the adapter's ``LABEL``, read without
     running provider code. Dashboards group ``llm_requests_total`` by the
     ``provider`` the adapter puts on its response, and
-    ``llm_provider_calls_total`` by the registry's provider name. A raw routed
-    call through each real adapter and transport gives all three the same
-    value. (The metering call sees the response before the registry suffixes
-    a low-confidence answer's provider, which these doubles' answers can be.)"""
-    import warnings
+    ``llm_provider_calls_total`` by the registry's provider name: for each real
+    adapter and transport all three are the same value.
 
+    The dispatch reports a DIRECT send's raw content (the DA tool loop, the
+    connection check), so its label is read from one. A routed raw call is
+    reported once, at the router's entry, as ``router`` — as the seam's report
+    is (#1998 P2b) — so the registry's two labels are read from a minted routed
+    call. (The metering call sees the response before the registry suffixes
+    a low-confidence answer's provider, which these doubles' answers can be.)"""
     from faultmaven.infrastructure.llm import dispatch
 
     target = _BY_LABEL[label]
-    metered = []
+    session = _session_for(target, mock_aiohttp_session)
     with (
         patch.object(dispatch, "llm_model_content_violations") as violations,
-        patch(
-            "faultmaven.infrastructure.llm.providers.registry.record_provider_call",
-            lambda provider, model, response, *a, **k: metered.append(
-                (provider, response.provider)
-            ),
-        ),
-        warnings.catch_warnings(),
+        patch("aiohttp.ClientSession", return_value=session),
+        pytest.warns(RawModelContentWarning, match=report_pattern("prompt raw")),
     ):
-        warnings.simplefilter("ignore")
-        await _routed(
-            target,
-            mock_aiohttp_session,
-            {"prompt": "raw", "max_tokens": 5},
-            minted=False,
-        )
+        response = await send_to_model(_provider(target), prompt="raw", max_tokens=5)
     [violation] = {c.kwargs["provider"] for c in violations.labels.call_args_list}
+
+    metered = []
+    with patch(
+        "faultmaven.infrastructure.llm.providers.registry.record_provider_call",
+        lambda provider, model, response, *a, **k: metered.append(
+            (provider, response.provider)
+        ),
+    ):
+        await _routed(target, mock_aiohttp_session, {"prompt": "x", "max_tokens": 5})
     [(calls_label, requests_label)] = metered
-    assert violation == calls_label == requests_label == target.provider
+
+    assert violation == response.provider == target.provider
+    assert calls_label == requests_label == target.provider

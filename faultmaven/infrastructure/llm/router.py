@@ -46,6 +46,7 @@ from .dispatch import (
     model_call_violations,
     refuse_if_refusing,
     report_raw_model_content,
+    reported_upstream,
 )
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason
@@ -522,21 +523,17 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # before the SANITIZE_PII pass below sees its content. ``route()``'s
         # signature is closed, so only the content arguments need checking.
         #
-        # In warn mode each violation is reported exactly once. The registry
-        # hands the re-minted values to ``dispatch.send_to_model``, which runs
-        # the same check again and reports what reaches it, naming the caller
-        # through SEND_SITE. What never reaches it is reported here: a value
-        # this router drops before the registry (a falsy prompt or falsy
-        # messages — the engine's routed tool loop sends ``prompt=""``), and,
-        # on a cache hit below, everything else.
+        # In warn mode each violation is reported exactly once, HERE, at entry
+        # (#1998 P2b), less what the seam (``route_model_call``) already
+        # reported: whether the call is answered from the cache, drops a falsy
+        # value before the registry, or reaches a registry that is a test's
+        # double. The registry hands the re-minted values to
+        # ``dispatch.send_to_model``, which runs the same check again; what was
+        # reported here is held as reported around that call
+        # (``reported_upstream``), so it is not reported twice.
         entry_violations = model_call_violations(prompt, messages, {})
         refuse_if_refusing("router", entry_violations)
-        dropped_violations = model_call_violations(
-            prompt if prompt is not None and not prompt else None,
-            messages if messages is not None and not messages else None,
-            {},
-        )
-        report_raw_model_content("router", dropped_violations, sys._getframe())
+        report_raw_model_content("router", entry_violations, sys._getframe())
 
         # Normalize the reasoning knobs up front, loudly — a typo'd intent or a
         # nonsensical floor is a caller bug and must fail at the call site, not
@@ -673,12 +670,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     model=cached_response.model,
                     status="cached",
                 ).inc()
-                # Answered without a send: no dispatch reports this call.
-                report_raw_model_content(
-                    "router",
-                    [v for v in entry_violations if v not in dropped_violations],
-                    sys._getframe(),
-                )
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
@@ -701,26 +692,27 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 find_send_site(sys._getframe()) or SEND_SITE.get()
             )
             try:
-                response = await self.call_external(
-                    operation_name="route_llm_request",
-                    call_func=self.registry.route_request,
-                    prompt=sanitized_prompt,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    response_format=response_format,
-                    messages=sanitized_messages,
-                    confidence_threshold=self.confidence_threshold,
-                    provider_override=provider_override,
-                    cache_prompt=cache_prompt,
-                    reasoning_intent=reasoning_intent,
-                    min_output_tokens=min_output_tokens,
-                    timeout=self._resolve_timeout(),  # Provider-aware ceiling
-                    retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
-                    retry_delay=1.0,
-                )
+                with reported_upstream(entry_violations):
+                    response = await self.call_external(
+                        operation_name="route_llm_request",
+                        call_func=self.registry.route_request,
+                        prompt=sanitized_prompt,
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        response_format=response_format,
+                        messages=sanitized_messages,
+                        confidence_threshold=self.confidence_threshold,
+                        provider_override=provider_override,
+                        cache_prompt=cache_prompt,
+                        reasoning_intent=reasoning_intent,
+                        min_output_tokens=min_output_tokens,
+                        timeout=self._resolve_timeout(),  # Provider-aware ceiling
+                        retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
+                        retry_delay=1.0,
+                    )
             finally:
                 SEND_SITE.reset(site_token)
 

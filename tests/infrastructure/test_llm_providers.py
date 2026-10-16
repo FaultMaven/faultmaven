@@ -299,7 +299,7 @@ class TestLLMProviderRealBehavior:
 
             # Execute multiple concurrent requests
             async def make_concurrent_request(request_id):
-                return await router.route(f"Concurrent request {request_id}")
+                return await router.route(vetted(f"Concurrent request {request_id}"))
 
             tasks = [make_concurrent_request(i) for i in range(10)]
             results = await asyncio.gather(*tasks)
@@ -625,8 +625,8 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Make requests of varying lengths
-                short_prompt = "Short test"
-                long_prompt = (
+                short_prompt = vetted("Short test")
+                long_prompt = vetted(
                     "This is a much longer prompt that should result in higher token usage "
                     * 5
                 )
@@ -772,7 +772,9 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Execute concurrent load test
-                tasks = [router.route(f"Load test request {i}") for i in range(20)]
+                tasks = [
+                    router.route(vetted(f"Load test request {i}")) for i in range(20)
+                ]
                 responses = await asyncio.gather(*tasks)
 
                 # Validate load performance

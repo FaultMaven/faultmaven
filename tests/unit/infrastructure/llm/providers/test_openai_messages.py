@@ -25,6 +25,7 @@ from faultmaven.infrastructure.llm.providers.openrouter_provider import (
     OpenRouterProvider,
 )
 from tests.model_content import vetted, vetted_messages
+from tests.raw_model_content_guard import report_pattern
 
 
 @pytest.fixture
@@ -269,7 +270,7 @@ class TestOpenAITokenLimitParam:
             patch("aiohttp.ClientSession", return_value=mock_session),
             pytest.warns(
                 RawModelContentWarning,
-                match=r"unknown_kwarg \(max_completion_tokens\)",
+                match=report_pattern("kwargs unknown_kwarg (max_completion_tokens)"),
             ),
         ):
             await send_to_model(

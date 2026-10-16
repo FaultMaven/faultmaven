@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import re
 import textwrap
 import warnings
 
@@ -262,13 +263,24 @@ def _child_ini(filterwarnings: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _child(pytester, monkeypatch, filterwarnings, *plugins):
+def _summary_line(outcome: str, test: str) -> str:
+    """A ``-rA`` summary line, as pytest prints it with and without ``CI`` set:
+    ``OUTCOME path::test``, then `` - <message>`` when ``CI`` is set."""
+    return rf"{outcome} \S+::{re.escape(test)}( - .*)?$"
+
+
+def _child(pytester, monkeypatch, filterwarnings, *plugins, tests=None):
     monkeypatch.setenv(
         "PYTHONPATH",
         os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
     )
     pytester.makefile(".ini", pytest=_child_ini(filterwarnings))
-    pytester.makepyfile(textwrap.dedent(_CHILD_TESTS))
+    if tests is None:
+        pytester.makepyfile(textwrap.dedent(_CHILD_TESTS))
+    else:
+        pytester.makepyfile(
+            **{name: textwrap.dedent(source) for name, source in tests.items()}
+        )
     args = ["-p", "no:cacheprovider", "-rA"]
     for plugin in plugins:
         args += ["-p", plugin]
@@ -287,11 +299,11 @@ def test_the_ini_line_alone_fails_a_raw_send_but_not_a_swallowed_one(
     assert ERROR_LINE in filters
     result = _child(pytester, monkeypatch, [ERROR_LINE])
     result.assert_outcomes(passed=4, failed=2)
-    result.stdout.fnmatch_lines(
+    result.stdout.re_match_lines(
         [
-            "PASSED *::test_a_raw_send_the_code_under_test_swallows",
-            "FAILED *::test_a_raw_send",
-            "FAILED *::test_a_raw_send_the_test_marks_as_expected",
+            _summary_line("PASSED", "test_a_raw_send_the_code_under_test_swallows"),
+            _summary_line("FAILED", "test_a_raw_send"),
+            _summary_line("FAILED", "test_a_raw_send_the_test_marks_as_expected"),
         ]
     )
 
@@ -313,10 +325,10 @@ def test_the_recorder_fails_a_raw_send_even_when_the_code_swallowed_it(
 ):
     result = _child(pytester, monkeypatch, filterwarnings, registered_by)
     result.assert_outcomes(passed=6, errors=2)
-    result.stdout.fnmatch_lines(
+    result.stdout.re_match_lines(
         [
-            "ERROR *::test_a_raw_send_the_code_under_test_swallows",
-            "ERROR *::test_a_raw_send",
+            _summary_line("ERROR", "test_a_raw_send_the_code_under_test_swallows"),
+            _summary_line("ERROR", "test_a_raw_send"),
         ]
     )
     result.stdout.fnmatch_lines(
@@ -326,3 +338,73 @@ def test_the_recorder_fails_a_raw_send_even_when_the_code_swallowed_it(
         ]
     )
     result.stdout.fnmatch_lines(["*UserWarning: handed back to the summary*"])
+
+
+_CHILD_SEND = """
+import asyncio
+
+import pytest
+
+from faultmaven.infrastructure.llm.dispatch import route_model_call
+
+
+class _Router:
+    async def route(self, **kwargs):
+        return "answer"
+
+
+def _send_raw():
+    asyncio.run(
+        route_model_call(_Router(), messages=[{"role": "user", "content": "raw"}])
+    )
+"""
+
+_CHILD_MARKED_TOO_WIDELY = {
+    "test_under_a_module_mark": _CHILD_SEND
+    + """
+pytestmark = pytest.mark.raw_model_content_expected
+
+
+def test_a_raw_send_under_a_module_mark():
+    _send_raw()
+""",
+    "test_under_a_class_mark": _CHILD_SEND
+    + """
+@pytest.mark.raw_model_content_expected
+class TestUnderAClassMark:
+    def test_a_raw_send_under_a_class_mark(self):
+        _send_raw()
+""",
+    "test_marked_one_case_at_a_time": _CHILD_SEND
+    + """
+@pytest.mark.parametrize(
+    "case", [pytest.param("raw", marks=pytest.mark.raw_model_content_expected)]
+)
+def test_a_raw_send_marked_on_its_own_case(case):
+    _send_raw()
+""",
+}
+
+
+def test_only_the_tests_own_marker_opts_it_out(pytester, monkeypatch):
+    """The opt-out is per test (#2034 review F2): a module's ``pytestmark`` and
+    a class decorator reach every test they cover, so neither exempts a raw
+    send. A test's own decorator does (the main child session), and so does the
+    mark on one ``pytest.param`` case."""
+    result = _child(
+        pytester,
+        monkeypatch,
+        [ERROR_LINE],
+        "tests.conftest",
+        tests=_CHILD_MARKED_TOO_WIDELY,
+    )
+    result.assert_outcomes(passed=3, errors=2)
+    result.stdout.re_match_lines(
+        [
+            _summary_line("PASSED", "test_a_raw_send_marked_on_its_own_case[raw]"),
+            _summary_line(
+                "ERROR", "TestUnderAClassMark::test_a_raw_send_under_a_class_mark"
+            ),
+            _summary_line("ERROR", "test_a_raw_send_under_a_module_mark"),
+        ]
+    )

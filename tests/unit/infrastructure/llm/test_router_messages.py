@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
-from tests.model_content import vetted
+from tests.model_content import vetted, vetted_messages
 from tests.utils import sockets_refused
 
 
@@ -69,7 +69,7 @@ class TestRoutePassesMessages:
             {"role": "tool", "tool_call_id": "call_1", "content": "result"},
         ]
 
-        await router.route(prompt=vetted("test"), messages=messages)
+        await router.route(prompt=vetted("test"), messages=vetted_messages(messages))
 
         mock_registry.route_request.assert_called_once()
         call_kwargs = mock_registry.route_request.call_args
@@ -115,7 +115,9 @@ class TestCacheBypassWithMessages:
         router.cache.check = MagicMock(return_value=None)
 
         messages = [{"role": "user", "content": "hello"}]
-        await router.route(prompt=vetted("test"), model="gpt-4", messages=messages)
+        await router.route(
+            prompt=vetted("test"), model="gpt-4", messages=vetted_messages(messages)
+        )
 
         # Cache.check should NOT be called when messages is provided
         router.cache.check.assert_not_called()
@@ -182,7 +184,7 @@ class TestRouteForwardsTheToolLoopCall:
 
         await router.route(
             prompt=vetted(""),
-            messages=messages,
+            messages=vetted_messages(messages),
             tools=[
                 {
                     "type": "function",

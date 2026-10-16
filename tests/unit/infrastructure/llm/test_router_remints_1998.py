@@ -349,10 +349,11 @@ async def test_a_routed_call_names_the_line_that_called_the_router(router):
     assert (warning.filename, warning.lineno) == (__file__, line)
 
 
-async def test_a_send_its_caller_put_in_a_task_falls_back_to_the_dispatch(router):
+async def test_a_send_its_caller_put_in_a_task_names_the_router_entry(router):
     """The stated limit: ``asyncio.wait_for(router.route(...))`` on 3.11 runs
     ``route`` as a task's root, so no frame reaches the caller; the warning
-    names the registry's dispatch, ``send_to_model``'s direct caller."""
+    names the outermost llm frame of that task, ``route()``'s own entry, where
+    the call is reported (#1998 P2b)."""
     import asyncio
 
     with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as recorded:
@@ -361,9 +362,7 @@ async def test_a_send_its_caller_put_in_a_task_falls_back_to_the_dispatch(router
     if sys.version_info >= (3, 12):  # wait_for creates no task from 3.12
         assert warning.filename == __file__
     else:
-        assert warning.filename.endswith(
-            "faultmaven/infrastructure/llm/providers/registry.py"
-        )
+        assert warning.filename.endswith("faultmaven/infrastructure/llm/router.py")
 
 
 async def test_the_send_site_is_reset_when_route_returns(router):
@@ -494,6 +493,91 @@ async def test_a_minted_routed_call_is_reported_nowhere(router, provider, saniti
         await router.route(prompt=vetted("cache me"), model=MODEL, max_tokens=50)
         await router.route(prompt=vetted("x"), messages=[], max_tokens=50)
     assert not _raw_warnings(recorded)
+
+
+def _two_provider_router(monkeypatch, first, second):
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    registry = ProviderRegistry(settings=None)
+    registry._providers = {"first": first, "second": second}
+    registry._fallback_chain = ["first", "second"]
+    registry._provider_states = {
+        "first": ProviderState(name="first"),
+        "second": ProviderState(name="second"),
+    }
+    registry._initialized = True
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.llm.providers.registry.record_provider_call",
+        lambda *a, **k: None,
+    )
+    router = LLMRouter()
+    router.sanitizer = regex_only_sanitizer()
+    return router
+
+
+@pytest.mark.parametrize("sanitize_pii", [True, False], ids=["pii_on", "pii_off"])
+@pytest.mark.parametrize("through", ["route", "seam"])
+async def test_a_raw_call_that_falls_back_is_reported_once(
+    monkeypatch, through, sanitize_pii
+):
+    """However many providers a raw routed call passes, it is reported once: by
+    the seam, or else at the router's entry (#1998 P2b). Each dispatch the
+    registry's fallback reaches holds it as reported."""
+    from faultmaven.infrastructure.llm.dispatch import route_model_call
+    from tests.model_content import FakeProvider
+
+    first = FakeProvider([RuntimeError("first provider down")], name="first")
+    second = FakeProvider(name="second")
+    router = _two_provider_router(monkeypatch, first, second)
+    with (
+        sanitize_pii_pinned(sanitize_pii),
+        warnings.catch_warnings(record=True) as recorded,
+    ):
+        warnings.simplefilter("always")
+        if through == "route":
+            await router.route(prompt="raw text", max_tokens=5)
+        else:
+            await route_model_call(router, prompt="raw text", max_tokens=5)
+
+    assert (len(first.calls), len(second.calls)) == (1, 1), "the call fell back"
+    assert [str(w.message) for w in _raw_warnings(recorded)] == [
+        "model-bound content not minted by the redaction module: prompt raw"
+    ]
+
+
+async def test_a_router_whose_registry_is_a_double_still_reports(monkeypatch):
+    """A test that replaces the registry never reaches a dispatch: the router's
+    entry is what reports its raw call (#1998 P2b), once, naming the caller."""
+    import inspect
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    registry = MagicMock()
+    registry.route_request = AsyncMock(
+        return_value=LLMResponse(
+            content="ok",
+            confidence=1.0,
+            provider="double",
+            model=MODEL,
+            tokens_used=1,
+            response_time_ms=1,
+        )
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
+    )
+    router = LLMRouter()
+    monkeypatch.setattr(router, "_resolve_timeout", lambda: None)
+    with sanitize_pii_pinned(False), pytest.warns(RawModelContentWarning) as rec:
+        line = inspect.currentframe().f_lineno + 1
+        await router.route(prompt="raw text", max_tokens=5)
+    [warning] = _raw_warnings(rec)
+    assert (warning.filename, warning.lineno) == (__file__, line)
+    registry.route_request.assert_awaited_once()
 
 
 async def test_refusals_leave_provider_health_and_the_breaker_untouched(

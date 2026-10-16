@@ -60,6 +60,21 @@ outside ``tests/`` (``faultmaven/``, ``scripts/``, ``alembic/``):
   only through a reflection this rule already names or a computed one, which
   is out of scope. No other file is allowed: since #1998 P2b every send
   site, the knowledge-authoring ones included, calls the seam.
+* W — nothing in ``faultmaven/`` switches off the suite's gate on a raw send
+  (#1998 P2b): ``filterwarnings = error`` in the pytest configs, and the
+  autouse recorder (``tests/raw_model_content_guard.py``). Code under test
+  runs inside both, so a warnings call there could switch them off by
+  accident: ``catch_warnings`` (whose ``record=True`` takes the warning
+  first), ``resetwarnings``, ``logging.captureWarnings`` with anything but a
+  literal ``False`` (it routes warnings to logging), a store into a
+  ``warnings`` module's ``showwarning`` and any use of its ``filters`` list,
+  and a ``simplefilter`` / ``filterwarnings`` that is not provably scoped
+  AWAY from ``RawModelContentWarning`` — scoped means a category the warning
+  is not (it is a ``UserWarning``, so ``Warning``, ``UserWarning`` and the
+  exception bases cover it), or a ``message`` pattern that does not match its
+  text. Aliases are resolved (``from warnings import simplefilter as sf``,
+  ``import warnings as w``). A filter that names ``RawModelContentWarning``
+  on purpose is flagged too; doing it anyway is a deliberate act (D1).
 
 The adapters' files are the providers package less ``registry.py``: the
 registry is a caller of the dispatch, not an adapter, so it is held to the
@@ -115,6 +130,18 @@ _DISPATCHER = "send_to" + "_model"
 _ROUTE = "route"
 #: The reflections that name a method or attribute by a string (rule S).
 _REFLECTORS = frozenset({"methodcaller", "attrgetter"})
+#: Rule W: where it applies, the calls it reads, and what covers the warning.
+_PACKAGE = "faultmaven/"
+_WARNING_FILTERS = frozenset({"simplefilter", "filterwarnings"})
+_WARNING_SWITCHES = frozenset({"catch_warnings", "resetwarnings"})
+_CAPTURE = "captureWarnings"
+#: ``RawModelContentWarning`` and the classes it derives from: a filter naming
+#: one of these reaches it.
+_COVERING = frozenset(
+    {"RawModelContentWarning", "UserWarning", "Warning", "Exception", "BaseException"}
+)
+#: The dispatch's warning, as a message-scoped filter would see it.
+_RAW_REPORT = "model-bound content not minted by the redaction module: prompt raw"
 
 
 def exempt(path: str) -> bool:
@@ -415,7 +442,195 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
                     )
     if rebindable:
         found.extend(_rebinding_violations(tree, path, docstrings))
+    if path.startswith(_PACKAGE):
+        found.extend(_warning_switch_violations(tree))
     return sorted(set(found))
+
+
+def _final_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _argument(call: ast.Call, position: int, keyword: str) -> ast.AST | None:
+    for kw in call.keywords:
+        if kw.arg == keyword:
+            return kw.value
+    if len(call.args) > position and not any(
+        isinstance(a, ast.Starred) for a in call.args[: position + 1]
+    ):
+        return call.args[position]
+    return None
+
+
+def _scoped_away(call: ast.Call, callee: str) -> bool:
+    """Whether a ``simplefilter`` / ``filterwarnings`` call provably cannot
+    reach ``RawModelContentWarning``: a category it is not, or a message
+    pattern its text does not match. A splat proves nothing."""
+    import re
+
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(
+        kw.arg is None for kw in call.keywords
+    ):
+        return False
+    category = _argument(call, 1 if callee == "simplefilter" else 2, "category")
+    if category is not None:
+        name = _final_name(category)
+        if name is not None and name not in _COVERING:
+            return True
+    if callee == "filterwarnings":
+        message = _argument(call, 1, "message")
+        if (
+            isinstance(message, ast.Constant)
+            and isinstance(message.value, str)
+            and message.value
+        ):
+            return re.compile(message.value, re.I).match(_RAW_REPORT) is None
+    return False
+
+
+def _warning_switch_violations(tree: ast.AST) -> List[Tuple[int, str, str]]:
+    """W: a warnings call that could switch off the suite's gate."""
+    aliases = {}
+    warning_modules = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"warnings", "logging"}:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "warnings":
+                    warning_modules.add(alias.asname or alias.name)
+    found: List[Tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", 0)
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                callee = func.attr
+            elif isinstance(func, ast.Name):
+                callee = aliases.get(func.id, func.id)
+            else:
+                continue
+            if callee in _WARNING_SWITCHES:
+                found.append((line, "W", f"{callee} in the package"))
+            elif callee == _CAPTURE:
+                switch = _argument(node, 0, "capture")
+                if not (isinstance(switch, ast.Constant) and switch.value is False):
+                    found.append((line, "W", f"{_CAPTURE} routes warnings to logging"))
+            elif callee in _WARNING_FILTERS and not _scoped_away(node, callee):
+                found.append(
+                    (line, "W", f"{callee} not scoped away from the raw-send warning")
+                )
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in warning_modules
+        ):
+            if node.attr == "filters":
+                found.append((line, "W", "the warnings filter list reached"))
+            elif node.attr == "showwarning" and isinstance(
+                node.ctx, (ast.Store, ast.Del)
+            ):
+                found.append((line, "W", "warnings.showwarning replaced"))
+    return found
+
+
+#: Rule W's planted cases: each switches off the suite's gate on a raw send
+#: (#2034 review F5): the review's ten forms and the ones beside them.
+W_FLAGGED = {
+    "simplefilter ignore": "import warnings\nwarnings.simplefilter('ignore')\n",
+    "filterwarnings ignore, category UserWarning": (
+        "import warnings\n" "warnings.filterwarnings('ignore', category=UserWarning)\n"
+    ),
+    "catch_warnings()": (
+        "import warnings\nwith warnings.catch_warnings():\n    send()\n"
+    ),
+    "catch_warnings(record=True)": (
+        "import warnings\n" "with warnings.catch_warnings(record=True):\n    send()\n"
+    ),
+    "resetwarnings": "import warnings\nwarnings.resetwarnings()\n",
+    "filterwarnings ignore, no category": (
+        "import warnings\nwarnings.filterwarnings('ignore')\n"
+    ),
+    "logging.captureWarnings(True)": (
+        "import logging\nlogging.captureWarnings(True)\n"
+    ),
+    "simplefilter by alias": (
+        "from warnings import simplefilter as quiet\nquiet('ignore')\n"
+    ),
+    "filterwarnings by alias": (
+        "from warnings import filterwarnings as fw\n"
+        "fw('ignore', category=UserWarning)\n"
+    ),
+    "catch_warnings by alias": (
+        "from warnings import catch_warnings as cw\nwith cw(record=True):\n"
+        "    send()\n"
+    ),
+    "resetwarnings by alias": (
+        "from warnings import resetwarnings as reset\nreset()\n"
+    ),
+    "captureWarnings by alias": (
+        "from logging import captureWarnings as capture\ncapture(True)\n"
+    ),
+    "the warnings module under an alias": (
+        "import warnings as w\nw.simplefilter('ignore')\n"
+    ),
+    "filterwarnings ignore, category Warning": (
+        "import warnings\nwarnings.filterwarnings('ignore', category=Warning)\n"
+    ),
+    "simplefilter error, no category": (
+        "import warnings\nwarnings.simplefilter('error')\n"
+    ),
+    "filterwarnings by a message that matches the warning": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', message='model-bound content')\n"
+    ),
+    "filterwarnings by module only": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', module='faultmaven.modules')\n"
+    ),
+    "filterwarnings naming the warning itself": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', category=RawModelContentWarning)\n"
+    ),
+    "a splat": "import warnings\nwarnings.simplefilter('ignore', *cats)\n",
+    "captureWarnings with a variable": (
+        "import logging\nlogging.captureWarnings(flag)\n"
+    ),
+    "showwarning replaced": (
+        "import warnings\nwarnings.showwarning = lambda *a, **k: None\n"
+    ),
+    "the filters list mutated": (
+        "import warnings\nwarnings.filters.insert(0, ('ignore', None, Warning, None, 0))\n"
+    ),
+}
+
+#: What rule W leaves alone: filters scoped away from the warning, and names
+#: that only look alike.
+W_ALLOWED = {
+    "filterwarnings by another warning's message": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', message='Pydantic V1 style')\n"
+    ),
+    "simplefilter for another category": (
+        "import warnings\nwarnings.simplefilter('ignore', DeprecationWarning)\n"
+    ),
+    "filterwarnings for another category, by keyword": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', category=DeprecationWarning, module='x')\n"
+    ),
+    "filterwarnings for another category, positionally": (
+        "import warnings\n"
+        "warnings.filterwarnings('ignore', '', exceptions.SAWarning)\n"
+    ),
+    "captureWarnings(False)": "import logging\nlogging.captureWarnings(False)\n",
+    "warnings.warn": "import warnings\nwarnings.warn('x', DeprecationWarning)\n",
+    "a query's filters": "query.filters.append(clause)\n",
+}
 
 
 def _files() -> Iterable[Tuple[str, Path]]:
@@ -433,6 +648,25 @@ def _scan() -> Tuple[dict, int]:
         if hits:
             found[rel] = hits
     return found, files
+
+
+@pytest.mark.parametrize("name", sorted(W_FLAGGED))
+def test_rule_w_flags_a_switch_of_the_warnings_machinery(name):
+    hits = violations(W_FLAGGED[name], "faultmaven/planted.py")
+    assert "W" in {rule for _line, rule, _what in hits}, name
+
+
+@pytest.mark.parametrize("name", sorted(W_ALLOWED))
+def test_rule_w_allows_a_filter_scoped_away_from_the_warning(name):
+    hits = violations(W_ALLOWED[name], "faultmaven/planted.py")
+    assert "W" not in {rule for _line, rule, _what in hits}, (name, hits)
+
+
+def test_rule_w_applies_to_the_package_only():
+    """Scripts and migrations run outside the suite's gate on model sends."""
+    source = W_FLAGGED["simplefilter ignore"]
+    assert violations(source, "faultmaven/planted.py")
+    assert not violations(source, "scripts/planted.py")
 
 
 def test_nothing_outside_the_dispatch_reaches_a_provider():
