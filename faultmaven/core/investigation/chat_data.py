@@ -139,9 +139,12 @@ def mint_chat_data_offer(
 
     ``state_report`` is the model's ``StateReport``: the message reports the
     state of the user's system with no data showing it, and names the output
-    that would. It is asked for unless the turn submitted data
-    (``submitted_data``) or an earlier request is still waiting with nothing
-    submitted since.
+    that would. It is asked for unless an earlier request is still waiting with
+    nothing submitted since. A turn that submitted data closes the earlier
+    requests first (``close_state_requests``) and does not stop this one: the
+    model sets a request only when it judged this turn's data does not show
+    the reported state, and the engine cannot tell which upload shows what
+    (#1938).
 
     Nothing is offered on a terminal case (it takes no new data) or for an empty
     message.
@@ -183,7 +186,7 @@ def mint_chat_data_offer(
                 seen.add(key)
                 blocks.append(block)
     request = (getattr(state_report, "request", None) or "").strip() or None
-    if request is not None and (submitted_data or _state_request_open(case)):
+    if request is not None and _state_request_open(case):
         request = None
     if not blocks and request is None:
         return None

@@ -316,18 +316,42 @@ class TestTheStateRequest:
         )
         assert offer.blocks == [_PODS] and offer.request == self._REQUEST
 
-    def test_not_asked_when_the_turn_submitted_data(self):
+    def test_asked_when_the_turns_data_does_not_show_it(self):
+        """#1938: "Restarted it, it's running now" with the unit file the user
+        was asked for. The model sets the request only when it judged this
+        turn's data does not show the reported state, and the engine cannot
+        tell which upload shows what, so the request stands."""
         case = _case()
-        assert (
-            mint_chat_data_offer(
-                case,
-                user_message="it's stable, see the attached",
-                named_blocks=None,
-                state_report=self._report(),
-                submitted_data=True,
-            )
-            is None
+        offer = mint_chat_data_offer(
+            case,
+            user_message="restarted it, it's running now; the unit file is attached",
+            named_blocks=None,
+            state_report=self._report(),
+            submitted_data=True,
         )
+        assert offer is not None
+        assert offer.blocks == [] and offer.request == self._REQUEST
+
+    def test_a_data_turn_answers_the_waiting_request_and_asks_its_own(self):
+        """The data closes the request that was waiting; the state the user
+        reports in the same turn, which that data does not show, is asked
+        for."""
+        case = _case()
+        first = mint_chat_data_offer(
+            case, user_message="stable", named_blocks=None, state_report=self._report()
+        )
+        case.current_turn += 1
+        second = mint_chat_data_offer(
+            case,
+            user_message="here is the config; it's working now too",
+            named_blocks=None,
+            state_report=SimpleNamespace(request="the output of systemctl status api"),
+            submitted_data=True,
+        )
+        assert first.decided_at_turn == case.current_turn
+        assert second is not None
+        assert second.request == "the output of systemctl status api"
+        assert second.decided_at_turn is None
 
     def test_not_asked_again_while_a_request_waits(self):
         """The user who keeps saying "still stable" is not asked every turn;
@@ -474,6 +498,37 @@ class TestTheEngineMintsOnTheLiveTurn:
 
         (offer,) = case.chat_data_offers
         assert offer.request == "the output of kubectl get pods"
+        assert result["metadata"][TURN_METADATA_CHAT_DATA_OFFER] == offer.offer_id
+
+    async def test_a_reported_state_is_asked_for_beside_unrelated_data(self):
+        """#1938, through the engine: the turn carries an attachment, and the
+        model's request still becomes the offer."""
+        case = _investigating_case()
+        engine = _engine(None)
+        engine.generator.generate_structured_output.return_value.system_state_report = (
+            StateReport(request="the output of systemctl status api")
+        )
+
+        result = await engine.process_turn(
+            case=case,
+            user_message="restarted it, it's running now; here is the unit file",
+            attachments=[
+                {
+                    "file_id": "file_aaaaaaaaaaaa",
+                    "filename": "api.service",
+                    "data_type": "config_files",
+                    "size": 512,
+                    "source_type": "file_upload",
+                    "summary": "",
+                    "storage_ref": "ref/api.service",
+                    "is_novel": True,
+                }
+            ],
+            redaction_ctx=None,
+        )
+
+        (offer,) = case.chat_data_offers
+        assert offer.request == "the output of systemctl status api"
         assert result["metadata"][TURN_METADATA_CHAT_DATA_OFFER] == offer.offer_id
 
     async def test_a_turn_with_nothing_named_records_nothing(self):
