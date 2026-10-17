@@ -184,7 +184,6 @@ def _validate_with_degradation(content_obj, schema_model):
     the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
     This is the backstop, not a per-variant patch.
     """
-    from pydantic import ValidationError
 
     def _record(outcome: str):
         _record_schema_validation(schema_model, outcome)
@@ -461,11 +460,6 @@ def _optional_sub_record_prefix(schema_model, loc) -> Optional[tuple]:
     or every ``state_updates`` outside one. ``test_confidence_repair_1502``'s
     census fails if any field reachable from an engine schema carries one.
     """
-    import types
-    import typing
-
-    from pydantic import BaseModel
-
     model = schema_model
     best: Optional[tuple] = None
     for depth, part in enumerate(loc):
@@ -702,12 +696,15 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     that field and nothing else (:func:`_prune_invalid_sub_records`), so a bad
     sibling can never cost K.
 
-    VALUE goes through :func:`_decode_against` like every other value: kept as
-    raw text (stripped) when the field accepts it as text — a text field, an
-    enum, anything Pydantic reads from a string — so no text value is
-    reinterpreted; otherwise it is JSON-decoded. A VALUE that cannot be decoded
-    is kept as raw text too (#1823), and the ladder decides what it costs: it
-    costs K alone, never the siblings lifted beside it.
+    VALUE is raw XML text, not a JSON value, so it goes through
+    :func:`_decode_against` as XML text (``xml_text=True``, VALUE's own string
+    only). It is kept as raw text (stripped) when the field accepts it as text
+    — a text field, an enum, anything Pydantic reads from a string — so a text
+    field keeps ``null``, ``42`` or ``{"a": 1}`` verbatim (#1799); otherwise
+    it is JSON-decoded, and what it decodes to is decoded like any delivered
+    value. A VALUE that cannot be decoded is kept as raw text too (#1823), and
+    the ladder decides what it costs: it costs K alone, never the siblings
+    lifted beside it.
     """
     su = content_obj.get("state_updates")
     if not isinstance(su, str):
@@ -725,7 +722,7 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     if field is None:
         return None
 
-    decoded = _decode_against(value.strip(), field.annotation)
+    decoded = _decode_against(value.strip(), field.annotation, xml_text=True)
 
     result: dict = {key: decoded}
     for k in list(content_obj):
@@ -806,9 +803,60 @@ def _normalize_state_updates(
     return content_obj
 
 
+#: Deeper than any engine schema nests (about six levels). A decoded value past
+#: it is not decodable: from about 200 levels pydantic's own recursion limit
+#: reports an error with an empty location, which the ladder cannot place and
+#: so costs every state field, and from about 500 the ladder's ``deepcopy``
+#: raises. The decoder itself refuses only past about 1000.
+_MAX_DECODED_DEPTH = 64
+
+
+def _depth_exceeds(value: Any, limit: int) -> bool:
+    """Whether *value* nests dicts and lists more than *limit* deep.
+
+    Iterative, so measuring a value can never exceed the recursion limit the
+    bound exists to stay under.
+    """
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, (dict, list)):
+            if depth > limit:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((child, depth + 1) for child in children)
+    return False
+
+
+def _bounded(decoded: Any) -> tuple[bool, Any]:
+    """``(True, decoded)``, or ``(False, None)`` when *decoded* nests deeper
+    than ``_MAX_DECODED_DEPTH``: every decode's result passes through here."""
+    if _depth_exceeds(decoded, _MAX_DECODED_DEPTH):
+        return False, None
+    return True, decoded
+
+
+def _decode_whole_json(text: str) -> tuple[bool, Any]:
+    """``(True, value)`` when *text*, parsed whole with no repair, is one JSON
+    value within the depth bound; ``(False, None)`` otherwise.
+
+    The decode a text position gets (:func:`_decode_against`): a repair could
+    turn prose that opens with a bracket into JSON, so none is tried there.
+    """
+    try:
+        return _bounded(json.loads(text, strict=False))
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        return False, None
+
+
 def _decode_json_text(text: str) -> tuple[bool, Any]:
     """``(True, value)`` when *text* decodes as JSON, after two repairs;
-    ``(False, None)`` otherwise. A value too deep to parse is not decodable.
+    ``(False, None)`` otherwise.
+
+    Not decodable either: a value nested deeper than ``_MAX_DECODED_DEPTH``, or
+    too deep for the decoder itself. Every parse is ``strict=False``, as the
+    outer parse of the arguments is: a model writes raw newlines and tabs into
+    the strings of a JSON-encoded list, and a strict parse would drop the list.
 
     Fireworks/DeepSeek V3 leak XML tool-call format artifacts, so before giving
     up:
@@ -818,7 +866,7 @@ def _decode_json_text(text: str) -> tuple[bool, Any]:
             handle stray closing braces/brackets (e.g. ``"[...]}"``).
     """
     try:
-        return True, json.loads(text)
+        return _bounded(json.loads(text, strict=False))
     except (json.JSONDecodeError, TypeError, RecursionError):
         pass
     stripped_obj = text.strip()
@@ -827,7 +875,7 @@ def _decode_json_text(text: str) -> tuple[bool, Any]:
     stripped = re.sub(r"(\s*</\w+>)+\s*$", "", stripped_obj)
     if stripped != stripped_obj:
         try:
-            return True, json.loads(stripped)
+            return _bounded(json.loads(stripped, strict=False))
         except (json.JSONDecodeError, TypeError, RecursionError):
             pass
 
@@ -841,7 +889,7 @@ def _decode_json_text(text: str) -> tuple[bool, Any]:
                 candidate = stripped_obj[: last_pos + 1]
                 if candidate != stripped_obj:
                     try:
-                        return True, json.loads(candidate)
+                        return _bounded(json.loads(candidate, strict=False))
                     except (json.JSONDecodeError, TypeError, RecursionError):
                         pass
     return False, None
@@ -854,20 +902,30 @@ _TEXT_ADAPTERS: dict = {}
 def _accepts_text(annotation: Any, text: str) -> bool:
     """Whether *annotation* takes *text* as a string, as Pydantic reads it.
 
-    Asks about the type only: constraints live in ``field.metadata``, not in
-    the annotation. The schemas' ``BeforeValidator`` coercions are pure, so
-    running them here has no side effect.
+    Validates against the bare annotation, so what runs is what the annotation
+    itself carries. A ``BeforeValidator`` nested inside it runs
+    (``Optional[IdRef]``'s ``_coerce_bare_int_to_new_index``); the schemas'
+    validators are pure, so running them here has no side effect. What a field
+    carries outside its annotation does not run: a top-level ``Annotated``'s
+    metadata, which Pydantic moves into ``field.metadata``, and model
+    validators. Constraints live there too, and are excluded on purpose: a long
+    text over its ``max_length`` is still text, and must never be sent to the
+    repairs.
+
+    Total: any exception, from building the adapter or from validating,
+    answers ``False``, and the value then takes the JSON decode.
     """
     try:
-        adapter = _TEXT_ADAPTERS.get(annotation)
-        if adapter is None:
-            adapter = _TEXT_ADAPTERS[annotation] = TypeAdapter(annotation)
-    except TypeError:  # unhashable annotation: build it uncached
-        adapter = TypeAdapter(annotation)
-    try:
+        try:
+            adapter = _TEXT_ADAPTERS.get(annotation)
+        except TypeError:  # unhashable annotation: build it uncached
+            adapter = TypeAdapter(annotation)
+        else:
+            if adapter is None:
+                adapter = _TEXT_ADAPTERS[annotation] = TypeAdapter(annotation)
         adapter.validate_python(text)
         return True
-    except ValidationError:
+    except Exception:
         return False
 
 
@@ -875,19 +933,41 @@ def _accepts_text(annotation: Any, text: str) -> bool:
 _UNKNOWN = object()
 
 
-def _decode_against(value: Any, annotation: Any) -> Any:
-    """Decode the JSON-encoded strings in *value* that *annotation* does not
-    accept as text.
+def _decode_against(value: Any, annotation: Any, *, xml_text: bool = False) -> Any:
+    """Decode the JSON-encoded strings in *value*, directed by *annotation*.
 
-    A string is kept when the annotation is unknown or accepts it as text;
-    otherwise it is JSON-decoded (both repairs included) and the result is
-    decoded against the same annotation. A string that cannot be decoded stays
-    as raw text. Dicts recurse per key against the model's field annotation (a
-    key that is not a field is untouched), lists per item; anything else is
-    unchanged.
+    A string at a position the schema does not describe (the annotation is
+    unknown) is kept. A string the annotation does not accept as text is
+    JSON-decoded (both repairs included) and the result is decoded against the
+    same annotation; one that cannot be decoded stays as raw text.
+
+    A string the annotation does accept as text is read in JSON context: it
+    arrived inside JSON arguments. When it is, parsed whole with no repair,
+    JSON ``null``, a JSON string, an object or an array, it is an encoded value:
+    it is decoded and decoded again against the same annotation, so a
+    ``"null"`` id is absent rather than the text ``null``, and an encoded
+    envelope is not shown to the user as text. Anything else — a number, a
+    bool, prose, or text that only a repair makes JSON — is kept as text
+    (#1822): ``"[1] disk full"`` is a summary, not a list, and ``"42"`` a
+    summary that happens to be a number.
+
+    *xml_text* says the string is raw XML text rather than a JSON value (a
+    leaked parameter's VALUE, :func:`_recover_leaked_parameter`): there is no
+    JSON context, so a string the annotation accepts as text is kept verbatim.
+    It applies to *value*'s own string only, never to what that decodes to.
+
+    Dicts recurse per key against the model's field annotation (a key that is
+    not a field is untouched), lists per item; anything else is unchanged.
     """
     if isinstance(value, str):
-        if annotation is _UNKNOWN or _accepts_text(annotation, value):
+        if annotation is _UNKNOWN:
+            return value
+        if _accepts_text(annotation, value):
+            if xml_text:
+                return value
+            ok, decoded = _decode_whole_json(value)
+            if ok and (decoded is None or isinstance(decoded, (str, dict, list))):
+                return _decode_against(decoded, annotation)
             return value
         ok, decoded = _decode_json_text(value)
         return _decode_against(decoded, annotation) if ok else value
@@ -911,13 +991,24 @@ def _decode_against(value: Any, annotation: Any) -> Any:
 def _parse_nested_json(obj, schema_model):
     """Decode the JSON-encoded strings in the arguments, directed by the schema.
 
-    A string the schema accepts as text at its position is never reinterpreted
-    as JSON (#1822): ``"[1] disk full"`` is a summary, not a list, and the two
-    repairs would otherwise cut it to ``[1]``. Each top-level key is decoded
-    against the response field's annotation, else against the state-update
-    model's field of that name (a leaked sibling, lifted afterwards by
-    :func:`_recover_leaked_parameter`), else left as is.
+    A string the schema accepts as text at its position is never repaired into
+    JSON or read as a number (#1822): ``"[1] disk full"`` is a summary, not a
+    list, and the two repairs would otherwise cut it to ``[1]``. The arguments
+    are JSON, though, so a text position whose string is itself, parsed whole,
+    JSON ``null``, a JSON string, an object or an array takes the decoded value
+    (:func:`_decode_against`): a ``"null"`` id is absent, not the text
+    ``null``.
+
+    *obj* may be a string: the whole argument object encoded once more. It is
+    decoded (repairs included) and then parsed as an object. Each top-level key
+    is decoded against the response field's annotation, else against the
+    state-update model's field of that name (a leaked sibling, lifted
+    afterwards by :func:`_recover_leaked_parameter`), else left as is.
     """
+    if isinstance(obj, str):
+        ok, decoded = _decode_json_text(obj)
+        if ok:
+            return _parse_nested_json(decoded, schema_model)
     if not isinstance(obj, dict):
         return obj
     fields = schema_model.model_fields

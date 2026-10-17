@@ -15,14 +15,21 @@ import ast
 import inspect
 import json
 import logging
+from typing import Annotated
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import BeforeValidator
 
 from faultmaven.core.investigation.milestone_engine import structured_output as so
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
+    RESPONSE_EMPTY_TEXT,
+    is_agent_response_synthesized,
+)
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _normalize_state_updates,
+    _parse_nested_json,
     _parse_schema_tool_call,
     _parse_text_as_schema,
     _recover_leaked_parameter,
@@ -738,16 +745,27 @@ def test_repair_vocabulary_is_pinned():
 
 
 # fm#1822 / fm#1823: the decode before validation is schema-directed. The
-# table is driven through _parse_schema_tool_call; each row asserts the design
-# column of the plan (field: its value on the parsed response).
+# table is driven through _parse_schema_tool_call; each row asserts the
+# plan's design column as revision 1 amends it (field: its value on the parsed
+# response). A text position keeps a number, a bool, prose and anything only a
+# repair makes JSON; a string that is, parsed whole, JSON null, a JSON string,
+# an object or an array arrived encoded inside JSON arguments, and is decoded.
 _LEAK_LINKS_JSON = '<parameter name="documentation_links">["https://a"]'
 _LEAK_LINKS_URL = '<parameter name="documentation_links">https://docs.example/runbook'
 _LEAK_LINKS_EMPTY = '<parameter name="documentation_links">'
+_LEAK_TEXT = '<parameter name="final_summary_update">'
 _DEEP = "[" * 1200
+_ENVELOPE = json.dumps(
+    {"agent_response": "Case closed.", "state_updates": {"final_summary_update": "S"}}
+)
 
 
 def _su(**fields):
     return {"agent_response": "x", "state_updates": fields}
+
+
+def _nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
 
 
 _TEXT_FIRST_ROWS = [
@@ -758,16 +776,22 @@ _TEXT_FIRST_ROWS = [
     ),
     ("text-number", _su(final_summary_update="42"), {"final_summary_update": "42"}),
     ("text-true", _su(final_summary_update="true"), {"final_summary_update": "true"}),
+    # An object or an array a text field rejects costs that field (pruned).
     (
         "text-object",
         _su(final_summary_update='{"a": 1}'),
-        {"final_summary_update": '{"a": 1}'},
+        {"final_summary_update": None},
     ),
-    ("text-null", _su(final_summary_update="null"), {"final_summary_update": "null"}),
+    (
+        "text-array",
+        _su(final_summary_update='["a","b"]'),
+        {"final_summary_update": None},
+    ),
+    ("text-null", _su(final_summary_update="null"), {"final_summary_update": None}),
     (
         "text-double-encoded",
         _su(final_summary_update='"quoted"'),
-        {"final_summary_update": '"quoted"'},
+        {"final_summary_update": "quoted"},
     ),
     (
         "list-json-string",
@@ -793,6 +817,55 @@ _TEXT_FIRST_ROWS = [
         "agent-response-text-like-list",
         {"agent_response": "[1] see below", "state_updates": {}},
         {"agent_response": "[1] see below"},
+    ),
+    # An answer that decodes to no text is blanked, for the tool loop to
+    # synthesize and the text path to refuse (the tests below the table).
+    (
+        "agent-response-null",
+        {"agent_response": "null", "state_updates": {}},
+        {"agent_response": ""},
+    ),
+    (
+        "agent-response-envelope",
+        {"agent_response": _ENVELOPE, "state_updates": {}},
+        {"agent_response": "", "final_summary_update": None},
+    ),
+    (
+        "double-encoded-arguments",
+        json.dumps(
+            {
+                "agent_response": "All good",
+                "state_updates": {"final_summary_update": "S"},
+            }
+        ),
+        {"agent_response": "All good", "final_summary_update": "S"},
+    ),
+    # The leaked value K is raw XML text, not JSON: a text field keeps it
+    # verbatim (#1799), whatever JSON it spells.
+    (
+        "leaked-text-keeps-null",
+        {"agent_response": "x", "state_updates": _LEAK_TEXT + "null"},
+        {"final_summary_update": "null"},
+    ),
+    (
+        "leaked-text-keeps-number",
+        {"agent_response": "x", "state_updates": _LEAK_TEXT + "42"},
+        {"final_summary_update": "42"},
+    ),
+    (
+        "leaked-text-keeps-object",
+        {"agent_response": "x", "state_updates": _LEAK_TEXT + '{"a": 1}'},
+        {"final_summary_update": '{"a": 1}'},
+    ),
+    # A leaked sibling is a JSON argument like any delivered value.
+    (
+        "leaked-sibling-null",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_LINKS_JSON,
+            "final_summary_update": "null",
+        },
+        {"documentation_links": ["https://a"], "final_summary_update": None},
     ),
     (
         "leaked-links-and-text-like-list-sibling",
@@ -877,6 +950,32 @@ _TEXT_FIRST_ROWS = [
     ),
 ]
 
+# A JSON-encoded links value nested past the depth bound is not decodable, at
+# any depth: neither Pydantic's recursion limit (an error with an empty
+# location, from about 200 levels) nor the ladder's deepcopy (from about 500)
+# ever sees it. It costs its own field, the sibling S is kept, nothing raises.
+_DEPTH_ROWS = [
+    row
+    for depth in (150, 250, 300, 600, 800, 1200)
+    for row in (
+        (
+            f"delivered-links-depth-{depth}",
+            _su(documentation_links=_nested(depth), final_summary_update="S"),
+            {"final_summary_update": "S", "documentation_links": []},
+        ),
+        (
+            f"leaked-links-depth-{depth}",
+            {
+                "agent_response": "x",
+                "state_updates": '<parameter name="documentation_links">'
+                + _nested(depth),
+                "final_summary_update": "S",
+            },
+            {"final_summary_update": "S", "documentation_links": []},
+        ),
+    )
+]
+
 
 def _check(parsed, expected):
     for name, want in expected.items():
@@ -884,31 +983,33 @@ def _check(parsed, expected):
         assert getattr(owner, name) == want, name
 
 
-def _tool_call_of(args) -> ToolCall:
+def _tool_call_of(args, name: str = "TerminalResponse") -> ToolCall:
     return ToolCall(
         id="c1",
         type="function",
-        function={"name": "TerminalResponse", "arguments": json.dumps(args)},
+        function={"name": name, "arguments": json.dumps(args)},
     )
 
 
 @pytest.mark.parametrize(
     "args, expected",
-    [r[1:] for r in _TEXT_FIRST_ROWS],
-    ids=[r[0] for r in _TEXT_FIRST_ROWS],
+    [r[1:] for r in _TEXT_FIRST_ROWS + _DEPTH_ROWS],
+    ids=[r[0] for r in _TEXT_FIRST_ROWS + _DEPTH_ROWS],
 )
 def test_tool_call_decodes_only_what_the_schema_does_not_take_as_text(args, expected):
     parsed = _parse_schema_tool_call(_tool_call_of(args), TerminalResponse)
     _check(parsed, expected)
 
 
-# Five rows that show each caller passes the schema to the decode.
+# Rows that show each caller passes the schema to the decode, and decodes an
+# argument object encoded twice.
 _CALLER_ROWS = [
     "text-like-list",
     "text-number",
     "agent-response-text-like-list",
     "leaked-links-and-text-like-list-sibling",
     "leaked-links-url-keeps-sibling",
+    "double-encoded-arguments",
 ]
 _CALLER_PARAMS = [r[1:] for r in _TEXT_FIRST_ROWS if r[0] in _CALLER_ROWS]
 _CALLER_IDS = [r[0] for r in _TEXT_FIRST_ROWS if r[0] in _CALLER_ROWS]
@@ -973,3 +1074,92 @@ def test_a_json_string_list_of_models_decodes_and_its_text_stays_text():
     parsed = _parse_schema_tool_call(call, InvestigationResponse_Diagnosis)
     added = parsed.state_updates.hypotheses_to_add
     assert [h.statement for h in added] == ["[2] pods restarted"]
+
+
+@pytest.mark.parametrize("answer", ["null", _ENVELOPE], ids=["null", "envelope"])
+def test_text_path_refuses_an_answer_that_decodes_to_no_text(answer):
+    """The text path escalates rather than show the user ``null`` or an encoded
+    envelope; ``"[1] see below"`` is kept there (the caller rows above)."""
+    text = json.dumps({"agent_response": answer, "state_updates": {}})
+    with pytest.raises(ValueError, match="empty agent_response"):
+        _parse_text_as_schema(text, TerminalResponse)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["null", _ENVELOPE], ids=["null", "envelope"])
+async def test_tool_loop_synthesizes_an_answer_that_decodes_to_no_text(answer):
+    call = _tool_call_of({"agent_response": answer, "state_updates": {}})
+    parsed = await _tool_loop(
+        _llm(stop_reason=StopReason.TOOL_CALLS, tool_calls=[call])
+    )
+    assert parsed.agent_response == RESPONSE_EMPTY_TEXT
+    assert is_agent_response_synthesized(parsed)
+
+
+def test_a_json_string_list_with_a_raw_newline_in_a_string_decodes():
+    """Every decode is ``strict=False``, as the outer parse is: a raw newline
+    inside a JSON-encoded list's string does not cost the list."""
+    raw = (
+        '[{"statement": "disk full", "category": "database", "likelihood": 0.4,'
+        ' "rationale": "line1\nline2"}]'
+    )
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(raw)  # the strict parse refuses it
+    args = {"agent_response": "x", "state_updates": {"hypotheses_to_add": raw}}
+    parsed = _parse_schema_tool_call(
+        _tool_call_of(args, "InvestigationResponse_Diagnosis"), _D
+    )
+    added = parsed.state_updates.hypotheses_to_add
+    assert [h.rationale for h in added] == ["line1\nline2"]
+
+
+@pytest.mark.parametrize(
+    "need_id, after_parse, validated",
+    [("null", None, None), ("0", "0", "new_index_0")],
+    ids=["null-is-absent", "digit-stays-text"],
+)
+def test_an_id_ref_spelled_null_is_absent_and_a_digit_stays_text(
+    need_id, after_parse, validated
+):
+    """A ``"null"`` id is JSON null, not the text ``null``: kept as text, it
+    would turn a create into an update of a need that does not exist. ``"0"``
+    stays text through the decode, and the ``IdRef`` validator coerces it."""
+
+    def args():
+        need = {
+            "need_id": need_id,
+            "purpose": "symptom_verification",
+            "request_text": "q",
+            "rationale": "r",
+        }
+        return _su(evidence_need_updates=[need])
+
+    decoded = _parse_nested_json(args(), _D)
+    assert decoded["state_updates"]["evidence_need_updates"][0]["need_id"] == (
+        after_parse
+    )
+    parsed = _parse_schema_tool_call(
+        _tool_call_of(args(), "InvestigationResponse_Diagnosis"), _D
+    )
+    needs = parsed.state_updates.evidence_need_updates
+    assert [n.need_id for n in needs] == [validated]
+
+
+class _NoSchema:
+    """A type Pydantic cannot build a schema for."""
+
+
+def _raise_attribute_error(value):
+    return value.no_such_attribute
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [_NoSchema, Annotated[str, BeforeValidator(_raise_attribute_error)]],
+    ids=["unbuildable", "validator-raises-attribute-error"],
+)
+def test_accepts_text_is_total(annotation):
+    """Any exception answers "not text", and the value takes the JSON decode."""
+    assert so._accepts_text(annotation, "x") is False
+    assert so._decode_against('["a"]', annotation) == ["a"]
+    assert so._decode_against("prose", annotation) == "prose"
