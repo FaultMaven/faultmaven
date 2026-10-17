@@ -12,13 +12,15 @@ Coverage Target: 90%+
 
 import base64
 import json
-import time
-import uuid
+import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from faultmaven.api.middleware.auth import (
     _extract_token,
@@ -360,27 +362,25 @@ _EXPIRED_TOKEN_DETAIL = "Token has expired. Please refresh or re-authenticate."
 #: response body, in any case.
 _DIAGNOSTIC_WORDS = ("decode", "segments", "padding", "Signature", "alg", "Expected")
 
-_ACCESS_PAYLOAD = {"sub": "u1", "type": "access"}
-
 
 def _b64url(obj: dict) -> str:
     raw = json.dumps(obj, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def _claims_typed(service: AuthService, token_type: str) -> dict:
-    """A full, correctly signed claim set whose only fault is its `type`."""
-    now = int(time.time())
-    return {
-        "sub": "u1",
-        "enterprise_id": "ent-1",
-        "iss": service._settings.security.jwt_issuer,
-        "aud": service._settings.security.jwt_audience,
-        "iat": now,
-        "exp": now + 900,
-        "jti": str(uuid.uuid4()),
-        "type": token_type,
-    }
+def _live_claims(service: AuthService) -> dict:
+    """The claim set the live access generator emits, read back unverified
+    from `forge_access_token` (whose shape `test_token_forger_shape_parity.py`
+    pins to the generator's). A row that changes one claim of it is refused
+    for that claim, not for one a hand-built set forgot."""
+    token = forge_access_token(
+        service,
+        user_id="u1",
+        enterprise_id="ent-1",
+        email="u1@example.com",
+        roles=["member"],
+    )
+    return jwt.decode(token, options={"verify_signature": False})
 
 
 #: Every token `get_current_user` refuses with the generic invalid-token 401,
@@ -388,37 +388,43 @@ def _claims_typed(service: AuthService, token_type: str) -> dict:
 _REFUSED_TOKENS = {
     "two-segments": lambda s: "abc.def",
     "not-a-jwt": lambda s: "not-a-jwt",
-    "bad-header-padding": lambda s: f"eyJhbGciOi.{_b64url(_ACCESS_PAYLOAD)}.AAAA",
+    "bad-header-padding": lambda s: f"eyJhbGciOi.{_b64url(_live_claims(s))}.AAAA",
     "bad-signature": lambda s: (
-        f"{_b64url({'alg': 'HS256'})}.{_b64url(_ACCESS_PAYLOAD)}.AAAA"
+        f"{_b64url({'alg': 'HS256'})}.{_b64url(_live_claims(s))}.AAAA"
     ),
-    "alg-none": lambda s: f"{_b64url({'alg': 'none'})}.{_b64url(_ACCESS_PAYLOAD)}.",
+    "alg-none": lambda s: f"{_b64url({'alg': 'none'})}.{_b64url(_live_claims(s))}.",
     # Correctly signed, wrong `type`: the message interpolates the claim.
     "type-refresh": lambda s: forge_refresh_token(
         s, user_id="u1", enterprise_id="ent-1"
     ),
-    "type-script": lambda s: sign_claims_for(s, _claims_typed(s, "<script>x</script>")),
+    "type-script": lambda s: sign_claims_for(
+        s, {**_live_claims(s), "type": "<script>x</script>"}
+    ),
 }
 
 
 @pytest.fixture(scope="module")
 def real_auth_service() -> AuthService:
-    """A real `AuthService` in local (HS256) mode, built the way
-    `tests/unit/modules/auth/domain/services/test_auth_service.py` builds it."""
-    settings = MagicMock()
-    settings.auth.auth_mode = "local"
-    settings.security.jwt_algorithm = "HS256"
-    settings.auth.jwt_access_token_expire_minutes = 15
-    settings.auth.jwt_refresh_token_expire_days = 7
-    settings.security.jwt_issuer = "faultmaven"
-    settings.security.jwt_audience = "faultmaven-api"
-    settings.security.jwt_private_key = None
-    settings.security.jwt_public_key = None
-    settings.security.jwt_private_key_path = None
-    settings.security.jwt_public_key_path = None
-    settings.security.jwt_secret_key = MagicMock()
-    settings.security.jwt_secret_key.get_secret_value.return_value = (
-        "test-secret-key-min-32-bytes!!!!!"
+    """A real `AuthService` in local (HS256) mode over strict settings.
+
+    A `SimpleNamespace`, not a `MagicMock`: it carries only what the service
+    and the forging helpers read, so a setting nobody set raises
+    `AttributeError` instead of reading as a truthy mock."""
+    settings = SimpleNamespace(
+        auth=SimpleNamespace(
+            auth_mode="local",
+            jwt_access_token_expire_minutes=15,
+            jwt_refresh_token_expire_days=7,
+        ),
+        security=SimpleNamespace(
+            jwt_issuer="faultmaven",
+            jwt_audience="faultmaven-api",
+            jwt_secret_key=SecretStr("test-secret-key-min-32-bytes!!!!!"),
+            jwt_private_key=None,
+            jwt_public_key=None,
+            jwt_private_key_path=None,
+            jwt_public_key_path=None,
+        ),
     )
     with patch(
         "faultmaven.modules.auth.domain.services.auth_service.get_settings",
@@ -466,6 +472,29 @@ class TestUnauthorizedBodyCarriesNoTokenText:
         # The two `type` rows: the claim's value is attacker-chosen content.
         assert "refresh" not in resp.json()["detail"]
         assert "<script>" not in resp.text
+
+    def test_the_refusal_reason_stays_in_the_debug_log(
+        self, bearer_client, real_auth_service, caplog
+    ):
+        """The body is static; the reason is kept server-side, in the debug
+        record `get_current_user` writes before it answers."""
+        token = _REFUSED_TOKENS["two-segments"](real_auth_service)
+
+        with caplog.at_level(logging.DEBUG, logger="faultmaven.api.middleware.auth"):
+            resp = bearer_client.get(
+                "/whoami", headers={"Authorization": f"Bearer {token}"}
+            )
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": _INVALID_TOKEN_DETAIL}
+        debug = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "faultmaven.api.middleware.auth" and r.levelno == logging.DEBUG
+        ]
+        assert any(
+            "DECODE_ERROR" in m and "Not enough segments" in m for m in debug
+        ), debug
 
     def test_an_expired_token_keeps_its_own_static_detail(
         self, bearer_client, real_auth_service

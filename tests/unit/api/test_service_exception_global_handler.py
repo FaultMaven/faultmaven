@@ -482,7 +482,9 @@ def test_every_arm_that_bypasses_the_global_handler_is_accounted_for():
     """State N. When #552 landed: 16 arms on the route surface catch
     ``ServiceException``/``LLMException``/``FaultMavenException``. 9 hand the
     failure on (1 calls the helper — `submit_turn`; 8 are bare re-raises of
-    ``FaultMavenException``), and the 7 above are listed with their reasons."""
+    ``FaultMavenException``), and the other 7 were listed above with their
+    reasons. #1859 removed ``delete_report``'s dead arm, so 6 are listed
+    today."""
     inventory = _inventory()
     keys = [key for key, _ in inventory]
 
