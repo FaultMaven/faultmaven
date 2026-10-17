@@ -28,17 +28,31 @@ parametrised over both classes: a rule added to one and not the other fails
 there rather than in whichever deployment happens to run the other.
 
 Two granularities (see ``ITokenRevocationStore``): individual tokens by JTI,
-and whole users by revocation watermark (#769). Both live in this one store
-with TTLs matching token expiration.
+and whole users by revocation watermark (#769). Both live in this one store,
+held for different lifetimes:
 
-**Watermark retention is 90 days on BOTH arms**, because
+- a per-jti entry (``add_revoked_token``) for the revoked token's remaining
+  life, which ``_revoke_token_by_jti`` also caps at
+  ``max_revocation_entry_ttl()`` (the schema ceiling on token lifetime) and
+  gives in full to a token with no ``exp``;
+- a watermark (``revoke_user_tokens_before``) for that ceiling plus
+  ``MAX_MINT_BASIS_CARRY_SECONDS``, whatever lifetime the user's tokens were
+  minted with (``AuthService._watermark_ttl_seconds``).
+
+**Watermark retention is the same on both stores**, because
 ``AuthService._watermark_ttl_seconds`` is store-agnostic and holds against the
 schema ceiling on token lifetime rather than the configured one (#828). On the
-Redis arm that raises per-user key retention from the configured refresh
-lifetime (7 days by default) to 90 — a real memory cost, not only a row. It is
-one small key per user who has been revoked and has not signed back in since (a
-sign-in clears the watermark), and the alternative is the resurrection the
-ceiling exists to prevent, so the cost is accepted rather than traded away.
+Redis store, that means each per-user key is held in memory for the ceiling
+rather than for the configured refresh lifetime. Every sign-out writes a
+watermark (``logout`` → ``_revoke_account_wide``), as does every other caller
+of ``AuthService.revoke_user_tokens``, and each write restarts the key's
+lifetime. Only a sign-in through ``local_login`` clears one early;
+``require_local_mode`` serves that route only under ``AUTH_MODE=local``, which
+cloud refuses at boot, and SSO and the OAuth token exchange mint without
+clearing. So on the Redis store a key lives its full lifetime, and the
+population is one key per user who signed out or was revoked within it. The
+alternative is the resurrection the ceiling exists to prevent, so the cost is
+accepted rather than traded away.
 
 In the Redis store the key prefix comes from
 ``settings.security.token_revocation_prefix`` so writers and the reader can

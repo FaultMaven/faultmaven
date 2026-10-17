@@ -672,11 +672,26 @@ class AuthService:
         this method used to carry is gone: a constant cannot under-cover, and a
         guard that can no longer fire is a guard that will sit green for ever.
         The cost is a longer-lived entry — the ceiling rather than the
-        configured lifetime — which is one entry per user who has been revoked
-        and has not signed back in, expiring on its own: a row on the SQL arm,
-        a key held in memory on the Redis arm. The retention reasoning is in
-        ``token_revocation_store``'s module docstring. That cost is set against
-        the resurrection of every token that user holds.
+        configured lifetime — held from the latest write to it. Every sign-out
+        writes one (``logout`` → ``_revoke_account_wide``), as does every other
+        caller of ``revoke_user_tokens`` (password reset and change, role and
+        membership changes, deactivation, deletion, admin revoke-tokens, the
+        operator CLIs that change an account's standing), and each write
+        restarts the full lifetime. The one thing that removes an entry early
+        is a sign-in through ``local_login``, which clears a watermark that
+        predates it; ``require_local_mode`` serves that route only under
+        ``AUTH_MODE=local``, and SSO and the OAuth token exchange mint without
+        clearing. Cloud refuses to boot without ``AUTH_MODE=oauth``, so on the
+        Redis store nothing clears a watermark. What an entry costs, per store:
+
+        - **Redis store**: a key held in memory, expiring by TTL.
+        - **SQL store**: a row that stops revoking at its deadline, because
+          every read filters on ``expires_at``, and is deleted by the sweep in
+          the next revocation write (per-jti or watermark, for any user).
+
+        The retention reasoning is in ``token_revocation_store``'s module
+        docstring. That cost is set against the resurrection of every token
+        that user holds.
         """
         from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
 
