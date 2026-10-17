@@ -405,6 +405,10 @@ cause_identification_held_mece_total = Counter(
 #   (it predates the cause row, sits in the fix's own execution turn — where a
 #   pasted journal still carries the pre-fix failures — or is about something
 #   else).
+# - ``relapse``          — the window FAILED as a relapse: the problem observed
+#   gone after the fix, then observed again, with no disconfirmation (the cause
+#   observed removed, then the problem present, nothing gone in between). The
+#   problem went with the cause, so nothing disproves it (#2039).
 # - ``resolution_confirmed`` — the window SUCCEEDED: the cause observed removed
 #   and the problem observed gone, with no persistence before the relief. This
 #   is the #987 incident shape, and a nonzero rate here means something
@@ -426,8 +430,8 @@ m6_demotion_refused_total = Counter(
 
 # M6 demoted the identified cause because the latest fix window FAILED
 # (``cause_assurance.fix_windows``: an executed SOLUTION, the cause observed
-# removed after it, then the problem observed persisting with no relief before
-# it), for a fix of that cause, while the model had not refuted the cause
+# removed after it, then the problem observed persisting with no relief in
+# between), for a fix of that cause, while the model had not refuted the cause
 # itself (#1927). The prompt's FAILURE PATH tells the
 # model to refute a cause its fix disproved, so a sustained rate is an
 # elicitation signal: the engine is doing the model's refutation for it.

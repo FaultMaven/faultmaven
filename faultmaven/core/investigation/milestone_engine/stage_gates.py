@@ -548,7 +548,14 @@ def _flag_absence_inside_a_failed_fix_window(
     what the user changed, and ``solution_accepted`` once they say it ran. The
     M5 license that admits the SolutionToAdd survives the demoted cause through
     a root_cause_conclusion — on a NEW hypothesis when the cause is the same
-    one re-applied correctly — which is the intended re-licensing path.
+    one re-applied correctly — which is the intended re-licensing path. A
+    RELAPSE demotes nothing (``FixWindow.disconfirms_cause``, #2039), so the
+    notice says only that and leaves the next step to the graph the model
+    sees: no new hypothesis while the addressed cause stands, a re-assertion
+    once it fell for another reason (a refutation on evidence, an earlier
+    window's demotion). Which cause a terse cause row addressed is not
+    something the engine can tell (``BearingFrame`` reads it as about no
+    chain), so the notice does not assert it.
 
     Prepended, like the withdrawal notice: the turn record truncates feedback
     head-first. Returns whether the notice was added."""
@@ -577,18 +584,32 @@ def _flag_absence_inside_a_failed_fix_window(
         for e in case.evidence or []
     ):
         return False
+    if window.disconfirms_cause:
+        shape = "the cause was shown removed, then the problem was seen again"
+        cause = (
+            " — re-assert the cause with a root_cause_conclusion on a new "
+            "hypothesis if the same cause was addressed again — then"
+        )
+    else:
+        shape = (
+            f"the problem was seen gone at turn {window.relief_turn}, then seen "
+            "again"
+        )
+        cause = (
+            " — a problem that went away after the fix and came back does not "
+            "by itself disprove the cause the fix addressed: if that cause still "
+            "stands, no new hypothesis is needed; if it no longer stands, "
+            "re-assert it with a root_cause_conclusion on a new hypothesis — then"
+        )
     _add_system_feedback(
         metadata,
         "SYSTEM: The fix executed at turn "
-        f"{window.fix_turn} did not hold: the cause was shown removed, then the "
-        "problem was seen again. Absence evidence recorded after that cannot "
-        "confirm a resolution. If the user has applied (or will apply) a new "
-        "fix, record it: propose it as a SolutionToAdd and set "
-        "solution_accepted once the user says it ran — re-assert the cause with "
-        "a root_cause_conclusion on a new hypothesis if the same cause was "
-        "addressed again — then record the cause gone and the problem gone "
-        "after it. If the problem is only quiet after a workaround, offer to "
-        "close instead.",
+        f"{window.fix_turn} did not hold: {shape}. Absence evidence recorded "
+        "after that cannot confirm a resolution. If the user has applied (or "
+        "will apply) a new fix, record it: propose it as a SolutionToAdd and "
+        f"set solution_accepted once the user says it ran{cause} record the "
+        "cause gone and the problem gone after it. If the problem is only "
+        "quiet after a workaround, offer to close instead.",
         prepend=True,
     )
     return True

@@ -396,9 +396,13 @@ The process:
      citing the failed fix as the disproof ("fix targeting [mechanism] had no effect,
      ruling out [hypothesis]"). The engine accepts it once the case records the
      failure: the cause observed removed after the fix and the problem observed
-     still present after that, both from submitted output. Without that output
-     the fix may simply not have been applied as intended, which disproves
-     nothing: ask for the re-check instead.
+     still present after that, never seen gone in between, both from submitted
+     output. Without that output the fix may simply not have been applied as
+     intended, which disproves nothing: ask for the re-check instead. A problem
+     that went away after the fix and came back is a relapse, which by itself
+     disproves nothing: re-check the cause. If it is back, the fix did not last
+     and the next step is one that holds; if it is still gone while the problem
+     is present, that disproves it.
    - Form new hypotheses if needed (hypotheses_to_add)
    - Link new evidence to hypotheses (hypothesis_evidence_links)
    - Emit a SolutionToAdd record in solutions_to_add describing the revised fix
@@ -435,8 +439,14 @@ The process:
   hypothesis or to a causal node (a fix confirms the cause; a
   confidence-bearing link would erode it, and a REFUTES reads as a FAILED
   fix — the opposite of what the row records).
-- **symptom_evidence**: New symptoms that emerge after a failed fix
-  (new errors, changed behavior, unexpected side effects)
+- **symptom_evidence**: After a fix, ONLY the reported problem's own signature,
+  still or again present. FaultMaven reads such a row as the fix not holding.
+  Output that fails for another reason is not the reported problem: a check
+  that failed on its own (missing credentials or flags, the wrong target) or a
+  different error. Say what it shows and ask for the check that shows the
+  reported signature; do not record it as symptom_evidence. The exception is
+  output showing the problem itself was mis-stated (Revisit the Diagnosis):
+  that is the symptom_evidence a revised_problem_statement cites.
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven
   ⚠️ REQUIRES: A hypothesis must exist before classifying evidence as causal
 
