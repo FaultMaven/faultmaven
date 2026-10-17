@@ -609,8 +609,13 @@ class AuthService:
     ) -> None:
         """Revoke a token by adding jti to the revocation store.
 
-        The store applies a TTL matching token expiration so revoked tokens
-        are automatically cleaned up.
+        The TTL is computed here, as the seconds from now until
+        ``expiration``, with no ceiling applied, and passed to the store's
+        ``add_revoked_token``. An ``expiration`` that is not in the future
+        writes nothing: the token has nothing left to revoke. The entry stops
+        revoking when that TTL runs out. The Redis store then expires the key;
+        the SQL store's reads filter the row out, and a later revocation write
+        sweeps it.
 
         Args:
             token_jti: JWT ID (jti claim)
@@ -672,8 +677,26 @@ class AuthService:
         this method used to carry is gone: a constant cannot under-cover, and a
         guard that can no longer fire is a guard that will sit green for ever.
         The cost is a longer-lived entry — the ceiling rather than the
-        configured lifetime — which is one row per revoked user, expiring on
-        its own, against the resurrection of every token that user holds.
+        configured lifetime — held from the latest write to it. Every sign-out
+        writes one (``logout`` → ``_revoke_account_wide``), as does every other
+        caller of ``revoke_user_tokens`` (password reset and change, role and
+        membership changes, deactivation, deletion, admin revoke-tokens, the
+        operator CLIs that change an account's standing), and each write
+        restarts the full lifetime. The one thing that removes an entry early
+        is a sign-in through ``local_login``, which clears a watermark that
+        predates it; ``require_local_mode`` serves that route only under
+        ``AUTH_MODE=local``, and SSO and the OAuth token exchange mint without
+        clearing. Cloud refuses to boot without ``AUTH_MODE=oauth``, so on the
+        Redis store nothing clears a watermark. What an entry costs, per store:
+
+        - **Redis store**: a key held in memory, expiring by TTL.
+        - **SQL store**: a row that stops revoking at its deadline, because
+          every read filters on ``expires_at``, and is deleted by the sweep in
+          the next revocation write (per-jti or watermark, for any user).
+
+        The retention reasoning is in ``token_revocation_store``'s module
+        docstring. That cost is set against the resurrection of every token
+        that user holds.
         """
         from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
 
