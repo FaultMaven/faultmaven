@@ -10,10 +10,15 @@ Test Categories:
 Coverage Target: 90%+
 """
 
+import base64
+import json
+import time
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware.auth import (
     _extract_token,
@@ -31,10 +36,16 @@ from faultmaven.api.middleware.auth import (
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
+    AuthService,
     RevocationStateUnknownError,
     TokenRevocationError,
 )
-from tests.utils import request_with_authorization
+from tests.utils import (
+    forge_access_token,
+    forge_refresh_token,
+    request_with_authorization,
+    sign_claims_for,
+)
 
 # ============================================================
 # Test Fixtures
@@ -329,6 +340,171 @@ class TestGetCurrentUser:
             )
 
         assert exc_info.value.status_code == 401
+
+
+# ============================================================
+# The 401 body carries no token- or PyJWT-derived text (#1859)
+# ============================================================
+#
+# `AuthService.verify_token` builds its `AuthenticationError.message` from
+# PyJWT's exception text and from the token's own `type` claim. That message is
+# the server-side diagnostic; the body must not carry it. These tests drive the
+# path that runs the dependency: a FastAPI route depending on
+# `get_current_user`, a REAL `AuthService` doing the verification, one request
+# per token through `TestClient`. Only `get_auth_service` is overridden.
+
+_INVALID_TOKEN_DETAIL = "Invalid token. Please re-authenticate."
+_EXPIRED_TOKEN_DETAIL = "Token has expired. Please refresh or re-authenticate."
+
+#: PyJWT's and `AuthService`'s diagnostic vocabulary. None of it may reach a
+#: response body, in any case.
+_DIAGNOSTIC_WORDS = ("decode", "segments", "padding", "Signature", "alg", "Expected")
+
+_ACCESS_PAYLOAD = {"sub": "u1", "type": "access"}
+
+
+def _b64url(obj: dict) -> str:
+    raw = json.dumps(obj, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _claims_typed(service: AuthService, token_type: str) -> dict:
+    """A full, correctly signed claim set whose only fault is its `type`."""
+    now = int(time.time())
+    return {
+        "sub": "u1",
+        "enterprise_id": "ent-1",
+        "iss": service._settings.security.jwt_issuer,
+        "aud": service._settings.security.jwt_audience,
+        "iat": now,
+        "exp": now + 900,
+        "jti": str(uuid.uuid4()),
+        "type": token_type,
+    }
+
+
+#: Every token `get_current_user` refuses with the generic invalid-token 401,
+#: one per reason `verify_token` builds a message for.
+_REFUSED_TOKENS = {
+    "two-segments": lambda s: "abc.def",
+    "not-a-jwt": lambda s: "not-a-jwt",
+    "bad-header-padding": lambda s: f"eyJhbGciOi.{_b64url(_ACCESS_PAYLOAD)}.AAAA",
+    "bad-signature": lambda s: (
+        f"{_b64url({'alg': 'HS256'})}.{_b64url(_ACCESS_PAYLOAD)}.AAAA"
+    ),
+    "alg-none": lambda s: f"{_b64url({'alg': 'none'})}.{_b64url(_ACCESS_PAYLOAD)}.",
+    # Correctly signed, wrong `type`: the message interpolates the claim.
+    "type-refresh": lambda s: forge_refresh_token(
+        s, user_id="u1", enterprise_id="ent-1"
+    ),
+    "type-script": lambda s: sign_claims_for(s, _claims_typed(s, "<script>x</script>")),
+}
+
+
+@pytest.fixture(scope="module")
+def real_auth_service() -> AuthService:
+    """A real `AuthService` in local (HS256) mode, built the way
+    `tests/unit/modules/auth/domain/services/test_auth_service.py` builds it."""
+    settings = MagicMock()
+    settings.auth.auth_mode = "local"
+    settings.security.jwt_algorithm = "HS256"
+    settings.auth.jwt_access_token_expire_minutes = 15
+    settings.auth.jwt_refresh_token_expire_days = 7
+    settings.security.jwt_issuer = "faultmaven"
+    settings.security.jwt_audience = "faultmaven-api"
+    settings.security.jwt_private_key = None
+    settings.security.jwt_public_key = None
+    settings.security.jwt_private_key_path = None
+    settings.security.jwt_public_key_path = None
+    settings.security.jwt_secret_key = MagicMock()
+    settings.security.jwt_secret_key.get_secret_value.return_value = (
+        "test-secret-key-min-32-bytes!!!!!"
+    )
+    with patch(
+        "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+        return_value=settings,
+    ):
+        return AuthService()
+
+
+@pytest.fixture(scope="module")
+def bearer_client(real_auth_service: AuthService) -> TestClient:
+    app = FastAPI()
+
+    @app.get("/whoami")
+    async def whoami(user: AuthenticatedUser = Depends(get_current_user)):
+        return {"user_id": user.user_id}
+
+    app.dependency_overrides[get_auth_service] = lambda: real_auth_service
+    return TestClient(app)
+
+
+def _assert_no_diagnostic(body: str) -> None:
+    leaked = [w for w in _DIAGNOSTIC_WORDS if w.lower() in body.lower()]
+    assert not leaked, f"401 body carries diagnostic text {leaked}: {body}"
+
+
+@pytest.mark.security
+class TestUnauthorizedBodyCarriesNoTokenText:
+    """No 401 from `get_current_user` carries text derived from the token or
+    from PyJWT (#1859)."""
+
+    @pytest.mark.parametrize("name", list(_REFUSED_TOKENS))
+    def test_a_refused_token_gets_the_static_detail(
+        self, bearer_client, real_auth_service, name
+    ):
+        token = _REFUSED_TOKENS[name](real_auth_service)
+
+        resp = bearer_client.get(
+            "/whoami", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": _INVALID_TOKEN_DETAIL}
+        assert resp.headers["WWW-Authenticate"] == "Bearer"
+        _assert_no_diagnostic(resp.text)
+        # The two `type` rows: the claim's value is attacker-chosen content.
+        assert "refresh" not in resp.json()["detail"]
+        assert "<script>" not in resp.text
+
+    def test_an_expired_token_keeps_its_own_static_detail(
+        self, bearer_client, real_auth_service
+    ):
+        token = forge_access_token(
+            real_auth_service,
+            user_id="u1",
+            enterprise_id="ent-1",
+            email="u1@example.com",
+            roles=["member"],
+            expires_in_minutes=-5,
+        )
+
+        resp = bearer_client.get(
+            "/whoami", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": _EXPIRED_TOKEN_DETAIL}
+        assert resp.headers["WWW-Authenticate"] == "Bearer"
+        _assert_no_diagnostic(resp.text)
+
+    def test_a_valid_token_is_admitted(self, bearer_client, real_auth_service):
+        """Positive control: the harness refuses for the token's reason, not
+        because the service or the override is broken."""
+        token = forge_access_token(
+            real_auth_service,
+            user_id="u1",
+            enterprise_id="ent-1",
+            email="u1@example.com",
+            roles=["member"],
+        )
+
+        resp = bearer_client.get(
+            "/whoami", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"user_id": "u1"}
 
 
 # ============================================================

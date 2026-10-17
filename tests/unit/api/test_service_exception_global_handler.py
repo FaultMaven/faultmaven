@@ -375,11 +375,6 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "`generate_reports`: every other per-type failure is swallowed "
         "(`continue`) in `_generate_reports_locked`."
     ),
-    (
-        "faultmaven/modules/report/api/routes.py",
-        "delete_report",
-        "ServiceException",
-    ): "Repository delete only.",
 }
 
 #: Files the inventory must look in because a ``ServiceException`` arm is known

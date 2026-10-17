@@ -673,11 +673,11 @@ _MUST_NOT_FLAG = [
             "def r():\n    try: x()\n    except ServiceException as e:\n        raise HTTPException(status_code=403, detail=str(e))\n",
             header=_DEFEAT_HEADER,
         ),
-        # Pending a ruling, not settled: "broad" is decided by class name, so
-        # the generic wrapper `ServiceException` keeps the typed 4xx
-        # carve-out although it carries whatever it wrapped. #1860 asks
-        # whether to widen "broad"; if it is ruled so, this row moves.
-        id="D6",  # ServiceException 403 (pending policy)
+        # Ruled, not a miss: "broad" is decided by class name, so the generic
+        # wrapper `ServiceException` keeps the typed 4xx carve-out although it
+        # carries whatever it wrapped. The #1860 ruling (b), 2026-10-02, keeps
+        # it so: such an arm is reviewed at its site, not flagged by the guard.
+        id="D6",  # ServiceException 403 (ruled: #1860 (b))
     ),
     pytest.param(
         _planted(
