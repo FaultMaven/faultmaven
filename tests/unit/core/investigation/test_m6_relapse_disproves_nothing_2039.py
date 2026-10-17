@@ -25,6 +25,7 @@ import pytest
 from faultmaven.core.investigation.causal_graph.disconfirmation import (
     m6_disconfirmation_basis,
 )
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -33,6 +34,7 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _flag_absence_inside_a_failed_fix_window,
+    _solution_cause_validated,
 )
 from faultmaven.core.investigation.prompts.templates.treatment import (
     treatment_instructions,
@@ -42,15 +44,19 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
+    CausalEdge,
     CauseState,
     EvidenceCategory,
+    EvidenceStance,
     HypothesisState,
     InvestigationActionType,
+    NodeEvidenceLink,
     NodeState,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
+    _add_sibling_chain,
     _assert_demoted,
     _cause_gone,
     _engine_rows,
@@ -265,7 +271,7 @@ def _notice(case, turn):
     return metadata["system_feedback"]
 
 
-def test_after_a_relapse_the_notice_keeps_the_fix_under_the_cause():
+def test_after_a_relapse_the_notice_keeps_the_fix_under_a_standing_cause():
     case, _root, _hyp = _relapsed_case()
     _recompute_at(case, 13)
 
@@ -274,17 +280,16 @@ def test_after_a_relapse_the_notice_keeps_the_fix_under_the_cause():
     assert "did not hold: the problem was seen gone at turn 7, then seen again" in (
         feedback
     )
-    assert "does not disprove the cause it addressed" in feedback
-    assert "no new hypothesis is needed" in feedback
-    assert "root_cause_conclusion on a new hypothesis" not in feedback
+    assert "does not by itself disprove the cause the fix addressed" in feedback
+    assert "if that cause still stands, no new hypothesis is needed" in feedback
     assert "SolutionToAdd" in feedback and "solution_accepted" in feedback
 
 
-def test_after_a_relapse_of_a_cause_that_already_fell_the_notice_asks_to_re_assert():
+def test_after_a_relapse_of_a_cause_that_already_fell_the_notice_offers_the_re_assertion():
     """Review finding: M6 demoted the cause on the first fix; a second fix of
-    the same cause then relapses. Nothing licenses a SolutionToAdd now, so
-    the notice asks for the re-assertion, not for a fix under a hypothesis
-    that no longer stands."""
+    the same cause then relapses. The notice must not tell the model the
+    cause stands: it leaves "no new hypothesis" to a cause that still stands
+    and names the re-assertion for one that fell."""
     case, root, hyp = _identified_case()
     _failed_fix(case, fix_turn=8, outcome_turn=9)
     _recompute_at(case, 9)
@@ -307,8 +312,9 @@ def test_after_a_relapse_of_a_cause_that_already_fell_the_notice_asks_to_re_asse
     feedback = _notice(case, 16)
 
     assert "the problem was seen gone at turn 13, then seen again" in feedback
-    assert "root_cause_conclusion on a new hypothesis" in feedback
-    assert "no new hypothesis is needed" not in feedback
+    assert "if it no longer stands, re-assert it with a root_cause_conclusion" in (
+        feedback
+    )
 
 
 def test_after_a_persistence_the_notice_asks_to_re_assert_the_cause():
@@ -320,7 +326,7 @@ def test_after_a_persistence_the_notice_asks_to_re_assert_the_cause():
 
     assert "the cause was shown removed, then the problem was seen again" in feedback
     assert "root_cause_conclusion on a new hypothesis" in feedback
-    assert "does not disprove" not in feedback
+    assert "does not by itself disprove" not in feedback
     assert "no new hypothesis is needed" not in feedback
 
 

@@ -549,11 +549,13 @@ def _flag_absence_inside_a_failed_fix_window(
     M5 license that admits the SolutionToAdd survives the demoted cause through
     a root_cause_conclusion — on a NEW hypothesis when the cause is the same
     one re-applied correctly — which is the intended re-licensing path. A
-    RELAPSE demotes nothing (``FixWindow.disconfirms_cause``, #2039): while the
-    M5 license still holds (``_solution_cause_validated``), the notice says no
-    new hypothesis is needed instead of asking for one that would duplicate the
-    standing cause. Once the cause fell for another reason (a refutation on
-    evidence, an earlier window's demotion), it asks for the re-assertion.
+    RELAPSE demotes nothing (``FixWindow.disconfirms_cause``, #2039), so the
+    notice says only that and leaves the next step to the graph the model
+    sees: no new hypothesis while the addressed cause stands, a re-assertion
+    once it fell for another reason (a refutation on evidence, an earlier
+    window's demotion). Which cause a terse cause row addressed is not
+    something the engine can tell (``BearingFrame`` reads it as about no
+    chain), so the notice does not assert it.
 
     Prepended, like the withdrawal notice: the turn record truncates feedback
     head-first. Returns whether the notice was added."""
@@ -584,21 +586,20 @@ def _flag_absence_inside_a_failed_fix_window(
         return False
     if window.disconfirms_cause:
         shape = "the cause was shown removed, then the problem was seen again"
+        cause = (
+            " — re-assert the cause with a root_cause_conclusion on a new "
+            "hypothesis if the same cause was addressed again — then"
+        )
     else:
         shape = (
             f"the problem was seen gone at turn {window.relief_turn}, then seen "
             "again"
         )
-    if not window.disconfirms_cause and _solution_cause_validated(case):
         cause = (
             " — a problem that went away after the fix and came back does not "
-            "disprove the cause it addressed, and the identified cause still "
-            "licenses the new fix, so no new hypothesis is needed — then"
-        )
-    else:
-        cause = (
-            " — re-assert the cause with a root_cause_conclusion on a new "
-            "hypothesis if the same cause was addressed again — then"
+            "by itself disprove the cause the fix addressed: if that cause still "
+            "stands, no new hypothesis is needed; if it no longer stands, "
+            "re-assert it with a root_cause_conclusion on a new hypothesis — then"
         )
     _add_system_feedback(
         metadata,
