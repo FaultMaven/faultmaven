@@ -25,7 +25,6 @@ import pytest
 from faultmaven.core.investigation.causal_graph.disconfirmation import (
     m6_disconfirmation_basis,
 )
-from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -34,7 +33,6 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _flag_absence_inside_a_failed_fix_window,
-    _solution_cause_validated,
 )
 from faultmaven.core.investigation.prompts.templates.treatment import (
     treatment_instructions,
@@ -44,19 +42,15 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
-    CausalEdge,
     CauseState,
     EvidenceCategory,
-    EvidenceStance,
     HypothesisState,
     InvestigationActionType,
-    NodeEvidenceLink,
     NodeState,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
-    _add_sibling_chain,
     _assert_demoted,
     _cause_gone,
     _engine_rows,
