@@ -115,10 +115,12 @@ factory aliases; a conditional status not spelled as ``x if c else y``;
 annotation forms the reader cannot parse; a cause chain walked under a typed
 handler; and ``match``.
 
-And one is pending a ruling: "broad" is decided by class NAME, so a generic
-wrapper — ``ServiceException``, ``RuntimeError`` — keeps the typed 4xx
-carve-out although it carries whatever it wrapped. Whether to widen "broad" is
-#1860; the two probable live sites are #1859.
+And one is ruled out of the guard's reach: "broad" is decided by class NAME
+(``Exception`` / ``BaseException``), so a generic wrapper —
+``ServiceException``, ``RuntimeError`` — keeps the typed 4xx carve-out although
+it carries whatever it wrapped. The #1860 ruling (b), 2026-10-02, keeps it so:
+a generic wrapper caught under a typed arm is reviewed at the site, not flagged
+by the guard.
 """
 
 from __future__ import annotations
@@ -629,8 +631,9 @@ def _exception_params(
     ``BaseException``. A parameter typed as a domain exception is the helper
     twin of a typed ``except`` arm, and keeps the 4xx carve-out the same way;
     an unannotated one keeps it too, because nothing says it is not one.
-    Whether a generic wrapper such as ``ServiceException`` should count as
-    broad is #1860.
+    A generic wrapper such as ``ServiceException`` does not count as broad:
+    the #1860 ruling (b) keeps "broad" to those two names, and an arm catching
+    such a wrapper is reviewed at its site, not flagged here.
     """
     found: list[tuple[str, bool]] = []
     args = fn.args

@@ -159,9 +159,14 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # Static, never `e.message` (#1859). `AuthService.verify_token` builds
+        # that message from PyJWT's own text and from the token's `type`
+        # claim, so echoing it hands the caller the library's diagnosis and
+        # reflects attacker-chosen content. The reason stays in the debug log
+        # above; the body says only that the token was refused.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e.message}",
+            detail="Invalid token. Please re-authenticate.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
