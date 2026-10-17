@@ -609,8 +609,13 @@ class AuthService:
     ) -> None:
         """Revoke a token by adding jti to the revocation store.
 
-        The store applies a TTL matching token expiration so revoked tokens
-        are automatically cleaned up.
+        The TTL is computed here, as the seconds from now until
+        ``expiration``, with no ceiling applied, and passed to the store's
+        ``add_revoked_token``. An ``expiration`` that is not in the future
+        writes nothing: the token has nothing left to revoke. The entry stops
+        revoking when that TTL runs out. The Redis store then expires the key;
+        the SQL store's reads filter the row out, and a later revocation write
+        sweeps it.
 
         Args:
             token_jti: JWT ID (jti claim)

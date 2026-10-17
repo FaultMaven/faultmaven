@@ -250,10 +250,12 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
 
     ``clear_user_revocation_if_before`` deliberately does NOT sweep, which is
     why the rule is stated as "the writes that add" rather than "every write":
-    it runs on every successful login, so sweeping there would put a table-wide
-    delete on the sign-in path to reclaim rows that a revocation write will
-    reclaim anyway. It also refuses to delete an elapsed watermark, by design
-    (Redis answers the same, its key having already gone).
+    its one production caller is ``local_login``, which runs it on every
+    local-mode sign-in of an active account, so sweeping there would put a
+    table-wide delete on that sign-in path to reclaim rows that a revocation
+    write will reclaim anyway. No other sign-in calls it. It also refuses to
+    delete an elapsed watermark, by design (Redis answers the same, its key
+    having already gone).
 
     The cost is bounded either way: measured over 20,000 live 90-day
     watermarks, a revocation write carrying the sweep costs 3.81ms, and the one
