@@ -3,9 +3,12 @@
 Behind config, DEFAULT OFF. Pins, all asserted on the OUTGOING request payload
 (the JSON body handed to aiohttp), never on a mock's mere invocation:
 
-  1. DEFAULT OFF — with no thinking configuration the request carries NO
-     `thinking` key, temperature is preserved, and forced tool_choice is
-     preserved: byte-identical behavior to pre-#1116.
+  1. DEFAULT OFF — with no thinking configuration, on a model with no
+     measured OFF control (sections 1-3 use claude-sonnet-4-6), the request
+     carries NO `thinking` key, temperature is preserved, and forced
+     tool_choice is preserved. Section 6 pins the per-model OFF control
+     (#1800): `disabled` on opus-5, `output_config.effort: low` on opus-5-5
+     and fable-5-1.
   2. "adaptive" mode sends ``{"type": "adaptive"}`` on tool-calling calls
      only (structured-output scope, mirroring Gemini) and drops temperature
      (Anthropic rejects a modified temperature with thinking on). When the
@@ -17,7 +20,7 @@ Behind config, DEFAULT OFF. Pins, all asserted on the OUTGOING request payload
   3. "enabled" mode budget validation — thinking bills INSIDE max_tokens
      (fm#1094): a budget that is >= max_tokens, leaves less than the answer
      floor, or is below the API minimum of 1024 downgrades the call to
-     no-thinking with a warning instead of being issued.
+     thinking off with a warning instead of being issued.
   4. Round-trip — thinking / redacted_thinking blocks are captured verbatim
      into provider_metadata.assistant_content and echoed back VERBATIM as
      the assistant turn on the next request (Anthropic validates block
@@ -722,3 +725,397 @@ class TestThinkingShapePerModel:
         body = await self._body("claude-opus-5-5", "enabled", tool_choice="required")
         assert body["tool_choice"] == {"type": "auto"}
         assert body["thinking"] == {"type": "adaptive"}
+
+
+# =========================================================================
+# 6. Thinking OFF control per model (#1800)
+# =========================================================================
+#
+# Omitting `thinking` does not turn thinking off on every model: on opus-5-5
+# and fable-5-1 it runs adaptive (1206 and 1720 thinking tokens measured at a
+# real INVESTIGATING call, docs/reference/llm-model-capabilities.md
+# §"Thinking controls at the INVESTIGATING call (#1800)"). So "thinking off"
+# — ANTHROPIC_THINKING_MODE=off, an unknown mode, a starvation guard or the
+# forced-tool refusal — sends the control measured for the model:
+# `thinking: {"type": "disabled"}` on opus-5, `output_config.effort: "low"`
+# on opus-5-5 and fable-5-1, and nothing on every model not measured.
+
+_SCHEMA_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "InvestigationResponse_Diagnosis",
+            "description": "Schema tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        },
+    }
+]
+_DISABLED = {"type": "disabled"}
+_EFFORT_LOW = {"effort": "low"}
+
+
+def _off_records(caplog, label):
+    return [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and f"sending {label}" in r.getMessage().lower()
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestThinkingOffControl:
+    @pytest.fixture(autouse=True)
+    def _fresh_log_memory(self, monkeypatch):
+        monkeypatch.setattr(AnthropicProvider, "_THINKING_SUBSTITUTION_LOGGED", set())
+        monkeypatch.setattr(AnthropicProvider, "_REQUEST_SHAPE_LOGGED", set())
+
+    async def _body(self, model, mode, *, tools=True, budget=4096, **kwargs):
+        provider = AnthropicProvider(_model_config(model, mode, budget))
+        kwargs.setdefault("max_tokens", 8000)
+        kwargs.setdefault("temperature", 0.2)
+        if tools:
+            kwargs["tools"] = _SCHEMA_TOOL
+        return await _sent_request_body(provider, **kwargs)
+
+    # --- off, per model ---------------------------------------------------
+
+    async def test_opus_5_off_forced_sends_disabled_beside_the_forcing(self):
+        """The measured opus-5 cell: `disabled` beside `tool_choice: any`."""
+        body = await self._body("claude-opus-5", "off", tool_choice="required")
+
+        assert body["thinking"] == _DISABLED
+        assert body["tool_choice"] == {"type": "any"}
+        assert "output_config" not in body
+        assert "temperature" not in body
+
+    async def test_opus_5_dated_off_toolless_sends_disabled(self):
+        body = await self._body("claude-opus-5-20261001", "off", tools=False)
+
+        assert body["thinking"] == _DISABLED
+        assert "output_config" not in body
+
+    async def test_opus_5_5_off_sends_effort_low(self):
+        """Forcing is sent as auto plus the instruction on opus-5-5 (#1695)."""
+        body = await self._body("claude-opus-5-5", "off", tool_choice="required")
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+        assert body["tool_choice"] == {"type": "auto"}
+        assert "temperature" not in body
+
+    async def test_opus_5_5_dated_off_toolless_sends_effort_low(self):
+        body = await self._body("claude-opus-5-5-20261001", "off", tools=False)
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+
+    async def test_fable_5_1_off_sends_effort_low(self):
+        body = await self._body("claude-fable-5-1", "off", tool_choice="required")
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+
+    @pytest.mark.parametrize(
+        ("model", "tools"),
+        [
+            ("claude-fable-5", True),
+            ("claude-opus-5-6", True),
+            ("claude-sonnet-5-5", False),
+            ("anthropic/claude-opus-5-5", True),
+            ("claude-opus-5-5-latest", True),
+        ],
+    )
+    async def test_unmeasured_model_off_sends_neither_key(self, model, tools):
+        """No measured cell: today's omission, which never 400s."""
+        body = await self._body(model, "off", tools=tools)
+
+        assert "thinking" not in body
+        assert "output_config" not in body
+
+    async def test_sampling_model_off_toolless_keeps_temperature(self):
+        body = await self._body("claude-opus-4-6", "off", tools=False)
+
+        assert "thinking" not in body
+        assert "output_config" not in body
+        assert body["temperature"] == 0.2
+
+    async def test_unknown_mode_sends_the_off_control_and_names_it(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await self._body("claude-opus-5-5", "bogus")
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+        records = _off_records(caplog, "output_config.effort=low")
+        assert len(records) == 1
+        assert "'bogus'" in records[0].getMessage()
+
+    @pytest.mark.parametrize("mode", [None, "", "  OFF ", "bogus"])
+    async def test_every_off_spelling_toolless_sends_the_off_control(self, mode):
+        """Tool-less, thinking off is "not an ON mode": unset, empty, any
+        case of off, and an unknown mode all send the OFF control."""
+        body = await self._body("claude-opus-5-5", mode, tools=False)
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+
+    # --- ON modes are unchanged -------------------------------------------
+
+    async def test_adaptive_above_the_floor_is_unchanged(self):
+        """Byte-identical to pre-#1800: adaptive, no output_config."""
+        body = await self._body("claude-opus-5-5", "adaptive", tool_choice="required")
+
+        assert body["thinking"] == {"type": "adaptive"}
+        assert set(body) == {
+            "model",
+            "max_tokens",
+            "messages",
+            "tools",
+            "tool_choice",
+            "system",
+            "thinking",
+        }
+
+    async def test_adaptive_toolless_sends_neither_key(self):
+        """ON modes stay tool-calls-only (out of scope for #1800)."""
+        body = await self._body("claude-opus-5-5", "adaptive", tools=False)
+
+        assert "thinking" not in body
+        assert "output_config" not in body
+
+    async def test_enabled_on_a_budget_model_is_unchanged(self):
+        body = await self._body("claude-sonnet-4-6", "enabled", budget=2048)
+
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+        assert "output_config" not in body
+
+    # --- guards and the refusal resolve to the OFF control ----------------
+
+    async def test_adaptive_starvation_guard_sends_effort_low(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await self._body("claude-opus-5-5", "adaptive", max_tokens=2000)
+
+        assert body["output_config"] == _EFFORT_LOW
+        assert "thinking" not in body
+        records = _off_records(caplog, "output_config.effort=low")
+        assert len(records) == 1
+        assert "max_tokens=2000" in records[0].getMessage()
+
+    async def test_forced_refusal_sends_disabled_and_keeps_the_forcing(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await self._body("claude-opus-5", "adaptive", tool_choice="required")
+
+        assert body["thinking"] == _DISABLED
+        assert body["tool_choice"] == {"type": "any"}
+        assert "output_config" not in body
+        refusals = [r for r in caplog.records if "thinking refused" in r.getMessage()]
+        assert len(refusals) == 1
+        assert "thinking.type=disabled" in refusals[0].getMessage()
+
+    async def test_substituted_adaptive_guard_sends_disabled(self, caplog):
+        """enabled → adaptive on opus-5 (#1756), then the adaptive floor."""
+        with caplog.at_level("WARNING"):
+            body = await self._body(
+                "claude-opus-5", "enabled", tool_choice="auto", max_tokens=2000
+            )
+
+        assert body["thinking"] == _DISABLED
+        assert body["tool_choice"] == {"type": "auto"}
+        assert len(_off_records(caplog, "thinking.type=disabled")) == 1
+
+    async def test_enabled_budget_guard_on_a_budget_model_sends_neither(self, caplog):
+        """The enabled guards are reachable only on models that accept
+        budget_tokens (<= 4.6), and none of those has a measured cell."""
+        with caplog.at_level("WARNING"):
+            body = await self._body("claude-sonnet-4-6", "enabled", budget=512)
+
+        assert "thinking" not in body
+        assert "output_config" not in body
+        assert body["temperature"] == 0.2
+        assert len(_off_records(caplog, "no thinking key")) == 1
+
+
+# --- the table itself ------------------------------------------------------
+
+
+def _model_id(family, version):
+    major, minor = version
+    return f"claude-{family}-{major}" + (f"-{minor}" if minor else "")
+
+
+_OFF_CELLS = sorted(AnthropicProvider._THINKING_OFF_CONTROL)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "cell", _OFF_CELLS, ids=[_model_id(*cell) for cell in _OFF_CELLS]
+)
+class TestThinkingOffTable:
+    def test_cell_is_a_parsed_version_that_takes_no_temperature(self, cell):
+        """An OFF control never meets a temperature: a cell for a model that
+        accepts sampling must first measure the control beside one."""
+        model = _model_id(*cell)
+
+        assert AnthropicProvider._claude_version(model) == cell
+        assert not AnthropicProvider._accepts_sampling(model)
+
+    def test_cell_sends_a_control_and_names_it(self, cell):
+        model = _model_id(*cell)
+
+        assert AnthropicProvider._thinking_off_control(model) in (
+            {"thinking": _DISABLED},
+            {"output_config": _EFFORT_LOW},
+        )
+        assert AnthropicProvider._thinking_off_label(model) in (
+            "thinking.type=disabled",
+            "output_config.effort=low",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cell_body_carries_no_temperature(self, cell):
+        """The same property through the request build, with a temperature
+        passed: off, tools and tool-less."""
+        model = _model_id(*cell)
+        provider = AnthropicProvider(_model_config(model, "off"))
+
+        for kwargs in ({"tools": _SCHEMA_TOOL}, {}):
+            body = await _sent_request_body(
+                provider, max_tokens=8000, temperature=0.2, **kwargs
+            )
+            assert "temperature" not in body
+            assert ("thinking" in body) != ("output_config" in body)
+
+
+# --- the observable ----------------------------------------------------------
+
+
+def _usage_resp(**usage):
+    return {
+        "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 4124, **usage},
+    }
+
+
+async def _response(model, response_data, mode="off"):
+    provider = AnthropicProvider(_model_config(model, mode))
+    mock_session = _mock_aiohttp_session(response_data)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        return await send_to_model(
+            provider, prompt=vetted("Investigate"), max_tokens=8000
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestThinkingTokens:
+    async def test_reported_thinking_tokens_reach_the_response(self):
+        response = await _response(
+            "claude-fable-5-1",
+            _usage_resp(output_tokens_details={"thinking_tokens": 893}),
+        )
+
+        assert response.thinking_tokens == 893
+        # A part of output_tokens, never added to it.
+        assert response.output_tokens == 4124
+        assert response.tokens_used == 10 + 4124
+
+    async def test_absent_figure_is_none(self):
+        response = await _response("claude-fable-5-1", _usage_resp())
+
+        assert response.thinking_tokens is None
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            {"thinking_tokens": "893"},
+            {"thinking_tokens": 893.0},
+            {"thinking_tokens": True},
+            {"thinking_tokens": None},
+            "893",
+            None,
+        ],
+    )
+    async def test_non_int_figure_is_none(self, details):
+        response = await _response(
+            "claude-fable-5-1", _usage_resp(output_tokens_details=details)
+        )
+
+        assert response.thinking_tokens is None
+
+    async def test_one_debug_line_per_call_names_the_control(self, caplog):
+        with caplog.at_level("DEBUG"):
+            await _response(
+                "claude-opus-5-5",
+                _usage_resp(output_tokens_details={"thinking_tokens": 0}),
+            )
+
+        records = [r for r in caplog.records if hasattr(r, "thinking_control")]
+        assert len(records) == 1
+        record = records[0]
+        assert record.levelname == "DEBUG"
+        assert record.model == "claude-opus-5-5"
+        assert record.thinking_control == "output_config.effort=low"
+        assert record.output_tokens == 4124
+        assert record.thinking_tokens == 0
+
+    async def test_debug_line_names_an_on_mode(self, caplog):
+        provider = AnthropicProvider(_model_config("claude-opus-5-5", "adaptive"))
+        mock_session = _mock_aiohttp_session(_usage_resp())
+        with (
+            caplog.at_level("DEBUG"),
+            patch("aiohttp.ClientSession", return_value=mock_session),
+        ):
+            await send_to_model(
+                provider,
+                **vetted_kwargs(
+                    {"prompt": "Investigate", "tools": _SCHEMA_TOOL, "max_tokens": 8000}
+                ),
+            )
+
+        records = [r for r in caplog.records if hasattr(r, "thinking_control")]
+        assert [r.thinking_control for r in records] == ["adaptive"]
+        assert records[0].thinking_tokens is None
+
+
+# --- the once-per-model shape line -------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestThinkingOffShapeLog:
+    @pytest.fixture(autouse=True)
+    def _fresh_log_memory(self, monkeypatch):
+        monkeypatch.setattr(AnthropicProvider, "_REQUEST_SHAPE_LOGGED", set())
+
+    @pytest.mark.parametrize(
+        ("model", "label"),
+        [
+            ("claude-opus-5", "thinking.type=disabled"),
+            ("claude-opus-5-5", "output_config.effort=low"),
+            ("claude-fable-5-1", "output_config.effort=low"),
+        ],
+    )
+    async def test_measured_model_names_its_off_control_once(
+        self, model, label, caplog
+    ):
+        with caplog.at_level("INFO"):
+            for _ in range(2):
+                await _response(model, _TEXT_RESP)
+
+        lines = [r for r in caplog.records if "(#1695)" in r.getMessage()]
+        assert len(lines) == 1
+        assert lines[0].levelname == "INFO"
+        assert f"thinking off is sent as {label}" in lines[0].getMessage()
+
+    @pytest.mark.parametrize("model", ["claude-fable-5", "claude-opus-4-8"])
+    async def test_unmeasured_model_logs_nothing_new(self, model, caplog):
+        with caplog.at_level("INFO"):
+            await _response(model, _TEXT_RESP)
+
+        lines = [r for r in caplog.records if "(#1695)" in r.getMessage()]
+        assert len(lines) == 1
+        assert "thinking" not in lines[0].getMessage()

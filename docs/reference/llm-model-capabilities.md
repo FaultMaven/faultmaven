@@ -71,7 +71,9 @@ exempt by design).
 
 Provider-wide reasoning knobs (not per-role): `OPENAI_REASONING_EFFORT`
 (none|low|medium|high, unset = shape-based defaults) and
-`ANTHROPIC_THINKING_MODE` / `ANTHROPIC_THINKING_BUDGET_TOKENS`. The
+`ANTHROPIC_THINKING_MODE` / `ANTHROPIC_THINKING_BUDGET_TOKENS` (`off`, the
+default, sends each model its measured OFF control: §"Thinking controls at the
+INVESTIGATING call (#1800)"). The
 key-by-key reference with defaults is `.env.example` (CI-synced to
 `settings.py`).
 
@@ -403,7 +405,7 @@ replays a real INVESTIGATING request (case at turn 6, schema
 with six tools) built offline by the API for that model, with no network I/O.
 The provider's per-model `tool_choice` is unchanged (`any` on Opus 5; `auto`
 plus the forcing sentence on Opus 5.5 and Fable 5.1, which 400 on forced tool
-use). No model gets a `thinking` key under the default
+use). At the time no model got a `thinking` key under the default
 `ANTHROPIC_THINKING_MODE=off`; only the control under test varies. Each call
 was sent once, in table order. Per model, `omitted` ran first and wrote the
 prompt cache, and later variants may have read it, so the elapsed differences
@@ -411,12 +413,12 @@ are not attributable to the control alone.
 
 | model | control | content blocks | output tokens | of which thinking | visible | elapsed |
 |---|---|---|---|---|---|---|
-| `claude-opus-5` | omitted (today's `off`) | `tool_use` | 3844 | 0 | 3844 | 42 s |
+| `claude-opus-5` | omitted (`off` before #1800) | `tool_use` | 3844 | 0 | 3844 | 42 s |
 | `claude-opus-5` | `output_config.effort: low` | `tool_use` | 2495 | 0 | 2495 | 30 s |
 | `claude-opus-5` | `thinking: {type: disabled}` | `tool_use` | 3356 | 0 | 3356 | 35 s |
-| `claude-opus-5-5` | omitted (today's `off`) | `thinking`, `text`, `tool_use` | 5397 | 1206 | 4191 | 49 s |
+| `claude-opus-5-5` | omitted (`off` before #1800) | `thinking`, `text`, `tool_use` | 5397 | 1206 | 4191 | 49 s |
 | `claude-opus-5-5` | `output_config.effort: low` | `tool_use` | 1948 | 0 | 1948 | 21 s |
-| `claude-fable-5-1` | omitted (today's `off`) | `thinking`, `tool_use` | 5463 | 1720 | 3743 | 67 s |
+| `claude-fable-5-1` | omitted (`off` before #1800) | `thinking`, `tool_use` | 5463 | 1720 | 3743 | 67 s |
 | `claude-fable-5-1` | `output_config.effort: low` | `thinking`, `tool_use` | 4124 | 893 | 3231 | 52 s |
 
 - **Opus 5:** with forced `tool_choice: any` there is no thinking under any of
@@ -433,8 +435,34 @@ are not attributable to the control alone.
   50k input tokens) hit `max_tokens` 8000 on Fable 5.1 with about 954 visible
   tokens, so that headroom is not general.
 
-Today's `off` still omits the `thinking` key, so on Opus 5.5 and Fable 5.1 it
-does not turn thinking off. Changing that is pending an owner ruling (#1800).
+`{type: disabled}` is a 400 on Opus 5.5 and Fable 5.1 ("`thinking.type.disabled`
+is not supported for this model. Use `thinking.type.adaptive` and
+`output_config.effort` to control thinking behavior", recorded on #1800).
+
+**What thinking off sends (#1800, shipped).** Thinking resolves to off on
+`ANTHROPIC_THINKING_MODE=off` (the default), an unknown mode, a starvation
+guard and the forced-tool refusal. Every Anthropic request, tool-less ones
+included, then carries the control measured for its exact model
+(`_THINKING_OFF_CONTROL` in `providers/anthropic.py`, keyed by the parsed
+family and version, not by a ceiling):
+
+| model | thinking off is sent as |
+|---|---|
+| `claude-opus-5` (any date suffix) | `thinking: {"type": "disabled"}` |
+| `claude-opus-5-5`, `claude-fable-5-1` (any date suffix) | `output_config: {"effort": "low"}` |
+| every other model, an unparseable id included | no `thinking` key (it may still think) |
+
+An entry moves only on a measured cell: an unmeasured control could 400 every
+call, and omission never 400s. Every entry is above the sampling ceiling, so
+no OFF control is sent beside a `temperature`. On Fable 5.1, `effort: low`
+lowers thinking (893 tokens at the measured turn) and does not remove it.
+`adaptive` and `enabled` requests are unchanged, and still apply to
+tool-calling requests only. The forced-tool refusal stays specific to them,
+so a forced Opus 5 call refused thinking sends `disabled` beside
+`tool_choice: any`, the measured cell. Each response reports
+`usage.output_tokens_details.thinking_tokens` as `LLMResponse.thinking_tokens`
+(`None` when the API sends no integer; a part of `output_tokens`, never added
+to it), logged at DEBUG with the control sent.
 
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling

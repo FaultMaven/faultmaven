@@ -184,7 +184,14 @@ does not apply. An unparseable id or a version above its ceiling takes
 that newest shape, which every measured model accepts. The thinking shape
 is the exception: no shape is accepted by every model, so an unparseable id
 is sent the configured `ANTHROPIC_THINKING_MODE`, and a parsed id above its
-ceiling is sent `adaptive` (#1756). Matrix and ceilings:
+ceiling is sent `adaptive` (#1756). Omitting `thinking` is not "off" on
+every model (opus-5-5 and fable-5-1 then run adaptive), so thinking off
+(`ANTHROPIC_THINKING_MODE=off`, an unknown mode, a starvation guard, the
+forced-tool refusal) sends, on every request, tool-less ones included, the
+control measured for that exact model in `_THINKING_OFF_CONTROL`:
+`thinking: {"type": "disabled"}` on opus-5, `output_config.effort: "low"` on
+opus-5-5 and fable-5-1, and no key on any unmeasured model, because an
+unmeasured control could 400 every call (#1800). Matrix and ceilings:
 `docs/reference/llm-model-capabilities.md` §"Anthropic request shape".
 
 ## Stop reasons and truncation
