@@ -18,6 +18,7 @@ from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
     record_provider_call,
 )
+from faultmaven.infrastructure.llm.providers.base import LLMResponse
 
 
 @dataclass
@@ -168,3 +169,58 @@ class TestRecordProviderCall:
         finally:
             active_token_tracker.reset(token)
         assert tracker.total_calls == 1
+
+
+def _llm_call_records(caplog):
+    return [r for r in caplog.records if r.getMessage() == "llm_call"]
+
+
+@pytest.mark.unit
+class TestLlmCallRecordThinkingTokens:
+    """The per-call ``llm_call`` record carries the provider's reported
+    thinking tokens (#1800): a part of output_tokens, None when unreported."""
+
+    @pytest.mark.parametrize("thinking_tokens", [893, None])
+    def test_llm_call_carries_thinking_tokens(self, thinking_tokens, caplog):
+        response = LLMResponse(
+            content="",
+            confidence=0.9,
+            provider="anthropic",
+            model="claude-fable-5-1",
+            tokens_used=10 + 4124,
+            response_time_ms=1,
+            input_tokens=10,
+            output_tokens=4124,
+            thinking_tokens=thinking_tokens,
+        )
+        tracker = TurnTokenTracker()
+        token = active_token_tracker.set(tracker)
+        try:
+            with caplog.at_level("DEBUG", logger=metering.__name__):
+                record_provider_call("anthropic", "claude-fable-5-1", response, 5.0)
+        finally:
+            active_token_tracker.reset(token)
+
+        records = _llm_call_records(caplog)
+        assert len(records) == 1
+        assert records[0].thinking_tokens == thinking_tokens
+        # Never added to the output bucket.
+        assert records[0].output_tokens == 4124
+        assert tracker.output_tokens == 4124
+
+    def test_a_response_type_without_the_field_reads_none(self, caplog):
+        """Downstream repos construct responses of their own; a missing
+        attribute is "no figure", never an error."""
+        tracker = TurnTokenTracker()
+        token = active_token_tracker.set(tracker)
+        try:
+            with caplog.at_level("DEBUG", logger=metering.__name__):
+                record_provider_call(
+                    "anthropic", "claude-sonnet-4-6", _FakeResponse(), 5.0
+                )
+        finally:
+            active_token_tracker.reset(token)
+
+        records = _llm_call_records(caplog)
+        assert len(records) == 1
+        assert records[0].thinking_tokens is None

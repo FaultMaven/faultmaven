@@ -439,30 +439,42 @@ are not attributable to the control alone.
 is not supported for this model. Use `thinking.type.adaptive` and
 `output_config.effort` to control thinking behavior", recorded on #1800).
 
-**What thinking off sends (#1800, shipped).** Thinking resolves to off on
-`ANTHROPIC_THINKING_MODE=off` (the default), an unknown mode, a starvation
-guard and the forced-tool refusal. Every Anthropic request, tool-less ones
-included, then carries the control measured for its exact model
+**What thinking off sends (#1800, shipped).** A thinking-off request is
+every tool-less call, whatever `ANTHROPIC_THINKING_MODE` is, and every tool
+call under `off` (the default), an unknown mode, a starvation guard or the
+forced-tool refusal. It carries the control measured for its exact model
 (`_THINKING_OFF_CONTROL` in `providers/anthropic.py`, keyed by the parsed
 family and version, not by a ceiling):
 
 | model | thinking off is sent as |
 |---|---|
-| `claude-opus-5` (any date suffix) | `thinking: {"type": "disabled"}` |
-| `claude-opus-5-5`, `claude-fable-5-1` (any date suffix) | `output_config: {"effort": "low"}` |
+| `claude-opus-5` (any date suffix) | `thinking: {"type": "disabled"}`, or no key when the history echoes thinking blocks |
+| `claude-opus-5-5`, `claude-fable-5-1` (any date suffix) | `output_config: {"effort": "low"}`, merged into any `output_config` already in the body |
 | every other model, an unparseable id included | no `thinking` key (it may still think) |
 
 An entry moves only on a measured cell: an unmeasured control could 400 every
 call, and omission never 400s. Every entry is above the sampling ceiling, so
-no OFF control is sent beside a `temperature`. On Fable 5.1, `effort: low`
-lowers thinking (893 tokens at the measured turn) and does not remove it.
-`adaptive` and `enabled` requests are unchanged, and still apply to
-tool-calling requests only. The forced-tool refusal stays specific to them,
-so a forced Opus 5 call refused thinking sends `disabled` beside
-`tool_choice: any`, the measured cell. Each response reports
-`usage.output_tokens_details.thinking_tokens` as `LLMResponse.thinking_tokens`
-(`None` when the API sends no integer; a part of `output_tokens`, never added
-to it), logged at DEBUG with the control sent.
+no OFF control is sent beside a `temperature`, and the only entry on a model
+that accepts forced tool use is the measured Opus 5 pairing. `disabled` is
+withheld when an assistant turn in the request echoes `thinking` or
+`redacted_thinking` blocks (a tool loop under `adaptive` whose forced
+iteration is refused thinking): Anthropic rejects echoed thinking blocks on a
+call without thinking enabled, and that pairing was never measured, so such
+a call is sent no key, as before #1800. `effort: low` keeps adaptive thinking
+on, so echoed blocks stay valid beside it.
+
+The control lowers thinking rather than removing it where the model allows
+no more: on Fable 5.1, `effort: low` gave 893 thinking tokens at the measured
+turn, and an unmeasured model may still think. So a starvation guard
+guarantees that the starvable configuration is never sent, not that the
+downgraded call cannot think. `adaptive` and `enabled` tool-call requests are
+unchanged. The forced-tool refusal stays specific to them, so a forced Opus 5
+call refused thinking sends `disabled` beside `tool_choice: any`, the measured
+cell. Each response reports `usage.output_tokens_details.thinking_tokens` as
+`LLMResponse.thinking_tokens` (`None` when the API sends no integer; a part of
+`output_tokens`, never added to it), carried by the per-call `llm_call`
+DEBUG record in `infrastructure/llm/metering.py`; the adapter logs the
+control it sent at DEBUG.
 
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling

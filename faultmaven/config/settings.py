@@ -324,23 +324,25 @@ class LLMSettings(BaseSettings):
     anthropic_knowledge_model: Optional[str] = Field(default=None)
 
     # Anthropic extended thinking on structured-output (tool-calling) calls
-    # (#1116). DEFAULT OFF — "off" sends each model the control measured to
-    # turn its thinking off, on every request (#1800): `{"type": "disabled"}`
-    # on opus-5, `output_config.effort: "low"` on opus-5-5 and fable-5-1
-    # (which lowers thinking there but cannot remove it on fable-5-1), and no
-    # `thinking` key on any model not measured. Modes:
+    # (#1116). DEFAULT OFF — "off" sends every request the model's measured
+    # thinking-off control (#1800): `{"type": "disabled"}` on opus-5,
+    # `output_config.effort: "low"` on opus-5-5 and fable-5-1 (on fable-5-1
+    # that lowers thinking rather than removing it), and no `thinking` key on
+    # any model not measured. Modes:
     #   - "adaptive": `{"type": "adaptive"}` — the model decides how much to
     #     think. Sent as "enabled" on a model that rejects it (4.5 and older).
     #   - "enabled": `{"type": "enabled", "budget_tokens": N}`. Sent as
     #     "adaptive" on a model that rejects budget_tokens (4.7+).
     #     Each substitution logs one WARNING per model. N comes from
     #     anthropic_thinking_budget_tokens and is validated against max_tokens
-    #     at call time (thinking bills INSIDE max_tokens; a starvable call is
-    #     downgraded to thinking off with a warning rather than issued — see
+    #     at call time (thinking bills INSIDE max_tokens; a starvable
+    #     configuration is never sent: the call is downgraded to the model's
+    #     thinking-off control with a warning — see
     #     AnthropicProvider._resolve_thinking).
     # Scope: the provider applies the ON modes only to tool-calling
     # (structured output) requests, mirroring Gemini's structured-only
-    # thinking config; a tool-less call under them is sent no thinking key.
+    # thinking config; a tool-less call is a thinking-off call under every
+    # mode and carries the same per-model control.
     # Declared `str`, not Literal: pydantic-settings' case-insensitivity
     # applies to env var NAMES, not values, so a Literal would raise a
     # ValidationError — and take the whole API down at boot — for
@@ -355,7 +357,7 @@ class LLMSettings(BaseSettings):
     # mode on a model that accepts budget_tokens, and in "adaptive" mode on a
     # model that does not support adaptive (4.5 and older). Anthropic's API
     # minimum is 1024; must leave room for the visible answer under
-    # max_tokens or the call is downgraded to thinking off.
+    # max_tokens or the call is downgraded to the model's thinking-off control.
     anthropic_thinking_budget_tokens: int = Field(
         default=4096, validation_alias="ANTHROPIC_THINKING_BUDGET_TOKENS"
     )
@@ -596,7 +598,9 @@ class LLMSettings(BaseSettings):
             return normalized
         logging.getLogger(__name__).warning(
             "Unrecognized ANTHROPIC_THINKING_MODE %r — falling back to 'off' "
-            "(valid values: %s). Extended thinking is DISABLED.",
+            "(valid values: %s). Thinking is OFF: each Anthropic model is sent "
+            "its measured thinking-off control, which on some models lowers "
+            "thinking rather than removing it.",
             v,
             ", ".join(ANTHROPIC_THINKING_MODES),
         )

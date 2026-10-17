@@ -3,7 +3,8 @@
 Each call replays a REAL FaultMaven INVESTIGATING request, captured offline
 from the API (no network) for that model, with one thinking control applied:
 
-* ``omitted``    the body exactly as FaultMaven sends it for ``ANTHROPIC_THINKING_MODE=off``;
+* ``omitted``    the pre-#1800 body FaultMaven sent for ``ANTHROPIC_THINKING_MODE=off``
+                 (no thinking control; #1800 now sends each model its measured one);
 * ``effort_low`` the same body plus ``output_config: {"effort": "low"}``;
 * ``disabled``   the same body plus ``thinking: {"type": "disabled"}``.
 
