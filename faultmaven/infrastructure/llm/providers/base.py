@@ -512,6 +512,12 @@ class LLMResponse:
     # so a provider that has not been taught to report — or a response we could
     # not parse a reason out of — never claims to have finished cleanly.
     stop_reason: StopReason = StopReason.UNKNOWN
+    # Hidden-reasoning tokens the provider reported for this call (#1800).
+    # `None` means the provider reported no figure — never read it as 0. An
+    # int is PART of `output_tokens` (thinking bills inside the output
+    # budget), never in addition to it, so the two are not summed for cost.
+    # Filled by Anthropic from `usage.output_tokens_details.thinking_tokens`.
+    thinking_tokens: Optional[int] = None
 
     @property
     def is_truncated(self) -> bool:
@@ -539,11 +545,12 @@ class ProviderConfig:
     default_model: Optional[str] = None
     confidence_score: float = 0.8
     # Provider-interpreted extended-thinking knobs (#1116). `None` (the
-    # default everywhere) means the provider sends no thinking configuration
-    # at all — byte-identical requests to pre-#1116 behavior. Currently only
-    # AnthropicProvider reads these ("off" | "adaptive" | "enabled"); other
-    # providers ignore them. Additive with defaults so every existing
-    # ProviderConfig construction site is unaffected.
+    # default everywhere) means thinking off: AnthropicProvider sends each
+    # model its measured OFF control, which is no thinking configuration at
+    # all on a model not measured (#1800). Currently only AnthropicProvider
+    # reads these ("off" | "adaptive" | "enabled"); other providers ignore
+    # them. Additive with defaults so every existing ProviderConfig
+    # construction site is unaffected.
     thinking_mode: Optional[str] = None
     thinking_budget_tokens: Optional[int] = None
     # Operator default for OpenAI ``reasoning_effort`` (OPENAI_REASONING_EFFORT,
