@@ -672,8 +672,11 @@ class AuthService:
         this method used to carry is gone: a constant cannot under-cover, and a
         guard that can no longer fire is a guard that will sit green for ever.
         The cost is a longer-lived entry — the ceiling rather than the
-        configured lifetime — which is one row per revoked user, expiring on
-        its own, against the resurrection of every token that user holds.
+        configured lifetime — which is one entry per user who has been revoked
+        and has not signed back in, expiring on its own: a row on the SQL arm,
+        a key held in memory on the Redis arm. The retention reasoning is in
+        ``token_revocation_store``'s module docstring. That cost is set against
+        the resurrection of every token that user holds.
         """
         from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
 
