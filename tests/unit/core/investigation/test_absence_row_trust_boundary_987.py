@@ -684,6 +684,11 @@ def _counterfactual_case(*, with_persistence: bool):
         "hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=created[0]
     )
     case.hypotheses[hyp.hypothesis_id] = hyp
+    # The identified cause (#2038): the root as the last derive left it,
+    # VALIDATED and marked terminal. M6 reads its representative off it (#2042).
+    root = case.causal_nodes[created[0]]
+    root.node_state = NodeState.VALIDATED
+    root.record_root_terminal(True, "nothing upstream sets the audience", 7)
     case.progress.cause_state = CauseState.IDENTIFIED
     return case
 

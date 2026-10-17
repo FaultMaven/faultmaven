@@ -536,14 +536,15 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     # recompute, so ``_representative_cause_hypothesis`` resolves to the hypothesis
     # the LLM's conclusion names; a conclusion re-grounded onto a DIFFERENT
     # still-standing cause points the trigger there and this demotion never fires
-    # on it (the refresh is delivered by the link). RESIDUAL, accepted: an
-    # UNLINKABLE conclusion (ambiguous/paraphrased text, no vhid) leaves the
-    # trigger on the max-``initial_likelihood`` proxy, so if that proxy is the
-    # disconfirmed cause the conclusion is still cleared even when it named a
-    # different cause — the pre-existing NO-INCORRECT-first behavior (never leave a
-    # possibly-disproven conclusion standing on a guess; inferring a
-    # different-cause link lexically would only trade this for the wrong-link
-    # collapse the link bar guards against).
+    # on it (the refresh is delivered by the link). An UNLINKABLE conclusion
+    # (ambiguous/paraphrased text, no vhid) leaves the trigger on a hypothesis of
+    # the identified root (#2042), never on one refuted before that root was
+    # identified. RESIDUAL, accepted: when the identified cause itself is
+    # disconfirmed, an unlinked conclusion is cleared even if it named a
+    # different cause — the NO-INCORRECT-first behavior (never leave a possibly
+    # disproven conclusion standing on a guess; inferring a different-cause link
+    # lexically would only trade this for the wrong-link collapse the link bar
+    # guards against).
     rcc = case.root_cause_conclusion
     # Count only a genuine "named cause was disconfirmed" retraction: the cleared
     # conclusion was LINKED to the very hypothesis this demotion disconfirmed. A
