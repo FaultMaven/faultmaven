@@ -62,9 +62,14 @@ Read as rates, never the numerator alone:
   ``(state_dropped + response_synthesized_state_dropped +
   faultmaven_schema_state_updates_repairs_total{repair=~"string_dropped|non_object_dropped"}) /
   total`` — the last term is state lost BEFORE validation, in a body that can
-  then still validate ``clean`` (fm#1753), so no outcome here shows it. The
-  synthesized-and-dropped rung is deliberately NOT folded into
-  ``response_synthesized``: it loses everything that rung loses AND the turn's
+  then still validate ``clean`` (fm#1753), so no outcome here shows it. An
+  undecodable leaked value is not in that term (fm#1823): a leaked parameter
+  whose VALUE its field neither takes as text nor can decode is still
+  recovered, counted ``xml_recovered``, and the ladder resets that one field,
+  so the body is counted ``pruned`` and the state fields lifted beside it are
+  kept. Such a body counted ``string_dropped`` before fm#1823, with every
+  sibling lost. The synthesized-and-dropped rung is deliberately NOT folded
+  into ``response_synthesized``: it loses everything that rung loses AND the turn's
   state, and counting the worse disposition as the lesser one is how a
   state-loss rate under-reports. The outcomes are not claimed to form a total
   order of severity; each names a specific loss, and a consumer sums the ones

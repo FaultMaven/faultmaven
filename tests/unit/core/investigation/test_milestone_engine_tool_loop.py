@@ -27,6 +27,10 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from faultmaven.core.investigation.schemas import (
+    InvestigationResponse_Diagnosis,
+    TerminalResponse,
+)
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.infrastructure.security.model_content import (
     SOURCE_MODEL_OUTPUT,
@@ -1049,51 +1053,51 @@ class TestFormatToolResult:
 
 @pytest.mark.unit
 class TestParseNestedJson:
-    """Tests for _parse_nested_json() static method."""
+    """Tests for _parse_nested_json(): the schema-directed decode (#1822)."""
 
-    def test_string_json_parsed_recursively(self):
-        """Nested JSON strings are parsed recursively."""
+    def test_json_string_list_field_decodes_recursively_into_model_items(self):
+        hyp = {
+            "statement": "[2] pods restarted",
+            "category": "database",
+            "likelihood": 0.4,
+            "rationale": "df shows 100%",
+        }
         obj = {
-            "outer": '{"inner_key": "inner_value"}',
-            "plain": "not json",
+            "agent_response": "x",
+            "state_updates": {"hypotheses_to_add": json.dumps([json.dumps(hyp)])},
         }
 
-        result = _parse_nested_json(obj)
+        result = _parse_nested_json(obj, InvestigationResponse_Diagnosis)
 
-        assert result["outer"] == {"inner_key": "inner_value"}
-        assert result["plain"] == "not json"
+        assert result["state_updates"]["hypotheses_to_add"] == [hyp]
 
-    def test_deeply_nested_json(self):
-        """Multiple levels of nested JSON strings are parsed."""
+    def test_text_field_that_looks_like_json_stays_text(self):
         obj = {
-            "level1": '{"level2": "{\\"level3\\": \\"deep\\"}"}',
+            "agent_response": "[1] see below",
+            "state_updates": {"final_summary_update": "42"},
         }
 
-        result = _parse_nested_json(obj)
+        result = _parse_nested_json(obj, TerminalResponse)
 
-        assert result["level1"]["level2"] == {"level3": "deep"}
-
-    def test_list_items_parsed(self):
-        """JSON strings in lists are parsed."""
-        obj = ['{"key": "value"}', "plain text", 42]
-
-        result = _parse_nested_json(obj)
-
-        assert result[0] == {"key": "value"}
-        assert result[1] == "plain text"
-        assert result[2] == 42
-
-    def test_non_json_string_preserved(self):
-        """Non-JSON strings are left as-is."""
-        obj = {"key": "just a normal string"}
-        result = _parse_nested_json(obj)
-        assert result["key"] == "just a normal string"
-
-    def test_non_string_types_preserved(self):
-        """Ints, floats, bools, None are preserved."""
-        obj = {"int": 42, "float": 3.14, "bool": True, "none": None}
-        result = _parse_nested_json(obj)
         assert result == obj
+
+    def test_non_string_scalars_are_unchanged(self):
+        obj = {"int": 42, "float": 3.14, "bool": True, "none": None}
+        assert _parse_nested_json(obj, TerminalResponse) == obj
+
+    def test_unknown_key_is_left_as_is(self):
+        obj = {"surprise": '{"a": 1}', "agent_response": "x"}
+
+        result = _parse_nested_json(obj, TerminalResponse)
+
+        assert result["surprise"] == '{"a": 1}'
+
+    def test_json_string_sub_model_decodes(self):
+        obj = {"agent_response": "x", "state_updates": '{"documentation_links": "[]"}'}
+
+        result = _parse_nested_json(obj, TerminalResponse)
+
+        assert result["state_updates"] == {"documentation_links": []}
 
 
 @pytest.mark.unit
