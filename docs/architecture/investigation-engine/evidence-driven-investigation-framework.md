@@ -564,7 +564,10 @@ words; the user declares what is data (#1930).
   submitted no data showing it, the model names the output that would
   show it (`system_state_report.request`), and FaultMaven asks for it,
   for verification and for the record. The model does not ask a second
-  time in its reply.
+  time in its reply. Other data submitted in the same turn does not stop
+  the request: the model judged that data does not show the state, and
+  the engine cannot tell which upload shows what (#1938). That data
+  still answers any earlier request that was waiting.
 - The engine finds the named lines in the user's message (after
   reversing PII placeholders) and takes the full lines between them. An
   anchor that matches nothing is dropped (`block_unmatched`). A block
