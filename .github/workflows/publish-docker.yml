@@ -106,13 +106,15 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: faultmaven-enterprise-infra
 
-      # Checkout enterprise-infra repository
+      # Checkout enterprise-infra's image-queue branch, which holds the image
+      # queue (infra#408): the queue lives on its own branch, which needs no
+      # ruleset bypass to push.
       - name: Checkout enterprise-infra
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         uses: actions/checkout@v6
         with:
           repository: FaultMaven/faultmaven-enterprise-infra
-          ref: main
+          ref: image-queue
           token: ${{ steps.infra-token.outputs.token }}
           path: enterprise-infra
 
@@ -147,23 +149,24 @@ jobs:
           Built from: ${{ github.repository }}@${GITHUB_SHA}
           Triggered by: @${{ github.actor }}
           Workflow: ${{ github.workflow }}"
-            # Three repositories push to faultmaven-enterprise-infra main —
-            # this one, and the other two service repos — and their builds
+            # Four repositories push to faultmaven-enterprise-infra's
+            # image-queue branch — faultmaven, faultmaven-dashboard,
+            # faultmaven-slack-agent and faultmaven-cloud — and their builds
             # finish whenever they finish. A non-fast-forward here is an
             # ordinary race, not a fault. Failing the job on it leaves GHCR
             # holding an image the queue does not name, in a repository nobody
-            # watches between PRs; the next promotion then ships an older image
-            # than the operator believes. Rebase and retry instead.
+            # watches between PRs; the next promotion then ships an older
+            # image than the operator believes. Rebase and retry instead.
             # --rebase is safe: this commit touches one file that only this
             # workflow writes.
             pushed=""
             for attempt in 1 2 3; do
-              if git push origin main; then
+              if git push origin image-queue; then
                 pushed=yes
                 break
               fi
-              echo "::warning::push attempt ${attempt} rejected; rebasing onto origin/main"
-              git pull --rebase origin main
+              echo "::warning::push attempt ${attempt} rejected; rebasing onto origin/image-queue"
+              git pull --rebase origin image-queue
             done
 
             if [ -z "$pushed" ]; then
