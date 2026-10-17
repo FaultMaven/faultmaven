@@ -124,8 +124,6 @@ def test_recovers_the_leaked_parameter(schema, state_updates, expected):
     "schema, state_updates",
     [
         (TerminalResponse, '<parameter name="final_summary_update">x</parameter>'),
-        (TerminalResponse, '<parameter name="documentation_links">'),
-        (TerminalResponse, '<parameter name="documentation_links">see wiki'),
         (TerminalResponse, '<parameter name="agent_response">x'),
         (
             InvestigationResponse_Diagnosis,
@@ -140,12 +138,9 @@ def test_recovers_the_leaked_parameter(schema, state_updates, expected):
         (TerminalResponse, "Root cause: disk"),
         (TerminalResponse, '{"final_summary_update": "x'),
         (TerminalResponse, "<parameter name='final_summary_update'>x"),
-        (TerminalResponse, TOO_DEEP),
     ],
     ids=[
         "a-closer-never-occurs",
-        "list-field-empty",
-        "list-field-not-json",
         "not-a-state-field",
         "nested-tag",
         "nested-tag-on-a-text-field",
@@ -153,7 +148,6 @@ def test_recovers_the_leaked_parameter(schema, state_updates, expected):
         "prose",
         "truncated-json",
         "single-quoted-name",
-        "nested-too-deep",
     ],
 )
 def test_declines_everything_else(schema, state_updates):
@@ -161,6 +155,29 @@ def test_declines_everything_else(schema, state_updates):
     before = json.loads(json.dumps(body))
     assert _recover_leaked_parameter(body, schema) is None
     assert body == before  # a declined recovery lifts nothing
+
+
+@pytest.mark.parametrize(
+    "value, kept",
+    [
+        ("", ""),
+        ("see wiki", "see wiki"),
+        ("https://docs.example/runbook", "https://docs.example/runbook"),
+        (TOO_DEEP.split(">", 1)[1], "[" * 1200),
+    ],
+    ids=["list-field-empty", "list-field-not-json", "url", "nested-too-deep"],
+)
+def test_keeps_an_undecodable_value_raw_and_lifts_the_siblings(value, kept):
+    """fm#1823: a K the field rejects and JSON cannot decode keeps its raw text,
+    so the ladder costs K alone and the leaked siblings are still lifted."""
+    body = _body(
+        '<parameter name="documentation_links">' + value,
+        final_summary_update="S",
+    )
+    assert _recover_leaked_parameter(body, TerminalResponse) == {
+        "documentation_links": kept,
+        "final_summary_update": "S",
+    }
 
 
 def test_lifts_a_leaked_state_sibling_out_of_the_top_level():
@@ -322,7 +339,8 @@ def test_tool_call_too_deep_value_is_dropped_not_raised(counters):
     assert parsed.state_updates.final_summary_update is None
     assert parsed.state_updates.documentation_links == []
     assert parsed.state_updates.model_fields_set == set()
-    assert counters.repairs() == [_repair("string_dropped")]
+    # K is kept raw (#1823), so the recovery stands and only K is reset.
+    assert counters.repairs() == [_repair("xml_recovered")]
 
 
 def test_tool_call_absent_state_updates_is_defaulted_and_counted(counters):
@@ -570,9 +588,12 @@ _D = InvestigationResponse_Diagnosis
             TerminalResponse,
             _LEAK_LINKS,
             {"final_summary_update": "[1] disk full on api-3"},
-            "pruned",
-            {"documentation_links": ["https://x"]},
-            ["final_summary_update"],
+            "clean",
+            {
+                "documentation_links": ["https://x"],
+                "final_summary_update": "[1] disk full on api-3",
+            },
+            [],
         ),
         (
             TerminalResponse,
@@ -647,7 +668,7 @@ _D = InvestigationResponse_Diagnosis
     ],
     ids=[
         "leaked-S-bad-links-sibling",
-        "leaked-links-sibling-decoded-to-list",
+        "leaked-links-sibling-text-like-json-kept",
         "leaked-K-wrong-type-good-sibling",
         "leaked-list-sibling-one-bad-entry",
         "leaked-sibling-enum-typo",
@@ -714,3 +735,241 @@ def test_repair_vocabulary_is_pinned():
     }
     assert recorded, "found no repair literals to pin"
     assert recorded == set(STATE_UPDATES_REPAIRS)
+
+
+# fm#1822 / fm#1823: the decode before validation is schema-directed. The
+# table is driven through _parse_schema_tool_call; each row asserts the design
+# column of the plan (field: its value on the parsed response).
+_LEAK_LINKS_JSON = '<parameter name="documentation_links">["https://a"]'
+_LEAK_LINKS_URL = '<parameter name="documentation_links">https://docs.example/runbook'
+_LEAK_LINKS_EMPTY = '<parameter name="documentation_links">'
+_DEEP = "[" * 1200
+
+
+def _su(**fields):
+    return {"agent_response": "x", "state_updates": fields}
+
+
+_TEXT_FIRST_ROWS = [
+    (
+        "text-like-list",
+        _su(final_summary_update="[1] disk full on api-3"),
+        {"final_summary_update": "[1] disk full on api-3"},
+    ),
+    ("text-number", _su(final_summary_update="42"), {"final_summary_update": "42"}),
+    ("text-true", _su(final_summary_update="true"), {"final_summary_update": "true"}),
+    (
+        "text-object",
+        _su(final_summary_update='{"a": 1}'),
+        {"final_summary_update": '{"a": 1}'},
+    ),
+    ("text-null", _su(final_summary_update="null"), {"final_summary_update": "null"}),
+    (
+        "text-double-encoded",
+        _su(final_summary_update='"quoted"'),
+        {"final_summary_update": '"quoted"'},
+    ),
+    (
+        "list-json-string",
+        _su(documentation_links='["https://a","https://b"]'),
+        {"documentation_links": ["https://a", "https://b"]},
+    ),
+    (
+        "list-stray-closer",
+        _su(documentation_links='["https://a"]}'),
+        {"documentation_links": ["https://a"]},
+    ),
+    (
+        "list-xml-closer",
+        _su(documentation_links='["https://a"]</parameter></invoke>'),
+        {"documentation_links": ["https://a"]},
+    ),
+    (
+        "state-updates-json-string",
+        {"agent_response": "x", "state_updates": '{"final_summary_update":"[1] disk"}'},
+        {"final_summary_update": "[1] disk"},
+    ),
+    (
+        "agent-response-text-like-list",
+        {"agent_response": "[1] see below", "state_updates": {}},
+        {"agent_response": "[1] see below"},
+    ),
+    (
+        "leaked-links-and-text-like-list-sibling",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_LINKS_JSON,
+            "final_summary_update": "[1] disk full on api-3",
+        },
+        {
+            "documentation_links": ["https://a"],
+            "final_summary_update": "[1] disk full on api-3",
+        },
+    ),
+    (
+        "leaked-links-and-number-sibling",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_LINKS_JSON,
+            "final_summary_update": "42",
+        },
+        {"documentation_links": ["https://a"], "final_summary_update": "42"},
+    ),
+    (
+        "leaked-text-and-list-sibling-json-string",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_S,
+            "documentation_links": '["https://y"]',
+        },
+        {"final_summary_update": "S", "documentation_links": ["https://y"]},
+    ),
+    (
+        "leaked-links-url-keeps-sibling",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_LINKS_URL,
+            "final_summary_update": "S",
+        },
+        {"final_summary_update": "S", "documentation_links": []},
+    ),
+    (
+        "leaked-links-empty-keeps-sibling",
+        {
+            "agent_response": "x",
+            "state_updates": _LEAK_LINKS_EMPTY,
+            "final_summary_update": "S",
+        },
+        {"final_summary_update": "S", "documentation_links": []},
+    ),
+    (
+        "leaked-links-too-deep-keeps-sibling",
+        {
+            "agent_response": "x",
+            "state_updates": '<parameter name="documentation_links">' + _DEEP,
+            "final_summary_update": "S",
+        },
+        {"final_summary_update": "S", "documentation_links": []},
+    ),
+    (
+        "leaked-links-too-deep-alone",
+        {
+            "agent_response": "x",
+            "state_updates": '<parameter name="documentation_links">' + _DEEP,
+        },
+        {"final_summary_update": None, "documentation_links": []},
+    ),
+    (
+        "delivered-links-too-deep",
+        _su(documentation_links=_DEEP),
+        {"documentation_links": []},
+    ),
+    (
+        "delivered-text-too-deep",
+        _su(final_summary_update=_DEEP),
+        {"final_summary_update": _DEEP},
+    ),
+    # Out of scope, pinned unchanged: Pass 2 truncates at the stray brace itself.
+    (
+        "stray-brace-at-the-end",
+        {"agent_response": "x", "state_updates": '{"final_summary_update":"S"}}'},
+        {"final_summary_update": None},
+    ),
+]
+
+
+def _check(parsed, expected):
+    for name, want in expected.items():
+        owner = parsed if name == "agent_response" else parsed.state_updates
+        assert getattr(owner, name) == want, name
+
+
+def _tool_call_of(args) -> ToolCall:
+    return ToolCall(
+        id="c1",
+        type="function",
+        function={"name": "TerminalResponse", "arguments": json.dumps(args)},
+    )
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [r[1:] for r in _TEXT_FIRST_ROWS],
+    ids=[r[0] for r in _TEXT_FIRST_ROWS],
+)
+def test_tool_call_decodes_only_what_the_schema_does_not_take_as_text(args, expected):
+    parsed = _parse_schema_tool_call(_tool_call_of(args), TerminalResponse)
+    _check(parsed, expected)
+
+
+# Five rows that show each caller passes the schema to the decode.
+_CALLER_ROWS = [
+    "text-like-list",
+    "text-number",
+    "agent-response-text-like-list",
+    "leaked-links-and-text-like-list-sibling",
+    "leaked-links-url-keeps-sibling",
+]
+_CALLER_PARAMS = [r[1:] for r in _TEXT_FIRST_ROWS if r[0] in _CALLER_ROWS]
+_CALLER_IDS = [r[0] for r in _TEXT_FIRST_ROWS if r[0] in _CALLER_ROWS]
+
+
+@pytest.mark.parametrize("args, expected", _CALLER_PARAMS, ids=_CALLER_IDS)
+def test_text_path_decodes_only_what_the_schema_does_not_take_as_text(args, expected):
+    parsed = _parse_text_as_schema(json.dumps(args), TerminalResponse)
+    _check(parsed, expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args, expected", _CALLER_PARAMS, ids=_CALLER_IDS)
+async def test_single_shot_path_decodes_only_what_the_schema_does_not_take_as_text(
+    args, expected
+):
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        StructuredOutputCapability,
+        StructuredOutputMode,
+        StructuredOutputStrategy,
+    )
+
+    provider = MagicMock()
+    provider.route = AsyncMock(
+        return_value=_llm(json.dumps(args), stop_reason=StopReason.STOP)
+    )
+    provider.get_structured_output_strategy = MagicMock(
+        return_value=StructuredOutputStrategy(
+            capability=StructuredOutputCapability.BEST_EFFORT,
+            mode=StructuredOutputMode.JSON_OBJECT,
+            include_schema_in_prompt=True,
+            response_format={"type": "json_object"},
+        )
+    )
+    repo = MagicMock()
+    repo.save = AsyncMock()
+    engine = MilestoneEngine(
+        llm_provider=provider, repository=repo, investigation_tools=MagicMock()
+    )
+    parsed = await engine.generator._generate_structured_output_inner(
+        "p", TerminalResponse, redaction_ctx=disabled_redaction()
+    )
+    _check(parsed, expected)
+
+
+def test_a_json_string_list_of_models_decodes_and_its_text_stays_text():
+    """An item's ``statement`` that starts like JSON is text; the list that
+    carries it, delivered as a JSON string, is decoded."""
+    hyp = {**_HYP, "statement": "[2] pods restarted"}
+    args = {
+        "agent_response": "x",
+        "state_updates": {"hypotheses_to_add": json.dumps([hyp])},
+    }
+    call = ToolCall(
+        id="c1",
+        type="function",
+        function={
+            "name": "InvestigationResponse_Diagnosis",
+            "arguments": json.dumps(args),
+        },
+    )
+    parsed = _parse_schema_tool_call(call, InvestigationResponse_Diagnosis)
+    added = parsed.state_updates.hypotheses_to_add
+    assert [h.statement for h in added] == ["[2] pods restarted"]
