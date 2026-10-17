@@ -189,15 +189,17 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
 
     All of: the hypothesis is still standing and its root VALIDATED (the cause
     the case identifies, not the representative proxy's guess); the latest fix
-    window with a verdict is FAILED (``cause_assurance.fix_windows``: the cause
-    observed removed after the fix, then the problem observed persisting, with
-    no problem-gone row before it — a newer fix still waiting on its first
-    observation does not erase that); the fix ran at/after the hypothesis existed (a
-    fix can only have addressed a cause that existed when it ran); and the fix
-    was a fix OF this cause — not every one of its cause rows is affirmatively
-    about another candidate chain (``BearingFrame.about_another_chain``). The
-    window's outcome is shared with the readiness gate, so M6 demotes exactly
-    when the gate stops reading the fix as a resolution; the attribution is
+    window with a verdict FAILED by persistence (``FixWindow.disconfirms_cause``:
+    the cause observed removed after the fix, then the problem observed
+    persisting, with no problem-gone row in between — a newer fix still waiting
+    on its first observation does not erase that); the fix ran at/after the
+    hypothesis existed (a fix can only have addressed a cause that existed when
+    it ran); and the fix was a fix OF this cause — not every one of its cause
+    rows is affirmatively about another candidate chain
+    (``BearingFrame.about_another_chain``). The window's outcome is shared with
+    the readiness gate, which also stops reading a RELAPSED fix as a
+    resolution; M6 does not demote on one, because the problem seen gone after
+    the cause went is the counterfactual holding (#2039). The attribution is
     M6's own, because a failed fix of another candidate disconfirms that
     candidate, not this one. The VALIDATED root is what keeps that attribution
     off a competitor: a terse cause row bears on no chain, so the bearing test
@@ -206,7 +208,7 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     if root is None or hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
         return None
     window = latest_decided_fix_window(case)
-    if window is None or window.state != FIX_FAILED:
+    if window is None or not window.disconfirms_cause:
         return None
     if (getattr(hyp, "generated_at_turn", 0) or 0) > window.fix_turn:
         return None
@@ -302,11 +304,13 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     Returns ``(fix_turn, provenance)`` when the latest fix window with a
     verdict is FAILED (``cause_assurance.fix_windows``): a RECORDED fix application, the cause
     observed removed after it, and the problem then observed persisting with
-    no problem-gone row before it. Otherwise the refusal is metered:
+    no problem-gone row in between. Otherwise the refusal is metered:
     ``no_fix_applied`` / ``undatable_acceptance`` (no dated fix),
     ``resolution_confirmed`` (the window SUCCEEDED), ``no_cause_removal`` (no
     cause re-check after the fix — "I ran it, still failing" may be an
-    implementation error, which disconfirms nothing), ``no_persistence``.
+    implementation error, which disconfirms nothing), ``no_persistence``,
+    ``relapse`` (the problem seen gone after the fix, then seen again: the
+    counterfactual held, and the return disproves nothing about the cause).
 
     The window is the ONE answer to "did the latest fix work?" (#1927): the
     readiness gate's legs exclude what a failed window holds, so M6 demotes
@@ -355,10 +359,12 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
 
 def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     """Why the case does not establish a failed fix, or None when it does: the
-    latest window with a verdict (``latest_decided_fix_window``) FAILED. A
-    newer window still waiting on its first observation does not erase it."""
+    latest window with a verdict (``latest_decided_fix_window``) FAILED by
+    persistence. A newer window still waiting on its first observation does
+    not erase it. A relapse — the problem seen gone after the fix, then seen
+    again — establishes no disconfirmation (``FixWindow.disconfirms_cause``)."""
     if decided is not None and decided.state == FIX_FAILED:
-        return None
+        return None if decided.disconfirms_cause else "relapse"
     latest = fix_windows(case)[-1]
     if latest.fix_turn is None:
         # Two different worlds, separately labeled: nothing was ever tried, vs
@@ -381,13 +387,14 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
 
 
 def _failed_fix_provenance(window: FixWindow) -> str:
-    """The engine row's provenance for a failed fix window."""
+    """The engine row's provenance for a fix window that disconfirms the cause:
+    the pair of observations it read (``FixWindow.disconfirmation``)."""
+    cause_turn, persistence_turn = window.disconfirmation
     return (
         f"a fix recorded as EXECUTED at turn {window.fix_turn} did not hold — "
-        f"the cause was observed removed at turn {window.cause_removal_turn}, "
-        f"and symptom evidence at turn {window.failure_turn} observes the "
-        f"problem still present after that, with the problem not observed gone "
-        f"before it"
+        f"the cause was observed removed at turn {cause_turn}, and symptom "
+        f"evidence at turn {persistence_turn} observes the problem still "
+        f"present after that, with the problem not observed gone in between"
     )
 
 

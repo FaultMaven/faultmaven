@@ -750,9 +750,13 @@ class FixWindow:
     execution record). ``end_turn`` is the next fix's execution turn, or None
     for the latest. ``cause_rows`` are the window's non-engine causal_absence
     rows; ``failure_turn`` is the turn the problem was observed persisting
-    after the cause's removal, when ``state`` is ``FIX_FAILED``. ``observed``:
-    the fix's outcome was looked at — a cause row in the window, or a
-    persistence row bearing on the problem after the fix."""
+    after the cause's removal, when ``state`` is ``FIX_FAILED``.
+    ``relief_turn`` is the first turn the problem was observed gone in the
+    window, before any failure. ``disconfirmation`` is the earliest
+    ``(cause_turn, persistence_turn)`` pair that disconfirms the cause the
+    fix addressed (``disconfirms_cause``), or None. ``observed``: the fix's
+    outcome was looked at — a cause row in the window, or a persistence row
+    bearing on the problem after the fix."""
 
     fix_turn: int | None
     end_turn: int | None
@@ -760,19 +764,29 @@ class FixWindow:
     state: str
     failure_turn: int | None = None
     observed: bool = False
-
-    @property
-    def cause_removal_turn(self) -> int | None:
-        return min(
-            ((getattr(r, "collected_at_turn", 0) or 0) for r in self.cause_rows),
-            default=None,
-        )
+    relief_turn: int | None = None
+    disconfirmation: tuple[int, int] | None = None
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
         return (self.fix_turn is None or turn >= self.fix_turn) and (
             self.end_turn is None or turn < self.end_turn
         )
+
+    @property
+    def disconfirms_cause(self) -> bool:
+        """The window records the counterfactual disconfirmation a destructive
+        reader may act on (INV-42): the cause observed removed, then the
+        problem observed present, never observed gone in between.
+
+        A relapse alone — the problem seen gone after the fix, then seen again
+        — FAILS the window, and the gate reads it so: only a new fix earns
+        RESOLVED. It disproves nothing about the cause: the problem went with
+        the cause, and its return may be the cause back, the effect not
+        lasting, another cause, or a misread check (#2039). The cause re-checked
+        still gone after the return, with the problem seen present after that,
+        is a disconfirmation again."""
+        return self.disconfirmation is not None
 
 
 def _identified_root_ids(case: "Case") -> set[str]:
@@ -870,7 +884,10 @@ def fix_windows(case: "Case") -> list[FixWindow]:
     granularity cannot order them, and a same-turn ambiguity resolves toward
     the confirmation (NO-COLLAPSE), as for the disconfirmation window and the
     mixed single-turn shape. A relief followed by a later persistence is a
-    relapse, FAILED. SUCCEEDED needs the cause observed removed as well;
+    relapse, FAILED: the gate reads it as a failed fix, a destructive reader
+    does not, unless the cause was observed removed after the relief and the
+    problem present after that (``FixWindow.disconfirms_cause``). SUCCEEDED
+    needs the cause observed removed as well;
     without a cause row the window stays UNKNOWN ("I ran it, still failing"
     with no cause re-check may be an implementation error).
 
@@ -920,14 +937,29 @@ def fix_windows(case: "Case") -> list[FixWindow]:
         if cause_rows:
             removal = min((getattr(r, "collected_at_turn", 0) or 0) for r in cause_rows)
             persist_turns = {turn for turn in after_fix if turn >= removal}
-        state, failure_turn, relieved = FIX_UNKNOWN, None, False
+        # The counterfactual disconfirmation (INV-42): the cause observed
+        # removed at r, the problem observed present at p >= r, and no
+        # problem-gone row in [r, p] — one in r's or p's turn reads as gone, as
+        # below. The earliest such pair; window 0 has none (no persistence).
+        cause_turns = sorted(
+            {getattr(row, "collected_at_turn", 0) or 0 for row in cause_rows}
+        )
+        disconfirmation: tuple[int, int] | None = None
+        for p in sorted(after_fix):
+            last_gone = max((g for g in gone_turns if g <= p), default=-1)
+            r = next((c for c in cause_turns if last_gone < c <= p), None)
+            if r is not None:
+                disconfirmation = (r, p)
+                break
+        state, failure_turn, relief_turn = FIX_UNKNOWN, None, None
         for turn in sorted(gone_turns | persist_turns):
             if turn in gone_turns:
-                relieved = True
+                if relief_turn is None:
+                    relief_turn = turn
             else:
                 state, failure_turn = FIX_FAILED, turn
                 break
-        if state != FIX_FAILED and relieved and cause_rows:
+        if state != FIX_FAILED and relief_turn is not None and cause_rows:
             state = FIX_SUCCEEDED
         windows.append(
             FixWindow(
@@ -937,6 +969,8 @@ def fix_windows(case: "Case") -> list[FixWindow]:
                 state,
                 failure_turn,
                 observed=bool(cause_rows or after_fix),
+                relief_turn=relief_turn,
+                disconfirmation=disconfirmation,
             )
         )
     return windows

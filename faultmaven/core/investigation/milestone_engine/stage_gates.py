@@ -548,7 +548,11 @@ def _flag_absence_inside_a_failed_fix_window(
     what the user changed, and ``solution_accepted`` once they say it ran. The
     M5 license that admits the SolutionToAdd survives the demoted cause through
     a root_cause_conclusion — on a NEW hypothesis when the cause is the same
-    one re-applied correctly — which is the intended re-licensing path.
+    one re-applied correctly — which is the intended re-licensing path. After a
+    RELAPSE nothing was demoted (``FixWindow.disconfirms_cause``, #2039): the
+    cause still stands and its hypothesis still licenses the new fix, so the
+    notice says so instead of asking for a new hypothesis that would duplicate
+    it.
 
     Prepended, like the withdrawal notice: the turn record truncates feedback
     head-first. Returns whether the notice was added."""
@@ -577,18 +581,31 @@ def _flag_absence_inside_a_failed_fix_window(
         for e in case.evidence or []
     ):
         return False
+    if window.disconfirms_cause:
+        shape = "the cause was shown removed, then the problem was seen again"
+        cause = (
+            " — re-assert the cause with a root_cause_conclusion on a new "
+            "hypothesis if the same cause was addressed again — then"
+        )
+    else:
+        shape = (
+            f"the problem was seen gone at turn {window.relief_turn}, then seen "
+            "again"
+        )
+        cause = (
+            " — a problem that went away after the fix and came back does not "
+            "disprove the cause it addressed, so propose the new fix under that "
+            "cause's hypothesis rather than a new one — then"
+        )
     _add_system_feedback(
         metadata,
         "SYSTEM: The fix executed at turn "
-        f"{window.fix_turn} did not hold: the cause was shown removed, then the "
-        "problem was seen again. Absence evidence recorded after that cannot "
-        "confirm a resolution. If the user has applied (or will apply) a new "
-        "fix, record it: propose it as a SolutionToAdd and set "
-        "solution_accepted once the user says it ran — re-assert the cause with "
-        "a root_cause_conclusion on a new hypothesis if the same cause was "
-        "addressed again — then record the cause gone and the problem gone "
-        "after it. If the problem is only quiet after a workaround, offer to "
-        "close instead.",
+        f"{window.fix_turn} did not hold: {shape}. Absence evidence recorded "
+        "after that cannot confirm a resolution. If the user has applied (or "
+        "will apply) a new fix, record it: propose it as a SolutionToAdd and "
+        f"set solution_accepted once the user says it ran{cause} record the "
+        "cause gone and the problem gone after it. If the problem is only "
+        "quiet after a workaround, offer to close instead.",
         prepend=True,
     )
     return True
