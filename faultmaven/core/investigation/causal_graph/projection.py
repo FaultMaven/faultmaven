@@ -33,14 +33,21 @@ def any_chain_root_validated(case: Case) -> bool:
     )
 
 
+def identified_root_ids(case: Case) -> set[str]:
+    """The STANDING hypotheses' chain roots that stand as the identified root
+    cause: validated AND marked terminal (M1, #2036)."""
+    return {
+        h.root_node_id
+        for h in _standing_hypotheses(case)
+        if is_chain_root_identified(h, case.causal_nodes)
+    }
+
+
 def any_chain_root_identified(case: Case) -> bool:
     """Does some STANDING hypothesis's chain root stand as the identified root
-    cause: validated AND marked terminal (M1, #2036)? This is the chain-mode
+    cause (``identified_root_ids``)? This is the chain-mode
     ``cause_state=IDENTIFIED`` signal."""
-    return any(
-        is_chain_root_identified(h, case.causal_nodes)
-        for h in _standing_hypotheses(case)
-    )
+    return bool(identified_root_ids(case))
 
 
 def held_open_root_ids(case: Case) -> set[str]:

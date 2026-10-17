@@ -69,21 +69,39 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     """The hypothesis that best represents the currently-grounded cause.
 
     When the conclusion names one (``validated_hypothesis_id``) that is
-    authoritative. Otherwise the cause was grounded case-wide (high likelihood +
-    causal evidence / ``evidence_basis``) WITHOUT naming a hypothesis — the
-    common grounding shape, and the one in case_e970a5c24fe1 (``likelihood`` 1.0,
-    ``validated_hypothesis_id`` null). The engine's best proxy is then the
-    strongest hypothesis by ORIGINAL confidence: ``initial_likelihood`` is stable
-    where ``likelihood`` is not — refutation zeroes ``likelihood``, so a
-    just-refuted believed-cause would vanish from a max-by-``likelihood`` pick.
-    """
+    authoritative. Otherwise it is a hypothesis on a root the LAST recompute
+    identified the cause on (``InvestigationProgress.identified_cause_root_ids``:
+    a standing hypothesis's validated root marked terminal, #2038) — the same
+    recompute whose ``cause_state=IDENTIFIED`` gates M6. Read off that record,
+    not the live graph: this turn's verdicts are applied before M6 runs (a
+    ``root_is_terminal: false`` on the cause's own hypothesis would hide a cause
+    whose fix just failed), and a root whose only hypothesis was refuted long ago
+    can still read VALIDATED and terminal. A standing one first (the cause stands
+    while its standing hypothesis does), else the strongest by
+    ``initial_likelihood``: a believed cause refuted THIS turn is no longer
+    standing, but its root is on the record, so it is picked and M6 demotes it.
+
+    Never a hypothesis off that record. The proxy this replaces ranked every
+    hypothesis by ``initial_likelihood``, refuted ones included, and broke the
+    0.5 default tie toward the first: in both gateway g2 runs a hypothesis
+    refuted seven turns earlier was "the identified cause", and M6 retracted the
+    conclusion on it (#2042). None when the record is empty."""
     rcc = case.root_cause_conclusion
     vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
     if vhid:
         return case.hypotheses.get(vhid)
-    if not case.hypotheses:
+    on_record = set(getattr(case.progress, "identified_cause_root_ids", None) or ())
+    on_cause = [
+        h
+        for h in case.hypotheses.values()
+        if h is not None and h.root_node_id and h.root_node_id in on_record
+    ]
+    if not on_cause:
         return None
-    return max(case.hypotheses.values(), key=lambda h: h.initial_likelihood)
+    return max(
+        on_cause,
+        key=lambda h: (h.state in _STANDING_HYP_STATES, h.initial_likelihood),
+    )
 
 
 def _hypothesis_disconfirmed(hyp: Hypothesis) -> bool:
@@ -101,10 +119,11 @@ def retract_disconfirmed_rcc(case: Case) -> bool:
     Returns True if it retracted one.
 
     Link-based ONLY — it acts solely on the RCC's explicit ``validated_hypothesis_id``
-    cause link. It deliberately does NOT infer the cause from a likelihood proxy:
-    ``_representative_cause_hypothesis``'s ``max(initial_likelihood)`` fallback would
-    refuse a valid RCC whenever an unrelated early-refuted alternative dominated
-    (a NO-COLLAPSE stall), since ``initial_likelihood`` never decays. This
+    cause link. It deliberately does NOT infer the cause from
+    ``_representative_cause_hypothesis``'s identified-root fallback: that reads the
+    cause the CHAIN identified, which a free-text conclusion may not name, and
+    refusing it on that cause's refutation would wipe a conclusion about another
+    cause (a NO-COLLAPSE breach). This
     complements the M6 retraction (``demote_disconfirmed_cause_via_evidence``,
     gated on ``cause_state=IDENTIFIED``) by covering the gap where an RCC's
     hypothesis is refuted but no chain root ever validated — so cause_state never
@@ -134,8 +153,8 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
     ``_representative_cause_hypothesis`` pick) can reach it.
 
     An LLM conclusion arrives with ``validated_hypothesis_id`` unset, so without a
-    link a disconfirmed conclusion lingers and M6's max-``initial_likelihood`` proxy
-    can wipe a re-grounded one that names a DIFFERENT live cause. Two tiers, both
+    link a disconfirmed conclusion lingers and M6's identified-root fallback can
+    wipe a re-grounded one that names a DIFFERENT live cause. Two tiers, both
     guarded by the SAME trust discipline — a STANDING hypothesis (never a refuted or
     retired one) with substantive shared-token overlap — so neither can attribute a
     conclusion to a refuted, retired, or textually-unrelated cause. That guard is
@@ -173,9 +192,9 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
         return False
     # A dangling link (points at a hypothesis no longer present) is cleared before
     # we re-resolve: left set, it would make ``_representative_cause_hypothesis``
-    # return None (the ``if vhid`` branch short-circuits the max-likelihood
+    # return None (the ``if vhid`` branch short-circuits the identified-root
     # fallback) and silently disable the M6 demotion for this case. A failed
-    # re-resolve below then correctly leaves it None (proxy fallback restored).
+    # re-resolve below then correctly leaves it None (that fallback restored).
     if current:
         rcc.validated_hypothesis_id = None
     statement = getattr(rcc, "root_cause", None) or ""

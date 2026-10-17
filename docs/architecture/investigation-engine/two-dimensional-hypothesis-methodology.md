@@ -1245,7 +1245,10 @@ Two consequences fall out of the link, not extra machinery:
   re-grounds its conclusion onto a *different* still-standing cause, the link
   points the M6 trigger at that new cause, so the demotion of the old cause
   never fires on the conclusion — the max-`initial_likelihood` proxy that used
-  to wipe it is gone.
+  to wipe it is gone. An unlinked conclusion's trigger reads a hypothesis on
+  the identified root (`is_identified_root`, #2038), a standing one first, and
+  never one refuted before that root was identified (#2042: a hypothesis
+  refuted seven turns earlier won the 0.5 tie and retracted the conclusion).
 - **The retraction is single-truth.** Because the conclusion is retracted at
   its source, every downstream reader sees one truth; no per-reader
   disconfirmation guard is needed.

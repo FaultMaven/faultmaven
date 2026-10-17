@@ -417,6 +417,17 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    identified_cause_root_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "The chain roots the last recompute identified the cause on: each "
+            "standing hypothesis's root that is VALIDATED and marked terminal "
+            "(#2038), recorded only while cause_state is IDENTIFIED. M6 reads "
+            "its representative cause off them at the next recompute, before "
+            "that turn's derive and verdicts move the graph (#2042)."
+        ),
+    )
+
     deferred_disposition_declined_signatures: List[str] = Field(
         default_factory=list,
         description=(

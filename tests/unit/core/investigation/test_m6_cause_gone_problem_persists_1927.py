@@ -547,18 +547,19 @@ def _add_proxy_candidate(case, hyp) -> Hypothesis:
     return other
 
 
-def test_the_record_never_refutes_the_proxys_unvalidated_pick():
-    """With no conclusion naming its cause, M6's representative hypothesis is
-    the highest ``initial_likelihood`` — a proxy that can point at a candidate
-    the case never validated. A failed fix disconfirms the cause the case
-    IDENTIFIED, so the record trigger demotes only a validated root."""
+def test_the_record_demotes_the_identified_cause_never_an_unvalidated_candidate():
+    """With no conclusion naming its cause, M6's representative is a hypothesis
+    on the identified root (#2042), never the strongest ``initial_likelihood``
+    overall. The old proxy picked this unvalidated candidate, so the
+    identified cause's failed fix demoted nothing."""
     case, root, hyp = _identified_case()
     other = _add_proxy_candidate(case, hyp)
     _failed_fix(case)
     _recompute_at(case, 9)
 
     assert other.state == HypothesisState.ACTIVE
-    assert _engine_rows(case) == []
+    _assert_demoted(case, root, hyp)
+    assert len(_engine_rows(case)) == 1
 
 
 def test_refuting_the_proxys_pick_never_takes_a_succeeded_fixs_cause_row():
