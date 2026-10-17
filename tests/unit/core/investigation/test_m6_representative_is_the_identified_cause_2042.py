@@ -8,10 +8,11 @@ turn 11: M6's evidence arm fired, minted "the identified cause no longer
 stands" and retracted the conclusion, while another hypothesis's root stood
 validated and identified.
 
-The representative now reads the one definition of the cause (#2038): a
-hypothesis whose root ``is_identified_root``, as the last derive left it, a
-standing one first. A cause refuted in the turn itself keeps its root
-identified until the next derive, so M6 still demotes it.
+The representative now reads the one definition of the cause (#2038) as the
+last recompute recorded it (``identified_cause_root_ids``): a hypothesis on a
+root that identification rested on, a standing one first. A cause refuted in
+the turn itself is on that record, so M6 still demotes it; a verdict this turn
+or a root whose hypothesis fell long ago does not move it.
 """
 
 import pytest
@@ -33,7 +34,9 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _assert_demoted,
     _engine_rows,
+    _failed_fix,
     _identified_case,
     _recompute_at,
 )
@@ -147,14 +150,66 @@ def test_a_standing_hypothesis_on_the_identified_root_outranks_a_refuted_one():
     assert case.root_cause_conclusion is not None
 
 
-def test_nothing_on_an_identified_root_has_no_representative():
+def test_nothing_on_the_record_has_no_representative():
     case, root, hyp = _identified_case()
     early, early_root = _refuted_earlier()
     _with_first(case, early, early_root)
-    root.node_state = NodeState.INCONCLUSIVE
+    case.progress.identified_cause_root_ids = []
     _unlinked_conclusion(case)
 
     assert _representative_cause_hypothesis(case) is None
+
+
+def test_a_same_turn_not_terminal_verdict_does_not_hide_a_failed_fix():
+    """Review finding 1: the turn's verdicts are applied before M6. The model
+    says the cause's root is not terminal in the turn its fix is seen failing;
+    the cause the last recompute identified is still the one demoted, as with
+    a linked conclusion."""
+    case, root, hyp = _identified_case()
+    _unlinked_conclusion(case)
+    case.root_cause_conclusion.root_cause = "a pool the server starves"
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    root.record_root_terminal(False, "something upstream resets the limit", 9)
+
+    assert _representative_cause_hypothesis(case) is hyp
+    _recompute_at(case, 9)
+
+    _assert_demoted(case, root, hyp)
+    assert len(_engine_rows(case)) == 1
+
+
+def test_an_orphaned_identified_root_never_stands_in_for_the_cause():
+    """Review finding 2: a second root still reads VALIDATED and terminal,
+    but its only hypothesis was refuted at turn 4, so it grounded no
+    identification. When the identified cause is refuted this turn, the 0.5
+    tie must not hand the demotion to the old hypothesis."""
+    case, root, hyp = _identified_case()
+    hyp.initial_likelihood = 0.5
+    old_root = CausalNode(
+        metadata={"root_terminal": True},
+        node_id="cn_0000000000b2",
+        statement="the checkout pod's clock runs ahead of the database",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        belief=0.9,
+        actionable=True,
+        generated_at_turn=3,
+    )
+    old, _ = _refuted_earlier(on=old_root.node_id)
+    _with_first(case, old, old_root)
+    assert old_root.is_identified_root
+    _unlinked_conclusion(case)
+    case.root_cause_conclusion.root_cause = "a pool the server starves"
+    hyp.state = HypothesisState.REFUTED
+    hyp.refutation_reason = "the pool never saturates in the captured window"
+
+    assert _representative_cause_hypothesis(case) is hyp
+    _recompute_at(case, 11)
+
+    (row,) = _engine_rows(case)
+    assert "the pool never saturates" in row.summary
+    assert "intermediate is valid until 2029" not in row.summary
 
 
 def test_a_conclusion_naming_its_hypothesis_stays_authoritative():
@@ -165,3 +220,30 @@ def test_a_conclusion_naming_its_hypothesis_stays_authoritative():
     case.root_cause_conclusion.validated_hypothesis_id = early.hypothesis_id
 
     assert _representative_cause_hypothesis(case) is early
+
+
+def test_a_root_whose_only_hypothesis_fell_grounds_no_identification():
+    """What the record is written from: a standing hypothesis's identified
+    root. A VALIDATED, terminal root whose only hypothesis was refuted is not
+    one, which is what keeps it off the record."""
+    from faultmaven.core.investigation.causal_graph.projection import (
+        identified_root_ids,
+    )
+
+    case, root, hyp = _identified_case()
+    old_root = CausalNode(
+        metadata={"root_terminal": True},
+        node_id="cn_0000000000b3",
+        statement="the checkout pod's clock runs ahead of the database",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        belief=0.9,
+        actionable=True,
+        generated_at_turn=3,
+    )
+    old, _ = _refuted_earlier(on=old_root.node_id)
+    _with_first(case, old, old_root)
+
+    assert identified_root_ids(case) == {root.node_id}
+    assert case.progress.identified_cause_root_ids == [root.node_id]

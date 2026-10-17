@@ -69,31 +69,32 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     """The hypothesis that best represents the currently-grounded cause.
 
     When the conclusion names one (``validated_hypothesis_id``) that is
-    authoritative. Otherwise it is a hypothesis on the case's identified cause
-    by the one definition (#2038): a root that ``is_identified_root`` — VALIDATED
-    and marked terminal — read as the last derive left it. A standing one first
-    (the cause stands while its standing hypothesis does), else the strongest
-    by ``initial_likelihood``: a believed cause refuted THIS turn is no longer
-    standing, but its root is still the identified one until the next derive,
-    so it is picked and M6 demotes it.
+    authoritative. Otherwise it is a hypothesis on a root the LAST recompute
+    identified the cause on (``InvestigationProgress.identified_cause_root_ids``:
+    a standing hypothesis's validated root marked terminal, #2038) — the same
+    recompute whose ``cause_state=IDENTIFIED`` gates M6. Read off that record,
+    not the live graph: this turn's verdicts are applied before M6 runs (a
+    ``root_is_terminal: false`` on the cause's own hypothesis would hide a cause
+    whose fix just failed), and a root whose only hypothesis was refuted long ago
+    can still read VALIDATED and terminal. A standing one first (the cause stands
+    while its standing hypothesis does), else the strongest by
+    ``initial_likelihood``: a believed cause refuted THIS turn is no longer
+    standing, but its root is on the record, so it is picked and M6 demotes it.
 
-    Never a hypothesis whose root is not the identified cause. The proxy this
-    replaces ranked every hypothesis by ``initial_likelihood``, refuted ones
-    included, and broke the 0.5 default tie toward the first: in both
-    gateway g2 runs a hypothesis refuted seven turns earlier was "the
-    identified cause", and M6 retracted the conclusion on it (#2042). None when
-    no hypothesis is on an identified root."""
+    Never a hypothesis off that record. The proxy this replaces ranked every
+    hypothesis by ``initial_likelihood``, refuted ones included, and broke the
+    0.5 default tie toward the first: in both gateway g2 runs a hypothesis
+    refuted seven turns earlier was "the identified cause", and M6 retracted the
+    conclusion on it (#2042). None when the record is empty."""
     rcc = case.root_cause_conclusion
     vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
     if vhid:
         return case.hypotheses.get(vhid)
-    nodes = case.causal_nodes or {}
+    on_record = set(getattr(case.progress, "identified_cause_root_ids", None) or ())
     on_cause = [
         h
         for h in case.hypotheses.values()
-        if h is not None
-        and (root := nodes.get(h.root_node_id or "")) is not None
-        and root.is_identified_root
+        if h is not None and h.root_node_id and h.root_node_id in on_record
     ]
     if not on_cause:
         return None
