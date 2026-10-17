@@ -275,9 +275,40 @@ def test_after_a_relapse_the_notice_keeps_the_fix_under_the_cause():
         feedback
     )
     assert "does not disprove the cause it addressed" in feedback
-    assert "under that cause's hypothesis rather than a new one" in feedback
-    assert "new hypothesis" not in feedback
+    assert "no new hypothesis is needed" in feedback
+    assert "root_cause_conclusion on a new hypothesis" not in feedback
     assert "SolutionToAdd" in feedback and "solution_accepted" in feedback
+
+
+def test_after_a_relapse_of_a_cause_that_already_fell_the_notice_asks_to_re_assert():
+    """Review finding: M6 demoted the cause on the first fix; a second fix of
+    the same cause then relapses. Nothing licenses a SolutionToAdd now, so
+    the notice asks for the re-assertion, not for a fix under a hypothesis
+    that no longer stands."""
+    case, root, hyp = _identified_case()
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    _recompute_at(case, 9)
+    _assert_demoted(case, root, hyp)
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    case.evidence += [
+        _row(
+            "second_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            13,
+            "max_connections now reads 100 after the second change",
+        ),
+        _problem_gone(13, label="second_relief"),
+        _still_failing(15, label="back_at_15"),
+    ]
+    _recompute_at(case, 15)
+    window = fix_windows(case)[-1]
+    assert (window.state, window.disconfirmation) == (FIX_FAILED, None)
+
+    feedback = _notice(case, 16)
+
+    assert "the problem was seen gone at turn 13, then seen again" in feedback
+    assert "root_cause_conclusion on a new hypothesis" in feedback
+    assert "no new hypothesis is needed" not in feedback
 
 
 def test_after_a_persistence_the_notice_asks_to_re_assert_the_cause():
@@ -290,6 +321,7 @@ def test_after_a_persistence_the_notice_asks_to_re_assert_the_cause():
     assert "the cause was shown removed, then the problem was seen again" in feedback
     assert "root_cause_conclusion on a new hypothesis" in feedback
     assert "does not disprove" not in feedback
+    assert "no new hypothesis is needed" not in feedback
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +335,10 @@ def test_treatment_keeps_symptom_evidence_for_the_reported_signature():
     assert "New symptoms that emerge after a failed fix" not in text
     assert "ONLY the reported problem's own signature" in text
     assert "do not record it as symptom_evidence" in text
+    # Review finding: "Revisit the Diagnosis" still asks for the
+    # symptom_evidence a mis-stated problem's revision cites.
+    assert "the symptom_evidence a revised_problem_statement cites" in text
+    assert "with the symptom_evidence that shows it" in text
 
 
 def test_treatment_says_a_relapse_disproves_nothing():

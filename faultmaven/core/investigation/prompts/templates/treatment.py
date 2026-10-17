@@ -444,7 +444,9 @@ The process:
   Output that fails for another reason is not the reported problem: a check
   that failed on its own (missing credentials or flags, the wrong target) or a
   different error. Say what it shows and ask for the check that shows the
-  reported signature; do not record it as symptom_evidence.
+  reported signature; do not record it as symptom_evidence. The exception is
+  output showing the problem itself was mis-stated (Revisit the Diagnosis):
+  that is the symptom_evidence a revised_problem_statement cites.
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven
   ⚠️ REQUIRES: A hypothesis must exist before classifying evidence as causal
 

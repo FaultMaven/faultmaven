@@ -939,8 +939,9 @@ def fix_windows(case: "Case") -> list[FixWindow]:
             persist_turns = {turn for turn in after_fix if turn >= removal}
         # The counterfactual disconfirmation (INV-42): the cause observed
         # removed at r, the problem observed present at p >= r, and no
-        # problem-gone row in [r, p] — one in r's or p's turn reads as gone, as
-        # below. The earliest such pair; window 0 has none (no persistence).
+        # problem-gone row of this window in [r, p] — one in r's or p's turn
+        # reads as gone, as below; one in the next fix's turn belongs to that
+        # window. The earliest such pair; window 0 has none (no persistence).
         cause_turns = sorted(
             {getattr(row, "collected_at_turn", 0) or 0 for row in cause_rows}
         )
