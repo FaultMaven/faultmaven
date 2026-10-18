@@ -50,9 +50,10 @@ boundary in both directions, and the analysis reported its file clean:
 
 * **Down, into a factory.** ``api/exception_handlers.py``'s ``_llm_http``
   builds the ``HTTPException`` from its ``detail`` parameter, so no caller ever
-  spells ``HTTPException`` at all. A same-module function whose own
-  ``HTTPException(...)`` — returned, raised or assigned — carries one of its
-  parameters onto the wire is a factory, and a call to it is read as the
+  spells ``HTTPException`` at all. A same-module function — a ``def``, or a
+  ``lambda`` bound to a name — whose own ``HTTPException(...)`` — returned,
+  raised or assigned — carries one of its parameters onto the wire is a
+  factory, and a call to it is read as the
   construction it performs — see ``_http_exception_factories``. That includes
   a *raising* helper called as a statement (``_fail(str(e))``), the house
   idiom for a 404 helper.
@@ -136,8 +137,11 @@ one:
   over it would be an allowlist and nothing else;
 * the reaching rule's own limit: line order stands in for reachability, and
   only an exact rebinding kills. There is no control-flow graph. A value
-  carried round a loop to a line *above* the one that binds it is not seen.
-  In the other direction, a rebinding inside a nested block, a conditional
+  carried round a loop to a line *above* the one that binds it is not seen,
+  and a binding is taken to run whenever its statement does: a ``for``
+  target, or a walrus behind ``and``/``or``, cuts off what came before
+  although the loop may not run or the operand may not be evaluated. In the
+  other direction, a rebinding inside a nested block, a conditional
   one, or a write into an object leaves the earlier definition reaching, and
   a closure sees every tainted definition of a name it reads wherever it is
   called from — reported, not missed. Measured when this replaced the five
@@ -447,11 +451,14 @@ def _carries_exception(
     assigns: dict[str, list[ast.AST]],
     _depth: int = 0,
 ) -> bool:
-    """Does ``expr`` carry the exception named ``exc_name``, directly or via a
+    """Does ``expr`` carry the parameter named ``exc_name``, directly or via a
     local alias?
 
-    ``exc_name`` is a handler's ``as`` name or an exception parameter; the
-    question is the same either way.
+    The factory view's question (``_factory_of``): CAN this parameter reach
+    the ``HTTPException`` the function builds. Flat and order-blind over
+    ``_local_assignments``, which is right for "can"; where the order of
+    bindings decides what reaches a sink, the taint analysis (``_ScopeTaint``)
+    answers instead.
     """
     if _mentions(expr, exc_name):
         return True
@@ -829,11 +836,11 @@ def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
     A factory is a function whose own ``HTTPException(...)`` — returned,
     raised or assigned, wherever in the function it is built — carries one of
     its parameters into ``detail`` or ``headers``, directly or through a local
-    alias, by the same ``_carries_exception`` that follows a handler's ``as``
-    name. ``api/exception_handlers.py``'s ``_llm_http(status_code, error_code,
-    detail, ...)`` is the shape: its callers never spell ``HTTPException``, so
-    without this a ``raise _llm_http(500, ..., str(e), ...)`` was invisible to
-    every pass. #1634's leak went through it.
+    alias (``_carries_exception``). ``api/exception_handlers.py``'s
+    ``_llm_http(status_code, error_code, detail, ...)`` is the shape: its
+    callers never spell ``HTTPException``, so without this a ``raise
+    _llm_http(500, ..., str(e), ...)`` was invisible to the analysis. #1634's
+    leak went through it.
 
     So is a *raising* helper — ``def _fail(msg): raise HTTPException(404,
     detail=msg)``, called as a statement. #1634's review counted six live on
@@ -864,9 +871,11 @@ def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
     ``mk = lambda m: HTTPException(500, detail=m)`` is ``def mk(m)`` spelled
     on one line, and ``raise mk(str(e))`` was invisible while only a ``def``
     could be one. It is keyed by the name it is bound to, and it is a method
-    when that binding sits directly in a class body. A lambda reached any other
-    way — a default argument, a dispatch-dict value — has no name a call could
-    use, which is the dispatch-dict stated limit.
+    when that binding sits directly in a class body. Its body can rebind a
+    parameter only with a walrus (``lambda s: HTTPException((s := 500), ...)``
+    is valid Python), which ``_rebound_names`` reads as it does for a ``def``.
+    A lambda reached any other way — a default argument, a dispatch-dict value
+    — has no name a call could use, which is the dispatch-dict stated limit.
     """
     factories: dict[str, list[_Factory]] = {}
     in_class_body = {
@@ -1135,8 +1144,9 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
     Scoping the walk to the handler missed every site of that shape —
     ``main.py`` had six, all of which CodeQL's ``py/stack-trace-exposure``
     flagged while this analysis reported the file clean — and following one
-    alias out of the handler missed the next hop: ``storage_errors.append(
-    str(e))`` reaching the response through ``debug_info`` was two (#1858).
+    alias out of the handler missed every later hop: ``storage_errors.append(
+    f"...{str(e)}")`` reaching the returned response through ``debug_info``
+    was found twice package-wide only once the chain was followed (#1858).
     A handler returning ``traceback.format_exc()`` is covered the same way
     (#1400), whether or not it binds a name: logging ``e`` and returning the
     formatted stack leaks it all the same.
