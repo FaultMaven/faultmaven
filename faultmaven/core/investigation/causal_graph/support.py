@@ -207,10 +207,11 @@ BLOCK_REASON_MIRROR = "mirror_collapse"  # enough rows, mutual restatements
 BLOCK_REASON_HEDGED = "hedged_only"  # causal links exist, all self-hedged
 # Not a grounding-bar reason and NEVER produced by ``root_support_block_reasons``
 # (whose population is the causal-grounding bar alone): the §7.1 RESTATEMENT
-# guard's own label, produced by ``restatement_held_root_ids`` and overlaid by
-# the context annotation so a restatement hold renders its recovery action
-# instead of a bare ``[root/inconclusive]`` line. Kept beside its siblings
-# because they share ONE consumer and one recovery-note map.
+# guard's own label, produced by ``restatement_held_root_ids`` and chosen by
+# the context annotation's precedence (``_root_recovery_reasons``) so a
+# restatement hold renders its recovery action instead of a bare
+# ``[root/inconclusive]`` line. Kept beside its siblings because they share
+# ONE consumer and one recovery-note map.
 BLOCK_REASON_RESTATEMENT = "restates_frame"  # would validate but for the guard
 
 # The reasons that make a root COUNT-HELD: really causally grounded and
