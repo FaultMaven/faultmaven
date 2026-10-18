@@ -75,7 +75,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
@@ -90,6 +90,17 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 #: a column CHECK constraint names the same two strings.
 _JTI_SCOPE = "jti"
 _USER_SCOPE = "user"
+
+
+def escape_glob(text: str) -> str:
+    """Escape Redis glob metacharacters so ``text`` matches only itself.
+
+    The backslash goes first, or the escapes added for the other four would be
+    escaped again.
+    """
+    for char in ("\\", "*", "?", "[", "]"):
+        text = text.replace(char, "\\" + char)
+    return text
 
 
 def _watermark_seconds(raw, *, field: str = "watermark") -> int:
@@ -218,6 +229,19 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
 
     async def cleanup_expired(self) -> int:
         return 0  # Redis handles expiration automatically
+
+    async def count_user_watermarks(self) -> int:
+        """Count the live ``user:`` keys with SCAN (never ``KEYS``, which blocks).
+
+        The prefix is configurable, so it is glob-escaped. SCAN may return a key
+        more than once, so the keys are collected into a set before counting.
+        The ``jti:`` namespace sits beside ``user:`` and never matches it.
+        """
+        pattern = escape_glob(self._user_key_prefix) + "*"
+        keys = set()
+        async for key in self.redis.scan_iter(match=pattern, count=1000):
+            keys.add(key)
+        return len(keys)
 
 
 class SqlTokenRevocationStore(ITokenRevocationStore):
@@ -439,6 +463,19 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             if token_revoked:
                 return True, False
             return False, user_revoked
+
+    async def count_user_watermarks(self) -> int:
+        """Live per-user rows: ``scope='user'`` and not yet elapsed. No sweep."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(TokenRevocationModel)
+                .where(
+                    TokenRevocationModel.scope == _USER_SCOPE,
+                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
+                )
+            )
+            return int(result.scalar_one())
 
     async def clear_user_revocation_if_before(
         self, user_id: str, instant: float

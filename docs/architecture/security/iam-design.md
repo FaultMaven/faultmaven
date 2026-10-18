@@ -439,6 +439,15 @@ shapes the response.
   account-wide revocation. There the reach of a revocation is bounded by the
   ceiling, not by the account's next login.
 
+**The watermark keyspace is measured.** The gauge
+`faultmaven_auth_revocation_watermarks` reports how many per-user watermarks can
+still revoke something: on the Redis store the `user:` keys (counted with `SCAN`,
+never `KEYS`, under the glob-escaped configured prefix), on the SQL store the
+`scope='user'` rows whose `expires_at` has not passed. It is refreshed every
+300 seconds by a background task, off the request path and off the scrape path,
+and no revocation decision reads it. The store is deployment-wide, so every API
+replica reports the same value: aggregate it with `max()`, not `sum()`.
+
 **A fresh authentication supersedes a watermark that predates it.** The
 watermark means "everything issued before instant T is stale", and an
 authentication whose state reads all began after T is not. `POST /auth/login`

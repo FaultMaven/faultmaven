@@ -787,6 +787,9 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     async def cleanup_expired(self) -> int:
         return 0
 
+    async def count_user_watermarks(self) -> int:
+        return len(self.user_watermarks)
+
 
 async def asgi_request(app, method: str, path: str, **kwargs):
     """Issue one request against an ASGI app over httpx's in-process transport.

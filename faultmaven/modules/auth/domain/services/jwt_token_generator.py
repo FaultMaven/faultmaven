@@ -2457,6 +2457,20 @@ class ITokenRevocationStore(ABC):
         """
         ...
 
+    @abstractmethod
+    async def count_user_watermarks(self) -> int:
+        """Number of per-user watermarks that can still revoke something.
+
+        Per-jti entries are not counted, and neither is a watermark whose TTL
+        has elapsed. A measurement for the revocation-watermark gauge: no
+        revocation decision reads it. It is deployment-wide, so every replica
+        reading the same store reports the same value.
+
+        Returns:
+            Count of live per-user watermarks
+        """
+        ...
+
 
 class SequentialRevocationState:
     """``revocation_state`` for a store whose reads are free.
