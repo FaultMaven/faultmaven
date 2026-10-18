@@ -77,8 +77,11 @@ Each is reported at the line of the call. So is a ``detail`` or ``headers``
 written onto an ``HTTPException`` after it exists (``err.detail = str(e)``),
 at the line of the write: one built here or by the function a closure sits
 in, or one caught (``except HTTPException as he``) or taken as a parameter.
-What the exception already holds is not a source for a write onto itself —
-``he.headers = he.headers or {}`` adds nothing to the wire.
+An ``HTTPException`` received that way, and as nothing else, is no source of
+text: its ``detail`` and ``headers`` were written FOR the caller, so writing
+them back — ``he.headers = he.headers or {}``, then a correlation id, which
+the live ``modules/case/api/routes/cases.py`` does — adds nothing to the
+wire.
 
 **How the text travels: one taint analysis per scope.** Until #1858 this was
 five passes — inside a handler, after it, under a handler binding nothing,
@@ -93,17 +96,27 @@ handler and ``message = f"...{err}"`` after it was two hops, so the raise of
 * the sources are an ``except ... as e`` name inside its handler, an exception
   parameter (for the ``HTTPException`` sinks only — see the stated limits), a
   rendering of the live exception inside a handler, and, in a closure, a
-  tainted name it reads from the scope that defines it or a parameter default
-  that scope evaluates (``def fail(m=msg)``);
+  tainted name it reads from the function that defines it or a parameter
+  default that function evaluates (``def fail(m=msg)``). Not an ``as`` name
+  of the MODULE, which Python deletes when its handler ends, and not an
+  ``HTTPException`` caught or passed in as nothing else;
 * a definition is tainted when its value carries a source, or a name with a
   tainted definition reaching it — through any number of hops. Reaching is by
   position, so a binding earlier on the same line counts
-  (``msg = str(e); raise ...``);
+  (``msg = str(e); raise ...``), but an assignment is not seen inside its own
+  statement, whose value runs first;
 * a binding that rebinds exactly that name on every path to a read stops the
   earlier definitions reaching it, and the definitions of every dotted name
-  rooted at it (``state = make()`` ends ``state.error``). A write *into* an
-  object never kills, a logging call (``logger.warning(f"{e}")``) is not a
-  write at all, and nothing is a definition of ``self`` or ``cls``.
+  rooted at it (``state = make()`` ends ``state.error``) unless it is built
+  from that object. One that binds only in a place — an ``as`` name in its
+  handler, a comprehension target in its comprehension, a ``match`` capture
+  in its ``case``, a ``for`` or ``with`` target in the body it heads — stops
+  them only there. A write *into* an object never kills. A logging call on a
+  logger (``logger.warning(f"{e}")``) is no write at all, nor is a call on an
+  imported module (``sys.stderr.write(...)``), and a call through a
+  parameter's attribute (``request.state.errors.append(...)``) writes into
+  the attribute, not the parameter. Nothing is a definition of ``self`` or
+  ``cls``.
 
 **Stated limits.** These shapes are outside this analysis on purpose, written
 down so the next widening starts from a measurement rather than re-deriving
@@ -149,20 +162,26 @@ one:
   only an exact rebinding kills. There is no control-flow graph. In the
   direction that misses: a value carried round a loop to a line *above* the
   one that binds it (``if last_error: raise ...`` heading a retry loop), and
-  a ``with`` target, taken to bind whenever its statement runs although an
-  earlier item may suppress the exception that skips it (``with
-  suppress(OSError), open(p) as msg``). In the direction that reports: a
-  rebinding inside a nested block, a conditional one or one in a
-  ``finally``, and a write into an object, leave the earlier definition
-  reaching; a dotted name is matched by its spelling, so ``self.last_error
-  is not None`` carries it although a ``Compare`` cannot; and a closure sees
-  every tainted definition of a name it reads, wherever it is called from.
-  Taint flows INTO a nested scope only: what a closure returns
-  (``detail=render()``), writes into an enclosing object, or binds through
-  ``nonlocal`` is not followed back out. Measured when this replaced the
-  five passes (#1858, with its review's revision): zero findings gained or
-  lost on the surface, and over the whole package three genuine returns
-  gained and two false positives lost;
+  likewise a closure's default read on a later turn (``def fail(m=msg)``
+  defined in a loop before the handler that binds ``msg``); a root swapped
+  through an alias (``self.state, other = other, self.state``, then
+  ``other.error``); and, inside a closure, a ``status_code`` the enclosing
+  function overwrote, so a write onto that exception is gated by the status
+  it was built with. In the direction that reports: a rebinding inside a
+  nested block, a conditional one or one in a ``finally``, and a write into
+  an object, leave the earlier definition reaching; a dotted name is matched
+  by its spelling, so ``self.last_error is not None`` carries it although a
+  ``Compare`` cannot; and a closure sees every tainted definition of a name
+  it reads, wherever it is called from. Taint flows INTO a nested scope only:
+  what a closure returns (``detail=render()``), writes into an enclosing
+  object, or binds through ``nonlocal`` is not followed back out. Zero live
+  sites for each shape #1858's second review recorded here. Measured when
+  this replaced the five passes (#1858, with its review's two revisions):
+  zero findings gained or lost on the surface, and over the whole package
+  three genuine returns gained and two false positives lost;
+* a caught ``HTTPException``'s ``__cause__`` and ``args``: as no source of
+  text, ``he.detail = f"{he.__cause__}"`` and ``he.detail = str(he.args)``
+  are not reported. ``main`` misses both as well;
 * the shapes #1858's review declined (2026-10-18), each with zero live
   sites by its defeat pass's scans of ``faultmaven/``, the
   response-producing surface included. Writes not followed: through an
@@ -394,12 +413,14 @@ def _bindings(node: ast.AST) -> Iterator[tuple[str, ast.AST, bool]]:
     ``resp["more"] = "static"`` kill the ``resp`` a handler had filled, and
     lost six true findings package-wide. Nor is a comprehension target, which
     binds in the comprehension's own scope and leaves the outer name as it
-    was, or a ``match`` capture, which binds only when its case matches.
+    was, or a ``match`` capture, which binds only when its case matches: each
+    replaces the name only in that place (``_ScopeTaint._kills_before``).
     """
-    if isinstance(node, ast.Assign):
-        for target in node.targets:
-            yield from _target_bindings(target, node.value, exact=True)
-    elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            yield from _target_bindings(target, node.value, exact=True, pair=True)
+    elif isinstance(node, ast.NamedExpr):
         yield from _target_bindings(node.target, node.value, exact=True)
     elif isinstance(node, ast.AugAssign):
         yield from _target_bindings(node.target, node.value, exact=False)
@@ -421,13 +442,8 @@ def _bindings(node: ast.AST) -> Iterator[tuple[str, ast.AST, bool]]:
                 )
     elif isinstance(node, ast.Match):
         for case in node.cases:
-            for pattern in ast.walk(case.pattern):
-                if isinstance(pattern, (ast.MatchAs, ast.MatchStar)):
-                    captured = pattern.name
-                else:
-                    captured = getattr(pattern, "rest", None)  # `{**rest}`
-                if captured:
-                    yield captured, node.subject, False
+            for captured in _captures(case.pattern):
+                yield captured, node.subject, False
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         # A container MUTATED by method call is bound just as effectively
         # as one assigned into: `out.append({"error": str(e)})` and
@@ -436,11 +452,12 @@ def _bindings(node: ast.AST) -> Iterator[tuple[str, ast.AST, bool]]:
         # and both reported clean. Any method is accepted rather than a
         # list of append/update/extend/setdefault -- the receiver is what
         # gets returned either way, and guessing which names mutate is how
-        # the next spelling slips through. The one denylist is the logging
-        # methods (`_LOGGING_METHODS`). Like an attribute write, the
-        # mutation also lands in the object the receiver hangs off:
-        # `resp.headers.update({"x": str(e)})` puts the text in `resp`.
-        if node.func.attr in _LOGGING_METHODS:
+        # the next spelling slips through. The one exception is a logging
+        # method called on a logger (`_LOGGING_METHODS`, `_is_logger`). Like
+        # an attribute write, the mutation also lands in the object the
+        # receiver hangs off: `resp.headers.update({"x": str(e)})` puts the
+        # text in `resp`.
+        if node.func.attr in _LOGGING_METHODS and _is_logger(node.func.value):
             return
         receiver = _written_name(node.func.value)
         root = _object_root(node.func.value)
@@ -452,10 +469,10 @@ def _bindings(node: ast.AST) -> Iterator[tuple[str, ast.AST, bool]]:
 
 
 #: Methods that hand their arguments to a log record rather than store them in
-#: the receiver. Read as writes, ``logger.warning(f"missing {e}")`` in a
-#: module-level import guard tainted ``logger``, and every function reading
-#: ``logger.name`` or ``logger.level`` after it reported a leak (#1858's
-#: review). Matched on the method name, whatever the receiver.
+#: the receiver — when the receiver is a logger (``_is_logger``). Read as
+#: writes, ``logger.warning(f"missing {e}")`` in a module-level import guard
+#: tainted ``logger``, and every function reading ``logger.name`` or
+#: ``logger.level`` after it reported a leak (#1858's review).
 _LOGGING_METHODS = frozenset(
     {
         "debug",
@@ -470,32 +487,73 @@ _LOGGING_METHODS = frozenset(
     }
 )
 
+#: A logger's spelling: ``logger``, ``log``, ``self._log``, ``LOGGER``,
+#: ``audit_logger``. Matched on the receiver's terminal name.
+_LOGGER_NAME = re.compile(r"(^|_)log(ger)?$", re.IGNORECASE)
+
+
+def _is_logger(receiver: ast.AST) -> bool:
+    """Is ``receiver`` a logger, whose logging methods store nothing in it?
+
+    Spelled like one (``_LOGGER_NAME``), or a ``getLogger(...)`` /
+    ``get_logger(...)`` call. Matching the method name alone stopped
+    following an accumulator: ``report.error(f"failed: {e}")`` and
+    ``validation.log("check", str(e))`` put the text in an object that is
+    then returned, and #1858's review measured each of them missed.
+    """
+    if isinstance(receiver, ast.Call):
+        return _terminal_name(receiver.func) in {"getLogger", "get_logger"}
+    name = _terminal_name(receiver)
+    return bool(name and _LOGGER_NAME.search(name))
+
+
+def _captures(pattern: ast.AST) -> list[str]:
+    """Every name a ``match`` pattern captures: ``x``, ``[*x]``, ``{**x}``."""
+    names = []
+    for node in ast.walk(pattern):
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            captured = node.name
+        else:
+            captured = getattr(node, "rest", None)  # `{**rest}`
+        if captured:
+            names.append(captured)
+    return names
+
 
 def _target_bindings(
-    target: ast.AST, value: ast.AST | None, exact: bool
+    target: ast.AST, value: ast.AST | None, exact: bool, pair: bool = False
 ) -> Iterator[tuple[str, ast.AST, bool]]:
-    """The bindings one assignment target makes from ``value`` (``_bindings``)."""
+    """The bindings one assignment target makes from ``value`` (``_bindings``).
+
+    ``pair`` is for an assignment, whose literal tuple value lines up with its
+    target element by element. A ``for`` or comprehension target unpacks each
+    ITEM of what it iterates, not the item at its own position: ``for label,
+    msg in (("db", str(e)), ("cache", "ok"))`` binds ``msg`` to ``str(e)`` on
+    the first turn, and pairing it with the second item read it as ``"ok"``
+    — a miss #1858's review measured, on a shape with five live sites.
+    """
     if value is None:
         return
     if isinstance(target, ast.Starred):
         # `first, *rest = str(e).split()`: `rest` holds the text as surely
         # as `first` does. A starred target used to bind nothing.
-        yield from _target_bindings(target.value, value, exact)
+        yield from _target_bindings(target.value, value, exact, pair)
         return
     if isinstance(target, (ast.Tuple, ast.List)):
         # `msg, code = str(e), 500` binds each element. Without this the
         # whole statement was skipped and `msg` looked clean. Paired element
-        # to element when the value is a literal tuple of the same length
-        # with nothing starred, so `code` is bound to `500` alone; otherwise
-        # every element is bound to the whole value.
+        # to element when assigning a literal tuple of the same length with
+        # nothing starred, so `code` is bound to `500` alone; otherwise every
+        # element is bound to the whole value.
         paired = (
-            isinstance(value, (ast.Tuple, ast.List))
+            pair
+            and isinstance(value, (ast.Tuple, ast.List))
             and len(value.elts) == len(target.elts)
             and not any(isinstance(n, ast.Starred) for n in [*target.elts, *value.elts])
         )
         for index, element in enumerate(target.elts):
             part = value.elts[index] if paired else value
-            yield from _target_bindings(element, part, exact)
+            yield from _target_bindings(element, part, exact, paired)
         return
     name = _written_name(target)
     if name:
@@ -1194,8 +1252,8 @@ def http_exception_leak_sites(path: pathlib.Path) -> list[str]:
     lines: set[int] = set()
     for scope in _scope_taints(tree, parameters=True, factories=factories):
         for node in scope.nodes:
-            for statuses, carried, receiver in _wire_writes(node, scope, factories):
-                broad = scope.carried(carried, at=node, exclude=receiver)
+            for statuses, carried in _wire_writes(node, scope, factories):
+                broad = scope.carried(carried, at=node)
                 if broad is not None and _gated(statuses, broad):
                     lines.add(node.lineno)
     return [f"{path.name}:{line}" for line in sorted(lines)]
@@ -1260,36 +1318,36 @@ _WIRE_ATTRIBUTES = frozenset({"detail", "headers"})
 
 def _wire_writes(
     node: ast.AST, scope: _ScopeTaint, factories: dict[str, list[_Factory]]
-) -> Iterator[tuple[tuple[ast.AST | None, ...], ast.AST, str | None]]:
-    """``(statuses, value, receiver)`` for what ``node`` puts into an ``HTTPException``.
+) -> Iterator[tuple[tuple[ast.AST | None, ...], ast.AST]]:
+    """``(statuses, value)`` for what ``node`` puts into an ``HTTPException``.
 
     A construction the factory view recognises, with what it carries
-    (``_http_exception_view``), and no receiver. And a ``detail`` or
-    ``headers`` written onto one that already exists — ``err.detail =
-    str(e)``, ``self.err.headers = {...}``, ``err.headers["x"] = ...``,
-    ``err.headers.update(...)`` — when a definition of the receiver reaching
-    the write holds an ``HTTPException`` (``_http_exception_statuses``): built
-    here, built by the function a closure sits in, caught, or taken as a
-    parameter. Building the exception with a static detail and filling it in
-    later is the same leak as building it with the text, and #1634's second
-    defeat pass measured it missed (#1858).
+    (``_http_exception_view``). And a ``detail`` or ``headers`` written onto
+    one that already exists — ``err.detail = str(e)``, ``self.err.headers =
+    {...}``, ``err.headers["x"] = ...``, ``err.headers.update(...)`` — when a
+    definition of the receiver reaching the write holds an ``HTTPException``
+    (``_http_exception_statuses``): built here, built by the function a
+    closure sits in, caught, or taken as a parameter. Building the exception
+    with a static detail and filling it in later is the same leak as building
+    it with the text, and #1634's second defeat pass measured it missed
+    (#1858).
 
-    The gate is that exception's statuses — unless a definition of
-    ``<receiver>.status_code`` reaches the write. What was built as a 400 may
-    be a 500 by then, so the status is unknown, which fails closed.
+    The gate is that exception's statuses — or, when a definition of
+    ``<receiver>.status_code`` reaches the write, the statuses written there:
+    what was built as a 500 and set to ``422`` is a 422 (#1858's review
+    measured an unknown there flagging typed text at 422), and an expression
+    nobody can read still fails closed in ``_status_is_5xx``.
 
-    The receiver comes back so that the caller leaves it out of the write's
-    own sources (``_ScopeTaint.carried``): ``he.headers = he.headers or {}``
-    writes back what a caught ``he`` already held, and is what the live
-    ``modules/case/api/routes/cases.py`` does before setting a correlation id.
-    Read as the caught exception carrying itself onto the wire, that line was
-    a finding on the surface.
+    What a caught or passed-in ``HTTPException`` already holds is not a source
+    (``_ScopeTaint``), so writing it back — ``he.headers = he.headers or {}``,
+    which the live ``modules/case/api/routes/cases.py`` does before setting a
+    correlation id — adds nothing to the wire.
     """
     view = _http_exception_view(node, factories)
     if view is not None:
         statuses, carried = view
         if carried is not None:
-            yield statuses, carried, None
+            yield statuses, carried
         return
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -1307,13 +1365,16 @@ def _wire_writes(
         receiver = _dotted_name(target.value)
         if receiver is None:
             continue
-        overwritten = bool(scope.reaching(f"{receiver}.status_code", node))
+        overwritten = tuple(
+            scope.definitions[index].value
+            for index in scope.reaching(f"{receiver}.status_code", node)
+        )
         for index in scope.reaching(receiver, node):
             statuses = _http_exception_statuses(scope.definitions[index], factories)
             if statuses is None:
                 continue
             for value in values:
-                yield ((None,) if overwritten else statuses), value, receiver
+                yield overwritten or statuses, value
 
 
 def _http_exception_statuses(
@@ -1327,20 +1388,41 @@ def _http_exception_statuses(
     nobody here can read: unknown, which fails closed. Matched on the class's
     terminal name, as ``_is_http_exception`` matches a construction.
     """
-    binder = definition.binder
-    if isinstance(binder, ast.ExceptHandler):
-        caught = (
-            binder.type.elts if isinstance(binder.type, ast.Tuple) else [binder.type]
-        )
-        received = any(_terminal_name(c) == "HTTPException" for c in caught if c)
-    elif isinstance(binder, ast.arg):
-        received = "HTTPException" in _annotation_classes(binder.annotation)
-    else:
-        received = False
-    if received:
+    if "HTTPException" in _received_classes(definition.binder):
         return (None,)
     view = _http_exception_view(definition.value, factories)
     return None if view is None else view[0]
+
+
+def _received_classes(binder: ast.AST) -> set[str]:
+    """The classes a caught or passed-in exception can be, by terminal name.
+
+    An ``except`` clause's types, a tuple's members included, or a parameter
+    annotation's classes (``_annotation_classes``); empty for any other
+    binder.
+    """
+    if isinstance(binder, ast.ExceptHandler) and binder.type is not None:
+        types = (
+            binder.type.elts if isinstance(binder.type, ast.Tuple) else [binder.type]
+        )
+        return {name for name in map(_terminal_name, types) if name}
+    if isinstance(binder, ast.arg):
+        return set(_annotation_classes(binder.annotation))
+    return set()
+
+
+def _caller_facing(binder: ast.AST) -> bool:
+    """Is the exception ``binder`` receives an ``HTTPException`` and nothing else?
+
+    Its ``detail`` and ``headers`` were written FOR the caller — that is what
+    an ``HTTPException`` is — so it is not a source of text (``_ScopeTaint``),
+    though it stays a receiver ``_wire_writes`` follows. Reading it as a
+    source made its own fields a leak the moment they were written back:
+    ``detail = he.detail`` and then ``he.detail = {"message": detail, ...}``
+    (#1858's review). A tuple catching anything else as well stays a source,
+    because the name may hold that other exception.
+    """
+    return _received_classes(binder) == {"HTTPException"}
 
 
 class _Definition(NamedTuple):
@@ -1420,10 +1502,12 @@ class _ScopeTaint:
         scope: ast.AST,
         parents: dict[int, ast.AST],
         sources: list[_Definition],
+        imported: frozenset[str],
     ) -> None:
         self.scope = scope
         self.nodes = list(_own_nodes(scope))
         self._parents = parents
+        self._imported = imported
         self.definitions = [*sources, *self._bound_here()]
         self._by_name: dict[str, list[int]] = {}
         for index, definition in enumerate(self.definitions):
@@ -1433,7 +1517,14 @@ class _ScopeTaint:
         self.taint = self._fixed_point()
 
     def _bound_here(self) -> Iterator[_Definition]:
-        """The ``except ... as`` names and the bindings this scope's nodes make."""
+        """The ``except ... as`` names and the bindings this scope's nodes make.
+
+        An ``as`` name catching only ``HTTPException`` is defined but is no
+        source (``_caller_facing``).
+        """
+        bound = {
+            name for node in self.nodes for name, _, exact in _bindings(node) if exact
+        }
         for node in self.nodes:
             if isinstance(node, ast.ExceptHandler) and node.name:
                 yield _Definition(
@@ -1442,11 +1533,15 @@ class _ScopeTaint:
                     node,
                     node,
                     _position(node),
-                    _is_broad_handler_type(node.type),
+                    (
+                        None
+                        if _caller_facing(node)
+                        else _is_broad_handler_type(node.type)
+                    ),
                     True,
                 )
             for name, value, exact in _bindings(node):
-                if name in {"self", "cls"}:
+                if name in {"self", "cls"} or self._not_written(node, name, bound):
                     continue
                 if isinstance(node, ast.comprehension):
                     # Bound in the comprehension, and seen only inside it.
@@ -1456,6 +1551,30 @@ class _ScopeTaint:
                 yield _Definition(
                     name, value, node, statement, _position(statement), None, exact
                 )
+
+    def _not_written(self, node: ast.AST, name: str, bound: set[str]) -> bool:
+        """Is ``name`` one that the method call ``node`` cannot have written into?
+
+        ``_bindings`` reads a method call as a write into its receiver and into
+        the object the receiver hangs off. Two of those are no write a return
+        can carry:
+
+        * an imported module, unless this scope binds the name itself —
+          ``warnings.warn(f"{e}")``, ``sys.stderr.write(...)``,
+          ``os.path.join(base, str(e))``;
+        * an object root this scope does not bind exactly — a parameter or a
+          global. ``request.state.errors.append(str(e))`` followed by ``return
+          await call_next(request)`` returns what the framework made of the
+          request, not the text. #1858's review counted seven live sites newly
+          binding such a root, one on the surface, none of them returned.
+
+        ``bound`` is every name this scope binds exactly.
+        """
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            return False
+        if name.split(".")[0] in self._imported and name.split(".")[0] not in bound:
+            return True
+        return name != _written_name(node.func.value) and name not in bound
 
     def _statement_of(self, node: ast.AST) -> ast.AST:
         """The statement of this scope that a binding in ``node`` belongs to.
@@ -1492,23 +1611,39 @@ class _ScopeTaint:
         Without a control-flow graph, "every way" is read off the structure.
         It does for a node:
 
-        * inside the handler, for an ``except ... as`` name;
+        * inside the place Python binds it, for a name bound only there: an
+          ``except ... as`` name inside its handler, a comprehension target
+          inside its comprehension, a ``match`` capture inside the body of a
+          ``case`` whose pattern captures it. Not read that way, a closure's
+          ``[e.name for e in items]`` read an enclosing handler's ``e``
+          (#1858's review);
         * inside the body a statement heads, for a binding that has run before
           that body can (``_heads_its_body``);
         * past its statement, for a binding that runs whenever its statement
           does, when the statement sits in a block of which a LATER statement
           contains the node: whatever reaches the node ran the binding first.
-          Not a ``for`` target, whose loop may never run, nor a walrus that may
-          never be evaluated (``_binds_whenever_reached``) — #1858's review
-          measured each of those killing a ``msg`` still on the wire after it.
+          Not a ``for`` target, whose loop may never run; not a ``with``
+          target, which a suppressing context manager can skip (``with
+          suppress(OSError), open(p) as msg``); nor a walrus that may never be
+          evaluated (``_binds_whenever_reached``). #1858's reviews measured
+          each of those killing a ``msg`` still on the wire after it.
 
         A binding inside an ``if`` the node follows, in a ``try`` body the
         node's handler interrupts, or in a statement that contains the node is
         none of these.
         """
+        statement = definition.statement
+        if isinstance(statement, _COMPREHENSIONS):
+            return id(statement) in path
+        if isinstance(definition.binder, ast.Match):
+            return any(
+                id(inner) in path
+                for case in definition.binder.cases
+                if definition.name in _captures(case.pattern)
+                for inner in case.body
+            )
         if not definition.kills:
             return False
-        statement = definition.statement
         if isinstance(statement, ast.ExceptHandler):
             return id(statement) in path
         if not isinstance(statement, ast.stmt):
@@ -1518,7 +1653,7 @@ class _ScopeTaint:
         ):
             return True
         if isinstance(
-            statement, (ast.For, ast.AsyncFor)
+            statement, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)
         ) or not self._binds_whenever_reached(definition):
             return False
         parent = self._parents.get(id(statement))
@@ -1557,15 +1692,15 @@ class _ScopeTaint:
         """Does the binding run whenever its statement runs to completion?
 
         Only a walrus can fail to: under an ``IfExp`` (``x = a if c else (msg
-        := "static")``), past the first operand of ``and``/``or``, or inside a
-        comprehension, it may never be evaluated.
+        := "static")``), past the first operand of ``and``/``or``, inside a
+        comprehension, or in a ``case`` guard, it may never be evaluated.
         """
         binder = definition.binder
         if not isinstance(binder, ast.NamedExpr):
             return True
         child, current = binder, self._parents.get(id(binder))
         while current is not None and current is not definition.statement:
-            if isinstance(current, (ast.IfExp, *_COMPREHENSIONS)):
+            if isinstance(current, (ast.IfExp, ast.match_case, *_COMPREHENSIONS)):
                 return False
             if isinstance(current, ast.BoolOp) and current.values[0] is not child:
                 return False
@@ -1582,11 +1717,15 @@ class _ScopeTaint:
         comprehension, where Python binds them. Position and not line, so
         ``msg = str(e); raise HTTPException(500, detail=msg)`` and a walrus
         inside the raise itself are seen; by line, #1858's review measured both
-        missed. The latest earlier definition that replaces the name on every
-        way to ``at`` (``_kills_before``) cuts off every definition before it,
-        and so does one that replaces the object a dotted name hangs off:
-        ``state = make()`` ends ``state.error``. A later conditional one still
-        reaches.
+        missed. An assignment is not seen inside its own statement, whose value
+        runs before it binds: ``msg, err = str(e), HTTPException(500,
+        detail=msg)`` puts the OLD ``msg`` on the wire. The latest earlier
+        definition that replaces the name on every way to ``at``
+        (``_kills_before``) cuts off every definition before it, and so does
+        one that replaces the object a dotted name hangs off — ``state =
+        make()`` ends ``state.error`` — unless it is built from that object:
+        ``self.state = self.state.copy()`` keeps ``self.state.error``. A later
+        conditional one still reaches.
 
         Sibling handlers of one ``try`` are NOT kept apart. Kills keep the live
         idiom — each arm rebuilding its own ``error_response`` — clean, and
@@ -1605,13 +1744,29 @@ class _ScopeTaint:
             definition = self.definitions[index]
             if isinstance(definition.statement, (ast.ExceptHandler, *_COMPREHENSIONS)):
                 return id(definition.statement) in path
+            if (
+                isinstance(
+                    definition.binder, (ast.Assign, ast.AnnAssign, ast.AugAssign)
+                )
+                and id(definition.binder) in path
+            ):
+                return False
             return definition.position < here
+
+        def rebuilt_from(index: int, root: str) -> bool:
+            value = self.definitions[index].value
+            return value is not None and any(
+                read == root or read.startswith(f"{root}.") for read in _names_in(value)
+            )
 
         candidates = [i for i in self._by_name.get(name, ()) if visible(i)]
         parts = name.split(".")
         objects = [".".join(parts[:end]) for end in range(1, len(parts))]
         killers = candidates + [
-            i for root in objects for i in self._by_name.get(root, ()) if visible(i)
+            i
+            for root in objects
+            for i in self._by_name.get(root, ())
+            if visible(i) and not rebuilt_from(i, root)
         ]
         cut = max(
             (
@@ -1642,34 +1797,41 @@ class _ScopeTaint:
         return handlers
 
     def _carrier(
-        self, expr: ast.AST, at: ast.AST, exclude: str | None = None
+        self, expr: ast.AST, at: ast.AST
     ) -> tuple[bool | None, tuple[int, ...]]:
         """What ``expr`` at ``at`` can carry, before any taint is known.
 
         A rendering of the live exception inside a handler, broad when any
-        enclosing handler is; and the definitions reaching each name the
+        handler around ``at`` is; and the definitions reaching each name the
         value can carry — by ``_mentions``, which skips a ``Compare`` and an
         ``IfExp``'s condition, or for a dotted name by ``_names_in``, the
-        spelling ``self.last_error`` is bound under. ``exclude`` is a name
-        whose own fields are not a source here, and neither is the name
-        (``_wire_writes``).
+        spelling ``self.last_error`` is bound under.
+
+        Each occurrence of such a name is read where it stands, not at ``at``:
+        inside a comprehension in the value, its own target is what the name
+        holds. Read at the sink, outside the comprehension, a closure's
+        ``detail=[err["msg"] for err in errors]`` took ``err`` for the
+        enclosing function's caught exception (#1858's review).
         """
         rendered = None
         if _renders_the_live_exception(expr):
             handlers = self._enclosing_handlers(at)
             if handlers:
                 rendered = any(_is_broad_handler_type(h.type) for h in handlers)
-        reaching = tuple(
-            index
-            for name in _names_in(expr)
-            if not (
-                exclude is not None
-                and (name == exclude or name.startswith(f"{exclude}."))
-            )
-            and ("." in name or _mentions(expr, name))
-            for index in self.reaching(name, at)
-        )
-        return rendered, reaching
+        carried = {
+            name for name in _names_in(expr) if "." in name or _mentions(expr, name)
+        }
+        reaching: set[int] = set()
+        for occurrence in ast.walk(expr):
+            if isinstance(occurrence, ast.Name):
+                name = occurrence.id
+            elif isinstance(occurrence, ast.Attribute):
+                name = _dotted_name(occurrence)
+            else:
+                continue
+            if name in carried:
+                reaching.update(self.reaching(name, occurrence))
+        return rendered, tuple(sorted(reaching))
 
     @staticmethod
     def _resolve(
@@ -1708,17 +1870,14 @@ class _ScopeTaint:
                 return taint
             taint = grown
 
-    def carried(
-        self, expr: ast.AST, at: ast.AST | None = None, exclude: str | None = None
-    ) -> bool | None:
+    def carried(self, expr: ast.AST, at: ast.AST | None = None) -> bool | None:
         """The taint ``expr`` carries, read at ``at`` (by default, where it stands).
 
-        ``at`` is the sink: what the factory view hands back is a synthetic
-        ``Tuple`` of the call's arguments, with no line or parent of its own.
-        ``exclude`` is the receiver of a write onto an ``HTTPException``,
-        which is not a source for its own write (``_wire_writes``).
+        ``at`` is the sink, which decides the handlers a rendering of the live
+        exception sits in: what the factory view hands back is a synthetic
+        ``Tuple`` of the call's arguments, with no parent of its own.
         """
-        return self._resolve(self._carrier(expr, at or expr, exclude), self.taint)
+        return self._resolve(self._carrier(expr, at or expr), self.taint)
 
     def closure_sources(
         self, closure: ast.AST, factories: dict[str, list[_Factory]] | None = None
@@ -1735,6 +1894,14 @@ class _ScopeTaint:
           #1858's review measured that shape missed while ``as`` names were
           handed only to a closure defined inside the handler. A rebinding
           inside the closure cuts a source off by the ordinary kill rule.
+        * Two limits on an ``as`` name. It is never handed from the MODULE:
+          Python deletes it when the handler ends, and handing a module-level
+          import guard's ``e`` made it a source in every function reading a
+          name ``e`` — fourteen routes on the surface under ``main.py``'s
+          guards. And a closure defined inside a handler that binds the name
+          is handed that handler's definition alone, the innermost, which is
+          the one it reads: the join over every same-named handler made a
+          typed arm's text broad.
         * A parameter whose default carries taint is a source: the default is
           evaluated HERE, where the closure is defined (``def fail(m=msg)``,
           ``lambda m=str(e): ...``).
@@ -1755,11 +1922,21 @@ class _ScopeTaint:
             ]
         }
         reads = {node.id for node in ast.walk(closure) if isinstance(node, ast.Name)}
+        innermost: dict[str, ast.ExceptHandler] = {}
+        for handler in reversed(self._enclosing_handlers(closure)):
+            if handler.name:
+                innermost[handler.name] = handler
         inherited: dict[str, bool | None] = {}
         exceptions: list[_Definition] = []
         for definition, taint in zip(self.definitions, self.taint):
             root = definition.name.split(".")[0]
             if root not in reads or root in params:
+                continue
+            if isinstance(definition.binder, ast.ExceptHandler) and (
+                isinstance(self.scope, ast.Module)
+                or innermost.get(definition.name, definition.binder)
+                is not definition.binder
+            ):
                 continue
             if taint is not None:
                 inherited[definition.name] = _join(
@@ -1804,23 +1981,32 @@ def _scope_taints(
     between.
 
     ``parameters`` makes each function's exception parameters
-    (``_exception_params``) sources from its first line. The ``HTTPException``
-    sinks start from them; the returned-body sinks do not, a stated limit.
-    ``factories`` is given for the ``HTTPException`` sinks too, so that a
-    closure is handed the exceptions it can write onto. A nested scope starts
-    from what its enclosing scope hands it (``closure_sources``), which is
-    why the enclosing one is analysed first.
+    (``_exception_params``) sources from its first line — all but one
+    annotated ``HTTPException`` and nothing else, which is defined but
+    caller-facing (``_caller_facing``). The ``HTTPException`` sinks start from
+    them; the returned-body sinks do not, a stated limit. ``factories`` is
+    given for the ``HTTPException`` sinks too, so that a closure is handed the
+    exceptions it can write onto. A nested scope starts from what its
+    enclosing scope hands it (``closure_sources``), which is why the enclosing
+    one is analysed first. The names the tree's imports bind are read once
+    here, for every scope (``_ScopeTaint._not_written``).
     """
     parents = {
         id(child): node
         for node in ast.walk(tree)
         for child in ast.iter_child_nodes(node)
     }
+    imported = frozenset(
+        (alias.asname or alias.name).split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    )
     exception_classes = _module_exception_classes(tree) if parameters else frozenset()
     pending: list[tuple[ast.AST, list[_Definition]]] = [(tree, [])]
     while pending:
         scope, sources = pending.pop()
-        analysis = _ScopeTaint(scope, parents, sources)
+        analysis = _ScopeTaint(scope, parents, sources, imported)
         yield analysis
         for node in analysis.nodes:
             if not isinstance(node, _SCOPES):
@@ -1832,7 +2018,15 @@ def _scope_taints(
                     p.arg: p for p in [*args.posonlyargs, *args.args, *args.kwonlyargs]
                 }
                 handed.extend(
-                    _Definition(name, None, given[name], node, (0, 0), broad, False)
+                    _Definition(
+                        name,
+                        None,
+                        given[name],
+                        node,
+                        (0, 0),
+                        None if _caller_facing(given[name]) else broad,
+                        False,
+                    )
                     for name, broad in _exception_params(node, exception_classes)
                 )
             pending.append((node, handed))
