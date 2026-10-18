@@ -1,6 +1,9 @@
 """Auth Module - Domain Models
 
-Contains all authentication, authorization, user, session, and RBAC models.
+Contains all authentication, authorization, user and session models.
+
+The organization's role vocabulary (``Role``, ``Permission``) is not
+re-exported here: its one door is ``faultmaven.models.rbac`` (#1040 item 4).
 
 Tenancy models (Organization, Team, Enterprise, their members, plan-tier and
 audit enums, and the repository interfaces) are defined once in
@@ -27,14 +30,10 @@ from .auth import (
     TokenStatus,
     TokenValidationResult,
 )
-from .rbac import Permission, Role
 from .session import Session
 from .user import User
 
 __all__ = [
-    # RBAC
-    "Role",
-    "Permission",
     # User
     "User",
     # Session

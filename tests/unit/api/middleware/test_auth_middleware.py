@@ -1,11 +1,10 @@
 """Unit tests for Authentication Middleware (TASK-017)
 
-Tests get_current_user, require_permission, and require_role dependencies.
+Tests get_current_user, get_current_user_optional and require_platform_admin.
 
 Test Categories:
 1. get_current_user Tests - Token extraction and verification
-2. require_permission Tests - Permission checking
-3. require_role Tests - Role checking
+2. require_platform_admin Tests - The operator axis
 
 Coverage Target: 90%+
 """
@@ -27,12 +26,7 @@ from faultmaven.api.middleware.auth import (
     get_auth_service,
     get_current_user,
     get_current_user_optional,
-    require_all_permissions,
-    require_any_permission,
-    require_any_role,
-    require_permission,
     require_platform_admin,
-    require_role,
     set_auth_service,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
@@ -95,22 +89,6 @@ def member_user() -> AuthenticatedUser:
             "evidence:read",
         ],
         token_jti="token-abc",
-    )
-
-
-@pytest.fixture
-def viewer_user() -> AuthenticatedUser:
-    """Create sample viewer user (read-only)."""
-    return AuthenticatedUser(
-        user_id="user-789",
-        enterprise_id="org-456",
-        email="viewer@example.com",
-        roles=["viewer"],
-        permissions=[
-            "cases:read",
-            "evidence:read",
-        ],
-        token_jti="token-def",
     )
 
 
@@ -602,172 +580,6 @@ class TestGetCurrentUserOptional:
 
 
 # ============================================================
-# require_permission Tests
-# ============================================================
-
-
-class TestRequirePermission:
-    """Tests for require_permission dependency."""
-
-    @pytest.mark.asyncio
-    async def test_allows_user_with_permission(self, sample_user):
-        """Allows user who has required permission."""
-        checker = require_permission("cases:read")
-
-        # The checker expects get_current_user to be called first
-        # We simulate this by passing the user directly
-        with patch(
-            "faultmaven.api.middleware.auth.get_current_user",
-            return_value=sample_user,
-        ):
-            # Create a dependency that returns sample_user
-            async def mock_get_current_user():
-                return sample_user
-
-            # The actual checker function needs current_user injected
-            result = await checker(current_user=sample_user)
-            assert result == sample_user
-
-    @pytest.mark.asyncio
-    async def test_raises_403_when_missing_permission(self, member_user):
-        """Raises 403 when user lacks permission."""
-        checker = require_permission("cases:delete")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await checker(current_user=member_user)
-
-        assert exc_info.value.status_code == 403
-        assert "cases:delete" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_admin_has_all_permissions(self, sample_user):
-        """Admin user has all permissions."""
-        # Note: This depends on how permissions are set
-        # Our sample_user has cases:delete
-        checker = require_permission("cases:delete")
-        result = await checker(current_user=sample_user)
-        assert result == sample_user
-
-
-# ============================================================
-# require_any_permission Tests
-# ============================================================
-
-
-class TestRequireAnyPermission:
-    """Tests for require_any_permission dependency."""
-
-    @pytest.mark.asyncio
-    async def test_allows_user_with_any_matching_permission(self, member_user):
-        """Allows user with any of the required permissions."""
-        checker = require_any_permission("cases:delete", "cases:read")
-
-        result = await checker(current_user=member_user)
-        assert result == member_user  # Has cases:read
-
-    @pytest.mark.asyncio
-    async def test_raises_403_when_no_matching_permission(self, viewer_user):
-        """Raises 403 when user has none of the required permissions."""
-        checker = require_any_permission("cases:write", "cases:delete")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await checker(current_user=viewer_user)
-
-        assert exc_info.value.status_code == 403
-
-
-# ============================================================
-# require_all_permissions Tests
-# ============================================================
-
-
-class TestRequireAllPermissions:
-    """Tests for require_all_permissions dependency."""
-
-    @pytest.mark.asyncio
-    async def test_allows_user_with_all_permissions(self, sample_user):
-        """Allows user with all required permissions."""
-        checker = require_all_permissions("cases:read", "cases:write")
-
-        result = await checker(current_user=sample_user)
-        assert result == sample_user
-
-    @pytest.mark.asyncio
-    async def test_raises_403_when_missing_any_permission(self, member_user):
-        """Raises 403 when user is missing any required permission."""
-        checker = require_all_permissions("cases:read", "cases:delete")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await checker(current_user=member_user)
-
-        assert exc_info.value.status_code == 403
-        assert "cases:delete" in exc_info.value.detail
-
-
-# ============================================================
-# require_role Tests
-# ============================================================
-
-
-class TestRequireRole:
-    """Tests for require_role dependency."""
-
-    @pytest.mark.asyncio
-    async def test_allows_user_with_role(self, sample_user):
-        """Allows user with required role."""
-        checker = require_role("admin")
-
-        result = await checker(current_user=sample_user)
-        assert result == sample_user
-
-    @pytest.mark.asyncio
-    async def test_raises_403_when_missing_role(self, member_user):
-        """Raises 403 when user lacks role."""
-        checker = require_role("admin")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await checker(current_user=member_user)
-
-        assert exc_info.value.status_code == 403
-        assert "admin" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_member_role_check(self, member_user):
-        """Member role check passes for member user."""
-        checker = require_role("member")
-
-        result = await checker(current_user=member_user)
-        assert result == member_user
-
-
-# ============================================================
-# require_any_role Tests
-# ============================================================
-
-
-class TestRequireAnyRole:
-    """Tests for require_any_role dependency."""
-
-    @pytest.mark.asyncio
-    async def test_allows_user_with_any_matching_role(self, member_user):
-        """Allows user with any of the required roles."""
-        checker = require_any_role("admin", "member")
-
-        result = await checker(current_user=member_user)
-        assert result == member_user
-
-    @pytest.mark.asyncio
-    async def test_raises_403_when_no_matching_role(self, viewer_user):
-        """Raises 403 when user has none of the required roles."""
-        checker = require_any_role("admin", "member")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await checker(current_user=viewer_user)
-
-        assert exc_info.value.status_code == 403
-
-
-# ============================================================
 # require_platform_admin Tests
 # ============================================================
 
@@ -849,30 +661,10 @@ class TestAuthServiceSingleton:
 class TestAuthenticatedUserModel:
     """Tests for AuthenticatedUser model methods."""
 
-    def test_has_permission(self, sample_user):
-        """has_permission returns True for existing permission."""
-        assert sample_user.has_permission("cases:read") is True
-        assert sample_user.has_permission("nonexistent:permission") is False
-
-    def test_has_role(self, sample_user):
-        """has_role returns True for existing role."""
-        assert sample_user.has_role("admin") is True
-        assert sample_user.has_role("viewer") is False
-
     def test_is_platform_admin(self, sample_user, member_user):
         """is_platform_admin returns True only for the platform_admin role."""
         assert sample_user.is_platform_admin() is True
         assert member_user.is_platform_admin() is False
-
-    def test_has_any_permission(self, member_user):
-        """has_any_permission returns True if any permission matches."""
-        assert member_user.has_any_permission(["cases:delete", "cases:read"]) is True
-        assert member_user.has_any_permission(["nonexistent"]) is False
-
-    def test_has_all_permissions(self, sample_user):
-        """has_all_permissions returns True only if all match."""
-        assert sample_user.has_all_permissions(["cases:read", "cases:write"]) is True
-        assert sample_user.has_all_permissions(["cases:read", "nonexistent"]) is False
 
     def test_to_dict(self, sample_user):
         """to_dict returns correct dictionary."""

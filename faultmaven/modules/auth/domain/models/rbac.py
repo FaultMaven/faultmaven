@@ -1,37 +1,23 @@
-"""Auth-module RBAC: the operator role, over the shared org role vocabulary.
+"""Auth-module RBAC: the operator axis, beside the organization's vocabulary.
 
-There used to be two full copies of the role vocabulary — this module and
-:mod:`faultmaven.models.rbac` — each defining its own ``Role``, ``Permission``,
-``ROLE_PERMISSIONS`` and helpers. ``test_platform_admin_role_separation.py``
-parametrised over both to keep them honest, which is a tripwire for drift, not a
-cure for it: two enums that must agree will eventually not, and the failure mode
-is a role that grants different permissions depending on which import the caller
-reached for.
+The organization's role vocabulary — ``Role``, ``Permission``,
+``ROLE_PERMISSIONS`` and the helpers that expand them — has one definition and
+one door, :mod:`faultmaven.models.rbac`, which faultmaven-cloud imports
+directly and from which the RBAC seed is written (#1040 item 4). It is the
+organization's management vocabulary only and gates no data (ADR-017 D5).
 
-So the org-scoped vocabulary now has **one** definition, in
-:mod:`faultmaven.models.rbac` — the copy migration 029 seeds from and that
-``rbac_seed.SYSTEM_ROLE_IDS`` maps to stable ids — and this module re-exports it
-alongside what is genuinely auth-module knowledge: the deployment-scoped operator
-role, which deliberately is not part of that vocabulary (#1040 item 4).
-
-Import either module and get the same objects. This one stays the auth module's
-door because ``contracts.py`` re-exports the operator constants from here, and
-because the operator/org split is the thing this module exists to state.
+This module is not a second door to it. It holds what is genuinely auth-module
+knowledge: the deployment-scoped operator role, which deliberately is not part
+of that vocabulary, and the role-list conventions built on it (the base
+marker, the operator grant set, what a demotion takes away, and how a roleless
+account is reported). It imports ``Role`` only to name two of those
+conventions in the enum's own spelling, and does not re-export it.
+``contracts.py`` re-exports the operator constants from here.
 """
 
 from typing import List, Sequence
 
-from faultmaven.models.rbac import (
-    ROLE_PERMISSIONS,
-    Permission,
-    Role,
-    get_permissions_for_role,
-    get_permissions_for_roles,
-    has_all_permissions,
-    has_any_permission,
-    has_permission,
-    has_role,
-)
+from faultmaven.models.rbac import Role
 
 # The cross-tenant OPERATOR role (ADR-012 D9).
 #
@@ -100,20 +86,11 @@ def effective_roles(roles: Sequence[str]) -> List[str]:
 
 
 __all__ = [
-    "ROLE_PERMISSIONS",
     "BASE_USER_ROLE",
     "OPERATOR_GRANTED_ROLES",
     "ORG_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE_SET",
     "ROLELESS_ACCOUNT_ROLE",
-    "Permission",
-    "Role",
-    "get_permissions_for_role",
-    "get_permissions_for_roles",
     "effective_roles",
-    "has_all_permissions",
-    "has_any_permission",
-    "has_permission",
-    "has_role",
 ]

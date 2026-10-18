@@ -1,14 +1,23 @@
-"""Role-Based Access Control (RBAC) Models (TASK-017)
+"""The organization's role vocabulary: who may manage an organization.
 
-Purpose: Define roles, permissions, and their mappings for authorization.
+An organization BILLS (ADR-017 D2); it does not isolate and it does not share.
+Its roles are therefore the organization's *management* vocabulary and nothing
+else: they say who may manage the organization's roster and its settings, and
+they gate no data. Case, evidence and knowledge visibility is the enterprise's
+(RLS on ``enterprise_id``) and the team's (consent, ``resource_shares``), and
+ADR-017 D5 is explicit that roles "no longer gate data visibility, which they
+never should have".
 
-This module provides:
-- Role enum for organization-level roles (admin, member, viewer)
-- Permission enum for granular access control
-- Role-permission mapping for easy lookup
-- Helper functions for permission checking
+So the mapping below carries exactly the management axis (#1040, owner ruling
+2026-09-24): ``admin`` holds ``org:manage_users`` and ``org:manage_settings``,
+``member`` and ``viewer`` hold nothing. The live reader is Cloud's organization
+management, which asks ``IOrganizationRepository.user_has_permission`` for one
+of those two per request; the ``permissions`` / ``role_permissions`` rows it
+joins are seeded from this map (``001_enterprise_baseline``, pruned to it by
+``020_org_permissions_are_management_only``).
 
-Design Reference: TASK-017 JWT Authentication & Authorization Middleware
+The deployment-scoped operator role ``platform_admin`` is a different axis and
+lives in :mod:`faultmaven.modules.auth.domain.models.rbac`.
 """
 
 from enum import Enum
@@ -16,10 +25,11 @@ from typing import FrozenSet, List, Set
 
 
 class Role(str, Enum):
-    """Organization-level roles.
+    """Organization-level roles: the organization's management vocabulary.
 
-    Roles define the level of access a user has within an organization.
-    Each role maps to a set of permissions.
+    A role says what its holder may manage in ONE organization. It gates no
+    data (ADR-017 D5): which cases, evidence and runbooks an account sees is
+    decided by its enterprise and its teams, whatever role it holds.
 
     These are tenant-bounded, and this enum is load-bearing beyond permissions:
     ``UserService.assign_role`` validates against it, so a role added here
@@ -31,9 +41,9 @@ class Role(str, Enum):
     the ``fm-promote-platform-admin`` command instead.
 
     Attributes:
-        ADMIN: Full access to organization resources
-        MEMBER: Standard investigator access
-        VIEWER: Read-only access
+        ADMIN: Manages the organization's roster and settings
+        MEMBER: Belongs to the organization; manages nothing
+        VIEWER: Belongs to the organization; manages nothing
     """
 
     ADMIN = "admin"
@@ -42,69 +52,29 @@ class Role(str, Enum):
 
 
 class Permission(str, Enum):
-    """Granular permissions for fine-grained access control.
+    """What an organization role may manage, as ``resource:action``.
 
-    Permissions follow the format: resource:action
-    where resource is the entity type and action is the operation.
-
-    Resource Categories:
-    - cases: Case management operations
-    - evidence: Evidence artifact operations
-    - org: Organization management operations
+    Only the management axis: managing the organization's members and its
+    settings. There is deliberately no case, evidence or session permission
+    here — those would make an organization role a data gate, which ADR-017 D5
+    forbids (#1040).
     """
 
-    # Cases
-    CASES_READ = "cases:read"
-    CASES_WRITE = "cases:write"
-    CASES_DELETE = "cases:delete"
-    CASES_ASSIGN = "cases:assign"
-    CASES_CLOSE = "cases:close"
-
-    # Evidence
-    EVIDENCE_READ = "evidence:read"
-    EVIDENCE_UPLOAD = "evidence:upload"
-    EVIDENCE_DELETE = "evidence:delete"
-
-    # Organization
     ORG_MANAGE_USERS = "org:manage_users"
     ORG_MANAGE_SETTINGS = "org:manage_settings"
 
 
-# Role-Permission mapping
-# Each role grants a set of permissions
+#: Role -> the permissions it grants. Every role is listed: ``member`` and
+#: ``viewer`` granting nothing is the statement, not an omission.
 ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
     Role.ADMIN: frozenset(
         [
-            # All permissions
-            Permission.CASES_READ,
-            Permission.CASES_WRITE,
-            Permission.CASES_DELETE,
-            Permission.CASES_ASSIGN,
-            Permission.CASES_CLOSE,
-            Permission.EVIDENCE_READ,
-            Permission.EVIDENCE_UPLOAD,
-            Permission.EVIDENCE_DELETE,
             Permission.ORG_MANAGE_USERS,
             Permission.ORG_MANAGE_SETTINGS,
         ]
     ),
-    Role.MEMBER: frozenset(
-        [
-            # Standard investigator permissions
-            Permission.CASES_READ,
-            Permission.CASES_WRITE,
-            Permission.CASES_ASSIGN,
-            Permission.EVIDENCE_READ,
-            Permission.EVIDENCE_UPLOAD,
-        ]
-    ),
-    Role.VIEWER: frozenset(
-        [
-            # Read-only permissions
-            Permission.CASES_READ,
-            Permission.EVIDENCE_READ,
-        ]
-    ),
+    Role.MEMBER: frozenset(),
+    Role.VIEWER: frozenset(),
 }
 
 
@@ -141,59 +111,3 @@ def get_permissions_for_roles(roles: List[str]) -> Set[Permission]:
             # Unknown role, skip
             continue
     return permissions
-
-
-def has_permission(user_permissions: List[str], required_permission: str) -> bool:
-    """Check if user has a specific permission.
-
-    Args:
-        user_permissions: List of permission strings the user has
-        required_permission: Permission string to check for
-
-    Returns:
-        True if user has the required permission
-    """
-    return required_permission in user_permissions
-
-
-def has_any_permission(
-    user_permissions: List[str], required_permissions: List[str]
-) -> bool:
-    """Check if user has any of the specified permissions.
-
-    Args:
-        user_permissions: List of permission strings the user has
-        required_permissions: List of permissions to check for
-
-    Returns:
-        True if user has at least one of the required permissions
-    """
-    return any(perm in user_permissions for perm in required_permissions)
-
-
-def has_all_permissions(
-    user_permissions: List[str], required_permissions: List[str]
-) -> bool:
-    """Check if user has all of the specified permissions.
-
-    Args:
-        user_permissions: List of permission strings the user has
-        required_permissions: List of permissions to check for
-
-    Returns:
-        True if user has all of the required permissions
-    """
-    return all(perm in user_permissions for perm in required_permissions)
-
-
-def has_role(user_roles: List[str], required_role: str) -> bool:
-    """Check if user has a specific role.
-
-    Args:
-        user_roles: List of role names the user has
-        required_role: Role name to check for
-
-    Returns:
-        True if user has the required role
-    """
-    return required_role in user_roles

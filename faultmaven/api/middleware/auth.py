@@ -5,12 +5,15 @@ Purpose: FastAPI dependencies for JWT-based authentication and authorization.
 This module provides reusable authentication dependencies:
 - get_current_user: Extract and verify JWT from Authorization header
 - get_current_user_optional: Optional authentication (returns None if no token)
-- require_permission: Check if user has specific permission
-- require_role: Check if user has specific role
-- require_platform_admin: Shortcut for requiring the cross-tenant operator role
+- require_platform_admin: Require the cross-tenant operator role
+
+There is deliberately no organization-role or permission dependency here. The
+organization's roles are its management vocabulary and gate no data (ADR-017
+D5); where they are enforced, organization management resolves them per request
+against ``role_permissions`` (#1040, owner ruling 2026-09-24).
 
 Usage:
-    from faultmaven.api.middleware.auth import get_current_user, require_permission
+    from faultmaven.api.middleware.auth import get_current_user
 
     @router.get("/cases")
     async def list_cases(
@@ -19,16 +22,11 @@ Usage:
         # current_user.user_id, current_user.organization_id verified
         ...
 
-    @router.delete("/cases/{id}", dependencies=[Depends(require_role("admin"))])
-    async def delete_case(...):
-        # Only admins can reach this endpoint
-        ...
-
 Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
 import logging
-from typing import Callable, Optional
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -259,160 +257,6 @@ async def get_current_user_optional(
     except Exception as e:
         logger.warning(f"Optional authentication error: {e}")
         return None
-
-
-def require_permission(permission: str) -> Callable:
-    """Create dependency that checks for specific permission.
-
-    Usage:
-        @router.post("/cases", dependencies=[Depends(require_permission("cases:write"))])
-        async def create_case(...):
-            ...
-
-    Args:
-        permission: Permission string (e.g., "cases:write", "evidence:upload")
-
-    Returns:
-        Dependency function that validates permission
-
-    Raises:
-        HTTPException 403: User lacks required permission
-    """
-
-    async def permission_checker(
-        current_user: AuthenticatedUser = Depends(get_current_user),
-    ) -> AuthenticatedUser:
-        if not current_user.has_permission(permission):
-            logger.debug(
-                f"Permission denied: user {current_user.user_id} "
-                f"lacks permission {permission}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing required permission: {permission}",
-            )
-        return current_user
-
-    return permission_checker
-
-
-def require_any_permission(*permissions: str) -> Callable:
-    """Create dependency that checks for any of the specified permissions.
-
-    Usage:
-        @router.get("/items", dependencies=[Depends(require_any_permission("items:read", "items:admin"))])
-
-    Args:
-        permissions: Permission strings to check
-
-    Returns:
-        Dependency function that validates any permission
-    """
-
-    async def permission_checker(
-        current_user: AuthenticatedUser = Depends(get_current_user),
-    ) -> AuthenticatedUser:
-        if not current_user.has_any_permission(list(permissions)):
-            logger.debug(
-                f"Permission denied: user {current_user.user_id} "
-                f"lacks all permissions: {permissions}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing one of required permissions: {', '.join(permissions)}",
-            )
-        return current_user
-
-    return permission_checker
-
-
-def require_all_permissions(*permissions: str) -> Callable:
-    """Create dependency that checks for all specified permissions.
-
-    Usage:
-        @router.delete("/items/{id}", dependencies=[Depends(require_all_permissions("items:read", "items:delete"))])
-
-    Args:
-        permissions: Permission strings to check
-
-    Returns:
-        Dependency function that validates all permissions
-    """
-
-    async def permission_checker(
-        current_user: AuthenticatedUser = Depends(get_current_user),
-    ) -> AuthenticatedUser:
-        if not current_user.has_all_permissions(list(permissions)):
-            missing = [p for p in permissions if not current_user.has_permission(p)]
-            logger.debug(
-                f"Permission denied: user {current_user.user_id} "
-                f"missing permissions: {missing}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing required permissions: {', '.join(missing)}",
-            )
-        return current_user
-
-    return permission_checker
-
-
-def require_role(role: str) -> Callable:
-    """Create dependency that checks for specific role.
-
-    Usage:
-        @router.delete("/cases/{id}", dependencies=[Depends(require_role("admin"))])
-        async def delete_case(...):
-            ...
-
-    Args:
-        role: Role name (admin, member, viewer)
-
-    Returns:
-        Dependency function that validates role
-
-    Raises:
-        HTTPException 403: User lacks required role
-    """
-
-    async def role_checker(
-        current_user: AuthenticatedUser = Depends(get_current_user),
-    ) -> AuthenticatedUser:
-        if not current_user.has_role(role):
-            logger.debug(f"Role denied: user {current_user.user_id} lacks role {role}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing required role: {role}",
-            )
-        return current_user
-
-    return role_checker
-
-
-def require_any_role(*roles: str) -> Callable:
-    """Create dependency that checks for any of the specified roles.
-
-    Args:
-        roles: Role names to check
-
-    Returns:
-        Dependency function that validates any role
-    """
-
-    async def role_checker(
-        current_user: AuthenticatedUser = Depends(get_current_user),
-    ) -> AuthenticatedUser:
-        if not any(current_user.has_role(role) for role in roles):
-            logger.debug(
-                f"Role denied: user {current_user.user_id} " f"lacks all roles: {roles}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing one of required roles: {', '.join(roles)}",
-            )
-        return current_user
-
-    return role_checker
 
 
 async def require_platform_admin(

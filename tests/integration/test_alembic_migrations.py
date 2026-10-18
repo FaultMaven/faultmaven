@@ -41,8 +41,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 019_verified_by_is_the_display_name
-HEAD_REVISION = "82bc95a1c02f"  # pragma: allowlist secret
+#: 020_org_permissions_are_management_only
+HEAD_REVISION = "596f06c52909"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -94,6 +94,10 @@ DRAFTS_IN_THE_DATABASE_REVISION = "c4441b83ba24"  # pragma: allowlist secret
 #: ``019_verified_by_is_the_display_name``: a verified runbook's frontmatter
 #: ``verified_by`` names its verifier by their display name (#1948).
 VERIFIED_BY_DISPLAY_NAME_REVISION = "82bc95a1c02f"  # pragma: allowlist secret
+#: ``020_org_permissions_are_management_only``: the ``cases:*`` and
+#: ``evidence:*`` permissions and their grants are deleted; organization roles
+#: carry only ``org:manage_users`` / ``org:manage_settings`` (#1040).
+ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION = "596f06c52909"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -3212,6 +3216,239 @@ class TestVerifiedByIsTheDisplayNameRevision:
         assert "row_security" not in sql[revision:]
 
 
+class TestOrgPermissionsAreManagementOnlyRevision:
+    """020 prunes the organization's permissions to the management axis
+    (#1040, owner ruling 2026-09-24): the eight ``cases:*`` / ``evidence:*``
+    permissions and every grant of one are deleted, ``org:manage_*`` and
+    admin's two grants of them are untouched, and the downgrade re-seeds
+    exactly the baseline's eight rows and fifteen system-role grants."""
+
+    ADMIN_ROLE_ID = "50551907-a02c-5bf7-9aa4-4a98f3c4eb64"
+    MEMBER_ROLE_ID = "5cb4c3f5-227c-5d73-95a5-d9d2e619ca72"
+    VIEWER_ROLE_ID = "834b74a5-33a7-5248-9fd0-b040c12aef7b"
+
+    #: The baseline's data permission rows: permission_id -> (resource, action).
+    BASELINE_DATA_PERMISSIONS = {
+        "f3adedf0-09df-5151-9490-83da7cff6c34": ("cases", "read"),
+        "01fe79a0-a217-5998-9ab8-e7adde82ffde": ("cases", "write"),
+        "91ed1dc0-2eb1-519f-b1e2-a1e93815cb59": ("cases", "delete"),
+        "818985d2-a051-5e55-86bb-1ba378835787": ("cases", "assign"),
+        "5de3208e-7f06-5037-b8d9-8f5f90a0fbdf": ("cases", "close"),
+        "d06d9c54-a00e-58e3-ad38-19dbd32975ee": ("evidence", "read"),
+        "0bd8e72e-a9ef-5ee4-9a67-32b8602c9d94": ("evidence", "upload"),
+        "a41fd5f5-f56b-5fb5-82f0-ff9c8f8ef2bf": ("evidence", "delete"),
+    }
+    CASES_READ_ID = "f3adedf0-09df-5151-9490-83da7cff6c34"
+    ORG_MANAGE_USERS_ID = "d3a93745-5f12-5622-a596-96e518669e90"
+    ORG_MANAGE_SETTINGS_ID = "31938541-ec6c-526f-a4ee-06e8d1b59252"
+
+    @staticmethod
+    def _data_rbac() -> tuple[list, list]:
+        """The ``cases`` / ``evidence`` permission rows and every grant of one."""
+        permissions = query_rows(
+            TEST_DB,
+            "SELECT permission_id, resource, action, description FROM permissions "
+            "WHERE resource IN ('cases', 'evidence') ORDER BY permission_id",
+        )
+        grants = query_rows(
+            TEST_DB,
+            "SELECT rp.role_id, rp.permission_id FROM role_permissions rp "
+            "JOIN permissions p ON p.permission_id = rp.permission_id "
+            "WHERE p.resource IN ('cases', 'evidence') "
+            "ORDER BY rp.role_id, rp.permission_id",
+        )
+        return permissions, grants
+
+    @staticmethod
+    def _all_rbac() -> tuple[list, list]:
+        """Both tables, every column, in a fixed order."""
+        return (
+            query_rows(TEST_DB, "SELECT * FROM permissions ORDER BY permission_id"),
+            query_rows(
+                TEST_DB,
+                "SELECT * FROM role_permissions ORDER BY role_id, permission_id",
+            ),
+        )
+
+    def test_upgrade_retires_the_data_permissions_and_nothing_else(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(
+            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        parent_permissions, parent_grants = self._data_rbac()
+        assert {
+            permission_id: (resource, action, description)
+            for permission_id, resource, action, description in parent_permissions
+        } == {
+            permission_id: (resource, action, None)
+            for permission_id, (
+                resource,
+                action,
+            ) in self.BASELINE_DATA_PERMISSIONS.items()
+        }, "positive control: 019 carries the baseline's eight rows"
+        grants_by_role = defaultdict(int)
+        for role_id, _ in parent_grants:
+            grants_by_role[role_id] += 1
+        assert dict(grants_by_role) == {
+            self.ADMIN_ROLE_ID: 8,
+            self.MEMBER_ROLE_ID: 5,
+            self.VIEWER_ROLE_ID: 2,
+        }, "positive control: 8 admin + 5 member + 2 viewer"
+        kept_permissions = query_rows(
+            TEST_DB,
+            "SELECT * FROM permissions WHERE resource NOT IN ('cases', 'evidence') "
+            "ORDER BY permission_id",
+        )
+        kept_grants = query_rows(
+            TEST_DB,
+            "SELECT * FROM role_permissions WHERE permission_id NOT IN "
+            "(SELECT permission_id FROM permissions "
+            "WHERE resource IN ('cases', 'evidence')) "
+            "ORDER BY role_id, permission_id",
+        )
+        assert [row[0] for row in kept_permissions] == sorted(
+            [self.ORG_MANAGE_USERS_ID, self.ORG_MANAGE_SETTINGS_ID]
+        ), "positive control: only org:manage_* is kept"
+        assert kept_grants == sorted(
+            [
+                (self.ADMIN_ROLE_ID, self.ORG_MANAGE_USERS_ID),
+                (self.ADMIN_ROLE_ID, self.ORG_MANAGE_SETTINGS_ID),
+            ]
+        ), "positive control: admin's two org:manage_* grants"
+
+        result = run_alembic(
+            f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._data_rbac() == ([], [])
+        # No orphan grant survives on SQLite, where the cascade may be off.
+        assert query_rows(
+            TEST_DB,
+            "SELECT COUNT(*) FROM role_permissions WHERE permission_id NOT IN "
+            "(SELECT permission_id FROM permissions)",
+        ) == [(0,)]
+        # The org:* rows and admin's grants of them are byte-identical.
+        assert self._all_rbac() == (kept_permissions, kept_grants)
+
+    def test_downgrade_restores_exactly_the_parent_rows(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(
+            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        parent = self._all_rbac()
+        assert len(parent[0]) == 10 and len(parent[1]) == 17, "positive control"
+
+        result = run_alembic(
+            f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._all_rbac() != parent, "positive control: the upgrade moved"
+        result = run_alembic(
+            f"downgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert get_current_revision(database_url) == VERIFIED_BY_DISPLAY_NAME_REVISION
+        assert self._all_rbac() == parent
+
+    def test_a_non_system_roles_grant_is_removed_and_not_restored(
+        self, clean_database, database_url
+    ):
+        """A database at the parent that carries a custom role's grant of
+        ``cases:read``: the upgrade deletes that grant with the system roles'
+        (and leaves the custom role's ``org:manage_users`` grant), and the
+        downgrade, which re-seeds only the baseline's grants, does not bring it
+        back."""
+        custom = "c0570000-0000-4000-8000-0000000000cc"
+        result = run_alembic(
+            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(
+                "INSERT INTO roles (role_id, name, scope, is_system_role) "
+                "VALUES (?, 'incident_lead', 'organization', 0)",
+                (custom,),
+            )
+            conn.executemany(
+                "INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)",
+                [(custom, self.CASES_READ_ID), (custom, self.ORG_MANAGE_USERS_ID)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        def custom_grants() -> list:
+            return query_rows(
+                TEST_DB,
+                "SELECT permission_id FROM role_permissions WHERE role_id = "
+                f"'{custom}' ORDER BY permission_id",
+            )
+
+        assert custom_grants() == sorted(
+            [(self.CASES_READ_ID,), (self.ORG_MANAGE_USERS_ID,)]
+        ), "positive control: the custom role holds both"
+
+        result = run_alembic(
+            f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert custom_grants() == [(self.ORG_MANAGE_USERS_ID,)]
+
+        result = run_alembic(
+            f"downgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert custom_grants() == [(self.ORG_MANAGE_USERS_ID,)]
+        # The system roles' grant of the same permission did come back.
+        assert query_rows(
+            TEST_DB,
+            "SELECT role_id FROM role_permissions WHERE permission_id = "
+            f"'{self.CASES_READ_ID}' ORDER BY role_id",
+        ) == sorted(
+            [(self.ADMIN_ROLE_ID,), (self.MEMBER_ROLE_ID,), (self.VIEWER_ROLE_ID,)]
+        )
+
+    def test_the_postgresql_script(self):
+        """Offline (``--sql``) against PostgreSQL: the grants' ``DELETE``
+        precedes the permissions' ``DELETE``, no ``row_security`` is set
+        (neither table is enrolled in RLS), and the downgrade inserts the eight
+        rows and their fifteen grants."""
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}:"
+            f"{ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        grants = up.stdout.index("DELETE FROM role_permissions")
+        perms = up.stdout.index(
+            "DELETE FROM permissions WHERE resource IN ('cases', 'evidence')"
+        )
+        assert grants < perms
+        assert "WHERE resource IN ('cases', 'evidence'))" in up.stdout[grants:perms]
+        assert "row_security" not in up.stdout
+
+        down = run_alembic(
+            f"downgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}:"
+            f"{VERIFIED_BY_DISPLAY_NAME_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        sql = down.stdout
+        assert sql.count("INSERT INTO permissions ") == 8
+        assert sql.count("INSERT INTO role_permissions ") == 15
+        for permission_id in self.BASELINE_DATA_PERMISSIONS:
+            assert permission_id in sql
+        assert "DELETE" not in sql
+        assert "row_security" not in sql
+
+
 class TestRbacSeed:
     """Migration 029 seeds the system RBAC roles/permissions/grants.
 
@@ -3263,9 +3500,12 @@ class TestRbacSeed:
         for role_name, perm_value in rows:
             actual[role_name].add(perm_value)
 
+        # A role that grants nothing has no ``role_permissions`` row, so it is
+        # absent from ``actual`` rather than mapped to an empty set.
         expected = {
             role.value: {perm.value for perm in perms}
             for role, perms in ROLE_PERMISSIONS.items()
+            if perms
         }
         assert dict(actual) == expected
 
@@ -3290,9 +3530,11 @@ class TestRbacSeed:
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
         # The baseline seeds 14 permissions and 26 grants; 017 retires the four
-        # ``sessions:*`` permissions and their 9 grants (#1935).
-        assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 10
-        assert len(query_rows(TEST_DB, "SELECT role_id FROM role_permissions")) == 17
+        # ``sessions:*`` permissions and their 9 grants (#1935), and 020 the
+        # eight ``cases:*`` / ``evidence:*`` ones and their 15 grants (#1040),
+        # leaving admin's two ``org:manage_*`` grants.
+        assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 2
+        assert len(query_rows(TEST_DB, "SELECT role_id FROM role_permissions")) == 2
 
 
 class TestStandaloneTenancySeed:

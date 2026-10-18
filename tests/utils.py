@@ -836,8 +836,8 @@ async def asgi_request(app, method: str, path: str, **kwargs):
 # ``permissions`` and `AuthenticatedUser.from_jwt_claims` reads ``permissions``,
 # but both live generators emit ``scopes`` and no ``permissions`` at all — so in
 # production ``AuthenticatedUser.permissions`` is always ``[]``. Forging
-# ``permissions`` would keep `require_permission` (defined, exported, wired to no
-# route today) green in every test and 403 on the first route that adopts it.
+# ``permissions`` would keep any check that read that field green in every test
+# and denying every real caller in production.
 # `test_token_forger_shape_parity.py` pins the key sets equal; keep both in step.
 
 

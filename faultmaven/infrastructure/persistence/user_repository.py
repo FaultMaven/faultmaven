@@ -674,13 +674,13 @@ class PostgreSQLUserRepository(UserRepository):
         membership — and is deliberately NOT the claim source, so this field is
         the one to read for effective roles in either mode.
 
-        Wiring the org-scoped `Permission` mapping to endpoint checks is the
-        remaining RBAC work; see #1040 and
-        `docs/architecture/security/org-permission-enforcement.md`, which
-        concludes that the org axis should be resolved per request from
-        `organization_members` rather than minted here — so this field stays the
-        source of the `roles` claim without becoming the org authorization
-        source.
+        The org-scoped `Permission` mapping is the management axis only and is
+        wired to no endpoint check, by decision (#1040,
+        `docs/architecture/security/org-permission-enforcement.md`): where it is
+        enforced, organization management resolves it per request from
+        `organization_members` rather than from anything minted here — so this
+        field stays the source of the `roles` claim without becoming the org
+        authorization source.
 
         A ``dev_roles`` value that is not a JSON array of strings reads as no
         roles (:data:`_ROLES_ARRAY`), as the role filter reads it.

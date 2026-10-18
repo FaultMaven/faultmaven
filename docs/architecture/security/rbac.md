@@ -83,16 +83,16 @@ const isPlatformAdmin = user.roles.includes('platform_admin');
 > **operator** role `platform_admin` is deployment-scoped: it governs Global-KB
 > authoring, cross-tenant case listing, user administration and LLM
 > configuration, and is enforced by the `require_platform_admin` dependency.
-> Separately, an **org-scoped** `Role` enum (`admin`, `member`, `viewer`) defined
-> in `models/rbac.py` and re-exported from `modules/auth/domain/models/rbac.py`
-> carries a granular `Permission` mapping
-> for organization/team RBAC; `admin` there is tenant-bounded and never crosses
-> tenants. `platform_admin` is intentionally **not** a member of that enum —
-> which is what stops `POST /admin/users/{id}/roles` from minting operators —
-> so it maps to no granular permissions on its own. Wiring those permissions to
-> endpoint checks is designed in
-> [org-permission-enforcement.md](org-permission-enforcement.md) and tracked by
-> #1040; it is **not** implemented. See
+> Separately, an **org-scoped** `Role` enum (`admin`, `member`, `viewer`),
+> defined once in `models/rbac.py`, is the organization's management vocabulary:
+> its `Permission` mapping holds only `org:manage_users` and
+> `org:manage_settings`, granted to `admin`, and gates no data (ADR-017 D5);
+> `admin` there is tenant-bounded and never crosses tenants. `platform_admin` is
+> intentionally **not** a member of that enum — which is what stops
+> `POST /admin/users/{id}/roles` from minting operators — so it maps to no org
+> permissions on its own. No endpoint check is wired to the mapping, by
+> decision (#1040, owner ruling 2026-09-24): see
+> [org-permission-enforcement.md](org-permission-enforcement.md) and
 > [iam-design.md § Role Implementation](iam-design.md#role-implementation).
 
 ### Where roles are stored, and what reads them
@@ -112,7 +112,7 @@ boundary:
 
 | Axis | Values | Granted by | Read by |
 |------|--------|-----------|---------|
-| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping (not yet wired to endpoint checks — see [org-permission-enforcement.md](org-permission-enforcement.md)) |
+| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping — the management axis only: `admin` holds `org:manage_users` / `org:manage_settings`, `member` and `viewer` hold nothing; enforced by Cloud's organization management, per request, from `organization_members`, and wired to no core endpoint, by decision ([org-permission-enforcement.md](org-permission-enforcement.md)) |
 | Deployment | `platform_admin` | `fm-promote-platform-admin` / bootstrap operator seed, and nothing else | `require_platform_admin` / `is_platform_admin()` |
 | Base | `user` | registration, SSO JIT provisioning; also the operator grant | nothing today (grants no permissions) |
 
@@ -137,14 +137,14 @@ assignment — a silent operator lockout recoverable only from a shell (#706).
 > when you know it did, or re-grant through `POST /api/v1/admin/users/{id}/roles`
 > afterwards.
 >
-> **Note on today's enforcement surface.** `require_role` / `require_any_role`
-> exist but have no production call sites; `require_permission` and its siblings
-> are **unusable** rather than merely unused, because no token generator mints a
-> `permissions` claim — `AuthenticatedUser.permissions` is always empty, so they
-> would deny every caller. JWT `scopes` are a fixed list, not role-derived. So
-> `platform_admin` is currently the only role the enforcement path consults; the
-> org-scoped axis is recorded and surfaced (user listing, filtering) ahead of the
-> wiring designed in
+> **Note on today's enforcement surface.** `require_platform_admin` is the only
+> role dependency in core; the org-role and permission dependencies
+> (`require_role`, `require_permission` and their siblings) were never called
+> and are deleted (#1040). No token generator mints a `permissions` claim, so
+> `AuthenticatedUser.permissions` is always empty, and nothing reads it. JWT
+> `scopes` are a fixed list, not role-derived. The org-scoped axis is recorded
+> and surfaced (user listing, filtering), and its management permissions are
+> enforced where the organization is managed — see
 > [org-permission-enforcement.md](org-permission-enforcement.md).
 
 ### 1. Regular User (`user` role)

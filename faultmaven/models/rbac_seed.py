@@ -1,8 +1,11 @@
 """System RBAC role identities — the stable IDs of the seeded system roles.
 
-The ``roles`` / ``permissions`` / ``role_permissions`` tables are populated by
-migration ``029_seed_rbac_roles_permissions`` (revision ``e1f2a3b4c5d6``) from
-the authority model in :mod:`faultmaven.models.rbac` (``ROLE_PERMISSIONS``). The
+The ``roles`` / ``permissions`` / ``role_permissions`` tables are seeded by the
+baseline migration ``001_enterprise_baseline`` from the authority model in
+:mod:`faultmaven.models.rbac` (``ROLE_PERMISSIONS``); later revisions prune what
+the model no longer holds (``017_drop_investigation_sessions`` the ``sessions``
+permissions, ``020_org_permissions_are_management_only`` the ``cases`` and
+``evidence`` ones), and none moves an id. The
 system roles are seeded with **fixed, deterministic UUIDs** so that any layer
 which must reference a role by identity — most importantly the Cloud-composed
 organization-management API, which resolves a :class:`~faultmaven.models.rbac.Role`

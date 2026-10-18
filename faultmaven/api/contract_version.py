@@ -2126,4 +2126,26 @@ asked to accept, and it belongs to a person.
 # message names each finding's type and line, never its text. No schema moves. MINOR because a request that succeeded can
 # now be refused: the dashboard keeps the edit and shows the message. A
 # placeholder (`<password>`, `${DB_PASS}`) is not refused.
-API_CONTRACT_VERSION = "14.3.0"
+#
+# 14.4.0 — MINOR. Organization roles carry only the management axis (#1040,
+# owner ruling 2026-09-24). No operation and no schema moves.
+#
+# Behaviour a client may notice without a schema change: the eight RBAC
+# permissions that gated case and evidence data by organization role
+# (`cases:read`, `cases:write`, `cases:delete`, `cases:assign`, `cases:close`,
+# `evidence:read`, `evidence:upload`, `evidence:delete`) are retired, so they no
+# longer appear in `UserDetailResponse.permissions`
+# (`GET /api/v1/admin/users/{user_id}`). An `admin`'s list is now
+# `["org:manage_settings", "org:manage_users"]`; a `member`'s or a `viewer`'s is
+# `[]`. Nothing ever checked the eight — ADR-017 D5 says organization roles gate
+# no data — and no first-party client reads that list. The rows are deleted by
+# alembic `020_org_permissions_are_management_only`.
+#
+# The OAuth scope strings `cases:read` / `cases:write` / `knowledge:read`, which
+# tokens carry in `scopes` and the consent page lists, are a separate vocabulary
+# and do not change.
+#
+# MINOR because the list keeps its type and every client survives a shorter
+# one: the dashboard's source has no reader of it, and the copilot and the slack
+# agent do not call the route.
+API_CONTRACT_VERSION = "14.4.0"
