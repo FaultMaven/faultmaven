@@ -40,6 +40,11 @@ Standalone and Test Cloud), so **26 jobs** per row: runs 37920418458,
 38139448483, 38182679918 (the latest attempt of each; 37924692163's Test
 Cloud is attempt 2, so #1916's stalled attempt 1 is not in the sample).
 
+One row is not from this sample. #1980's sanitizer changed
+``SANITIZE_DOCUMENT_BATCH``'s workload after these runs, so that row is
+anchored by the same derivation on a later sample of its own, 27 runs listed
+at the row.
+
 Each row's statistic is **normalised by the job's raw_ratio**, the axis
 ``tests/wallclock/collect.py`` puts every row on: a latency is
 ``observed / raw_ratio``, a throughput ``observed x raw_ratio``. That is the
@@ -66,7 +71,11 @@ anchoring dates; the arithmetic uses the 3.53 measured for the first 21
 rows), so dividing by it puts them on the same axis as the CI rows.
 
 Reproduce the table (it prints every row's old and new reference, new
-regression, clearance and the min/max raw_ratio it was measured at)::
+regression, clearance and the min/max raw_ratio it was measured at). Over
+these 13 runs it re-derives every row except ``SANITIZE_DOCUMENT_BATCH``,
+whose proposal from them measures the sanitizer before #1980: that row's own
+runs are listed at the row, and the same command over their rows re-derives
+it::
 
     for run in 37920418458 37923637124 37923926346 37924692163 37978314493 \\
                38010407829 38022212638 38031929009 38048142028 38091013985 \\
@@ -386,8 +395,9 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 # --- moved here from the required-gate unit tests (#1579) --------------------
 #
 # First anchored 2026-09-26 on the development box; re-anchored with the rest
-# of the table (module docstring). Every ``product_target`` is the number the
-# moved assertion used, converted to this row's units:
+# of the table (module docstring), except ``SANITIZE_DOCUMENT_BATCH``, which
+# has a sample of its own, listed at its row. Every ``product_target`` is the
+# number the moved assertion used, converted to this row's units:
 #
 # =============================  ====================================  =========
 # row                            asserted before, and where            product
@@ -416,23 +426,36 @@ SANITIZE_LARGE_DOCUMENT = ThroughputBudget(
     product_target=100.0,
     reference=100650.0,
 )
-#: Re-anchored by #1980, by this table's derivation, on a measured ratio
-#: rather than new CI rows: #2024 re-derives it with ``collect.py --propose``
-#: once CI has recorded the change. #1980 made the sanitizer detect 22
-#: pattern families where it had 14, read a keyed value whole and on the next
-#: line, and run a masked second round on any text that has a span (one
-#: idempotent pass). On these 50 secret-dense documents that costs 0.69x the
-#: old throughput (twelve interleaved A/B rounds on the development box,
-#: pinned to one core, median ratio, best window of 25 each; the 1000-line
-#: document got 3.3x FASTER). At 0.69x: the #1910 reference 19661/s ->
-#: 13566/s, rounded down to 13500; the worst of the 26 jobs 11675/s ->
-#: 8056/s, which the floor must clear by 1.5x: at most 5370/s; 13500 / 2.5 =
-#: 5400 does not, so the floor is 5300/s, inside the band (2.55x).
+#: Anchored on a sample of its own, not the table's (module docstring):
+#: #1980's sanitizer (#2021, ``169497f30``) changed this workload after the
+#: #1910 runs. ``collect.py --propose --box-rev 4ad6d76e0`` over the
+#: ``wallclock-rows-*`` artifacts of 27 CI/CD Pipeline runs, the latest
+#: attempt of each, both profiles: 54 jobs.
+#:
+#: * The 25 green ``main`` runs from #2021 through ``15372124b``:
+#:   38694469190, 38698676124, 38720972324, 38724035943, 38724375353,
+#:   38727266224, 38727604191, 38731703849, 38737926920, 38742519867,
+#:   38847020579, 38865048814, 38882044873, 38972101151, 38996794576,
+#:   39000253334, 39015891148, 39064691781, 39064897417, 39065136593,
+#:   39098333639, 39103951747, 39104662574, 39119197025, 39120794036.
+#: * The two pull-request runs whose false reds against the old 5300/s floor
+#:   this anchor is set to clear. 39107602469 (#2058): its Test Standalone
+#:   read 868.7/s at raw_ratio 5.32, 4624/s normalised, the worst job in the
+#:   sample. 38994720342 (#2040): its red was Test Cloud attempt 1, 701.7/s
+#:   at raw_ratio 7.33, 5143/s normalised; the sample holds that job's
+#:   passing attempt 2 instead.
+#:
+#: The reference is the CI p5, 8822.5/s. The floor is 3000/s: 2.94x below
+#: the reference, inside the band, and 1.54x clear of #2058's job, the worst
+#: in the sample (1.71x clear of #2040's red). #2031 (``11900bcd1``) changed
+#: the sanitizer's cost again; the last 17 ``main`` runs listed, from
+#: 38737926920 (#2031) on, give the same p5 and worst job as all 25 (8826/s
+#: and 6926/s).
 SANITIZE_DOCUMENT_BATCH = ThroughputBudget(
     "test_document_batch_sanitization_throughput",
-    regression=5300.0,
+    regression=3000.0,
     product_target=10.0,
-    reference=13500.0,
+    reference=8822.5,
 )
 
 # tests/performance/test_shim_overhead.py
