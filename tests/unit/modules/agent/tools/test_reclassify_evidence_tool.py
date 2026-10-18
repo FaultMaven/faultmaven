@@ -1,7 +1,7 @@
 """Phase 1.5 — ReclassifyEvidenceTool
 
 Covers the agent-tool wrapper around
-``EvidenceReclassifier.reclassify_evidence``. The tool is lean by
+``EvidenceReclassifier.reclassify_in_turn``. The tool is lean by
 design — validation + delegation — so tests focus on the validation
 surface and the exception-to-ToolResult mapping.
 """
@@ -66,7 +66,7 @@ def _ctx(in_memory_case=_UNSET):
 @pytest.fixture
 def reclassifier():
     svc = MagicMock()
-    svc.reclassify_evidence = AsyncMock()
+    svc.reclassify_in_turn = AsyncMock()
     return svc
 
 
@@ -139,7 +139,7 @@ class TestReclassifierDelegation:
         updated.evidence_id = "ev_abc"
         updated.source_type.value = "logs_and_errors"
         updated.summary = "Re-extracted"
-        reclassifier.reclassify_evidence.return_value = updated
+        reclassifier.reclassify_in_turn.return_value = updated
 
         with _enable_flag(True):
             result = await tool.execute_with_context(
@@ -155,16 +155,16 @@ class TestReclassifierDelegation:
         # invited the model to read stale claim text as the fresh one.
         assert "summary" not in result.data
         assert result.data["evidence_summary"] == "Re-extracted"
-        # Tool must pass trigger="agent_tool" for observability labelling.
-        kwargs = reclassifier.reclassify_evidence.call_args.kwargs
-        assert kwargs["trigger"] == "agent_tool"
+        # The tool reaches the in-turn method (its counter label is that
+        # method's, not a parameter).
+        kwargs = reclassifier.reclassify_in_turn.call_args.kwargs
         assert kwargs["case_id"] == "case_xyz"
         assert kwargs["user_id"] == "user_abc"
         assert kwargs["data_type"] == DataType.LOGS_AND_ERRORS
 
     @pytest.mark.asyncio
     async def test_not_found_maps_to_error(self, tool, reclassifier):
-        reclassifier.reclassify_evidence.side_effect = NotFoundError(
+        reclassifier.reclassify_in_turn.side_effect = NotFoundError(
             "Evidence", "ev_abc"
         )
         with _enable_flag(True):
@@ -178,7 +178,7 @@ class TestReclassifierDelegation:
     @pytest.mark.asyncio
     async def test_authorization_error_maps_to_error(self, tool, reclassifier):
         """AuthorizationError surfaces as a failed ToolResult."""
-        reclassifier.reclassify_evidence.side_effect = AuthorizationError("nope")
+        reclassifier.reclassify_in_turn.side_effect = AuthorizationError("nope")
         with _enable_flag(True):
             result = await tool.execute_with_context(
                 params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
@@ -191,7 +191,7 @@ class TestReclassifierDelegation:
         """Evidence with no stored raw file → ConflictError → failed
         ToolResult.
         """
-        reclassifier.reclassify_evidence.side_effect = ConflictError(
+        reclassifier.reclassify_in_turn.side_effect = ConflictError(
             "Evidence ev_abc has no stored raw file",
             resource_type="evidence",
             resource_id="ev_abc",
@@ -217,7 +217,7 @@ class TestReclassifierDelegation:
         updated.evidence_id = "ev_abc"
         updated.source_type.value = "logs_and_errors"
         updated.summary = "Re-extracted"
-        reclassifier.reclassify_evidence.return_value = updated
+        reclassifier.reclassify_in_turn.return_value = updated
 
         ctx = _ctx()
         with _enable_flag(True):
@@ -227,8 +227,8 @@ class TestReclassifierDelegation:
             )
 
         assert result.success is True
-        kwargs = reclassifier.reclassify_evidence.call_args.kwargs
-        assert kwargs["in_flight_case"] is ctx.in_memory_case
+        kwargs = reclassifier.reclassify_in_turn.call_args.kwargs
+        assert kwargs["case"] is ctx.in_memory_case
 
     @pytest.mark.asyncio
     async def test_no_in_flight_case_refuses_rather_than_losing_the_write(
@@ -250,4 +250,4 @@ class TestReclassifierDelegation:
 
         assert result.success is False
         assert "in-flight case" in result.error
-        reclassifier.reclassify_evidence.assert_not_awaited()
+        reclassifier.reclassify_in_turn.assert_not_awaited()

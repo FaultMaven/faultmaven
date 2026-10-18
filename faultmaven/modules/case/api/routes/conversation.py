@@ -1143,12 +1143,11 @@ async def reclassify_evidence(
         case_service is not None
         and await case_service.get_case(case_id, current_user.user_id) is not None
     )
-    updated_evidence = await evidence_reclassifier.reclassify_evidence(
+    updated_evidence = await evidence_reclassifier.reclassify_out_of_band(
         case_id=case_id,
         evidence_id=evidence_id,
         user_id=current_user.user_id,
         data_type=data_type,
-        trigger="api",
         caller_reads_case=caller_reads_case,
     )
 

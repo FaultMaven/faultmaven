@@ -180,7 +180,7 @@ class TestReclassifyRouteForwardsTheReadFact:
 
         monkeypatch.setattr(get_settings().preprocessing, "reclassify_enabled", True)
         reclassifier = SimpleNamespace(
-            reclassify_evidence=AsyncMock(
+            reclassify_out_of_band=AsyncMock(
                 return_value=SimpleNamespace(
                     evidence_id="ev_aaaaaaaaaaaa",
                     source_type="logs",
@@ -215,6 +215,6 @@ class TestReclassifyRouteForwardsTheReadFact:
             json={"data_type": "logs_and_errors"},
         )
 
-        kwargs = recording.reclassify_evidence.await_args.kwargs
+        kwargs = recording.reclassify_out_of_band.await_args.kwargs
         assert kwargs["caller_reads_case"] is reads
         assert kwargs["user_id"] == caller

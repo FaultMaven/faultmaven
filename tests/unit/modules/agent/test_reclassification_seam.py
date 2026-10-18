@@ -198,7 +198,7 @@ def _build(
 
 async def _out_of_band(rig, evidence_id=EV_1):
     """The ``PATCH /evidence/{id}/classification`` path. Returns the saved case."""
-    await rig.reclassifier.reclassify_evidence(
+    await rig.reclassifier.reclassify_out_of_band(
         case_id=rig.case.case_id,
         evidence_id=evidence_id,
         user_id=OWNER,
@@ -607,12 +607,12 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         rig = _build()
         stranger = create_sample_case(user_id=OWNER)
         with pytest.raises(ValidationException):
-            await rig.reclassifier.reclassify_evidence(
+            await rig.reclassifier.reclassify_in_turn(
                 case_id=rig.case.case_id,
+                case=stranger,
                 evidence_id=EV_1,
                 user_id=OWNER,
                 data_type=DataType.LOGS_AND_ERRORS,
-                in_flight_case=stranger,
             )
 
 
@@ -679,7 +679,7 @@ class TestATerminalCaseIsNotMutable:
         rig = _build()
         closed = self._closed(rig)
         with pytest.raises(ValidationException) as exc:
-            await rig.reclassifier.reclassify_evidence(
+            await rig.reclassifier.reclassify_out_of_band(
                 case_id=closed.case_id,
                 evidence_id=EV_1,
                 user_id=OWNER,
@@ -693,7 +693,7 @@ class TestATerminalCaseIsNotMutable:
         rig = _build()
         self._closed(rig)
         with pytest.raises(ValidationException):
-            await rig.reclassifier.reclassify_evidence(
+            await rig.reclassifier.reclassify_out_of_band(
                 case_id=rig.case.case_id,
                 evidence_id=EV_1,
                 user_id=OWNER,
@@ -1273,7 +1273,7 @@ class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
     async def test_an_open_case_answers_not_found(self):
         rig = _build()
         with pytest.raises(NotFoundError):
-            await rig.reclassifier.reclassify_evidence(
+            await rig.reclassifier.reclassify_out_of_band(
                 case_id=rig.case.case_id,
                 evidence_id="ev_does_not_exist",
                 user_id=OWNER,
@@ -1293,7 +1293,7 @@ class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
         )
         rig.repo._storage[closed.case_id] = closed
         with pytest.raises(NotFoundError):
-            await rig.reclassifier.reclassify_evidence(
+            await rig.reclassifier.reclassify_out_of_band(
                 case_id=closed.case_id,
                 evidence_id="ev_does_not_exist",
                 user_id=OWNER,

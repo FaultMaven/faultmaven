@@ -595,10 +595,10 @@ The extractor pipeline has two correction paths layered on top of the §2.4 sing
 
 When the heuristic classifier picks the wrong `DataType` (or short-circuits on `classification_failed`), the user can correct it. Two callers exist:
 
-- `PATCH /evidence/{id}/classification` — operator/UI-driven correction.
-- `reclassify_evidence` agent tool — agent-driven correction during investigation.
+- `PATCH /evidence/{id}/classification` — operator/UI-driven correction, through `EvidenceReclassifier.reclassify_out_of_band` (loads, applies, saves).
+- `reclassify_evidence` agent tool — agent-driven correction during investigation, through `EvidenceReclassifier.reclassify_in_turn` (applies to the turn's own case, which the turn saves).
 
-Both invoke `PreprocessingService.reclassify_evidence(content, filename, user_override, previous_metadata)`, which calls `classify_and_extract(..., user_override=<DataType>)`. The classifier is forced to return `source="user_override"`, `confidence=1.0`, suppressing the low-confidence marker on the updated evidence row. The newly-produced `extractor.attempts` list is then prepended with the prior attempts via `_merge_attempts()`. The combined list is hard-capped at `_MAX_ATTEMPTS_KEPT = 5` entries; the **oldest** entries roll off the head when the cap is exceeded — preserving the most recent truth and the immediately-preceding mistakes, while bounding row growth on repeated corrections.
+Both apply the change through `EvidenceReclassifier.apply_reclassification`, which invokes `PreprocessingService.reclassify_evidence(content, filename, user_override, previous_metadata)`, which calls `classify_and_extract(..., user_override=<DataType>)`. The classifier is forced to return `source="user_override"`, `confidence=1.0`, suppressing the low-confidence marker on the updated evidence row. The newly-produced `extractor.attempts` list is then prepended with the prior attempts via `_merge_attempts()`. The combined list is hard-capped at `_MAX_ATTEMPTS_KEPT = 5` entries; the **oldest** entries roll off the head when the cap is exceeded — preserving the most recent truth and the immediately-preceding mistakes, while bounding row growth on repeated corrections.
 
 Each appended attempt sets `triggered_by = "user_override"` so observability can distinguish user-corrected rows from initial classifications.
 
