@@ -49,6 +49,12 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   model's context and what the `TOOL_RESULT_MAX_CHARS` cap cuts off, per tool.
   See [Tool-Result Context Budget](./tool-result-budget.md) for the clip-rate
   query and what raising the cap would actually cost.
+- `faultmaven_auth_revocation_watermarks` — the per-user token revocation
+  watermarks the revocation store holds that can still revoke something,
+  recounted every 300 s by a background task. The store is deployment-wide, so
+  every replica reports the same value: aggregate with `max()`, not `sum()`. A
+  count that fails reads `NaN`, never the last number. See
+  [IAM design](../../architecture/security/iam-design.md)
 
 ## Alerting on component health
 

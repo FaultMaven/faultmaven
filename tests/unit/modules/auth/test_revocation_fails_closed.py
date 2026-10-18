@@ -168,6 +168,9 @@ class _RaisingStore(SequentialRevocationState, ITokenRevocationStore):
     async def cleanup_expired(self):  # pragma: no cover - unused
         raise self._exc
 
+    async def count_user_watermarks(self):  # pragma: no cover - unused
+        raise self._exc
+
 
 def _operational_error() -> sa_exc.OperationalError:
     """The shape SQLAlchemy raises for a locked / absent / full SQLite file."""

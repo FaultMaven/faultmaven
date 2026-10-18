@@ -189,6 +189,43 @@ class TestPerUserArm:
         assert await store.is_user_revoked(USER_ID, int(now) - 1) is True
 
 
+class TestCountUserWatermarks:
+    """The keyspace the watermark gauge reports (#1479), the same on both stores."""
+
+    async def test_an_empty_store_counts_zero(self, store):
+        assert await store.count_user_watermarks() == 0
+
+    async def test_each_users_watermark_counts_once(self, store):
+        now = time.time()
+        await store.revoke_user_tokens_before("user-a", now, ttl=60)
+        await store.revoke_user_tokens_before("user-b", now, ttl=60)
+
+        assert await store.count_user_watermarks() == 2
+
+    async def test_re_revoking_the_same_user_still_counts_one(self, store):
+        now = time.time()
+        await store.revoke_user_tokens_before(USER_ID, now - 5, ttl=60)
+        await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
+
+        assert await store.count_user_watermarks() == 1
+
+    async def test_a_jti_entry_is_not_a_watermark(self, store):
+        """Including a jti whose VALUE is spelled like a user key."""
+        await store.add_revoked_token(JTI, ttl=60)
+        await store.add_revoked_token(f"user:{USER_ID}", ttl=60)
+
+        assert await store.count_user_watermarks() == 0
+
+    async def test_a_cleared_watermark_leaves_the_count(self, store):
+        now = time.time()
+        await store.revoke_user_tokens_before("user-a", now - 10, ttl=60)
+        await store.revoke_user_tokens_before("user-b", now - 10, ttl=60)
+
+        assert await store.clear_user_revocation_if_before("user-a", now) is True
+
+        assert await store.count_user_watermarks() == 1
+
+
 @pytest.mark.slow
 class TestEntriesStopRevokingAtTheirDeadline:
     """TTL is the revocation RULE, not a cleanup detail.
@@ -220,6 +257,8 @@ class TestEntriesStopRevokingAtTheirDeadline:
         # carries its own deadline filter, so it needs its own observable here
         # or a store could expire correctly through the methods nobody uses.
         assert await store.revocation_state(JTI, USER_ID, int(now)) == (False, False)
+        # And an elapsed watermark is no longer part of the gauge's population.
+        assert await store.count_user_watermarks() == 0
 
 
 class TestTheBatchedReadAgreesWithTheSingleReads:
@@ -618,6 +657,9 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
                 return False
 
             async def cleanup_expired(self):
+                return 0
+
+            async def count_user_watermarks(self):
                 return 0
 
         store = FreeReads()

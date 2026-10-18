@@ -428,6 +428,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Funnel metrics collector not started (non-fatal): {e}")
 
+    # Revocation watermark keyspace gauge (#1479): how many live per-user
+    # watermarks the revocation store holds. Same exporter gate and the same
+    # background-task shape as the funnel collector above.
+    try:
+        from faultmaven.config.settings import MetricsExporter, get_settings
+
+        if get_settings().providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+            from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
+                collector as watermark_collector,
+            )
+
+            app.state.revocation_watermark_task = asyncio.create_task(
+                watermark_collector.run_periodic(app.state.token_revocation_store)
+            )
+            logger.info("✅ Revocation watermark gauge started")
+    except Exception as e:
+        logger.warning(f"Revocation watermark gauge not started (non-fatal): {e}")
+
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
     )
@@ -460,6 +478,15 @@ async def lifespan(app: FastAPI):
         _funnel_task.cancel()
         try:
             await _funnel_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Stop revocation watermark gauge
+    _watermark_task = getattr(app.state, "revocation_watermark_task", None)
+    if _watermark_task is not None:
+        _watermark_task.cancel()
+        try:
+            await _watermark_task
         except (asyncio.CancelledError, Exception):
             pass
 
