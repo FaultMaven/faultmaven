@@ -18,15 +18,23 @@ version (https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944512
 probed the same way before they were built; the R5a/R5b and F1 rows, and
 the key, multi-line and renderer tests at the end, are its second round
 (https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944976538),
-and R5c-R5j its third.
+and R5c-R5j its third. The ``1858-`` rows are #1858's plan table
+(https://github.com/FaultMaven/faultmaven/issues/1858#issuecomment-6249782911),
+probed the same way when the analysis became one taint pass per scope; its
+X rows pin how the lane read the plan's rules where the probe was silent.
 The invariant they pin, on the response-producing surface:
 
 * an exception's text reaching an ``HTTPException``'s ``detail`` or
-  ``headers`` is reported whenever the exception came from a broad source,
-  whatever the status, and at 5xx otherwise;
+  ``headers`` is reported whenever the exception came from a broad source or
+  the site sits inside a broad handler, whatever the status, and at 5xx
+  otherwise;
 * whether the ``HTTPException`` is built directly or through a same-module
-  factory or raising helper, wherever that call stands, and whether the
-  exception arrives by an ``except`` binding or a function parameter.
+  factory, lambda factory or raising helper, wherever that call stands, or
+  has its ``detail`` or ``headers`` written onto it after it is built;
+* whether the exception arrives by an ``except`` binding or a function
+  parameter, and through any chain of local bindings in one function or a
+  closure it defines. A binding that rebinds exactly that name on every path
+  to the sink stops the taint; a write into an object never does.
 
 The N rows are as much the point as the P rows: a guard that cries wolf on a
 typed 4xx or a static detail is the guard the next person narrows until it is
@@ -64,6 +72,15 @@ _HEADER = (
 #: The header the review's D and NN rows were probed under: ``_llm_http``
 #: again, and ``Any`` for the annotation rows.
 _DEFEAT_HEADER = 'import traceback\nfrom typing import Any, Optional\nfrom fastapi import HTTPException, status\ndef _llm_http(status_code, error_code, detail, retry_after, correlation_id):\n    return HTTPException(status_code=status_code, detail=detail, headers={"x": error_code})\n'
+
+#: The header #1858's rows were probed under: ``traceback`` and ``sys`` for the
+#: renderer rows, ``Any``, and a local ``ValidationError`` for the typed arms.
+_TAINT_HEADER = (
+    "import traceback, sys\n"
+    "from typing import Any\n"
+    "from fastapi import HTTPException\n"
+    "class ValidationError(Exception): ...\n"
+)
 
 #: A row is a planter: ``plant(tmp_path) -> (path, leak_line)``. The leak line
 #: is what a must-flag row expects reported, and nothing else; a must-not-flag
@@ -533,6 +550,193 @@ _MUST_FLAG = [
         # The default is replaced by a `match` capture.
         id="R5g-match",
     ),
+    # --- #1858: one taint analysis per scope, to a fixed point. The plan's
+    # T rows, probed before the change was built ---
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    message = f"Failed: {err}"\n    raise HTTPException(500, detail=message)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T1",  # `err = str(e)` in a broad handler, a second hop after it, raised 500
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        err = e\n    text = str(err)\n    payload = {"m": text}\n    raise HTTPException(400, detail=payload)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T2",  # three hops after a broad handler, raised at 400: the source is broad
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    def fail():\n        raise HTTPException(500, detail=msg)\n    try:\n        do()\n    except Exception as e:\n        msg = str(e)\n        fail()\n",
+            header=_TAINT_HEADER,
+            leak_line=3,
+        ),
+        id="1858-T3",  # a closure written before the `try` raises the `msg` its handler binds
+    ),
+    pytest.param(
+        _planted(
+            "def helper(exc: Exception):\n    def build():\n        return HTTPException(500, detail=str(exc))\n    return build()\n",
+            header=_TAINT_HEADER,
+            leak_line=3,
+        ),
+        id="1858-T4",  # an exception parameter read in a nested closure that builds the exception
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except Exception:\n        tb = traceback.format_exc()\n    raise HTTPException(500, detail=tb)\n",
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T5",  # `tb = traceback.format_exc()` under an unbound broad handler, raised after it
+    ),
+    pytest.param(
+        _planted(
+            'def r(x):\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    if x:\n        err = "static"\n    raise HTTPException(500, detail=err)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T6",  # a conditional rebinding does not kill
+    ),
+    pytest.param(
+        _planted(
+            "def r(items):\n    for i in items:\n        try:\n            do(i)\n        except ValueError as e:\n            msg = str(e)\n        except Exception:\n            raise HTTPException(400, detail=msg)\n",
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T7",  # in a loop, a typed arm stashes `msg` and its broad sibling raises it at 400
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except Exception as e:\n        first = str(e)\n    if (second := first.upper()):\n        raise HTTPException(500, detail=second)\n",
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T8",  # a walrus hop
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except Exception as e:\n        lines = str(e).splitlines()\n    for line in lines:\n        raise HTTPException(500, detail=line)\n",
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T9",  # a `for`-target hop
+    ),
+    pytest.param(
+        _planted(
+            "mk = lambda m: HTTPException(500, detail=m)\ndef r():\n    try:\n        do()\n    except Exception as e:\n        raise mk(str(e))\n",
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T10",  # a lambda factory
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    err = HTTPException(500, detail="failed")\n    try:\n        do()\n    except Exception as e:\n        err.detail = str(e)\n        raise err\n',
+            header=_TAINT_HEADER,
+            leak_line=6,
+        ),
+        id="1858-T11",  # `detail` written onto an `HTTPException` built earlier: reported at the write
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    err = HTTPException(500, detail="failed")\n    try:\n        do()\n    except Exception as e:\n        err.headers = {"x": str(e)}\n        raise err\n',
+            header=_TAINT_HEADER,
+            leak_line=6,
+        ),
+        id="1858-T12",  # `headers` written onto one the same way
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        info = {"m": str(e)}\n    match info:\n        case {"m": text}:\n            raise HTTPException(500, detail=text)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T13",  # a `match` capture from a tainted subject
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    resp = {"ok": False}\n    try:\n        do()\n    except Exception as e:\n        resp["error"] = str(e)\n    resp["more"] = "static"\n    raise HTTPException(500, detail=resp)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T14",  # a container write after the taint does not kill
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        msg = str(e)\n    msg += " (retry later)"\n    raise HTTPException(500, detail=msg)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-T15",  # `msg += ...` does not kill
+    ),
+    # --- #1858, beyond the plan's table: the lane's reading of its rules ---
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except Exception:\n        def fail():\n            raise HTTPException(400, detail=traceback.format_exc())\n        fail()\n",
+            header=_TAINT_HEADER,
+            leak_line=6,
+        ),
+        # A rendering in a closure defined inside a broad handler: `main`
+        # caught it by walking the whole handler, and a source read only
+        # within the closure's own scope would lose it.
+        id="1858-X1",
+    ),
+    pytest.param(
+        _planted(
+            "mk = lambda exc: HTTPException(500, detail=str(exc))\n",
+            header=_TAINT_HEADER,
+        ),
+        # A lambda is a scope, so its exception parameter is a source: the
+        # one-line twin of P21's `def h(exc)`.
+        id="1858-X2",
+    ),
+    pytest.param(
+        _planted(
+            "def r(items):\n    try:\n        do()\n    except Exception as e:\n        msg = str(e)\n    names = [msg for msg in items]\n    raise HTTPException(500, detail=msg)\n",
+            header=_TAINT_HEADER,
+        ),
+        # A comprehension target binds in the comprehension's own scope, so
+        # it does not kill the `msg` raised after it.
+        id="1858-X3",
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    err = HTTPException(500, detail="failed", headers={})\n    try:\n        do()\n    except Exception as e:\n        err.headers.update({"x": str(e)})\n        raise err\n',
+            header=_TAINT_HEADER,
+            leak_line=6,
+        ),
+        # `headers` written onto a built exception by method call, the
+        # sibling of T12's assignment.
+        id="1858-X4",
+    ),
+    pytest.param(
+        _planted(
+            "mk = lambda m: wrap(HTTPException(500, detail=m))\ndef r():\n    try:\n        do()\n    except KeyError as e:\n        raise mk(str(e))\n",
+            header=_TAINT_HEADER,
+        ),
+        # A lambda factory that builds its exception anywhere in its body,
+        # as a `def` factory may.
+        id="1858-X5",
+    ),
+    pytest.param(
+        _planted(
+            "class C:\n    mk = lambda self, m: HTTPException(500, detail=m)\n    def r(self):\n        try:\n            do()\n        except KeyError as e:\n            raise self.mk(str(e))\n",
+            header=_TAINT_HEADER,
+        ),
+        # A lambda bound in a class body is a method, reached through `self.`.
+        id="1858-X6",
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except ValueError as e:\n        a = str(e)\n    try:\n        do()\n    except Exception as e2:\n        z = str(e2)\n    y = z\n    x = y\n    c = a + x\n    raise HTTPException(400, detail=c)\n",
+            header=_TAINT_HEADER,
+        ),
+        # Broad is the OR of what reaches a definition: `c` is typed through
+        # `a` one hop in, and broad through `x` three hops in.
+        id="1858-X7",
+    ),
+    pytest.param(
+        _planted(
+            "def r():\n    try:\n        do()\n    except ValueError as e:\n        msg = str(e)\n    except Exception:\n        def fail():\n            raise HTTPException(400, detail=msg)\n        fail()\n",
+            header=_TAINT_HEADER,
+            leak_line=8,
+        ),
+        # T7's typed stash, raised at 400 by a closure defined inside the
+        # broad sibling: the sink sits inside that handler lexically.
+        id="1858-X8",
+    ),
 ]
 
 _MUST_NOT_FLAG = [
@@ -741,6 +945,84 @@ _MUST_NOT_FLAG = [
         # its default, so this is not a rebind.
         id="R5j-comprehension",
     ),
+    # --- #1858: the plan's N rows ---
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    err = "static"\n    raise HTTPException(500, detail=err)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N1",  # an unconditional rebinding after the handler kills (main flagged this)
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    if err:\n        raise HTTPException(500, detail="failed")\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N2",  # the stash read only as a boolean
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    failed = err is not None\n    raise HTTPException(500, detail={"failed": failed})\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N3",  # a hop through a `Compare`
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except ValidationError as e:\n        err = str(e)\n    message = f"bad: {err}"\n    raise HTTPException(400, detail=message)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N4",  # a typed handler, two hops, raised at 400
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    def fail(msg):\n        raise HTTPException(500, detail=msg)\n    try:\n        do()\n    except Exception as e:\n        msg = str(e)\n    fail("static")\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N5",  # a closure whose parameter shadows the tainted name
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except ValidationError as e:\n        resp = {"m": str(e)}\n        raise HTTPException(400, detail=resp)\n    except Exception as e:\n        resp = {"m": "failed"}\n        raise HTTPException(500, detail=resp)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N6",  # each sibling arm rebinds `resp`: typed 400 with text, broad 500 static
+    ),
+    pytest.param(
+        _planted(
+            'def r(flag):\n    msg = "static"\n    if flag:\n        raise HTTPException(500, detail=msg)\n    try:\n        do()\n    except Exception as e:\n        msg = str(e)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N7",  # a raise above the handler
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    try:\n        do()\n    except Exception as e:\n        code = getattr(e, "code", None)\n    text = "A" if code == 1 else "B"\n    raise HTTPException(500, detail=text)\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N8",  # an `IfExp` choosing between literals on `e.code`
+    ),
+    pytest.param(
+        _planted(
+            'mk = lambda m: HTTPException(500, detail="failed")\ndef r():\n    try:\n        do()\n    except Exception as e:\n        raise mk(str(e))\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N9",  # a lambda factory with a static detail
+    ),
+    pytest.param(
+        _planted(
+            'def r():\n    err = HTTPException(500, detail="failed")\n    try:\n        do()\n    except Exception as e:\n        err.headers = {"x": "static"}\n        raise err\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N10",  # a static header written after construction
+    ),
+    pytest.param(
+        _planted(
+            'class S:\n    MAX = 3\n    def r(self):\n        try:\n            do()\n        except Exception as e:\n            self._skip(e)\n        remaining = self.MAX\n        raise HTTPException(500, detail={"remaining": remaining})\n',
+            header=_TAINT_HEADER,
+        ),
+        id="1858-N11",  # `self._skip(e)` in the handler, then `self.MAX` raised: no `self` taint
+    ),
 ]
 
 
@@ -944,3 +1226,58 @@ def test_a_bound_handler_returning_the_rendered_stack_is_a_returned_body_leak(
     )(tmp_path)
 
     assert returned_body_leak_sites(path) == [f"{path.name}:{leak_line}"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "plant, must_flag",
+    [
+        pytest.param(
+            _planted(
+                "def r():\n    try:\n        do()\n    except Exception as e:\n        err = str(e)\n    body = {'error': err}\n    return {'result': body}\n",
+                header=_TAINT_HEADER,
+            ),
+            True,
+            id="1858-R1",  # two hops after the handler: `main` followed one
+        ),
+        pytest.param(
+            _planted(
+                "def r():\n    resp = {'ok': False}\n    try:\n        do()\n    except Exception as e:\n        resp['error'] = str(e)\n    resp['more'] = 'static'\n    return resp\n",
+                header=_TAINT_HEADER,
+            ),
+            True,
+            id="1858-R2",  # a static write into the returned dict does not kill
+        ),
+        pytest.param(
+            _planted(
+                "class S:\n    def r(self):\n        try:\n            do()\n        except Exception as e:\n            self._helper(e)\n        return self.x\n",
+                header=_TAINT_HEADER,
+            ),
+            False,
+            id="1858-R3",  # `self._helper(e)` does not taint `self`: `main` flagged it
+        ),
+        pytest.param(
+            _planted(
+                "def h(exc: Exception):\n    return {'error': str(exc)}\n",
+                header=_TAINT_HEADER,
+            ),
+            False,
+            id="1858-R4",  # an exception parameter is not a source here: a stated limit
+        ),
+    ],
+)
+def test_returned_body_rows(tmp_path, plant, must_flag):
+    """#1858's returned-body rows: the same analysis, behind a ``return``.
+
+    R1 is the shape the package-wide measurement found live twice
+    (``storage_errors.append(str(e))`` reaching the response through
+    ``debug_info``); R3 is the two ``local_provider.py`` false positives the
+    old one-hop pass produced by reading ``self._transport_error(..., e)`` as
+    tainting ``self``. R4 pins the stated limit rather than a pass: the typed
+    domain handlers in ``api/exception_handlers.py`` return ``str(exc)`` by
+    design (#1598), so returned bodies do not start from parameters.
+    """
+    path, leak_line = plant(tmp_path)
+
+    expected = [f"{path.name}:{leak_line}"] if must_flag else []
+    assert returned_body_leak_sites(path) == expected
