@@ -493,8 +493,8 @@ recovery action ("needs a SECOND INDEPENDENT causal observation") so the
 model is steered to corroborate instead of re-recording the first datum.
 A root under more than one hold carries one annotation, chosen by one
 precedence (a MECE contest, then an open WHY, then the restatement or
-grounding hold), which `root_recovery_reasons` in `causal_graph_block.py` holds
-with its reasons.
+grounding hold), which `_root_recovery_reasons` in `causal_graph_block.py`
+holds with its reasons.
 
 The bar is recompute-honest (NOT grandfathered, unlike the restatement
 guard): support counts are monotone in evidence — links only accumulate
@@ -786,7 +786,8 @@ cause** — never the node states:
 - Each contested root keeps its evidence-derived VALIDATED standing (the §7.1
   entry-bar lesson: re-adjudicating settled nodes is what causes flap), and
   the context builder renders the discrimination ask inline on the contested
-  roots.
+  roots. A root under more than one hold carries the note the annotation
+  precedence in §7.1 (*Independent-support bar*) picks.
 
 **What is NOT a contest** (`distinct_cause_clusters` collapses these before
 counting):
