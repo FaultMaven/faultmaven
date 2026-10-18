@@ -55,6 +55,12 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   every replica reports the same value: aggregate with `max()`, not `sum()`. A
   count that fails reads `NaN`, never the last number. See
   [IAM design](../../architecture/security/iam-design.md)
+- `faultmaven_event_loop_lag_seconds` — a histogram of how late the API's event
+  loop woke from a 0.25 s tick, recorded from startup to shutdown whenever the
+  Prometheus exporter is mounted. A loop held for H seconds reads as at least H
+  minus one interval (0.25 s). Ticks that woke more than 10 s late:
+  `sum by (instance) (increase(faultmaven_event_loop_lag_seconds_count[7d])) - sum by (instance) (increase(faultmaven_event_loop_lag_seconds_bucket{le="10"}[7d]))`.
+  It is per pod: do not `sum` the buckets across pods to read a single pod's hold.
 
 ## Alerting on component health
 
