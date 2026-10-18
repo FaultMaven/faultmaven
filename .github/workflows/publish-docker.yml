@@ -138,7 +138,8 @@ jobs:
       # a tag naming another commit, no commit at all) is refused, and so is a
       # missing queue file. A refusal writes nothing: a person fixes the entry.
       # Four repositories push this branch, so a push rejected as `fetch first`
-      # or `non-fast-forward` is an ordinary race. It RE-READS origin's file and
+      # or `non-fast-forward`, or lost at the server's ref lock, is an ordinary
+      # race. It RE-READS origin's file and
       # decides again, so the last writer has always compared against the
       # newest entry. Any other push failure is red. It never rebases: two runs
       # of one repository rewrite the same three lines, and that rebase stops on
@@ -167,6 +168,7 @@ jobs:
           HEX='^[0-9a-fA-F]{7,40}$'
           SHA_TAG='^sha-([0-9a-fA-F]{7,40})$'
           RACE='^ ! \[rejected\] .*\((fetch first|non-fast-forward)\)'
+          RACE_LOCK='^ ! \[remote rejected\] .*\((incorrect old value provided|cannot lock ref[^)]*|failed to update ref)\)'
           ERR="$(mktemp)"
           trap 'rm -f "$ERR"' EXIT
 
@@ -189,14 +191,18 @@ jobs:
           first_err() {
             awk 'NF { sub(/^gh: /, ""); sub(/[ \t\r]+$/, ""); print; exit }' "$ERR"
           }
-          # The line of a failed push that says why: the first one starting
-          # " ! ", "remote: ", "fatal: " or "error: ", else the first non-blank.
+          # The line of a failed push that says why, trimmed: the first " ! "
+          # status line, else the first "remote: " line with text after the
+          # prefix, else the first "fatal: " or "error: " line, else the first
+          # non-blank line.
           push_err() {
             local line
-            line="$(awk '/^( ! |remote: |fatal: |error: )/ { sub(/[ \t\r]+$/, ""); print; exit }' "$ERR")"
-            if [ -z "$line" ]; then
-              line="$(first_err)"
-            fi
+            line="$(awk '/^ ! / { print; exit }' "$ERR")"
+            [ -n "$line" ] || line="$(awk '/^remote: *[^ \t\r]/ { print; exit }' "$ERR")"
+            [ -n "$line" ] || line="$(awk '/^(fatal|error): / { print; exit }' "$ERR")"
+            [ -n "$line" ] || line="$(awk 'NF { print; exit }' "$ERR")"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
             printf '%s' "$line"
           }
 
@@ -208,8 +214,10 @@ jobs:
             REASON=""
             DETAIL=""
             Q=""
-            if ! sha="$(yq '.commit_sha // ""' "$QUEUE_FILE" 2>"$ERR")" ||
-               ! tag="$(yq '.tag // ""' "$QUEUE_FILE" 2>"$ERR")"; then
+            # select(. != null), not // "": yq's // also replaces false, which
+            # would read a boolean entry as unseeded.
+            if ! sha="$(yq '.commit_sha | select(. != null)' "$QUEUE_FILE" 2>"$ERR")" ||
+               ! tag="$(yq '.tag | select(. != null)' "$QUEUE_FILE" 2>"$ERR")"; then
               DECISION="retry"
               REASON="could not read ${QUEUE_FILE}: $(first_err)"
               return 0
@@ -225,7 +233,9 @@ jobs:
                 REASON="the queued commit_sha is not a commit sha"
                 return 0
               fi
-              if [ -n "$tag" ] && { ! [[ $tag =~ $SHA_TAG ]] || [[ ${sha,,} != "${BASH_REMATCH[1],,}"* ]]; }; then
+              # They agree when either hex is a case-insensitive prefix of the other.
+              if [ -n "$tag" ] && { ! [[ $tag =~ $SHA_TAG ]] ||
+                   [[ ${sha,,} != "${BASH_REMATCH[1],,}"* && ${BASH_REMATCH[1],,} != "${sha,,}"* ]]; }; then
                 DECISION="refuse"
                 REASON="the queued tag and commit_sha name different commits"
                 return 0
@@ -310,7 +320,7 @@ jobs:
                   echo "✓ Updated image queue: ${TAG}"
                   exit 0
                 fi
-                if ! grep -Eq "$RACE" "$ERR"; then
+                if ! grep -Eq -e "$RACE" -e "$RACE_LOCK" "$ERR"; then
                   annotate error "the push to image-queue failed, not as a race: $(push_err). ${GHCR}"
                   exit 1
                 fi
