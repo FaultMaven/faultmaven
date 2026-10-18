@@ -211,7 +211,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         await self.call_external(
             operation_name="add_documents",
             call_func=_add_wrapper,
-            timeout=30.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=2,
             retry_delay=2.0,
         )
@@ -330,7 +332,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         await self.call_external(
             operation_name="delete_documents",
             call_func=_delete_wrapper,
-            timeout=10.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=2,
             retry_delay=1.0,
         )
@@ -362,7 +366,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         await self.call_external(
             operation_name="delete_documents_by_parent_id",
             call_func=_delete_by_parent_wrapper,
-            timeout=10.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=retries,
             retry_delay=1.0,
         )

@@ -16,8 +16,10 @@ interrupt it. These tests pin the fix against a real ``chromadb.HttpClient``:
   refuses an HTTP client the door did not build, and a "persistent" client
   cannot be turned into an HTTP one by the environment;
 - the configuration refusals (``ChromaClientConfigError``) are never answered
-  with a fallback or a degraded mode, at either acquisition site, in the
-  ingester's container wrapper, or in ``DIContainer.initialize``.
+  with a fallback or a degraded mode: not at either acquisition site, not in
+  the ingester's container wrapper, not in ``DIContainer.initialize``, and not
+  in the two channels that decide whether a failed container is terminal, the
+  jobs runner and ``compose_application``, in any deployment mode.
 
 No test here reads a clock (#1579). Each judges an ORDER of events instead:
 whether the loop ran while the stub held a request, and whether the client
@@ -33,17 +35,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
+import types
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import chromadb
 import httpx
 import pytest
 from chromadb.config import Settings as ChromaSettings
+from fastapi import FastAPI
 
+from faultmaven.bootstrap.composition import compose_application
 from faultmaven.container import DIContainer
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
 from faultmaven.container.providers.tools import create_knowledge_ingester
@@ -65,6 +72,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
     ChromaDBVectorStore,
     create_persistent_client,
 )
+from faultmaven.jobs.run import run_job
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from tests.unit.container.conftest import make_chroma_settings
 
@@ -492,6 +500,32 @@ def test_each_store_refuses_an_http_client_built_outside_the_door(
         blocking_executor_for(outside)
 
 
+@pytest.mark.parametrize(
+    "make_store",
+    [
+        CaseVectorStore,
+        KnowledgeVectorStore,
+        lambda c: ChromaDBVectorStore(client=c, collection_name="arm_test"),
+    ],
+    ids=["case", "knowledge", "chromadb"],
+)
+async def test_each_store_refuses_an_async_http_client(
+    stub: _StubChroma, make_store: Any
+) -> None:
+    """R2.4. The door never builds an ``AsyncHttpClient``, and a store cannot
+    drive one from its threads; read as "not HTTP", it would have been
+    accepted as the local arm."""
+    outside = await chromadb.AsyncHttpClient(
+        host="127.0.0.1",
+        port=stub.port,
+        settings=ChromaSettings(anonymized_telemetry=False),
+    )
+    assert is_http_client(outside)
+
+    with pytest.raises(ChromaClientConfigError, match="build_http_client"):
+        make_store(outside)
+
+
 def test_a_persistent_client_cannot_be_turned_into_an_http_one_by_the_env(
     stub: _StubChroma, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -573,21 +607,27 @@ def test_the_ingester_wrapper_does_not_turn_a_refusal_into_no_ingester(
         create_knowledge_ingester(settings)
 
 
-async def test_the_container_does_not_serve_without_its_service_layer(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    """R7. Standalone in development is the lenient posture, where
-    ``initialize()`` swallows a composition failure and the API serves on.
-    A refusal raised by ``register_tools`` (the ingester, host-only, with a
-    malformed token) would then leave the API serving with no service layer,
-    a worse degraded mode than the fallback the class rules out."""
+def _refusing_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, *, cloud: bool
+) -> Any:
+    """Settings whose ``register_tools`` refuses: the ingester, host-only, with
+    a malformed token. Development, so standalone is the lenient posture."""
     monkeypatch.setenv("ENVIRONMENT", "development")
     settings = make_chroma_settings(
-        chromadb_host="chromadb.faultmaven.svc", auth_token="bad token"
+        cloud=cloud, chromadb_host="chromadb.faultmaven.svc", auth_token="bad token"
     )
     settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
-    assert settings.must_not_degrade is False, "not the lenient path"
+    # The jobs runner refuses to start without a persistent database.
+    settings.database.database_url = f"sqlite+aiosqlite:///{tmp_path / 'fm.db'}"
+    assert settings.must_not_degrade is cloud
+    return settings
 
+
+@contextmanager
+def _real_container_refusing(settings: Any) -> Iterator[MagicMock]:
+    """The real ``DIContainer.initialize``, with infrastructure and services
+    stubbed and ``register_tools`` real, so the refusal is raised where it
+    is in production. Yields the ``register_services`` stub."""
     container = DIContainer()
     container._initialized = False
     container._initializing = False
@@ -603,8 +643,86 @@ async def test_the_container_does_not_serve_without_its_service_layer(
         ),
         patch("faultmaven._container_impl.register_services") as services,
     ):
+        yield services
+    assert container._initialized is False
+
+
+_MODES = pytest.mark.parametrize(
+    "cloud", [False, True], ids=["standalone-development", "cloud"]
+)
+
+
+@_MODES
+async def test_the_container_refuses_to_initialize(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+) -> None:
+    """R7. On standalone development ``initialize()`` swallows a composition
+    failure and returns, leaving a container with no service layer."""
+    settings = _refusing_settings(monkeypatch, tmp_path, cloud=cloud)
+
+    with _real_container_refusing(settings) as services:
         with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
-            await container.initialize()
+            await DIContainer().initialize()
 
     services.assert_not_called()
-    assert container._initialized is False
+
+
+@_MODES
+async def test_the_web_boot_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+) -> None:
+    """R2.1. ``compose_application`` treats only a ``RuntimeError`` as
+    terminal. Anything else it wraps on cloud, and on standalone development
+    it answers with "fallback service implementations": a partial app."""
+    settings = _refusing_settings(monkeypatch, tmp_path, cloud=cloud)
+
+    with _real_container_refusing(settings) as services:
+        with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
+            await compose_application(FastAPI(), settings)
+
+    services.assert_not_called()
+
+
+_REFUSAL_JOB_MODULE = "tests._chroma_refusal_job"
+
+
+@_MODES
+async def test_a_job_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+) -> None:
+    """R2.1. The jobs runner treats only a ``RuntimeError`` (and the tenancy
+    refusal) as terminal. Anything else it logs as a warning and runs the
+    job against an uninitialised container: a cloud CronJob reported
+    ``status: ok``."""
+    settings = _refusing_settings(monkeypatch, tmp_path, cloud=cloud)
+    job = types.ModuleType(_REFUSAL_JOB_MODULE)
+    job.run = AsyncMock(return_value={"status": "ok"})
+    job.JOB_TENANT_SCOPE = "tenant_neutral"
+    sys.modules[_REFUSAL_JOB_MODULE] = job
+    try:
+        with (
+            _real_container_refusing(settings),
+            patch("faultmaven.config.settings.get_settings", return_value=settings),
+            patch(
+                "faultmaven.config.deployment_coherence.validate_deployment_coherence"
+            ),
+            patch(
+                "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+                return_value="single",
+            ),
+            patch(
+                "faultmaven.infrastructure.persistence.rls_role_guard"
+                ".assert_app_db_role_enforces_rls",
+                new=AsyncMock(),
+            ),
+            patch.dict(
+                "faultmaven.jobs.run.AVAILABLE_JOBS",
+                {"chroma_refusal_job": _REFUSAL_JOB_MODULE},
+            ),
+        ):
+            with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
+                await run_job("chroma_refusal_job")
+    finally:
+        sys.modules.pop(_REFUSAL_JOB_MODULE, None)
+
+    job.run.assert_not_called()

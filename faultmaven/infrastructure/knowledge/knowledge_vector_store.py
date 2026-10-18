@@ -362,10 +362,13 @@ class KnowledgeVectorStore(BaseExternalClient):
         Called before AND after every write that adds or deletes chunks. The
         size signature would catch an add and a delete of different sizes on
         its own, but not a same-size replace, and a replace is exactly what
-        re-ingesting an edited runbook does. Before: a cached index is never
-        read across the write. After: a build that started after the first
-        call but read the documents before the write landed finishes under an
-        old generation, so its index is not stored.
+        re-ingesting an edited runbook does. Before, from the caller: a cached
+        index is never read across the write. After, in the write wrapper's
+        own ``finally``, on the thread that made the write: a build that
+        started after the first call but read the documents before the write
+        landed finishes under an old generation, so its index is not stored,
+        or is dropped if it already was. The after call runs once the write
+        has landed, even when the caller's await was cancelled first.
         """
         with self._term_stats_lock:
             self._term_stats_generation[collection_name] = (
@@ -1439,7 +1442,13 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
-            collection.add(**add_kwargs)
+            try:
+                collection.add(**add_kwargs)
+            finally:
+                # After the write lands, in its own thread: whatever becomes of the
+                # caller's await, no build that read before it is cached (see
+                # _invalidate_term_stats).
+                self._invalidate_term_stats(collection_name)
 
             self.logger.info(
                 f"Added {len(documents)} documents to KB collection "
@@ -1456,17 +1465,16 @@ class KnowledgeVectorStore(BaseExternalClient):
         # longer exists. Dropping it early costs one rebuild and can never be
         # stale.
         self._invalidate_term_stats(collection_name)
-        try:
-            await self.call_external(
-                operation_name="add_documents",
-                call_func=_add_wrapper,
-                timeout=30.0,
-                retries=2,
-                retry_delay=2.0,
-            )
-        finally:
-            # And after: see _invalidate_term_stats.
-            self._invalidate_term_stats(collection_name)
+
+        await self.call_external(
+            operation_name="add_documents",
+            call_func=_add_wrapper,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
+            retries=2,
+            retry_delay=2.0,
+        )
 
     async def get_document_count(self, collection_name: str) -> int:
         """Get number of documents in a KB collection."""
@@ -1510,12 +1518,11 @@ class KnowledgeVectorStore(BaseExternalClient):
         this while holding its row change uncommitted and passes 0: on SQLite
         that hold is the database's single writer lock, so it must stay one
         attempt long, and the caller's 503 makes its own caller the retry loop.
-        (The ``timeout`` below does not bound the hold either:
-        ``call_external`` applies it to coroutine calls only, and awaits this
-        sync wrapper to its end, so the 503 is never sent while the delete is
-        still landing. On the ``HttpClient`` arm the client's per-phase
-        timeout bounds each request; on a local ``PersistentClient`` the calls
-        run on the loop thread, as before.)
+        (No ``call_external`` timeout bounds the hold either: this is a write,
+        so it passes none and is awaited to its end, and the 503 is never sent
+        while the delete is still landing. On the ``HttpClient`` arm the
+        client's per-phase timeout bounds each request; on a local
+        ``PersistentClient`` the calls run on the loop thread, as before.)
 
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """
@@ -1529,7 +1536,13 @@ class KnowledgeVectorStore(BaseExternalClient):
             chunk_ids = results.get("ids", [])
             if not chunk_ids:
                 return 0
-            collection.delete(ids=chunk_ids)
+            try:
+                collection.delete(ids=chunk_ids)
+            finally:
+                # After the write lands, in its own thread: whatever becomes of the
+                # caller's await, no build that read before it is cached (see
+                # _invalidate_term_stats).
+                self._invalidate_term_stats(collection_name)
             self.logger.info(
                 f"Deleted {len(chunk_ids)} chunks for parent "
                 f"{parent_document_id} from KB collection '{collection_name}'"
@@ -1537,17 +1550,16 @@ class KnowledgeVectorStore(BaseExternalClient):
             return len(chunk_ids)
 
         self._invalidate_term_stats(collection_name)
-        try:
-            return await self.call_external(
-                operation_name="delete_documents_by_parent_id",
-                call_func=_delete_wrapper,
-                timeout=10.0,
-                retries=retries,
-                retry_delay=1.0,
-            )
-        finally:
-            # And after: see _invalidate_term_stats.
-            self._invalidate_term_stats(collection_name)
+
+        return await self.call_external(
+            operation_name="delete_documents_by_parent_id",
+            call_func=_delete_wrapper,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
+            retries=retries,
+            retry_delay=1.0,
+        )
 
     async def list_all_chunk_ids_by_parent(
         self,
@@ -1698,7 +1710,13 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             if not matched:
                 return []
-            collection.delete(ids=matched, **scope)
+            try:
+                collection.delete(ids=matched, **scope)
+            finally:
+                # After the write lands, in its own thread: whatever becomes of the
+                # caller's await, no build that read before it is cached (see
+                # _invalidate_term_stats).
+                self._invalidate_term_stats(collection_name)
             self.logger.info(
                 f"Deleted {len(matched)} observed chunk(s) from KB collection "
                 f"'{collection_name}'"
@@ -1706,14 +1724,13 @@ class KnowledgeVectorStore(BaseExternalClient):
             return matched
 
         self._invalidate_term_stats(collection_name)
-        try:
-            return await self.call_external(
-                operation_name=operation_name,
-                call_func=_delete_wrapper,
-                timeout=15.0,
-                retries=2,
-                retry_delay=1.0,
-            )
-        finally:
-            # And after: see _invalidate_term_stats.
-            self._invalidate_term_stats(collection_name)
+
+        return await self.call_external(
+            operation_name=operation_name,
+            call_func=_delete_wrapper,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
+            retries=2,
+            retry_delay=1.0,
+        )

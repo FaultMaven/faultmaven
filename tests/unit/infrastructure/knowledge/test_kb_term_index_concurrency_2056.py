@@ -7,6 +7,9 @@ properties keep that safe:
 - a build that spans a write does not keep its index (the generation check),
   so a same-size replace, the edited-runbook re-ingest, cannot leave a stale
   index behind;
+- a build that reads before a write lands is dropped once it lands, by the
+  invalidation the write wrapper runs in its own thread, even when the
+  writer's await was cancelled first;
 - concurrent cache misses share one build (single-flight);
 - the build runs after the vector search, so a search that raises (the
   circuit breaker open included) spends no worker on it.
@@ -40,13 +43,20 @@ _DOCUMENTS = [
 
 
 class _Collection:
-    """A KB collection whose FIRST index build is held at its document read."""
+    """A KB collection that can hold its FIRST index build at the document
+    read, or hold every write until the test lets it land."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, hold_build: bool = True, hold_writes: bool = False) -> None:
         self.counts = 0
         self.builds = 0
+        self.hold_build = hold_build
+        self.hold_writes = hold_writes
         self.build_reading = threading.Event()
         self.let_build_finish = threading.Event()
+        self.write_arrived = threading.Event()
+        self.let_write_land = threading.Event()
+        #: Set as the write returns, before anything after it runs.
+        self.write_landed = threading.Event()
 
     def count(self) -> int:
         self.counts += 1
@@ -57,14 +67,17 @@ class _Collection:
     def get(self, **kwargs: Any) -> Dict[str, Any]:
         if kwargs.get("include") == ["documents"]:
             self.builds += 1
-            if self.builds == 1:
+            if self.builds == 1 and self.hold_build:
                 self.build_reading.set()
                 self.let_build_finish.wait(10)
             return {"ids": ["p1_chunk_0", "p2_chunk_0"], "documents": _DOCUMENTS}
         return {"ids": ["p1_chunk_0"]}
 
     def add(self, **kwargs: Any) -> None:
-        pass
+        if self.hold_writes:
+            self.write_arrived.set()
+            self.let_write_land.wait(10)
+            self.write_landed.set()
 
     def delete(self, **kwargs: Any) -> None:
         pass
@@ -119,6 +132,62 @@ async def test_a_build_that_spans_a_same_size_replace_is_not_kept() -> None:
 
     assert collection.builds == 2, "the next lookup did not rebuild"
     assert store._term_stats[KB_COLLECTION] is rebuilt
+
+
+_EDITED: List[Dict[str, Any]] = [
+    {"id": "p1_chunk_0", "content": "edited", "metadata": {"enterprise_id": "ent-1"}}
+]
+
+
+async def test_a_build_that_reads_before_the_write_lands_is_dropped() -> None:
+    """F5. A build that starts after the write's first invalidation but reads
+    the corpus before the write lands is cached, mid-write; the invalidation
+    after the write drops it."""
+    collection = _Collection(hold_build=False, hold_writes=True)
+    store = _http_arm_store(collection)
+
+    write = asyncio.create_task(store.add_documents(_EDITED, embeddings=[[0.1]]))
+    assert await _wait_for(collection.write_arrived)
+    await store._term_stats_for(KB_COLLECTION)
+    assert KB_COLLECTION in store._term_stats, "precondition: cached mid-write"
+
+    collection.let_write_land.set()
+    await write
+
+    assert KB_COLLECTION not in store._term_stats, "a pre-write index was kept"
+
+
+async def test_a_cancelled_writer_leaves_no_pre_write_index_once_the_write_lands() -> (
+    None
+):
+    """F4. The writer's await is cancelled while its write is held, so
+    nothing on the CALLER's side runs after the write lands. A build then
+    reads the pre-write corpus. The invalidation must come from the write's
+    own thread, after it lands."""
+    collection = _Collection(hold_build=False, hold_writes=True)
+    store = _http_arm_store(collection)
+    invalidated_after_landing = threading.Event()
+    invalidate = store._invalidate_term_stats
+
+    def _observed_invalidate(collection_name: str) -> None:
+        invalidate(collection_name)
+        if collection.write_landed.is_set():
+            invalidated_after_landing.set()
+
+    store._invalidate_term_stats = _observed_invalidate  # type: ignore[method-assign]
+
+    write = asyncio.create_task(store.add_documents(_EDITED, embeddings=[[0.1]]))
+    assert await _wait_for(collection.write_arrived)
+    write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+
+    await store._term_stats_for(KB_COLLECTION)
+    assert KB_COLLECTION in store._term_stats, "precondition: pre-write corpus cached"
+
+    collection.let_write_land.set()
+    assert await _wait_for(invalidated_after_landing), "nothing ran after the write"
+    assert KB_COLLECTION not in store._term_stats, "a pre-write index was kept"
 
 
 async def test_concurrent_misses_share_one_build() -> None:

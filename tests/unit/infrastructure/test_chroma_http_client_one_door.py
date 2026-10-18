@@ -21,10 +21,11 @@ names an HTTP client or its server API:
   is not an HTTP implementation (``create_persistent_client`` pins the local
   one, so the environment cannot choose).
 
-Two sites are allowed, both in ``infrastructure/chroma_client.py``, each
+Three sites are allowed, all in ``infrastructure/chroma_client.py``, each
 pinned to its function AND its shape: the construction in
-``build_http_client`` (``.HttpClient``) and the type test in
-``is_http_client`` (``.FastAPI``). The positive control requires exactly one
+``build_http_client`` (``.HttpClient``), and the type test in
+``is_http_client`` (``.FastAPI`` and ``.AsyncFastAPI``, so an
+``AsyncHttpClient`` is refused too). The positive control requires exactly one
 of each, so the test fails if the scan goes blind as well as if a second door
 opens.
 
@@ -57,6 +58,7 @@ _ALLOWED = frozenset(
     {
         (_DOOR_FILE, "build_http_client", "attribute .HttpClient"),
         (_DOOR_FILE, "is_http_client", "attribute .FastAPI"),
+        (_DOOR_FILE, "is_http_client", "attribute .AsyncFastAPI"),
     }
 )
 
@@ -174,11 +176,13 @@ def test_the_only_http_client_construction_is_the_builder() -> None:
     [
         (_DOOR_FILE, (1, "build_http_client", "attribute .HttpClient"), True),
         (_DOOR_FILE, (1, "is_http_client", "attribute .FastAPI"), True),
+        (_DOOR_FILE, (1, "is_http_client", "attribute .AsyncFastAPI"), True),
         # Another function in the door's own file.
         (_DOOR_FILE, (1, "chroma_token_auth_kwargs", "attribute .HttpClient"), False),
         # The right function, another shape.
         (_DOOR_FILE, (1, "is_http_client", "attribute .HttpClient"), False),
         (_DOOR_FILE, (1, "build_http_client", "keyword chroma_api_impl="), False),
+        (_DOOR_FILE, (1, "build_http_client", "attribute .AsyncFastAPI"), False),
         # A function named like the door, in another file.
         ("faultmaven/x.py", (1, "build_http_client", "attribute .HttpClient"), False),
         # Module level of the door's file.

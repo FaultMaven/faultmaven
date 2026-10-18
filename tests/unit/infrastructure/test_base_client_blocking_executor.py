@@ -5,12 +5,12 @@ for a sync ``call_func`` ``call_external`` did not try: it ran inline,
 unbounded, with the loop held. A client that sets ``blocking_executor`` now
 has its sync calls run there, where the loop stays live.
 
-Such a call is awaited to its END, with no ``wait_for``. Ending the await
-early would leave the call running, so a caller would see a timeout for a
-write still landing and could undo it before it landed. The client bounds its
-own requests instead. A client that sets no executor, which is every client
-but the ChromaDB stores on the HTTP arm, keeps the old inline behaviour, and
-coroutine ``call_func``s are untouched.
+With a ``timeout`` such a call's AWAIT ends at that budget, and the call runs
+on in its thread: that is a read keeping its budget. With none it is awaited
+to its end: that is a write, whose caller must never see a timeout for a
+write still landing and compensate for it. A client that sets no executor,
+which is every client but the ChromaDB stores on the HTTP arm, keeps the old
+inline behaviour, and coroutine ``call_func``s are untouched.
 
 No test here reads a clock (#1579): each judges an order of events.
 """
@@ -62,17 +62,44 @@ async def test_a_sync_call_runs_in_the_executor(executor: ThreadPoolExecutor) ->
     assert ran_on.startswith(_PREFIX)
 
 
-async def test_a_running_sync_call_is_never_abandoned_by_its_timeout(
+async def test_a_budgeted_call_ends_the_await_not_the_call(
     executor: ThreadPoolExecutor,
 ) -> None:
-    """R2: the caller sees the call's real outcome, never a timeout for a
-    write that is still landing.
+    """A read keeps its budget: the timeout is raised while the call is still
+    running in its thread, without waiting for it."""
+    client = _Client()
+    client.blocking_executor = executor
+    started = threading.Event()
+    proceed = threading.Event()
+    returned = threading.Event()
 
-    The call is still running long after ``timeout`` has passed: the loop
-    runs a coroutine that sleeps ten times the timeout before letting it
-    finish. ``call_external`` returns what the call returned, and only once
-    it has returned. That coroutine running at all, while the call runs, is
-    the loop staying live.
+    def _read() -> str:
+        started.set()
+        proceed.wait(10)
+        returned.set()
+        return "late"
+
+    try:
+        with pytest.raises(ExternalCallTimeout):
+            await client.call_external(
+                operation_name="read", call_func=_read, timeout=0.05
+            )
+        assert started.is_set(), "the call never started"
+        assert not returned.is_set(), "the timeout waited for the thread"
+    finally:
+        proceed.set()
+
+
+async def test_a_call_with_no_timeout_is_awaited_to_its_end(
+    executor: ThreadPoolExecutor,
+) -> None:
+    """A write passes no timeout: the caller sees the call's real outcome,
+    never a timeout for a write still landing.
+
+    The loop runs a coroutine that waits well past any budget a store
+    declares before letting the call finish; ``call_external`` returns what
+    the call returned, and only once it has returned. That coroutine running
+    at all, while the call runs, is the loop staying live.
     """
     client = _Client()
     client.blocking_executor = executor
@@ -86,26 +113,26 @@ async def test_a_running_sync_call_is_never_abandoned_by_its_timeout(
         returned.set()
         return "landed"
 
-    still_running_after_the_timeout = False
+    still_running_while_the_loop_ran = False
 
-    async def _finish_it_well_after_the_timeout() -> None:
-        nonlocal still_running_after_the_timeout
+    async def _finish_it_later() -> None:
+        nonlocal still_running_while_the_loop_ran
         while not started.is_set():
             await asyncio.sleep(0.01)
         await asyncio.sleep(0.5)
-        still_running_after_the_timeout = not returned.is_set()
+        still_running_while_the_loop_ran = not returned.is_set()
         proceed.set()
 
-    finisher = asyncio.create_task(_finish_it_well_after_the_timeout())
+    finisher = asyncio.create_task(_finish_it_later())
     try:
         result = await client.call_external(
-            operation_name="write", call_func=_write, timeout=0.05
+            operation_name="write", call_func=_write, timeout=None
         )
     finally:
         proceed.set()
         await finisher
 
-    assert still_running_after_the_timeout
+    assert still_running_while_the_loop_ran
     assert returned.is_set()
     assert result == "landed"
 

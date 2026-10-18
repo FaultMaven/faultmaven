@@ -63,11 +63,13 @@ logger = logging.getLogger(__name__)
 #:
 #: chromadb builds its session as ``httpx.Client(timeout=None)`` and exposes no
 #: setting for it, so without this a stalled server holds the calling thread
-#: for as long as it stalls (#2056). It is the only bound on a store's request:
-#: ``call_external`` awaits a sync call to its end rather than abandon a write
-#: that is still landing, so the stores' ``call_external(timeout=…)`` budgets do
-#: not apply to them. The value is the longest of those budgets
-#: (``add_documents``, 30 s), so no phase is cut shorter than a store asked for.
+#: for as long as it stalls (#2056). A store's READ also keeps its
+#: ``call_external(timeout=…)`` budget, which ends the caller's await while the
+#: request runs on in its thread to this bound. A store's WRITE passes no
+#: budget and is awaited to its end, so its caller never compensates for a
+#: write still landing; this is the write's only bound. The value is the
+#: longest budget a store ever declared for one call (``add_documents``,
+#: 30 s), so no phase is cut shorter than a store asked for.
 #:
 #: A server that trickles bytes, each read inside the bound, can hold a request
 #: longer. A total-deadline transport would close that, and is out of scope:
@@ -109,7 +111,7 @@ _VALID_TOKEN_CHARS = frozenset(
 )
 
 
-class ChromaClientConfigError(Exception):
+class ChromaClientConfigError(RuntimeError):
     """A ChromaDB client that must not be built, for a reason that is not connectivity.
 
     No caller may answer it with a fallback or a degraded mode: both client
@@ -118,9 +120,14 @@ class ChromaClientConfigError(Exception):
     That handling exists for an unreachable server, and answering a
     configuration fault with it swaps the populated external store for an
     empty local one on standalone, and blames connectivity on cloud (#1173,
-    #2056). Deliberately not a ``ValueError``: chromadb raises those for an
-    unreachable server, and that is the family the fallback treats as
-    connectivity.
+    #2056).
+
+    A ``RuntimeError``, like ``TenancyConfigurationError``, because that is
+    the container's fail-fast channel: the jobs runner and
+    ``compose_application`` treat it as terminal in every deployment mode,
+    and answer any other exception with a degraded run. Not a ``ValueError``:
+    chromadb raises those for an unreachable server, and that is the family
+    the fallback treats as connectivity.
     """
 
 
@@ -321,13 +328,19 @@ def is_http_client(client: Any) -> bool:
     stall, and the local arm's latency is local work. Asked of the client
     object rather than of the settings, because standalone falls back to a
     ``PersistentClient`` when the configured URL is unreachable. ``False`` for
-    ``None`` and for any client that is not chromadb's HTTP one.
+    ``None`` and for any client that is not chromadb's HTTP one. An
+    ``AsyncHttpClient`` counts as HTTP, so a store refuses it: the door never
+    builds one, and a store cannot drive an async client from its threads.
     """
-    # The module, not ``from … import FastAPI``. This type test is one of the
-    # two sites the one-door scan allows, and it allows only this shape here.
+    # The modules, not ``from … import``. This type test is one of the sites
+    # the one-door scan allows, and it allows only these shapes here.
+    import chromadb.api.async_fastapi
     import chromadb.api.fastapi
 
-    return isinstance(getattr(client, "_server", None), chromadb.api.fastapi.FastAPI)
+    return isinstance(
+        getattr(client, "_server", None),
+        (chromadb.api.fastapi.FastAPI, chromadb.api.async_fastapi.AsyncFastAPI),
+    )
 
 
 def blocking_executor_for(client: Any) -> Optional[Executor]:
