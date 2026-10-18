@@ -445,8 +445,11 @@ still revoke something: on the Redis store the `user:` keys (counted with `SCAN`
 never `KEYS`, under the glob-escaped configured prefix), on the SQL store the
 `scope='user'` rows whose `expires_at` has not passed. It is refreshed every
 300 seconds by a background task, off the request path and off the scrape path,
-and no revocation decision reads it. The store is deployment-wide, so every API
-replica reports the same value: aggregate it with `max()`, not `sum()`.
+and no revocation decision reads it. The series exists only with
+`METRICS_EXPORTER=prometheus_http`, and records only with `ENABLE_METRICS=true`.
+A count that fails sets it to `NaN`, so a failure reads as unknown, never as a
+stale number. The store is deployment-wide, so every API replica reports the
+same value: aggregate it with `max()`, not `sum()`.
 
 **A fresh authentication supersedes a watermark that predates it.** The
 watermark means "everything issued before instant T is stale", and an

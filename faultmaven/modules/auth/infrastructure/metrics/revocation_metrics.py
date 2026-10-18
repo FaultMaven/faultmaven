@@ -77,9 +77,10 @@ class RevocationWatermarkCollector:
     ) -> None:
         """Background loop: refresh first, then sleep ``interval`` seconds.
 
-        A failed refresh keeps the last value and the loop. Only the exception's
-        class name is logged: a SQLAlchemy message carries the statement and its
-        bound parameters.
+        A failed refresh sets the gauge to ``NaN``, so it reads as unknown and
+        never as a stale count, and keeps the loop. Only the exception's class
+        name is logged: a SQLAlchemy message carries the statement and its bound
+        parameters.
         """
         while True:
             try:
@@ -87,6 +88,7 @@ class RevocationWatermarkCollector:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                revocation_watermarks.set(float("nan"))
                 logger.warning(
                     "Revocation watermark count failed (non-fatal): %s",
                     type(exc).__name__,

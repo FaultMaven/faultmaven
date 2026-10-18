@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 
 import fakeredis.aioredis as fakeredis_aio
@@ -40,8 +41,9 @@ pytestmark = pytest.mark.unit
 async def test_the_prefix_matches_only_itself(prefix):
     """Two live watermarks under the prefix; every decoy is excluded.
 
-    Raw, ``rev[x]:`` and ``rev\\:`` count 0 and ``rev*:`` counts 3 (it also
-    matches ``revXuser:z``-shaped keys), which is why the pattern is escaped.
+    Raw, ``rev[x]:`` and ``rev\\:`` count 0 and ``rev*:`` counts 3: its third
+    match is the jti decoy ``rev*:jti:user:c``, so a per-jti entry would be
+    counted as a watermark. That is why the pattern is escaped.
     """
     redis = fakeredis_aio.FakeRedis(decode_responses=True)
     store = RedisTokenRevocationStore(redis, key_prefix=prefix)
@@ -101,9 +103,7 @@ async def test_refresh_sets_the_gauge_to_the_stores_count(monkeypatch):
     assert seen == [7]
 
 
-async def test_a_failing_store_keeps_the_gauge_logs_the_class_and_loops(
-    monkeypatch, caplog
-):
+async def test_a_failing_store_reads_nan_logs_the_class_and_loops(monkeypatch, caplog):
     seen = []
     monkeypatch.setattr(
         revocation_metrics,
@@ -124,7 +124,11 @@ async def test_a_failing_store_keeps_the_gauge_logs_the_class_and_loops(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert seen[:2] == [3, 4]  # the failed iteration set nothing
+    # The failed iteration reads as unknown, never as the stale 3, and the
+    # next one publishes the store's number again.
+    assert seen[0] == 3
+    assert math.isnan(seen[1])
+    assert seen[2] == 4
     messages = [r.getMessage() for r in caplog.records]
     assert any("RuntimeError" in m for m in messages)
     assert not any("secret-statement" in m for m in messages)
