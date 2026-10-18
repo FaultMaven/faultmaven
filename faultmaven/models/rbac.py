@@ -78,18 +78,6 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
 }
 
 
-def get_permissions_for_role(role: Role) -> FrozenSet[Permission]:
-    """Get all permissions granted by a role.
-
-    Args:
-        role: Role to get permissions for
-
-    Returns:
-        Set of permissions granted by the role
-    """
-    return ROLE_PERMISSIONS.get(role, frozenset())
-
-
 def get_permissions_for_roles(roles: List[str]) -> Set[Permission]:
     """Get combined permissions for multiple roles.
 

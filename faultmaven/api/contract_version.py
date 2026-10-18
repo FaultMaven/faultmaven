@@ -2135,11 +2135,15 @@ asked to accept, and it belongs to a person.
 # (`cases:read`, `cases:write`, `cases:delete`, `cases:assign`, `cases:close`,
 # `evidence:read`, `evidence:upload`, `evidence:delete`) are retired, so they no
 # longer appear in `UserDetailResponse.permissions`
-# (`GET /api/v1/admin/users/{user_id}`). An `admin`'s list is now
-# `["org:manage_settings", "org:manage_users"]`; a `member`'s or a `viewer`'s is
-# `[]`. Nothing ever checked the eight — ADR-017 D5 says organization roles gate
-# no data — and no first-party client reads that list. The rows are deleted by
-# alembic `020_org_permissions_are_management_only`.
+# (`GET /api/v1/admin/users/{user_id}`). That list is derived from the
+# account's roles (`users.dev_roles`), not from organization membership, which
+# is what faultmaven-cloud's organization management checks; it is not the
+# account's authority in any organization. An account whose roles include
+# `admin` now lists `["org:manage_settings", "org:manage_users"]`; one whose
+# roles are `member` or `viewer` lists `[]`. Nothing ever checked the eight —
+# ADR-017 D5 says organization roles gate no data — and no first-party client
+# reads that list. The rows are deleted by alembic
+# `020_org_permissions_are_management_only`.
 #
 # The OAuth scope strings `cases:read` / `cases:write` / `knowledge:read`, which
 # tokens carry in `scopes` and the consent page lists, are a separate vocabulary

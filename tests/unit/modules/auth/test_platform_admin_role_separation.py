@@ -308,7 +308,6 @@ VOCABULARY = [
     "Role",
     "Permission",
     "ROLE_PERMISSIONS",
-    "get_permissions_for_role",
     "get_permissions_for_roles",
 ]
 
@@ -327,9 +326,6 @@ def test_the_auth_module_is_not_a_second_door(door, name):
     """
     assert hasattr(models_rbac, name), "positive control: the one door has it"
     assert name not in door.__all__
-    if door is auth_rbac and name == "Role":
-        # Imported to spell two constants, not offered onward: see below.
-        return
     assert not hasattr(door, name)
 
 
@@ -337,12 +333,12 @@ def test_the_auth_module_is_not_a_second_door(door, name):
 def test_the_role_vocabulary_is_models_rbac():
     """`Role` is defined once, in `models.rbac`.
 
-    The auth module imports it to spell `ORG_ADMIN_ROLE` and
-    `ROLELESS_ACCOUNT_ROLE`, and does not offer it onward: it is not in that
-    module's `__all__`, and those two constants are values of the one enum.
+    The auth module reaches that module under a private name to spell
+    `ORG_ADMIN_ROLE` and `ROLELESS_ACCOUNT_ROLE`, binds no `Role` of its own,
+    and those two constants are values of the one enum.
     """
     assert models_rbac.Role.__module__ == "faultmaven.models.rbac"
-    assert "Role" not in auth_rbac.__all__
+    assert not hasattr(auth_rbac, "Role")
     assert models_rbac.Role(auth_rbac.ORG_ADMIN_ROLE) is models_rbac.Role.ADMIN
     assert models_rbac.Role(auth_rbac.ROLELESS_ACCOUNT_ROLE) is models_rbac.Role.MEMBER
 

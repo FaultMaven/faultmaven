@@ -127,10 +127,10 @@ assignment — a silent operator lockout recoverable only from a shell (#706).
 > path grants the whole `PLATFORM_ADMIN_ROLE_SET`
 > (`["user", "admin", "platform_admin"]`), org `admin` included.
 > `fm-demote-platform-admin` removes `OPERATOR_GRANTED_ROLES` (that set minus the
-> base `user` marker), so a promoted-then-demoted account does not keep org
-> authority it never had. It previously removed only `platform_admin`, which left
-> exactly that residue — harmless while org roles enforce nothing, a real
-> over-grant the moment the `Permission` wiring lands (#1040 item 3).
+> base `user` marker), so a promoted-then-demoted account does not keep the
+> org-management role it never had. It previously removed only `platform_admin`,
+> which left exactly that residue: an account still holding org `admin` it was
+> never given (#1040 item 3).
 >
 > Because nothing records which grant a role came from, this also removes an org
 > `admin` the account held *before* it was ever promoted. Pass `--keep-org-admin`
@@ -1097,7 +1097,7 @@ await authManager.refreshToken();
 
 ## Summary
 
-- **Account Role Model**: `user` and `admin` account roles for Global-KB access (a separate org-scoped `Role` enum — `admin`/`member`/`viewer` — exists for organization/team RBAC; see the note under [User Roles](#user-roles))
+- **Account Role Model**: `user` and `admin` account roles for Global-KB access (a separate org-scoped `Role` enum — `admin`/`member`/`viewer` — is the organization's management vocabulary and gates no data; see the note under [User Roles](#user-roles))
 - **Server-Side Enforcement**: All security checks on backend
 - **User Management Tools**: CLI scripts for easy administration
 - **Frontend Integration**: Roles included in login response

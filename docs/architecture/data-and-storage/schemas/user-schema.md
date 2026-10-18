@@ -619,15 +619,13 @@ CREATE TABLE roles (
     CONSTRAINT roles_scope_check CHECK (scope IN ('system', 'enterprise', 'organization', 'team'))
 );
 
--- Seed System Roles
+-- Seed System Roles: the organization's management vocabulary (faultmaven.models.rbac.Role).
+-- Seeded by 001_enterprise_baseline with the ids in rbac_seed.SYSTEM_ROLE_IDS;
+-- 020_org_permissions_are_management_only rewrote the descriptions.
 INSERT INTO roles (role_id, name, description, scope, is_system_role) VALUES
-('role_super_admin', 'Super Admin', 'Full system access (FaultMaven staff only)', 'system', true),
-('role_org_owner', 'Owner', 'Organization owner with full admin rights', 'organization', true),
-('role_org_admin', 'Admin', 'Organization administrator', 'organization', true),
-('role_org_member', 'Member', 'Standard organization member', 'organization', true),
-('role_org_viewer', 'Viewer', 'Read-only organization access', 'organization', true),
-('role_team_lead', 'Team Lead', 'Team leader with management rights', 'team', true),
-('role_team_member', 'Team Member', 'Standard team member', 'team', true);
+('50551907-a02c-5bf7-9aa4-4a98f3c4eb64', 'admin',  'Manages the organization''s roster and settings.', 'organization', true),
+('5cb4c3f5-227c-5d73-95a5-d9d2e619ca72', 'member', 'Belongs to the organization; manages nothing.', 'organization', true),
+('834b74a5-33a7-5248-9fd0-b040c12aef7b', 'viewer', 'Belongs to the organization; manages nothing.', 'organization', true);
 
 COMMENT ON TABLE roles IS 'Role definitions for RBAC system';
 COMMENT ON COLUMN roles.is_system_role IS 'System roles cannot be deleted or modified';
@@ -641,41 +639,21 @@ CREATE TABLE permissions (
     permission_id VARCHAR(36) PRIMARY KEY,
 
     -- Permission Definition
-    resource VARCHAR(50) NOT NULL,  -- 'cases', 'knowledge_base', 'settings', etc.
-    action VARCHAR(50) NOT NULL,    -- 'read', 'write', 'delete', 'manage'
+    resource VARCHAR(50) NOT NULL,  -- 'org' is the only resource seeded
+    action VARCHAR(50) NOT NULL,    -- 'manage_users', 'manage_settings'
     description TEXT,
 
     -- Unique permission per resource+action
     UNIQUE (resource, action)
 );
 
--- Seed Core Permissions
+-- Seed Permissions: the management axis only (#1040, ADR-017 D5 — org roles gate no data).
+-- 001_enterprise_baseline seeded case, session and evidence permissions too;
+-- 017_drop_investigation_sessions pruned sessions:*, 020_org_permissions_are_management_only
+-- pruned cases:* and evidence:*.
 INSERT INTO permissions (permission_id, resource, action, description) VALUES
--- Cases
-('perm_cases_read', 'cases', 'read', 'View cases'),
-('perm_cases_write', 'cases', 'write', 'Create and edit cases'),
-('perm_cases_delete', 'cases', 'delete', 'Delete cases'),
-('perm_cases_manage', 'cases', 'manage', 'Full case management'),
-
--- Knowledge Base
-('perm_kb_read', 'knowledge_base', 'read', 'View knowledge base'),
-('perm_kb_write', 'knowledge_base', 'write', 'Add to knowledge base'),
-('perm_kb_manage', 'knowledge_base', 'manage', 'Manage knowledge base'),
-
--- Organization Settings
-('perm_org_read', 'organization', 'read', 'View organization settings'),
-('perm_org_write', 'organization', 'write', 'Edit organization settings'),
-('perm_org_manage', 'organization', 'manage', 'Full organization management'),
-
--- Users
-('perm_users_read', 'users', 'read', 'View users'),
-('perm_users_invite', 'users', 'invite', 'Invite users'),
-('perm_users_manage', 'users', 'manage', 'Manage users and roles'),
-
--- Teams
-('perm_teams_read', 'teams', 'read', 'View teams'),
-('perm_teams_write', 'teams', 'write', 'Create and edit teams'),
-('perm_teams_manage', 'teams', 'manage', 'Full team management');
+('d3a93745-5f12-5622-a596-96e518669e90', 'org', 'manage_users', NULL),
+('31938541-ec6c-526f-a4ee-06e8d1b59252', 'org', 'manage_settings', NULL);
 
 COMMENT ON TABLE permissions IS 'Permission definitions for RBAC system';
 ```
@@ -690,22 +668,11 @@ CREATE TABLE role_permissions (
     PRIMARY KEY (role_id, permission_id)
 );
 
--- Seed Role-Permission Mappings
--- Owner: Full access
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT 'role_org_owner', permission_id FROM permissions WHERE resource IN ('cases', 'knowledge_base', 'organization', 'users', 'teams');
-
--- Admin: Most permissions except org management
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT 'role_org_admin', permission_id FROM permissions WHERE resource IN ('cases', 'knowledge_base', 'users', 'teams');
-
--- Member: Read/write cases and KB
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT 'role_org_member', permission_id FROM permissions WHERE resource IN ('cases', 'knowledge_base') AND action IN ('read', 'write');
-
--- Viewer: Read-only
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT 'role_org_viewer', permission_id FROM permissions WHERE action = 'read';
+-- Seed Role-Permission Mappings (001_enterprise_baseline, pruned by 017 and 020):
+-- admin holds both management permissions; member and viewer hold none.
+INSERT INTO role_permissions (role_id, permission_id) VALUES
+('50551907-a02c-5bf7-9aa4-4a98f3c4eb64', 'd3a93745-5f12-5622-a596-96e518669e90'),
+('50551907-a02c-5bf7-9aa4-4a98f3c4eb64', '31938541-ec6c-526f-a4ee-06e8d1b59252');
 
 COMMENT ON TABLE role_permissions IS 'Role-to-permission mappings for RBAC';
 ```
@@ -998,7 +965,7 @@ HAVING COUNT(*) > 5;
 
 ## 7. Implementation Status
 
-✅ **Implemented and deployed** — baseline migration `001_enterprise_baseline` (revision `a1e0c17bd001`) creates all 14 user-domain tables, 7 seed roles, and 19 seed permissions. The live source of truth is:
+✅ **Implemented and deployed** — baseline migration `001_enterprise_baseline` (revision `a1e0c17bd001`) creates all 14 user-domain tables and seeds the three system roles (`admin`, `member`, `viewer`) and their permissions; `017_drop_investigation_sessions` and `020_org_permissions_are_management_only` prune the permissions to `org:manage_users` and `org:manage_settings`, granted to `admin` alone. The live source of truth is:
 
 - SQLAlchemy models: `faultmaven/infrastructure/persistence/models.py`
 - Repositories: `faultmaven/modules/auth/infrastructure/repositories/`

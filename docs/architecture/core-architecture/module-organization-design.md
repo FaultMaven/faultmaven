@@ -474,9 +474,6 @@ class IAuthService(Protocol):  # Full auth operations
 
 class IUserQuery(Protocol):  # Read-only user queries (used by many)
     async def get_user(self, user_id: str) -> UserDTO: ...
-
-class IPermissionChecker(Protocol):  # Permission checks (used by many)
-    async def can_access(self, user_id: str, resource: str) -> bool: ...
 ```
 
 **Benefit**: Modules that only need read access don't depend on full auth service.
@@ -490,7 +487,7 @@ Document which modules depend on high fan-in modules:
 ## Dependencies
 - Used by: case, evidence, knowledge, agent, report
 - Reason: Access control and user identity
-- Contract: IAuthService, IUserQuery, IPermissionChecker
+- Contract: IAuthService, IUserQuery
 ```
 
 **Benefit**: Clear visibility into dependency patterns.

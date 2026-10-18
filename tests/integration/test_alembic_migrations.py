@@ -411,6 +411,11 @@ class TestFunctionOnlyRevisions:
     019 is data-only too (it rewrites runbook text). Its rows are pinned by
     ``TestVerifiedByIsTheDisplayNameRevision``, and on PostgreSQL by
     ``tests/integration/security/test_verified_by_display_name_postgres.py``.
+
+    020 is data-only as well (it prunes the RBAC seed to the management axis
+    and rewrites the system roles' descriptions). Its rows are pinned by
+    ``TestOrgPermissionsAreManagementOnlyRevision``, and on PostgreSQL by
+    ``tests/integration/security/test_org_permissions_management_only_postgres.py``.
     """
 
     @pytest.mark.parametrize(
@@ -450,6 +455,11 @@ class TestFunctionOnlyRevisions:
                 VERIFIED_BY_DISPLAY_NAME_REVISION,
                 DRAFTS_IN_THE_DATABASE_REVISION,
                 id="019_verified_by_is_the_display_name",
+            ),
+            pytest.param(
+                ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION,
+                VERIFIED_BY_DISPLAY_NAME_REVISION,
+                id="020_org_permissions_are_management_only",
             ),
         ],
     )
@@ -3220,8 +3230,9 @@ class TestOrgPermissionsAreManagementOnlyRevision:
     """020 prunes the organization's permissions to the management axis
     (#1040, owner ruling 2026-09-24): the eight ``cases:*`` / ``evidence:*``
     permissions and every grant of one are deleted, ``org:manage_*`` and
-    admin's two grants of them are untouched, and the downgrade re-seeds
-    exactly the baseline's eight rows and fifteen system-role grants."""
+    admin's two grants of them are untouched, the three system roles'
+    descriptions say what each manages, and the downgrade restores exactly the
+    baseline's eight rows, fifteen system-role grants and three descriptions."""
 
     ADMIN_ROLE_ID = "50551907-a02c-5bf7-9aa4-4a98f3c4eb64"
     MEMBER_ROLE_ID = "5cb4c3f5-227c-5d73-95a5-d9d2e619ca72"
@@ -3239,6 +3250,22 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         "a41fd5f5-f56b-5fb5-82f0-ff9c8f8ef2bf": ("evidence", "delete"),
     }
     CASES_READ_ID = "f3adedf0-09df-5151-9490-83da7cff6c34"
+    #: The system roles' descriptions: the baseline's, and 020's.
+    BASELINE_DESCRIPTIONS = [
+        ("admin", "Full access to organization resources."),
+        ("member", "Standard investigator access."),
+        ("viewer", "Read-only access."),
+    ]
+    MANAGEMENT_DESCRIPTIONS = [
+        ("admin", "Manages the organization's roster and settings."),
+        ("member", "Belongs to the organization; manages nothing."),
+        ("viewer", "Belongs to the organization; manages nothing."),
+    ]
+
+    @staticmethod
+    def _descriptions() -> list:
+        return query_rows(TEST_DB, "SELECT name, description FROM roles ORDER BY name")
+
     ORG_MANAGE_USERS_ID = "d3a93745-5f12-5622-a596-96e518669e90"
     ORG_MANAGE_SETTINGS_ID = "31938541-ec6c-526f-a4ee-06e8d1b59252"
 
@@ -3260,14 +3287,15 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         return permissions, grants
 
     @staticmethod
-    def _all_rbac() -> tuple[list, list]:
-        """Both tables, every column, in a fixed order."""
+    def _all_rbac() -> tuple[list, list, list]:
+        """The three tables, every column, in a fixed order."""
         return (
             query_rows(TEST_DB, "SELECT * FROM permissions ORDER BY permission_id"),
             query_rows(
                 TEST_DB,
                 "SELECT * FROM role_permissions ORDER BY role_id, permission_id",
             ),
+            query_rows(TEST_DB, "SELECT * FROM roles ORDER BY role_id"),
         )
 
     def test_upgrade_retires_the_data_permissions_and_nothing_else(
@@ -3317,12 +3345,16 @@ class TestOrgPermissionsAreManagementOnlyRevision:
                 (self.ADMIN_ROLE_ID, self.ORG_MANAGE_SETTINGS_ID),
             ]
         ), "positive control: admin's two org:manage_* grants"
+        assert (
+            self._descriptions() == self.BASELINE_DESCRIPTIONS
+        ), "positive control: the baseline's descriptions"
 
         result = run_alembic(
             f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
         )
         assert result.returncode == 0, result.stderr
         assert self._data_rbac() == ([], [])
+        assert self._descriptions() == self.MANAGEMENT_DESCRIPTIONS
         # No orphan grant survives on SQLite, where the cascade may be off.
         assert query_rows(
             TEST_DB,
@@ -3330,7 +3362,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
             "(SELECT permission_id FROM permissions)",
         ) == [(0,)]
         # The org:* rows and admin's grants of them are byte-identical.
-        assert self._all_rbac() == (kept_permissions, kept_grants)
+        assert self._all_rbac()[:2] == (kept_permissions, kept_grants)
 
     def test_downgrade_restores_exactly_the_parent_rows(
         self, clean_database, database_url
@@ -3341,6 +3373,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         assert result.returncode == 0, result.stderr
         parent = self._all_rbac()
         assert len(parent[0]) == 10 and len(parent[1]) == 17, "positive control"
+        assert self._descriptions() == self.BASELINE_DESCRIPTIONS
 
         result = run_alembic(
             f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
@@ -3354,6 +3387,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
 
         assert get_current_revision(database_url) == VERIFIED_BY_DISPLAY_NAME_REVISION
         assert self._all_rbac() == parent
+        assert self._descriptions() == self.BASELINE_DESCRIPTIONS
 
     def test_a_non_system_roles_grant_is_removed_and_not_restored(
         self, clean_database, database_url
@@ -3433,6 +3467,11 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         assert grants < perms
         assert "WHERE resource IN ('cases', 'evidence'))" in up.stdout[grants:perms]
         assert "row_security" not in up.stdout
+        assert (
+            "UPDATE roles SET description='Manages the organization''s roster and "
+            "settings.' WHERE roles.role_id = '50551907-a02c-5bf7-9aa4-4a98f3c4eb64';"
+        ) in up.stdout
+        assert up.stdout.count("UPDATE roles SET description=") == 3
 
         down = run_alembic(
             f"downgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}:"
@@ -3447,15 +3486,22 @@ class TestOrgPermissionsAreManagementOnlyRevision:
             assert permission_id in sql
         assert "DELETE" not in sql
         assert "row_security" not in sql
+        assert sql.count("UPDATE roles SET description=") == 3
+        for _, description in self.BASELINE_DESCRIPTIONS:
+            assert f"description='{description}'" in sql
 
 
 class TestRbacSeed:
-    """Migration 029 seeds the system RBAC roles/permissions/grants.
+    """The chain seeds the system RBAC roles, permissions and grants.
 
-    These assertions tie the frozen seed snapshot in the migration to the live
-    authority model (``faultmaven/models/rbac.py``) and the runtime role-id
-    constant (``rbac_seed.SYSTEM_ROLE_IDS``) — so the migration can never
-    silently drift from either.
+    The baseline (``001_enterprise_baseline``) seeds them; ``017`` prunes the
+    ``sessions:*`` permissions and ``020`` the ``cases:*`` / ``evidence:*``
+    ones, leaving the management axis: ``org:manage_users`` and
+    ``org:manage_settings``, granted to ``admin`` alone. These assertions tie
+    the database at head to the live authority model
+    (``faultmaven/models/rbac.py``) and the runtime role-id constant
+    (``rbac_seed.SYSTEM_ROLE_IDS``), so the chain cannot silently drift from
+    either.
     """
 
     def test_system_roles_seeded_with_stable_ids(self, clean_database, database_url):

@@ -3,7 +3,9 @@
 Prunes the organization's permissions to the management axis (#1040, owner
 ruling 2026-09-24): the ``cases:*`` and ``evidence:*`` permissions and every
 grant of one are deleted, leaving ``org:manage_users`` and
-``org:manage_settings``, granted to ``admin`` alone.
+``org:manage_settings``, granted to ``admin`` alone. The three system roles'
+descriptions, which still described data tiers, are rewritten to say what
+each role manages.
 
 Organization roles are the organization's management vocabulary and gate no
 data (ADR-017 D5: roles "no longer gate data visibility, which they never
@@ -27,17 +29,28 @@ Deletes every grant of a ``cases`` or ``evidence`` permission from
 ``role_permissions`` (a non-system role's included), then the eight
 ``permissions`` rows, matched on ``resource``. The grants go first and
 explicitly: SQLite runs the ``ON DELETE CASCADE`` on ``role_permissions`` only
-when ``PRAGMA foreign_keys`` is on. Neither table is enrolled in row-level
-security (``_TENANT_TABLES`` in the baseline does not list them, and no later
-revision enrols them), so no ``row_security`` setting is needed on PostgreSQL.
-The same two ``DELETE`` statements run on both dialects.
+when ``PRAGMA foreign_keys`` is on.
+
+It then rewrites ``roles.description`` for the three system roles, by
+``role_id``, in the ``Role`` enum's words: ``admin`` "Manages the
+organization's roster and settings.", ``member`` and ``viewer`` "Belongs to the
+organization; manages nothing." The baseline's "Full access to organization
+resources.", "Standard investigator access." and "Read-only access." described
+data tiers that no role grants. Nothing reads the column today; the seed is
+corrected where it is pruned rather than by a later revision.
+
+None of the three tables is enrolled in row-level security (``_TENANT_TABLES``
+in the baseline does not list them, and no later revision enrols them), and
+none carries a trigger, so no ``row_security`` setting is needed on PostgreSQL.
+The same statements run on both dialects.
 
 ``downgrade()``
 ---------------
 
-Re-seeds exactly the baseline's eight ``cases:*`` / ``evidence:*`` permission
-rows and its fifteen grants of them to the three system roles, with the
-baseline's ids, copied rather than imported so a later edit there cannot move
+Restores the baseline's three role descriptions exactly, then re-seeds
+exactly the baseline's eight ``cases:*`` / ``evidence:*`` permission rows and
+its fifteen grants of them to the three system roles, with the baseline's ids
+and strings, copied rather than imported so a later edit there cannot move
 them. A grant to a non-system role that the upgrade deleted is not restored:
 nothing recorded it.
 
@@ -72,6 +85,24 @@ _DATA_PERMISSIONS = {
     "evidence:upload": "0bd8e72e-a9ef-5ee4-9a67-32b8602c9d94",
     "evidence:delete": "a41fd5f5-f56b-5fb5-82f0-ff9c8f8ef2bf",
 }
+#: The system roles' descriptions: role_id -> (020's, the baseline's).
+_ROLE_DESCRIPTIONS = {
+    # admin
+    "50551907-a02c-5bf7-9aa4-4a98f3c4eb64": (
+        "Manages the organization's roster and settings.",
+        "Full access to organization resources.",
+    ),
+    # member
+    "5cb4c3f5-227c-5d73-95a5-d9d2e619ca72": (
+        "Belongs to the organization; manages nothing.",
+        "Standard investigator access.",
+    ),
+    # viewer
+    "834b74a5-33a7-5248-9fd0-b040c12aef7b": (
+        "Belongs to the organization; manages nothing.",
+        "Read-only access.",
+    ),
+}
 #: The baseline's grants of them: system role_id -> permission values.
 _DATA_GRANTS = {
     # admin
@@ -89,18 +120,37 @@ _DATA_GRANTS = {
 }
 
 
+def _set_role_descriptions(which: int) -> None:
+    """Write each system role's description: 0 = 020's, 1 = the baseline's."""
+    roles = sa.table(
+        "roles",
+        sa.column("role_id", sa.String),
+        sa.column("description", sa.Text),
+    )
+    for role_id, descriptions in _ROLE_DESCRIPTIONS.items():
+        op.execute(
+            roles.update()
+            .where(roles.c.role_id == role_id)
+            .values(description=descriptions[which])
+        )
+
+
 def upgrade() -> None:
-    """Retire the data permissions' grants, then the permissions."""
+    """Retire the data permissions' grants, then the permissions; then say
+    what each system role manages."""
     op.execute(
         "DELETE FROM role_permissions WHERE permission_id IN "
         "(SELECT permission_id FROM permissions "
         "WHERE resource IN ('cases', 'evidence'))"
     )
     op.execute("DELETE FROM permissions WHERE resource IN ('cases', 'evidence')")
+    _set_role_descriptions(0)
 
 
 def downgrade() -> None:
-    """Re-seed the baseline's data permissions and their system-role grants."""
+    """Restore the baseline's role descriptions, then re-seed its data
+    permissions and their system-role grants."""
+    _set_role_descriptions(1)
     permissions = sa.table(
         "permissions",
         sa.column("permission_id", sa.String),
