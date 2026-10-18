@@ -612,15 +612,16 @@ class EvidenceReclassifier:
 
     WRITE MODEL (#1465). The write mode is chosen by which method a caller
     calls. ``reclassify_out_of_band`` (the PATCH endpoint, which runs outside
-    any turn) owns its write: load, guard, apply, save. ``reclassify_in_turn``
-    (the ``reclassify_evidence`` agent tool, called from inside the engine's
-    tool loop) applies the change to the aggregate the turn is holding and
-    does not save. A turn ends with ONE aggregate save of the case object it
-    has been holding since it started; that save has no idea a row was
-    written underneath it, so a write made on a separately loaded copy was
-    overwritten by it: the file row, the Evidence row and the fm#918
-    clarification drop alike. The model was told the reclassification
-    succeeded and the case ended the turn as though it never happened.
+    any turn) owns its write: load, guard, apply to a deep copy, save the
+    copy. ``reclassify_in_turn`` (the ``reclassify_evidence`` agent tool,
+    called from inside the engine's tool loop) applies the change to the
+    aggregate the turn is holding and does not save. A turn ends with ONE
+    aggregate save of the case object it has been holding since it started;
+    that save has no idea a row was written underneath it, so a write made on
+    a separately loaded copy was overwritten by it: the file row, the Evidence
+    row and the fm#918 clarification drop alike. The model was told the
+    reclassification succeeded and the case ended the turn as though it never
+    happened.
 
     The defect is in the ORDERING, not in the values, so the fix is where the
     write lands rather than what it contains: the turn's existing end-of-turn
@@ -649,18 +650,20 @@ class EvidenceReclassifier:
     def _require_reclassifiable(
         case: "Case", evidence_id: str, user_id: str, *, reads: bool
     ) -> int:
-        """The one guard both entry points run, in today's order: the driver
-        gate (403), the evidence lookup (404), then the terminal refusal (422).
-        Returns the addressed evidence's index.
+        """The one guard both entry points run in front of
+        ``apply_reclassification``, in this order: the driver gate (403), the
+        evidence lookup (404), then the terminal refusal (422). Returns the
+        addressed evidence's index.
 
-        ``reads`` is whether the caller still reads the case. The case's
-        effective DRIVER only (ADR-020 D2), and one who still READS it. The
-        creator always reads their case, and an in-flight case means the turn
-        route resolved it through the read allowlist; an assigned driver on
-        the PATCH route reads it only if the route says so
-        (``caller_reads_case``). Without that last arm this route — which has
-        no read check of its own ahead of this 403 — would admit a driver who
-        had lost every share before a release reached the row.
+        The case's effective DRIVER only (ADR-020 D2), and one who still READS
+        it: ``reads`` is that read fact, which each entry point supplies. The
+        creator always reads their case, and inside a turn
+        (``reclassify_in_turn``) the turn route resolved the case through the
+        read allowlist; an assigned driver on the PATCH route
+        (``reclassify_out_of_band``) reads it only if the route says so
+        (``caller_reads_case``). Without that last arm the PATCH route — which
+        has no read check of its own ahead of this 403 — would admit a driver
+        who had lost every share before a release reached the row.
         """
         if case.effective_driver_id != user_id or not reads:
             raise AuthorizationError(
@@ -676,31 +679,28 @@ class EvidenceReclassifier:
             raise NotFoundError("Evidence", evidence_id)
 
         # AFTER the evidence lookup, so a closed case answers 404 for an
-        # evidence id that does not exist exactly as an open one does. Before
-        # the lookup it answered 422 there, which made the case's state
+        # evidence id that does not exist exactly as an open one does. Ahead
+        # of the lookup it would answer 422 there, and the case's state would
         # decide what a missing row is called.
-        # Terminal guard, matching ``_handle_file_reclassification`` — the
-        # asymmetry between the two paths is closed here because THIS change
-        # is what made it bite.
         #
-        # The terminal short-circuit does not protect this method by itself;
-        # it short-circuits INTO a tool loop, which hands its tools a
+        # The same terminal refusal ``_handle_file_reclassification`` makes,
+        # on both entry points. The terminal short-circuit does not keep a
+        # closed case away from ``reclassify_in_turn`` by itself: it
+        # short-circuits INTO a tool loop, which hands its tools a
         # ``ToolContext`` carrying ``in_memory_case=case`` and returns that
-        # same object as ``case_updated`` for ``process_turn`` to save. That
-        # loop used to offer every registered tool, ``reclassify_evidence``
-        # included whenever the flag is on. Since #1964 it offers only
-        # ``TERMINAL_QA_TOOLS`` and runs no tool it did not offer, so this
-        # guard is the second line: a refusal for any path that still reaches
-        # the service with a terminal case.
+        # same object as ``case_updated`` for ``process_turn`` to save. Since
+        # #1964 that loop offers only ``TERMINAL_QA_TOOLS`` and runs no tool it
+        # did not offer, and ``reclassify_evidence`` is not among them, so this
+        # refusal is the second line: for any path that still reaches the
+        # reclassifier with a terminal case.
         #
-        # Before the in-flight write model above, that was accidentally
-        # harmless: the tool wrote its own freshly-loaded copy and the
-        # terminal turn's aggregate save overwrote it — the #1465 lost update
-        # was protecting closed cases. Measured on ``origin/main``: the row
-        # came back unchanged. Removing the lost update removes that
-        # accident, so the guard the sibling handler has always had has to be
-        # here too, or a case whose own handler documents "no state mutations"
-        # becomes persistently mutable.
+        # The in-turn write model (#1465, the class docstring) is why that
+        # second line is needed. The tool applies its change to the turn's own
+        # aggregate and the turn's save persists it, so without this refusal a
+        # case whose own handler documents "no state mutations" would be
+        # persistently mutable. While the tool wrote a separately loaded copy
+        # instead, the terminal turn's aggregate save overwrote that copy, and
+        # the #1465 lost update was what kept closed cases unchanged.
         _refuse_if_terminal(case, "evidence")
         return evidence_index
 
@@ -709,10 +709,11 @@ class EvidenceReclassifier:
     ) -> AppliedReclassification:
         """Apply the reclassification IN PLACE on *case* and persist nothing.
 
-        The write mode belongs to the caller: ``reclassify_in_turn`` leaves
-        the save to the turn, ``reclassify_out_of_band`` saves. This method
-        has no policy and no counter of its own. The guard
-        (``_require_reclassifiable``) has already run.
+        The write mode belongs to the caller: ``reclassify_in_turn`` passes
+        the turn's own aggregate and leaves the save to the turn,
+        ``reclassify_out_of_band`` passes a deep copy of the case it loaded
+        and saves that. This method has no policy and no counter of its own.
+        The guard (``_require_reclassifiable``) has already run.
 
         Raises:
             ConflictError: evidence has no backing file (409,
@@ -831,9 +832,10 @@ class EvidenceReclassifier:
         #
         # Three whole-field assignments, no in-place list mutation: the lists
         # above are new lists built from the case's own, so this leaves any
-        # list the caller may still be holding alone. In place on THIS object,
-        # never a ``model_copy``: a turn is holding exactly this object and
-        # saves it at its end, so a copy would be the bug (#1465).
+        # list the caller may still be holding alone. In place on the object
+        # given, never a ``model_copy`` here: in a turn that object is the one
+        # the turn holds and saves at its end, so a copy would be the bug
+        # (#1465). The out-of-band caller makes its own copy before calling.
         case.uploaded_files = new_files_list
         case.evidence = new_evidence_list
         case.last_suggestions = dropped_suggestions
@@ -844,7 +846,8 @@ class EvidenceReclassifier:
             new_type=new_type,
         )
 
-    @trace("evidence_reclassifier_reclassify_out_of_band")
+    # The pre-split name on both entry points keeps trace's function_name series whole.
+    @trace("evidence_reclassifier_reclassify_evidence")
     async def reclassify_out_of_band(
         self,
         case_id: str,
@@ -855,7 +858,7 @@ class EvidenceReclassifier:
         caller_reads_case: bool = False,
     ) -> Evidence:
         """Reclassify from OUTSIDE any turn (the PATCH endpoint): load, guard,
-        apply, save.
+        apply to a deep copy, save the copy.
 
         No turn owns this write, so this method does. See
         ``apply_reclassification`` for what is applied and the class docstring
@@ -894,14 +897,20 @@ class EvidenceReclassifier:
             user_id,
             reads=caller_reads_case or case.user_id == user_id,
         )
-        applied = await self.apply_reclassification(case, evidence_index, data_type)
-        await self.repository.save(case)
+        # On a deep copy, never on the object ``get`` returned: a repository
+        # may hand back its stored object by reference (the in-memory one
+        # does), which a turn may be holding, and a save that fails must leave
+        # the store as it was. The copy is what is saved.
+        working = case.model_copy(deep=True)
+        applied = await self.apply_reclassification(working, evidence_index, data_type)
+        await self.repository.save(working)
 
         # ``api`` counts a COMMITTED reclassification: the save has run.
         self._count_and_log(case_id, evidence_id, applied, trigger="api")
         return applied.evidence
 
-    @trace("evidence_reclassifier_reclassify_in_turn")
+    # The pre-split name on both entry points keeps trace's function_name series whole.
+    @trace("evidence_reclassifier_reclassify_evidence")
     async def reclassify_in_turn(
         self,
         case_id: str,
