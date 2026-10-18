@@ -6,12 +6,19 @@ request-level metric shows the stall as such. :class:`LoopLagMonitor` sleeps a
 fixed tick and records how much later than that it actually woke, as one
 histogram on ``/metrics``.
 
+When it records: while the app is serving, from the end of startup until
+shutdown begins, in a process that mounts the Prometheus exporter, and only
+when ``ENABLE_METRICS=true`` as well, as for every first-party metric.
+
 Reading it: a value is the lateness of one wake-up. A loop held for H seconds
 is recorded as at least H minus one tick interval (the part of the tick that
 had already elapsed when the hold began), so a hold is under-read by at most
-``LOOP_LAG_TICK_SECONDS``. ``le="10"`` is the bucket #2066 reads: ticks above
-that bucket woke more than 10 s late. The series is per pod; do not ``sum`` the
-buckets across pods to read one pod's hold.
+``LOOP_LAG_TICK_SECONDS``. A hold is recorded when it ends, so a hold that
+ends in a restart (a liveness kill) is never recorded: read
+``kube_pod_container_status_restarts_total`` beside it. ``le="10.0"`` is the
+bucket #2066 reads: ticks above that bucket woke more than 10 s late. The
+series is per pod; do not ``sum`` the buckets across pods to read one pod's
+hold.
 
 The tick makes no I/O, and nothing on the request path or the scrape path reads
 or writes the histogram. No health decision reads it either.
@@ -28,14 +35,33 @@ logger = logging.getLogger(__name__)
 #: Seconds between ticks.
 LOOP_LAG_TICK_SECONDS = 0.25
 
+#: The histogram's bucket bounds, in seconds. ``prometheus_client`` renders
+#: each as a float label, so the bound 10 is selected as ``le="10.0"``.
+LOOP_LAG_BUCKETS = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    30,
+    60,
+    120,
+)
+
 #: How late the loop woke from each tick.
 event_loop_lag_seconds = Histogram(
     "faultmaven_event_loop_lag_seconds",
     "How late the event loop woke from a tick, in seconds. A hold of H seconds "
-    'is under-read by at most one tick interval (0.25 s). le="10" is the '
-    "bucket the liveness decision (#2066) reads. Per pod: do not sum the "
-    "buckets across pods to read a single pod's hold.",
-    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120],
+    f"is under-read by at most one tick interval ({LOOP_LAG_TICK_SECONDS} s). "
+    'le="10.0" is the bucket the liveness decision (#2066) reads. Per pod: do '
+    "not sum the buckets across pods to read a single pod's hold.",
+    buckets=list(LOOP_LAG_BUCKETS),
 )
 
 

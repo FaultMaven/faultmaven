@@ -56,10 +56,15 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   count that fails reads `NaN`, never the last number. See
   [IAM design](../../architecture/security/iam-design.md)
 - `faultmaven_event_loop_lag_seconds` — a histogram of how late the API's event
-  loop woke from a 0.25 s tick, recorded from startup to shutdown whenever the
-  Prometheus exporter is mounted. A loop held for H seconds reads as at least H
-  minus one interval (0.25 s). Ticks that woke more than 10 s late:
-  `sum by (instance) (increase(faultmaven_event_loop_lag_seconds_count[7d])) - sum by (instance) (increase(faultmaven_event_loop_lag_seconds_bucket{le="10"}[7d]))`.
+  loop woke from a 0.25 s tick. It records while the app is serving, from the
+  end of startup until shutdown begins, in a process that mounts the Prometheus
+  exporter, and only when `ENABLE_METRICS=true` as well, as for every
+  first-party metric. A loop held for H seconds reads as at least H minus one
+  interval (0.25 s). A hold is recorded when it ends, so a hold that ends in a
+  restart (a liveness kill) is never recorded: read
+  `kube_pod_container_status_restarts_total` beside it. Ticks that woke more
+  than 10 s late:
+  `sum by (instance) (increase(faultmaven_event_loop_lag_seconds_count[7d])) - sum by (instance) (increase(faultmaven_event_loop_lag_seconds_bucket{le="10.0"}[7d]))`.
   It is per pod: do not `sum` the buckets across pods to read a single pod's hold.
 
 ## Alerting on component health

@@ -1,10 +1,14 @@
 """The loop-lag ticker records how late each wake-up was (#2056).
 
-Values come from an injected clock, never from the wall clock.
+Values come from an injected clock, never from the wall clock. The one test
+of the default clock asserts only a lower bound, set by an offset it adds to
+the loop's own clock.
 """
 
 import asyncio
 import logging
+import re
+from pathlib import Path
 
 import pytest
 
@@ -84,7 +88,7 @@ async def test_real_loop_hold_is_observed_and_idle_is_zero(monkeypatch):
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await asyncio.wait_for(task, 5)
 
 
 async def test_failing_observe_is_logged_once_and_loop_continues(monkeypatch, caplog):
@@ -113,5 +117,91 @@ async def test_cancel_ends_the_task_with_cancelled_error(monkeypatch):
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.wait_for(task, 5)
     assert task.cancelled()
+
+
+class _OffsetLoop(asyncio.SelectorEventLoop):
+    """A real loop whose ``time()`` runs ``offset`` seconds ahead."""
+
+    offset = 0.0
+
+    def time(self) -> float:
+        return super().time() + self.offset
+
+
+def test_the_default_clock_is_the_running_loops_time(monkeypatch):
+    """With no ``clock=``, the ticker reads the running loop's ``time``.
+
+    The loop's clock jumps 5.0 ahead between two ticks, so the tick in flight
+    reads at least ``5.0 - LOOP_LAG_TICK_SECONDS`` late. A lower bound only:
+    real elapsed time can only add to it. A ticker that read any other clock
+    (a constant, ``time.time``) misses the jump.
+    """
+    rec = _Recorder()
+    monkeypatch.setattr(loop_lag, "event_loop_lag_seconds", rec)
+    loop = _OffsetLoop()
+
+    async def scenario():
+        task = asyncio.create_task(loop_lag.monitor.run_periodic())
+        try:
+            await asyncio.wait_for(rec.event.wait(), 10)
+            # The ticker computed this tick's deadline before yielding, so the
+            # jump lands inside the tick in flight, the next one observed.
+            rec.event.clear()
+            seen = len(rec.values)
+            loop.offset += 5.0
+            await asyncio.wait_for(rec.event.wait(), 10)
+            return rec.values[seen]
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+
+    try:
+        lag = loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+    assert lag >= 5.0 - loop_lag.LOOP_LAG_TICK_SECONDS
+
+
+#: The monitoring README, whose PromQL reads this histogram's buckets.
+_README = Path(__file__).resolve().parents[4] / "docs/operations/monitoring/README.md"
+#: Every selector on the histogram's buckets, and every ``le`` matcher in one.
+_BUCKET_SELECTOR = re.compile(r"faultmaven_event_loop_lag_seconds_bucket\{([^}]*)\}")
+_LE_MATCHER = re.compile(r'\ble\s*=\s*"([^"]*)"')
+
+
+def test_the_documented_bucket_selectors_match_the_exposition():
+    """Each ``le`` the README selects is a label the exporter renders.
+
+    ``prometheus_client`` renders the bound 10 as ``le="10.0"``, so a query on
+    ``le="10"`` returns no data at all rather than a wrong number.
+    """
+    prometheus_client = pytest.importorskip("prometheus_client")
+    from prometheus_client.parser import text_string_to_metric_families
+
+    registry = prometheus_client.CollectorRegistry()
+    histogram = prometheus_client.Histogram(
+        "faultmaven_event_loop_lag_seconds",
+        "loop lag",
+        buckets=list(loop_lag.LOOP_LAG_BUCKETS),
+        registry=registry,
+    )
+    histogram.observe(12.0)
+    exposition = prometheus_client.generate_latest(registry).decode()
+    rendered = {
+        sample.labels["le"]
+        for family in text_string_to_metric_families(exposition)
+        for sample in family.samples
+        if sample.name == "faultmaven_event_loop_lag_seconds_bucket"
+    }
+
+    selected = [
+        label
+        for selector in _BUCKET_SELECTOR.findall(_README.read_text())
+        for label in _LE_MATCHER.findall(selector)
+    ]
+    assert selected, f"{_README} selects no bucket of this histogram"
+    missing = sorted(set(selected) - rendered)
+    assert not missing, f"selected {missing}, rendered {sorted(rendered)}"
