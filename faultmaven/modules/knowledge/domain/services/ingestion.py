@@ -34,14 +34,13 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-import chromadb
 import pandas as pd
 import pypdf
-from chromadb.config import Settings
 from docx import Document
 
 from faultmaven.infrastructure.chroma_client import (
-    chroma_token_auth_kwargs,
+    ChromaClientConfigError,
+    build_http_client,
     is_external_chroma_configured,
     is_host_only_chroma_configured,
     local_chroma_or_fail,
@@ -116,13 +115,6 @@ class KnowledgeIngester:
             chromadb_url = settings.database.chromadb_url
             chromadb_host = settings.database.chromadb_host
             chromadb_port = settings.database.chromadb_port
-            # Shared with the container provider's client factory — before
-            # #1173 this path read a different setting than the container path
-            # and only sent it on the CHROMADB_HOST branch, so the deployed
-            # configuration (CHROMADB_URL set) authenticated nothing. The old
-            # hardcoded fallback token is gone with it: no configured token
-            # means send nothing, not send a guessable default.
-            auth_kwargs = chroma_token_auth_kwargs(settings)
         else:
             # No fallback - unified settings system is mandatory
             from faultmaven.models.exceptions import KnowledgeBaseError
@@ -147,11 +139,26 @@ class KnowledgeIngester:
         # Single unified collection for all KB scopes (global, team, personal).
         # Must match UnifiedKBConfig.get_collection_name() = "faultmaven_kb".
         # Scope isolation via metadata filtering, not separate collections.
-        def _open_http(label: str, **client_kwargs: Any) -> None:
+        def _open_http(label: str, *, host: str, port: int, ssl: bool) -> None:
             self.logger.info(f"Using ChromaDB HTTP client at {label}")
 
             def _build():
-                client = chromadb.HttpClient(**client_kwargs)
+                # Built through the one door the container provider's client
+                # factory uses too, which applies the shared credential and the
+                # request timeout (#1462, #2056). Before #1173 this path read a
+                # different setting than the container path and only sent it
+                # on the CHROMADB_HOST branch, so the deployed configuration
+                # (CHROMADB_URL set) authenticated nothing. The old hardcoded
+                # fallback token is gone with it: no configured token means
+                # send nothing, not send a guessable default.
+                client = build_http_client(
+                    settings,
+                    host=host,
+                    port=port,
+                    ssl=ssl,
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                )
                 # Force a real round-trip here so an unreachable / mis-auth'd
                 # server fails inside the timeout guard, not on first query.
                 collection = client.get_or_create_collection(
@@ -164,6 +171,10 @@ class KnowledgeIngester:
                 self.chroma_client, self._collection = _call_with_timeout(
                     _build, connect_timeout, f"ChromaDB at {label}"
                 )
+            except ChromaClientConfigError:
+                # Not connectivity: a client that must not be built is never
+                # answered with degraded mode (see the class).
+                raise
             except Exception as exc:  # unreachable, timeout, auth failure
                 self.degraded = True
                 self.logger.error(
@@ -189,9 +200,7 @@ class KnowledgeIngester:
                 chromadb_url,
                 host=parsed.hostname or "localhost",
                 port=parsed.port or (443 if parsed.scheme == "https" else 80),
-                settings=Settings(
-                    anonymized_telemetry=False, allow_reset=True, **auth_kwargs
-                ),
+                ssl=parsed.scheme == "https",
             )
         elif is_host_only_chroma_configured(settings):
             # K8s cluster or external HTTP client. The condition is the shared
@@ -203,9 +212,7 @@ class KnowledgeIngester:
                 f"{chromadb_host}:{chromadb_port}",
                 host=chromadb_host,
                 port=chromadb_port,
-                settings=Settings(
-                    anonymized_telemetry=False, allow_reset=True, **auth_kwargs
-                ),
+                ssl=False,
             )
         else:
             # Local development with persistent client (no network — cannot

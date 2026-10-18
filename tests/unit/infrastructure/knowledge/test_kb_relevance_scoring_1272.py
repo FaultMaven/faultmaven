@@ -14,6 +14,7 @@ masked by another:
    substring filter, so the arm's yield depended on the reporter's shift key.
 """
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -256,7 +257,10 @@ class TestKeywordArm:
         store._get_or_create_collection = MagicMock(return_value=collection)
 
         async def _run(**kw):
-            return await kw["call_func"]()
+            # The store's wrappers are plain functions (#2056); await only
+            # what is awaitable.
+            result = kw["call_func"]()
+            return await result if inspect.isawaitable(result) else result
 
         store.call_external = AsyncMock(side_effect=_run)
         await store._single_keyword_search(

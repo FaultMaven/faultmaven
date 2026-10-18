@@ -43,9 +43,12 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 #: ~60s and SIGKILLs every pod at ~4 min — the exact outcome the fatal/degraded
 #: split exists to prevent, reached by latency instead of by status code. None
 #: of the underlying clients bounds itself anywhere near a probe interval:
-#: chromadb is built with ``timeout=None``, the Presidio path is 21s worst case
-#: (10s + 1s backoff + 10s), and redis sits at ``socket_timeout=10`` — which
-#: already EQUALS readiness's own ``timeoutSeconds``.
+#: chromadb's HTTP session is bounded only per I/O phase, at
+#: ``CHROMA_HTTP_TIMEOUT_SECONDS`` (30s, #2056), and a local client not at all;
+#: the Presidio path is 21s worst case (10s + 1s backoff + 10s), and redis sits
+#: at ``socket_timeout=10`` — which already EQUALS readiness's own
+#: ``timeoutSeconds``. This deadline is the outer bound on every probe, and the
+#: only one on the local ChromaDB arm.
 #:
 #: 3s because the tightest probe timeout that reads ``/health`` is the
 #: startupProbe's 5s, and the whole response must fit inside it.
@@ -424,9 +427,11 @@ class ComponentHealthMonitor:
         """Check health of a specific component, under a deadline.
 
         The deadline is the point. A dependency that HANGS is the common
-        failure — chromadb is constructed with ``timeout=None``, and behind
-        the cluster's auth proxy a stalled read sits for ``proxy_read_timeout
-        300s`` — and an unbounded probe does not report it, it joins it:
+        failure — on the HTTP arm chromadb's session is bounded only per I/O
+        phase, at ``CHROMA_HTTP_TIMEOUT_SECONDS`` (#2056), well past a probe
+        interval, and behind the cluster's auth proxy a stalled read sits for
+        ``proxy_read_timeout 300s`` — and an unbounded probe does not report
+        it, it joins it:
         ``/health`` stops answering, and every probe that reads ``/health``
         acts on the silence.
 

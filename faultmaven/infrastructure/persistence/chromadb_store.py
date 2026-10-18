@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -60,6 +61,13 @@ def create_persistent_client(path: str) -> Any:
             # clients for one path gets the refusal above. Pinned, the client
             # is identified by its path and nothing else.
             environment="",
+            # chromadb 1.5.8's own default for a local client, pinned for the
+            # same reason. ``Settings`` reads ``CHROMA_API_IMPL`` (and the
+            # server host and port) from the environment and from ``.env``,
+            # so left to them, this "persistent" client could be an HTTP
+            # client built outside the one door, with no request timeout
+            # and no credential (#2056).
+            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
         ),
     )
 
@@ -89,6 +97,12 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
         self.client = client
         self.collection_name = collection_name
+        # On the HttpClient arm every ChromaDB call runs in the chroma-http
+        # executor, so a slow server never holds the event loop (#2056). A local
+        # PersistentClient's calls stay on the loop thread as before, local work
+        # outside #2056's scope. An HTTP client built outside the door is
+        # refused here.
+        self.blocking_executor = blocking_executor_for(client)
 
         try:
             self.collection = self.client.get_or_create_collection(
@@ -183,7 +197,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             self._normalize_metadata(doc.get("metadata", {})) for doc in documents
         ]
 
-        async def _add_wrapper():
+        def _add_wrapper():
             add_kwargs: Dict = dict(ids=ids, documents=contents, metadatas=metadatas)
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
@@ -197,7 +211,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         await self.call_external(
             operation_name="add_documents",
             call_func=_add_wrapper,
-            timeout=30.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=2,
             retry_delay=2.0,
         )
@@ -222,7 +238,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             log=self.logger,
         )
 
-        async def _search_wrapper():
+        def _search_wrapper():
             query_params = {
                 "query_embeddings": [query_embedding],
                 "n_results": k,
@@ -265,7 +281,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     ) -> Dict[str, Any]:
         """Query vector store using pre-computed embedding."""
 
-        async def _query_wrapper():
+        def _query_wrapper():
             query_params = {
                 "query_embeddings": [query_embedding],
                 "n_results": top_k,
@@ -295,7 +311,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def count(self) -> int:
         """Return the number of documents in the collection."""
 
-        async def _count_wrapper():
+        def _count_wrapper():
             return self.collection.count()
 
         return await self.call_external(
@@ -309,14 +325,16 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def delete_documents(self, ids: List[str]) -> None:
         """Delete documents by IDs."""
 
-        async def _delete_wrapper():
+        def _delete_wrapper():
             self.collection.delete(ids=ids)
             self.logger.info(f"Deleted {len(ids)} documents from vector store")
 
         await self.call_external(
             operation_name="delete_documents",
             call_func=_delete_wrapper,
-            timeout=10.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=2,
             retry_delay=1.0,
         )
@@ -331,7 +349,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         """
         deleted_count = 0
 
-        async def _delete_by_parent_wrapper():
+        def _delete_by_parent_wrapper():
             nonlocal deleted_count
             results = self.collection.get(
                 where={"parent_document_id": parent_document_id},
@@ -348,7 +366,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         await self.call_external(
             operation_name="delete_documents_by_parent_id",
             call_func=_delete_by_parent_wrapper,
-            timeout=10.0,
+            # A write: awaited to its end, so its caller never compensates
+            # for a write still landing (#2056).
+            timeout=None,
             retries=retries,
             retry_delay=1.0,
         )
