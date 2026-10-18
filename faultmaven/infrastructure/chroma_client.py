@@ -12,14 +12,21 @@ leaving a KB that lists fine and searches empty (#901).
 This module holds the pieces both client-acquisition paths (the container
 provider and ``KnowledgeIngester``) and the deployment coherence gate share,
 so they cannot drift apart on what "external ChromaDB is configured" means —
-the #881 lesson applied to the vector store.
+the #881 lesson applied to the vector store. It is also the one door every
+``chromadb.HttpClient`` in ``faultmaven/`` is built through
+(:func:`build_http_client`), which is where the credential and the request
+timeout are applied (#2056, #1462).
 """
 
 from __future__ import annotations
 
 import logging
 import string
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from chromadb.api import ClientAPI
 
 # The shared predicate lives in the config module (beside coherence check 7)
 # so the import stays one-directional: infrastructure → config. Re-exported
@@ -32,17 +39,46 @@ from faultmaven.config.deployment_coherence import (
 )
 
 __all__ = [
+    "CHROMA_EXECUTOR",
+    "CHROMA_HTTP_TIMEOUT_SECONDS",
     "CHROMA_STORAGE_SYNONYMS",
     "CHROMA_TOKEN_AUTH_PROVIDER",
+    "ChromaClientConfigError",
     "ChromaUnavailableError",
+    "build_http_client",
     "chroma_token_auth_kwargs",
     "is_external_chroma_configured",
     "is_host_only_chroma_configured",
+    "is_http_client",
     "is_server_backed",
     "local_chroma_or_fail",
 ]
 
 logger = logging.getLogger(__name__)
+
+#: The client-side bound on every ``HttpClient`` request, in seconds.
+#:
+#: chromadb builds its session as ``httpx.Client(timeout=None)`` and exposes no
+#: setting for it, so without this a stalled server holds the calling thread
+#: for as long as it stalls (#2056). The value is the longest single-request
+#: budget any vector store declares (``add_documents``,
+#: ``call_external(timeout=30.0)``), so no request is cut shorter than its own
+#: budget. ``call_external``'s ``wait_for`` still ends each *await* at that
+#: call's own budget; this bounds the *thread* the request runs on, which
+#: ``wait_for`` cannot.
+CHROMA_HTTP_TIMEOUT_SECONDS = 30.0
+
+#: Where the vector stores run their ChromaDB requests on the ``HttpClient``
+#: arm, so that a slow server never holds the event loop (#2056).
+#:
+#: Dedicated, not the default executor: the default pool also runs BGE-M3
+#: ``encode`` and Presidio on the upload path, and a Chroma stall must queue
+#: only Chroma calls. Like ``component_monitor._PROBE_EXECUTOR``, a stalled
+#: request strands one worker until :data:`CHROMA_HTTP_TIMEOUT_SECONDS` ends
+#: it; once the pool is full a further call is queued, and is cancelled
+#: unstarted when its ``wait_for`` expires. The local ``PersistentClient`` never
+#: runs here: its SQLite connection is bound to the thread that created it.
+CHROMA_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chroma-http")
 
 # The client-side token auth provider. ``chromadb.auth.token`` was renamed to
 # ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 1.0.0`` floor,
@@ -59,11 +95,25 @@ _VALID_TOKEN_CHARS = frozenset(
 )
 
 
+class ChromaClientConfigError(ValueError):
+    """A ChromaDB client that must not be built, for a reason that is not connectivity.
+
+    No caller may answer it with a fallback or a degraded mode: both client
+    acquisition paths re-raise it ahead of their connection-failure handling.
+    That handling exists for an unreachable server, and answering a
+    configuration fault with it swaps the populated external store for an
+    empty local one on standalone, and blames connectivity on cloud (#1173,
+    #2056). A ``ValueError`` so the callers that caught the malformed-token
+    ``ValueError`` before this class existed still do.
+    """
+
+
 def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     """Client-side token-auth ``ChromaSettings`` kwargs, or ``{}`` if no token.
 
-    The single place both HTTP client acquisition paths (the container
-    provider and ``KnowledgeIngester``) resolve their ChromaDB credential, so
+    The single place every HTTP client resolves its ChromaDB credential —
+    :func:`build_http_client` calls it, and both acquisition paths (the
+    container provider and ``KnowledgeIngester``) build through that — so
     they cannot drift on either axis again — before #1173 one path read
     ``chromadb_api_key`` with a dead provider path while the other read
     ``chromadb_auth_token`` with the correct one, and neither actually sent a
@@ -83,8 +133,10 @@ def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     callers' connection-failure handling, where standalone answers it with a
     silent ``PersistentClient`` fallback (the populated external store swapped
     for an empty local one) and cloud with a boot refusal whose headline
-    blames connectivity. Raising before any client is constructed keeps a
-    malformed credential loud and named on both paths. Surrounding whitespace
+    blames connectivity. It is raised as :class:`ChromaClientConfigError`
+    before any client is constructed, and both acquisition paths re-raise that
+    class ahead of their connection-failure handling, so a malformed
+    credential stays loud and named on both. Surrounding whitespace
     is stripped first — the deployed secret is minted with shell tooling, and
     a trailing newline should not become a fleet-wide CrashLoop — but any
     interior violation of chromadb's own character rule (ASCII letters,
@@ -111,7 +163,7 @@ def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     source = "CHROMADB_AUTH_TOKEN" if auth_token else "CHROMADB_API_KEY"
     token = secret.get_secret_value().strip()
     if not token or not all(c in _VALID_TOKEN_CHARS for c in token):
-        raise ValueError(
+        raise ChromaClientConfigError(
             f"{source} is set but is not a usable ChromaDB token: it must be "
             "non-empty and contain only ASCII letters, digits, and "
             "punctuation. Fix the credential; an unauthenticated client is "
@@ -177,3 +229,77 @@ def is_server_backed(client: Any) -> bool:
         return bool(getattr(client.get_settings(), "chroma_server_host", None))
     except Exception:
         return False
+
+
+def build_http_client(
+    settings: Any, *, host: str, port: int, **settings_overrides: Any
+) -> ClientAPI:
+    """Build a ``chromadb.HttpClient``: the one door every one in ``faultmaven/`` uses.
+
+    It applies the two things no HTTP client may be built without, so a new
+    acquisition site cannot skip either (#1462;
+    ``tests/unit/infrastructure/test_chroma_http_client_one_door.py`` fails on
+    any other construction site):
+
+    - **the shared credential**, resolved HERE by
+      :func:`chroma_token_auth_kwargs` before any client is constructed, so a
+      malformed one is a :class:`ChromaClientConfigError`, never a connection
+      failure;
+    - **the request timeout**, :data:`CHROMA_HTTP_TIMEOUT_SECONDS`, set on the
+      client's own ``httpx`` session. chromadb builds that session with
+      ``timeout=None`` and offers no setting for it, and each ``HttpClient()``
+      has its own session, so it is set on every client this builds (#2056).
+
+    ``settings_overrides`` are further ``ChromaSettings`` fields (the ingester
+    passes ``anonymized_telemetry=False, allow_reset=True``).
+
+    Construction itself makes three round trips to the server, before the
+    timeout is set; those are boot-time, and the callers bound them their own
+    way. ``chromadb.HttpClient`` raises when the server is unreachable, which
+    the callers handle as connectivity.
+
+    Raises:
+        ChromaClientConfigError: a malformed credential, or a chromadb whose
+            client exposes no HTTP session to bound. The second fails a
+            chromadb upgrade that moves the session loudly, rather than
+            shipping requests with no timeout.
+    """
+    import chromadb
+    import httpx
+    from chromadb.config import Settings as ChromaSettings
+
+    auth_kwargs = chroma_token_auth_kwargs(settings)
+    client = chromadb.HttpClient(
+        host=host,
+        port=port,
+        settings=ChromaSettings(**auth_kwargs, **settings_overrides),
+    )
+    session = getattr(getattr(client, "_server", None), "_session", None)
+    if session is None:
+        raise ChromaClientConfigError(
+            f"chromadb {getattr(chromadb, '__version__', '?')} exposes no HTTP "
+            "session to bound (client._server._session): its requests would "
+            "run with no timeout and hold their thread for as long as the "
+            "server stalls. Update build_http_client for this chromadb "
+            "version (#2056)."
+        )
+    session.timeout = httpx.Timeout(CHROMA_HTTP_TIMEOUT_SECONDS)
+    return client
+
+
+def is_http_client(client: Any) -> bool:
+    """Whether this client sends its requests over HTTP, to a ChromaDB server.
+
+    Decides where a vector store runs its ChromaDB calls: an HTTP client's
+    run in :data:`CHROMA_EXECUTOR`, off the event loop; a ``PersistentClient``'s
+    stay on the loop thread, which its SQLite connection requires. Asked of
+    the client object rather than of the settings, because standalone falls
+    back to a ``PersistentClient`` when the configured URL is unreachable.
+    ``False`` for ``None`` and for any client that is not chromadb's HTTP one.
+    """
+    # The module, not ``from … import FastAPI``: that import is a shape the
+    # one-door scan refuses outside build_http_client, and this is a type
+    # test, not a construction.
+    import chromadb.api.fastapi
+
+    return isinstance(getattr(client, "_server", None), chromadb.api.fastapi.FastAPI)

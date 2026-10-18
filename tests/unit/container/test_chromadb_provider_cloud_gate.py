@@ -16,6 +16,8 @@ truthy in both modes, which would let the standalone half of each pair pass
 against a dead gate.
 """
 
+from types import SimpleNamespace
+
 import chromadb
 import pytest
 
@@ -104,8 +106,11 @@ def test_skip_service_checks_still_skips_under_standalone():
 
 def test_cloud_reachable_server_returns_the_http_client(monkeypatch):
     """The gate must be able to PASS: with a reachable server, cloud gets the
-    HttpClient and no refusal — proves the refusal branch is reachable-only."""
-    sentinel = object()
+    HttpClient and no refusal — proves the refusal branch is reachable-only.
+
+    The sentinel carries the ``_server._session`` ``build_http_client`` sets
+    its request timeout on (#2056); a client without one is refused."""
+    sentinel = SimpleNamespace(_server=SimpleNamespace(_session=SimpleNamespace()))
     monkeypatch.setattr(chromadb, "HttpClient", lambda **kwargs: sentinel)
     settings = _settings(cloud=True, chromadb_url="http://chromadb:8000")
 

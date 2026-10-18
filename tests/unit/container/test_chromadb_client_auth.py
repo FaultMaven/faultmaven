@@ -20,6 +20,7 @@ the dead path fails a test instead of failing silently in production.
 """
 
 from importlib import import_module
+from types import SimpleNamespace
 
 import chromadb
 import pytest
@@ -27,6 +28,7 @@ import pytest
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
 from faultmaven.infrastructure.chroma_client import (
     CHROMA_TOKEN_AUTH_PROVIDER,
+    ChromaClientConfigError,
     chroma_token_auth_kwargs,
 )
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
@@ -36,12 +38,17 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 
 class _CapturingHttpClient:
-    """Records the ChromaSettings it was constructed with, acts connected."""
+    """Records the ChromaSettings it was constructed with, acts connected.
+
+    Carries the ``_server._session`` that ``build_http_client`` sets the
+    request timeout on (#2056); without it the builder refuses the client.
+    """
 
     captured: list[dict] = []
 
     def __init__(self, *args, **kwargs):
         type(self).captured.append(kwargs)
+        self._server = SimpleNamespace(_session=SimpleNamespace(timeout=None))
 
     def get_or_create_collection(self, *args, **kwargs):
         return object()
@@ -236,6 +243,36 @@ def test_ingester_dispatch_matches_the_container_predicate(monkeypatch, tmp_path
 
     assert ingester.chroma_client is not None
     assert (tmp_path / "chroma-kb").exists()
+
+
+@pytest.mark.parametrize(
+    "branch_settings",
+    [
+        {"chromadb_url": "http://chromadb:8000"},
+        {"chromadb_host": "chromadb.faultmaven.svc"},
+    ],
+)
+def test_ingester_malformed_token_raises_instead_of_degrading(
+    monkeypatch, tmp_path, branch_settings
+):
+    """The container twin's guarantee, on the ingester. The credential is now
+    resolved inside the builder, which runs inside the ingester's connection
+    guard; that guard answers any failure with ``degraded=True`` and carries
+    on. A malformed token is not an unreachable server, so it must escape it
+    (#1173, #2056)."""
+
+    def _must_not_be_called(*args, **kwargs):  # pragma: no cover - the assertion
+        raise AssertionError("no client may be built with a malformed token")
+
+    monkeypatch.setattr(chromadb, "HttpClient", _must_not_be_called)
+    settings = _settings(auth_token="bad token", **branch_settings)
+    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
+
+    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN") as raised:
+        KnowledgeIngester(settings=settings)
+
+    assert isinstance(raised.value, ChromaClientConfigError)
+    assert not (tmp_path / "chroma-kb").exists()
 
 
 def test_ingester_host_branch_carries_the_token(monkeypatch):

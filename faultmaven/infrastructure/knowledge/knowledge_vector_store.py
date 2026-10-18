@@ -51,6 +51,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR, is_http_client
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -329,6 +330,10 @@ class KnowledgeVectorStore(BaseExternalClient):
         )
 
         self.client = client
+        # On the HttpClient arm every ChromaDB call runs in the chroma-http
+        # executor, so a slow server never holds the event loop (#2056); a
+        # local PersistentClient's stay on the loop thread (SQLite thread rule).
+        self.blocking_executor = CHROMA_EXECUTOR if is_http_client(client) else None
         # Per-collection term index, rebuilt when the collection's size changes.
         # Never a correctness dependency: a miss degrades ranking to the
         # pre-IDF blend, it does not fail a search.
@@ -360,8 +365,11 @@ class KnowledgeVectorStore(BaseExternalClient):
         influence the IDF weights; that is the right trade, and on the shipped
         corpus the global tier IS the corpus.
 
-        Synchronous and blocking, and deliberately OUTSIDE ``call_external`` —
-        beside the query embedding, for the same reason it is: a failure here is
+        Synchronous and blocking, so :meth:`hybrid_search` runs it through
+        ``run_blocking``: on the ``HttpClient`` arm its ChromaDB reads and the
+        tokenizing of the whole global tier happen in the chroma-http executor,
+        off the event loop (#2056). And deliberately OUTSIDE ``call_external``
+        — beside the query embedding, for the same reason it is: a failure here is
         a deterministic local fault, not a ChromaDB one, and raising it inside
         the wrapper would burn the retry budget and charge the circuit breaker
         this store shares with the KB read path. It does not raise at all: every
@@ -555,7 +563,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         if not query_embedding:
             query_embedding = await self._embed_query_or_raise(query, "search")
 
-        async def _search_wrapper():
+        def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)
 
             query_params = {
@@ -682,7 +690,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         # Corpus statistics for BOTH stages: which query terms are rare enough
         # to be worth an exact-match probe (Stage 1), and how much each one
         # weighs when scoring overlap (Stage 2). ``None`` is a supported state.
-        stats = self._corpus_term_stats(collection_name)
+        stats = await self.run_blocking(self._corpus_term_stats, collection_name)
 
         vector_results = await self.search(
             collection_name=collection_name,
@@ -831,7 +839,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         """
         where_document = self._where_document_for_keyword(keyword)
 
-        async def _search_wrapper():
+        def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)
 
             query_params = {
@@ -1339,7 +1347,7 @@ class KnowledgeVectorStore(BaseExternalClient):
                 f"before the external-call machinery sees it."
             ) from e
 
-        async def _add_wrapper():
+        def _add_wrapper():
             collection = self._get_or_create_collection(collection_name)
 
             sanitized_metadatas = []
@@ -1388,7 +1396,7 @@ class KnowledgeVectorStore(BaseExternalClient):
     async def get_document_count(self, collection_name: str) -> int:
         """Get number of documents in a KB collection."""
 
-        async def _count_wrapper():
+        def _count_wrapper():
             try:
                 collection = self.client.get_collection(name=collection_name)
                 count = collection.count()
@@ -1427,14 +1435,16 @@ class KnowledgeVectorStore(BaseExternalClient):
         this while holding its row change uncommitted and passes 0: on SQLite
         that hold is the database's single writer lock, so it must stay one
         attempt long, and the caller's 503 makes its own caller the retry loop.
-        (The ``timeout`` below does not bound the hold either: the ChromaDB
-        calls inside are synchronous, so ``asyncio.wait_for`` cannot interrupt
-        them.)
+        (On a local ``PersistentClient`` the ``timeout`` below does not bound
+        the hold either: the ChromaDB calls run synchronously on the loop
+        thread, so ``asyncio.wait_for`` cannot interrupt them. On the
+        ``HttpClient`` arm they run in the chroma-http executor, and the
+        timeout ends the await.)
 
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """
 
-        async def _delete_wrapper() -> int:
+        def _delete_wrapper() -> int:
             collection = self._get_or_create_collection(collection_name)
             results = collection.get(
                 where={"parent_document_id": parent_document_id},
@@ -1480,7 +1490,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         (item_ids never contain ``_chunk_``).
         """
 
-        async def _list_wrapper() -> Dict[str, List[str]]:
+        def _list_wrapper() -> Dict[str, List[str]]:
             try:
                 collection = self.client.get_collection(name=collection_name)
             except NotFoundError:
@@ -1524,7 +1534,7 @@ class KnowledgeVectorStore(BaseExternalClient):
                 "unfiltered listing is list_all_chunk_ids_by_parent' alone."
             )
 
-        async def _list_wrapper() -> Dict[str, List[str]]:
+        def _list_wrapper() -> Dict[str, List[str]]:
             try:
                 collection = self.client.get_collection(name=collection_name)
             except NotFoundError:
@@ -1598,7 +1608,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         if not ids:
             return []
 
-        async def _delete_wrapper() -> List[str]:
+        def _delete_wrapper() -> List[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
             except NotFoundError:

@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any, List
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.infrastructure.chroma_client import ChromaClientConfigError
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -36,6 +37,11 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
         # A boot-refusal (e.g. ChromaUnavailableError under cloud, #901) must
         # propagate — swallowing it here would re-open the fail-open path this
         # gate exists to close.
+        raise
+    except ChromaClientConfigError:
+        # Nor may a ChromaDB client that must not be built (a malformed
+        # credential, a chromadb with no session to bound) become "no
+        # ingester": None is the degraded mode that class rules out.
         raise
     except Exception as e:
         logger.warning(f"KnowledgeIngester creation failed: {e}")

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR, is_http_client
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -89,6 +90,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
         self.client = client
         self.collection_name = collection_name
+        # On the HttpClient arm every ChromaDB call runs in the chroma-http
+        # executor, so a slow server never holds the event loop (#2056); a
+        # local PersistentClient's stay on the loop thread (SQLite thread rule).
+        self.blocking_executor = CHROMA_EXECUTOR if is_http_client(client) else None
 
         try:
             self.collection = self.client.get_or_create_collection(
@@ -183,7 +188,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             self._normalize_metadata(doc.get("metadata", {})) for doc in documents
         ]
 
-        async def _add_wrapper():
+        def _add_wrapper():
             add_kwargs: Dict = dict(ids=ids, documents=contents, metadatas=metadatas)
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
@@ -222,7 +227,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             log=self.logger,
         )
 
-        async def _search_wrapper():
+        def _search_wrapper():
             query_params = {
                 "query_embeddings": [query_embedding],
                 "n_results": k,
@@ -265,7 +270,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     ) -> Dict[str, Any]:
         """Query vector store using pre-computed embedding."""
 
-        async def _query_wrapper():
+        def _query_wrapper():
             query_params = {
                 "query_embeddings": [query_embedding],
                 "n_results": top_k,
@@ -295,7 +300,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def count(self) -> int:
         """Return the number of documents in the collection."""
 
-        async def _count_wrapper():
+        def _count_wrapper():
             return self.collection.count()
 
         return await self.call_external(
@@ -309,7 +314,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def delete_documents(self, ids: List[str]) -> None:
         """Delete documents by IDs."""
 
-        async def _delete_wrapper():
+        def _delete_wrapper():
             self.collection.delete(ids=ids)
             self.logger.info(f"Deleted {len(ids)} documents from vector store")
 
@@ -331,7 +336,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         """
         deleted_count = 0
 
-        async def _delete_by_parent_wrapper():
+        def _delete_by_parent_wrapper():
             nonlocal deleted_count
             results = self.collection.get(
                 where={"parent_document_id": parent_document_id},

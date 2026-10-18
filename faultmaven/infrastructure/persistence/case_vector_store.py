@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR, is_http_client
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -48,6 +49,10 @@ class CaseVectorStore(BaseExternalClient):
         )
 
         self.client = client
+        # On the HttpClient arm every ChromaDB call runs in the chroma-http
+        # executor, so a slow server never holds the event loop (#2056); a
+        # local PersistentClient's stay on the loop thread (SQLite thread rule).
+        self.blocking_executor = CHROMA_EXECUTOR if is_http_client(client) else None
         self.logger.info("CaseVectorStore initialized (lifecycle-based cleanup)")
 
     def _get_collection_name(self, case_id: str) -> str:
@@ -109,7 +114,7 @@ class CaseVectorStore(BaseExternalClient):
                         document. When provided, bypasses ChromaDB's default embedding.
         """
 
-        async def _add_wrapper():
+        def _add_wrapper():
             collection = self._get_or_create_collection(case_id)
 
             ids = [doc["id"] for doc in documents]
@@ -134,12 +139,13 @@ class CaseVectorStore(BaseExternalClient):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
-            # Kept on the loop thread: every other ChromaDB collection op in the
-            # codebase runs on the loop, and the local PersistentClient (SQLite)
-            # is not safe to use from a different thread than it was created on.
-            # The heavy per-turn embedding is already offloaded upstream
-            # (vector_storage.py pre-computes and passes `embeddings`), so add()
-            # here just stores vectors.
+            # Where this runs is the client's call: a local PersistentClient
+            # keeps it on the loop thread, because its SQLite connection is not
+            # safe to use from a thread other than the one that created it; an
+            # HttpClient runs it in the chroma-http executor, off the loop, with
+            # a client timeout (#2056). The heavy per-turn embedding is already
+            # offloaded upstream (vector_storage.py pre-computes and passes
+            # `embeddings`), so add() here just stores vectors.
             collection.add(**add_kwargs)
 
             self.logger.info(
@@ -213,7 +219,7 @@ class CaseVectorStore(BaseExternalClient):
             log=self.logger,
         )
 
-        async def _search_wrapper():
+        def _search_wrapper():
             collection = self._get_existing_collection(case_id)
             if collection is None:
                 # Never vectorized: nothing to search, and nothing to create.
@@ -270,7 +276,7 @@ class CaseVectorStore(BaseExternalClient):
     async def delete_case_collection(self, case_id: str) -> None:
         """Delete entire case collection (called when case closes/archives)."""
 
-        async def _delete_wrapper():
+        def _delete_wrapper():
             collection_name = self._get_collection_name(case_id)
 
             try:
@@ -305,7 +311,7 @@ class CaseVectorStore(BaseExternalClient):
             Case ids (collection prefix stripped), unordered.
         """
 
-        async def _list_wrapper():
+        def _list_wrapper():
             return [
                 collection.name[len(self.COLLECTION_PREFIX) :]
                 for collection in self.client.list_collections()
@@ -341,7 +347,10 @@ class CaseVectorStore(BaseExternalClient):
             deleted_count = 0
 
             try:
-                collections = self.client.list_collections()
+                # This wrapper stays async (it awaits ``case_exists``), so it
+                # runs on the loop: its ChromaDB calls go through run_blocking
+                # one by one, like every other wrapper's whole body (#2056).
+                collections = await self.run_blocking(self.client.list_collections)
 
                 expected_collections = {
                     self._get_collection_name(case_id) for case_id in active_case_ids
@@ -373,7 +382,9 @@ class CaseVectorStore(BaseExternalClient):
                                 )
                                 continue
                         try:
-                            self.client.delete_collection(name=collection.name)
+                            await self.run_blocking(
+                                self.client.delete_collection, name=collection.name
+                            )
                             deleted_count += 1
 
                             case_id = collection.name[len(self.COLLECTION_PREFIX) :]
@@ -415,7 +426,7 @@ class CaseVectorStore(BaseExternalClient):
     async def get_case_document_count(self, case_id: str) -> int:
         """Get number of documents in case collection."""
 
-        async def _count_wrapper():
+        def _count_wrapper():
             collection_name = self._get_collection_name(case_id)
 
             try:

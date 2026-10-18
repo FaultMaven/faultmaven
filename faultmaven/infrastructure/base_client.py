@@ -7,8 +7,11 @@ comprehensive error handling.
 """
 
 import asyncio
+import contextvars
+import functools
 import time
 from abc import ABC
+from concurrent.futures import Executor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
@@ -138,7 +141,16 @@ class BaseExternalClient(ABC):
         service_name: Name of the external service being accessed
         logger: UnifiedLogger instance for infrastructure layer
         circuit_breaker: Circuit breaker for service protection
+        blocking_executor: Where ``call_external`` runs a SYNC ``call_func``
+            (see :meth:`run_blocking`), or ``None`` to run it inline
     """
+
+    #: Where :meth:`run_blocking` runs blocking work, and so where
+    #: ``call_external`` runs a SYNC ``call_func``. ``None`` (the default, and
+    #: every client but the ChromaDB stores on the ``HttpClient`` arm) runs it
+    #: inline, on the calling thread, as it always has. A client whose sync
+    #: calls block on I/O sets one so that they leave the event loop (#2056).
+    blocking_executor: Optional[Executor] = None
 
     def __init__(
         self,
@@ -195,6 +207,24 @@ class BaseExternalClient(ABC):
             },
         )
 
+    async def run_blocking(self, fn: Callable[..., T], *args, **kwargs) -> T:
+        """Run a blocking ``fn(*args, **kwargs)`` where this client runs blocking work.
+
+        With a :attr:`blocking_executor`, in that executor, so the event loop
+        stays free while ``fn`` blocks; ``fn`` runs in a copy of the caller's
+        context, as ``asyncio.to_thread`` runs it, so the request id and other
+        context the log lines carry come with it. Without one, inline on the
+        calling thread.
+        """
+        if self.blocking_executor is None:
+            return fn(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        context = contextvars.copy_context()
+        return await loop.run_in_executor(
+            self.blocking_executor,
+            functools.partial(context.run, fn, *args, **kwargs),
+        )
+
     async def call_external(
         self,
         operation_name: str,
@@ -219,7 +249,9 @@ class BaseExternalClient(ABC):
 
         Args:
             operation_name: Name of the external operation (e.g., "get", "set", "query")
-            call_func: The function to call (can be sync or async)
+            call_func: The function to call (can be sync or async). A sync one
+                runs through :meth:`run_blocking`: in :attr:`blocking_executor`
+                when the client sets one, inline otherwise
             *args: Arguments to pass to the call function
             timeout: Optional timeout for the operation
             retries: Number of retry attempts on failure
@@ -324,19 +356,27 @@ class BaseExternalClient(ABC):
                     # Execute with timeout
                     start_time = time.time()
 
-                    if timeout:
-                        if asyncio.iscoroutinefunction(call_func):
+                    if asyncio.iscoroutinefunction(call_func):
+                        if timeout:
                             result = await asyncio.wait_for(
                                 call_func(*args, **kwargs), timeout=timeout
                             )
                         else:
-                            # For sync functions, we can't easily apply timeout, but we log it
-                            result = call_func(*args, **kwargs)
-                    else:
-                        if asyncio.iscoroutinefunction(call_func):
                             result = await call_func(*args, **kwargs)
-                        else:
-                            result = call_func(*args, **kwargs)
+                    elif timeout and self.blocking_executor is not None:
+                        # Off the loop, so the timeout can end the AWAIT. It
+                        # cannot stop the thread: a call already running there
+                        # runs on until it returns, which is why a client that
+                        # sets an executor also bounds its calls (#2056).
+                        result = await asyncio.wait_for(
+                            self.run_blocking(call_func, *args, **kwargs),
+                            timeout=timeout,
+                        )
+                    else:
+                        # Inline when the client sets no executor, where no
+                        # timeout can interrupt it: ``wait_for`` cannot
+                        # preempt synchronous code on the loop thread.
+                        result = await self.run_blocking(call_func, *args, **kwargs)
 
                     call_duration = time.time() - start_time
                     ctx["call_duration"] = call_duration

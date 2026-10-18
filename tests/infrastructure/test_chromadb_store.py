@@ -34,7 +34,10 @@ def vector_store(mock_client):
     ) as mock_call:
 
         async def side_effect(operation_name, call_func, **kwargs):
-            return await call_func()
+            # The store's wrappers are plain functions (#2056); await only
+            # what is awaitable.
+            result = call_func()
+            return await result if inspect.isawaitable(result) else result
 
         mock_call.side_effect = side_effect
 

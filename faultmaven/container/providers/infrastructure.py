@@ -225,7 +225,8 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         label: Human-readable label for logging (e.g., "KB", "evidence")
     """
     from faultmaven.infrastructure.chroma_client import (
-        chroma_token_auth_kwargs,
+        ChromaClientConfigError,
+        build_http_client,
         is_external_chroma_configured,
         local_chroma_or_fail,
     )
@@ -235,16 +236,14 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
     # out of the vector-store guarantee — a cloud process with no vector store
     # is the degradation the gate exists to refuse. Standalone keeps the skip
     # (returns None; downstream stores register as disabled). Checked BEFORE
-    # the chromadb import below so skip-mode boots (CI) keep not paying it.
+    # either client builder below, which import chromadb, so skip-mode boots
+    # (CI) keep not paying it.
     if settings.server.skip_service_checks:
         local_chroma_or_fail(
             "SKIP_SERVICE_CHECKS=true skips ChromaDB entirely", settings
         )
         logger.info(f"Skipping ChromaDB {label} client (SKIP_SERVICE_CHECKS=True)")
         return None
-
-    import chromadb
-    from chromadb.config import Settings as ChromaSettings
 
     # Dispatch: canonical value is "chromadb" (default). If the caller
     # configures CHROMADB_URL, we probe it via HttpClient; on failure,
@@ -268,20 +267,21 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         host = parsed.hostname or "localhost"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
-        # Token auth via the shared helper — no probe, no swallow. The old
-        # inline block imported the pre-0.5 module path inside a bare
-        # ``except Exception: pass``, so at every supported chromadb version
-        # it silently built an unauthenticated client (#1173).
-        settings_kwargs = chroma_token_auth_kwargs(settings)
-
+        # Built through the one door, which applies the shared credential and
+        # the request timeout (#1462, #2056). The old inline block imported
+        # the pre-0.5 auth module path inside a bare ``except Exception:
+        # pass``, so at every supported chromadb version it silently built an
+        # unauthenticated client (#1173).
         try:
-            client = chromadb.HttpClient(
-                host=host,
-                port=port,
-                settings=ChromaSettings(**settings_kwargs),
-            )
+            client = build_http_client(settings, host=host, port=port)
             logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
+        except ChromaClientConfigError:
+            # A client that must not be built (a malformed credential, a
+            # chromadb with no session to bound) is not an unreachable server:
+            # falling back would swap the external store for an empty local
+            # one on standalone, and blame connectivity on cloud.
+            raise
         except Exception as e:
             # Don't log "falling back" here — under cloud the gate below
             # refuses instead, and a fallback announcement followed by a
