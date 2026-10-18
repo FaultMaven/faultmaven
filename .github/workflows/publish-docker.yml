@@ -120,8 +120,10 @@ jobs:
       - name: Install yq
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       # The queue only moves forward (infra#413). This run replaces the queued
       # entry only when its commit CONTAINS the queued one; GitHub's compare of
@@ -131,11 +133,16 @@ jobs:
       #   behind     this run is older (an old rerun)  -> skip
       #   diverged   neither contains the other        -> refuse: a red run, for a person
       #   no answer  (the compare failed or said else) -> retry, then a red run
-      # Four repositories push this branch, so a rejected push is an ordinary
-      # race. It RE-READS origin's file and decides again, so the last writer
-      # has always compared against the newest entry. It never rebases: two
-      # runs of one repository rewrite the same three lines, and that rebase
-      # stops on a conflict.
+      # Only an unseeded entry (no tag and no commit_sha) is written without a
+      # compare. An entry the rule cannot order (a commit_sha that is not hex,
+      # a tag naming another commit, no commit at all) is refused, and so is a
+      # missing queue file. A refusal writes nothing: a person fixes the entry.
+      # Four repositories push this branch, so a push rejected as `fetch first`
+      # or `non-fast-forward` is an ordinary race. It RE-READS origin's file and
+      # decides again, so the last writer has always compared against the
+      # newest entry. Any other push failure is red. It never rebases: two runs
+      # of one repository rewrite the same three lines, and that rebase stops on
+      # a conflict.
       - name: Update image queue
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         env:
@@ -156,45 +163,79 @@ jobs:
           Built from: ${REPO}@${RUN_SHA}
           Triggered by: @${TRIGGERED_BY}
           Workflow: ${WORKFLOW_NAME}"
+          GHCR="GHCR holds ${TAG} but the queue does not name it."
+          HEX='^[0-9a-fA-F]{7,40}$'
+          SHA_TAG='^sha-([0-9a-fA-F]{7,40})$'
+          RACE='^ ! \[rejected\] .*\((fetch first|non-fast-forward)\)'
           ERR="$(mktemp)"
           trap 'rm -f "$ERR"' EXIT
 
-          # Sets Q to the commit the queue names: commit_sha, else the sha-
-          # tag's suffix, else empty. A yq failure returns 1 with REASON set.
-          queued_commit() {
-            local sha tag
-            Q=""
-            if ! sha="$(yq '.commit_sha // ""' "$QUEUE_FILE" 2>"$ERR")"; then
-              REASON="could not read ${QUEUE_FILE}: $(awk 'NF { l = $0 } END { print l }' "$ERR")"
-              return 1
+          # Every value printed into a :: command or the step summary goes
+          # through flat(): CR, LF and tab become spaces, so no value can start
+          # a line of its own.
+          flat() {
+            local s="$1"
+            s="${s//$'\r'/ }"
+            s="${s//$'\n'/ }"
+            s="${s//$'\t'/ }"
+            printf '%s' "$s"
+          }
+          annotate() {
+            printf '::%s::%s\n' "$1" "$(flat "$2")"
+          }
+          # The FIRST non-blank stderr line of gh, git or yq, without gh's
+          # "gh: " prefix. gh's later lines are hints, not the error. Trailing
+          # blanks are cut: git pads a "remote: " line with spaces.
+          first_err() {
+            awk 'NF { sub(/^gh: /, ""); sub(/[ \t\r]+$/, ""); print; exit }' "$ERR"
+          }
+          # The line of a failed push that says why: the first one starting
+          # " ! ", "remote: ", "fatal: " or "error: ", else the first non-blank.
+          push_err() {
+            local line
+            line="$(awk '/^( ! |remote: |fatal: |error: )/ { sub(/[ \t\r]+$/, ""); print; exit }' "$ERR")"
+            if [ -z "$line" ]; then
+              line="$(first_err)"
             fi
-            if [ -n "$sha" ]; then
-              Q="$sha"
-              return 0
-            fi
-            if ! tag="$(yq '.tag // ""' "$QUEUE_FILE" 2>"$ERR")"; then
-              REASON="could not read ${QUEUE_FILE}: $(awk 'NF { l = $0 } END { print l }' "$ERR")"
-              return 1
-            fi
-            case "$tag" in
-              sha-?*) Q="${tag#sha-}" ;;
-            esac
-            return 0
+            printf '%s' "$line"
           }
 
-          # Sets DECISION (write, skip, refuse or retry) and REASON from the
-          # queue file as it stands. gh's rc is read before its answer: a 404
-          # prints its JSON body on stdout.
+          # Sets DECISION (write, skip, refuse or retry), REASON and DETAIL from
+          # the queue entry as it stands, and Q to the commit it names.
           decide() {
-            local rc status
+            local rc status sha tag
             DECISION=""
             REASON=""
-            if ! queued_commit; then
+            DETAIL=""
+            Q=""
+            if ! sha="$(yq '.commit_sha // ""' "$QUEUE_FILE" 2>"$ERR")" ||
+               ! tag="$(yq '.tag // ""' "$QUEUE_FILE" 2>"$ERR")"; then
               DECISION="retry"
+              REASON="could not read ${QUEUE_FILE}: $(first_err)"
               return 0
             fi
-            if [ -z "$Q" ]; then
-              DECISION="write"
+            DETAIL="${QUEUE_FILE} has tag '${tag}' and commit_sha '${sha}'"
+            if [ -z "$sha" ] && [ -z "$tag" ]; then
+              DECISION="write"   # unseeded: nothing to order against
+              return 0
+            fi
+            if [ -n "$sha" ]; then
+              if ! [[ $sha =~ $HEX ]]; then
+                DECISION="refuse"
+                REASON="the queued commit_sha is not a commit sha"
+                return 0
+              fi
+              if [ -n "$tag" ] && { ! [[ $tag =~ $SHA_TAG ]] || [[ ${sha,,} != "${BASH_REMATCH[1],,}"* ]]; }; then
+                DECISION="refuse"
+                REASON="the queued tag and commit_sha name different commits"
+                return 0
+              fi
+              Q="$sha"
+            elif [[ $tag =~ $SHA_TAG ]]; then
+              Q="${BASH_REMATCH[1]}"
+            else
+              DECISION="refuse"
+              REASON="the queue entry names no commit this rule can order"
               return 0
             fi
             if [ "$Q" = "$RUN_SHA" ]; then
@@ -202,18 +243,21 @@ jobs:
               REASON="the queue already names this commit"
               return 0
             fi
+            # gh's rc is read before its answer: a 404 prints its JSON body on
+            # stdout. per_page=1: only .status is read, not the commit list.
             rc=0
-            status="$(gh api "repos/${REPO}/compare/${Q}...${RUN_SHA}" --jq .status 2>"$ERR")" || rc=$?
+            status="$(gh api "repos/${REPO}/compare/${Q}...${RUN_SHA}?per_page=1" --jq .status 2>"$ERR")" || rc=$?
             if [ "$rc" -ne 0 ]; then
               DECISION="retry"
-              REASON="the compare ${Q}...${RUN_SHA} failed: $(awk 'NF { l = $0 } END { print l }' "$ERR")"
+              REASON="the compare ${Q}...${RUN_SHA} failed: $(first_err)"
               return 0
             fi
             case "$status" in
               ahead)     DECISION="write" ;;
               identical) DECISION="skip";   REASON="the queued ${Q} is this commit" ;;
               behind)    DECISION="skip";   REASON="this run's commit is older than the queued ${Q}" ;;
-              diverged)  DECISION="refuse"; REASON="neither commit contains the other" ;;
+              diverged)  DECISION="refuse"; REASON="neither commit contains the other"
+                         DETAIL="${QUEUE_FILE} names ${Q} and this run is ${RUN_SHA}" ;;
               *)         DECISION="retry";  REASON="the compare ${Q}...${RUN_SHA} answered '${status}'" ;;
             esac
           }
@@ -221,28 +265,33 @@ jobs:
           for attempt in 1 2 3; do
             if [ "$attempt" -gt 1 ] && ! { git fetch -q origin image-queue && git reset -q --hard FETCH_HEAD; }; then
               REASON="could not re-read origin/image-queue"
-              echo "::warning::${REASON} (attempt ${attempt}/3)"
-              sleep $((attempt * 2))
+              annotate warning "${REASON} (attempt ${attempt}/3)"
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 2)); fi
               continue
+            fi
+            # Not transient, so not retried.
+            if [ ! -f "$QUEUE_FILE" ]; then
+              annotate error "Queue file not found: ${QUEUE_FILE} on image-queue - register the service first. ${GHCR}"
+              exit 1
             fi
             decide
             case "$DECISION" in
               skip)
-                echo "::notice::${REASON}; the queue keeps ${Q} in ${QUEUE_FILE}"
+                annotate notice "${REASON}; the queue keeps ${Q} in ${QUEUE_FILE}"
                 {
                   echo "## Image queue"
                   echo ""
-                  echo "\`${QUEUE_FILE}\` is unchanged: ${REASON}. It keeps \`${Q}\`; this run is \`${RUN_SHA}\`."
+                  printf '%s\n' "$(flat "\`${QUEUE_FILE}\` is unchanged: ${REASON}. It keeps \`${Q}\`; this run is \`${RUN_SHA}\`.")"
                 } >> "$GITHUB_STEP_SUMMARY"
                 exit 0
                 ;;
               refuse)
-                echo "::error::${REASON}: ${QUEUE_FILE} names ${Q} and this run is ${RUN_SHA}. The queue is left as it is."
+                annotate error "${REASON}: ${DETAIL}. The queue is left as it is. ${GHCR}"
                 exit 1
                 ;;
               retry)
-                echo "::warning::${REASON} (attempt ${attempt}/3)"
-                sleep $((attempt * 2))
+                annotate warning "${REASON} (attempt ${attempt}/3)"
+                if [ "$attempt" -lt 3 ]; then sleep $((attempt * 2)); fi
                 ;;
               write)
                 echo "Updating ${QUEUE_FILE} to ${TAG}"
@@ -251,17 +300,24 @@ jobs:
                        yq -i ".commit_sha = \"${RUN_SHA}\"" "$QUEUE_FILE" &&
                        git add "$QUEUE_FILE" &&
                        git commit -q -m "$COMMIT_MSG"; }; then
-                  echo "::error::could not write ${QUEUE_FILE} in the checkout"
+                  annotate error "could not write ${QUEUE_FILE} in the checkout. ${GHCR}"
                   exit 1
                 fi
-                if git push origin image-queue; then
+                rc=0
+                git push origin image-queue 2>"$ERR" || rc=$?
+                cat "$ERR" >&2
+                if [ "$rc" -eq 0 ]; then
                   echo "✓ Updated image queue: ${TAG}"
                   exit 0
                 fi
+                if ! grep -Eq "$RACE" "$ERR"; then
+                  annotate error "the push to image-queue failed, not as a race: $(push_err). ${GHCR}"
+                  exit 1
+                fi
                 REASON="the push to image-queue was rejected"
-                echo "::warning::push rejected; recomputing against origin/image-queue (attempt ${attempt}/3)"
+                annotate warning "push rejected; recomputing against origin/image-queue (attempt ${attempt}/3)"
                 ;;
             esac
           done
-          echo "::error::could not update the queue after 3 attempts: ${REASON}"
+          annotate error "could not update the queue after 3 attempts: ${REASON}. ${GHCR}"
           exit 1
