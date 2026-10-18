@@ -6,7 +6,7 @@ Triggered by corrective-intent phrases ("that's actually a log file",
 "treat server.log as config") — see the prompt rule in
 ``core/investigation/prompts/templates/blocks.py``.
 
-The tool delegates to ``EvidenceReclassifier.reclassify_evidence``, which
+The tool delegates to ``EvidenceReclassifier.reclassify_in_turn``, which
 handles auth, storage fetch, preprocessing re-run, and the write. This tool
 just validates inputs and passes them through. It holds the reclassifier,
 not the investigation service: the service is built after the milestone
@@ -165,13 +165,12 @@ class ReclassifyEvidenceTool(AgentTool):
             )
 
         try:
-            updated = await self.reclassifier.reclassify_evidence(
+            updated = await self.reclassifier.reclassify_in_turn(
                 case_id=context.case_id,
+                case=in_flight_case,
                 evidence_id=evidence_id,
                 user_id=context.user_id,
                 data_type=data_type,
-                trigger="agent_tool",
-                in_flight_case=in_flight_case,
             )
         except NotFoundError as e:
             return ToolResult(success=False, data=None, error=str(e))

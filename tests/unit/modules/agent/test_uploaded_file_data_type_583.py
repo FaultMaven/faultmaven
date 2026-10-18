@@ -869,7 +869,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("other", 1),
     (
         _RECLASSIFICATION,
-        "EvidenceReclassifier.reclassify_evidence",
+        "EvidenceReclassifier.apply_reclassification",
         "attr",
         "preprocessing_result",
     ): ("other", 1),

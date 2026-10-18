@@ -1898,12 +1898,11 @@ class TestAnUnreadableIntentIsNeverAnException:
             file_storage_service=file_storage,
             preprocessing_service=preprocessing_service,
         )
-        updated = await reclassifier.reclassify_evidence(
+        updated = await reclassifier.reclassify_out_of_band(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id=case.user_id,
             data_type=DataType.LOGS_AND_ERRORS,
-            trigger="api",
         )
         assert updated.evidence_id == "ev_aaaaaaaaaaaa"
         saved = await repo.get(case.case_id)
@@ -2816,12 +2815,11 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
 
         await EvidenceReclassifier(
             repo, service.file_storage_service, service.preprocessing_service
-        ).reclassify_evidence(
+        ).reclassify_out_of_band(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
             data_type=override,
-            trigger="api",
         )
 
         saved = await repo.get(case.case_id)
@@ -2861,12 +2859,11 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
         )
         await EvidenceReclassifier(
             repo, service.file_storage_service, service.preprocessing_service
-        ).reclassify_evidence(
+        ).reclassify_out_of_band(
             case_id=case.case_id,
             evidence_id="ev_aaaaaaaaaaaa",
             user_id="user_owner",
             data_type=DataType.STRUCTURED_CONFIG,
-            trigger="api",
         )
         saved = await repo.get(case.case_id)
         assert self._clarified_file_ids(saved.last_suggestions) == []
@@ -3177,7 +3174,7 @@ def test_every_data_type_writer_retires_the_question():
         # the same reclassifier (#1941).
         (
             reclassification_module,
-            "EvidenceReclassifier.reclassify_evidence",
+            "EvidenceReclassifier.apply_reclassification",
             "reclassification",
         ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
