@@ -446,6 +446,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Revocation watermark gauge not started (non-fatal): {e}")
 
+    # Event-loop lag (#2056): how late the loop wakes from each tick. Same
+    # exporter gate and background-task shape as the collectors above.
+    try:
+        from faultmaven.config.settings import MetricsExporter, get_settings
+
+        if get_settings().providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+            from faultmaven.infrastructure.observability import loop_lag
+
+            app.state.loop_lag_task = asyncio.create_task(
+                loop_lag.monitor.run_periodic()
+            )
+            logger.info("✅ Event-loop lag monitor started")
+    except Exception as e:
+        logger.warning(f"Event-loop lag monitor not started (non-fatal): {e}")
+
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
     )
@@ -487,6 +502,15 @@ async def lifespan(app: FastAPI):
         _watermark_task.cancel()
         try:
             await _watermark_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Stop event-loop lag monitor
+    _loop_lag_task = getattr(app.state, "loop_lag_task", None)
+    if _loop_lag_task is not None:
+        _loop_lag_task.cancel()
+        try:
+            await _loop_lag_task
         except (asyncio.CancelledError, Exception):
             pass
 
