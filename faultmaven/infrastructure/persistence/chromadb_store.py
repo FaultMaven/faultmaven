@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR, is_http_client
+from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -61,6 +61,13 @@ def create_persistent_client(path: str) -> Any:
             # clients for one path gets the refusal above. Pinned, the client
             # is identified by its path and nothing else.
             environment="",
+            # chromadb 1.5.8's own default for a local client, pinned for the
+            # same reason. ``Settings`` reads ``CHROMA_API_IMPL`` (and the
+            # server host and port) from the environment and from ``.env``,
+            # so left to them, this "persistent" client could be an HTTP
+            # client built outside the one door, with no request timeout
+            # and no credential (#2056).
+            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
         ),
     )
 
@@ -91,9 +98,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         self.client = client
         self.collection_name = collection_name
         # On the HttpClient arm every ChromaDB call runs in the chroma-http
-        # executor, so a slow server never holds the event loop (#2056); a
-        # local PersistentClient's stay on the loop thread (SQLite thread rule).
-        self.blocking_executor = CHROMA_EXECUTOR if is_http_client(client) else None
+        # executor, so a slow server never holds the event loop (#2056). A local
+        # PersistentClient's calls stay on the loop thread as before, local work
+        # outside #2056's scope. An HTTP client built outside the door is
+        # refused here.
+        self.blocking_executor = blocking_executor_for(client)
 
         try:
             self.collection = self.client.get_or_create_collection(

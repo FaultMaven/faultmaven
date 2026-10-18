@@ -1,9 +1,9 @@
-"""Every ChromaDB call every vector store makes runs where its client requires (#2056).
+"""Every ChromaDB call every vector store makes runs on the thread its arm uses (#2056).
 
 On the ``HttpClient`` arm a store's ChromaDB calls run in the ``chroma-http``
-executor, off the event loop; on the local ``PersistentClient`` arm they stay
-on the loop thread, which SQLite's thread rule requires. The stores choose by
-setting ``blocking_executor``. ``call_external`` sends a SYNC ``call_func``
+executor, off the event loop. On the local ``PersistentClient`` arm they stay
+on the loop thread, as they always have: that arm's latency is local work,
+outside #2056's scope. The stores choose by setting ``blocking_executor``. ``call_external`` sends a SYNC ``call_func``
 through it, so a wrapper left ``async def``, or a ChromaDB call made outside a
 wrapper, would run on the loop thread on both arms. That is what this table
 catches.

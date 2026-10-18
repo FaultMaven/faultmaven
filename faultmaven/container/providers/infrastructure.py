@@ -273,7 +273,9 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         # pass``, so at every supported chromadb version it silently built an
         # unauthenticated client (#1173).
         try:
-            client = build_http_client(settings, host=host, port=port)
+            client = build_http_client(
+                settings, host=host, port=port, ssl=parsed.scheme == "https"
+            )
             logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
         except ChromaClientConfigError:

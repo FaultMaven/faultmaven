@@ -3,10 +3,16 @@
 ``asyncio.wait_for`` cannot interrupt synchronous code on the loop thread, and
 for a sync ``call_func`` ``call_external`` did not try: it ran inline,
 unbounded, with the loop held. A client that sets ``blocking_executor`` now
-has its sync calls run there, where the loop stays live and ``timeout`` ends
-the await. A client that sets none, which is every client but the ChromaDB
-stores on the HTTP arm, keeps the old inline behaviour, and coroutine
-``call_func``s are untouched.
+has its sync calls run there, where the loop stays live.
+
+Such a call is awaited to its END, with no ``wait_for``. Ending the await
+early would leave the call running, so a caller would see a timeout for a
+write still landing and could undo it before it landed. The client bounds its
+own requests instead. A client that sets no executor, which is every client
+but the ChromaDB stores on the HTTP arm, keeps the old inline behaviour, and
+coroutine ``call_func``s are untouched.
+
+No test here reads a clock (#1579): each judges an order of events.
 """
 
 from __future__ import annotations
@@ -14,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator, List
 
@@ -57,47 +62,52 @@ async def test_a_sync_call_runs_in_the_executor(executor: ThreadPoolExecutor) ->
     assert ran_on.startswith(_PREFIX)
 
 
-async def test_a_timeout_ends_the_await_while_the_loop_ticks(
+async def test_a_running_sync_call_is_never_abandoned_by_its_timeout(
     executor: ThreadPoolExecutor,
 ) -> None:
-    """The case ``wait_for`` could never bound before: a sync call that stalls.
-    Off the loop it is bounded at the call's own budget, and the loop keeps
-    ticking meanwhile."""
+    """R2: the caller sees the call's real outcome, never a timeout for a
+    write that is still landing.
+
+    The call is still running long after ``timeout`` has passed: the loop
+    runs a coroutine that sleeps ten times the timeout before letting it
+    finish. ``call_external`` returns what the call returned, and only once
+    it has returned. That coroutine running at all, while the call runs, is
+    the loop staying live.
+    """
     client = _Client()
     client.blocking_executor = executor
-    stalled = threading.Event()
+    started = threading.Event()
+    proceed = threading.Event()
+    returned = threading.Event()
 
-    def _stall() -> None:
-        stalled.wait(2.0)
+    def _write() -> str:
+        started.set()
+        proceed.wait(10)
+        returned.set()
+        return "landed"
 
-    gaps: List[float] = []
-    stop = asyncio.Event()
+    still_running_after_the_timeout = False
 
-    async def _ticker() -> None:
-        last = time.monotonic()
-        while not stop.is_set():
-            await asyncio.sleep(0.05)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+    async def _finish_it_well_after_the_timeout() -> None:
+        nonlocal still_running_after_the_timeout
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.5)
+        still_running_after_the_timeout = not returned.is_set()
+        proceed.set()
 
-    ticker = asyncio.create_task(_ticker())
-    await asyncio.sleep(0)
-    started = time.monotonic()
+    finisher = asyncio.create_task(_finish_it_well_after_the_timeout())
     try:
-        with pytest.raises(ExternalCallTimeout) as raised:
-            await client.call_external(
-                operation_name="stall", call_func=_stall, timeout=0.2
-            )
+        result = await client.call_external(
+            operation_name="write", call_func=_write, timeout=0.05
+        )
     finally:
-        elapsed = time.monotonic() - started
-        stop.set()
-        await ticker
-        stalled.set()
+        proceed.set()
+        await finisher
 
-    assert isinstance(raised.value, asyncio.TimeoutError)
-    assert elapsed < 1.0
-    assert max(gaps) < 0.25
+    assert still_running_after_the_timeout
+    assert returned.is_set()
+    assert result == "landed"
 
 
 async def test_with_no_executor_a_sync_call_runs_inline_as_before() -> None:
@@ -130,10 +140,8 @@ async def test_a_coroutine_call_is_unchanged(executor: ThreadPoolExecutor) -> No
     async def _hang() -> None:
         await asyncio.sleep(2.0)
 
-    started = time.monotonic()
     with pytest.raises(ExternalCallTimeout):
         await client.call_external(operation_name="h", call_func=_hang, timeout=0.2)
-    assert time.monotonic() - started < 1.0
 
 
 async def test_retries_still_apply_to_a_sync_call(

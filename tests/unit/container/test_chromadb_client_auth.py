@@ -138,9 +138,9 @@ def test_malformed_token_raises_a_named_error(bad):
     standalone answers with a silent PersistentClient fallback and cloud with
     a boot refusal that blames connectivity. The error must name the env var
     that carried the bad value."""
-    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN"):
+    with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
         chroma_token_auth_kwargs(_settings(auth_token=bad))
-    with pytest.raises(ValueError, match="CHROMADB_API_KEY"):
+    with pytest.raises(ChromaClientConfigError, match="CHROMADB_API_KEY"):
         chroma_token_auth_kwargs(_settings(api_key=bad))
 
 
@@ -180,7 +180,7 @@ def test_container_malformed_token_raises_instead_of_falling_back(tmp_path):
     before any client exists, so the error escapes instead."""
     settings = _settings(chromadb_url="http://chromadb:8000", auth_token="bad token")
 
-    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN"):
+    with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
         _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
 
     assert not (tmp_path / "chroma").exists()
@@ -268,10 +268,9 @@ def test_ingester_malformed_token_raises_instead_of_degrading(
     settings = _settings(auth_token="bad token", **branch_settings)
     settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
 
-    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN") as raised:
+    with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
         KnowledgeIngester(settings=settings)
 
-    assert isinstance(raised.value, ChromaClientConfigError)
     assert not (tmp_path / "chroma-kb").exists()
 
 

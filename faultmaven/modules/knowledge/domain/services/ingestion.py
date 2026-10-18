@@ -139,7 +139,7 @@ class KnowledgeIngester:
         # Single unified collection for all KB scopes (global, team, personal).
         # Must match UnifiedKBConfig.get_collection_name() = "faultmaven_kb".
         # Scope isolation via metadata filtering, not separate collections.
-        def _open_http(label: str, *, host: str, port: int) -> None:
+        def _open_http(label: str, *, host: str, port: int, ssl: bool) -> None:
             self.logger.info(f"Using ChromaDB HTTP client at {label}")
 
             def _build():
@@ -155,6 +155,7 @@ class KnowledgeIngester:
                     settings,
                     host=host,
                     port=port,
+                    ssl=ssl,
                     anonymized_telemetry=False,
                     allow_reset=True,
                 )
@@ -199,6 +200,7 @@ class KnowledgeIngester:
                 chromadb_url,
                 host=parsed.hostname or "localhost",
                 port=parsed.port or (443 if parsed.scheme == "https" else 80),
+                ssl=parsed.scheme == "https",
             )
         elif is_host_only_chroma_configured(settings):
             # K8s cluster or external HTTP client. The condition is the shared
@@ -210,6 +212,7 @@ class KnowledgeIngester:
                 f"{chromadb_host}:{chromadb_port}",
                 host=chromadb_host,
                 port=chromadb_port,
+                ssl=False,
             )
         else:
             # Local development with persistent client (no network — cannot

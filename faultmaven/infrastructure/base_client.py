@@ -149,7 +149,9 @@ class BaseExternalClient(ABC):
     #: ``call_external`` runs a SYNC ``call_func``. ``None`` (the default, and
     #: every client but the ChromaDB stores on the ``HttpClient`` arm) runs it
     #: inline, on the calling thread, as it always has. A client whose sync
-    #: calls block on I/O sets one so that they leave the event loop (#2056).
+    #: calls block on I/O sets one so that they leave the event loop (#2056),
+    #: and bounds those calls itself: ``call_external`` awaits a sync call to
+    #: its end and applies no ``timeout`` to it.
     blocking_executor: Optional[Executor] = None
 
     def __init__(
@@ -253,7 +255,16 @@ class BaseExternalClient(ABC):
                 runs through :meth:`run_blocking`: in :attr:`blocking_executor`
                 when the client sets one, inline otherwise
             *args: Arguments to pass to the call function
-            timeout: Optional timeout for the operation
+            timeout: Optional timeout for a COROUTINE ``call_func``, applied
+                with ``asyncio.wait_for``. It does not apply to a sync one,
+                which is awaited to its end and never abandoned. Inline, nothing
+                can interrupt it. In a :attr:`blocking_executor`, ending the
+                await would leave the call running: the caller would see a
+                timeout while a write was still landing, and a compensating
+                caller would undo work that then lands anyway. A client that
+                sets an executor bounds its own requests instead (the ChromaDB
+                stores' client timeout, #2056), so the caller always sees the
+                call's real outcome.
             retries: Number of retry attempts on failure
             retry_delay: Base delay between retries (with exponential backoff)
             validate_response: Optional function to validate response
@@ -363,19 +374,13 @@ class BaseExternalClient(ABC):
                             )
                         else:
                             result = await call_func(*args, **kwargs)
-                    elif timeout and self.blocking_executor is not None:
-                        # Off the loop, so the timeout can end the AWAIT. It
-                        # cannot stop the thread: a call already running there
-                        # runs on until it returns, which is why a client that
-                        # sets an executor also bounds its calls (#2056).
-                        result = await asyncio.wait_for(
-                            self.run_blocking(call_func, *args, **kwargs),
-                            timeout=timeout,
-                        )
                     else:
-                        # Inline when the client sets no executor, where no
-                        # timeout can interrupt it: ``wait_for`` cannot
-                        # preempt synchronous code on the loop thread.
+                        # Awaited to its end, never abandoned, with no
+                        # ``wait_for``. Inline, ``wait_for`` could not preempt it
+                        # anyway. In an executor it could end the await while
+                        # the call ran on, which reports a timeout for a write
+                        # that then lands (#2056). The client bounds its own
+                        # requests instead; see ``timeout`` above.
                         result = await self.run_blocking(call_func, *args, **kwargs)
 
                     call_duration = time.time() - start_time

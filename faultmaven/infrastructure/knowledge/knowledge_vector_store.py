@@ -41,9 +41,11 @@ Two scores, deliberately different, both returned (#1272):
 Never filter on ``rerank_score`` and never rank on ``score`` alone.
 """
 
+import asyncio
 import logging
 import math
 import re
+import threading
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -51,7 +53,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR, is_http_client
+from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
@@ -331,24 +333,70 @@ class KnowledgeVectorStore(BaseExternalClient):
 
         self.client = client
         # On the HttpClient arm every ChromaDB call runs in the chroma-http
-        # executor, so a slow server never holds the event loop (#2056); a
-        # local PersistentClient's stay on the loop thread (SQLite thread rule).
-        self.blocking_executor = CHROMA_EXECUTOR if is_http_client(client) else None
+        # executor, so a slow server never holds the event loop (#2056). A local
+        # PersistentClient's calls stay on the loop thread as before, local work
+        # outside #2056's scope. An HTTP client built outside the door is
+        # refused here.
+        self.blocking_executor = blocking_executor_for(client)
         # Per-collection term index, rebuilt when the collection's size changes.
         # Never a correctness dependency: a miss degrades ranking to the
         # pre-IDF blend, it does not fail a search.
         self._term_stats: Dict[str, CorpusTermStats] = {}
+        # Bumped by every invalidation. A build stores its index only if the
+        # generation it started under is still current, so a write that lands
+        # while a build reads the documents never leaves that build's index
+        # behind. On the HTTP arm builds run in a worker thread, concurrently
+        # with writes (#2056).
+        self._term_stats_generation: Dict[str, int] = {}
+        # Makes "is the generation still current, then store" one step against
+        # an invalidation on the loop thread.
+        self._term_stats_lock = threading.Lock()
+        # One index lookup in flight per collection. A concurrent caller awaits
+        # it rather than start a build of its own.
+        self._term_stats_inflight: Dict[str, "asyncio.Future[Any]"] = {}
         self.logger.info("KnowledgeVectorStore initialized (permanent KB collections)")
 
     def _invalidate_term_stats(self, collection_name: str) -> None:
-        """Drop the cached term index for a collection after a write.
+        """Drop the cached term index for a collection, and bump its generation.
 
-        Called on every path that adds or deletes chunks. The size signature
-        below would catch an add and a delete of different sizes on its own,
-        but not a same-size replace — and a replace is exactly what re-ingesting
-        an edited runbook does.
+        Called before AND after every write that adds or deletes chunks. The
+        size signature would catch an add and a delete of different sizes on
+        its own, but not a same-size replace, and a replace is exactly what
+        re-ingesting an edited runbook does. Before: a cached index is never
+        read across the write. After: a build that started after the first
+        call but read the documents before the write landed finishes under an
+        old generation, so its index is not stored.
         """
-        self._term_stats.pop(collection_name, None)
+        with self._term_stats_lock:
+            self._term_stats_generation[collection_name] = (
+                self._term_stats_generation.get(collection_name, 0) + 1
+            )
+            self._term_stats.pop(collection_name, None)
+
+    async def _term_stats_for(self, collection_name: str) -> Optional[CorpusTermStats]:
+        """The term index for a collection, with one lookup in flight at a time.
+
+        Runs :meth:`_corpus_term_stats` through ``run_blocking``. On the
+        ``HttpClient`` arm that is the chroma-http executor, off the event loop
+        (#2056). A caller that arrives while a lookup for the same collection is
+        in flight awaits that lookup. Without this, concurrent cache misses
+        would each read and tokenize the whole global tier in parallel workers.
+        """
+        inflight = self._term_stats_inflight.get(collection_name)
+        if inflight is None:
+            inflight = asyncio.ensure_future(
+                self.run_blocking(self._corpus_term_stats, collection_name)
+            )
+            self._term_stats_inflight[collection_name] = inflight
+
+            def _done(future: "asyncio.Future[Any]") -> None:
+                if self._term_stats_inflight.get(collection_name) is future:
+                    del self._term_stats_inflight[collection_name]
+
+            inflight.add_done_callback(_done)
+        # Shielded: a caller cancelled mid-wait (a dropped request) must not
+        # cancel the lookup the other callers are waiting on.
+        return await asyncio.shield(inflight)
 
     def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
         """Term index for a collection, built once and reused.
@@ -365,11 +413,16 @@ class KnowledgeVectorStore(BaseExternalClient):
         influence the IDF weights; that is the right trade, and on the shipped
         corpus the global tier IS the corpus.
 
-        Synchronous and blocking, so :meth:`hybrid_search` runs it through
-        ``run_blocking``: on the ``HttpClient`` arm its ChromaDB reads and the
-        tokenizing of the whole global tier happen in the chroma-http executor,
-        off the event loop (#2056). And deliberately OUTSIDE ``call_external``
-        — beside the query embedding, for the same reason it is: a failure here is
+        Synchronous and blocking, so it is reached through
+        :meth:`_term_stats_for`. That runs it through ``run_blocking``, so on
+        the ``HttpClient`` arm its ChromaDB reads and the tokenizing of the
+        whole global tier happen in the chroma-http executor, off the event
+        loop (#2056), with one lookup per collection in flight. A write that
+        lands while it reads bumps the collection's generation (see
+        :meth:`_invalidate_term_stats`), and the index it then built is
+        returned to its callers but not stored. Deliberately OUTSIDE
+        ``call_external``, beside the query embedding, for the same reason it
+        is: a failure here is
         a deterministic local fault, not a ChromaDB one, and raising it inside
         the wrapper would burn the retry budget and charge the circuit breaker
         this store shares with the KB read path. It does not raise at all: every
@@ -378,6 +431,9 @@ class KnowledgeVectorStore(BaseExternalClient):
         comparison lives inside the guarded block rather than after it. Bounded
         by ``MAX_TERM_INDEX_CHUNKS``.
         """
+        # Read before the collection is: an invalidation from here on means
+        # the documents this build reads may predate a write.
+        generation = self._term_stats_generation.get(collection_name, 0)
         try:
             collection = self._get_or_create_collection(collection_name)
             size = int(collection.count())
@@ -395,8 +451,11 @@ class KnowledgeVectorStore(BaseExternalClient):
                 return None
 
             # Signature is the WHOLE collection's size, while the documents read
-            # are the global ones: coarser than the thing it guards, so it
-            # over-invalidates and can never serve a stale index.
+            # are the global ones: coarser than the thing it guards, so a change
+            # in another tier also invalidates it. It cannot see a SAME-SIZE
+            # change made by another replica or process: that index is served
+            # until the size next changes (#2064). A same-size replace through
+            # THIS store bumps the generation instead, which is what catches it.
             payload = collection.get(where=_GLOBAL_TIER, include=["documents"])
             documents = payload.get("documents") or []
             stats = CorpusTermStats(documents=documents, signature=size)
@@ -428,7 +487,17 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             return None
 
-        self._term_stats[collection_name] = stats
+        with self._term_stats_lock:
+            if self._term_stats_generation.get(collection_name, 0) != generation:
+                # A write landed while this build read the documents. The
+                # index serves the searches already waiting on it, which only
+                # ranks with it, but it is not kept: the next lookup rebuilds.
+                self.logger.debug(
+                    f"KB term index for '{collection_name}' not cached: the "
+                    f"collection was written during the build"
+                )
+                return stats
+            self._term_stats[collection_name] = stats
         self.logger.info(
             f"KB term index built for '{collection_name}': {stats.n_chunks} "
             f"global chunks"
@@ -687,11 +756,6 @@ class KnowledgeVectorStore(BaseExternalClient):
         # model call (~1.2-2.3s each on CPU) and dominated Stage-1 latency.
         query_embedding = await self._embed_query_or_raise(query, "hybrid search")
 
-        # Corpus statistics for BOTH stages: which query terms are rare enough
-        # to be worth an exact-match probe (Stage 1), and how much each one
-        # weighs when scoring overlap (Stage 2). ``None`` is a supported state.
-        stats = await self.run_blocking(self._corpus_term_stats, collection_name)
-
         vector_results = await self.search(
             collection_name=collection_name,
             query=query,
@@ -699,6 +763,14 @@ class KnowledgeVectorStore(BaseExternalClient):
             where=where,
             query_embedding=query_embedding,
         )
+
+        # Corpus statistics for both stages that read them: which query terms
+        # are rare enough to be worth an exact-match probe (Stage 1), and how
+        # much each one weighs when scoring overlap (Stage 2). Fetched AFTER
+        # the vector search, beside their first consumer: a search that raises,
+        # the circuit breaker open included, spends no worker on them.
+        # ``None`` is a supported state.
+        stats = await self._term_stats_for(collection_name)
 
         # Keyword-constrained retrieval for identifier-heavy queries
         keywords = self._extract_search_keywords(query, stats=stats)
@@ -1384,14 +1456,17 @@ class KnowledgeVectorStore(BaseExternalClient):
         # longer exists. Dropping it early costs one rebuild and can never be
         # stale.
         self._invalidate_term_stats(collection_name)
-
-        await self.call_external(
-            operation_name="add_documents",
-            call_func=_add_wrapper,
-            timeout=30.0,
-            retries=2,
-            retry_delay=2.0,
-        )
+        try:
+            await self.call_external(
+                operation_name="add_documents",
+                call_func=_add_wrapper,
+                timeout=30.0,
+                retries=2,
+                retry_delay=2.0,
+            )
+        finally:
+            # And after: see _invalidate_term_stats.
+            self._invalidate_term_stats(collection_name)
 
     async def get_document_count(self, collection_name: str) -> int:
         """Get number of documents in a KB collection."""
@@ -1435,11 +1510,12 @@ class KnowledgeVectorStore(BaseExternalClient):
         this while holding its row change uncommitted and passes 0: on SQLite
         that hold is the database's single writer lock, so it must stay one
         attempt long, and the caller's 503 makes its own caller the retry loop.
-        (On a local ``PersistentClient`` the ``timeout`` below does not bound
-        the hold either: the ChromaDB calls run synchronously on the loop
-        thread, so ``asyncio.wait_for`` cannot interrupt them. On the
-        ``HttpClient`` arm they run in the chroma-http executor, and the
-        timeout ends the await.)
+        (The ``timeout`` below does not bound the hold either:
+        ``call_external`` applies it to coroutine calls only, and awaits this
+        sync wrapper to its end, so the 503 is never sent while the delete is
+        still landing. On the ``HttpClient`` arm the client's per-phase
+        timeout bounds each request; on a local ``PersistentClient`` the calls
+        run on the loop thread, as before.)
 
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """
@@ -1461,14 +1537,17 @@ class KnowledgeVectorStore(BaseExternalClient):
             return len(chunk_ids)
 
         self._invalidate_term_stats(collection_name)
-
-        return await self.call_external(
-            operation_name="delete_documents_by_parent_id",
-            call_func=_delete_wrapper,
-            timeout=10.0,
-            retries=retries,
-            retry_delay=1.0,
-        )
+        try:
+            return await self.call_external(
+                operation_name="delete_documents_by_parent_id",
+                call_func=_delete_wrapper,
+                timeout=10.0,
+                retries=retries,
+                retry_delay=1.0,
+            )
+        finally:
+            # And after: see _invalidate_term_stats.
+            self._invalidate_term_stats(collection_name)
 
     async def list_all_chunk_ids_by_parent(
         self,
@@ -1627,11 +1706,14 @@ class KnowledgeVectorStore(BaseExternalClient):
             return matched
 
         self._invalidate_term_stats(collection_name)
-
-        return await self.call_external(
-            operation_name=operation_name,
-            call_func=_delete_wrapper,
-            timeout=15.0,
-            retries=2,
-            retry_delay=1.0,
-        )
+        try:
+            return await self.call_external(
+                operation_name=operation_name,
+                call_func=_delete_wrapper,
+                timeout=15.0,
+                retries=2,
+                retry_delay=1.0,
+            )
+        finally:
+            # And after: see _invalidate_term_stats.
+            self._invalidate_term_stats(collection_name)

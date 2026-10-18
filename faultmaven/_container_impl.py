@@ -218,6 +218,18 @@ class DIContainer(BaseDIContainer):
             if is_tenancy_refusal:
                 raise
 
+            # Nor does a ChromaDB client that must not be built (a malformed
+            # credential, a chromadb with no session to bound, an HTTP client
+            # built outside the door): no caller may answer it with a degraded
+            # mode, and a container serving without its service layer is a
+            # worse one than the fallback it replaces (#2056).
+            from faultmaven.infrastructure.chroma_client import (
+                ChromaClientConfigError,
+            )
+
+            if isinstance(e, ChromaClientConfigError):
+                raise
+
             # A deployment that must not degrade never serves a half-composed
             # container (#885). Composition is ordered — infrastructure, then
             # tools, then services — so an exception part-way through leaves
