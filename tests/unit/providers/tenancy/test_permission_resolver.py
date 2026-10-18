@@ -1,11 +1,12 @@
-"""The org-permission resolver behind the tenancy seam (#1163, Phase 0 Step 2).
+"""The org-permission resolver behind the tenancy seam (#1163).
 
 The multi-tenant resolver runs against a **real** in-memory SQLite engine with
 the real ORM schema, the real ``PostgreSQLOrganizationRepository`` and the real
-``ROLE_PERMISSIONS`` map — the layer under test is never substituted. The one
-place a double appears is ``_RecordingOrgRepository``, and it is there to
-observe whether a *dependency* was reached at all, which a real repository
-cannot report.
+``ROLE_PERMISSIONS`` map — the layer under test is never substituted. Two
+doubles appear. ``_RecordingOrgRepository`` is there to observe whether a
+*dependency* was reached at all, which a real repository cannot report.
+``_HoldsOnly`` supplies ``resolve`` so that the base class's own ``has`` can be
+asked about a partial set, which no seeded role holds.
 
 Test ↔ guard mapping (each guard, and the fail-open mutation that breaks it):
 
@@ -18,19 +19,31 @@ Test                                                             Guard it pins
 ``test_non_member_resolves_to_nothing``                          ``if role_id is None: return frozenset()`` — mutate the
                                                                  return to ``STANDALONE_PERMISSIONS`` and it fails.
 ``test_unseeded_role_id_resolves_to_nothing``                    ``ROLE_BY_ID.get(role_id)`` + the ``None`` check —
-                                                                 mutate to ``.get(role_id, Role.MEMBER)`` and it fails.
+                                                                 mutate to ``.get(role_id, Role.ADMIN)`` and it fails.
+                                                                 (Not ``Role.MEMBER``: a member holds nothing, so that
+                                                                 default would be the refusal's own answer.)
 ``test_member_resolves_to_its_role_tier``                        the expansion is the role's own set, per role, not one
 ``test_each_seeded_role_resolves_to_its_own_set``                tier for everyone.
 ``test_standalone_resolves_the_admin_tier``                      ``STANDALONE_PERMISSIONS`` is the admin set — mutate it
-                                                                 to ``Role.VIEWER``'s and it fails.
+                                                                 to ``ROLE_PERMISSIONS[Role.MEMBER]`` and it fails.
 ``test_standalone_ignores_the_ids``                              standalone answers without a table it does not populate.
 ``test_factory_follows_the_tenant_provider``                     ``create_permission_resolver`` reads the mode off the
                                                                  built provider — invert the branch and it fails.
-``test_has_fails_closed_for_a_non_member``                       ``PermissionResolver.has`` is membership, not truthiness.
+``test_has_fails_closed_for_a_non_member``                       ``PermissionResolver.has`` denies an outsider, an unidentified
+                                                                 caller and a member — mutate it to ``return True`` and it fails.
+``test_has_is_membership_not_truthiness``                        ``PermissionResolver.has`` is membership, not truthiness —
+                                                                 mutate it to ``bool(await self.resolve(...))`` and it fails.
+                                                                 Written on a resolver holding one of the two permissions:
+                                                                 no seeded role holds a partial set, so no seeded role can
+                                                                 tell the two apart.
 ===============================================================  =========================================================
 
-**Phase 0 enforces nothing**: this resolver has no caller. That is pinned
-separately by ``tests/unit/modules/auth/test_permission_enforcement_is_unwired.py``.
+The resolver has no caller in core: the org axis is the management axis, and
+it is enforced where it is managed (faultmaven-cloud's organization management,
+through ``user_has_permission``). Only ``admin`` holds anything — the two
+``org:manage_*`` permissions — so the tests that tell a grant from a refusal
+are written on ``admin``; ``member`` and ``viewer`` answer what a refusal does
+(#1040, owner ruling 2026-09-24).
 """
 
 from typing import List, Optional, Tuple
@@ -54,6 +67,7 @@ from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.providers.tenancy.permissions import (
     STANDALONE_PERMISSIONS,
     MultiTenantPermissionResolver,
+    PermissionResolver,
     SingleTenantPermissionResolver,
     create_permission_resolver,
 )
@@ -65,6 +79,7 @@ from tests.utils import DEFAULT_TEST_ENTERPRISE_ID  # noqa: E402
 OTHER_ORG = "org-2"
 USER = "user-1"
 OUTSIDER = "user-2"
+MEMBER = "user-3"
 
 
 @pytest.fixture(scope="function")
@@ -85,7 +100,7 @@ async def session(engine):
 
 @pytest.fixture
 async def seeded(session):
-    """Roles / permissions / grants, as migration 029 seeds them."""
+    """Roles / permissions / grants, as the RBAC seed writes them."""
     for role, role_id in SYSTEM_ROLE_IDS.items():
         session.add(
             RoleModel(
@@ -271,12 +286,41 @@ async def test_resolve_returns_a_set_never_none(multi, seeded):
 @pytest.mark.unit
 @pytest.mark.security
 async def test_has_fails_closed_for_a_non_member(multi, seeded):
-    await _join(seeded, USER, Role.VIEWER)
+    await _join(seeded, USER, Role.ADMIN)
+    await _join(seeded, MEMBER, Role.MEMBER)
 
-    assert await multi.has(USER, ORG, Permission.CASES_READ)
-    assert not await multi.has(USER, ORG, Permission.CASES_DELETE)
-    assert not await multi.has(OUTSIDER, ORG, Permission.CASES_READ)
-    assert not await multi.has(None, ORG, Permission.CASES_READ)
+    assert await multi.has(USER, ORG, Permission.ORG_MANAGE_USERS)
+    assert not await multi.has(OUTSIDER, ORG, Permission.ORG_MANAGE_USERS)
+    assert not await multi.has(None, ORG, Permission.ORG_MANAGE_USERS)
+    # A member of the organization manages nothing in it.
+    assert not await multi.has(MEMBER, ORG, Permission.ORG_MANAGE_USERS)
+    assert not await multi.has(MEMBER, ORG, Permission.ORG_MANAGE_SETTINGS)
+
+
+class _HoldsOnly(PermissionResolver):
+    """A resolver that holds exactly the permissions it is given.
+
+    The layer under test is :meth:`PermissionResolver.has`, which this class
+    inherits unchanged; ``resolve`` is supplied only to give it a set that
+    holds one permission and not the other.
+    """
+
+    def __init__(self, *held: Permission) -> None:
+        self._held = frozenset(held)
+
+    async def resolve(self, user_id, organization_id):
+        return self._held
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.security
+async def test_has_is_membership_not_truthiness():
+    """Holding some permission is not holding every permission."""
+    resolver = _HoldsOnly(Permission.ORG_MANAGE_SETTINGS)
+
+    assert await resolver.has(USER, ORG, Permission.ORG_MANAGE_SETTINGS)
+    assert not await resolver.has(USER, ORG, Permission.ORG_MANAGE_USERS)
 
 
 # =============================================================================
@@ -301,7 +345,6 @@ async def test_standalone_resolves_the_admin_tier():
 
     assert Permission.ORG_MANAGE_USERS in resolved
     assert Permission.ORG_MANAGE_SETTINGS in resolved
-    assert Permission.CASES_DELETE in resolved
     assert resolved == STANDALONE_PERMISSIONS
 
 

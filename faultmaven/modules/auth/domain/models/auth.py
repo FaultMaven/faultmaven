@@ -262,7 +262,8 @@ class AuthenticatedUser:
             it must never be read as a visibility predicate.
         email: User email address
         roles: List of organization-level roles (admin, member, viewer)
-        permissions: List of granular permissions (cases:read, evidence:upload, etc.)
+        permissions: The ``permissions`` claim. No mint emits it, so it is empty on
+            every live token; nothing authorizes on it.
         token_jti: JWT ID for token revocation tracking (optional)
     """
 
@@ -279,28 +280,6 @@ class AuthenticatedUser:
     organization_id: str = ""
     token_jti: Optional[str] = None
 
-    def has_permission(self, permission: str) -> bool:
-        """Check if user has a specific permission.
-
-        Args:
-            permission: Permission string (e.g., "cases:read")
-
-        Returns:
-            True if user has the permission
-        """
-        return permission in self.permissions
-
-    def has_role(self, role: str) -> bool:
-        """Check if user has a specific role.
-
-        Args:
-            role: Role name (e.g., "admin")
-
-        Returns:
-            True if user has the role
-        """
-        return role in self.roles
-
     def is_platform_admin(self) -> bool:
         """Check if user holds the cross-tenant operator role.
 
@@ -308,28 +287,6 @@ class AuthenticatedUser:
         ``PLATFORM_ADMIN_ROLE`` for why the two axes are separate.
         """
         return PLATFORM_ADMIN_ROLE in self.roles
-
-    def has_any_permission(self, permissions: list[str]) -> bool:
-        """Check if user has any of the specified permissions.
-
-        Args:
-            permissions: List of permission strings
-
-        Returns:
-            True if user has at least one of the permissions
-        """
-        return any(perm in self.permissions for perm in permissions)
-
-    def has_all_permissions(self, permissions: list[str]) -> bool:
-        """Check if user has all of the specified permissions.
-
-        Args:
-            permissions: List of permission strings
-
-        Returns:
-            True if user has all of the permissions
-        """
-        return all(perm in self.permissions for perm in permissions)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""

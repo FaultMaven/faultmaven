@@ -333,11 +333,13 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
         The permission is spelled the way :class:`~faultmaven.models.rbac.Permission`
         spells it — ``resource:action`` with a **colon** — and a ``Permission``
-        member may be passed directly. That is also how migration 029 seeds the
-        ``permissions`` rows, so caller, enum and table now agree on one
-        spelling. The old ``resource.action`` (dot) form this method used to
-        parse is **no longer accepted**: it was unreachable from the enum's own
-        value, so passing ``Permission.ORG_MANAGE_USERS`` silently denied.
+        member may be passed directly. That is also how the baseline
+        (``001_enterprise_baseline``, pruned to ``org:manage_*`` by
+        ``020_org_permissions_are_management_only``) seeds the ``permissions``
+        rows, so caller, enum and table now agree on one spelling. The old
+        ``resource.action`` (dot) form this method used to parse is **no longer
+        accepted**: it was unreachable from the enum's own value, so passing
+        ``Permission.ORG_MANAGE_USERS`` silently denied.
 
         Anything that is not exactly one ``resource:action`` pair returns
         ``False`` — an authorization primitive fails closed on input it cannot

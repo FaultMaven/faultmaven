@@ -1,48 +1,83 @@
 # Wiring org-scoped permissions to endpoint checks
 
-**Status:** Phase 0 landed (#1163) — the machinery exists and **enforces
-nothing**. Phases 1–3 are design. Tracked by [#1040](https://github.com/FaultMaven/faultmaven/issues/1040).
+**Status:** **Decided** (owner ruling 2026-09-24 on [#1040](https://github.com/FaultMaven/faultmaven/issues/1040)): the org mapping is pruned to the management axis and **nothing new is wired**. Phase 0 (#1163) stands as the resolver seam; Phases 1–3 are superseded. Decisions 1–3 below are kept as the history that led there.
 **Supersedes the "tracked in #706" pointers** in [rbac.md](rbac.md), [iam-design.md](iam-design.md) and `infrastructure/persistence/user_repository.py`.
-**Related:** ADR-012 D9 (operator vs org-admin axes), ADR-006 (`TENANT_PROVIDER=multi` seam), #706 (PR #1039, which settled the role *source* question), #874 / #1042 (membership and role writes must revoke), dash#35 (role-naming reconciliation), **ADR-017** (the enterprise isolates, the organization bills — see the open question this raises for Phases 2–3, below).
+**Related:** ADR-012 D9 (operator vs org-admin axes), ADR-006 (`TENANT_PROVIDER=multi` seam), #706 (PR #1039, which settled the role *source* question), #874 / #1042 (membership and role writes must revoke), dash#35 (role-naming reconciliation), **ADR-017** (the enterprise isolates, the organization bills).
 
-> **Open question raised by ADR-017.** This document's staged rollout (Phase 2/3) enforces `Permission` values including `cases:read` / `cases:write` / `cases:delete` gated by **organization** role — i.e. it eventually turns org membership into a data-access gate. ADR-017 D2/D5 is explicit that organization roles are the organization's *management* vocabulary and "no longer gate data visibility, which they never should have" — isolation is the enterprise's job (RLS on `enterprise_id`), and sharing is the team's (consent, `resource_shares`). Nothing here is enforced yet (Phase 0 only), so no live behavior contradicts ADR-017 today, but the `ROLE_PERMISSIONS` map in `faultmaven/models/rbac.py` still grants case-level `Permission` values by org role, unchanged by this campaign. Reconciling the two — most plausibly, confining Phases 2–3 to `org:manage_users` / `org:manage_settings` and dropping the case/session/evidence permissions from the org axis — is an open decision for whoever resumes #1040, not settled by this document.
+---
+
+## The decision — prune to the management axis; wire nothing new
+
+ADR-017 raised an open question against this document's staged rollout: Phases
+2–3 would have enforced `cases:read` / `cases:write` / `cases:delete` by
+**organization** role, turning org membership into a data-access gate, while
+ADR-017 D2/D5 says organization roles are the organization's *management*
+vocabulary and "no longer gate data visibility, which they never should have" —
+isolation is the enterprise's job (RLS on `enterprise_id`), sharing the team's
+(consent, `resource_shares`). The owner's ruling of 2026-09-24 answers it:
+
+1. **The mapping is the management axis.** `ROLE_PERMISSIONS` in
+   `faultmaven/models/rbac.py` holds exactly `org:manage_users` and
+   `org:manage_settings`, both granted to `admin`; `member` and `viewer` grant
+   nothing. The `cases:*` and `evidence:*` permissions are deleted from the enum,
+   the map and the seed — alembic `020_org_permissions_are_management_only`
+   deletes their rows and grants from every database (the `sessions:*` ones went
+   in `017`).
+2. **Nothing new is wired.** The premise "recorded but not enforced" was wrong
+   for the `org:*` pair: they are already enforced, where the organization is
+   managed. faultmaven-cloud's organization management authorises every request
+   through `OrganizationManagementService._authorized_org`, which asks
+   `IOrganizationRepository.user_has_permission` for `org:manage_settings` or
+   `org:manage_users` — a live join over `role_permissions`. In core, the
+   org-management surface is `/admin/users/{id}/roles`, gated by
+   `require_platform_admin`, and `fm-remove-org-member`. Adding a
+   `require_permission` to those would be a second mechanism for a check that
+   already runs.
+3. **The readers shrink with the mapping.** `STANDALONE_PERMISSIONS`
+   (`providers/tenancy/permissions.py`) follows `ROLE_PERMISSIONS[Role.ADMIN]`
+   and is now the two `org:*` permissions. The five dependency factories nothing
+   called — `require_permission`, `require_any_permission`,
+   `require_all_permissions`, `require_role`, `require_any_role` — are deleted
+   from `api/middleware/auth.py`, with `AuthenticatedUser`'s `has_permission`,
+   `has_role`, `has_any_permission` and `has_all_permissions`. The
+   `PermissionResolver` seam is kept.
+
+Items 2 and 4 of #1040 close with it: see *Already landed under #1040* below.
+
+The OAuth **scope** strings `cases:read` / `cases:write` / `knowledge:read`,
+which tokens carry in `scopes` and the consent page lists, are a separate,
+literal vocabulary and are untouched.
 
 ---
 
 ## What is actually true today
 
-The `Role` → `Permission` mapping in `faultmaven/models/rbac.py` maps to nothing
-at the API surface. Three separate facts make that so, and they compound:
+The `Role` → `Permission` mapping is the organization's management axis, and it
+is enforced where the organization is managed. Three facts describe the rest:
 
 **1. The `permissions` claim is never minted.** `AuthenticatedUser.from_jwt_claims`
 reads `claims.get("permissions", [])`, and neither token generator writes that
 key — `jwt_token_generator.py` mints `roles` plus a hardcoded `scopes` literal
 (`["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"]`,
 identical in the RS256 and HS256 paths, unrelated to the user's roles). So
-`AuthenticatedUser.permissions` is **always the empty list**.
+`AuthenticatedUser.permissions` is **always the empty list**, and nothing reads
+it: the dependencies that would have (and that would have denied every caller,
+platform admin included) are deleted.
 
-The practical consequence is worth stating plainly, because it inverts the
-obvious first step: `require_permission("cases:read")` on an endpoint today
-would **403 every caller, including a platform admin**. The dependencies are not
-merely unused — they are unusable until something populates the field. Any plan
-that begins "add `require_permission` to a route and see" begins with an outage.
+**2. `platform_admin` is the only role a core dependency consults.**
+`require_platform_admin` / `is_platform_admin()` read the deployment axis from
+the `roles` claim. There is no org-role dependency in core; the org axis is
+read by organization management, per request, from `organization_members`.
 
-**2. `require_role` / `require_any_role` have zero production call sites.**
-Only docstring examples and the `api/middleware/__init__.py` re-export. They
-would work — `roles` *is* minted — but nothing calls them, so `platform_admin`
-(via `require_platform_admin` / `is_platform_admin()`) is the only role any
-enforcement path consults. Assigning `member` versus `viewer` changes nothing
-about what a user can do.
-
-**3. There are already two answers to "what is this user's org role", and they
-can disagree.** #706 settled that `users.dev_roles` is the canonical source of
+**3. There are two answers to "what is this user's org role", and they can
+disagree.** #706 settled that `users.dev_roles` is the canonical source of
 the JWT `roles` claim and that `organization_members.role_id` is affiliation,
 not the claim source. But the Cloud org console does not consult the claim at
 all: `OrganizationManagementService` gates on
 `IOrganizationRepository.user_has_permission`, which joins
 `organization_members → role_permissions → permissions` **live, per request**.
-So the console's authority model and the token's `roles` claim are two
-independent readings of the same question, kept in sync only by convention.
+The org role in the `roles` claim authorises nothing, so the disagreement
+decides nothing; the console's live answer is the one that is enforced.
 
 ---
 
@@ -58,6 +93,10 @@ mint time") locks out every ordinary account: a user whose `dev_roles` is
 `["user"]` derives no permissions and loses `cases:read`. The vocabulary gap is
 not a tidiness item to do afterwards — it is load-bearing on the very first
 step, which is why #1040 item 2 and item 1 cannot be sequenced independently.
+
+*Since the 2026-09-24 decision there is no `cases:read` to lose:* `user` and
+`member` both grant nothing, so nothing reconciles them, and Decision 2 below
+stands as the answer.
 
 ---
 
@@ -151,12 +190,14 @@ doesn't work" rather than as a string-format bug.
 
 ---
 
-## Staged rollout
+## Staged rollout — superseded
 
-Enforcement changes authorization across the API surface, and fact 1 means the
-naive first step is an outage. So it stages:
+Phases 1–3 below are **superseded** by the 2026-09-24 decision and will not
+run: the org axis is the management axis, it is already enforced where it is
+managed, and nothing gates data by organization role. They are kept as the plan
+the ruling replaced.
 
-**Phase 0 — the seam, enforcing nothing. Landed (#1163).**
+**Phase 0 — the seam, enforcing nothing. Landed (#1163), and stands.**
 `providers/tenancy/permissions.PermissionResolver` sits behind the
 `TenantProvider` seam (ADR-006): `MultiTenantPermissionResolver` reads the
 caller's `organization_members` role and expands it through `ROLE_PERMISSIONS`
@@ -168,29 +209,19 @@ decides the deployment's tenancy. It fails closed throughout: `resolve` returns
 a frozenset and never `None`, an unidentified caller is answered without a
 query, and a `role_id` outside the seeded system set grants nothing.
 
-Nothing calls it. `tests/unit/modules/auth/test_permission_enforcement_is_unwired.py`
-AST-scans the package and holds `require_permission` and its four siblings to an
-empty allowlist of uses (imports: the middleware re-export only), so Phase 0
-cannot silently become Phase 2.
+Nothing in core calls it. `test_permission_enforcement_is_unwired.py`, which
+held `require_permission` and its four siblings to an empty allowlist of uses,
+is deleted with them: the surface it held empty is gone.
 
-**Phase 1 — populate and observe.** `get_current_user` fills
-`AuthenticatedUser.permissions` from the resolver. Still no endpoint checks, but
-`require_permission` becomes *usable* rather than deny-all. Add shadow logging:
-for a candidate set of endpoints, log what *would* have been denied. The
-question Phase 1 answers is the one no amount of reading settles — whether the
-`ROLE_PERMISSIONS` map matches how the product is actually used.
+**Phase 1 — populate and observe** *(superseded)*. `get_current_user` would
+have filled `AuthenticatedUser.permissions` from the resolver, with shadow
+logging of what candidate endpoints would have denied.
 
-**Phase 2 — enforce where a wrong answer is obvious.** Destructive operations
-first (`cases:delete`, `evidence:delete`), where a `viewer` holding the ability
-is plainly wrong and the blast radius of a mistake is a 403 on a rare action
-rather than on the main read path.
+**Phase 2 — enforce where a wrong answer is obvious** *(superseded)*.
+Destructive operations first (`cases:delete`, `evidence:delete`).
 
-**Phase 3 — enforce broadly**, informed by Phase 1's shadow data, and delete the
-hardcoded `scopes` literal or make it role-derived.
-
-Phases 1–3 are each independently revertible, which is the point of staging
-them: the failure mode of RBAC wiring is locking out real users, and it is
-discovered in production or not at all.
+**Phase 3 — enforce broadly** *(superseded)*, and delete the hardcoded `scopes`
+literal or make it role-derived.
 
 ---
 
@@ -206,16 +237,23 @@ the two came apart — keeping the base `user` marker. `--keep-org-admin` covers
 the account that held org `admin` independently, which nothing records and this
 command therefore cannot infer.
 
-**Item 4 — one role vocabulary.** `modules/auth/domain/models/rbac.py` no longer
-defines its own `Role` / `Permission` / `ROLE_PERMISSIONS`; it re-exports
-`faultmaven/models/rbac.py` (the copy migration 029 seeds from, and that
-`rbac_seed.SYSTEM_ROLE_IDS` maps to stable ids) and adds only what is genuinely
-auth-module knowledge: `PLATFORM_ADMIN_ROLE`, `PLATFORM_ADMIN_ROLE_SET`,
-`BASE_USER_ROLE`, `OPERATOR_GRANTED_ROLES`.
-`test_platform_admin_role_separation.py` now asserts the two modules expose the
-**same objects** (identity, not equality — two separately-defined enums with
-identical members compare unequal member-by-member and would pass an equality
-check right through a re-fork).
+**Item 4 — one role vocabulary, one door.** `modules/auth/domain/models/rbac.py`
+no longer defines its own `Role` / `Permission` / `ROLE_PERMISSIONS`, and no
+longer re-exports them either: `faultmaven/models/rbac.py` is the one
+definition and the one door (it is what faultmaven-cloud imports and what the
+seed is written from), and the auth module's `rbac` holds only what is
+genuinely auth-module knowledge: `PLATFORM_ADMIN_ROLE`,
+`PLATFORM_ADMIN_ROLE_SET`, `BASE_USER_ROLE`, `OPERATOR_GRANTED_ROLES`,
+`ORG_ADMIN_ROLE`, `ROLELESS_ACCOUNT_ROLE` and `effective_roles`. The auth
+packages above it (`modules/auth`, `modules/auth/domain/models`) stopped
+re-exporting `Role` / `Permission` too. `test_platform_admin_role_separation.py`
+asserts that none of the three auth doors offers the vocabulary.
+
+**Item 1 — the mapping.** Pruned to the management axis, as decided above.
+
+**Item 2 — `user` versus `member`.** No code: after the prune both grant
+nothing, so there is nothing to reconcile, and Decision 2 stands — `user` is the
+deployment-axis marker on `dev_roles`, `member` an org-axis role.
 
 ## Deliberately not decided here
 
@@ -223,9 +261,8 @@ check right through a re-fork).
   claim; whether they should participate in `ROLE_PERMISSIONS` is a separate
   question.
 - **Break-glass interaction.** ADR-012 D8/D9 break-glass grants cross-tenant
-  content access to an operator. How a grant composes with org permissions (it
-  should not need to — the axes are orthogonal) wants its own note once Phase 2
-  exists.
+  content access to an operator. It does not compose with org permissions: the
+  axes are orthogonal, and org permissions gate no content.
 - **Per-resource ownership.** `ROLE_PERMISSIONS` is role-uniform: it cannot
   express "a member may edit their own case but not another member's". Every
   such check is currently a service-layer ownership test, and this design leaves

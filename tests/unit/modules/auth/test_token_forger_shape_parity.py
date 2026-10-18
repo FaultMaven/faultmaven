@@ -11,17 +11,17 @@ The concrete trap, and why this file exists: the removed mint emitted a
 ``permissions`` claim, and `AuthenticatedUser.from_jwt_claims` reads
 ``permissions`` — but both live generators emit ``scopes`` and no ``permissions``
 at all. So in production `AuthenticatedUser.permissions` is **always** empty,
-while every forged-token test would have seen it populated.
-`require_permission` is defined and exported (`api/middleware/auth.py`) and is
-wired to no route today; the first route to adopt it would have passed the whole
-suite and returned 403 to every real caller.
+while every forged-token test would have seen it populated. A check that read
+that field would have passed the whole suite and denied every real caller; the
+permission dependencies that read it are gone (#1040), and the field stays
+unread.
 
 These tests pin the two shapes equal, in both directions:
 
 * the forged claim key set equals the live generator's, so the forger cannot
   drift from the mint;
 * `AuthenticatedUser` built from a *live* token has no permissions, so the fact
-  above is recorded where the next reader of `require_permission` will meet it.
+  above is recorded where the next reader of that field will meet it.
 """
 
 from datetime import datetime, timezone
@@ -208,10 +208,9 @@ async def test_identity_from_a_live_token_carries_no_permissions(
     """Production truth, recorded: `AuthenticatedUser.permissions` is empty.
 
     `from_jwt_claims` reads `claims.get("permissions", [])` and no mint emits
-    that claim, so `has_permission` is False for every permission on every real
-    request. `require_permission` is wired to no route today — the first route
-    that adopts it 403s in production, and this test is where that is written
-    down. Roles, which the mint *does* emit, survive the trip.
+    that claim, so the field is empty on every real request: a check that read
+    it would deny every caller in production, and this test is where that is
+    written down. Roles, which the mint *does* emit, survive the trip.
     """
     token = await generator.generate_access_token(
         _user(), state_read_at=datetime.now(timezone.utc)
@@ -220,5 +219,4 @@ async def test_identity_from_a_live_token_carries_no_permissions(
     user = auth_service.extract_user_from_token(token)
 
     assert user.permissions == []
-    assert not user.has_permission("cases:write")
     assert user.roles == ROLES

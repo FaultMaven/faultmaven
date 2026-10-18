@@ -587,7 +587,7 @@ class IOrganizationRepository(ABC):
             user_id: User identifier
             organization_id: Organization identifier
             permission: A :class:`~faultmaven.models.rbac.Permission` member, or
-                its ``resource:action`` value (e.g. ``'cases:write'``)
+                its ``resource:action`` value (e.g. ``'org:manage_users'``)
 
         Returns:
             True if user has permission; False for a permission that cannot be

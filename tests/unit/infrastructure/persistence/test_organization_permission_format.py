@@ -32,6 +32,10 @@ Test                                                         Guard it pins
                                                              ``AttributeError`` out of an authorization check.
 ``test_permission_outside_the_role_denies``                  the join itself still discriminates: the normalisation
 ``test_non_member_denies``                                   did not turn the check into a constant ``True``.
+``test_a_partial_grant_discriminates_by_permission``         the ``resource``/``action`` predicate — drop it and this
+                                                             fails. Seeds a role holding one of the two permissions:
+                                                             the seed grants ``admin`` both and the others neither,
+                                                             so no seeded role can show it.
 ===========================================================  ==========================================================
 """
 
@@ -55,6 +59,8 @@ ENTERPRISE = "ent-1"
 ORG = "org-1"
 USER = "user-1"
 OUTSIDER = "user-2"
+MEMBER = "user-3"
+VIEWER = "user-4"
 
 
 @pytest.fixture(scope="function")
@@ -76,7 +82,7 @@ async def session(engine):
 
 @pytest.fixture
 async def seeded(session):
-    """Seed roles/permissions/grants exactly as migration 029 does.
+    """Seed roles/permissions/grants exactly as the RBAC seed does.
 
     Permissions are stored as the enum value split on ``":"`` — that split is
     the migration's, restated here so the test would notice if the storage
@@ -255,12 +261,22 @@ async def test_non_string_permission_denies(repo, seeded, bad):
 @pytest.mark.unit
 @pytest.mark.security
 async def test_permission_outside_the_role_denies(repo, seeded):
-    """A viewer does not hold a permission its role was never granted."""
-    await _join(seeded, USER, Role.VIEWER)
+    """A member and a viewer hold no permission their role was never granted.
 
-    assert await repo.user_has_permission(USER, ORG, Permission.CASES_READ)
-    assert not await repo.user_has_permission(USER, ORG, Permission.CASES_DELETE)
-    assert not await repo.user_has_permission(USER, ORG, Permission.ORG_MANAGE_USERS)
+    Only ``admin`` is granted anything (the two ``org:manage_*`` permissions),
+    so the admin is the positive control and the other two tiers the check.
+    """
+    await _join(seeded, USER, Role.ADMIN)
+    await _join(seeded, MEMBER, Role.MEMBER)
+    await _join(seeded, VIEWER, Role.VIEWER)
+
+    assert await repo.user_has_permission(USER, ORG, Permission.ORG_MANAGE_USERS)
+    for user_id in (MEMBER, VIEWER):
+        for perm in Permission:
+            assert not await repo.user_has_permission(user_id, ORG, perm), (
+                user_id,
+                perm,
+            )
 
 
 @pytest.mark.asyncio
@@ -270,5 +286,47 @@ async def test_non_member_denies(repo, seeded):
     """Membership of *this* organization is what the join requires."""
     await _join(seeded, USER, Role.ADMIN)
 
-    assert not await repo.user_has_permission(OUTSIDER, ORG, Permission.CASES_READ)
-    assert not await repo.user_has_permission(USER, "org-other", Permission.CASES_READ)
+    assert await repo.user_has_permission(USER, ORG, Permission.ORG_MANAGE_USERS)
+    for perm in Permission:
+        assert not await repo.user_has_permission(OUTSIDER, ORG, perm), perm
+        assert not await repo.user_has_permission(USER, "org-other", perm), perm
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.security
+async def test_a_partial_grant_discriminates_by_permission(repo, seeded):
+    """A role granted one permission does not hold the other.
+
+    The join reaches ``role_permissions`` by ``role_id`` directly, so a role
+    outside the system set is honoured here; it is the only way to hold a
+    partial set now that the seed grants ``admin`` both permissions and the
+    other tiers none.
+    """
+    seeded.add(
+        RoleModel(
+            role_id="role-settings-only",
+            name="settings_only",
+            scope="organization",
+            is_system_role=False,
+        )
+    )
+    await seeded.commit()
+    seeded.add(
+        RolePermissionModel(
+            role_id="role-settings-only",
+            permission_id=f"perm-{Permission.ORG_MANAGE_SETTINGS.name}",
+        )
+    )
+    seeded.add(
+        OrganizationMemberModel(
+            user_id=USER,
+            organization_id=ORG,
+            enterprise_id=ENTERPRISE,
+            role_id="role-settings-only",
+        )
+    )
+    await seeded.commit()
+
+    assert await repo.user_has_permission(USER, ORG, Permission.ORG_MANAGE_SETTINGS)
+    assert not await repo.user_has_permission(USER, ORG, Permission.ORG_MANAGE_USERS)

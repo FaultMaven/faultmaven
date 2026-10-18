@@ -430,14 +430,6 @@ class ILocalAuthService(ABC):
         ...
 
 
-class IPermissionChecker(Protocol):
-    """Interface for permission checking (for high fan-in scenarios)."""
-
-    async def can_access(self, user_id: str, resource: str) -> bool:
-        """Check if user can access a resource."""
-        ...
-
-
 class IOAuthCodeRepository(ABC):
     """Storage abstraction for OAuth authorization codes.
 
@@ -1074,7 +1066,6 @@ __all__ = [
     "IAuthService",
     "IOAuthService",
     "ILocalAuthService",
-    "IPermissionChecker",
     "ISessionService",
     "ISSOIdentityProvider",
     "ISSOOrgMappingRepository",

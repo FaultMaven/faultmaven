@@ -1,17 +1,20 @@
-"""Org-scoped permission resolution, behind the tenancy seam (#1163, Phase 0).
+"""Org-scoped permission resolution, behind the tenancy seam (#1163).
 
-Resolves *what a caller may do inside an organization* — the org axis of
+Resolves *what a caller may manage inside an organization* — the org axis of
 ADR-012 D9. The deployment axis (``platform_admin``, from ``users.dev_roles``
 via the ``roles`` claim) is a different question with a different reader
 (``require_platform_admin``) and is deliberately not answered here.
 
-**Nothing calls this yet.** Phase 0 of
-``docs/architecture/security/org-permission-enforcement.md`` builds the
-machinery and enforces nothing: no token generator mints a ``permissions``
-claim, so putting ``require_permission`` on a route today denies every caller,
-platform admin included. ``tests/unit/modules/auth/
-test_permission_enforcement_is_unwired.py`` pins that surface as empty so
-Phase 0 cannot become Phase 2 by accident.
+**The org axis is the management axis, and nothing in core calls this.** The
+staged rollout that once planned to wire organization permissions to endpoint
+checks (Phases 1-3 of ``docs/architecture/security/org-permission-enforcement.md``)
+is superseded by the owner's ruling of 2026-09-24 on #1040: the mapping is
+pruned to ``org:manage_users`` / ``org:manage_settings`` (``ROLE_PERMISSIONS``,
+which ``admin`` alone holds), and nothing new is wired, because organization
+roles gate no data (ADR-017 D5). Where the org axis is enforced, it is enforced
+where it is managed: faultmaven-cloud's organization management asks
+``IOrganizationRepository.user_has_permission`` per request. This resolver is
+kept as the seam's statement of the same answer.
 
 **Resolved per request, never minted into a token.** That is Decision 1 of the
 design, and the reason is the shape of the bugs this codebase keeps finding
@@ -72,9 +75,9 @@ class SingleTenantPermissionResolver(PermissionResolver):
     """Standalone: the fixed set for the single account.
 
     Reads no table. ``organization_members`` exists in the schema but standalone
-    deployment does not populate it (migration 029's rows are inert reference
-    data there, #706), so resolving from it would deny the only account the
-    deployment has.
+    deployment does not populate it (the baseline's RBAC seed is inert
+    reference data there, #706), so resolving from it would deny the only
+    account the deployment has.
     """
 
     async def resolve(

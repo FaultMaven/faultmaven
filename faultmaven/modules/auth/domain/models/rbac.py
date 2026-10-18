@@ -1,45 +1,33 @@
-"""Auth-module RBAC: the operator role, over the shared org role vocabulary.
+"""Auth-module RBAC: the operator axis, beside the organization's vocabulary.
 
-There used to be two full copies of the role vocabulary — this module and
-:mod:`faultmaven.models.rbac` — each defining its own ``Role``, ``Permission``,
-``ROLE_PERMISSIONS`` and helpers. ``test_platform_admin_role_separation.py``
-parametrised over both to keep them honest, which is a tripwire for drift, not a
-cure for it: two enums that must agree will eventually not, and the failure mode
-is a role that grants different permissions depending on which import the caller
-reached for.
+The organization's role vocabulary — ``Role``, ``Permission``,
+``ROLE_PERMISSIONS`` and the helpers that expand them — has one definition and
+one door, :mod:`faultmaven.models.rbac`, which faultmaven-cloud imports
+directly and from which the RBAC seed is written (#1040 item 4). It is the
+organization's management vocabulary only and gates no data (ADR-017 D5).
 
-So the org-scoped vocabulary now has **one** definition, in
-:mod:`faultmaven.models.rbac` — the copy migration 029 seeds from and that
-``rbac_seed.SYSTEM_ROLE_IDS`` maps to stable ids — and this module re-exports it
-alongside what is genuinely auth-module knowledge: the deployment-scoped operator
-role, which deliberately is not part of that vocabulary (#1040 item 4).
-
-Import either module and get the same objects. This one stays the auth module's
-door because ``contracts.py`` re-exports the operator constants from here, and
-because the operator/org split is the thing this module exists to state.
+This module is not a second door to it. It holds what is genuinely auth-module
+knowledge: the deployment-scoped operator role, which deliberately is not part
+of that vocabulary, and the role-list conventions built on it (the base
+marker, the operator grant set, what a demotion takes away, and how a roleless
+account is reported). It reaches the organization's module under a private
+name (``_org_rbac``) only to spell two of those conventions in the enum's own
+values, so no name of that vocabulary is an attribute of this module.
+``contracts.py`` re-exports the operator constants from here.
 """
 
 from typing import List, Sequence
 
-from faultmaven.models.rbac import (
-    ROLE_PERMISSIONS,
-    Permission,
-    Role,
-    get_permissions_for_role,
-    get_permissions_for_roles,
-    has_all_permissions,
-    has_any_permission,
-    has_permission,
-    has_role,
-)
+from faultmaven.models import rbac as _org_rbac
 
 # The cross-tenant OPERATOR role (ADR-012 D9).
 #
 # Deliberately NOT a member of ``Role``: the two are orthogonal axes and
 # conflating them is the bug D9 exists to fix.
 #
-#   Role.ADMIN ("admin")      — organization-scoped. Full access to ONE org's
-#                               resources; tenant-bounded, never crosses tenants.
+#   Role.ADMIN ("admin")      — organization-scoped. Manages ONE organization's
+#                               roster and settings and gates no data (ADR-017
+#                               D5); tenant-bounded, never crosses tenants.
 #   PLATFORM_ADMIN_ROLE       — deployment-scoped. The operator who runs the
 #                               deployment: cross-tenant case listing, user
 #                               administration, LLM configuration, global KB.
@@ -67,7 +55,7 @@ BASE_USER_ROLE = "user"
 #: plain string. Named so the demotion path can say "keep the org admin" in the
 #: same vocabulary the flag is named in, without reaching past this module for
 #: the enum.
-ORG_ADMIN_ROLE = Role.ADMIN.value
+ORG_ADMIN_ROLE = _org_rbac.Role.ADMIN.value
 
 PLATFORM_ADMIN_ROLE_SET = [BASE_USER_ROLE, ORG_ADMIN_ROLE, PLATFORM_ADMIN_ROLE]
 
@@ -77,16 +65,15 @@ PLATFORM_ADMIN_ROLE_SET = [BASE_USER_ROLE, ORG_ADMIN_ROLE, PLATFORM_ADMIN_ROLE]
 # Derived from the set above rather than restated, because the asymmetry this
 # fixes came from restating it: `fm-demote-platform-admin` removed only
 # `platform_admin` while promotion granted the org `admin` too, so
-# promote-then-demote left an account holding org authority it never had. That
-# was latent while org roles enforced nothing and becomes real the moment they
-# do.
+# promote-then-demote left an account holding the org-management role it never
+# had.
 #
 # `BASE_USER_ROLE` is excluded because a demotion must leave a usable account,
 # not an account with an empty role list.
 OPERATOR_GRANTED_ROLES = [r for r in PLATFORM_ADMIN_ROLE_SET if r != BASE_USER_ROLE]
 
 #: The role an account holding none is reported and filtered under.
-ROLELESS_ACCOUNT_ROLE = Role.MEMBER.value
+ROLELESS_ACCOUNT_ROLE = _org_rbac.Role.MEMBER.value
 
 
 def effective_roles(roles: Sequence[str]) -> List[str]:
@@ -100,20 +87,11 @@ def effective_roles(roles: Sequence[str]) -> List[str]:
 
 
 __all__ = [
-    "ROLE_PERMISSIONS",
     "BASE_USER_ROLE",
     "OPERATOR_GRANTED_ROLES",
     "ORG_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE_SET",
     "ROLELESS_ACCOUNT_ROLE",
-    "Permission",
-    "Role",
-    "get_permissions_for_role",
-    "get_permissions_for_roles",
     "effective_roles",
-    "has_all_permissions",
-    "has_any_permission",
-    "has_permission",
-    "has_role",
 ]

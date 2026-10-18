@@ -636,10 +636,6 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
         "get_user and get_by_email over User (RedisUserStore returns DevUser "
         "and names its lookup get_user_by_email)."
     ),
-    "IPermissionChecker": (
-        "No subclass and no full implementation — nothing anywhere defines "
-        "can_access(user_id, resource)."
-    ),
     "ILocalAuthService": (
         "No subclass and no full implementation: nothing defines login/"
         "refresh_access_token per this contract. Unrelated classes own a "

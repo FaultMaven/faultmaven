@@ -7,7 +7,7 @@ repository substrate.)
 
 Public API:
     From domain.models:
-        - User, Session, Role, Permission
+        - User, Session
         - AuthToken, TokenPair, TokenClaims, DevUser
         - DevLoginRequest, UserProfile, AuthTokenResponse
 
@@ -21,14 +21,12 @@ Structure:
 """
 
 # Domain models (already eagerly imported in domain/models/__init__.py)
-from faultmaven.modules.auth.domain.models import (  # RBAC; User & Session; Auth; API Auth
+from faultmaven.modules.auth.domain.models import (  # User & Session; Auth; API Auth
     AuthToken,
     AuthTokenResponse,
     DevLoginRequest,
     DevUser,
     LogoutResponse,
-    Permission,
-    Role,
     Session,
     TokenClaims,
     TokenPair,
@@ -42,9 +40,6 @@ from faultmaven.modules.auth.domain.models import (  # RBAC; User & Session; Aut
 # from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService
 
 __all__ = [
-    # Models - RBAC
-    "Role",
-    "Permission",
     # Models - User & Session
     "User",
     "Session",

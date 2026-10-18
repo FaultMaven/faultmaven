@@ -125,6 +125,6 @@ def test_the_auth_session_surface_is_not_flagged():
         "status = AuthSessionStatus.ACTIVE\n"
         "key = f'session:{session_id}:current_case_id'\n"
         'metric = \'active_sessions:{"service": "faultmaven"}\'\n'
-        "perm = Permission.CASES_READ\n"
+        "perm = Permission.ORG_MANAGE_USERS\n"
     )
     assert _retired_hits(tree) == []

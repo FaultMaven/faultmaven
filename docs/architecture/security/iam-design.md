@@ -1383,8 +1383,10 @@ Two role vocabularies coexist in the codebase:
   through the user-management API, whose `assign_role` validates against the
   org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately, `models/rbac.py` defines a
-  `Role` enum — `admin`, `member`, `viewer` — with a granular `Permission` mapping
-  (`get_permissions_for_roles`) for organization/team-scoped RBAC. Under
+  `Role` enum — `admin`, `member`, `viewer` — with a `Permission` mapping
+  (`get_permissions_for_roles`) that holds only the management axis: `admin`
+  grants `org:manage_users` and `org:manage_settings`, `member` and `viewer`
+  grant nothing. Under
   ADR-017 D5 these stay the organization's *management* vocabulary only —
   `admin` here means full authority over that organization's billing roster
   (naming which accounts a subscription covers, and their management role),
@@ -1395,12 +1397,14 @@ Two role vocabularies coexist in the codebase:
   no common team still see nothing of each other's data.
   `platform_admin` is deliberately NOT a member of this enum, so holding it
   grants no org permissions by itself; the standalone deployment's single
-  account legitimately holds both. (`modules/auth/domain/models/rbac.py`
-  re-exports that enum rather than defining a second copy — #1040 item 4.)
-  Wiring the granular permissions to actual endpoint checks is designed in
-  [org-permission-enforcement.md](org-permission-enforcement.md) and tracked by
-  #1040. It is not implemented, and note that `require_permission` would
-  currently deny every caller: no token generator mints a `permissions` claim.
+  account legitimately holds both. (`models/rbac.py` is the enum's one
+  definition and one door; the auth module neither copies nor re-exports it —
+  #1040 item 4.) No endpoint check is wired to the mapping, by decision (#1040,
+  owner ruling 2026-09-24): the management permissions are enforced where the
+  organization is managed, by faultmaven-cloud's organization management
+  through `user_has_permission`, and the unused org-role and permission
+  dependencies are deleted — see
+  [org-permission-enforcement.md](org-permission-enforcement.md).
 - **Baseline (`user`).** Every other authenticated user; baseline access is
   gated by `require_authentication`, not by a specific role string. Token
   generators default the claim to `["user"]` when the user carries no roles.

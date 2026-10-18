@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import faultmaven.modules.auth as auth_package
+import faultmaven.modules.auth.domain.models as auth_models
 from faultmaven.exceptions import ConflictError, NotFoundError
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models import rbac as models_rbac
@@ -30,37 +32,29 @@ from faultmaven.modules.auth.contracts import (
 from faultmaven.modules.auth.domain.models import rbac as auth_rbac
 from faultmaven.modules.auth.domain.services.user_service import UserService
 
-# Both import paths for the role vocabulary. There used to be two separate
-# definitions here and this parametrisation was the tripwire keeping them
-# honest; since #1040 item 4 `modules.auth...rbac` re-exports
-# `models.rbac`, so these are the same object and the parametrisation asserts
-# the invariant once per door rather than once per copy. Kept because both doors
-# are live — `UserService.assign_role` validates against the first and
-# `contracts.py` re-exports the second — and a future fork would silently make
-# it mean two things again, which
-# `test_the_role_vocabulary_has_exactly_one_definition` below catches.
-ROLE_ENUMS = [models_rbac.Role, auth_rbac.Role]
+# The role vocabulary has one definition and one door, `models.rbac` (#1040
+# item 4): `UserService.assign_role` validates against it, and the auth module's
+# `rbac` holds only the operator axis. `test_the_auth_module_is_not_a_second_door`
+# below fails if the auth module starts re-exporting it again.
 
 
 @pytest.mark.unit
 @pytest.mark.security
-@pytest.mark.parametrize("role_enum", ROLE_ENUMS)
-def test_platform_admin_is_not_an_org_role(role_enum):
+def test_platform_admin_is_not_an_org_role():
     """`platform_admin` must not be assignable as an organization role.
 
     `UserService.assign_role` accepts any value in this enum, so membership
     here would let the user-management API mint cross-tenant operators.
     """
-    assert PLATFORM_ADMIN_ROLE not in [r.value for r in role_enum]
+    assert PLATFORM_ADMIN_ROLE not in [r.value for r in models_rbac.Role]
 
 
 @pytest.mark.unit
 @pytest.mark.security
-@pytest.mark.parametrize("role_enum", ROLE_ENUMS)
-def test_org_admin_is_not_the_operator_role(role_enum):
+def test_org_admin_is_not_the_operator_role():
     """The org admin role must keep its own distinct string."""
-    assert role_enum.ADMIN.value == "admin"
-    assert role_enum.ADMIN.value != PLATFORM_ADMIN_ROLE
+    assert models_rbac.Role.ADMIN.value == "admin"
+    assert models_rbac.Role.ADMIN.value != PLATFORM_ADMIN_ROLE
 
 
 @pytest.mark.unit
@@ -71,7 +65,6 @@ def test_platform_admin_grants_no_org_permissions_by_itself():
     Cross-tenant reach and in-org authority are separate grants; an operator's
     org permissions come from the `admin` role it is provisioned alongside.
     """
-    assert auth_rbac.get_permissions_for_roles([PLATFORM_ADMIN_ROLE]) == set()
     assert models_rbac.get_permissions_for_roles([PLATFORM_ADMIN_ROLE]) == set()
 
 
@@ -303,30 +296,51 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
 
 
 # =============================================================================
-# One vocabulary, two doors (#1040 item 4)
+# One vocabulary, one door (#1040 item 4)
 # =============================================================================
 
 
+#: Every auth-module door that has offered the organization's vocabulary: the
+#: auth `rbac` module, and the two packages above it that re-exported it.
+AUTH_DOORS = [auth_rbac, auth_models, auth_package]
+#: The vocabulary `models.rbac` defines.
+VOCABULARY = [
+    "Role",
+    "Permission",
+    "ROLE_PERMISSIONS",
+    "get_permissions_for_roles",
+]
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "name",
-    ["Role", "Permission", "ROLE_PERMISSIONS"],
-)
-def test_the_role_vocabulary_has_exactly_one_definition(name):
-    """The two modules must expose the *same* objects, not equal ones.
+@pytest.mark.parametrize("name", VOCABULARY)
+@pytest.mark.parametrize("door", AUTH_DOORS, ids=lambda module: module.__name__)
+def test_the_auth_module_is_not_a_second_door(door, name):
+    """The organization's vocabulary is reached through `models.rbac` only.
 
-    Identity rather than equality is the point. Two separately-defined enums
-    with identical members compare unequal member-by-member and pass most
-    plausible assertions anyway, so an equality check would keep passing right
-    through a re-fork — while `Role.ADMIN` from one import stopped matching
-    `Role.ADMIN` from the other in every `in` test and dict lookup in the
-    codebase.
-
-    Before #1040 item 4 these were genuinely two copies, and the failure this
-    guards is a role granting different permissions depending on which import
-    the caller reached for.
+    The auth module's `rbac` used to define its own copy, then re-exported the
+    shared one, as did the two packages above it; two doors to one vocabulary
+    leave a caller free to reach a stale or forked copy through the one nobody
+    watches, and a role then grants different permissions depending on which
+    import was used.
     """
-    assert getattr(models_rbac, name) is getattr(auth_rbac, name)
+    assert hasattr(models_rbac, name), "positive control: the one door has it"
+    assert name not in door.__all__
+    assert not hasattr(door, name)
+
+
+@pytest.mark.unit
+def test_the_role_vocabulary_is_models_rbac():
+    """`Role` is defined once, in `models.rbac`.
+
+    The auth module reaches that module under a private name to spell
+    `ORG_ADMIN_ROLE` and `ROLELESS_ACCOUNT_ROLE`, binds no `Role` of its own,
+    and those two constants are values of the one enum.
+    """
+    assert models_rbac.Role.__module__ == "faultmaven.models.rbac"
+    assert not hasattr(auth_rbac, "Role")
+    assert models_rbac.Role(auth_rbac.ORG_ADMIN_ROLE) is models_rbac.Role.ADMIN
+    assert models_rbac.Role(auth_rbac.ROLELESS_ACCOUNT_ROLE) is models_rbac.Role.MEMBER
 
 
 @pytest.mark.unit
@@ -377,4 +391,4 @@ def test_the_base_marker_grants_nothing():
     `user`/`member` vocabulary duplication) is exactly the kind of change that
     would do it.
     """
-    assert auth_rbac.get_permissions_for_roles([auth_rbac.BASE_USER_ROLE]) == set()
+    assert models_rbac.get_permissions_for_roles([auth_rbac.BASE_USER_ROLE]) == set()

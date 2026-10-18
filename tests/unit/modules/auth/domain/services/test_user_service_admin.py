@@ -287,8 +287,8 @@ class TestGetUserWithMetadata:
 
         assert "permissions" in result
         assert len(result["permissions"]) > 0
-        # Admin should have cases:read permission
-        assert "cases:read" in result["permissions"]
+        # Admin holds the organization's management permissions
+        assert "org:manage_users" in result["permissions"]
 
     @pytest.mark.asyncio
     async def test_includes_metadata(self, user_service, mock_user_repo, admin_user):
