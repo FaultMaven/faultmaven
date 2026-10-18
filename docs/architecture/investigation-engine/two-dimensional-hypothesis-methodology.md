@@ -491,6 +491,10 @@ feed the true cause to forced retirement while it waits for its second
 observation), and the context builder annotates a count-held root with its
 recovery action ("needs a SECOND INDEPENDENT causal observation") so the
 model is steered to corroborate instead of re-recording the first datum.
+A root under more than one hold carries one annotation, chosen by one
+precedence (a MECE contest, then an open WHY, then the restatement or
+grounding hold), which `root_recovery_reasons` in `causal_graph_block.py` holds
+with its reasons.
 
 The bar is recompute-honest (NOT grandfathered, unlike the restatement
 guard): support counts are monotone in evidence — links only accumulate

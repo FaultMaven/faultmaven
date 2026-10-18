@@ -157,6 +157,132 @@ def exclusions_reminder(case: Case) -> str:
     return f"<exclusions_on_record>\n{record}\n{rule}\n</exclusions_on_record>\n\n"
 
 
+# §7.1.2 MECE arbitration: contested roots (several simultaneously-
+# validated, mutually-exclusive causes) get the discrimination ask
+# rendered inline — without it the model sees several [root/validated]
+# lines, reads the cause as settled, and never runs the test that
+# separates them. Rendered through the SAME per-node reason → note maps
+# as the §7.1 recovery notes; ``root_recovery_reasons`` declares the
+# precedence (a contested VALIDATED root shows the discrimination ask even
+# if a future block reason ever annotates validated roots too).
+_MECE_CONTESTED = "mece_contested"
+# M1's terminal clause (#2036): a validated root whose hypothesis has not
+# marked it terminal holds identification. The S3 question for that node,
+# rendered on it, is the hold's recovery.
+_WHY_OPEN = "why_open"
+
+# §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
+# causal-grounding bar gets its REASON-SPECIFIC recovery action rendered
+# inline — without it the model sees a bare [root/inconclusive],
+# re-records the same datum (which the independence mirror collapses) or
+# re-hedges the same link, and stalls.
+_RECOVERY_NOTES: dict[str, str] = {
+    BLOCK_REASON_COUNT: (
+        " — needs a SECOND INDEPENDENT causal observation to validate "
+        "(re-recording the same datum does not count)"
+    ),
+    BLOCK_REASON_MIRROR: (
+        " — needs a SECOND INDEPENDENT causal observation to validate "
+        "(re-recording the same datum does not count)"
+    ),
+    BLOCK_REASON_HEDGED: (
+        " — its causal support is self-hedged (stance_confidence below "
+        "0.6); record a CONFIDENT causal observation to ground it"
+    ),
+    # §7.1 restatement guard. Its own arm because its recovery is the
+    # OPPOSITE of the grounding arms': this root's evidence bar is already
+    # met, so more SUPPORTING observations move nothing. Without the note
+    # the model sees a bare [root/inconclusive] beside confident causal
+    # supports and keeps collecting (fm#1137: nine turns of it).
+    #
+    # BOTH recoveries are named because the held population is not one
+    # shape. A root held by the problem ANCHORS alone is the symptom
+    # restated and needs a new MECHANISM statement; a root held by frame
+    # DILUTION — several different causes' hypotheses that between them
+    # cover this one, the documented <=2% FP class — validates the moment
+    # one of those alternatives is refuted or retired. (The third shape, a
+    # standing DUPLICATE of the root's own hypothesis, was the fm#1137
+    # known limit and is no longer held at all: fm#1122's §7.1 attribution
+    # test releases a root whose whole overlap ONE standing explanation
+    # accounts for.) The engine cannot tell the remaining two apart (that is
+    # the fm#1137 known limit), so telling the model only the surgery half
+    # would be categorically false for the dilution slice and would repeat,
+    # in a new place, the wrong-recovery-advice failure this note exists to
+    # fix.
+    #
+    # Spelled as ADD-and-relink, not "restate this node", because
+    # state_updates carries no node-update field — causal_nodes_to_add /
+    # causal_edges_to_add / node_evidence_links only, and
+    # ingest_emitted_chain reuses a node solely on an exact normalised
+    # statement match. A model told to "restate" either no-ops (the hold
+    # persists) or mints a root carrying none of the held node's evidence
+    # links, landing at CANDIDATE with zero supports. The produces edge is
+    # named explicitly because ``_attach`` DECLINES a re-root whose new
+    # chain does not reach D — omit it and the re-root is silently refused,
+    # the hold persists, and the relinked evidence strands on a validated,
+    # hypothesis-less orphan root.
+    BLOCK_REASON_RESTATEMENT: (
+        " — fully supported, but its statement adds no content beyond what "
+        "the problem and the other hypotheses already say, so MORE "
+        "SUPPORTING EVIDENCE WILL NOT VALIDATE IT. Two recoveries: if an "
+        "overlapping ALTERNATIVE hypothesis is what this restates, REFUTE "
+        "or RETIRE that alternative; if this node is the symptom restated, "
+        "add a NEW root naming the specific MECHANISM (what is "
+        "misconfigured/exhausted/failing), give it a produces edge so its "
+        "chain reaches D, point this hypothesis's root_node_ref at it, and "
+        "re-link this node's ev_ ids to it via node_evidence_links"
+    ),
+    _MECE_CONTESTED: (
+        " — one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: "
+        "cause identification is HELD until discriminating evidence refutes "
+        "the alternatives (at most one can be the real cause)"
+    ),
+    _WHY_OPEN: (
+        " — its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
+        "what produced this state and whether it returns once corrected. Then "
+        "re-root this hypothesis onto that cause, or mark this root terminal "
+        "(root_is_terminal true, with root_terminal_basis) on its "
+        "hypotheses_to_update entry. The cause is not identified until one of "
+        "them is done"
+    ),
+}
+
+
+def root_recovery_reasons(case: Case) -> dict[str, str]:
+    """The one recovery note each root carries, by root node id.
+
+    A root under more than one hold carries ONE note, chosen by one declared
+    precedence (highest first):
+
+    1. ``mece_contested``: several validated, mutually-exclusive roots hold
+       identification whatever any root's terminal verdict, so discriminating
+       between them is the move that advances the case.
+    2. ``why_open``: a validated root, or one its hypothesis marked
+       non-terminal, whose WHY is open; the model has said something produces
+       it, so identification needs a re-root, which more evidence for or a
+       restatement of this node does not give.
+    3. ``restates_frame``, then the grounding reasons (``count``,
+       ``mirror_collapse``, ``hedged_only``): these two never meet, so their relative order is
+       immaterial.
+
+    Pairs that can co-occur: why_open with mece_contested, with a grounding
+    reason, and with restates_frame. The grounding and restatement holds
+    exclude VALIDATED roots and the MECE contest holds only VALIDATED ones, so
+    those pairs are disjoint by their definitions.
+    """
+    populations = (
+        dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
+        dict.fromkeys(held_open_root_ids(case), _WHY_OPEN),
+        dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
+        root_support_block_reasons(case),
+    )
+    reasons: dict[str, str] = {}
+    for population in populations:  # highest precedence first
+        for root_id, reason in population.items():
+            reasons.setdefault(root_id, reason)
+    return reasons
+
+
 def _build_causal_graph_block(case: Case) -> str:
     """Render the causal graph (hypotheses ARE chains, methodology M3).
 
@@ -180,109 +306,10 @@ def _build_causal_graph_block(case: Case) -> str:
     if not (active_h or nodes):
         return ""
 
-    # §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
-    # causal-grounding bar gets its REASON-SPECIFIC recovery action rendered
-    # inline — without it the model sees a bare [root/inconclusive],
-    # re-records the same datum (which the independence mirror collapses) or
-    # re-hedges the same link, and stalls.
-    block_reasons = root_support_block_reasons(case)
-    recovery_notes = {
-        BLOCK_REASON_COUNT: (
-            " — needs a SECOND INDEPENDENT causal observation to validate "
-            "(re-recording the same datum does not count)"
-        ),
-        BLOCK_REASON_MIRROR: (
-            " — needs a SECOND INDEPENDENT causal observation to validate "
-            "(re-recording the same datum does not count)"
-        ),
-        BLOCK_REASON_HEDGED: (
-            " — its causal support is self-hedged (stance_confidence below "
-            "0.6); record a CONFIDENT causal observation to ground it"
-        ),
-        # §7.1 restatement guard. Its own arm because its recovery is the
-        # OPPOSITE of the grounding arms': this root's evidence bar is already
-        # met, so more SUPPORTING observations move nothing. Without the note
-        # the model sees a bare [root/inconclusive] beside confident causal
-        # supports and keeps collecting (fm#1137: nine turns of it).
-        #
-        # BOTH recoveries are named because the held population is not one
-        # shape. A root held by the problem ANCHORS alone is the symptom
-        # restated and needs a new MECHANISM statement; a root held by frame
-        # DILUTION — several different causes' hypotheses that between them
-        # cover this one, the documented <=2% FP class — validates the moment
-        # one of those alternatives is refuted or retired. (The third shape, a
-        # standing DUPLICATE of the root's own hypothesis, was the fm#1137
-        # known limit and is no longer held at all: fm#1122's §7.1 attribution
-        # test releases a root whose whole overlap ONE standing explanation
-        # accounts for.) The engine cannot tell the remaining two apart (that is
-        # the fm#1137 known limit), so telling the model only the surgery half
-        # would be categorically false for the dilution slice and would repeat,
-        # in a new place, the wrong-recovery-advice failure this note exists to
-        # fix.
-        #
-        # Spelled as ADD-and-relink, not "restate this node", because
-        # state_updates carries no node-update field — causal_nodes_to_add /
-        # causal_edges_to_add / node_evidence_links only, and
-        # ingest_emitted_chain reuses a node solely on an exact normalised
-        # statement match. A model told to "restate" either no-ops (the hold
-        # persists) or mints a root carrying none of the held node's evidence
-        # links, landing at CANDIDATE with zero supports. The produces edge is
-        # named explicitly because ``_attach`` DECLINES a re-root whose new
-        # chain does not reach D — omit it and the re-root is silently refused,
-        # the hold persists, and the relinked evidence strands on a validated,
-        # hypothesis-less orphan root.
-        BLOCK_REASON_RESTATEMENT: (
-            " — fully supported, but its statement adds no content beyond what "
-            "the problem and the other hypotheses already say, so MORE "
-            "SUPPORTING EVIDENCE WILL NOT VALIDATE IT. Two recoveries: if an "
-            "overlapping ALTERNATIVE hypothesis is what this restates, REFUTE "
-            "or RETIRE that alternative; if this node is the symptom restated, "
-            "add a NEW root naming the specific MECHANISM (what is "
-            "misconfigured/exhausted/failing), give it a produces edge so its "
-            "chain reaches D, point this hypothesis's root_node_ref at it, and "
-            "re-link this node's ev_ ids to it via node_evidence_links"
-        ),
-    }
-
-    # §7.1.2 MECE arbitration: contested roots (several simultaneously-
-    # validated, mutually-exclusive causes) get the discrimination ask
-    # rendered inline — without it the model sees several [root/validated]
-    # lines, reads the cause as settled, and never runs the test that
-    # separates them. Rendered through the SAME per-node reason → note maps
-    # as the §7.1 recovery notes; the overlay order makes the precedence
-    # explicit (a contested VALIDATED root shows the discrimination ask even
-    # if a future block reason ever annotates validated roots too).
-    _MECE_CONTESTED = "mece_contested"
-    recovery_notes[_MECE_CONTESTED] = (
-        " — one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: "
-        "cause identification is HELD until discriminating evidence refutes "
-        "the alternatives (at most one can be the real cause)"
-    )
-    # M1's terminal clause (#2036): a validated root whose hypothesis has not
-    # marked it terminal holds identification. The S3 question for that node,
-    # rendered on it, is the hold's recovery.
-    _WHY_OPEN = "why_open"
-    recovery_notes[_WHY_OPEN] = (
-        " — its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
-        "what produced this state and whether it returns once corrected. Then "
-        "re-root this hypothesis onto that cause, or mark this root terminal "
-        "(root_is_terminal true, with root_terminal_basis) on its "
-        "hypotheses_to_update entry. The cause is not identified until one of "
-        "them is done"
-    )
-    # The two hold populations are disjoint by construction —
-    # root_support_block_reasons excludes restating roots, and
-    # restatement_held_root_ids requires the grounding bar already MET — so
-    # the merge order below cannot silently reclassify a root.
-    node_reasons = {
-        **block_reasons,
-        **dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
-        **dict.fromkeys(held_open_root_ids(case), _WHY_OPEN),
-        **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
-    }
+    reasons = root_recovery_reasons(case)
 
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
-        note = recovery_notes.get(node_reasons.get(n.node_id), "")
+        note = _RECOVERY_NOTES.get(reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{node_type or n.node_type.value}/"
             f"{n.node_state.value}] {_one_line(n.statement)}{note}"
