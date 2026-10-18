@@ -930,8 +930,11 @@ def create_token_revocation_store(
 ) -> Any:
     """Create the deployment-wide token revocation store.
 
-    Revoked tokens are tracked with TTL (matching token expiration). This is
-    the SINGLE revocation store (#767): every revoke path writes to it and the
+    Every entry is written with a time to live: a per-jti entry for the revoked
+    token's remaining life, a per-user watermark for the schema ceiling on token
+    lifetime plus the mint-basis carry, whatever lifetime is configured (see
+    ``token_revocation_store``'s module docstring). This is the SINGLE
+    revocation store (#767): every revoke path writes to it and the
     request-path check reads from it.
 
     **Which implementation is a durability question** (#828). Revocation state

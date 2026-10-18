@@ -267,6 +267,9 @@ def record_provider_call(
                 "output_tokens": output_tokens,
                 "cache_read_tokens": cache_read,
                 "cache_write_tokens": cache_write,
+                # A PART of output_tokens, never added to it; None when the
+                # provider reported no figure (#1800).
+                "thinking_tokens": getattr(response, "thinking_tokens", None),
                 "total_tokens": int(getattr(response, "tokens_used", 0) or 0),
                 "prompt_cache_hit": bool(getattr(response, "prompt_cache_hit", False)),
                 "estimated_cost_usd": round(cost_usd, 6),

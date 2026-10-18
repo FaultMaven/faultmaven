@@ -9,7 +9,7 @@ import asyncio
 import json
 import re
 import time
-from typing import List, Optional
+from typing import List, Mapping, NamedTuple, Optional
 
 import aiohttp
 
@@ -27,6 +27,40 @@ from .base import (
     normalize_stop_reason,
 )
 
+# Assistant content blocks that carry signed reasoning, echoed verbatim.
+_THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+
+class _ThinkingOffControl(NamedTuple):
+    """One way of sending thinking off (#1800): its log label and the request
+    body keys it merges. Each value is merged field by field into the body's
+    object of that name, never as a whole-object replace, and the table's own
+    dicts are never placed in a body."""
+
+    label: str
+    body: Mapping[str, Mapping[str, str]]
+
+
+_OFF_DISABLED = _ThinkingOffControl(
+    "thinking.type=disabled", {"thinking": {"type": "disabled"}}
+)
+_OFF_EFFORT_LOW = _ThinkingOffControl(
+    "output_config.effort=low", {"output_config": {"effort": "low"}}
+)
+_OFF_NONE_UNMEASURED = _ThinkingOffControl(
+    "no thinking key (unmeasured model; it may still think)", {}
+)
+_OFF_NONE_ECHOED_THINKING = _ThinkingOffControl(
+    "no thinking key (thinking.type=disabled withheld: the history echoes "
+    "thinking blocks)",
+    {},
+)
+# The tail of every starvation-guard warning; %s is the control's label.
+_DOWNGRADED_TO_OFF = (
+    "downgraded to the model's thinking-off control: thinking off is sent as "
+    "%s, which on some models lowers thinking rather than removing it"
+)
+
 
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude LLM provider implementation"""
@@ -41,8 +75,11 @@ class AnthropicProvider(BaseLLMProvider):
     # max_tokens=8000
     # (milestone_engine.generation.STRUCTURED_OUTPUT_MAX_TOKENS), so a
     # 1024-token floor is ~15–30x the observed starvation region while
-    # leaving the default 4096 budget viable. A call that cannot satisfy the
-    # floor is downgraded to no-thinking with a warning, never issued.
+    # leaving the default 4096 budget viable. A configuration that cannot
+    # satisfy the floor is never sent: the call is downgraded to the model's
+    # thinking-off control with a warning (#1800). On a model where that
+    # control lowers rather than removes thinking (fable-5-1), or one with no
+    # measured control, the downgraded call can still think inside max_tokens.
     _THINKING_MIN_ANSWER_TOKENS = 1024
     # Fallback budget for "enabled" mode when ProviderConfig carries none.
     _THINKING_DEFAULT_BUDGET_TOKENS = 4096
@@ -105,6 +142,34 @@ class AnthropicProvider(BaseLLMProvider):
         "sonnet": (4, 5),
         "haiku": (4, 5),
     }
+    # Thinking OFF control (#1800). Omitting `thinking` does not turn thinking
+    # off on every model: on opus-5-5 and fable-5-1 it runs adaptive. Measured
+    # live 2026-10-02 at a real INVESTIGATING request, one control varied per
+    # call (docs/reference/llm-model-capabilities.md §"Thinking controls at
+    # the INVESTIGATING call (#1800)"):
+    #   opus-5: `thinking: {"type": "disabled"}` 200 beside tool_choice any;
+    #     0 thinking tokens under every control.
+    #   opus-5-5: omitted 1206 thinking tokens; `output_config.effort: low` 0.
+    #   fable-5-1: omitted 1720 thinking tokens; `output_config.effort: low`
+    #     893 (lowered, not removed).
+    #   opus-5-5, fable-5-1: `{"type": "disabled"}` 400 ("is not supported for
+    #     this model. Use thinking.type.adaptive and output_config.effort").
+    # Keyed by the EXACT (family, version) `_claude_version` parses, not by a
+    # ceiling: a cell moves only on a measured cell. Every other model, an
+    # unparseable id included, is sent no control, because an unmeasured
+    # control could 400 every call and omission never 400s (the worst it does
+    # is let the model think). Every cell is above _SAMPLING_ACCEPTED_THROUGH,
+    # so an OFF control never meets a temperature, and the only cell on a
+    # model that accepts forcing is the measured opus-5 pairing; tests pin
+    # both. A `thinking`-key control (disabled) is withheld when the history
+    # echoes thinking blocks: Anthropic 400s on echoed thinking when thinking
+    # is not enabled for the call (milestone_engine/generation.py records it),
+    # and that pairing is unmeasured, so such a call is sent no key, as before.
+    _THINKING_OFF_CONTROL = {
+        ("opus", (5, 0)): _OFF_DISABLED,
+        ("opus", (5, 5)): _OFF_EFFORT_LOW,
+        ("fable", (5, 1)): _OFF_EFFORT_LOW,
+    }
     # claude-<family>-<major>[-<minor>][-<yyyymmdd>]. The minor is 1-2 digits
     # and the date 8, so claude-opus-4-20250514 is (4, 0) and
     # claude-haiku-4-5-20251001 is (4, 5).
@@ -163,12 +228,63 @@ class AnthropicProvider(BaseLLMProvider):
     def _accepts_adaptive_thinking(cls, model: str) -> bool:
         return not cls._accepted_through(model, cls._ADAPTIVE_THINKING_REJECTED_THROUGH)
 
+    @classmethod
+    def _thinking_off_cell(cls, model: str) -> Optional[_ThinkingOffControl]:
+        """*model*'s `_THINKING_OFF_CONTROL` cell, or None when unmeasured."""
+        parsed = cls._claude_version(model)
+        if parsed is None:
+            return None
+        return cls._THINKING_OFF_CONTROL.get(parsed)
+
+    @staticmethod
+    def _echoes_thinking_blocks(messages: Optional[list]) -> bool:
+        """True when an assistant turn in the CONVERTED *messages* carries a
+        ``thinking`` or ``redacted_thinking`` block (the tool loop's verbatim
+        echo of ``provider_metadata.assistant_content``)."""
+        for message in messages or ():
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES
+                for block in content
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _thinking_off_control(
+        cls, model: str, messages: Optional[list]
+    ) -> _ThinkingOffControl:
+        """How thinking off is sent on this request to *model* (#1800).
+
+        The model's measured cell; no key on a model not measured either way;
+        and no key in place of a `thinking`-key control (disabled) when
+        *messages* echo thinking blocks, which is the pre-#1800 body.
+        """
+        control = cls._thinking_off_cell(model)
+        if control is None:
+            return _OFF_NONE_UNMEASURED
+        if "thinking" in control.body and cls._echoes_thinking_blocks(messages):
+            return _OFF_NONE_ECHOED_THINKING
+        return control
+
+    @staticmethod
+    def _merge_thinking_off(request_body: dict, control: _ThinkingOffControl) -> None:
+        """Merge *control* into *request_body* field by field: an object the
+        body already carries (e.g. another ``output_config`` key) keeps its
+        other fields."""
+        for key, fields in control.body.items():
+            request_body.setdefault(key, {}).update(fields)
+
     def _log_request_shape(self, model: str) -> None:
         """Say once per model id what this provider leaves out of its requests.
 
         An unparseable id gets a WARNING, because it takes the reduced shape by
         default rather than by measurement. A parsed model above a ceiling gets
-        an INFO naming what is dropped. A model that accepts both logs nothing.
+        an INFO naming what is dropped, and, when the model has a measured OFF
+        control (#1800), how thinking off is sent. A model that accepts both
+        and has no OFF control logs nothing.
         """
         if model in self._REQUEST_SHAPE_LOGGED:
             return
@@ -182,15 +298,16 @@ class AnthropicProvider(BaseLLMProvider):
                 model,
             )
             return
-        dropped = []
+        notes = []
         if not self._accepts_sampling(model):
-            dropped.append("temperature is not sent")
+            notes.append("temperature is not sent")
         if not self._accepts_forced_tool_choice(model):
-            dropped.append("forced tool_choice is sent as auto plus an instruction")
-        if dropped:
-            self.logger.info(
-                "Anthropic model %s: %s (#1695)", model, "; ".join(dropped)
-            )
+            notes.append("forced tool_choice is sent as auto plus an instruction")
+        off_cell = self._thinking_off_cell(model)
+        if off_cell is not None:
+            notes.append(f"thinking off is sent as {off_cell.label} (#1800)")
+        if notes:
+            self.logger.info("Anthropic model %s: %s (#1695)", model, "; ".join(notes))
 
     @staticmethod
     def _tool_use_instruction(forced_choice: dict, tools: list) -> str:
@@ -219,12 +336,27 @@ class AnthropicProvider(BaseLLMProvider):
         self._THINKING_SUBSTITUTION_LOGGED.add(key)
         self.logger.warning(msg, model)
 
-    def _resolve_thinking(self, max_tokens: int, model: str) -> Optional[dict]:
-        """Thinking parameter for this call, or None to send none at all.
+    def _configured_thinking_mode(self) -> str:
+        """ProviderConfig.thinking_mode, normalised; None reads as "off"."""
+        return (self.config.thinking_mode or "off").strip().lower()
+
+    def _resolve_thinking(
+        self, max_tokens: int, model: str, off_control: _ThinkingOffControl
+    ) -> Optional[dict]:
+        """The ON thinking parameter for a TOOL call, or None for "thinking off".
+
+        None never means "send nothing": the caller sends *off_control*, the
+        model's thinking-off control for this request (#1800,
+        ``_thinking_off_control``), which every warning here names. A tool-less
+        call never reaches this method: it is a thinking-off call whatever the
+        mode.
 
         Modes (from ProviderConfig.thinking_mode, default None → off):
-        - "off"/None: no `thinking` key ever — the request is byte-identical
-          to pre-#1116 behavior. This is the shipped default.
+        - "off"/None: thinking off. Each model is sent the control measured for
+          it: ``{"type": "disabled"}`` on opus-5, ``output_config.effort:
+          "low"`` on opus-5-5 and fable-5-1 (on fable-5-1 that lowers thinking
+          rather than removing it), and no key on every model not measured
+          either way. This is the shipped default.
         - "adaptive": ``{"type": "adaptive"}`` — the mechanism on Claude 4.6+
           (``budget_tokens`` is deprecated on 4.6 and a 400 on 4.7+; the
           model decides how much to think). A model that rejects it (4.5 and
@@ -240,10 +372,14 @@ class AnthropicProvider(BaseLLMProvider):
 
         Starvation guard (fm#1094): thinking is billed INSIDE ``max_tokens``.
         A configuration that cannot leave ``_THINKING_MIN_ANSWER_TOKENS`` for
-        the visible answer is downgraded to no-thinking with a warning — a
-        starvable call is never issued.
+        the visible answer is never sent: the call is downgraded to the
+        model's thinking-off control, with a warning naming it. That control
+        removes thinking on opus-5 and opus-5-5 but only lowers it on
+        fable-5-1, and on an unmeasured model it is no key, so there the
+        downgraded call can still think inside ``max_tokens``. An unknown mode
+        is thinking off too, with the same naming.
         """
-        mode = (self.config.thinking_mode or "off").strip().lower()
+        mode = self._configured_thinking_mode()
         if mode in ("", "off"):
             return None
 
@@ -280,11 +416,13 @@ class AnthropicProvider(BaseLLMProvider):
             floor = self._THINKING_MIN_BUDGET_TOKENS + self._THINKING_MIN_ANSWER_TOKENS
             if max_tokens < floor:
                 self.logger.warning(
-                    "Anthropic adaptive thinking disabled for this call: "
+                    "Anthropic adaptive thinking not sent for this call: "
                     "max_tokens=%d < %d (thinking shares the max_tokens pool "
-                    "and would risk starving the visible answer — fm#1094)",
+                    "and would risk starving the visible answer — fm#1094); "
+                    + _DOWNGRADED_TO_OFF,
                     max_tokens,
                     floor,
+                    off_control.label,
                 )
                 return None
             return {"type": "adaptive"}
@@ -297,29 +435,35 @@ class AnthropicProvider(BaseLLMProvider):
                 budget = self._THINKING_DEFAULT_BUDGET_TOKENS
             if budget < self._THINKING_MIN_BUDGET_TOKENS:
                 self.logger.warning(
-                    "Anthropic thinking disabled for this call: "
-                    "budget_tokens=%d is below the API minimum of %d",
+                    "Anthropic enabled thinking not sent for this call: "
+                    "budget_tokens=%d is below the API minimum of %d; "
+                    + _DOWNGRADED_TO_OFF,
                     budget,
                     self._THINKING_MIN_BUDGET_TOKENS,
+                    off_control.label,
                 )
                 return None
             # budget_tokens must be strictly less than max_tokens AND leave
             # the answer floor; the second condition subsumes the first.
             if max_tokens - budget < self._THINKING_MIN_ANSWER_TOKENS:
                 self.logger.warning(
-                    "Anthropic thinking disabled for this call: "
+                    "Anthropic enabled thinking not sent for this call: "
                     "budget_tokens=%d + answer floor %d exceeds max_tokens=%d "
-                    "(thinking bills inside max_tokens; issuing this call "
-                    "would starve the visible answer — fm#1094)",
+                    "(thinking bills inside max_tokens; this budget would "
+                    "starve the visible answer — fm#1094); " + _DOWNGRADED_TO_OFF,
                     budget,
                     self._THINKING_MIN_ANSWER_TOKENS,
                     max_tokens,
+                    off_control.label,
                 )
                 return None
             return {"type": "enabled", "budget_tokens": budget}
 
         self.logger.warning(
-            "Unknown ANTHROPIC_THINKING_MODE %r — thinking stays off", mode
+            "Unknown ANTHROPIC_THINKING_MODE %r: treated as off; thinking off is "
+            "sent as %s",
+            mode,
+            off_control.label,
         )
         return None
 
@@ -349,6 +493,18 @@ class AnthropicProvider(BaseLLMProvider):
         # All Anthropic models support function calling via the tools API
         # No model-specific logic needed - all Claude models have the same capability
         return StructuredOutputCapability.FUNCTION_CALLING
+
+    def _base_request_body(
+        self, model: str, max_tokens: int, temperature: float
+    ) -> dict:
+        """The request body every call starts from, before messages, tools
+        and thinking are added."""
+        request_body = {"model": model, "max_tokens": max_tokens}
+        # Sampling is sent only to a model that accepts it: newer models 400
+        # on ANY temperature, including 0.0 (#1695, table above).
+        if self._accepts_sampling(model):
+            request_body["temperature"] = temperature
+        return request_body
 
     async def _generate(
         self,
@@ -386,15 +542,7 @@ class AnthropicProvider(BaseLLMProvider):
             "anthropic-version": "2023-06-01",
         }
 
-        # Prepare request body for Anthropic API format
-        request_body = {
-            "model": selected_model,
-            "max_tokens": max_tokens,
-        }
-        # Sampling is sent only to a model that accepts it: newer models 400
-        # on ANY temperature, including 0.0 (#1695, table above).
-        if self._accepts_sampling(selected_model):
-            request_body["temperature"] = temperature
+        request_body = self._base_request_body(selected_model, max_tokens, temperature)
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
@@ -550,13 +698,23 @@ class AnthropicProvider(BaseLLMProvider):
                     else:
                         request_body["tool_choice"] = tool_choice
 
-        # Extended thinking (#1116) — applied ONLY to tool-calling
-        # (structured-output) requests, mirroring Gemini's structured-only
-        # thinkingConfig scope, and only when explicitly configured
-        # (ANTHROPIC_THINKING_MODE, default "off": no `thinking` key and a
-        # request byte-identical to pre-#1116 behavior).
+        # Extended thinking (#1116). The ON modes ("adaptive"/"enabled") apply
+        # ONLY to tool-calling (structured-output) requests, mirroring Gemini's
+        # structured-only thinkingConfig scope. Every other request is a
+        # thinking-off request (#1800): a tool-less call under any mode, and a
+        # tool call under "off", an unknown mode, a starvation guard or the
+        # forced-tool refusal. It carries the model's thinking-off control,
+        # resolved once here (`_thinking_off_control`): the measured cell, or
+        # no key on an unmeasured model or where `disabled` would meet echoed
+        # thinking blocks.
+        off_control = self._thinking_off_control(
+            selected_model, request_body.get("messages")
+        )
+        thinking_param = None
         if request_body.get("tools"):
-            thinking_param = self._resolve_thinking(max_tokens, selected_model)
+            thinking_param = self._resolve_thinking(
+                max_tokens, selected_model, off_control
+            )
             # Thinking supports only tool_choice auto/none — forced tool use
             # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. On
             # a model that ACCEPTS forcing we FAIL CLOSED here: the caller's
@@ -597,21 +755,37 @@ class AnthropicProvider(BaseLLMProvider):
                     "forced tool use with thinking enabled. Keeping the "
                     "forcing — dropping it would disarm schema forcing on the "
                     "single-shot structured path (no prose recovery there) "
-                    "and the evidence-before-conclusion guarantee on DA turns.",
+                    "and the evidence-before-conclusion guarantee on DA turns. "
+                    "Thinking off is sent as %s.",
                     forced_choice,
+                    off_control.label,
                 )
                 thinking_param = None
-            if thinking_param is not None:
-                request_body["thinking"] = thinking_param
-                # Thinking is incompatible with temperature modification —
-                # only the default (1) is accepted when thinking is on.
-                if "temperature" in request_body:
-                    self.logger.debug(
-                        "Dropping temperature=%s: Anthropic rejects a "
-                        "modified temperature when thinking is enabled",
-                        request_body["temperature"],
-                    )
-                    del request_body["temperature"]
+        if thinking_param is not None:
+            request_body["thinking"] = thinking_param
+            thinking_sent = thinking_param["type"]
+            # Thinking is incompatible with temperature modification —
+            # only the default (1) is accepted when thinking is on.
+            if "temperature" in request_body:
+                self.logger.debug(
+                    "Dropping temperature=%s: Anthropic rejects a "
+                    "modified temperature when thinking is enabled",
+                    request_body["temperature"],
+                )
+                del request_body["temperature"]
+        else:
+            # Thinking off. The refusal above and the temperature drop stay
+            # specific to the ON param: `disabled` is exactly what the forced
+            # opus-5 call was measured to accept, and no OFF-control model
+            # accepts sampling, so no temperature is ever beside it.
+            self._merge_thinking_off(request_body, off_control)
+            thinking_sent = off_control.label
+        self.logger.debug(
+            "Anthropic call: model=%s thinking=%s",
+            selected_model,
+            thinking_sent,
+            extra={"model": selected_model, "thinking_control": thinking_sent},
+        )
 
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
@@ -672,8 +846,7 @@ class AnthropicProvider(BaseLLMProvider):
         # content + tool_calls (which would drop the thinking blocks).
         raw_content_blocks = response_data.get("content") or []
         has_thinking_blocks = any(
-            block.get("type") in ("thinking", "redacted_thinking")
-            for block in raw_content_blocks
+            block.get("type") in _THINKING_BLOCK_TYPES for block in raw_content_blocks
         )
         provider_metadata = (
             {"assistant_content": raw_content_blocks} if has_thinking_blocks else None
@@ -719,6 +892,16 @@ class AnthropicProvider(BaseLLMProvider):
         tokens_used = (
             input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
         )
+        # Thinking tokens are a PART of output_tokens (#1800). Read only when
+        # the API reports an int; anything else is "no figure", never 0.
+        output_details = usage_data.get("output_tokens_details")
+        thinking_tokens = (
+            output_details.get("thinking_tokens")
+            if isinstance(output_details, dict)
+            else None
+        )
+        if isinstance(thinking_tokens, bool) or not isinstance(thinking_tokens, int):
+            thinking_tokens = None
 
         # Calculate confidence based on model and response quality
         # For structured output (tool calls), content may be empty - that's expected
@@ -743,6 +926,7 @@ class AnthropicProvider(BaseLLMProvider):
             cache_read_tokens=cache_read_tokens,
             prompt_cache_hit=bool(cache_read_tokens > 0),
             stop_reason=stop_reason,
+            thinking_tokens=thinking_tokens,
         )
 
     def _calculate_confidence(

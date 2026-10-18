@@ -2272,8 +2272,16 @@ class ITokenRevocationStore(ABC):
       ``docs/architecture/security/iam-design.md`` for the full limits
       (clock skew, where revocation state lives, password-reset tokens).
 
-    Entries carry a TTL matching token expiration; once a token can no longer
-    be presented, its revocation entry is redundant and expires.
+    Every entry is written with a TTL and stops revoking when it runs out. The
+    two granularities are held for different lifetimes:
+
+    - a per-jti entry for the revoked token's remaining life, which
+      ``_revoke_token_by_jti`` also caps at ``max_revocation_entry_ttl()`` and
+      gives in full to a token with no ``exp``;
+    - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS``,
+      whatever lifetime the user's tokens were minted with
+      (``AuthService._watermark_ttl_seconds``). Each new watermark for the user
+      restarts it.
     """
 
     @abstractmethod

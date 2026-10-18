@@ -375,11 +375,6 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "`generate_reports`: every other per-type failure is swallowed "
         "(`continue`) in `_generate_reports_locked`."
     ),
-    (
-        "faultmaven/modules/report/api/routes.py",
-        "delete_report",
-        "ServiceException",
-    ): "Repository delete only.",
 }
 
 #: Files the inventory must look in because a ``ServiceException`` arm is known
@@ -487,7 +482,9 @@ def test_every_arm_that_bypasses_the_global_handler_is_accounted_for():
     """State N. When #552 landed: 16 arms on the route surface catch
     ``ServiceException``/``LLMException``/``FaultMavenException``. 9 hand the
     failure on (1 calls the helper — `submit_turn`; 8 are bare re-raises of
-    ``FaultMavenException``), and the 7 above are listed with their reasons."""
+    ``FaultMavenException``), and the other 7 were listed above with their
+    reasons. #1859 removed ``delete_report``'s dead arm, so 6 are listed
+    today."""
     inventory = _inventory()
     keys = [key for key, _ in inventory]
 

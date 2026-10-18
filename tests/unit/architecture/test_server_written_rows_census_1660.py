@@ -190,10 +190,12 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py",
         "_case_record_params",
     ): (1, _PERSISTENCE),
+    # The call's ``messages`` keyword, and (#1800) the converted request
+    # messages scanned for echoed thinking blocks before a thinking-off control.
     (
         "faultmaven/infrastructure/llm/providers/anthropic.py",
         "AnthropicProvider._generate",
-    ): (1, _WIRE),
+    ): (2, _WIRE),
     # #2016: the raw llama.cpp fallback refuses a call that carries a
     # conversation (it takes one prompt) rather than send an empty one.
     (

@@ -431,8 +431,13 @@ shapes the response.
   expires the watermark before them and brings them back, which durability
   alone does not fix: a persisted row with too short a TTL is just as gone at
   its deadline. The per-jti arm has read the same ceiling since #830.
-- A sign-in clears a watermark that predates it (below), so the reach of a
-  revocation over a *reachable* account ends at that account's next login.
+- A local-mode sign-in (`POST /auth/login`, served only under
+  `AUTH_MODE=local`) clears a watermark that predates it (below). SSO and
+  OAuth sign-ins mint without clearing, and cloud refuses to boot without
+  `AUTH_MODE=oauth`, so on cloud a watermark lives its full ceiling from the
+  latest write to it — and every sign-out writes one, as does every other
+  account-wide revocation. There the reach of a revocation is bounded by the
+  ceiling, not by the account's next login.
 
 **A fresh authentication supersedes a watermark that predates it.** The
 watermark means "everything issued before instant T is stale", and an

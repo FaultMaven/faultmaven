@@ -1950,7 +1950,7 @@ class StructuredOutputGenerator:
                     content_obj = content
 
                 # Parse any nested JSON strings (reuse class static method)
-                content_obj = _parse_nested_json(content_obj)
+                content_obj = _parse_nested_json(content_obj, schema_model)
 
                 # Recover the leaked parameter form, or coerce an unresolvable
                 # state_updates to {} so Pydantic defaults apply (counted). A

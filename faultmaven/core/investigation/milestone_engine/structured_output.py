@@ -4,7 +4,11 @@ import difflib
 import json
 import logging
 import re
+import types
+import typing
 from typing import Any, Optional
+
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from faultmaven.core.investigation.confidence_repair import (
     CONFIDENCE_REPAIRS_CONTEXT_KEY,
@@ -58,7 +62,7 @@ def _parse_schema_tool_call(
     content_obj = json.loads(content, strict=False)
 
     # Recursively parse nested JSON strings
-    content_obj = _parse_nested_json(content_obj)
+    content_obj = _parse_nested_json(content_obj, schema_model)
 
     # Recover the leaked parameter form, or coerce unresolvable state_updates
     # to {} so Pydantic field defaults apply (counted either way).
@@ -180,7 +184,6 @@ def _validate_with_degradation(content_obj, schema_model):
     the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
     This is the backstop, not a per-variant patch.
     """
-    from pydantic import ValidationError
 
     def _record(outcome: str):
         _record_schema_validation(schema_model, outcome)
@@ -457,11 +460,6 @@ def _optional_sub_record_prefix(schema_model, loc) -> Optional[tuple]:
     or every ``state_updates`` outside one. ``test_confidence_repair_1502``'s
     census fails if any field reachable from an engine schema carries one.
     """
-    import types
-    import typing
-
-    from pydantic import BaseModel
-
     model = schema_model
     best: Optional[tuple] = None
     for depth, part in enumerate(loc):
@@ -603,7 +601,7 @@ def _parse_text_as_schema(
     *cut* is as in :func:`_parse_schema_tool_call`.
     """
     content_obj = loads_llm_json(text)
-    content_obj = _parse_nested_json(content_obj)
+    content_obj = _parse_nested_json(content_obj, schema_model)
     content_obj = _normalize_state_updates(content_obj, schema_model, cut=cut)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
@@ -638,27 +636,44 @@ _LEAKED_PARAMETER = re.compile(
 )
 
 
+def _unwrap_optional(annotation: Any) -> Any:
+    """*annotation* with one ``Optional`` layer removed: the sole non-``None``
+    member of a union, ``None`` for a union of several, else *annotation*."""
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        members = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return members[0] if len(members) == 1 else None
+    return annotation
+
+
+def _model_in(annotation: Any) -> Optional[type]:
+    """The ``BaseModel`` subclass *annotation* names, unwrapped from
+    ``Optional``; ``None`` when it is anything else."""
+    inner = _unwrap_optional(annotation)
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        return inner
+    return None
+
+
+def _item_of(annotation: Any) -> Any:
+    """The item annotation of a list-like *annotation* (``Optional[List[X]]``
+    gives ``X``); ``None`` when it is not a sequence of one type."""
+    inner = _unwrap_optional(annotation)
+    if typing.get_origin(inner) in (list, tuple, set, frozenset):
+        args = typing.get_args(inner)
+        return args[0] if args else None
+    return None
+
+
 def _state_model_of(schema_model: Any) -> Optional[type]:
     """The model class of *schema_model*'s ``state_updates`` field.
 
     The field's annotation, unwrapped from ``Optional``; ``None`` unless that
     is a ``BaseModel`` subclass.
     """
-    import types
-    import typing
-
-    from pydantic import BaseModel
-
     fields = getattr(schema_model, "model_fields", None)
     if not isinstance(fields, dict) or "state_updates" not in fields:
         return None
-    annotation = fields["state_updates"].annotation
-    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
-        members = [a for a in typing.get_args(annotation) if a is not type(None)]
-        annotation = members[0] if len(members) == 1 else None
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return annotation
-    return None
+    return _model_in(fields["state_updates"].annotation)
 
 
 def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[dict]:
@@ -681,13 +696,16 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     that field and nothing else (:func:`_prune_invalid_sub_records`), so a bad
     sibling can never cost K.
 
-    VALUE is kept as raw text (stripped) when the field accepts it as text —
-    a text field, an enum, anything Pydantic reads from a string — so no text
-    value is reinterpreted; otherwise it is JSON-decoded, and a value that is
-    not JSON fails the recovery.
+    VALUE is raw XML text, not a JSON value, so it goes through
+    :func:`_decode_against` as XML text (``xml_text=True``, VALUE's own string
+    only). It is kept as raw text (stripped) when the field accepts it as text
+    — a text field, an enum, anything Pydantic reads from a string — so a text
+    field keeps ``null``, ``42`` or ``{"a": 1}`` verbatim (#1799); otherwise
+    it is JSON-decoded, and what it decodes to is decoded like any delivered
+    value. A VALUE that cannot be decoded is kept as raw text too (#1823), and
+    the ladder decides what it costs: it costs K alone, never the siblings
+    lifted beside it.
     """
-    from pydantic import TypeAdapter, ValidationError
-
     su = content_obj.get("state_updates")
     if not isinstance(su, str):
         return None
@@ -704,16 +722,7 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     if field is None:
         return None
 
-    raw = value.strip()
-    decoded: Any
-    try:
-        TypeAdapter(field.annotation).validate_python(raw)
-        decoded = raw
-    except ValidationError:
-        try:
-            decoded = json.loads(raw)
-        except (ValueError, RecursionError):
-            return None
+    decoded = _decode_against(value.strip(), field.annotation, xml_text=True)
 
     result: dict = {key: decoded}
     for k in list(content_obj):
@@ -794,52 +803,226 @@ def _normalize_state_updates(
     return content_obj
 
 
-def _parse_nested_json(obj):
-    """Recursively parse JSON strings in a dict/list structure."""
-    if isinstance(obj, dict):
-        return {k: _parse_nested_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_parse_nested_json(item) for item in obj]
-    elif isinstance(obj, str):
+#: Deeper than any engine schema nests (about six levels). A decoded value past
+#: it is not decodable: from about 200 levels pydantic's own recursion limit
+#: reports an error with an empty location, which the ladder cannot place and
+#: so costs every state field, and from about 500 the ladder's ``deepcopy``
+#: raises. The decoder itself refuses only past about 1000.
+_MAX_DECODED_DEPTH = 64
+
+
+def _depth_exceeds(value: Any, limit: int) -> bool:
+    """Whether *value* nests dicts and lists more than *limit* deep.
+
+    Iterative, so measuring a value can never exceed the recursion limit the
+    bound exists to stay under.
+    """
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, (dict, list)):
+            if depth > limit:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((child, depth + 1) for child in children)
+    return False
+
+
+def _bounded(decoded: Any) -> tuple[bool, Any]:
+    """``(True, decoded)``, or ``(False, None)`` when *decoded* nests deeper
+    than ``_MAX_DECODED_DEPTH``: every decode's result passes through here."""
+    if _depth_exceeds(decoded, _MAX_DECODED_DEPTH):
+        return False, None
+    return True, decoded
+
+
+def _decode_whole_json(text: str) -> tuple[bool, Any]:
+    """``(True, value)`` when *text*, parsed whole with no repair, is one JSON
+    value within the depth bound; ``(False, None)`` otherwise.
+
+    The decode a text position gets (:func:`_decode_against`): a repair could
+    turn prose that opens with a bracket into JSON, so none is tried there.
+    """
+    try:
+        return _bounded(json.loads(text, strict=False))
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        return False, None
+
+
+def _decode_json_text(text: str) -> tuple[bool, Any]:
+    """``(True, value)`` when *text* decodes as JSON, after two repairs;
+    ``(False, None)`` otherwise.
+
+    Not decodable either: a value nested deeper than ``_MAX_DECODED_DEPTH``, or
+    too deep for the decoder itself. Every parse is ``strict=False``, as the
+    outer parse of the arguments is: a model writes raw newlines and tabs into
+    the strings of a JSON-encoded list, and a strict parse would drop the list.
+
+    Fireworks/DeepSeek V3 leak XML tool-call format artifacts, so before giving
+    up:
+
+    Pass 1: strip trailing XML closing tags (e.g. ``</parameter></invoke>``).
+    Pass 2: for JSON containers, truncate at the last valid terminator to
+            handle stray closing braces/brackets (e.g. ``"[...]}"``).
+    """
+    try:
+        return _bounded(json.loads(text, strict=False))
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        pass
+    stripped_obj = text.strip()
+
+    # Pass 1 - XML closing tags
+    stripped = re.sub(r"(\s*</\w+>)+\s*$", "", stripped_obj)
+    if stripped != stripped_obj:
         try:
-            parsed = json.loads(obj)
-            return _parse_nested_json(parsed)
-        except (json.JSONDecodeError, TypeError):
-            # Fireworks/DeepSeek V3 leaks XML tool-call format artifacts.
-            # Apply two repair passes before giving up:
-            #
-            # Pass 1: strip trailing XML closing tags (e.g. </parameter></invoke>)
-            # Pass 2: for JSON containers, truncate at the last valid terminator
-            #         to handle stray closing braces/brackets (e.g. "[...]}")
-            stripped_obj = obj.strip()
+            return _bounded(json.loads(stripped, strict=False))
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            pass
 
-            # Pass 1 — XML closing tags
-            stripped = re.sub(r"(\s*</\w+>)+\s*$", "", stripped_obj)
-            if stripped != stripped_obj:
-                try:
-                    parsed = json.loads(stripped)
-                    return _parse_nested_json(parsed)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+    # Pass 2 - truncate at last valid JSON container terminator
+    if stripped_obj:
+        first_ch = stripped_obj[0]
+        search_ch = "]" if first_ch == "[" else "}" if first_ch == "{" else None
+        if search_ch:
+            last_pos = stripped_obj.rfind(search_ch)
+            if last_pos > 0:
+                candidate = stripped_obj[: last_pos + 1]
+                if candidate != stripped_obj:
+                    try:
+                        return _bounded(json.loads(candidate, strict=False))
+                    except (json.JSONDecodeError, TypeError, RecursionError):
+                        pass
+    return False, None
 
-            # Pass 2 — truncate at last valid JSON container terminator
-            if stripped_obj:
-                first_ch = stripped_obj[0]
-                search_ch = "]" if first_ch == "[" else "}" if first_ch == "{" else None
-                if search_ch:
-                    last_pos = stripped_obj.rfind(search_ch)
-                    if last_pos > 0:
-                        candidate = stripped_obj[: last_pos + 1]
-                        if candidate != stripped_obj:
-                            try:
-                                parsed = json.loads(candidate)
-                                return _parse_nested_json(parsed)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
 
-            return obj
-    else:
+# One TypeAdapter per annotation, keyed on the annotation object itself.
+_TEXT_ADAPTERS: dict = {}
+
+
+def _accepts_text(annotation: Any, text: str) -> bool:
+    """Whether *annotation* takes *text* as a string, as Pydantic reads it.
+
+    Validates against the bare annotation, so what runs is what the annotation
+    itself carries. A ``BeforeValidator`` nested inside it runs
+    (``Optional[IdRef]``'s ``_coerce_bare_int_to_new_index``); the schemas'
+    validators are pure, so running them here has no side effect. What a field
+    carries outside its annotation does not run: a top-level ``Annotated``'s
+    metadata, which Pydantic moves into ``field.metadata``, and model
+    validators. Constraints live there too, and are excluded on purpose: a long
+    text over its ``max_length`` is still text, and must never be sent to the
+    repairs.
+
+    Total: any exception, from building the adapter or from validating,
+    answers ``False``, and the value then takes the JSON decode.
+    """
+    try:
+        try:
+            adapter = _TEXT_ADAPTERS.get(annotation)
+        except TypeError:  # unhashable annotation: build it uncached
+            adapter = TypeAdapter(annotation)
+        else:
+            if adapter is None:
+                adapter = _TEXT_ADAPTERS[annotation] = TypeAdapter(annotation)
+        adapter.validate_python(text)
+        return True
+    except Exception:
+        return False
+
+
+# The annotation of a position the schema does not describe.
+_UNKNOWN = object()
+
+
+def _decode_against(value: Any, annotation: Any, *, xml_text: bool = False) -> Any:
+    """Decode the JSON-encoded strings in *value*, directed by *annotation*.
+
+    A string at a position the schema does not describe (the annotation is
+    unknown) is kept. A string the annotation does not accept as text is
+    JSON-decoded (both repairs included) and the result is decoded against the
+    same annotation; one that cannot be decoded stays as raw text.
+
+    A string the annotation does accept as text is read in JSON context: it
+    arrived inside JSON arguments. When it is, parsed whole with no repair,
+    JSON ``null``, a JSON string, an object or an array, it is an encoded value:
+    it is decoded and decoded again against the same annotation, so a
+    ``"null"`` id is absent rather than the text ``null``, and an encoded
+    envelope is not shown to the user as text. Anything else — a number, a
+    bool, prose, or text that only a repair makes JSON — is kept as text
+    (#1822): ``"[1] disk full"`` is a summary, not a list, and ``"42"`` a
+    summary that happens to be a number.
+
+    *xml_text* says the string is raw XML text rather than a JSON value (a
+    leaked parameter's VALUE, :func:`_recover_leaked_parameter`): there is no
+    JSON context, so a string the annotation accepts as text is kept verbatim.
+    It applies to *value*'s own string only, never to what that decodes to.
+
+    Dicts recurse per key against the model's field annotation (a key that is
+    not a field is untouched), lists per item; anything else is unchanged.
+    """
+    if isinstance(value, str):
+        if annotation is _UNKNOWN:
+            return value
+        if _accepts_text(annotation, value):
+            if xml_text:
+                return value
+            ok, decoded = _decode_whole_json(value)
+            if ok and (decoded is None or isinstance(decoded, (str, dict, list))):
+                return _decode_against(decoded, annotation)
+            return value
+        ok, decoded = _decode_json_text(value)
+        return _decode_against(decoded, annotation) if ok else value
+    if isinstance(value, dict):
+        model = None if annotation is _UNKNOWN else _model_in(annotation)
+        if model is None:
+            return value
+        fields = model.model_fields
+        return {
+            k: _decode_against(v, fields[k].annotation if k in fields else _UNKNOWN)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        item = None if annotation is _UNKNOWN else _item_of(annotation)
+        if item is None:
+            return value
+        return [_decode_against(v, item) for v in value]
+    return value
+
+
+def _parse_nested_json(obj, schema_model):
+    """Decode the JSON-encoded strings in the arguments, directed by the schema.
+
+    A string the schema accepts as text at its position is never repaired into
+    JSON or read as a number (#1822): ``"[1] disk full"`` is a summary, not a
+    list, and the two repairs would otherwise cut it to ``[1]``. The arguments
+    are JSON, though, so a text position whose string is itself, parsed whole,
+    JSON ``null``, a JSON string, an object or an array takes the decoded value
+    (:func:`_decode_against`): a ``"null"`` id is absent, not the text
+    ``null``.
+
+    *obj* may be a string: the whole argument object encoded once more. It is
+    decoded (repairs included) and then parsed as an object. Each top-level key
+    is decoded against the response field's annotation, else against the
+    state-update model's field of that name (a leaked sibling, lifted
+    afterwards by :func:`_recover_leaked_parameter`), else left as is.
+    """
+    if isinstance(obj, str):
+        ok, decoded = _decode_json_text(obj)
+        if ok:
+            return _parse_nested_json(decoded, schema_model)
+    if not isinstance(obj, dict):
         return obj
+    fields = schema_model.model_fields
+    state_model = _state_model_of(schema_model)
+    state_fields = state_model.model_fields if state_model is not None else {}
+    out = {}
+    for k, v in obj.items():
+        if k in fields:
+            out[k] = _decode_against(v, fields[k].annotation)
+        elif k in state_fields:
+            out[k] = _decode_against(v, state_fields[k].annotation)
+        else:
+            out[k] = v
+    return out
 
 
 def _fix_enum_violations(obj, schema_dict, root_defs=None):

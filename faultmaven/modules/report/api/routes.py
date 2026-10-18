@@ -660,8 +660,6 @@ async def delete_report(
 
     except HTTPException:
         raise
-    except ServiceException as e:
-        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"Error deleting report {report_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete report")
