@@ -1,12 +1,14 @@
 """The funnel quantile window (#1810) on real PostgreSQL.
 
 ``closed_at`` is ``timestamptz`` here, so the SQL prefilter compares a bound
-aware datetime. The table lives in a throwaway schema; the real ``cases`` table
-is never touched.
+aware datetime. The table lives in a throwaway schema, uuid-suffixed so
+concurrent runs never drop each other's; the real ``cases`` table is never
+touched.
 """
 
 import math
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -30,20 +32,20 @@ pytestmark = [
     ),
 ]
 
-_SCHEMA = "fm_test_1810"
+_SCHEMA = f"fm_test_1810_{uuid.uuid4().hex[:8]}"
 _NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 _CUT = _NOW - QUANTILE_WINDOW
 
-# (offset from the window start, current_turn). In-window turns are 1-3;
-# out-of-window turns are huge so any leak moves p95.
+# (offset from the window start, in window?, current_turn). In-window turns are
+# 1-3; out-of-window turns are huge so any leak moves p95.
 _ROWS = (
-    (timedelta(seconds=1), 1),
-    (-timedelta(seconds=1), 9000),
-    (-timedelta(hours=23), 9001),
-    (-timedelta(hours=25), 9002),
-    (-timedelta(days=3), 9003),
-    (timedelta(days=3), 2),
-    (QUANTILE_WINDOW, 3),
+    (timedelta(seconds=1), True, 1),
+    (-timedelta(seconds=1), False, 9000),
+    (-timedelta(hours=23), False, 9001),
+    (-timedelta(hours=25), False, 9002),
+    (-timedelta(days=3), False, 9003),
+    (timedelta(days=3), True, 2),
+    (QUANTILE_WINDOW, True, 3),
 )
 
 
@@ -57,6 +59,9 @@ def _values(g):
 
 
 async def _refresh(maker):
+    """Refresh on ``maker``; return the turns and duration gauges and the rows
+    that survived the window (what both quantiles were computed from)."""
+
     @asynccontextmanager
     async def real_session():
         async with maker() as session:
@@ -70,9 +75,15 @@ async def _refresh(maker):
         patch.object(funnel_metrics, "cases_gauge"),
         patch.object(funnel_metrics, "resolution_turns_quantile_7d") as turns_g,
         patch.object(funnel_metrics, "duration_seconds_quantile_7d") as dur_g,
+        patch.object(
+            FunnelMetricsCollector,
+            "_set_quantiles",
+            autospec=True,
+            side_effect=FunnelMetricsCollector._set_quantiles,
+        ) as spy,
     ):
         await FunnelMetricsCollector().refresh(now=_NOW)
-    return _values(turns_g), _values(dur_g)
+    return _values(turns_g), _values(dur_g), spy.call_args.args[1]
 
 
 async def _with_table(rows):
@@ -114,9 +125,15 @@ async def _with_table(rows):
 
 
 async def test_window_keeps_exactly_the_in_window_rows():
-    rows = [(turns, _CUT + off) for off, turns in _ROWS]
+    rows = [(turns, _CUT + off) for off, _inside, turns in _ROWS]
     rows.append((9999, None))  # NULL closed_at: in no window
-    turns, durations = await _with_table(rows)
+    turns, durations, windowed = await _with_table(rows)
+
+    # The exact windowed set: every in-window row, none out of window. A
+    # quantile cannot show this: p50/p95 over [1, 2, 3] and [2, 3] are equal.
+    assert sorted((r[2], r[4]) for r in windowed) == [
+        (t, _CUT + off) for off, inside, t in _ROWS if inside
+    ]
     assert turns[("resolved", "0.5")] == 2.0
     assert turns[("resolved", "0.95")] == 3.0
     assert durations[("resolved", "0.5")] == 3600.0
@@ -125,7 +142,8 @@ async def test_window_keeps_exactly_the_in_window_rows():
 
 async def test_empty_window_publishes_nan():
     old = _NOW - timedelta(days=9)
-    turns, durations = await _with_table([(5, old)])
+    turns, durations, windowed = await _with_table([(5, old)])
+    assert windowed == []
     assert all(math.isnan(v) for v in turns.values())
     assert all(math.isnan(v) for v in durations.values())
     assert len(turns) == 2 * len(funnel_metrics._EFFORT_TO_STATES)

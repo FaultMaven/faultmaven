@@ -155,8 +155,10 @@ class FunnelMetricsCollector:
         """Query the source of truth and republish every gauge series.
 
         ``now`` anchors the trailing quantile window; it defaults to the clock.
+        It is normalised to UTC (a naive value is taken as UTC): SQLite compares
+        the bound floor as wall-clock text, so any other offset would move it.
         """
-        now = now or datetime.now(UTC)
+        now = _as_utc(now) if now is not None else datetime.now(UTC)
         cutoff = now - QUANTILE_WINDOW
         from faultmaven.infrastructure.persistence.database import get_db_session
 

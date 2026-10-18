@@ -9,6 +9,7 @@ counters, no transition instrumentation.
 import math
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
+from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -397,7 +398,13 @@ _WINDOW_CASES = (
 
 
 def _text_shapes(dt):
-    """The text spellings a SQLite ``closed_at`` takes."""
+    """The text spellings a SQLite ``closed_at`` takes.
+
+    The extreme offsets bound the prefilter: ``minus12`` at cutoff+1 s reads
+    12 h early as text, so a margin under 12 h drops an in-window row;
+    ``plus14`` at cutoff-1 s reads 14 h late as text, so only the exact cut
+    keeps it out.
+    """
     return {
         "space_off": dt.isoformat(" "),
         "t_off": dt.isoformat(),
@@ -406,7 +413,12 @@ def _text_shapes(dt):
         "naive_t_z": dt.replace(tzinfo=None).isoformat() + "Z",
         "plus5": dt.astimezone(timezone(timedelta(hours=5))).isoformat(" "),
         "minus8": dt.astimezone(timezone(timedelta(hours=-8))).isoformat(" "),
+        "minus12": dt.astimezone(timezone(timedelta(hours=-12))).isoformat(" "),
+        "plus14": dt.astimezone(timezone(timedelta(hours=14))).isoformat(" "),
     }
+
+
+_SHAPES = len(_text_shapes(_NOW))
 
 
 def _gauge_values(g):
@@ -418,10 +430,31 @@ def _gauge_values(g):
     }
 
 
-async def _refresh_on(maker, now):
+class _Refreshed(NamedTuple):
+    cases_g: MagicMock
+    turns: dict
+    durations: dict
+    fetched: list  # the rows the effort query returned from SQL
+    windowed: list  # the rows that survived the exact cut in Python
+
+
+async def _refresh_on(maker, now) -> _Refreshed:
+    fetched: list = []
+
     @asynccontextmanager
     async def real_session():
         async with maker() as session:
+            execute = session.execute
+
+            async def recording_execute(statement, *args, **kwargs):
+                result = await execute(statement, *args, **kwargs)
+                if "current_turn" not in str(statement):
+                    return result
+                frozen = result.freeze()
+                fetched.extend(frozen().all())
+                return frozen()
+
+            session.execute = recording_execute
             yield session
 
     with (
@@ -440,8 +473,13 @@ async def _refresh_on(maker, now):
             side_effect=FunnelMetricsCollector._set_quantiles,
         ) as spy:
             await FunnelMetricsCollector().refresh(now=now)
-    _refresh_on.windowed_rows = spy.call_args.args[1]
-    return cases_g, _gauge_values(turns_g), _gauge_values(dur_g)
+    return _Refreshed(
+        cases_g,
+        _gauge_values(turns_g),
+        _gauge_values(dur_g),
+        fetched,
+        spy.call_args.args[1],
+    )
 
 
 _CREATE_CASES = (
@@ -451,52 +489,71 @@ _CREATE_CASES = (
 _INSERT_CASE = text("INSERT INTO cases VALUES (:id, :st, :cr, :t, :c, :e)")
 
 
+async def _seed_window_table(conn, shapes):
+    """Every ``_WINDOW_CASES`` offset in each of ``shapes``, plus a NULL close."""
+    await conn.execute(text(_CREATE_CASES))
+    for tag, off, _inside, turns in _WINDOW_CASES:
+        closed = _CUT + off
+        for shape, value in _text_shapes(closed).items():
+            if shape not in shapes:
+                continue
+            await conn.execute(
+                _INSERT_CASE,
+                {
+                    "id": f"{tag}/{shape}",
+                    "st": "resolved",
+                    "cr": None,
+                    "t": turns,
+                    "c": (closed - timedelta(hours=1)).isoformat(" "),
+                    "e": value,
+                },
+            )
+    # No closed_at: in no window, so it leaves both quantiles.
+    await conn.execute(
+        _INSERT_CASE,
+        {
+            "id": "null_closed",
+            "st": "resolved",
+            "cr": None,
+            "t": 9999,
+            "c": _CUT.isoformat(" "),
+            "e": None,
+        },
+    )
+
+
+async def _refresh_window_table(shapes, now) -> _Refreshed:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as conn:
+            await _seed_window_table(conn, shapes)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        return await _refresh_on(maker, now)
+    finally:
+        await engine.dispose()
+
+
+def _turns_of(rows):
+    return sorted(r[2] for r in rows)
+
+
+_IN_WINDOW_TURNS = sorted(t for _tag, _off, inside, t in _WINDOW_CASES if inside)
+
+
 @pytest.mark.unit
 class TestQuantileWindowAgainstRealSqlite:
     """The trailing 7-day window on ``closed_at`` (#1810), on text timestamps."""
 
     async def test_window_keeps_exactly_the_in_window_rows_in_every_text_shape(self):
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(text(_CREATE_CASES))
-                for tag, off, _inside, turns in _WINDOW_CASES:
-                    closed = _CUT + off
-                    for shape, value in _text_shapes(closed).items():
-                        await conn.execute(
-                            _INSERT_CASE,
-                            {
-                                "id": f"{tag}/{shape}",
-                                "st": "resolved",
-                                "cr": None,
-                                "t": turns,
-                                "c": (closed - timedelta(hours=1)).isoformat(" "),
-                                "e": value,
-                            },
-                        )
-                # No closed_at: in no window, so it leaves both quantiles.
-                await conn.execute(
-                    _INSERT_CASE,
-                    {
-                        "id": "null_closed",
-                        "st": "resolved",
-                        "cr": None,
-                        "t": 9999,
-                        "c": _CUT.isoformat(" "),
-                        "e": None,
-                    },
-                )
-            maker = async_sessionmaker(engine, expire_on_commit=False)
-            cases_g, turns, durations = await _refresh_on(maker, _NOW)
-        finally:
-            await engine.dispose()
-
-        # The windowed list holds every in-window row (3 offsets x 7 shapes), so
-        # the SQL prefilter dropped none, even in a negative-offset spelling.
-        assert (
-            sorted(r[2] for r in _refresh_on.windowed_rows)
-            == [1] * 7 + [2] * 7 + [3] * 7
+        all_shapes = set(_text_shapes(_NOW))
+        cases_g, turns, durations, _fetched, windowed = await _refresh_window_table(
+            all_shapes, _NOW
         )
+
+        # The windowed list holds every in-window row (3 offsets x every shape),
+        # so the SQL prefilter dropped none, even at -12:00, and the exact cut
+        # admitted no out-of-window row, even at +14:00.
+        assert _turns_of(windowed) == sorted(_IN_WINDOW_TURNS * _SHAPES)
         # In-window turns are 1, 2, 3 (one copy per text shape): p50 2, p95 3.
         assert turns[("resolved", "0.5")] == 2.0
         assert turns[("resolved", "0.95")] == 3.0
@@ -511,7 +568,33 @@ class TestQuantileWindowAgainstRealSqlite:
                 cases_g.labels.return_value.set.call_args_list,
             )
         }
-        assert counted[("resolved", "none")] == 7 * 7 + 1
+        assert counted[("resolved", "none")] == len(_WINDOW_CASES) * _SHAPES + 1
+
+    async def test_sql_prefilter_keeps_rows_older_than_the_floor_in_sql(self):
+        # The writer's own shape (space separator, +00:00). The floor is one day
+        # below the cutoff: -25 h, -3 d and the NULL close never leave SQL; -23 h
+        # over-selects and the exact cut drops it.
+        refreshed = await _refresh_window_table({"space_off"}, _NOW)
+
+        fetched = {r[2] for r in refreshed.fetched}
+        assert fetched == {1, 9000, 9001, 2, 3}  # in_1s out_1s out_23h in_3d in_now
+        assert _turns_of(refreshed.windowed) == _IN_WINDOW_TURNS
+
+    @pytest.mark.parametrize(
+        "now",
+        [
+            _NOW.replace(tzinfo=None),
+            _NOW.astimezone(timezone(timedelta(hours=14))),
+        ],
+        ids=["naive", "plus14"],
+    )
+    async def test_now_is_normalised_to_utc(self, now):
+        all_shapes = set(_text_shapes(_NOW))
+        utc = await _refresh_window_table(all_shapes, _NOW)
+        other = await _refresh_window_table(all_shapes, now)
+
+        assert _turns_of(utc.windowed) == sorted(_IN_WINDOW_TURNS * _SHAPES)
+        assert sorted(map(tuple, other.windowed)) == sorted(map(tuple, utc.windowed))
 
     async def test_empty_window_publishes_nan_and_the_series_stays(self):
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -538,7 +621,9 @@ class TestQuantileWindowAgainstRealSqlite:
                         },
                     )
             maker = async_sessionmaker(engine, expire_on_commit=False)
-            cases_g, turns, durations = await _refresh_on(maker, _NOW)
+            cases_g, turns, durations, _fetched, _windowed = await _refresh_on(
+                maker, _NOW
+            )
         finally:
             await engine.dispose()
 
