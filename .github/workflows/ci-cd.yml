@@ -387,9 +387,10 @@ jobs:
           #
           # `not performance` + `--ignore=tests/performance` (#2090): a
           # wall-clock test judges the runner, not the diff, so it runs in
-          # benchmarks.yml's per-PR job. Ruled exceptions that stay here:
-          # test_runbook_regex_redos.py, test_secret_patterns_1980.py and
-          # TestTheAllocatorSettle's child-process growth checks.
+          # benchmarks.yml's per-PR job. Real-time tests that stay here: by
+          # ruling, test_runbook_regex_redos.py (the ReDoS of #1395/#1405) and
+          # test_secret_patterns_1980.py; by the plan, the revocation TTL tests
+          # in test_revocation_store_contract.py, which pin the deadline rule.
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \
