@@ -84,7 +84,7 @@ Find the newest proposal or result on the Queue:
    - **Open, reported `waiting on main` or `waiting on <service>`:** while `main` is red or the service is down,
      leave it open; it does not stop the round. Once it is green or back, refresh it (below).
    - **Open, with no merge-ready:** a pull or a build was interrupted. If its item is in `pile:blocked`, finish the
-     pull (*To pull an item*, step 4). Otherwise report it and stop.
+     pull, which closes the PR (*To pull an item*, step 4). Otherwise report it and stop.
    - **Open after a merge-ready:** read its queue state:
 
      ```bash
@@ -101,8 +101,7 @@ Find the newest proposal or result on the Queue:
      - **In the queue at its vouched head:** leave it alone.
      - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
-   If any is still open after that, queued or not, other than one waiting on `main` or a service, report it and
-   stop.
+   If any is still open after that, queued or not, and not waiting on `main` or a service, report it and stop.
 2. **Each issue row**, taking the first that matches:
    - **closed:** nothing to do;
    - **open, PR merged:** close it if everything it asked for is delivered; otherwise edit it down to the
@@ -247,8 +246,8 @@ existing worktree. When only the branch exists, add its worktree as *Lane rules*
      Post its verdict on the PR as `## Delta — <head>`, with the reviewed head, the reviewer and each finding's
      landing.
 
-   - **A delta with any `fixed` finding** gets one more fix and delta. A second delta with any `fixed` finding pulls
-     the item. So does passing twice the size budget.
+   - **A fix delta with any `fixed` finding** gets one more fix and delta. A second fix delta with any `fixed`
+     finding pulls the item. So does passing twice the size budget.
    - **Never review the same code twice.** An item gets at most one design critique, one adversarial review and two
      fix deltas; more fix rounds pull it to the owner. A re-entry, a refresh, a conflict resolution or a change the
      owner asks for is a delta of only what is new, and it does not count against that cap. A whole-PR review is
@@ -319,8 +318,8 @@ To **pull** an item:
 **Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
 - **File it** when it is:
   - **true:** reproduced, or shown at `path:line` on `origin/main`;
-  - **valid:** a real defect or gap, reachable today or latent. A latent one is a ready `P3` whose body says what
-    would make it reachable, if that is known. A style preference, or a simplification that changes no outcome, is
+  - **valid:** a real defect or gap, reachable today or latent. A latent one is a ready `P3` (`P1` if *State* makes it
+    one) whose body says what would make it reachable, if that is known. A style preference, or a simplification that changes no outcome, is
     not valid;
   - **not part of the item:** a different root.
 
@@ -343,7 +342,8 @@ Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
 
-Every report states those four numbers and lists every issue filed. Then stop: the round ends when the owner merges.
+Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still
+waiting from an earlier round, until that PR merges or is pulled. Then stop: the round ends when the owner merges.
 
 ## Lane rules (sent verbatim)
 
