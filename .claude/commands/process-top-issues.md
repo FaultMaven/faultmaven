@@ -247,8 +247,9 @@ existing worktree. When only the branch exists, use `git worktree add <path> fix
    - **A delta with any `fixed` finding** gets one more fix and delta. A second delta with any `fixed` finding pulls
      the item. So does passing twice the size budget.
    - **Never review the same code twice.** An item gets at most one design critique, one adversarial review and two
-     deltas. A re-entry, a refresh or a new commit is a delta of only what is new. A whole-PR review is never
-     repeated, and never run in place of a delta. Anything beyond that is a pull to the owner.
+     fix deltas; more fix rounds pull it to the owner. A re-entry, a refresh, a conflict resolution or a change the
+     owner asks for is a delta of only what is new, and it does not count against that cap. A whole-PR review is
+     never repeated, and never run in place of a delta.
    - **Any code commit after the reviewed head gets a delta before merge-ready.** That covers fixes, conflict
      resolutions and changes the owner asks for (step 1). A clean merge of `main` needs only CI.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
