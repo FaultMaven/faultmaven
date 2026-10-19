@@ -1,3 +1,8 @@
+> **Archived 2026-10-19 — superseded, do not follow.** The procedure it reasoned about grew to 2,473 lines
+> and drove the open-issue count from 61 to 113 by filing review findings at about one per merged pull request.
+> It was replaced by the self-contained [`/process-top-issues` command](../../../../.claude/commands/process-top-issues.md).
+> `scripts/backlog_metrics.py`, which this document cites throughout, was deleted with it.
+
 # Issue processing
 
 How issues get picked, worked and closed. One round at a time, with every

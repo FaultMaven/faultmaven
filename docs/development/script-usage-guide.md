@@ -482,7 +482,6 @@ python scripts/generate_er_diagram.py --update   # Regenerate the ER diagram fro
 python scripts/check_import_violations.py  # Check architecture
 python scripts/generate_api_docs.py --check  # Detect API reference drift (CI gate)
 python scripts/generate_api_docs.py        # Regenerate the API reference (commit the result)
-python scripts/backlog_metrics.py          # Is the backlog converging? Residue flow, survival, fix latency, rule-4 tier (#1453)
 
 # Development & testing
 python scripts/setup_env.py                # Environment setup
