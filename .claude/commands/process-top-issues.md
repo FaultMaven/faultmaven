@@ -84,7 +84,7 @@ Find the newest proposal or result on the Queue:
    - **Open, reported `waiting on main` or `waiting on <service>`:** while `main` is red or the service is down,
      leave it open; it does not stop the round. Once it is green or back, refresh it (below).
    - **Open, with no merge-ready:** a pull or a build was interrupted. If its item is in `pile:blocked`, finish the
-     pull, which closes the PR (*To pull an item*, step 4). Otherwise report it and stop.
+     pull (*To pull an item*, step 4). Otherwise report it and stop.
    - **Open after a merge-ready:** read its queue state:
 
      ```bash
