@@ -91,11 +91,12 @@ marks every test there `performance`, new modules included, and the defensive
 real-timing growth checks outside it carry the marker too
 (`test_url_query_redaction.py`, `test_sshd_auth_anchoring.py`, and
 `TestTheGrowthHelper`, the growth helper's self-tests), so one marker selects
-them all; the required jobs also `--ignore` the directory. Of the tests
-judged on real time, these stay in the required jobs (#2090): by the owner's
-ruling, `test_runbook_regex_redos.py`, which pins the real ReDoS of
-#1395/#1405, and `test_secret_patterns_1980.py`; by the plan, the revocation
-TTL tests in `test_revocation_store_contract.py`, which pin the deadline rule.
+them all; the required jobs also `--ignore` the directory. Named to stay in
+the required jobs (#2090): by the owner's ruling, `test_runbook_regex_redos.py`,
+which pins the real ReDoS of #1395/#1405, and `test_secret_patterns_1980.py`;
+by the plan, the revocation TTL tests in `test_revocation_store_contract.py`,
+which pin the deadline rule. Other real-time unit tests remain there, tracked
+in #2097.
 `TestWorkflowWiring` evaluates both required jobs' `-m` expressions and
 checks the per-PR step, which records its rows as the
 `wallclock-rows-performance` artifact for a re-anchor
