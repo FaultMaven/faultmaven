@@ -5,10 +5,11 @@ Measures the cost of the request-scoped context that
 ``ContextVar``.
 
 ‼ Every wall-clock comparison here goes through ``assert_latency_within``
-against a row of ``budgets.py``, never against a literal. This directory is
-collected by BOTH required CI gates — unlike ``tests/benchmarks/``, which
-``-m "not benchmark"`` excludes — so an uncalibrated threshold here reds a
-required check on a diff that changed nothing (#1557). ``budgets.py``
+against a row of ``budgets.py``, never against a literal. Until #2090 this
+directory was collected by BOTH required CI gates — unlike
+``tests/benchmarks/``, which ``-m "not benchmark"`` excludes — so an
+uncalibrated threshold here could red a required check on a diff that changed
+nothing (#1557); it now runs in benchmarks.yml's per-PR step. ``budgets.py``
 carries the anchors, where they were measured, and which four comparisons
 were deleted rather than re-anchored.
 
@@ -50,6 +51,8 @@ from .budgets import (
     ISOLATION_TIME_SPREAD,
     LARGE_DATA_CHECK,
 )
+
+pytestmark = pytest.mark.performance
 
 
 class TestContextVariablePerformance:

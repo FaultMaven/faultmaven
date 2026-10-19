@@ -2,10 +2,11 @@
 
 Two suites compare wall-clock numbers against thresholds —
 ``tests/benchmarks/`` (its own workflow, excluded from both required CI
-gates) and ``tests/performance/`` (collected by BOTH required gates). Both
-go through the two functions below, so the machine-throughput calibration
-(#1555) and the #1556 regression/product-target split apply identically to
-each, and so widening either is one edit rather than a search.
+gates) and ``tests/performance/`` (in both required gates until #2090, now
+benchmarks.yml's per-PR ``-m performance`` step). Both go through the two
+functions below, so the machine-throughput calibration (#1555) and the #1556
+regression/product-target split apply identically to each, and so widening
+either is one edit rather than a search.
 
 Before #908 the benchmark comparison was written three ways in three
 modules, which is the only reason calibrating it was a multi-file change;

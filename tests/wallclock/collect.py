@@ -5,21 +5,22 @@ Why this exists
 
 ``tests/performance/budgets.py`` was anchored on a development box, and a
 re-anchor from CI needs the statistic every timed comparison saw, on enough
-green runs, normalised by that run's calibration. The per-PR jobs (Test
-Standalone, Test Cloud) run ``pytest -n logical`` with no ``-s``, so a
-passing test's stdout never reaches their logs; the rows are therefore
-recorded where they are computed (``record.py``) and uploaded as the
-``wallclock-rows-<profile>`` artifacts. This script is the join.
+green runs, normalised by that run's calibration. The per-PR run of the
+timed tests (``benchmarks.yml``'s "Run wall-clock tests" step, #2090) passes
+no ``-s``, so a passing test's stdout never reaches its log; the rows are
+therefore recorded where they are computed (``record.py``) and uploaded as
+the ``wallclock-rows-<profile>`` artifacts. This script is the join.
 
 Operator steps (no network access happens in this script)::
 
-    for run in $(gh run list --workflow ci-cd.yml --branch main \\
+    for run in $(gh run list --workflow benchmarks.yml --branch main \\
             --status success --limit 30 --json databaseId -q '.[].databaseId'); do
       gh run download "$run" --pattern 'wallclock-rows-*' --dir "rows/$run"
     done
-    # nightly (isolated runner) rows, from benchmarks.yml:
-    gh run download <run> --name wallclock-rows-nightly --dir rows/nightly-<run>
     python -I tests/wallclock/collect.py rows/
+
+A push run carries ``wallclock-rows-performance`` (the per-PR profile), a
+scheduled run ``wallclock-rows-nightly`` (isolated runner, absolute mode).
 
 Every ``*.jsonl`` under the given paths is read, recursively.
 
@@ -53,8 +54,8 @@ commit, not a commit on any branch. Join runs by ``run_id`` (with
     python tests/wallclock/collect.py --propose --box-rev <rev> rows/
 
 prints, per row of ``tests/performance/budgets.py``, the anchor the rule in
-that module's docstring gives for the per-PR (``standalone`` + ``cloud``)
-rows under ``rows/``. The row's statistic per CI job is its WORST comparison
+that module's docstring gives for the per-PR (``performance``) rows under
+``rows/``. The row's statistic per CI job is its WORST comparison
 in that job (a test that asserts one row several times, such as eleven
 extraction shapes or four deduplication sizes, must pass all of them), and:
 
@@ -197,8 +198,9 @@ PERFORMANCE_DIR = REPO_ROOT / "tests" / "performance"
 TABLE_PATH = "tests/performance/budgets.py"
 
 #: The per-PR job profiles a re-anchor reads. The nightly judges the product
-#: target on an isolated runner, a different question.
-PROPOSE_PROFILES = ("standalone", "cloud")
+#: target on an isolated runner, a different question. Until #2090 the per-PR
+#: rows came from Test Standalone and Test Cloud (``standalone``, ``cloud``).
+PROPOSE_PROFILES = ("performance",)
 
 #: Where ``regression`` starts, as a multiple of ``reference``: the middle of
 #: the 2-3x band the #1556 ruling fixed.

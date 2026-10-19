@@ -381,9 +381,10 @@ def reset_calibration_cache() -> None:
     to print the scale a red was measured against. A test that resets the
     cache and does not put the flag back therefore silences that line for
     everything that ran BEFORE it. That is not hypothetical — pytest
-    collects ``tests/performance/`` before ``tests/unit/``, so in both
-    required CI gates the calibrated budgets there run first and this
-    module's own tests then erased the evidence (#1557 review). Use
+    collects ``tests/performance/`` before ``tests/unit/``, so in a run of
+    both (the required gates until #2090; benchmarks.yml's ``pytest tests/
+    -m performance`` step since) the calibrated budgets there run first and
+    this module's own tests then erased the evidence (#1557 review). Use
     ``calibration_state`` / ``restore_calibration_state`` around a reset
     that is part of a test fixture.
     """

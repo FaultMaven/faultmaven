@@ -3,12 +3,13 @@
 Why
 ---
 
-Both required gates (Test Standalone, Test Cloud) run ``tests/performance/``
-under ``pytest-xdist`` beside the whole suite, so a runner can be preempted
-for a second in the middle of any timed region. One timed window cannot tell
-that stall from a regression. #1916 is the case: one ``asyncio.gather`` of 20
-logged requests took 1.2 s instead of ~16 ms, and the per-request figure
-judged against ``CONCURRENT_REQUEST`` was that one window divided by 20.
+Both required gates (Test Standalone, Test Cloud) ran ``tests/performance/``
+under ``pytest-xdist`` beside the whole suite until #2090, and any runner can
+be preempted for a second in the middle of any timed region. One timed
+window cannot tell that stall from a regression. #1916 is the case: one
+``asyncio.gather`` of 20 logged requests took 1.2 s instead of ~16 ms, and the
+per-request figure judged against ``CONCURRENT_REQUEST`` was that one window
+divided by 20.
 
 So every statistic a pull request judges here is taken over several
 INDEPENDENT windows, and a stall lands in one of them:

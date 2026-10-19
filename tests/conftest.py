@@ -2337,10 +2337,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     no way to tell a slow runner from a real regression without downloading
     a 90-day artifact — which is the habit #908 is about breaking. It is
     registered HERE rather than in ``tests/benchmarks/conftest.py`` because
-    ``tests/performance/`` asserts calibrated budgets too (#1557) and is
-    collected by both required CI gates, where that suite's conftest is the
-    only one guaranteed loaded. Registering it in two conftests would print
-    the line twice on a full run.
+    ``tests/performance/`` asserts calibrated budgets too (#1557), and the
+    nightly runs it alone (``pytest tests/performance/``), where this
+    conftest is the only one guaranteed loaded; per pull request it runs in
+    benchmarks.yml's ``pytest tests/ -m performance`` step (#2090).
+    Registering it in two conftests would print the line twice on a full run.
 
     ``scale_was_used()`` gates the whole thing, so a run that asserts no
     budget — including the ordinary CI invocation's collect-and-deselect of

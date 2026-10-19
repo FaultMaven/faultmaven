@@ -109,6 +109,7 @@ class TestRedactUrls:
             "for url 'https://g.com/s?<redacted>'"
         )
 
+    @pytest.mark.performance
     def test_a_long_near_miss_line_does_not_blow_up(self):
         """‼ Polynomial ReDoS guard, with a measured anchor.
 

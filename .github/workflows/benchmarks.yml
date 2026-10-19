@@ -83,6 +83,41 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           SKIP_SERVICE_CHECKS: 'true'
 
+      # Every wall-clock test outside tests/benchmarks/ (#2090): all of
+      # tests/performance/ and the real-timing growth checks, all marked
+      # `performance`. The required jobs deselect them, so this step is where
+      # they run on a pull request, against the calibrated budgets. Its own
+      # `if`, so a red benchmark above does not skip it. `pytest tests/`
+      # collects tests/performance/ before tests/unit/, the session order the
+      # calibration fixtures in tests/unit/ci/ reason about.
+      - name: Run wall-clock tests
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          pytest tests/ \
+            -m performance \
+            --tb=short \
+            -v \
+            --no-cov \
+            2>&1 | tee performance_output.txt
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+          # Row-level record for a re-anchor (#1910); see tests/wallclock/collect.py.
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/wallclock-rows/
+          FM_WALLCLOCK_PROFILE: performance
+
+      # `error` on no files: a run of the timed tests that recorded nothing is
+      # the defect this artifact exists to catch (#1910).
+      - name: Upload wall-clock rows (performance)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wallclock-rows-performance
+          path: ${{ runner.temp }}/wallclock-rows/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Parse benchmark results
         if: always()
         run: |

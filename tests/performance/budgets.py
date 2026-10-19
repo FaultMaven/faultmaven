@@ -10,11 +10,14 @@ Why this directory has a table at all (#1557)
 ---------------------------------------------
 
 ``tests/benchmarks/`` is excluded from both required CI gates by
-``-m "not benchmark"`` and runs in a job of its own. **This directory is
-not.** ``Test Standalone`` (``-m "not cloud and not benchmark"``) and
-``Test Cloud`` (``-m "not benchmark"``) both collect it, so a wall-clock
-assertion here reds a REQUIRED check on a diff that changed nothing —
-#908's failure, except blocking the merge.
+``-m "not benchmark"`` and runs in a job of its own. Until #2090 **this
+directory was not**: ``Test Standalone`` and ``Test Cloud`` both collected
+it, so a wall-clock assertion here could red a REQUIRED check on a diff that
+changed nothing — #908's failure, except blocking the merge. Every module
+here is now marked ``performance``, which both required jobs deselect (and
+they ``--ignore`` the directory); it runs per pull request in
+``benchmarks.yml``'s "Run wall-clock tests" step, which is not required, and
+nightly in ``nightly-absolute``.
 
 #1557 measured all 27 hand-rolled comparisons that were here, over 29 runs
 on the development box:
@@ -84,6 +87,11 @@ it::
     done
     python tests/wallclock/collect.py --propose --box-rev 4ad6d76e0 rows/
 
+These rows carry the ``standalone`` and ``cloud`` profiles of the required
+jobs that recorded them before #2090; ``--propose`` now reads the
+``performance`` profile, so set ``PROPOSE_PROFILES`` in ``collect.py`` back to
+those two to reproduce it.
+
 **Why this re-anchor.** The table used to hold those RAW box values, and
 the per-PR comparison multiplied them by the runner's calibration scale as
 well, so a row's limit was about 3.5x too loose before the 2-3x band was
@@ -97,8 +105,8 @@ sanitizer document at 0.46-0.54x, and three of the fixed-cost rows below
 Each row's anchor takes whichever of the two terms is the more conservative.
 
 **Every judged statistic is taken over several windows (#1916).** Both
-required gates run this directory under ``pytest-xdist`` beside the whole
-suite, and one timed window cannot tell a preempted runner from a
+required gates ran this directory under ``pytest-xdist`` beside the whole
+suite until #2090, and one timed window cannot tell a preempted runner from a
 regression: one ``asyncio.gather`` that stalled for 1.2 s failed
 ``CONCURRENT_REQUEST`` at 7x its limit. So every statistic here is the median
 of at least three independent windows, the fastest of at least two
@@ -509,8 +517,8 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #:   xdist worker's fsync or a scheduler stall moves only the tail, and the
 #:   calibration (#1555) measures CPU throughput, so it cannot see either; a
 #:   costlier commit moves the median too. The required gates (Standalone and
-#:   Cloud) both collect this directory under xdist, and Test Standalone
-#:   failed on the p99 of three pull requests that did not touch the commit
+#:   Cloud) both collected this directory under xdist until #2090, and Test
+#:   Standalone failed on the p99 of three pull requests that did not touch the commit
 #:   (#1902): p50 180.8 / 218.2 / 143.4 ms, p99 2089.7 / 3349.1 / 2284.7 ms
 #:   (max 42.4 s) against limits of 2024 / 2750 / 1887 ms (0.5 s x 4.05 /
 #:   5.50 / 3.77 calibration; runs 37867131425, 37774700908, 37775185302).
