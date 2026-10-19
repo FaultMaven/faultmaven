@@ -49,8 +49,6 @@ from .budgets import (
     VOCABULARY_EXTRACTION,
 )
 
-pytestmark = pytest.mark.performance
-
 
 def _fastest_seconds(work, samples: int) -> float:
     return fastest_of_windows(lambda window: window.seconds(work), samples)

@@ -56,8 +56,6 @@ from .budgets import (
     UNIFIED_LOGGER_SET,
 )
 
-pytestmark = pytest.mark.performance
-
 
 class TestLoggingPerformanceOverhead:
     """Test logging performance overhead.

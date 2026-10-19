@@ -52,8 +52,6 @@ from .budgets import (
     LARGE_DATA_CHECK,
 )
 
-pytestmark = pytest.mark.performance
-
 
 class TestContextVariablePerformance:
     """Test context variable performance overhead."""

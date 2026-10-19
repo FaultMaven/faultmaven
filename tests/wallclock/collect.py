@@ -54,8 +54,8 @@ commit, not a commit on any branch. Join runs by ``run_id`` (with
     python tests/wallclock/collect.py --propose --box-rev <rev> rows/
 
 prints, per row of ``tests/performance/budgets.py``, the anchor the rule in
-that module's docstring gives for the per-PR (``performance``) rows under
-``rows/``. The row's statistic per CI job is its WORST comparison
+that module's docstring gives for the per-PR rows under ``rows/``
+(``PROPOSE_PROFILES``). The row's statistic per CI job is its WORST comparison
 in that job (a test that asserts one row several times, such as eleven
 extraction shapes or four deduplication sizes, must pass all of them), and:
 
@@ -197,10 +197,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PERFORMANCE_DIR = REPO_ROOT / "tests" / "performance"
 TABLE_PATH = "tests/performance/budgets.py"
 
-#: The per-PR job profiles a re-anchor reads. The nightly judges the product
-#: target on an isolated runner, a different question. Until #2090 the per-PR
-#: rows came from Test Standalone and Test Cloud (``standalone``, ``cloud``).
-PROPOSE_PROFILES = ("performance",)
+#: The per-PR profiles a re-anchor reads; the first two are the required jobs'
+#: until #2090. The nightly judges the product target on an isolated runner.
+PROPOSE_PROFILES = ("standalone", "cloud", "performance")
 
 #: Where ``regression`` starts, as a multiple of ``reference``: the middle of
 #: the 2-3x band the #1556 ruling fixed.

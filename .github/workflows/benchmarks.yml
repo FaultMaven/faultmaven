@@ -55,7 +55,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Cleanup pip cache
         if: always()
@@ -141,6 +142,9 @@ jobs:
               echo "| $line | :x: | Failed |" >> $GITHUB_STEP_SUMMARY
             fi
           done || echo "| No benchmark results | :warning: | Check logs |" >> $GITHUB_STEP_SUMMARY
+          # The wall-clock step's pytest footer (#2090); absent if it never ran.
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Wall-clock tests:** $(tail -n 1 performance_output.txt 2>/dev/null || echo 'did not run')" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
@@ -150,6 +154,7 @@ jobs:
           path: |
             benchmark_results.json
             benchmark_output.txt
+            performance_output.txt
           retention-days: 90
 
       - name: Comment on PR with results
@@ -235,7 +240,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Run benchmarks against raw targets
         run: |
@@ -512,7 +518,8 @@ jobs:
         working-directory: ${{ runner.temp }}/base
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       # Base runs FIRST so it runs against its own pinned dependencies;
       # the head install below may move them, and a base measured under
@@ -549,7 +556,9 @@ jobs:
 
       - name: Install dependencies (head)
         if: steps.base.outputs.comparable == 'true'
-        run: pip install -e .[test]
+        run: |
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Run benchmarks at head
         if: steps.base.outputs.comparable == 'true'
@@ -686,7 +695,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Cleanup pip cache
         if: always()

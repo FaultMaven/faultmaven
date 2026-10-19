@@ -24,8 +24,6 @@ from tests.wallclock.sampling import fastest_of_windows
 
 from .budgets import SANITIZE_DOCUMENT_BATCH, SANITIZE_LARGE_DOCUMENT
 
-pytestmark = pytest.mark.performance
-
 #: Timed repetitions per statistic; the FASTEST is the statistic. Every
 #: source of noise is additive, so the minimum is the least contaminated.
 SAMPLES = 5

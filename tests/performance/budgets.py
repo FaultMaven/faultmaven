@@ -87,11 +87,6 @@ it::
     done
     python tests/wallclock/collect.py --propose --box-rev 4ad6d76e0 rows/
 
-These rows carry the ``standalone`` and ``cloud`` profiles of the required
-jobs that recorded them before #2090; ``--propose`` now reads the
-``performance`` profile, so set ``PROPOSE_PROFILES`` in ``collect.py`` back to
-those two to reproduce it.
-
 **Why this re-anchor.** The table used to hold those RAW box values, and
 the per-PR comparison multiplied them by the runner's calibration scale as
 well, so a row's limit was about 3.5x too loose before the 2-3x band was

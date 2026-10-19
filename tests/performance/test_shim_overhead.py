@@ -22,8 +22,6 @@ from tests.wallclock.sampling import fastest_of_windows
 
 from .budgets import NOOP_TRACK_CALL, PII_PASSTHROUGH_CALL
 
-pytestmark = pytest.mark.performance
-
 CALLS = 1000
 SAMPLES = 5
 

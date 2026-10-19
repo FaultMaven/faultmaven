@@ -385,9 +385,11 @@ jobs:
           # combines the workers' data into one .coverage before the reports and
           # the threshold step below read it.
           #
-          # `not performance` + `--ignore=tests/performance` (#2090): a test
-          # that judges wall-clock time judges the runner, not the diff, so it
-          # runs in benchmarks.yml's per-PR job, not in a required check.
+          # `not performance` + `--ignore=tests/performance` (#2090): a
+          # wall-clock test judges the runner, not the diff, so it runs in
+          # benchmarks.yml's per-PR job. Ruled exceptions that stay here:
+          # test_runbook_regex_redos.py, test_secret_patterns_1980.py and
+          # TestTheAllocatorSettle's child-process growth checks.
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \

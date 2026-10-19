@@ -85,7 +85,8 @@ from tests.wallclock.budgets import (
     LatencyBudget,
     ThroughputBudget,
 )
-from tests.wallclock.record import RECORD_ENV
+from tests.wallclock.collect import PROPOSE_PROFILES
+from tests.wallclock.record import PROFILE_ENV, RECORD_ENV
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_DIR = REPO_ROOT / "tests" / "benchmarks"
@@ -1287,9 +1288,9 @@ class TestOneComparisonSite:
     def test_the_performance_suite_is_in_scope_at_all(self):
         """‼ The #1557 defect itself, as a test.
 
-        `tests/performance/` is collected by both required CI gates and
-        `tests/benchmarks/` is not, so this is the directory where a
-        hand-rolled threshold does damage. It was outside the scan for the
+        `tests/performance/` was collected by both required CI gates until
+        #2090 and `tests/benchmarks/` was not, so this is the directory where
+        a hand-rolled threshold did damage. It was outside the scan for the
         whole of #1555.
         """
         assert PERFORMANCE_DIR in GUARDED_DIRS
@@ -4397,9 +4398,9 @@ EVENT_SHAPES = [
 
 PAIR = ("benchmarks", "nightly-absolute")
 
-#: The required pytest jobs of ci-cd.yml. No wall-clock test may run in them:
-#: its verdict is the runner's, so a diff that changes nothing reds a required
-#: check (#2090: 11 of main's 19 red runs).
+#: ci-cd.yml's two required jobs that run the whole tree (Test PostgreSQL
+#: selects only ``-m postgres``, Test Packaging only tests/installation/). No
+#: wall-clock test may run in them: its verdict is the runner's (#2090).
 REQUIRED_PYTEST_JOBS = ("test-standalone", "test-cloud")
 
 
@@ -4637,15 +4638,20 @@ class TestWorkflowWiring:
         """#2090, the other half: what the required jobs drop runs per PR.
 
         Some step of the ``benchmarks`` job runs the whole tree with an
-        expression that keeps ``performance``, and records its rows.
+        expression that keeps ``performance``, drops nothing by ``-k``,
+        ``--ignore*`` or ``--deselect`` (``--ignore=tests/unit`` alone drops
+        the growth checks), and records rows under a profile ``--propose`` reads.
         """
         job = self._workflow()["jobs"]["benchmarks"]
         recording = [
             argv
             for step in job["steps"]
-            if RECORD_ENV in (step.get("env") or {})
+            if (step.get("env") or {}).get(PROFILE_ENV) in PROPOSE_PROFILES
+            and RECORD_ENV in step["env"]
             for argv in _pytest_invocations(step.get("run") or "")
-            if _selects(argv, {"performance"}) and {"tests", "tests/"} & set(argv)
+            if _selects(argv, {"performance"})
+            and {"tests", "tests/"} & set(argv)
+            and not any(a.startswith(("-k", "--ignore", "--deselect")) for a in argv)
         ]
         assert recording, (
             "no step of the benchmarks job runs `pytest tests/` selecting "

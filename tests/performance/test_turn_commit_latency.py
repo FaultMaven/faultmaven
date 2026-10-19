@@ -57,8 +57,6 @@ from tests.wallclock import absolute_mode, assert_latency_within
 
 from .budgets import TURN_COMMIT
 
-pytestmark = pytest.mark.performance
-
 ENTERPRISE = "ent_1882_latency"
 
 

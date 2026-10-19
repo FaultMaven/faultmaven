@@ -114,11 +114,11 @@ The test runner supports predefined CI/CD pipeline configurations:
 |--------|-------------|
 | `unit` | Unit tests |
 | `integration` | Integration tests |
-| `slow` | Long-running tests (informational: every CI job runs them) |
+| `slow` | Long-running tests (the required Test Standalone/Test Cloud jobs run them; `scripts/tests.py --ci` skips them) |
 | `enterprise` | Requires Redis, PostgreSQL, etc. |
 | `security` | Security-focused tests |
 | `benchmark` | Performance benchmarks |
-| `performance` | Wall-clock tests: budgets and real-timing growth checks (excluded from the required jobs; run in `benchmarks.yml`) |
+| `performance` | Wall-clock tests: `tests/performance` and the defensive growth checks (excluded from the required jobs; run in `benchmarks.yml`) |
 
 ## Load Testing
 
