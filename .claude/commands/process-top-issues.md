@@ -1,5 +1,5 @@
 ---
-description: Run one round of issue processing — settle the last round, propose items and the questions blocking others, build what is approved, report. Opens PRs; never merges; files an issue only on the owner's yes.
+description: Run one round of issue processing — settle the last round, propose items and the questions blocking others, build what is approved, report. Opens PRs and files what it finds; never merges.
 ---
 
 # /process-top-issues
@@ -8,7 +8,7 @@ description: Run one round of issue processing — settle the last round, propos
 This file is self-contained. Only the owner changes it, and a new rule **replaces** an old one, so it does not
 grow. Memory notes point here and never restate it; where they disagree, this file wins.
 
-**Roles.** The owner rules on questions, approves rounds, decides what gets filed, and merges. You (the owning
+**Roles.** The owner rules on questions, approves rounds, and merges. You (the owning
 agent) propose, plan, verify, review and report. Lanes (subagents) each implement one plan you wrote, in their own
 worktree; at most three run at once.
 
@@ -90,7 +90,6 @@ Find the newest proposal or result on the Queue:
    | # | P | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
    ### Needs your call
    Every item blocked on an owner ruling, with question · options · recommendation · what it unblocks.
-   Every filing candidate not yet answered (step 5): security/tenancy ones first and uncapped.
    ### Priorities I set (change any)
    ### Expired this round · expiring before the next
    ### Yours to run
@@ -107,10 +106,6 @@ Record each ruling on its own issue. Then place the issue:
 - **implies none:** close it, quoting the ruling;
 - **the owner's to run:** yours.
 
-For a filing candidate:
-- **file:** create it, with a pile and a priority;
-- **drop:** remove it from the list.
-
 If you cannot tell which, that is the next question. Unanswered questions stay where they are.
 
 ## 4. Build
@@ -125,7 +120,10 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
 ```
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`:
-   - **the root,** with its code points. Fix the root. Never fix a symptom and leave the root for later;
+   - **the root,** with its code points. The root is where the defect starts, however deep. When investigating
+     shows the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this
+     PR fixes it. Never fix a symptom and file its root. A root that needs a ruling or will not fit the size
+     budget pulls the item with that question;
    - **the change,** and what is out of scope;
    - **N,** for a duplicated rule, with the scan that counted it. You run the scan for the plan; it is not
      committed as a test (below);
@@ -161,15 +159,15 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
    - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
      that has live sites.
 
-   Each finding is either:
-   - **fixed:** it breaks the invariant, or is a crash, wrong result or regression the diff introduces on a
-     reachable path; or
-   - **declined:** one line in the PR body saying why. Out of scope, unreachable, a miss with no live site, or a
-     simplification that changes no outcome.
+   Each finding is exactly one of:
+   - **fixed:** it is part of this item. It breaks the invariant, it is a crash, wrong result or regression the
+     diff introduces on a reachable path, or it shares the item's root;
+   - **filed:** it is true, valid and not part of this item (*Filing what you find*, below);
+   - **declined:** one line in the PR body saying why. Either it is not true (it did not reproduce), or it is not
+     valid (a style preference, a simplification that changes no outcome, a shape nothing can reach), or an open
+     issue already covers it (add the evidence there).
 
-   A finding outside the PR's scope becomes a **filing candidate** (step 5) when it is a security or tenancy
-   exposure, or a defect of medium or higher severity that someone can hit. Anything lower is declined. Post the
-   verdict on the PR as `## Review — <head>`, with the fix list.
+   Post the verdict on the PR as `## Review — <head>`, with the fix list and the issues filed.
 5. **Fix once.** The fix list goes to the same lane (`SendMessage`), as one commit. If the fix redesigns a
    mechanism, probe the new design first, as in the plan. Then review only the fix commits against the fix list
    (the delta):
@@ -209,6 +207,20 @@ To **pull** an item:
    (for size: the new estimate, build or drop);
 4. carry on with the others.
 
+**Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
+- **File it** when it is:
+  - **true:** reproduced, or shown at `path:line` on `origin/main`;
+  - **valid:** a defect, gap or open decision that a user, an operator or a later change can actually meet;
+  - **not part of the item:** a different root.
+
+  File it as you find it, with `Found while working on #<n>`, the evidence, a pile, a priority and, for a ready
+  `P3`, an `**Expires:**` line.
+- **Search first.** If an open issue already covers it, add the evidence there instead. Findings that share one
+  root go in one issue.
+- **Never file the item's own root, a symptom of it, or a part of it.** That is fixed in the item's PR (*Plan*).
+- **You need not build what you file this round.** A filed issue joins the piles and is taken by priority in a
+  later round or session.
+
 ## 5. Report
 
 Comment on the Queue:
@@ -216,16 +228,12 @@ Comment on the Queue:
 ```
 ## Round <N> — result
 | # | outcome (merge-ready · closed by verification · pulled) | PR | product +/− | tests +/− |
-Closed <x> · Filed <y> (all on the owner's yes) · Net lines: product <p>, tests <t> · Open <before> → <after>
-Filing candidates: <PR> — <what, who hits it and how, reproduced or not>
+Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
+Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue <PRs>; each is merge-ready at the head its comment names.
 ```
 
-Every report states those four numbers. Filing candidates carry into the next proposal's *Needs your call*:
-- security and tenancy candidates are uncapped and listed first, until answered;
-- any other candidate counts against a cap of 3 and is dropped after two proposals go unanswered.
-
-Then stop: the round ends when the owner merges.
+Every report states those four numbers and lists every issue filed. Then stop: the round ends when the owner merges.
 
 ## Lane rules (sent verbatim)
 
@@ -240,19 +248,17 @@ Then stop: the round ends when the owner merges.
   the plan names one. Keep within the plan's size budget, and say so if you cannot.
 - **The PR body** says `Closes #<n>` only when the issue as written is delivered. Otherwise it says `Refs #<n>`,
   and you comment on the issue naming what was delivered.
-- **Return:** the PR URL, each command with its tail output, `git status --short`, and every departure from the
-  plan.
+- **Return:** the PR URL, each command with its tail output, `git status --short`, every departure from the
+  plan, and anything outside the plan you found, with its evidence. You do not file it; the owning agent does.
 
 ## Rules
 
 - **Never merge.** Adding a PR to the merge queue is merging. The owner may authorize merging for the current
   session only, in as many words, and the authorization never carries over.
-- **Never create an issue without the owner's yes** (step 3).
-  - Your own issue writes are rulings, labels, `**Blocked on:**` and `**Expires:**` lines, edit-downs, and
-    expiry and verification closes.
-  - A round that filed without that yes has failed; say so first in its report.
+- **File what is true and valid and not part of the item. Never fix a symptom and file its root.** Your other issue
+  writes are rulings, labels, `**Blocked on:**` and `**Expires:**` lines, edit-downs, and expiry and verification
+  closes.
 - **Never ask mid-build:** pull the item instead. Never build an item with an open question.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
-- **Never relay a finding you did not reproduce,** except a security or tenancy filing candidate, which is marked
-  `not reproduced`.
+- **Never file or relay a finding you have not verified:** reproduced, or shown at `path:line` on `origin/main`.
 - **Never poll CI in the foreground,** and never from a lane or a review.
