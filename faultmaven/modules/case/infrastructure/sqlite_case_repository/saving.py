@@ -648,7 +648,9 @@ async def _reconcile_causal_graph(
     set: stale edges are deleted explicitly (a pruned edge whose endpoints
     both survive is not caught by the node-delete FK cascade), then stale
     nodes (their causal_node_evidence + endpoint edges cascade away, and
-    solutions.node_id is SET NULL).
+    solutions.node_id is SET NULL). The engine mirrors that SET NULL in memory
+    when it prunes a node (``prune_abandoned_nodes``), so the solution upsert
+    that runs after it never writes a pruned id back.
 
     Guarded on a non-empty node set: ``save`` persists the FULL graph and
     ``get`` loads it whole, so an empty set means a brand-new case with no

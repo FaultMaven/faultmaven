@@ -29,6 +29,8 @@ from faultmaven.modules.case.contracts import (
     NodeType,
     ProblemStatus,
     ProblemVerification,
+    Solution,
+    SolutionType,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -394,6 +396,62 @@ def test_reroot_gcs_full_abandoned_multi_rung_chain():
     assert all(
         e.cause_node_id in case.causal_nodes and e.effect_node_id in case.causal_nodes
         for e in case.causal_edges
+    )
+
+
+def test_reroot_clears_the_link_of_a_solution_on_the_pruned_root_2071():
+    # #2071: a re-root prunes the abandoned root, and a solution acting on it
+    # must not keep the pruned id. The save deletes the node row, so writing the
+    # stale id back into solutions.node_id fails the FK and rolls the whole turn
+    # back (500). Swap shape: R -> I -> D re-roots onto N -> I -> D, so R is
+    # pruned while I survives on the new path, and so does its solution's link.
+    case = _case()
+    h = _hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    _apply_chain_emission(
+        case,
+        _two_rung_chain(),
+        {"hypotheses_generated": [], "hyp_root_refs": {h.hypothesis_id: "new_index_0"}},
+    )
+    old_root, mid, d_id = h.path
+    on_root = Solution(
+        solution_type=SolutionType.WORKAROUND,
+        title="Restart the pool",
+        immediate_action="Bounce the pool",
+        node_id=old_root,
+    )
+    on_mid = Solution(
+        solution_type=SolutionType.CODE_FIX,
+        title="Release on every path",
+        longterm_fix="Release the connection on every return path",
+        node_id=mid,
+    )
+    case.solutions = [on_root, on_mid]
+
+    _apply_chain_emission(
+        case,
+        _updates(
+            nodes=[
+                SimpleNamespace(
+                    statement="the deploy pipeline skipped the release-path review",
+                    node_type=NodeType.ROOT,
+                    produces=mid,  # into the existing chain, below the old root
+                    and_group=None,
+                )
+            ]
+        ),
+        {"hypotheses_generated": [], "hyp_root_refs": {h.hypothesis_id: "new_index_0"}},
+    )
+
+    new_root = h.root_node_id
+    assert new_root != old_root
+    assert h.path == [new_root, mid, d_id]  # the old root is off the new path
+    assert old_root not in case.causal_nodes
+    # The pruned root's solution is unlinked; no solution names a missing node.
+    assert on_root.node_id is None
+    assert on_mid.node_id == mid
+    assert all(
+        s.node_id is None or s.node_id in case.causal_nodes for s in case.solutions
     )
 
 

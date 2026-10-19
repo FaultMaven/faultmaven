@@ -1647,12 +1647,15 @@ variables, milestones, and confidence stay consistent.
 - **`solutions.hypothesis_id`** (currently unused) is wired, plus a `node_id` +
   quadrant tag (§7.4), so a chain's demotion (§7.3) retires its dependent solutions
   and a defensive-fix / mitigation records which rung it intercepts.
-  *Realized today at the OFFER level (INV-32):* the solution emission carries no
-  `node_id`, so per-chain retirement is not yet computable — instead the engine
-  re-checks the M5 established-cause license on every recompute and withdraws
-  PENDING SOLUTION offers when NO established cause stands (demotion, retraction,
-  MECE hold). `Solution` rows stay as historical records; per-node linkage remains
-  the rejected-for-now finer grain (waits until the emission carries `node_id`).
+  *Realized today at the OFFER level (INV-32):* the solution emission carries a
+  `node_ref` (#793), recorded as `Solution.node_id` when it names a node already on
+  the graph, and cleared when a re-root prunes that node (the store's `ON DELETE
+  SET NULL` on `solutions.node_id`, mirrored in memory by `prune_abandoned_nodes`,
+  #2071). Nothing reads the link yet, so per-chain retirement is not computed
+  from it — instead the engine re-checks the M5 established-cause license on
+  every recompute and withdraws PENDING SOLUTION offers when NO established cause
+  stands (demotion, retraction, MECE hold). `Solution` rows stay as historical
+  records; per-node retirement remains the rejected-for-now finer grain.
 
 ### 9.2 Assessment variables — `cause_state`
 

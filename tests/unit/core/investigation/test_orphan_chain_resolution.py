@@ -35,6 +35,8 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     NodeType,
     ProblemVerification,
+    Solution,
+    SolutionType,
 )
 from tests.utils import bridge_flat_hypotheses_to_graph
 
@@ -232,6 +234,33 @@ def test_t1_reattaches_unambiguous_double_representation_and_gcs_stub():
     # The abandoned bridge stub is GC'd; no orphan roots remain.
     assert stub_root not in case.causal_nodes
     assert _orphan_roots(case) == []
+
+
+def test_t1_reattach_clears_the_link_of_a_solution_on_the_gcd_stub_2071():
+    # #2071: the T1 re-attach GCs the abandoned stub root, and a solution acting
+    # on it must not keep the pruned id — the save would write it back into
+    # solutions.node_id after deleting the node row, and the FK fails the turn.
+    hyp = _hyp("connection pool exhausted by a leaked database connection")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    stub_root = hyp.root_node_id
+    on_stub = Solution(
+        solution_type=SolutionType.RESTART,
+        title="Restart the pool",
+        immediate_action="Bounce the pool to clear leaked handles",
+        node_id=stub_root,
+    )
+    case.solutions = [on_stub]
+    orphan_root = _add_orphan_chain(
+        case, "a leaked database connection exhausts the pool", multi_rung=True
+    )
+
+    assert resolve_orphan_chains(case) == []
+
+    assert hyp.root_node_id == orphan_root
+    assert stub_root not in case.causal_nodes
+    assert on_stub.node_id is None
 
 
 def test_t1_reattaches_a_flat_hypothesis_onto_orphan_chain():
