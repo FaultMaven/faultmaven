@@ -26,7 +26,9 @@ worktree; at most three run at once.
   - `P2`: any other defect reachable today;
   - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
     any item, and a ruled feature takes the priority its ruling states (ask if it states none).
-- **A `P3` in `pile:ready`** carries `**Expires:** <date, 30 days after it was labelled P3>` in its body.
+  - A `P0` label, if the owner uses one, is read as `P1`, ranked first.
+- **A `P3` in `pile:ready`** carries `**Expires:** <date, 30 days after it was labelled P3>` in its body. Write that
+  line whenever an item becomes a ready `P3`, by whatever step, and when an older ready `P3` has none.
 - **A blocked item's body** has one line in one of these forms:
   - `**Blocked on:** #N …`;
   - `**Blocked on:** an owner ruling on …` (also used for a pull, a PR closed unmerged, or an item over its size
@@ -52,7 +54,7 @@ Find the newest proposal or result on the Queue:
 1. **The last result's PRs.** For each PR it named that is still open and not in the merge queue:
    - refresh it if it conflicts, was dequeued, or has a red required check: merge `main` in, re-run CI, and delta
      any code change (step 4.5);
-   - pull it if it cannot be refreshed.
+   - pull it if it cannot be refreshed (step 4's *pull*, which closes the PR).
 
    If any is still open after that, report it and stop.
 2. **Each issue row**, taking the first that matches:
@@ -73,8 +75,8 @@ Find the newest proposal or result on the Queue:
 2. **Expire.** Close, as not planned, each ready `P3` past its `**Expires:**` date with no owner comment since it
    was labelled. Comment: `Expired: P3, 30 days (/process-top-issues). Reopen with a reason.`
 3. **Pick.**
-   - `P1` before `P2`, oldest first within each. Reserve one slot for the oldest `P2` that has waited over 30
-     days. `P3` only when the owner pins it.
+   - From `pile:ready` only: `P1` before `P2`, oldest first within each. Reserve one slot for the oldest `P2` that
+     has waited over 30 days. `P3` only when the owner pins it.
    - Items on one seam share a lane and a PR.
    - Size the round by review effort, not item count: at most 5 items and 3 lanes. An item touching a security
      boundary, storage or a migration is a round by itself.
@@ -113,7 +115,14 @@ If you cannot tell which, that is the next question. Unanswered questions stay w
 
 ## 4. Build
 
-Per approved item:
+Per approved item, skipping one whose lane branch already has a PR, open or merged, opened after this round's
+proposal. That item goes straight to *Verify* with the PR it has, or is reported as merged. This is what keeps a
+re-entry, or an out-of-band approval, from sending a second lane over built work:
+
+```bash
+gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this proposal's timestamp>" \
+  --json number,headRefName,state --jq '.[] | select(.state != "CLOSED") | select(.headRefName | test("/<n>-"))'
+```
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`:
    - **the root,** with its code points. Fix the root. Never fix a symptom and leave the root for later;
@@ -144,8 +153,9 @@ Per approved item:
 4. **Review once.** Brief the review with the invariant and the done-when, and start the CI watch in the
    background at the same time.
    - **Runtime PRs: `/code-review xhigh <pr>`.** These are PRs that change what runs in a deployment or a
-     pipeline: `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `Dockerfile`, `docker-compose*`,
-     `.github/workflows/`, or `scripts/` that CI or CD runs.
+     pipeline: `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `pyproject.toml`, `Dockerfile`,
+     `docker-compose*`, `.github/workflows/`, `.github/scripts/`, `.importlinter`, `pytest.ini`, or `scripts/` that CI
+     or CD runs.
    - **Every other PR: `/code-review high <pr>`.**
    - **A mixed PR** takes the higher level.
    - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
@@ -173,21 +183,31 @@ Per approved item:
    req=$(gh api repos/FaultMaven/faultmaven/rules/branches/main --jq \
      '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | unique')
    gh pr view <n> --json statusCheckRollup | jq -r --argjson req "$req" '
-     [.statusCheckRollup[] | {n: (.name // .context), c: (.conclusion // .state), t: (.completedAt // .startedAt // "")}] as $all
+     [.statusCheckRollup[] | {n: (.name // .context), t: (.startedAt // ""),
+       c: (if (.status // "COMPLETED") != "COMPLETED" then "PENDING" else (.conclusion // .state) end)}] as $all
      | $req | map(. as $r | ([$all[] | select(.n == $r)] | sort_by(.t) | last) as $hit
                   | "\($r)=\($hit.c // "MISSING")") | join("  ")'
    ```
 
    - Re-run a flake once.
    - Wait out an outside-service outage (check the service's status page).
-   - A failure the merge base also has is `main`'s: plan its repair first, on a `main red: <check> at <sha>`
-     branch. Nothing merges before it.
+   - A failure the merge base also has is `main`'s: plan its repair first, on branch `fix/main-red-<short sha>`.
+     Nothing merges before it.
+
+   In-progress checks read `PENDING`; sort by `startedAt`, because a running check's `completedAt` is
+   `0001-01-01T00:00:00Z`, not empty.
 
    Then comment `## Merge-ready — <head>`: the base, the plan link, the review (1 round + delta, k declined), the
    commands you re-ran with their tail output, and the checks.
 
-To **pull** an item: stop its lane, move it to `pile:blocked` with `**Blocked on:** an owner ruling on …` stating
-what stopped it and the choice (for size: the new estimate, build or drop), and carry on.
+To **pull** an item:
+1. stop its lane;
+2. close its PR, with a comment saying why. On a PR shared with other items, have the lane take the item's part
+   out instead, and remove its `Closes`/`Refs` line from the PR body (`gh api -X PATCH`, read back), so the merge
+   cannot close it;
+3. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the choice
+   (for size: the new estimate, build or drop);
+4. carry on with the others.
 
 ## 5. Report
 
@@ -210,8 +230,9 @@ Then stop: the round ends when the owner merges.
 ## Lane rules (sent verbatim)
 
 - **Implement the plan; do not re-plan.** Where the code disagrees with the plan, stop and report what you found.
-- **Worktree:** `git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`. Never work in the main
-  checkout. Never delete `./data` there: it is the live stack's database.
+- **Worktree:** `git fetch origin main`, then
+  `git worktree add -b fix/<n>-<slug> /home/swhouse/product/faultmaven/.claude/worktrees/<n> origin/main`.
+  Never work in the main checkout. Never delete `./data` there: it is the live stack's database.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
   the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
   moved. Not the whole suite: CI runs it.
