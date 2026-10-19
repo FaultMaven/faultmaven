@@ -4,7 +4,8 @@ description: Run one round of issue processing — settle the last round, propos
 
 # /process-top-issues
 
-**Purpose:** bring the open-issue count down, keep `main` green, and keep each fix no larger than the defect needs.
+**Purpose:** work the backlog down by fixing what matters most at its root, keep `main` green, and keep each fix no
+larger than the defect needs. The count is never lowered by hiding or closing issues.
 The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you hand over must have
 been through the full review chain in step 4.
 
@@ -24,9 +25,16 @@ Reviewers are independent agents: they never wrote or planned what they review.
 
 - **Piles are labels:** `pile:ready` (known work), `pile:blocked` (waits on a ruling, an issue or a condition),
   `pile:yours` (only the owner can run it), `tracking` (in no pile: the Queue, trackers). Move with two edits, add
-  first (`--add-label` then `--remove-label`); more than one pile label reads as blocked.
-- **Every open issue outside `tracking` carries one priority label**, re-set by these definitions whenever the item
-  moves between piles:
+  first (`--add-label` then `--remove-label`); more than one pile label reads as blocked. **The ready query** (Pick
+  and Build use it) returns the open `pile:ready` issues outside `tracking`; an item with a second pile label is
+  skipped:
+
+  ```bash
+  gh issue list -R FaultMaven/faultmaven --state open --label pile:ready --limit 500 --json number,title,labels,createdAt \
+    --jq 'map(select(any(.labels[]; .name == "tracking") | not))'
+  ```
+- **Every open issue outside `tracking` carries one priority label.** It is re-set by these definitions whenever the
+  item moves between piles, unless the owner set it or a ruling states it:
   - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
     normal use (a wrong result, a 5xx, lost work);
   - `P2`: any other defect reachable today;
@@ -37,6 +45,7 @@ Reviewers are independent agents: they never wrote or planned what they review.
   - it is fixed;
   - it duplicates another issue;
   - you verified its premise is dead;
+  - it is a tracker whose tracked work has all closed;
   - an owner ruling closes it.
 
   Nothing closes an issue to lower the count: not age, not a timer, not silence.
@@ -50,7 +59,7 @@ Reviewers are independent agents: they never wrote or planned what they review.
     - on the Queue (issue #1817, pinned, `tracking`): `## Round <N> — proposal`, `## Round <N> — result`,
       `## Note — <what>`;
     - on issues and PRs: `## Plan`, `## Review`, `## Delta`, `## Design critique`, `## Merge-ready`,
-      `## Evidence`.
+      `## Evidence`, `## Ruling`, `## Closed`, `## Pulled`, `## Delivered`.
   - Any comment without one is the owner speaking.
   - An answer the owner gives in session is transcribed, quoting them, under `## Owner, in session — <date>`, and is
     read as theirs.
@@ -68,11 +77,14 @@ Find the newest proposal or result on the Queue:
 
 ## 1. Settle the last round
 
-1. **Each PR the last result named** (the main-red repair too):
-   - **Merged:** its final `headRefOid` must be the head its `## Merge-ready` names. If it is not, run the
-     vouched-head check (step 4.6) from the vouched head. Code after it gets an independent review now, and what
-     that review finds is fixed in a new PR.
-   - **Still open:** read its queue state:
+1. **Each PR the last result named:**
+   - **Merged:** its final `headRefOid` must be the head its `## Merge-ready` names. If it had no merge-ready, or the
+     heads differ, an independent reviewer reviews the code that merged without a vouch. That is the code after the
+     last reviewed head, or the whole PR if it was never reviewed. File what the reviewer finds (*Filing what you
+     find*).
+   - **Open, and reported `waiting on main` or `waiting on <service>`:** while `main` is still red or the service is
+     still down, report it and stop. Otherwise take it through step 4.6.
+   - **Open after a merge-ready:** read its queue state:
 
      ```bash
      gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<n>){
@@ -80,16 +92,11 @@ Find the newest proposal or result on the Queue:
        nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'
      ```
 
-     Then:
-     - **Refresh** when any of these holds:
-       - the vouched-head check finds code after the vouched head;
-       - an owner comment follows the merge-ready (it is a fix list);
-       - the PR conflicts with `main`;
-       - it was removed from the queue (quote the `reason`);
-       - a required check is red.
-
-       To refresh: merge `main` in; have any change made (by a lane, or by you for a conflict); get an
-       independent delta (step 4.5) when code changed; re-run CI; post merge-ready again.
+     - **Refresh** it when the vouched-head check finds code after the vouched head, when an owner comment follows
+       the merge-ready (a fix list), when it conflicts with `main`, when a queue removal is dated after the newest
+       merge-ready (quote the `reason`), or when a required check is red. To refresh: merge `main` in; have any
+       change made (by a lane, or by you for a conflict); get an independent delta (step 4.5) when code changed;
+       re-run CI; post merge-ready again.
      - **In the queue at its vouched head:** leave it alone.
      - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
@@ -99,8 +106,7 @@ Find the newest proposal or result on the Queue:
    - **open, PR merged:** close it if everything it asked for is delivered; otherwise edit it down to the
      remainder, title and body;
    - **`pulled`, or PR closed unmerged:** `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what
-     stopped it — unless an owner ruling recorded since then places it;
-   - **`waiting on main` or `waiting on <service>`:** run its check again; if it still waits, report it and stop.
+     stopped it — unless an owner ruling recorded since then places it.
 
 ## 2. Propose
 
@@ -135,7 +141,7 @@ Find the newest proposal or result on the Queue:
 
 ## 3. Take the answers
 
-Record each ruling on its own issue. Then place the issue:
+Record each ruling on its own issue under `## Ruling`. Then place the issue:
 - **implies work:** ready, with the ruling as its spec and its priority;
 - **defers:** blocked, with a `condition —` line;
 - **implies none:** close it, quoting the ruling;
@@ -156,7 +162,7 @@ gh pr list -R FaultMaven/faultmaven --state all --limit 200 --search "created:>=
 
 A skipped item resumes from the newest `## Merge-ready`, `## Delta` or `## Review` naming its PR's current head,
 or from *Verify* when there is none. An item with a `## Plan — round <N>` but no PR resumes from that plan, in its
-existing worktree. When the branch exists, add the worktree without `-b`.
+existing worktree. When only the branch exists, use `git worktree add <path> fix/<n>-<slug>`.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
@@ -181,19 +187,14 @@ existing worktree. When the branch exists, add the worktree without `-b`.
    - **the decisions.** Any choice about what a user sees, overriding a documented decision, deleting data,
      changing a contract's major version, or between options of very different size is not yours: pull the item
      with the question;
-   - **a design critique,** for a plan that does any of these:
-     - changes a contract or a schema;
-     - changes what a user sees;
-     - makes a design choice a ruling left open;
-     - is estimated over 300 product lines;
-     - changes this file (always).
+   - **a design critique,** for a plan that changes a contract, a schema or what a user sees, makes a design choice
+     a ruling left open, is estimated over 300 product lines, or changes this file (always). That means one Fable
+     critique before a lane is sent: the Agent tool with `model: "fable"`, read-only, briefed to challenge the plan
+     rather than approve it. Post it as `## Design critique` with what you declined and why. A declined point about
+     a decision reserved for the owner pulls the item with that question.
 
-     That means one Fable critique before a lane is sent: the Agent tool with `model: "fable"`, read-only,
-     briefed to challenge the plan rather than approve it. Post it as `## Design critique`. Record what you
-     declined and why. A declined point about a decision reserved for the owner pulls the item with that question.
-
-   For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue, citing what
-   fixed it and the evidence. If it is alive, plan it as above.
+   For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue with a `## Closed`
+   comment citing what fixed it and the evidence. If it is alive, plan it as above.
 2. **Lane.** Send a fresh agent on your model. Use `sonnet` only for a docs-only change outside `.claude/` and
    `CLAUDE.md`. Its prompt holds the issue, the ruling, your plan, the done-when, and *Lane rules* below, verbatim.
    Run lanes in the background; plan the next item meanwhile.
@@ -218,9 +219,8 @@ existing worktree. When the branch exists, add the worktree without `-b`.
      that has live sites.
 
    Each finding is exactly one of:
-   - **fixed:** it is part of this item. It breaks the invariant; or it is a crash, wrong result or regression the
-     diff introduces on a reachable path; or it is a test or guard this PR ships that cannot fail; or it shares the
-     item's root;
+   - **fixed:** it is part of this item. It breaks the invariant; or it is a defect in code this PR adds; or it is a
+     test or guard this PR ships that cannot fail; or it shares the item's root;
    - **filed:** it is true, valid and not part of this item (*Filing what you find*, below);
    - **declined:** one line in the PR body saying why. Either it is not true (not reproduced, and not shown at
      `path:line` on `origin/main` or the PR head), or it is not valid (as defined below), or an open issue already
@@ -239,6 +239,9 @@ existing worktree. When the branch exists, add the worktree without `-b`.
      t=$(git merge-tree --write-tree <reviewed> "$(git merge-base <head> origin/main)" | head -1)
      git diff "$t" <head>
      ```
+
+     Post its verdict on the PR as `## Delta — <head>`, with the reviewed head, the reviewer and each finding's
+     landing.
 
    - **A delta with any `fixed` finding** gets one more fix and delta. A second delta with any `fixed` finding pulls
      the item. So does passing twice the size budget.
@@ -260,9 +263,9 @@ existing worktree. When the branch exists, add the worktree without `-b`.
      `completedAt` is `0001-01-01T00:00:00Z`).
    - **An outside-service outage:** wait it out (check the service's status page). If it outlasts the round,
      report the PR as `waiting on <service>`.
-   - **A failure the merge base also has:** it is `main`'s. Repair it first, as its own PR on branch
-     `fix/main-red-<short sha>` (worktree `.claude/worktrees/main-red-<short sha>`), built and reviewed like any
-     item. The PRs it blocks are reported as `waiting on main`.
+   - **A failure the merge base also has:** it is `main`'s. File it as a `P1` issue, `main red: <check> at <sha>`,
+     and build it as an item of this round in the next free lane, reviewed like any item. The PRs it blocks are
+     reported as `waiting on main`.
 
    **The vouched-head check.** The head you vouch for must be the last reviewed head (the head named in the last
    `## Review` or `## Delta`), plus only clean merges of `main` and commits that change no file. Only the word
@@ -281,30 +284,28 @@ existing worktree. When the branch exists, add the worktree without `-b`.
    echo clean
    ```
 
-   A PR is merge-ready only when all of these hold on its final head:
-   - every lane on it has ended, so nothing pushes after you vouch;
-   - the adversarial review and every delta are clean, with every finding landed as fixed, filed or declined;
-   - the vouched-head check prints `clean`;
-   - every required check is green;
-   - you have re-run the verification.
-
-   Then comment `## Merge-ready — <head>` with:
-   - the base and the plan link;
-   - the design critique, if the plan had one, and the points you declined;
-   - the review (its level) and each delta (its range and its reviewer);
-   - the findings fixed, filed and declined;
-   - the commands you re-ran, with their tail output;
-   - the checks.
+   A PR is merge-ready only when, on its final head: every lane on it has ended, so nothing pushes after you vouch;
+   the review and every delta are clean, with every finding landed; the vouched-head check prints `clean`; every
+   required check is green; and you have re-run the verification. Then comment `## Merge-ready — <head>` with the
+   base, the plan link, the design critique and its declined points, the review level, each delta's range and
+   reviewer, the findings fixed, filed and declined, the commands you re-ran with their tail output, and the checks.
 
 To **pull** an item:
 1. stop its lane;
-2. close its PR, with a comment saying why. On a PR shared with other items, have the lane take the item's part
-   out instead, and remove its `Closes`/`Refs` line from the PR body (`gh api -X PATCH`, read back). Then check
-   that nothing else can close it: `git log --format=%B origin/main..<head>` and the PR title must not name
-   `#<pulled>`. A commit that names it pulls the whole PR;
-3. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the options.
+2. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the options.
    For size or a deep root, the options are: build at the new estimate, mitigate now with the root as its own P1,
    or drop;
+3. close its PR with a `## Pulled` comment saying why. On a PR shared with other items, have the lane take the
+   item's part out instead, and remove its `Closes`/`Refs` line from the PR body (`gh api -X PATCH`, read back).
+   Then check that no closing keyword names it, which this must print `none` for:
+
+   ```bash
+   re='\b(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#<pulled>\b'
+   { git log --format=%B origin/main..<head>; gh pr view <n> --json title,body --jq '.title, .body'; } \
+     | grep -iqE "$re" && echo named || echo none
+   ```
+
+   A commit message that names it pulls the whole PR;
 4. carry on with the others.
 
 **Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
@@ -338,24 +339,22 @@ Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
 
-Every report states those four numbers and lists every issue filed. A main-red repair gets a row of its own. Then
-stop: the round ends when the owner merges.
+Every report states those four numbers and lists every issue filed. Then stop: the round ends when the owner merges.
 
 ## Lane rules (sent verbatim)
 
 - **Implement the plan; do not re-plan.** Where the code disagrees with the plan, stop and report what you found.
-- **Worktree:** `git fetch origin main`, then
-  `git worktree add -b fix/<n>-<slug> /home/swhouse/product/faultmaven/.claude/worktrees/<n> origin/main`. If the
-  branch already exists, add the worktree without `-b`.
-  Never work in the main checkout. Never delete `./data` there: it is the live stack's database.
+- **Worktree** (`W=/home/swhouse/product/faultmaven/.claude/worktrees/<n>`): `git fetch origin main`, then
+  `git worktree add -b fix/<n>-<slug> $W origin/main`. If `$W` exists, work in it; if only the branch exists,
+  `git worktree add $W fix/<n>-<slug>`. Never work in the main checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
   the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
   moved. Not the whole suite: CI runs it.
 - **Tests** reproduce the defect and assert behaviour. No wall-clock thresholds, and no repo-scanning guard unless
   the plan names one. Keep within the plan's size budget, and say so if you cannot.
 - **Closing keywords go in the PR body only**, never in the title or a commit message. The body says `Closes #<n>`
-  only when the issue as written is delivered. Otherwise it says `Refs #<n>`, and you comment on the issue naming
-  what was delivered.
+  only when the issue as written is delivered. Otherwise it says `Refs #<n>`, and you comment on the issue, under
+  `## Delivered`, naming what was delivered.
 - **Return:** the PR URL, each command with its tail output, `git status --short`, every departure from the
   plan, and anything outside the plan you found, with its evidence. You do not file it; the owning agent does.
 
@@ -364,8 +363,8 @@ stop: the round ends when the owner merges.
 - **Never merge.** Adding a PR to the merge queue is merging. The owner may authorize merging for the current
   session only, in as many words, and the authorization never carries over.
 - **File what is true and valid and not part of the item. Never fix a symptom and file its root.**
-- **Issue and PR writes besides filing:** plans, evidence, rulings, labels, `**Blocked on:**` lines, edit-downs, and
-  the closes *State* allows (fixed, duplicate, dead premise, owner ruling). Each comment carries its heading.
+- **Write to issues and PRs only what these steps call for.** Every comment carries its heading (*State*). Close an
+  issue only for a reason *State* allows.
 - **Never ask mid-build:** pull the item instead. Never build an item with an open question.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
 - **Never review your own work:** the review, every delta and every design critique come from an agent that did not
