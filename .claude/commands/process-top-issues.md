@@ -5,15 +5,20 @@ description: Run one round of issue processing — settle the last round, propos
 # /process-top-issues
 
 **Purpose:** bring the open-issue count down, keep `main` green, and keep each fix no larger than the defect needs.
-This file is self-contained. Only the owner changes it, and a new rule **replaces** an old one, so it does not
-grow. Memory notes point here and never restate it; where they disagree, this file wins.
+The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you hand over must have
+been through the full review chain in step 4.
 
-**Roles.** The owner rules on questions, approves rounds, and merges. You (the owning
-agent) propose, plan, verify, review and report. Lanes (subagents) each implement one plan you wrote, in their own
-worktree; at most three run at once.
+This file is self-contained. Memory notes point here and never restate it; where they disagree, this file wins.
+**Changing this file:**
+- you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the owner merges it;
+- an edit replaces or tightens an existing rule where it can, and the file stays under 350 lines.
+
+**Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
+and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
+Reviewers are independent agents: they never wrote or planned what they review.
 
 `$ARGUMENTS`: empty = continue from wherever the round is; numbers = pin those issues into the next proposal;
-`propose` / `build` = force that step.
+`propose` = post a fresh proposal even if one is outstanding.
 
 ## State
 
@@ -31,8 +36,8 @@ worktree; at most three run at once.
   line whenever an item becomes a ready `P3`, by whatever step, and when an older ready `P3` has none.
 - **A blocked item's body** has one line in one of these forms:
   - `**Blocked on:** #N …`;
-  - `**Blocked on:** an owner ruling on …` (also used for a pull, a PR closed unmerged, or an item over its size
-    budget, with the question that settles it);
+  - `**Blocked on:** an owner ruling on …` (also used for a pull and a PR closed unmerged, with the question that
+    settles it);
   - `**Blocked on:** condition — <a check you can run>` (a future event too, e.g. "redis-py ≥ 8 is pinned").
 - **The Queue** is issue #1817 (pinned, `tracking`). Write your comments there under exactly one of these
   headings: `## Round <N> — proposal`, `## Round <N> — result`, `## Note — <what>`. Any other comment is the owner
@@ -46,17 +51,24 @@ Find the newest proposal or result on the Queue:
 |---|---|
 | none or a result | step 1 |
 | a proposal with an owner comment after it | step 3 |
-| a proposal, no owner comment, but a lane PR for one of its items opened after it | approved out of band: post a `## Note`, then step 4 |
+| a proposal, no owner comment, but a lane PR (branch `fix/<n>-<slug>`, *Lane rules*) for one of its items opened after it | approved out of band: post a `## Note`, then step 4 |
 | a proposal, no owner comment, no lane PR | stop and say what it waits for; do not re-propose |
 
 ## 1. Settle the last round
 
-1. **The last result's PRs.** For each PR it named that is still open and not in the merge queue:
-   - refresh it if it conflicts, was dequeued, or has a red required check: merge `main` in, re-run CI, and delta
-     any code change (step 4.5);
-   - pull it if it cannot be refreshed (step 4's *pull*, which closes the PR).
+1. **Each PR the last result named that is still open:**
+   - **The vouched-head check (step 4.6)** runs from the head its newest `## Merge-ready` comment names. A head that
+     moved by anything but clean merges of `main` is a code change.
+   - **An owner comment on the PR after that merge-ready comment** is a fix list.
+   - **Refresh** on a code change, a fix list, a conflict, a dequeue or a red required check:
+     1. merge `main` in;
+     2. have the change made: by a lane, or by you for a conflict;
+     3. get an independent delta (step 4.5) against the invariant and the reviewed head's diff;
+     4. re-run CI and post merge-ready again.
+   - **In the merge queue at its vouched head:** leave it alone.
+   - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
-   If any is still open after that, report it and stop.
+   If any is still open and not in the merge queue after that, report it and stop.
 2. **Each issue row**, taking the first that matches:
    - **closed:** nothing to do;
    - **open, PR merged:** close it if everything it asked for is delivered; otherwise edit it down to the
@@ -72,8 +84,12 @@ Find the newest proposal or result on the Queue:
    - Run each condition you can, and move items whose condition holds; list the ones you cannot run as
      `not checked: needs <what>`.
    - Close a tracker whose tracked work has all closed.
-2. **Expire.** Close, as not planned, each ready `P3` past its `**Expires:**` date with no owner comment since it
-   was labelled. Comment: `Expired: P3, 30 days (/process-top-issues). Reopen with a reason.`
+2. **Expire.** Close, as not planned, each ready `P3` that meets all three:
+   - it is past its `**Expires:**` date;
+   - an earlier proposal listed it under *expiring before the next*;
+   - the owner has not commented on it since it was labelled.
+
+   Comment: `Expired: P3, 30 days (/process-top-issues). Reopen with a reason.`
 3. **Pick.**
    - From `pile:ready` only: `P1` before `P2`, oldest first within each. Reserve one slot for the oldest `P2` that
      has waited over 30 days. `P3` only when the owner pins it.
@@ -122,8 +138,10 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`:
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating
      shows the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this
-     PR fixes it. Never fix a symptom and file its root. A root that needs a ruling or will not fit the size
-     budget pulls the item with that question;
+     PR fixes it. Never fix a symptom and file its root.
+     - A root that needs a ruling, or will not fit the size budget, pulls the item with that question.
+     - The question's options include "mitigate the symptom now, with the root as its own P1". Only the owner may
+       choose that option;
    - **the change,** and what is out of scope;
    - **N,** for a duplicated rule, with the scan that counted it. You run the scan for the plan; it is not
      committed as a test (below);
@@ -139,21 +157,39 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
      a lane;
    - **the decisions.** Any choice about what a user sees, overriding a documented decision, deleting data,
      changing a contract's major version, or between options of very different size is not yours: pull the item
-     with the question.
+     with the question;
+   - **a design critique,** for a plan that does any of these:
+     - changes a contract or a schema;
+     - changes what a user sees;
+     - makes a design choice a ruling left open;
+     - is estimated over 300 product lines;
+     - changes this file (always).
+
+     That means one Fable critique before a lane is sent: the Agent tool with `model: "fable"`, read-only,
+     briefed to challenge the plan rather than approve it. Apply what holds, and record on the plan what you
+     declined and why. A declined point about a decision reserved for the owner (the bullet above) pulls the item
+     with that question instead.
 
    For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue, citing what
    fixed it and the evidence. If it is alive, plan it as above.
-2. **Lane.** Send a fresh agent on your model, or `sonnet` for a docs-only change. Its prompt holds the issue, the
-   ruling, your plan, the done-when, and *Lane rules* below, verbatim. Run lanes in the background; plan the next
-   item meanwhile.
-3. **Verify.** Re-run the lane's test command from its worktree, and confirm its head is the PR's head. Read the
-   whole diff against the plan. A hunk the plan does not cover goes back to the lane once.
-4. **Review once.** Brief the review with the invariant and the done-when, and start the CI watch in the
-   background at the same time.
-   - **Runtime PRs: `/code-review xhigh <pr>`.** These are PRs that change what runs in a deployment or a
-     pipeline: `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `pyproject.toml`, `Dockerfile`,
-     `docker-compose*`, `.github/workflows/`, `.github/scripts/`, `.importlinter`, `pytest.ini`, or `scripts/` that CI
-     or CD runs.
+2. **Lane.** Send a fresh agent on your model. Use `sonnet` only for a docs-only change outside `.claude/` and
+   `CLAUDE.md`. Its prompt holds the issue, the ruling, your plan, the done-when, and *Lane rules* below, verbatim.
+   Run lanes in the background; plan the next item meanwhile.
+3. **Verify.**
+   - Bring the head up to `origin/main` first: merge it in, and send a conflict back to the lane. If `main` has
+     moved since you planned, re-run the plan's consumer and N searches.
+   - Re-run the lane's test command from its worktree, and confirm its head is the PR's head.
+   - Read the whole diff against the plan. A hunk the plan does not cover goes back to the lane once.
+4. **Adversarial review.** The reviewer is independent: `/code-review`, running in its own context. Brief it to
+   break the PR, not to approve it: the invariant, the done-when, the riskiest ways the change could be wrong, and
+   what must not change. Your own diff read in *Verify* is quality control, not this review. Start the CI watch in
+   the background at the same time.
+   - **Runtime PRs: `/code-review xhigh <pr>`.** These are PRs that change what runs in a deployment, a pipeline
+     or an agent:
+     - `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `pyproject.toml`;
+     - `Dockerfile`, `docker-compose*`;
+     - `.github/workflows/`, `.github/scripts/`, `.importlinter`, `pytest.ini`, and `scripts/` that CI or CD runs;
+     - `.claude/` and any `CLAUDE.md`.
    - **Every other PR: `/code-review high <pr>`.**
    - **A mixed PR** takes the higher level.
    - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
@@ -164,17 +200,20 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
      diff introduces on a reachable path, or it shares the item's root;
    - **filed:** it is true, valid and not part of this item (*Filing what you find*, below);
    - **declined:** one line in the PR body saying why. Either it is not true (it did not reproduce), or it is not
-     valid (a style preference, a simplification that changes no outcome, a shape nothing can reach), or an open
-     issue already covers it (add the evidence there).
+     valid (as defined below), or an open issue already covers it (add the evidence there).
 
-   Post the verdict on the PR as `## Review — <head>`, with the fix list and the issues filed.
-5. **Fix once.** The fix list goes to the same lane (`SendMessage`), as one commit. If the fix redesigns a
-   mechanism, probe the new design first, as in the plan. Then review only the fix commits against the fix list
-   (the delta):
-   - read them yourself when they are small;
-   - otherwise send one reviewer, briefed with the commit range, never the PR number.
-
-   If the fix breaks the invariant, or the item passes twice its size budget, pull it.
+   Post the verdict on the PR as `## Review — <head>`, with the fix list and the issues filed. A review or delta is
+   **clean** when no `fixed` landing is outstanding.
+5. **Fix and delta.** The fix list goes to the same lane (`SendMessage`) as one commit. If the fix redesigns a
+   mechanism, probe the new design first, as in the plan.
+   - **The delta.** An independent reviewer reviews the fix commits against the fix list and the invariant. Brief
+     it with the commit range, never the PR number, which would re-review the whole PR. The author of the commits
+     never reads its own delta. You may read a delta yourself only when a lane wrote it and it changes tests or
+     docs alone, outside `.claude/` and `CLAUDE.md`.
+   - **A delta with any `fixed` finding** gets one more fix and delta. A second delta with any `fixed` finding pulls
+     the item. So does passing twice the size budget.
+   - **Any code commit after the reviewed head gets a delta before merge-ready.** That covers fixes, conflict
+     resolutions and changes the owner asks for (step 1). A clean merge of `main` needs only CI.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
 
    ```bash
@@ -195,22 +234,57 @@ gh pr list -R FaultMaven/faultmaven --state all --search "created:>=<this propos
    In-progress checks read `PENDING`; sort by `startedAt`, because a running check's `completedAt` is
    `0001-01-01T00:00:00Z`, not empty.
 
-   Then comment `## Merge-ready — <head>`: the base, the plan link, the review (1 round + delta, k declined), the
-   commands you re-ran with their tail output, and the checks.
+   **The vouched-head check.** The head you vouch for must be the last reviewed head (the head named in the last
+   `## Review` or delta), plus only clean merges of `main` and commits that change no file. Only the word `clean`
+   passes; anything else is a code change, and gets a delta first:
+
+   ```bash
+   git fetch -q origin main
+   git merge-base --is-ancestor <reviewed> <head> 2>/dev/null || { echo "code: <reviewed> is not an ancestor of <head>"; exit 1; }
+   for c in $(git rev-list --first-parent <reviewed>..<head>); do
+     set -- $(git rev-list --parents -n1 "$c")
+     if [ $# -eq 2 ]; then [ "$(git rev-parse "$c^{tree}")" = "$(git rev-parse "$2^{tree}")" ] || { echo "code: $c"; exit 1; }; continue; fi
+     [ $# -eq 3 ] && git merge-base --is-ancestor "$3" origin/main \
+       && t=$(git merge-tree --write-tree "$2" "$3") && [ "$(printf '%s\n' "$t" | head -1)" = "$(git rev-parse "$c^{tree}")" ] \
+       || { echo "code: $c"; exit 1; }
+   done
+   echo clean
+   ```
+
+   A PR is merge-ready only when all of these hold on its final head:
+   - the adversarial review and every delta are clean, with every finding landed as fixed, filed or declined;
+   - the vouched-head check prints `clean`;
+   - every required check is green;
+   - you have re-run the verification.
+
+   Then comment `## Merge-ready — <head>` with:
+   - the base and the plan link;
+   - the design critique, if the plan had one, and the points you declined;
+   - the review (its level) and each delta (its range and its reviewer);
+   - the findings fixed, filed and declined;
+   - the commands you re-ran, with their tail output;
+   - the checks.
 
 To **pull** an item:
 1. stop its lane;
 2. close its PR, with a comment saying why. On a PR shared with other items, have the lane take the item's part
    out instead, and remove its `Closes`/`Refs` line from the PR body (`gh api -X PATCH`, read back), so the merge
    cannot close it;
-3. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the choice
-   (for size: the new estimate, build or drop);
+3. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the options.
+   For size or a deep root, the options are: build at the new estimate, mitigate now with the root as its own P1,
+   or drop;
 4. carry on with the others.
 
 **Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
 - **File it** when it is:
   - **true:** reproduced, or shown at `path:line` on `origin/main`;
-  - **valid:** a defect, gap or open decision that a user, an operator or a later change can actually meet;
+  - **valid:** any one of these:
+    - it would be `P1` or `P2` by *State*;
+    - it is a `P3` with a named trigger, written as a `condition —` line: the dependency bump, the client or the
+      configuration that would make it reachable;
+    - it hides a failure, such as a test that never runs or a check that cannot fail.
+
+    A shape nothing can reach, which no named event would make reachable, is not valid;
   - **not part of the item:** a different root.
 
   File it as you find it, with `Found while working on #<n>`, the evidence, a pile, a priority and, for a ready
@@ -260,5 +334,7 @@ Every report states those four numbers and lists every issue filed. Then stop: t
   closes.
 - **Never ask mid-build:** pull the item instead. Never build an item with an open question.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
+- **Never review your own work:** the review, every delta and every design critique come from an agent that did not
+  write or plan what it reads.
 - **Never file or relay a finding you have not verified:** reproduced, or shown at `path:line` on `origin/main`.
 - **Never poll CI in the foreground,** and never from a lane or a review.
