@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.core.investigation.causal_graph.pruning import prune_abandoned_nodes
 from faultmaven.infrastructure.persistence.database import (
     close_database,
     get_db_session,
@@ -31,6 +32,11 @@ from faultmaven.infrastructure.persistence.database import (
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
+    CausalEdge,
+    CausalNode,
+    NodeType,
+)
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
@@ -61,6 +67,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
+    RepositoryException,
     SQLiteCaseRepository,
 )
 from tests.utils import seed_enterprises, seed_users
@@ -971,3 +978,103 @@ async def test_superseded_offer_stamps_round_trip(db_repository: SQLiteCaseRepos
     standing = by_desc["the standing fix"]
     assert standing.state == "pending"
     assert standing.superseded_reason is None
+
+
+def _causal_case() -> Case:
+    return Case(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="hypothesis-test-user",
+        enterprise_id="hypothesis-test-enterprise",
+        title="Re-root prunes a solution's node",
+        description="Connection pool exhausted under load",
+        state=CaseState.INVESTIGATING,
+        current_turn=7,
+        inquiry=InquiryData(
+            proposed_problem_statement="Checkout returns 500s",
+            problem_statement_confirmed=True,
+        ),
+    )
+
+
+def _solution_on(node_id: str) -> Solution:
+    return Solution(
+        solution_type=SolutionType.WORKAROUND,
+        title="Recycle the pool",
+        immediate_action="Restart the pool to release leaked connections",
+        node_id=node_id,
+    )
+
+
+def _node(statement: str, node_type: NodeType) -> CausalNode:
+    return CausalNode(statement=statement, node_type=node_type, generated_at_turn=3)
+
+
+def _edge(cause: CausalNode, effect: CausalNode) -> CausalEdge:
+    return CausalEdge(
+        cause_node_id=cause.node_id, effect_node_id=effect.node_id, created_at_turn=3
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_reroot_that_prunes_a_solutions_node_saves_2071(
+    db_repository: SQLiteCaseRepository,
+):
+    """#2071: a turn that re-roots a hypothesis away from a node a solution
+    acts on saves. The prune drops the node; the save deletes its row
+    (``_reconcile_causal_graph``) and then upserts the solutions, so a solution
+    still carrying the pruned id failed the ``solutions.node_id`` FK and rolled
+    the turn back (sim ``case_9ada62991d31`` turn 7, HTTP 500). Both write paths
+    are covered: S1 stored in an earlier turn (the ON CONFLICT update) and S2
+    new this turn (the INSERT)."""
+    # Positive control: this engine enforces the FK, so the regression below
+    # cannot pass vacuously.
+    control = _causal_case()
+    control.solutions = [_solution_on("cn_000000000000")]
+    with pytest.raises(RepositoryException, match="FOREIGN KEY constraint failed"):
+        await db_repository.save(control)
+
+    # An earlier turn: the hypothesis holds R -> I -> D; S1 acts on R.
+    case = _causal_case()
+    d = _node("Checkout returns 500s", NodeType.PROBLEM)
+    r = _node("a deploy dropped the connection release", NodeType.ROOT)
+    i = _node("connections are acquired but never released", NodeType.INTERMEDIATE)
+    case.causal_nodes = {n.node_id: n for n in (d, r, i)}
+    case.causal_edges = [_edge(r, i), _edge(i, d)]
+    hyp = Hypothesis(
+        statement="A deploy dropped the connection release",
+        category=HypothesisCategory.CODE,
+        state=HypothesisState.VALIDATED,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        rationale="pool exhaustion began with the deploy",
+        generated_at_turn=3,
+        root_node_id=r.node_id,
+        path=[r.node_id, i.node_id, d.node_id],
+    )
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    s1 = _solution_on(r.node_id)
+    case.solutions = [s1]
+    await db_repository.save(case)
+
+    # Turn 7: a NEW solution S2 on R, then the hypothesis re-roots onto
+    # N -> I -> D, which no longer holds R, and the abandoned chain is pruned.
+    turn = await db_repository.get(case.case_id)
+    s2 = _solution_on(r.node_id)
+    turn.solutions.append(s2)
+    n = _node("the review gate skips the release path", NodeType.ROOT)
+    turn.causal_nodes[n.node_id] = n
+    turn.causal_edges.append(_edge(n, i))
+    moved = turn.hypotheses[hyp.hypothesis_id]
+    old_path = list(moved.path)
+    moved.root_node_id = n.node_id
+    moved.path = [n.node_id, i.node_id, d.node_id]
+    prune_abandoned_nodes(turn, old_path)
+
+    await db_repository.save(turn)
+
+    final = await db_repository.get(case.case_id)
+    assert r.node_id not in final.causal_nodes
+    assert final.hypotheses[hyp.hypothesis_id].path == moved.path
+    by_id = {s.solution_id: s for s in final.solutions}
+    assert by_id[s1.solution_id].node_id is None
+    assert by_id[s2.solution_id].node_id is None

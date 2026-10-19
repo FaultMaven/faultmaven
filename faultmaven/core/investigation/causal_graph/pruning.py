@@ -34,8 +34,13 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
     PROBLEM node D is never collected (it anchors every chain). Edges are pruned
     to those whose endpoints both survive, so a surviving node's connectivity is
     never severed. No-op for any node still load-bearing for another hypothesis.
+
+    A solution acting on a dropped node has its ``node_id`` cleared: the store's
+    ``ON DELETE SET NULL`` on ``solutions.node_id``, applied in memory, so the
+    save never writes back an id whose row it has just deleted (#2071).
     """
     referenced = _referenced_node_ids(case)
+    pruned: set[str] = set()
     for node_id in abandoned_node_ids:
         node = case.causal_nodes.get(node_id)
         if node is None or node.node_type == NodeType.PROBLEM:
@@ -43,6 +48,10 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
         if node_id in referenced:
             continue  # still load-bearing for some hypothesis
         case.causal_nodes.pop(node_id, None)
+        pruned.add(node_id)
+    for solution in case.solutions:
+        if solution.node_id in pruned:
+            solution.node_id = None
     case.causal_edges[:] = [
         e
         for e in case.causal_edges
