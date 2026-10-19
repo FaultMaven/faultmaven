@@ -360,8 +360,7 @@ def suggestion_is_live(
     # Nothing is lost: the follow-ups a terminal turn itself emits
     # (regenerate summary, generate runbook) carry no ``intent``, so
     # ``_stored_suggestions`` never stores them and there is no terminal
-    # affordance for the resolver to match. Pinned by
-    # ``test_every_intent_bearing_follow_up_belongs_to_a_gate``.
+    # affordance for the resolver to match.
     if case_is_terminal:
         return False
 

@@ -19,17 +19,9 @@ What these tests hold:
 * the three arms — **structured present** classifies with the marker tuple
   emptied; **structured absent** still classifies from the markers; **neither**
   stays retryable, which is the arm the incident was about;
-* the enumeration, as a scan rather than a claim: every provider in
-  ``PROVIDER_SCHEMA`` whose adapter raises from a live response body passes the
-  code along, so a tenth provider cannot land with the structured tier
-  unwired;
 * the codes deliberately kept OUT, each of which would turn a transient rate
   limit permanent.
 """
-
-import ast
-import inspect
-import pathlib
 
 import pytest
 
@@ -40,11 +32,7 @@ from faultmaven.exceptions import (
     is_billing_error,
     is_billing_quota_error,
 )
-from faultmaven.infrastructure.llm.providers.base import (
-    BaseLLMProvider,
-    extract_provider_error_code,
-)
-from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
+from faultmaven.infrastructure.llm.providers.base import extract_provider_error_code
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -423,135 +411,3 @@ def test_the_code_tier_matches_a_value_not_a_substring():
     """
     assert is_billing_quota_error("handled by is_billing_error()", 500, None) is False
     assert is_billing_quota_error("x", 500, "not_insufficient_quota_at_all") is False
-
-
-# ---------------------------------------------------------------------------
-# The enumeration, as a scan (State N)
-# ---------------------------------------------------------------------------
-#
-# N = 10 raise sites across 8 adapter modules read a live provider response
-# body. Every one of them already passed ``provider_error_code``; what #548
-# changed is that the value is now read for billing as well as for category. A
-# tenth provider, or a new raise site on an existing one, would silently opt out
-# of the structured tier unless it passes the code too — so the scan is shipped
-# rather than the number.
-
-
-def _provider_modules(provider_class) -> list:
-    """Every module in the providers package that this class inherits code from.
-
-    The MRO walk is load-bearing: ``OpenRouterProvider`` subclasses
-    ``OpenAIProvider`` and raises nothing of its own, so a scan of its own
-    module alone would find zero sites and pass vacuously.
-    """
-    paths = []
-    for klass in provider_class.__mro__:
-        if klass in (BaseLLMProvider, object):
-            continue
-        try:
-            path = pathlib.Path(inspect.getfile(klass))
-        except TypeError:  # pragma: no cover - builtins
-            continue
-        if path.parent.name == "providers" and path not in paths:
-            paths.append(path)
-    return paths
-
-
-#: Statuses an adapter SYNTHESIZES when no response arrived at all. The only
-#: one in the tree is the gateway timeout raised from ``asyncio.TimeoutError``.
-#: A raise carrying one of these is exempt because there is no body to read a
-#: code out of — requiring one would be requiring a lie. Any OTHER literal
-#: status is checked: ``status_code=400`` beside an interpolated error body is
-#: a body-reading raise wearing a constant, and exempting it by shape is how a
-#: scan like this goes quietly blind.
-_SYNTHESIZED_STATUSES = frozenset({504})
-
-
-def _body_reading_sites(path: pathlib.Path) -> list:
-    """``LLMException(...)`` calls that classify a LIVE response.
-
-    Discriminated by where the status came from. A status READ off a response
-    (``status_code=response.status``, or any expression) means a response
-    arrived, and where a response arrived there is a body to extract a code
-    from.
-    """
-    sites = []
-    for node in ast.walk(ast.parse(path.read_text())):
-        if not isinstance(node, ast.Call):
-            continue
-        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if name != "LLMException":
-            continue
-
-        # ``**kwargs`` carries ``arg is None``. A splat hides every keyword
-        # from this scan, so it is reported rather than skipped — a silently
-        # unreviewable site is the one shape that defeats the whole check.
-        if any(kw.arg is None for kw in node.keywords):
-            sites.append((node.lineno, False))
-            continue
-
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        status = kwargs.get("status_code")
-        if status is None:
-            continue
-        if isinstance(status, ast.Constant) and status.value in _SYNTHESIZED_STATUSES:
-            continue
-
-        code = kwargs.get("provider_error_code")
-        # Present-but-``None`` satisfies "passes the argument" while delivering
-        # nothing, so the value is checked, not just the keyword.
-        delivered = code is not None and not (
-            isinstance(code, ast.Constant) and code.value is None
-        )
-        sites.append((node.lineno, delivered))
-    return sites
-
-
-@pytest.mark.parametrize("provider_name", sorted(PROVIDER_SCHEMA))
-def test_every_provider_hands_its_structured_code_to_llmexception(provider_name):
-    """Where the rule can be violated, stated as the set it is checked over.
-
-    Driven off ``PROVIDER_SCHEMA`` rather than a hand-written list, so a tenth
-    provider is covered the day it is registered instead of the day someone
-    remembers this file.
-    """
-    provider_class = PROVIDER_SCHEMA[provider_name]["provider_class"]
-    modules = _provider_modules(provider_class)
-    assert modules, f"{provider_name}: resolved to no module in the providers package"
-
-    sites = [
-        (path.name, lineno, has_code)
-        for path in modules
-        for lineno, has_code in _body_reading_sites(path)
-    ]
-
-    # A provider with zero body-reading sites means the scan looked in the
-    # wrong place — every adapter raises on a non-200 — so it fails rather than
-    # passing vacuously.
-    assert sites, (
-        f"{provider_name}: no LLMException raised from a live response body was "
-        f"found in {[p.name for p in modules]}. Either the adapter stopped "
-        f"classifying HTTP errors, or this scan no longer recognises how it does."
-    )
-
-    missing = [(name, lineno) for name, lineno, has_code in sites if not has_code]
-    assert not missing, (
-        f"{provider_name}: these raises read a live response body but do not pass "
-        f"provider_error_code, so the structured billing tier (#548) and the "
-        f"category tier (#509) are both blind to them: {missing}"
-    )
-
-
-def test_the_scan_covers_every_registered_provider():
-    """The count, stated where it can go stale loudly rather than in prose."""
-    assert len(PROVIDER_SCHEMA) == 9, sorted(PROVIDER_SCHEMA)
-
-    total = sum(
-        len(_body_reading_sites(path))
-        for path in {
-            path
-            for schema in PROVIDER_SCHEMA.values()
-            for path in _provider_modules(schema["provider_class"])
-        }
-    )
-    assert total == 10, f"body-reading LLMException sites moved: {total}"

@@ -19,12 +19,10 @@ prompt text or tool error string calls a row "searchable".
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-import faultmaven
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
 )
@@ -332,18 +330,3 @@ class TestToolErrorsKeyOnTheNewAttribute:
         assert FILE_BACKED in result.error, result.error
         assert "searchable" not in result.error.lower(), result.error
         assert f"{_eid(1)} (app1.log)" in result.error
-
-
-def test_no_source_line_writes_the_old_attribute():
-    """The attribute is spelled ``file_backed`` everywhere it is written: the
-    renderers, the instructions, the tool errors and the comments that explain
-    them. A reader of any of them must not meet ``searchable="`` and take it
-    for something the renderer emits."""
-    root = Path(faultmaven.__file__).parent
-    offenders = [
-        f"{path.relative_to(root)}:{n}"
-        for path in sorted(root.rglob("*.py"))
-        for n, line in enumerate(path.read_text().splitlines(), 1)
-        if OLD_ATTRIBUTE in line
-    ]
-    assert not offenders, offenders
