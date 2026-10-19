@@ -18,7 +18,7 @@
     {
       "id": "recurring-docs-change",
       "changed": [
-        "docs/development/issue-processing.md",
+        "docs/archive/2026/10/issue-processing.md",
         ".claude/commands/process-top-issues.md"
       ],
       "expected": "true",
@@ -182,7 +182,7 @@
     }
   ],
   "paths": {
-    "docs_only_diff": "docs/development/issue-processing.md",
+    "docs_only_diff": "docs/archive/2026/10/issue-processing.md",
     "arbitrary_docs_file": "docs/x.md",
     "bare_docs_literal": "docs",
     "unpinned_docs_subtree_doc": "docs/development/anything.md",

@@ -1,1069 +1,173 @@
 ---
-description: Run one round of issue processing — settle what the last round left, propose a round of items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
+description: Run one round of issue processing — settle the last round, propose items and the questions blocking others, build what is approved, report. Opens PRs; never merges; files an issue only on the owner's yes.
 ---
 
 # /process-top-issues
 
-One round of `docs/development/issue-processing.md`. Read that document
-first; this file is its runnable form and does not restate its reasoning.
+**Purpose:** bring the open-issue count down, keep `main` green, and keep each fix no larger than the defect needs.
+This file is self-contained. Only the owner changes it, and a new rule **replaces** an old one, so it does not
+grow. Memory notes point here and never restate it; where they disagree, this file wins.
 
-You are the **owning agent**. You propose, investigate, plan, dispatch,
-verify, review and report — the thinking about every item, and the verdict
-on it, are yours. Subagents — **lanes** — each implement one plan you
-wrote. Nobody merges.
+**Roles.** The owner rules on questions, approves rounds, decides what gets filed, and merges. You (the owning
+agent) propose, plan, verify, review and report. Lanes (subagents) each implement one plan you wrote, in their own
+worktree; at most three run at once.
 
-The round's shape, and the reason for it: **every question is asked before
-the work starts, never during it.** A round touches the owner twice —
-answers to the calls only a person can make, then merges that need no
-review — beside one standing action outside it, the *yours* pile. The rest
-is autonomous, and its quality is yours: every pull request you hand over
-is **merge-ready**, reviewed, green and checked against its plan, so the
-owner merges it without reading the diff.
+`$ARGUMENTS`: empty = continue from wherever the round is; numbers = pin those issues into the next proposal;
+`propose` / `build` = force that step.
 
-## Argument
+## State
 
-`$ARGUMENTS` — optional, and usually unnecessary. **Bare invocation is
-always correct**: step 0 reads where the round has got to and continues from
-there, so the operator never has to know.
-
-- empty — continue from wherever the round is.
-- a list of numbers (`1452 1447`) — **pin** these into the next round
-  whatever their rank; the ranking fills the rest of the capacity. A pinned
-  item that needs a ruling is reported as blocked rather than built.
-- `propose` — force a fresh proposal even if one is outstanding.
-- `build` — force the building step.
-
-## The piles are labels
-
-An issue's pile is a **label on that issue**, not a list in a shared blob:
-
-| label | pile |
-|---|---|
-| `pile:ready` | the answer is known; it needs work, not a call |
-| `pile:blocked` | needs an owner ruling, waits on an issue or a condition, or a lane stopped on it |
-| `pile:yours` | only the owner can run it — live deployment, credentials |
-| `tracking` | **in no pile** — the `Queue`, a campaign tracker, a document refined each round |
-
-Create any that is missing before you use one; `gh issue edit` fails the
-**whole** edit on a label the repository does not have.
-
-**`tracking` takes an issue out of every pile, whatever `pile:` label it also
-carries.** A tracker is not work a lane can be dispatched against, so in ready
-it would be counted in the rule-4 tier and named as the reserved slot's buy;
-and bare it would read as an unsorted arrival, which step 2 sorts straight
-back into ready (#819 carried `tracking` and `pile:ready` both; #1499 sat in
-ready untagged). So the ready query below excludes it, step 2 does not sort
-it, and a `pile:` label on it is a leftover to remove — the metrics name any
-under *Tracking, but carrying a `pile:` label*. Moving an issue **into**
-tracking is the same two edits as any move, add first: `--add-label
-tracking`, then `--remove-label pile:<whichever>`; the intermediate is a
-tracker with a leftover, which nothing dispatches. **Out of it**: a tracker
-closes when what it tracks is done — whoever closes the last of it closes the
-tracker too — and one that turns out to be work gets a pile and loses the
-label, again add first. The metrics list every open tracker each run, so the
-label cannot quietly take real work out of every pile.
-
-Three rules when you apply `pile:blocked`, the first and last from a pile
-that held at 12 for six rounds and then lost ten of twelve in one reading:
-
-- **Say what it is blocked ON, in the issue BODY, in one form**, as you
-  label it. "Needs an owner ruling", "needs #N to land" and "waits until
-  something is observed" look identical in a label and only the first is
-  owner latency (#1513 was miscounted for six rounds; #673 was counted as a
-  ruling nobody owed). One line, the reference — or the word `condition` —
-  first:
-
-  ```
-  **Blocked on:** #1294 — the arithmetic moves when that ladder splits.
-  **Blocked on:** an owner ruling on which axis owns the degrade policy.
-  **Blocked on:** condition — `llm_stop_reasons_total{stop_reason="max_tokens"}` above 1% of calls over a week.
-  **Blocked on:** condition — unobservable today: nothing records <what>; observing it needs <the instrument>.
-  ```
-
-  The third form is a **deferral on something to be observed** — neither a
-  question nor a dependency — and the script counts it in its own bucket,
-  *waiting on a condition*, never as a ruling. State the condition as
-  something step 2 can **check** — a query, a metric, a log or trace count,
-  and where to look — because step 2 checks it every round and a condition
-  it cannot run is one nothing ever checks. If nothing can observe it today,
-  write `condition — unobservable today:` and what would have to exist; the
-  metrics name those under *Nothing can check*, because their only exit is
-  the owner. `condition` (or `precondition`) must open the statement with
-  **nothing before it** — not an article, not a qualifier — so `an owner
-  ruling on the condition for …` stays a ruling. And a condition must not
-  name an issue: `condition — #1116 lands` is waiting on an issue, which is
-  the `#N` form, and the metrics report it as *stated but unreadable* for
-  you to reword. Read as a condition it would have no edge, and nothing
-  would move it when #1116 closed.
-
-  The body rather than a comment, because this is a current value that
-  *Picking*'s promotion rule and `scripts/backlog_metrics.py` both read
-  every round, and a thread holds a history. The reference **first**: a
-  reference anywhere else is read as neither a dependency nor a ruling, so
-  `**Blocked on:** an owner ruling on #1294's shape` comes back as *stated
-  but unreadable* and is reported for you to reword. A line naming an issue
-  **and** something it cannot resolve — `**Blocked on:** #1294 and #9999` —
-  is reported as both, so the half it could not read is never dropped. The
-  label with nothing after it, or with `TBD` — or `condition` with no
-  condition after it — counts as **stating nothing** rather than as a
-  ruling: *Needs your call* lists the ruling bucket, and an entry there with
-  no question in it is a round spent waiting on an answer nobody was asked
-  for. The metrics count all of these, so no gap is invisible.
-- **A blocked item whose named issue has closed goes to ready as you sort** —
-  `--add-label pile:ready`, then `--remove-label pile:blocked`. Closing #N
-  writes no label on anything waiting for it, so nothing else will notice.
-  The metrics name these under *Rule-4 tier*.
-- **Split a mixed issue as you label it.** Any part needing a ruling blocks
-  the whole issue, so one design question freezes the mechanical work beside
-  it — #985 held seven items its own text called "no design needed" since
-  round 1. Cheap now, expensive later.
-
-**Read a pile as a query, never as a parse:**
-
-```bash
-gh issue list --state open --label pile:blocked --limit 500 \
-  --json number,title,labels,createdAt,body
-```
-
-`--state open` is why nothing needs a rule about carrying closed numbers
-forward: a closed issue is not in the answer.
-
-**Move an item with two separate edits, the add first:**
-
-```bash
-gh issue edit <n> --add-label pile:blocked      # then, as its own command:
-gh issue edit <n> --remove-label pile:ready
-```
-
-Each single-direction edit is one mutation. `--add-label X --remove-label Y`
-in one command is **not** one: `gh` fires two mutations concurrently, so a
-stop between them can leave either — and "neither label" reads as an unsorted
-arrival, which *Propose* would sort straight back into ready. Add first and
-the only intermediate is "both", which the reading rule below settles.
-
-**Reading, when the labels disagree:** more than one `pile:` label means
-**blocked**, or **yours** if blocked is not among them. The restrictive
-answer is deliberate and it is not symmetric: on a half-finished move *into*
-blocked it is already right, and on one *out of* blocked it costs a re-ask
-next proposal — which is the cheap direction to be wrong in, because the
-expensive one would be dispatching a lane at an item that was pulled. Say so
-in *Measurement* so a half-finished move is visible rather than merely safe.
-**No** `pile:` label means an unsorted arrival, which step 2 sorts — unless
-the issue carries `tracking`, which is in no pile and is never sorted — and
-nothing bare is ever dispatched either, because step 4 dispatches from the
-ready query, which a bare issue is not in.
-
-**The ready query** — the one step 4 dispatches from, and the one every
-"ready" in this file means:
-
-```bash
-gh issue list --state open --label pile:ready --limit 500 \
-  --json number,title,labels,createdAt,body \
-  --jq 'map(select(any(.labels[]; .name == "tracking") | not))'
-```
-
-The tracker is dropped in `--jq` rather than with `--search "-label:tracking"`
-on purpose: `--search` switches `gh` to the search index, which lags a label
-edit, so an item pulled a moment ago could still come back from it.
-
-Adding a label already present is a no-op and so is removing one that is
-absent, both exit 0, which is what makes every move below safe to repeat.
-That is obtained from the medium rather than argued for in prose, and it is
-why nothing here writes a marker recording that it has been.
-
-The migration off the old enumerated lists has been **run** (2026-09-17):
-`pile:ready` 64, `pile:blocked` 12, `pile:yours` 2, balancing against 79 open
-issues with only the `Queue` itself unlabelled. It is not repeated here,
-because the commands were keyed to the lists as they stood that day and a
-re-run would re-add `pile:blocked` to anything a ruling has since moved to
-ready — a second writer of pile membership, derived from a stale list, which
-is the shape this whole scheme exists to remove. The run and its
-reconciliation are recorded on the `Queue`.
-
-## The Queue
-
-One pinned tracking issue titled exactly `Queue`:
-
-```bash
-gh issue list --state open --label tracking --search "Queue in:title" \
-  --json number,title --jq 'map(select(.title == "Queue"))'
-```
-
-Create it if absent (`gh issue create --title Queue --label tracking`, then
-`gh issue pin`) and say so in the report. Its **newest comment of a
-recognised kind** is where the round has got to — step 0 says which kinds
-those are, and the last comment is not one of them by virtue of being last.
-Its **body** holds what a label cannot: the **ranked head** in order, the
-**round timestamp**, and a stamped snapshot of the three counts.
-
-**Step 2 is the only writer of that body.** Membership is labels, so the
-settlement and a pull change piles without touching it — which is what lets
-the head live in a blob at all. Write it with `gh api -X PATCH` and read it
-back; `gh issue edit` can fail silently.
-
-- **The ranked head orders; the labels decide.** A name in the head that the
-  ready query does not return is skipped wherever the head is read — step 4
-  states that predicate, and it is the only one. So a pull does not have to
-  edit the head, and a head naming a blocked, pulled or closed item is stale
-  rather than wrong.
-- **The counts are a snapshot, never read back.** Step 2 stamps them beside
-  the timestamp because the body is also what a person reads; every decision
-  takes its count from the query.
-- **The timestamp is step 2's.** It is what "what arrived since the last
-  round" is measured from.
-- **The rule-4 tier is not written down** — oldest-first is recoverable from
-  `createdAt`, and `scripts/backlog_metrics.py` recomputes the tier and names
-  its oldest members on every run.
+- **Piles are labels:** `pile:ready` (known work), `pile:blocked` (waits on a ruling, an issue or a condition),
+  `pile:yours` (only the owner can run it), `tracking` (in no pile: the Queue, trackers). Move with two edits, add
+  first (`--add-label` then `--remove-label`); more than one pile label reads as blocked.
+- **Every open issue outside `tracking` carries one priority label:**
+  - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
+    normal use (a wrong result, a 5xx, lost work);
+  - `P2`: any other defect reachable today;
+  - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
+    any item, and a ruled feature takes the priority its ruling states (ask if it states none).
+- **A `P3` in `pile:ready`** carries `**Expires:** <date, 30 days after it was labelled P3>` in its body.
+- **A blocked item's body** has one line in one of these forms:
+  - `**Blocked on:** #N …`;
+  - `**Blocked on:** an owner ruling on …` (also used for a pull, a PR closed unmerged, or an item over its size
+    budget, with the question that settles it);
+  - `**Blocked on:** condition — <a check you can run>` (a future event too, e.g. "redis-py ≥ 8 is pinned").
+- **The Queue** is issue #1817 (pinned, `tracking`). Write your comments there under exactly one of these
+  headings: `## Round <N> — proposal`, `## Round <N> — result`, `## Note — <what>`. Any other comment is the owner
+  speaking.
 
 ## 0. Locate the round
 
-**Every comment on the `Queue` is authored by the same account** — the agent
-posts with the owner's credential — so a state cannot be read off who wrote
-one. It is read off the heading, and the agent gives its own writes exactly
-four:
+Find the newest proposal or result on the Queue:
 
-| heading the agent writes | what it is |
+| newest | then |
 |---|---|
-| `## Round <N> — proposal` | a recognised kind: a round proposed |
-| `## Round <N> — result` | a recognised kind: a round reported |
-| `## Round <N> — withdrawn` | a recognised kind: a round ended with nothing to report |
-| `## Note — <what>` | never a state: a migration record, a handover, a checkpoint |
-
-Anything else is **the owner speaking**. Write every board comment under one
-of those four headings, or the next reader cannot tell your note from an
-answer; five of the first ten rounds posted a note, and the one that closed
-round 9 is what made round 10's step 0 guess.
-
-**Write `##`; match `#` or `##`.** One hash or two, on all four — the rest
-of the heading is exact. This is not politeness to the owner: it is the
-producer half of this rule, which lives in prose and in another file while
-the consumer here is a grammar. Every result the board carries — rounds 7,
-8, 9 and 10 — was posted as `# Round <N> — result`, matched nothing, and so
-read as *the owner answering the proposal above it*. On a finished and fully
-merged round that sends the next reader to step 3, hunting rulings in its
-own result comment. Both directions of this rule are stated below; that one
-is the unsafe one and the one that has happened, because it needs only the
-agent to forget a character, while the safe one needs the owner to type a
-heading they have no reason to type. No other comment kind opens with
-`Round <N> — <state>`, so the tolerance introduces no ambiguity, and it
-makes ten rounds of history readable (#1585).
-
-Now scan back to the **newest comment of a recognised kind** — past notes,
-past owner comments, however many — and read what follows it. Take the first
-row that matches:
-
-| the newest recognised comment, and what follows it | state | do |
-|---|---|---|
-| none | before the first round | step 1 |
-| a **result** or a **withdrawal** | between rounds | step 1 |
-| a **proposal**, with an owner comment after it | answered | step 3, take the answers |
-| a **proposal**, no owner comment after it, but **any** of its *Building* items has a lane pull request opened **after that proposal**, open or merged | approved out of band, and some of its work is built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 — whose dispatch predicate skips a lane branch that already has such a pull request, which is what stops a fresh lane being sent over work already on `main` — and step 5 |
-| a **proposal**, no owner comment after it, and no lane pull request opened after it | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
-
-```bash
-# One query, bounded by THIS PROPOSAL'S timestamp rather than by a page
-# size, then filtered on the <prefix>/<n>-<slug> branch tail.
-gh pr list --state all --limit 100 --search "created:>=<this proposal's timestamp>" \
-  --json number,headRefName,state \
-  --jq '.[] | select(.state != "CLOSED")
-            | select(.headRefName | test("/(1450|1511|1512)-"))'  # the round's numbers
-```
-
-**Both halves of that query are load-bearing, and each replaces something
-that was measurably wrong.**
-
-- **Bounded by the proposal, not by a count.** A repo-wide `--limit` page is
-  what the historical case this row exists for rolls off. Worse, without the
-  date bound the row fires on a pull request from a *previous* round: an item
-  delivered under `Refs #<n>` stays open, is re-ranked into the next round,
-  and its old merged pull request then matches — so the row would transcribe
-  an approval nobody gave and step 4 would dispatch every other item in that
-  round, unapproved. That breaks this file's own *Never build an item with an
-  unanswered question*. A round opens a handful of pull requests in a few
-  hours, so the window is small and nothing can roll off it.
-- **Matched on the branch TAIL, not on a prefix.** Over the last 200 pull
-  requests the numbered lane branches run `fix/` 110, `feat/` 7, `docs/` 6,
-  `demo/` 5, `chore/` 1 — so a `head:fix/<n>-` search misses 19 of 129 and
-  answers 0 for #1554, whose branch was `chore/1554-remove-dead-session-deps`.
-  For those items step 4 would dispatch over merged work while this row read
-  the round as unanswered: both halves of the failure, on 15% of branches.
-
-**Any**, not all: one such pull request is the evidence that the round was
-approved. Step 4 then dispatches whatever has none, which is the part that
-was approved and never built.
-
-**This row does not skip settlement; it defers it to the step that does it.**
-Step 5 posts the result these pull requests were missing, and the *next*
-invocation reads that result and settles every issue it names — including
-the one whose merged pull request said `Refs #<n>` and left it open, which
-is the case step 1 exists for and the case that left #1447 and #918 to be
-closed by hand. Settling here instead is not possible: step 1 takes its
-issue↔pull-request pairs from a result table that, by the definition of this
-row, has not been written yet.
-
-The last two rows are one question — *was this round approved?* — asked of
-the narration first and of the facts second. Round 3 was approved in a
-working session rather than as a reply **and** its result was never posted,
-so the narration said "unanswered" about a round whose work was merged. An
-approval nobody wrote down is still visible in what it authorised.
-
-`withdrawn` is written out of band, when a round is abandoned before it is
-built. The heading exists so the next reader lands between rounds instead of
-on a proposal that no longer stands — round 4 was withdrawn exactly once and
-had no heading to say so.
-
-The transcription note is **safe to write twice**: a note is not a
-recognised kind, so a re-run reads the same proposal, finds the same lane
-branches and takes the same row. One duplicate comment, the same price the
-abandonment comment carries.
-
-**The one case this still cannot see** is an **owner** comment opening with
-one of the four headings, which reads as yours and leaves the round waiting.
-That is the safe direction and it is reported as such: the round stops
-naming what it waits for, and the owner says in their next comment that the
-one above was theirs — the exit is a human word, and there is no mechanical
-one, because nothing distinguishes the two authors. Widening the match to
-`#` or `##` widens this case by exactly the owner comments headed with a
-single hash; the trade is deliberate, because the direction it closes ends
-in a round being built on rulings nobody wrote and this one ends in a round
-asking.
-
-Never re-post a proposal that is merely unanswered. An unanswered question
-is not a failure and repeating it is noise; it already appears in the next
-proposal by construction.
+| none or a result | step 1 |
+| a proposal with an owner comment after it | step 3 |
+| a proposal, no owner comment, but a lane PR for one of its items opened after it | approved out of band: post a `## Note`, then step 4 |
+| a proposal, no owner comment, no lane PR | stop and say what it waits for; do not re-propose |
 
 ## 1. Settle the last round
 
-The previous round's **result comment names the pull requests it opened**.
-Those are the ones that must be merged before another round starts:
+1. **The last result's PRs.** For each PR it named that is still open and not in the merge queue:
+   - refresh it if it conflicts, was dequeued, or has a red required check: merge `main` in, re-run CI, and delta
+     any code change (step 4.5);
+   - pull it if it cannot be refreshed.
 
-```bash
-gh pr view <n> --json state,mergedAt      # for each PR that round named
-```
-
-Any of them still open means this round does not start — but first,
-**refresh** each open one that cannot be merged as it stands, starting with
-any open repair of a red `main`, which the result need not name. One that is
-in the merge queue (`isInMergeQueue`, the query below) is left alone and
-reported as queued: its group's checks are its verdict, and any push would
-take it out of the queue. Of the rest, refresh each that was removed from
-the queue since its newest `## Merge-ready` comment, is in conflict with
-`main`, carries a required context that is not green, or has a head that is
-not the one that comment names. Quote a removal's `reason` verbatim in the
-report — it is free text — and an owner who dequeued one on purpose simply
-does not queue it again. A pull request merely behind `main` is not one of
-them: the queue brings it up to date. That is step 4's *Merge-ready* again
-on the same pull request, with `main` merged in first when the queue removed
-it or it conflicts — what the queue tested it on top of has landed on `main`
-since — and its *vouched head* test decides how much of it: commits after
-the named head that are only clean merges of `main`, or commits that change
-no file, need CI and a new comment; anything else is code, and goes through
-*Review*'s fix path first — its lane a fresh `full` one that does not count
-as the item's second. One that cannot be refreshed is pulled — closed,
-placed as the `pulled` row below places an item, what stopped it recorded on
-its issue, and its row in the result edited to `pulled` (`gh api -X PATCH`
-on that comment, read back), so the settlement never reads your close as the
-owner's. Then, if any is still open, report it and stop; otherwise settle.
-An open pull request from anything else — a change to this procedure,
-another person's branch — is not this check's business. Do not run a bare
-`gh pr list` and refuse on whatever it finds.
-
-```bash
-gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<n>){
-  isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){
-    nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'
-```
-
-Then settle. That check is per pull request; **the settlement is per
-issue** — one pull request may carry several. Take the issue↔pull-request
-pairs from **the result table itself**, which lists every item beside the
-pull request that carried it; do not derive them from what the pull requests
-cited, or a lane that cited nothing contributes no issue and is never
-settled. Read each issue's own state, not the pull request's body.
-
-```bash
-gh issue view <n> --json state,title,body,comments   # each cited issue
-```
-
-Walk that table **one row at a time**. A row is an issue, the pull request
-that carried it and an outcome, so what you do is decided by the row in front
-of you and that issue's own state — never by another row, and never by the
-issue alone. Take the **first** row here that matches; the order lands on the
-fact rather than on the report of it, so a pull request the owner reopened
-and merged is settled as merged even where the round reported that item
-`pulled`:
-
-| the row | what you do |
-|---|---|
-| the issue is closed | nothing |
-| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and **place the remainder by *What escalates***: `pile:ready` when nothing left in it needs a ruling, `pile:blocked` when something does (record the question in the `**Blocked on:**` form, or the next *Needs your call* has nothing to phrase), `pile:yours` when the work itself is the owner's. Write it with the two label edits in whichever direction it goes; writing *a* pile is what repairs a label a `pulled` round already moved, and that property is not particular to `pile:ready`. An item edited down also **leaves the ranked head**: step 2 writes that body and does not carry the name into it, so the proposal compares it against the current candidates like any other arrival. The parent still either closes or gets smaller — what is chosen here is only where the smaller one goes |
-| the round reported it `pulled` | **place it by *What escalates***, in the same two label edits and for the reason the row above gives. With nothing recorded on the issue since the pull that is `pile:blocked` — a pull enters that pile by its own door — and doing it again is a no-op. With a ruling recorded it is wherever that ruling sent it: `pile:ready`, `pile:blocked` again for a deferral, `pile:yours`; a ruling implying no work closed the issue, which matched the **first** row and never reached this one. **An answer arriving before this step is the normal path, not an edge case** — the proposal carrying a pulled item's question is the very next one, so by the time the settlement walks the row the owner has usually ruled and step 3 has placed it, and forcing `pile:blocked` moves it back to where *Needs your call* re-asks a question that has been answered (#512, round 11 → 12). Say nothing more — the pull already recorded what stopped it, which is the only thing this row does differently from the one below. The row may name no pull request at all, because a lane pulled mid-build opened none |
-| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then **place it by *What escalates*** the same way; with nothing recorded that is `pile:blocked`, and the next proposal asks whether to build it another way or close it. Do not guess why — placing on a ruling the owner *did* record is the opposite of guessing, and the two rows have to compute the same pile or the reserved `pulled` value starts carrying state |
-
-A row matching none of them — open, naming no pull request, and not `pulled` —
-is a malformed result. Say so under *Settled from last round* rather than
-guessing; the item keeps the labels it has. If several pull requests named one
-issue, the merged one decides.
-
-**Nothing above is a skip.** The `pulled` row does the full pile move and
-differs from the one below it only in staying quiet, so the round's report
-suppresses a comment and never carries state: lose the report and you get one
-comment too many, never an item in the wrong pile. That is the whole reason a
-label replaced the note this step used to write.
-
-**So the settlement is safe to run twice** — but safe is not silent. Every
-label edit is a no-op the second time, a close on a closed issue is a no-op,
-and an edit down to a remainder the body already carries changes nothing. The
-abandonment comment is the one that is not, because it is free-form prose a
-re-run cannot reliably recognise as its own. That duplicate is the whole
-price, and it was priced knowingly.
-
-This step writes no `Queue` body. Report what you settled under *Settled from
-last round* in the proposal.
-
-Before the first round there is no result comment, so there is nothing to
-check and the round starts.
+   If any is still open after that, report it and stop.
+2. **Each issue row**, taking the first that matches:
+   - **closed:** nothing to do;
+   - **open, PR merged:** close it if everything it asked for is delivered; otherwise edit it down to the
+     remainder, title and body;
+   - **`pulled`, or PR closed unmerged:** `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what
+     stopped it — unless an owner ruling recorded since then places it.
 
 ## 2. Propose
 
-Read what arrived since the round timestamp in the `Queue` body:
+1. **Sort.**
+   - Give every open issue that lacks a pile label or a priority label the missing one(s). Skip `tracking`.
+   - Move to ready any blocked item whose blocking issue has closed.
+   - Run each condition you can, and move items whose condition holds; list the ones you cannot run as
+     `not checked: needs <what>`.
+   - Close a tracker whose tracked work has all closed.
+2. **Expire.** Close, as not planned, each ready `P3` past its `**Expires:**` date with no owner comment since it
+   was labelled. Comment: `Expired: P3, 30 days (/process-top-issues). Reopen with a reason.`
+3. **Pick.**
+   - `P1` before `P2`, oldest first within each. Reserve one slot for the oldest `P2` that has waited over 30
+     days. `P3` only when the owner pins it.
+   - Items on one seam share a lane and a PR.
+   - Size the round by review effort, not item count: at most 5 items and 3 lanes. An item touching a security
+     boundary, storage or a migration is a round by itself.
+4. **Check premises.** `git fetch origin main`, then confirm each picked item's code points still show the defect.
+   An item whose premise looks dead is built as a **verification** item (step 4).
+5. **Post the proposal**, then stop. Build nothing that has an open question.
 
-```bash
-gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
-```
-
-Label each issue carrying no `pile:` label — every new arrival, and anything
-a half-finished move left bare — using *What escalates* in the procedure.
-**Except anything labelled `tracking`, which is in no pile** — the `Queue`
-first among them: it is the board, not an item on it, and a `pile:ready` on it
-would put it in the rule-4 tier and in reach of step 4. An arrival that is
-itself a tracker gets `tracking` rather than a pile. `pile:yours` is work no
-agent can do: a live deployment check, a console or
-credential an agent lacks. List it, never rank it into a round. Compare each
-new issue against the current candidates and place it; do not re-sort the
-backlog. Losing does not have to be undone — the item keeps its place and the
-pile drains past it. Move one up only if a trigger fired: a new priority
-label, another issue on the same seam, a citation.
-
-**Then re-read the blocked pile, which is the one pile a query cannot
-settle.** Three checks, all cheap, all on items the next *Needs your call*
-has to list anyway:
-
-- an item whose `**Blocked on:**` line names an issue that has **closed**
-  moves to ready (`--add-label pile:ready`, then `--remove-label
-  pile:blocked`) — nothing else notices, because closing #N writes no label
-  on anything waiting for it;
-- an item carrying **no** `**Blocked on:**` line, one whose line is empty or
-  `TBD` (the script counts those two together as *stating nothing*), or one
-  the metrics report as *stated but unreadable*, gets a readable one now:
-  you are about to phrase its question for the proposal, and that line is
-  the phrasing written down. The script counts them, so the gap is visible
-  rather than merely present;
-- an item **waiting on a condition** — the metrics list each under *Waiting
-  on a condition* with the condition quoted — is **checked**: run what the
-  condition names, and move the item to ready the round it holds. One you
-  cannot run from where you stand — a deployment's Prometheus you have no
-  access to — is not skipped: its row in *Needs your call* says `not
-  checked: needs <what>`, which hands the check to the owner that round
-  rather than letting it lapse in silence. A ruled
-  deferral whose line is still a ruling-shaped sentence gets rewritten into
-  `**Blocked on:** condition — …` now, or the script keeps counting it as a
-  question. One the metrics name under *Nothing can check* goes into *Needs
-  your call* with its condition marked unobservable and the owner's three
-  exits as the options — build the measurement (a ready item), re-rule, or
-  close — because nothing else will ever move it.
-
-**Then read the ready pile's question list, which the ready query cannot
-settle either.** An item that entered ready carrying a question, a
-dependency or a deferral — or grew one in its thread since — has no other
-reader: this step sorts only unlabelled issues, and ready's only other exits
-are the rule-4 slot and being ranked into a round. Round 15 found **5 of 81**
-ready items that were not ready work (#835, #723, #1114, #1040, #1463). The
-metrics list the candidates under *Ready items that read like a question*:
-ready items whose body carries decision, gating or trigger language and no
-recorded ruling (a `**Ruled` body line, or a `Ruling` / `Ruled` / `Owner
-ruling(s)` / `Decision record` heading in the body or a comment). **Read
-each one; the list is never a label move** — the language is a symptom, and
-most hits are prose about the code. For each, one of:
-
-- it is ready work — leave it. Nothing is written, so the list names it
-  again next round; that re-read is the price of never moving an item on
-  the heuristic alone, and it is small because the list is;
-- it needs a ruling, waits on an issue, or waits on a condition — move it to
-  `pile:blocked` (the two edits) with its `**Blocked on:**` line in the form
-  that fits;
-- it is mixed — split it, as for any label;
-- it is a tracker — `tracking`, per *The piles are labels*;
-- its question was answered in a form the list does not recognise — record
-  the ruling in the body as a `**Ruled <date>.**` line, so the next round
-  does not read it again. Before moving an item to blocked, **read its
-  comments for a ruling under any heading**: round 15 moved #1451 and #1502
-  to blocked as open questions when both had been ruled under `## Ruling
-  recorded`, which the detector of the day did not read — asking the owner a
-  question they have answered is the expensive direction here.
-
-This is reading, not re-sorting: nothing is re-ranked, and an item that stays
-keeps the place its first comparison gave it.
-
-**Last, the trackers** — the metrics list every open one under *Tracking, in
-no pile*. A tracker's children are closed by lanes that never look at it, so
-nothing else notices when its work is done: close any whose tracked work has
-all closed, citing what closed it. The board and a document refined each
-round never qualify, and that is the whole of the check. A `pile:` label the
-metrics name on one (*Tracking, but carrying a `pile:` label*) is removed now.
-
-The piles need no rebuilding: each is a query over open issues, so an item
-the owner closed — a *yours* item they ran, a blocked item closed by a "leave
-it" ruling — leaves by itself, and no number is ever carried forward.
-
-**Rank a blocker for what it releases.** Before the four rules are applied,
-every `pile:blocked` item whose `**Blocked on:**` line names an issue lends
-that issue its claim: the blocker is ranked by the best rule holding for it
-*or* for anything waiting on it, and in the rule-4 tier it takes the earlier
-of the two filing dates. Rule 1 needs two dependents, so without this a
-blocker of exactly one holds no rule at all and the blocked item's only exit
-is unreachable — #1513 waited six rounds on #1294 with no rule broken. Not
-counted under rule 1, because rule 1 outranks a live security defect and a
-blocker of one has not earned that; inheritance gives it the priority of
-what it is holding up and no more. Lend from every dependent, not only
-where there is one: a count here would restate rule 1's threshold, and the
-two would disagree the first time it moved.
-
-**The first thing the round's capacity buys is the oldest rule-4 item** —
-the oldest ready issue holding none of picking rules 1-3 — ahead of rules
-1-3, unless the tier is empty or the pinned items left no capacity at all.
-Rules 1-3 outrank that tier every time, so without the reserved place its
-drain rate is zero. It does not bound the wait, so the size is reported:
-`scripts/backlog_metrics.py` computes the tier under *Rule-4 tier* and names
-its oldest members, which is this slot's candidate list. **Read the
-candidate before ranking it.** The figure is an upper bound — only rule 1 is
-computed, and an item holding rule 2 or rule 3 is still counted in the tier,
-so the oldest member may be one. The same section lists the **hot seams**
-for you to apply rule 3 by reading; it does not apply them itself, because
-the path an issue cites is not the seam that produced it.
-
-**Then it buys the oldest residuals issue the ready query returns**
-(`Round <N> residuals`, step 4's *Review*), also ahead of rules 1-3 and on
-the same terms. A residuals issue holds none of rules 1-3 by construction: it
-unblocks nothing, nobody can hit it, and it spans seams. So without its own
-buy it would wait behind every older item in the rule-4 tier, while a new one
-arrives each round. At most one arrives a round and one is bought a round, so
-the count is bounded by the buy rate, not flat: a `Refs` delivery, a pull, or
-pins that leave no capacity each leave one more open. The proposal's
-*Measurement* reports how many are open, counted by title. The two slots never
-buy the same issue, because the rule-4 slot skips residuals issues.
-
-**Its plan's invariant is fixed: no reachable behaviour changes.** Under it
-the item counts as one seam for sizing, and its tier is `sonnet` unless a line
-touches a guard's mechanism, a storage change or a security boundary. **Never
-rank a residuals issue into the round
-whose number it carries**, pinned or not, because that round's step 4 may
-still be appending to it. A pin refused for that reason is reported under
-*Measurement*.
-
-**Then check the premise of the items you are about to list under
-*Building* — whatever their age, and before you write the comment.** `git
-fetch origin main` now and confirm each one's named code points still say
-what the issue says. This runs on the selected candidates, not on this week's
-arrivals: round 1's two dead items were 49 and 58 days old, so checking only
-new issues would have missed both. An item whose premise looks dead still
-goes into the round — as a **verification** item, which you run yourself in
-step 4, rather than a build lane.
-
-Post one comment on `Queue`:
-
-```
-## Round <N> — proposal
-
-### Building
-| # | kind | tier | why in this round | done when |
-
-One line on why the round is this size, in terms of **independent seams and
-the review rounds they will cost**, not item count: lanes are parallel and
-review is not, so three items on three seams is a bigger round than five on
-one, and an item whose own review will run several rounds — a security
-boundary, a storage change, anything shipping a new guard — is a round by
-itself.
-
-### Needs your call (every blocked item, not only the new ones)
-| # | the question | options | my recommendation | unblocks |
-
-Deferred items belong in this table too — every item the metrics list under
-*Waiting on a condition* — with the ruling and the condition they wait on in
-place of the question and options, and what this round's check of it found.
-Listed, never re-asked — and never omitted, or they leave every pile. The
-exception is one under *Nothing can check*: that is a question, because its
-only exit is the owner — build the measurement, re-rule, or close.
-
-A feature ranked into *Building* brings rows of its own: the choices about
-what a user sees that its plan will have to make, each with a
-recommendation, so approving the round answers them and the plan makes none
-itself. One found only while planning pulls the item, as for any plan.
-
-### Yours to run (never ranked into a round)
-| # | what only you can do |
-
-### Settled from last round
-| PR | issue | what it did |
-
-### Measurement
-<python scripts/backlog_metrics.py --weeks 8>
-Piles: ready <n> · blocked <n> · yours <n>
-Rule-4 tier: <the script's figure> (last round: <n, or "n/a — first
-  computed figure">) — an upper bound
-Carrying more than one pile label: <the script's line, or none>
-Read like a question: <the script's count> — <what reading each one did>
-Second lanes: <n> of last round's <m> laned items, <k> after `sonnet` — <each, and what the first lane found>
-Residuals issues open: <n> (every open `Round … residuals` issue) — <any pin refused because it carries this round's number>
-```
-
-The rule-4 line is **quoted from the script's own *Rule-4 tier* section**,
-never estimated and never derived from labels: the proxy that was used for
-nine rounds read 59 of 62 and was measuring the wrong thing. Compare it only
-against the same script's figure from an earlier round — and where there is
-no earlier one, write `n/a — first computed figure` rather than reaching for
-the retired proxy, which the sentence above forbids comparing against.
-
-**The `tier` column is the model the item's lane runs on.** Every lane
-carries out a plan you write in step 4, so the tier does not measure how
-hard the item is to understand — that part is yours — but how much can go
-wrong in carrying the plan out. It is set here because this is where each
-item's size is already being judged, and shown so the owner can change it
-in the reply that approves the round. It is `full` — your own model —
-unless **both** of these hold, and then it is `sonnet`:
-
-- a lane builds it: a defect, a feature, a chore or docs, or the pull
-  request that follows an investigation or verification you ran;
-- the change sits on one seam and is none of what makes an item a round by
-  itself — a security boundary, a storage change, a new guard.
-
-Step 4's investigation may raise a tier the owner did not set, never lower
-one. Review, the guard-defeat pass and verification have no tier: they are
-yours. No lane is `haiku`. *Build* in `docs/development/issue-processing.md`
-says why.
-
-Write the `Queue` body per *The Queue*: **the ranked head in order**, this
-round's timestamp, and the three counts as a snapshot. This is the only step
-that writes it.
-
-Then **stop and wait**. Do not build anything that has an open question
-against it.
+   ```
+   ## Round <N> — proposal
+   ### Building
+   | # | P | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
+   ### Needs your call
+   Every item blocked on an owner ruling, with question · options · recommendation · what it unblocks.
+   Every filing candidate not yet answered (step 5): security/tenancy ones first and uncapped.
+   ### Priorities I set (change any)
+   ### Expired this round · expiring before the next
+   ### Yours to run
+   ### Settled from last round
+   ### Scorecard
+   open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · last round: closed <x>, filed <y>
+   ```
 
 ## 3. Take the answers
 
-Read the owner's reply. For each answered question, record the ruling as a
-comment on its own issue, then:
+Record each ruling on its own issue. Then place the issue:
+- **implies work:** ready, with the ruling as its spec and its priority;
+- **defers:** blocked, with a `condition —` line;
+- **implies none:** close it, quoting the ruling;
+- **the owner's to run:** yours.
 
-- **implies work** — re-file the issue as the defect or feature that work
-  is, with the ruling as its spec: `--add-label pile:ready`, then
-  `--remove-label pile:blocked`.
-- **defers** ("(b) **for now**", "(3) **at a second tenant**") — leave
-  `pile:blocked` where it is and rewrite its `**Blocked on:**` line into the
-  condition form — `**Blocked on:** condition — <what step 2 will check>`,
-  or `condition — unobservable today: …` — so the metrics stop counting it
-  as a question. List it in the next proposal as answered-and-waiting, not
-  as a question, and check the condition when you sort: it moves to ready
-  the round it holds. Do not close it: a deferral is "not yet", not "never".
-  A deferral whose trigger is another issue landing is a dependency, and
-  takes the `#N` form instead.
-- **implies none** (the behaviour is right as it stands) — **close** the
-  issue there, quoting the ruling. Its labels stop mattering the moment it
-  closes, so leave them.
-- **makes the work the owner's** — `--add-label pile:yours`, then
-  `--remove-label pile:blocked`.
+For a filing candidate:
+- **file:** create it, with a pile and a priority;
+- **drop:** remove it from the list.
 
-A ruling lands in one of those four. If you cannot tell which, that is the
-next question, not a guess.
-
-Unanswered questions stay blocked and go in the next proposal unchanged.
+If you cannot tell which, that is the next question. Unanswered questions stay where they are.
 
 ## 4. Build
 
-**The approved items** are the ones the owner approved from this round's
-proposal — the ranked head's names that made it into *Building*, plus any the
-owner pinned, the rule-4 slot and the residuals slot, none of which is in the
-head. The head is
-their order, not their membership.
+Per approved item:
 
-Dispatch them in the order the ranked head gives,
-**skipping any the ready query does not return, any it returns that carries a
-second `pile:` label, and any this step has already built** — the ready query
-being the one under *The piles are labels* (open, `pile:ready`, and not
-`tracking`), and "already built"
-being a pull request on this item's lane branch that is **open or merged**
-and was opened **after this round's proposal** — step 0's query, unchanged:
+1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`:
+   - **the root,** with its code points. Fix the root. Never fix a symptom and leave the root for later;
+   - **the change,** and what is out of scope;
+   - **N,** for a duplicated rule, with the scan that counted it. You run the scan for the plan; it is not
+     committed as a test (below);
+   - **the consumers,** for a value whose meaning moves (the search that found them);
+   - **the invariant:** one or two sentences that must hold after the merge;
+   - **the tests:** a regression test that reproduces each defect and asserts the behaviour. No wall-clock or
+     performance thresholds. A repo-scanning guard, census or lint only when you can name an incident where the
+     same class came back after an earlier fix. Such a guard is exercised through the path that runs it, and
+     reverting the fix makes it fail;
+   - **the size budget:** estimated product and test lines;
+   - **a probe,** when the plan chooses a mechanism (a classifier rule, a predicate, a library behaviour): the
+     realistic inputs you ran it against, negatives first, and what each returned. Run the probe before sending
+     a lane;
+   - **the decisions.** Any choice about what a user sees, overriding a documented decision, deleting data,
+     changing a contract's major version, or between options of very different size is not yours: pull the item
+     with the question.
 
-```bash
-gh pr list --state all --limit 100 --search "created:>=<this round's proposal>" \
-  --json number,url,headRefName,state \
-  --jq '.[] | select(.state != "CLOSED")
-            | select(.headRefName | test("/<n>-"))'   # the <prefix>/<n>-<slug> tail
-```
+   For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue, citing what
+   fixed it and the evidence. If it is alive, plan it as above.
+2. **Lane.** Send a fresh agent on your model, or `sonnet` for a docs-only change. Its prompt holds the issue, the
+   ruling, your plan, the done-when, and *Lane rules* below, verbatim. Run lanes in the background; plan the next
+   item meanwhile.
+3. **Verify.** Re-run the lane's test command from its worktree, and confirm its head is the PR's head. Read the
+   whole diff against the plan. A hunk the plan does not cover goes back to the lane once.
+4. **Review once.** Brief the review with the invariant and the done-when, and start the CI watch in the
+   background at the same time.
+   - **Runtime PRs: `/code-review xhigh <pr>`.** These are PRs that change what runs in a deployment or a
+     pipeline: `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `Dockerfile`, `docker-compose*`,
+     `.github/workflows/`, or `scripts/` that CI or CD runs.
+   - **Every other PR: `/code-review high <pr>`.**
+   - **A mixed PR** takes the higher level.
+   - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
+     that has live sites.
 
-**Merged, not only open.** Step 1 will not start a round while a previous
-round's pull request is open, so within a normal round "already built" and
-"open" coincide — but step 0's out-of-band row is reached *precisely* when
-they are merged, and an `--state open` test finds nothing there and
-dispatches a fresh lane over work already on `main`. Closed-unmerged is
-excluded because the owner abandoned it, which step 1 turns into a blocked
-item; it would not be in the ready query either. **After the proposal**,
-because an item delivered under `Refs #<n>` is still open and can be ranked
-again: its previous round's merged pull request would otherwise make this
-round skip it as built. Matched on the branch tail rather than a prefix,
-because `fix/` is the convention and not the whole of it — `chore/`,
-`feat/`, `docs/` and `demo/` carry 19 of the last 129 lane branches.
+   Each finding is either:
+   - **fixed:** it breaks the invariant, or is a crash, wrong result or regression the diff introduces on a
+     reachable path; or
+   - **declined:** one line in the PR body saying why. Out of scope, unreachable, a miss with no live site, or a
+     simplification that changes no outcome.
 
-Three conditions, because the query expresses only the first — and its
-`tracking` filter is part of that first: a tracker carrying a leftover
-`pile:ready` is singly pile-labelled, so without it nothing here would skip
-the tracker. An item mid-move
-carries both labels and `--label pile:ready` still returns it, and an item
-whose lane has delivered stays open and singly-labelled until the owner merges.
+   A finding outside the PR's scope becomes a **filing candidate** (step 5) when it is a security or tenancy
+   exposure, or a defect of medium or higher severity that someone can hit. Anything lower is declined. Post the
+   verdict on the PR as `## Review — <head>`, with the fix list.
+5. **Fix once.** The fix list goes to the same lane (`SendMessage`), as one commit. If the fix redesigns a
+   mechanism, probe the new design first, as in the plan. Then review only the fix commits against the fix list
+   (the delta):
+   - read them yourself when they are small;
+   - otherwise send one reviewer, briefed with the commit range, never the PR number.
 
-That is one predicate and it is the only one — a re-entry into this step reads
-it rather than a rule of its own. It is a query rather than a test on a name,
-which is what lets it cover the three ways an approved item stops being
-dispatchable: a pull earlier in this step or in a previous invocation of it
-(the item gained `pile:blocked`, and between the two label commands it carries
-**both** — still `pile:ready`, and still not dispatchable), an item delivered
-and closed by a previous round (labels survive closing, so only `--state open`
-excludes it), and an item a lane has already built — which its lane pull
-request identifies whether that pull request is still open or has since been
-merged. **Skipped for that third reason is not dropped**: the item joins the
-verify-and-review pass below carrying the pull request it has, exactly as a
-returned lane would — except that a pull request the owner has already
-merged is *reported* as merged rather than re-reviewed, because a review
-after the merge changes nothing and the worktree it was built in may be
-gone. It still gets its row, which is what the next settlement reads.
-
-**Investigate and plan each approved item yourself, before any lane is spent
-on it.** Trace it to its root on `origin/main` fetched now, starting from
-what the proposal's premise check already read, and write the plan:
-
-- the root, with the code points that show it;
-- the change, at the code points it touches, and what is out of scope;
-- for a duplicated rule, how many places it lives, with the scan that found
-  the number;
-- for anything whose meaning moves, its consumers, with the search that
-  found them;
-- the tests that will prove it — for a guard, one that drives it through the
-  path that runs it — and the commands that run them;
-- **the invariant**: one or two sentences saying what must hold once this
-  merges ("a refused run writes nothing"; "every KB chunk the service writes
-  carries its row's tenant"). Review and the defeat pass are briefed with it,
-  and it is the fix line for every ruling in *Review* and *Delta* below;
-- for every **mechanism** the change chooses (a classifier's rule, the source
-  a reader binds, a guard's predicate, a library behaviour it relies on), the
-  inputs you ran it against and what it returned, **before any lane is sent**.
-  Start with negatives that share the positives' tokens, then the spellings,
-  orders and nestings the real input can take, and go through the path that
-  runs it. The list goes into the plan as the lane's test table. In round 21
-  every in-invariant defect found after a first review was in a revision's
-  mechanism, and a few lines of input refuted each one. A revision that changes a mechanism
-  is probed the same way before it goes back to a lane;
-- every choice you made, with its reason. A choice any of the four triggers
-  under *What escalates* reserves for the owner — what a user sees, a
-  documented decision overridden, two options of materially different
-  size, deleted data or a changed contract — is not yours: pull the item
-  with the question instead.
-
-Post it on the issue as a comment headed `## Plan — round <N>`, its first
-line `Tier: <tier>`, where the owner can read it and the lane is built from
-it — and with no heading inside it starting `Ruling`, `Ruled`, `Owner ruling`
-or `Decision record`, which the metrics read as an owner's ruling. A revision that changes the root or a mechanism is posted the same way, so the
-newest such comment since this round's proposal is the plan in force and its
-tier the lane's; a re-entry reads that and builds from it rather than
-planning again. A review round's fix list is **not** a revision: it lives in
-that round's `## Review — <head>` comment on the pull request (*Review*
-below). That comment is the one ruling artifact the lane is sent, rather than
-a second copy on the issue. A read-only search may be sent out to find where something
-lives; what it means is yours — read the code points before they go into a
-plan.
-
-What the plan finds decides the item's path:
-
-- **Verification** — run it: prove by execution whether the defect
-  reproduces, and make the covering guard bite under mutation. Unambiguously
-  dead, close the issue yourself, naming the pull request that fixed it and
-  the evidence you re-ran. Whatever survives gets a plan and a lane. An
-  ambiguous answer is a pull.
-- **Investigation** — run the measurement and read it yourself. A lane
-  packages the script and its unit test into the pull request.
-- **Defect, feature, chore or docs** — a lane builds the plan. A feature's
-  plan is its spec, and says what a user will see; a choice in it that the four
-  triggers reserve for the owner pulls the item with that question, as for any
-  plan.
-
-If you find more than the proposal saw, raise the item's tier on the plan's
-first line — unless the owner set it, which governs the first lane; say in
-the result that you would have raised it. A second lane is always `full`.
-**An item you cannot plan is pulled before any lane is spent on it** — the
-root will not hold still, it needs a ruling, or it is several rounds of work
-that will not slice. One that slices is planned as its first slice, which
-ships on its own, with the rest filed as issues — by you, as you plan —
-which the pull request's `Refs` comment names: *Root before scope* in
-*Building*.
-
-One lane per item that has one — or per seam, where approved items share
-one, at the highest of their tiers — each with a self-contained prompt
-carrying: the issue and its full text, the ruling if it had one, **your
-plan**, what "done" means, and the *Building* section of
-`docs/development/issue-processing.md` verbatim. A shared lane's branch is
-the lead item's, and every other plan it carries has
-`Shares lane with #<lead>` on the line after its `Tier:`; the dispatch
-predicate above reads the lead's branch tail for such an item, so a re-entry
-never sends it a lane of its own. A pull on one item of a shared pull
-request pulls every item on it — each with the record on its issue and a
-`pulled` row — unless the lane can take the pulled item's part out of the
-branch: then only that item is pulled, its row names no pull request, and
-the rest stay on the lead's branch — and the pull request's body loses the
-pulled item's `Closes`/`Refs` line (`gh api -X PATCH`, read back) before
-review reads the new head, or the merge closes an issue that is waiting on a
-ruling. The title is edited the same way; a commit message cannot be without
-rewriting history. So after the edit this must print `none`, and only
-`none` is a pass — `named` on a commit pulls the whole pull request,
-`named` on the title or body means the edit did not take:
-
-```bash
-git fetch -q origin main
-re='\b(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+#|https://github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/|#)<pulled>\b'
-text=$(git log --format=%B origin/main..<head> && gh pr view <n> --json title,body --jq '.title, .body') \
-  || { echo "error: could not read the branch or the pull request"; exit 1; }
-printf '%s\n' "$text" | grep -iE "$re"
-case $? in 1) echo none ;; 0) echo named ;; *) echo error; exit 1 ;; esac
-```
-
-**Each lane runs at the tier on its plan's first line.** `full` leaves the
-Agent tool's `model` unset, so the lane
-runs on your model; `sonnet` passes `model: "sonnet"`. A fork ignores
-`model`, so a lane is always a fresh agent — which its self-contained
-prompt already makes it.
-
-**Keep every lane moving.** Dispatch each lane in the background as soon
-as its plan is posted, and plan the next item while it builds; verify each
-as it returns rather than waiting for the rest. Items on one seam share
-one lane and one pull request (*Building*). A fix commit goes to the lane
-that built the pull request, continued with `SendMessage` so it keeps its
-context; only a second lane is a fresh agent.
-
-Mechanics the prompt adds:
-
-- **The lane implements the plan and does not re-plan.** Where the code
-  disagrees with the plan, it stops and reports what it found. *Building*'s
-  planning gates — root before scope, state N, enumerate the consumers, the
-  invariant, the mechanism probe — are done, and their results are the plan
-  (the probe's inputs are the lane's test table); the rest bind the lane.
-- Every lane works in a fresh worktree on `origin/main` fetched now:
-  `git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`.
-  Before pushing: `black`, `ruff`, `lint-imports`, the tests that cover the
-  change, and `python scripts/check_contract_version.py` if
-  `docs/reference/api/` moved. **Not the whole suite** — see *Read CI for the
-  regression check* below. A diff `.github/scripts/classify_docs_only.py` calls docs-only runs no tests
-  at all; a document a test names is not docs-only there. `Closes #<n>` — in the pull
-  request's body, never in its title or a commit message, which a squash or
-  rebase merge carries to `main` — only if the issue as written is
-  delivered; otherwise `Refs #<n>`, plus a comment on #<n> naming what the
-  pull request delivered and which issues carry the rest. The next round's
-  *Settle the last round* reads it to decide whether #<n> closes or is
-  edited down.
-- An investigation's lane commits the measurement script you ran, with a
-  unit test.
-
-The lane returns: the pull request URL, the exact commands it ran with their
-tail output, `git status --short` of its worktree, every place it departed
-from the plan and why, and anything unresolved.
-
-**A lane's failure comes back to you, because the plan was yours.** When a
-lane stops, or fails your verification below, read what it found. If that
-needs a ruling, is several rounds of work, or cannot be done from where you
-stand, pull the item. Otherwise the plan or the lane was wrong: revise the
-plan with what the lane found, post the revision under the same heading as
-`Tier: full`, and give the item **one** more lane, on the same worktree,
-branch and pull request. That lane's failure is a pull. So no lane ever
-plans, and a `sonnet` lane's stop never pulls an item on its own.
-
-**To pull an item**, stop its lane, record on the issue the question if
-there is one and otherwise what stopped it, return the item to the blocked
-pile — `--add-label pile:blocked` then `--remove-label pile:ready`, per *The
-piles are labels* — and carry on with the others. That is one issue's own
-labels, so it needs nothing from step 2 and collides with no other lane. A
-re-entry into this step will not re-dispatch it, whatever the proposal and
-the head still say, because the dispatch rule above reads the label. Do not
-ask the owner mid-round and do not guess.
-
-Then per returned lane, in order. **Nothing here is done twice.** Each step
-leaves a record a later step or a re-entry reads instead of redoing it: the
-plan on the issue, and on the pull request a `## Review — <head>` comment
-per review round and the `## Merge-ready — <head>` comment. Bring the head
-up to `origin/main` as the lane returns — merged in by you when it applies
-cleanly, a conflict resolved by the lane from your plan — before
-verification, so verification, the first review and CI all see the code as
-it will merge, re-running the plan's consumer and N-count searches when
-`main` has moved since you planned. After that the merge queue keeps it
-current: nothing merges `main` in again unless a conflict or a queue removal
-calls for it.
-
-1. **Verify.** Re-run the lane's test command yourself from its worktree — the
-   focused command, once per head; CI runs the suite — and confirm the output
-   matches what was reported. Confirm `git status` was clean or every leftover
-   file is named — and that the work is actually on the pull request, not only
-   on disk:
-
-   ```bash
-   git -C <worktree> rev-parse --short HEAD @{u}      # must agree
-   gh pr view <n> --json commits --jq '.commits[-1].oid[0:9]'
-   ```
-
-   Verify the *fixes* as well as the findings. A finding the lane pushed back
-   on gets your attention by default; one it accepted does not, and that is
-   where a half-done fix survives. Re-run the measurement that failed, not
-   the report of it.
-
-   **Then read the whole diff against the plan yourself.** Every hunk
-   traces to the plan or to a departure the lane reported and you accept;
-   anything else goes back to the lane to come out, once. A diff that still
-   carries a hunk the plan does not cover is a lane failure, as is a re-run
-   that does not match the lane's report; both are handled as above.
-2. **Review: once, whole, at xhigh.** Run `/code-review xhigh <n>` on the pull
-   request's head. Never make a bare call, which reuses whatever level was
-   typed last, and never go lower for a `sonnet` lane, whose author is the
-   weaker one. Brief it with the plan's invariant. **Start the CI watch in
-   the same breath** (the command under *Merge-ready*, in the background): CI
-   has been running since the lane pushed, so a red required context reaches
-   this ruling and not the next one. In round 21 a head sat red, unread,
-   through a review and a defeat pass.
-
-   The verdict on every finding is yours, reached by running it, and each
-   finding lands in exactly one of four places:
-   - **fix**: a defect in the invariant, or a crash, wrong result or
-     regression that the diff introduces on a reachable path. A miss in a
-     guard or test **this pull request ships** is in the invariant whatever
-     its live-site count: that guard exists to stop the next instance;
-   - **file**: a defect outside that line that someone can hit — wrong
-     behaviour, a crash, a security or tenancy gap, a guard miss with live
-     sites, text that ships to a user or that a later lane reads as an
-     instruction — or a question that trips *What escalates*. It becomes a
-     new issue carrying `Found while working on #<n>`, with findings that
-     share a root sharing one issue. **When reachability cannot be shown by
-     execution, file**: a misfiled residual costs one rank, a buried defect
-     costs a user;
-   - **residual**: anything else true, which needs no ruling and which
-     nobody can hit — dead code, a comment only a reader of the source sees
-     that misstates the code, a miss with no live site in a guard or test
-     this pull request did **not** ship, a measurement worth taking. It is
-     not an issue of its own: it is one line in the round's residuals issue
-     (below);
-   - **decline**: said in one line, with the reason. Unreachable, already
-     ruled, or a simplification that changes no outcome.
-
-   **The round's residuals issue** is one issue per round, titled exactly
-   `Round <N> residuals`, labelled `pile:ready`, and written by you alone: a
-   lane or a reviewer that finds a line reachable, or needing a ruling,
-   reports it and you move it. Write its lines, and any filed issues,
-   **before** the `## Review — <head>` comment, which names
-   `#<the residuals issue>` beside each residual. Then a stop between the two
-   writes loses nothing, and a re-entry that resumes from that comment checks
-   with one read that its lines are there. Look for the issue by exact title
-   first, not through `--search`, whose index lags a creation as it lags a
-   label edit, and create it in one command when there is none:
-
-   ```bash
-   gh issue list --state open --limit 500 --json number,title \
-     --jq 'map(select(.title == "Round <N> residuals"))'
-   gh issue create --title "Round <N> residuals" --label pile:ready --body "<its first lines>"
-   ```
-
-   If two match, append to the lower number, and close the higher after
-   copying across only the lines it does not already hold. A review run by
-   step 1's refresh writes to the residuals issue of the round whose result
-   named that pull request. For the repair of a red `main`, which no result
-   names, it writes to the newest result's round. That round's own step 4 is
-   over, so nothing else is writing to it.
-
-   Each residual is one `- ` line: what is true, `path:line` (prefixed
-   `<repo>:` when it is in another repository), and `(#<pr> review)`. Append
-   by rewriting the body with `gh api -X PATCH` and reading it back. The issue
-   is ready work, built like any item and bought by its own reserved slot in
-   step 2. The pull request that drains it says `Closes` when it delivers
-   every line and `Refs` otherwise. With `Refs`, the lane's comment on the
-   issue names the lines it delivered, as any `Refs` comment names what was
-   delivered, and the next settlement deletes those lines, as it edits down
-   any item delivered in part. A line that is found to need a ruling, to be reachable after all,
-   or to have a dead premise at the plan's premise check leaves the list: you
-   move it out as its own filed issue, or delete it with the evidence. If that
-   was its last line, close the residuals issue, so an empty one never sits in
-   the ready pile.
-
-   The fixes go back together (one fix list, one fix commit, one push, so CI
-   runs once per round rather than once per finding) to the lane. If this
-   lane is `sonnet`, they go to a `full` lane as the item's second. A design
-   call is never a mid-round interruption: if the change depends on its
-   answer, pull the item; otherwise file it, and step 2 places it in *Needs
-   your call* when it trips *What escalates*.
-
-   Post the round's verdict on the pull request as `## Review — <head>`: each
-   finding and where it landed, then the fix list under `### Revision <k>`.
-   That comment is what the lane is sent; the issue gets no second copy.
-
-   A re-entry that finds one naming the current head resumes from its verdict
-   rather than verifying or reviewing again: a clean one goes on to
-   *Merge-ready*, and an open fix list goes back to a lane as above. One naming
-   an earlier head takes a delta of what came after it.
-
-   **If the pull request ships a guard, the brief is to defeat the guard** —
-   what can be re-introduced without it noticing, in the shapes this codebase
-   actually uses, with the live site count for each miss (which decides
-   file against residual only for a guard this pull request did not ship).
-   Verifying the
-   guard's answer on the current tree is a different activity and does not
-   substitute: four rounds running the defect was in the guard the pull
-   request installed, and every time it had already passed that check.
-3. **Delta: the fix commits, against the ruling.** A fix round is never
-   reviewed whole again. `/code-review <n>` reads the entire pull request, so
-   it re-rules what round 1 settled. In round 21, four such passes over one
-   pull request raised 47 findings, and each in-invariant defect among them
-   was in the previous round's fix.
-
-   Read only what is new since the last `## Review` head: the current head's
-   diff against what that head plus the `main` it now contains would be.
-   Check it against that round's fix list and the invariant:
-   - does each fix do what the ruling asked?
-   - does any of it break the invariant, or introduce a reachable defect?
-
-   Read the diff yourself when it is small (under about 300 changed lines, or
-   tests and docs only). Otherwise send one reviewer agent, briefed with the
-   commit range, the fix list and the invariant, and never with the pull
-   request number. A guard whose mechanism the fix changed also gets a delta
-   defeat pass on the same terms. The landings are *Review*'s four, and a
-   delta with nothing to fix is clean.
-
-   **A fix that breaks its own invariant is a design the plan did not
-   understand.** The next revision goes through the plan's mechanism probe
-   first, extended by the inputs the delta found. A second such fix pulls the
-   item, as a lane failure would.
-
-   Clean merges of `main` and empty commits show nothing. Fix commits, a
-   conflict's resolution, a merge of any other branch and a rewritten history
-   all show. An empty diff is a clean delta:
-
-   ```bash
-   git fetch -q origin main
-   git cat-file -e "<reviewed>^{commit}" 2>/dev/null || { echo "reviewed head not found: review the pull request whole"; exit 1; }
-   m=$(git merge-base <head> origin/main) || { echo "error: no merge base with main"; exit 1; }
-   out=$(git merge-tree --write-tree <reviewed> "$m"); [ $? -le 1 ] || { echo "error: merge-tree failed"; exit 1; }
-   git diff "$(printf '%s\n' "$out" | head -1)" <head> || { echo "error: diff failed"; exit 1; }
-   ```
-
-4. **Merge-ready.** Do not chase `main` here: the merge queue tests each pull
-   request merged onto the latest `main` and onto those queued ahead of it
-   before it lands, so the head brought up to date as the lane returned is
-   current enough. Merge `main` in again only when the pull request conflicts
-   with it, which the queue cannot resolve; the resolution is code, and goes
-   through *Review*'s fix path above. Then read CI. Its watch started with the
-   review (or the delta) on this head, in the background and never polled in
-   the foreground, so it has usually finished by now: every required context on
-   the head must read `SUCCESS` or `SKIPPED`, and `ci_verdict` from *Building*
-   compares the head with its merge base.
+   If the fix breaks the invariant, or the item passes twice its size budget, pull it.
+6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
 
    ```bash
    req=$(gh api repos/FaultMaven/faultmaven/rules/branches/main --jq \
@@ -1074,180 +178,60 @@ calls for it.
                   | "\($r)=\($hit.c // "MISSING")") | join("  ")'
    ```
 
-   (`gh pr checks --json` does not exist here, and `gh --jq` takes no
-   `--argjson`.) A regression CI finds is an on-seam defect: back through
-   *Review*'s fix path, and a delta review of the fix.
+   - Re-run a flake once.
+   - Wait out an outside-service outage (check the service's status page).
+   - A failure the merge base also has is `main`'s: plan its repair first, on a `main red: <check> at <sha>`
+     branch. Nothing merges before it.
 
-   **Not every red is the lane's.** Where CI skipped the tests as docs-only,
-   `ci_verdict` reads `skipped` on the head and there is nothing to compare:
-   the required contexts are the whole check. A context that is red or
-   cancelled for a reason the pull request did not cause — a flake, a timeout,
-   a concurrency cancel — is re-run once (`gh run rerun <id> --failed`). One
-   that is missing has no run to re-run: re-trigger it once by pushing an empty
-   commit (`git commit --allow-empty -m "ci: re-trigger checks"`) — one push,
-   so no state lies between two mutations, and a commit that changes no file is
-   not code (*The vouched head*). A failure outside the repository — the log
-   names a host other than the runner's own (`localhost`, `testserver` and any
-   address the suite starts are the pull request's), and the service's status
-   page reports an incident or maintenance (PyPI: `status.python.org`; GitHub:
-   `githubstatus.com`) — or, where it has none, your own request to each URL
-   the failed runs named fails the same way — is neither the pull request's nor
-   `main`'s: wait it out, checking the status page every few minutes in the
-   background, and re-run once per outage when it reports the service
-   operational (or, with no page, when all those URLs answer); never file a
-   `main red` issue for it. A service that fails one request at a time answers
-   some URLs mid-outage, so a URL that answers is not a recovery while its page
-   says otherwise. If it has not recovered by the time the rest of the round is
-   ready, report the pull request as waiting on that service and stop; step 1's
-   refresh re-runs it the next invocation. One still red that the merge base
-   fails too — *Building*'s comparison, re-running the base's run where its
-   verdict predates the failure — is `main`'s, and the pull request **waits on
-   `main`**: it is never pulled for a failure it did not cause.
+   Then comment `## Merge-ready — <head>`: the base, the plan link, the review (1 round + delta, k declined), the
+   commands you re-ran with their tail output, and the checks.
 
-   **A red `main` is repaired before anything merges.** Its issue is titled
-   `main red: <check> at <sha>`; look for an open one with the list below
-   before filing, so a re-entry finds the issue and its pull request and brings
-   that pull request through this step again rather than starting a second
-   repair. Plan the fix yourself and send it a `full` lane on that issue's
-   branch. The repair is not a round item and needs no proposal, because
-   nothing can merge until it lands; and it is the one pull request whose base
-   is red by definition, so for it *Land*'s third condition reads: its head
-   turns the base's failure green and adds none of its own. A failure whose fix
-   you cannot plan — one whose fix trips any of the four triggers under *What
-   escalates* included — is reported with its issue, not built: what waits on
-   it is the owner's to unblock.
+To **pull** an item: stop its lane, move it to `pile:blocked` with `**Blocked on:** an owner ruling on …` stating
+what stopped it and the choice (for size: the new estimate, build or drop), and carry on.
 
-   ```bash
-   gh issue list --state open --limit 500 --json number,title \
-     --jq 'map(select(.title | startswith("main red:")))'
-   ```
+## 5. Report
 
-   When all four of the procedure's *Land* conditions hold and nothing in the
-   pull request waits on the owner or on `main`, comment on it:
-
-   ```
-   ## Merge-ready — <final head, 9 characters>
-   Base: main@<sha> · Plan: <link> · Review: 1 round at xhigh + <k> deltas, <m> findings filed and <r> recorded as residuals rather than fixed
-   Verified: <the commands you re-ran, with their tail>
-   Checks: <every required context=conclusion> · base <ci_verdict>
-   ```
-
-   **The vouched head.** A pull request whose newest merge-ready comment names
-   its current head is reported rather than reviewed again, as a merged one is;
-   one whose head has only fallen behind `main` is reported as it stands, and
-   not reviewed again, since the queue brings it up to date. A head that
-   differs from the named one needs only CI and a new comment when every commit
-   after the named head is a commit that changes no file, or a clean merge of
-   `main` — a two-parent commit whose second parent is on `main` and whose tree
-   is what `git merge-tree` makes of its parents. Anything else, a conflict's
-   resolution or a merge of another branch included, is code and goes through
-   *Review*'s fix path:
-
-   ```bash
-   git fetch -q origin main
-   git merge-base --is-ancestor <named> <head> 2>/dev/null || { echo "code: <named> is not an ancestor of <head>"; exit 1; }
-   for c in $(git rev-list --first-parent <named>..<head>); do
-     set -- $(git rev-list --parents -n1 "$c")
-     if [ $# -eq 2 ]; then   # one parent: passes only if it changes no file
-       [ "$(git rev-parse "$c^{tree}")" = "$(git rev-parse "$2^{tree}")" ] || { echo "code: $c"; exit 1; }
-       continue
-     fi
-     [ $# -eq 3 ] && git merge-base --is-ancestor "$3" origin/main \
-       && t=$(git merge-tree --write-tree "$2" "$3") \
-       && [ "$(printf '%s\n' "$t" | head -1)" = "$(git rev-parse "$c^{tree}")" ] \
-       || { echo "code: $c"; exit 1; }
-   done
-   echo clean
-   ```
-
-   Only the word `clean` is a pass — silence or an error is not, because a
-   guard that fails open vouches for what it never compared. It errs towards
-   code: a genuine merge of `main` that `merge-tree` recomputes differently
-   costs a needless review, which is safe, so never loosen the test to quiet
-   it.
-5. **Never relay a finding you could not reproduce by running it.**
-
-## 5. Report and hand back
-
-Report when every item is merge-ready, closed by its verification, pulled,
-waiting on a red `main` whose repair is merge-ready or reported, or waiting
-on an outside service. Nothing is handed over half-way. Comment on the
-round's proposal:
+Comment on the Queue:
 
 ```
 ## Round <N> — result
-
-| # | outcome | link | CI | review rounds | tier |
-
-One row per **issue**, even where one lane delivered several under one pull
-request: the next round's *Settle the last round* reads this table for its
-issue-to-pull-request pairs, and an issue missing from it is never settled.
-A pulled issue gets a row too. `outcome` is free text with **one reserved
-value** — `pulled`, lower case, which nothing but a pull may carry and which
-is the only value the next settlement reads. It decides whether that
-settlement posts an abandonment comment, and nothing else: the pile is
-placed by *What escalates* either way. A mid-build pull's row names no pull request, because none
-was opened. The line below carries what stopped it. `tier` names the lanes
-that ran, in order — `sonnet → full` where the item needed a second — or
-`—` for an item with none; a tier you raised reads `full (raised)`. The
-next proposal's *Measurement* counts the second lanes.
-
-Pulled: #N — <the question, or what stopped the lane>
-Filed on the way: … (defects someone can hit, and questions)
-Residuals: #<the round's residuals issue>, <k> lines — or none
-Waiting on main: #<pr>, … — main red at <sha> on <check>; merge the repair #<n> first, then run `/process-top-issues` once.
-Waiting on <service>: #<pr>, … — <the URL that did not answer>; run `/process-top-issues` once it answers.
-Waiting on you: add the pull requests above to the merge queue. Each is merge-ready at the head its
-comment names — queue it while its head is that one; the queue tests it on the latest main and merges
-it. One the queue removes, one that conflicts, a head you do not recognise — run `/process-top-issues` once.
+| # | outcome (merge-ready · closed by verification · pulled) | PR | product +/− | tests +/− |
+Closed <x> · Filed <y> (all on the owner's yes) · Net lines: product <p>, tests <t> · Open <before> → <after>
+Filing candidates: <PR> — <what, who hits it and how, reproduced or not>
+Waiting on you: queue <PRs>; each is merge-ready at the head its comment names.
 ```
 
-The `## Round <N> — result` heading is load-bearing, not decoration: it is
-what step 0 scans back to, and a result posted under any other heading reads
-as the owner answering the proposal above it. **Two hashes, and the rest of
-the string exactly as written above** — step 0 matches one hash or two and
-nothing else, and the four results already on the board were each posted
-with one, which is the drift this literal exists to stop. Copy it; do not
-retype it from memory.
+Every report states those four numbers. Filing candidates carry into the next proposal's *Needs your call*:
+- security and tenancy candidates are uncapped and listed first, until answered;
+- any other candidate counts against a cap of 3 and is dropped after two proposals go unanswered.
 
-Then stop. The round ends when the owner merges.
+Then stop: the round ends when the owner merges.
+
+## Lane rules (sent verbatim)
+
+- **Implement the plan; do not re-plan.** Where the code disagrees with the plan, stop and report what you found.
+- **Worktree:** `git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`. Never work in the main
+  checkout. Never delete `./data` there: it is the live stack's database.
+- **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
+  the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
+  moved. Not the whole suite: CI runs it.
+- **Tests** reproduce the defect and assert behaviour. No wall-clock thresholds, and no repo-scanning guard unless
+  the plan names one. Keep within the plan's size budget, and say so if you cannot.
+- **The PR body** says `Closes #<n>` only when the issue as written is delivered. Otherwise it says `Refs #<n>`,
+  and you comment on the issue naming what was delivered.
+- **Return:** the PR URL, each command with its tail output, `git status --short`, and every departure from the
+  plan.
 
 ## Rules
 
-- **Never merge** — not on green CI, not on a clean review, not on a
-  merge-ready comment; and adding a pull request to the merge queue is merging
-  it. The owner presses merge unless they authorize you in as many words for
-  the session in hand; that authorization ends with the session, never carries
-  into another, and is never read into a round approval. A delegated merge
-  still needs all four: review clean on the final head, every required context
-  green on that head, the merge base green by commit — save for the repair of
-  a red `main` (step 4's *Merge-ready*) — and the head unchanged since the
-  review but for clean merges of `main` and commits that change no file.
-- **Never poll CI in the foreground, and never from a lane or a
-  `/code-review`.** The CI verdict is yours, read once per final head in the
-  background (step 4's *Merge-ready*). A reviewer reports findings and says
-  which of its checks it did not reach; three review lanes in one round stalled
-  waiting on `Test Standalone` / `Test Cloud`.
-- **Never post to the `Queue` without one of step 0's four headings**, and
-  copy the heading rather than retyping it. A comment with any other heading
-  is read as the owner speaking, so an unlabelled note of your own answers
-  your own proposal — and so does a result whose heading is a character out.
-- **Never start a round over an unfinished one.**
-- **Never ask a question mid-build.** Pull the item instead.
-- **Never build an item with an unanswered question.**
-- **Never stack.** A pull request that would depend on another unmerged one
-  is not opened. Two seams that move one value meet in the merge queue,
-  which removes the one that fails on top of the other.
-- **Never relay an unverified finding as a defect.**
-- **Never hand a lane a judgement.** Investigation, planning, review and
-  verification are yours; a lane implements a plan, and what it reports is
-  a claim until you have checked it.
-- **Never hand the owner a pull request that is not merge-ready.** Pull it
-  instead. The owner is asked for the calls only a person can make, and
-  for merges — never for a review.
-- **Every fifth round**, read the procedure as a state machine: name what
-  moves an issue out of each state and who does it. A state with no exit is
-  a leak and prose hides it. **If you edit the procedure, read your own
-  result the same way before opening the pull request** — the pass that last
-  edited it created two new leaks while closing others, and both were caught
-  only by re-reading the result.
+- **Never merge.** Adding a PR to the merge queue is merging. The owner may authorize merging for the current
+  session only, in as many words, and the authorization never carries over.
+- **Never create an issue without the owner's yes** (step 3).
+  - Your own issue writes are rulings, labels, `**Blocked on:**` and `**Expires:**` lines, edit-downs, and
+    expiry and verification closes.
+  - A round that filed without that yes has failed; say so first in its report.
+- **Never ask mid-build:** pull the item instead. Never build an item with an open question.
+- **Never stack PRs.** Never hand over a PR that is not merge-ready.
+- **Never relay a finding you did not reproduce,** except a security or tenancy filing candidate, which is marked
+  `not reproduced`.
+- **Never poll CI in the foreground,** and never from a lane or a review.
