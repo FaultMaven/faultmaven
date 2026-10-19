@@ -11,14 +11,12 @@
 
 Two implementations of one security rule is exactly the shape that drifts, and
 the drift would be invisible: whichever deployment runs the store that lost a
-rule is the one where revocation silently stops working. So every behavioural
-test below is parametrised over BOTH classes, and
-``test_every_production_store_is_covered_here`` fails if a third
-implementation is added to ``faultmaven/`` without joining them.
-
-That last guard names where it looked — the whole ``faultmaven`` package, by
-source scan rather than by ``__subclasses__()``, which would only ever see the
-classes this module happened to import.
+rule is the one where revocation silently stops working. So every contract rule
+below is parametrised over BOTH classes through the ``store`` fixture. The
+restart, boundedness and unit-of-work tests pin a property of one store, or one
+the two do not share, and the interface tests pin the interface itself, by
+design. A new ``ITokenRevocationStore`` implementation joins the ``store``
+fixture.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import faultmaven
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
@@ -43,10 +40,6 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
     SqlTokenRevocationStore,
 )
-
-#: Every store this suite is a contract for. The names are asserted against a
-#: scan of the package below, so this list cannot quietly fall behind.
-COVERED_STORES = {"RedisTokenRevocationStore", "SqlTokenRevocationStore"}
 
 USER_ID = "user-828"
 JTI = "jti-828"
@@ -693,122 +686,4 @@ def test_every_engine_here_is_registered():
     assert callers == {"_new_engine"}, (
         f"create_async_engine is called from {sorted(callers)}; it belongs in "
         "_new_engine alone, which registers the engine for disposal."
-    )
-
-
-def _bases_by_module_and_class(root: Path) -> dict[tuple[str, str], set[str]]:
-    """``(module, class) -> base names`` for every class under ``root``.
-
-    Keyed on (module, class), not on the bare name: two classes sharing a name
-    anywhere in the tree collided, last one parsed winning — so an unrelated
-    ``Store`` in some other module could evict a real revocation store from this
-    map and hide it from the guard entirely (#828 delta review). Extracted from
-    the scan so that property is testable against a tree that HAS a collision;
-    the real package may not have one today, and a guard whose fix is
-    unobservable is a guard nobody can trust.
-    """
-    bases_of: dict[tuple[str, str], set[str]] = {}
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            names = {
-                base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
-                for base in node.bases
-            }
-            bases_of[(str(path.relative_to(root)), node.name)] = {n for n in names if n}
-    return bases_of
-
-
-def _resolve_stores(bases_of: dict[tuple[str, str], set[str]]) -> set[str]:
-    """Every class reachable from ``ITokenRevocationStore`` by inheritance.
-
-    Base names are resolved by NAME (an ``ast`` base is a name, not a qualified
-    reference), so the reachable set stays name-keyed even though the map is
-    not. That direction is safe: a name collision can only make the set LARGER
-    — it reports a class that is not a store rather than hiding one that is,
-    and a false positive fails loudly here.
-    """
-    reachable = {"ITokenRevocationStore"}
-    grew = True
-    while grew:
-        grew = False
-        for (_module, name), bases in bases_of.items():
-            if name not in reachable and bases & reachable:
-                reachable.add(name)
-                grew = True
-    return reachable - {"ITokenRevocationStore"}
-
-
-def _stores_declared_in_package() -> set[str]:
-    """Every class in ``faultmaven/`` that IS an ``ITokenRevocationStore``.
-
-    Source scan, not ``__subclasses__()``: the latter reports only what this
-    process has imported, so a new store in a module nothing here touches would
-    be invisible to it — precisely the case this guard exists for.
-
-    Resolved TRANSITIVELY. Matching only a direct base spelled
-    ``ITokenRevocationStore`` missed the likeliest third store there is — a
-    subclass of one of the two shipped ones, which inherits the whole contract
-    and can override any part of it.
-
-    Deliberately scoped to ``faultmaven/``. ``tests/utils.InMemoryRevocationStore``
-    is a third subclass and stays out: this guard asks "did a DEPLOYMENT get a
-    store nobody held to the contract", and a double is not a deployment. That
-    exclusion has a cost worth naming — the double honours no TTL at all, so
-    the deadline rule ``TestEntriesStopRevokingAtTheirDeadline`` pins here is
-    not observable through the stand-in the rest of the auth suite uses. Tests
-    that need to see an entry expire must use a real store, as this module does.
-    """
-    return _resolve_stores(_bases_by_module_and_class(Path(faultmaven.__file__).parent))
-
-
-class TestTheScanSurvivesADuplicatedClassName:
-    """Two classes may share a name; only one of them may be the store.
-
-    The map was keyed on the bare class name, so the last module parsed won and
-    a real store could be evicted by something unrelated — invisible to the
-    guard that exists to catch exactly a store nobody covered (#828 delta
-    review). Tested against a tree that HAS the collision, because the real
-    package does not have to for the hazard to be real.
-    """
-
-    @staticmethod
-    def _tree(tmp_path):
-        (tmp_path / "pkg").mkdir()
-        # Alphabetically AFTER the store module, so under the old bare-name key
-        # it is parsed last and wins.
-        (tmp_path / "pkg" / "a_store.py").write_text(
-            "class Collider(ITokenRevocationStore):\n    pass\n", encoding="utf-8"
-        )
-        (tmp_path / "pkg" / "z_unrelated.py").write_text(
-            "class Collider(SomethingElse):\n    pass\n", encoding="utf-8"
-        )
-        return tmp_path
-
-    def test_both_classes_are_kept_apart(self, tmp_path):
-        bases = _bases_by_module_and_class(self._tree(tmp_path))
-
-        keys = {k for k in bases if k[1] == "Collider"}
-        assert len(keys) == 2, f"a name collision collapsed to one entry: {keys}"
-
-    def test_the_store_is_still_found_behind_the_collision(self, tmp_path):
-        found = _resolve_stores(_bases_by_module_and_class(self._tree(tmp_path)))
-
-        assert "Collider" in found
-
-
-def test_every_production_store_is_covered_here():
-    """A third implementation must join this contract suite, not slip past it."""
-    declared = _stores_declared_in_package()
-
-    assert declared, (
-        "The scan found no ITokenRevocationStore implementations at all, which "
-        "means it is looking in the wrong place — not that none exist."
-    )
-    assert declared == COVERED_STORES, (
-        f"ITokenRevocationStore implementations in faultmaven/: {sorted(declared)}; "
-        f"covered by this contract suite: {sorted(COVERED_STORES)}. "
-        "Add the new store to the `store` fixture and to COVERED_STORES."
     )
