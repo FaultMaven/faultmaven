@@ -1182,10 +1182,9 @@ async def get_env_config_status(
         # store exists (#828 delta review).
         #
         # ``isinstance``, not a class-NAME comparison: the likeliest third store
-        # is a subclass of a shipped one — which is exactly why the contract
-        # suite's scan resolves subclasses transitively — and a name check would
-        # report such a store as non-durable, with a hint telling the operator
-        # revocation is unenforceable on a deployment where it is fine.
+        # is a subclass of a shipped one, and a name check would report such a
+        # store as non-durable, with a hint telling the operator revocation is
+        # unenforceable on a deployment where it is fine.
         is_database_store = isinstance(revocation_store, SqlTokenRevocationStore)
 
         # And then PROBE it. Being the database store is necessary, not

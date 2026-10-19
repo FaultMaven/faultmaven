@@ -11,8 +11,11 @@
 
 Two implementations of one security rule is exactly the shape that drifts, and
 the drift would be invisible: whichever deployment runs the store that lost a
-rule is the one where revocation silently stops working. So every behavioural
-test below is parametrised over BOTH classes.
+rule is the one where revocation silently stops working. So every contract rule
+below is parametrised over BOTH classes through the ``store`` fixture. The
+restart, boundedness, unit-of-work and interface tests are SQL- or
+interface-specific by design. A new ``ITokenRevocationStore`` implementation
+joins the ``store`` fixture.
 """
 
 from __future__ import annotations

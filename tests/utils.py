@@ -745,6 +745,11 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     per-user revocation watermarks. Tests may inspect ``revoked`` and
     ``user_watermarks`` directly.
 
+    It honours no TTL: the reads ignore the stored TTL, so an entry never
+    expires here. The deadline rule ``TestEntriesStopRevokingAtTheirDeadline``
+    pins is not observable through this double. A test that needs an entry to
+    expire must use a real store, as ``test_revocation_store_contract.py`` does.
+
     Subclasses ``ITokenRevocationStore`` on purpose. The #767 bug was a store
     that silently did not implement the interface — the resulting
     AttributeError was swallowed by the then fail-open request-path check — so
