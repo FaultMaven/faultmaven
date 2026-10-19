@@ -95,8 +95,7 @@ them all; the required jobs also `--ignore` the directory. Named to stay in
 the required jobs (#2090): by the owner's ruling, `test_runbook_regex_redos.py`,
 which pins the real ReDoS of #1395/#1405, and `test_secret_patterns_1980.py`;
 by the plan, the revocation TTL tests in `test_revocation_store_contract.py`,
-which pin the deadline rule. Other real-time unit tests remain there, tracked
-in #2097.
+which pin the deadline rule.
 `TestWorkflowWiring` evaluates both required jobs' `-m` expressions and
 checks the per-PR step, which records its rows as the
 `wallclock-rows-performance` artifact for a re-anchor
