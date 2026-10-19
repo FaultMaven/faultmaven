@@ -5,7 +5,7 @@ description: Run one round of issue processing — settle the last round, propos
 # /process-top-issues
 
 **Purpose:** work the backlog down by fixing what matters most at its root, keep `main` green, and keep each fix no
-larger than the defect needs. The count is never lowered by hiding or closing issues.
+larger than the defect needs. Nothing is hidden or closed to lower the count.
 The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you hand over must have
 been through the full review chain in step 4.
 
@@ -77,13 +77,14 @@ Find the newest proposal or result on the Queue:
 
 ## 1. Settle the last round
 
-1. **Each PR the last result named:**
+1. **Each PR the last result named**, taking the first row that matches:
    - **Merged:** its final `headRefOid` must be the head its `## Merge-ready` names. If it had no merge-ready, or the
-     heads differ, an independent reviewer reviews the code that merged without a vouch. That is the code after the
-     last reviewed head, or the whole PR if it was never reviewed. File what the reviewer finds (*Filing what you
-     find*).
-   - **Open, and reported `waiting on main` or `waiting on <service>`:** while `main` is still red or the service is
-     still down, report it and stop. Otherwise take it through step 4.6.
+     heads differ, file an issue (search first): `PR #<n> merged at an unvouched head`. Name the unreviewed commits,
+     and put it in `pile:blocked` with `**Blocked on:** an owner ruling on how to review them`.
+   - **Open, reported `waiting on main` or `waiting on <service>`:** while `main` is red or the service is down,
+     leave it open; it does not stop the round. Once it is green or back, refresh it (below).
+   - **Open, with no merge-ready:** a pull or a build was interrupted. If its item is in `pile:blocked`, finish the
+     pull (*To pull an item*, step 4). Otherwise report it and stop.
    - **Open after a merge-ready:** read its queue state:
 
      ```bash
@@ -100,7 +101,8 @@ Find the newest proposal or result on the Queue:
      - **In the queue at its vouched head:** leave it alone.
      - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
-   If any is still open after that, queued or not, report it and stop.
+   If any is still open after that, queued or not, other than one waiting on `main` or a service, report it and
+   stop.
 2. **Each issue row**, taking the first that matches:
    - **closed:** nothing to do;
    - **open, PR merged:** close it if everything it asked for is delivered; otherwise edit it down to the
@@ -117,7 +119,7 @@ Find the newest proposal or result on the Queue:
    - Close a tracker whose tracked work has all closed.
 2. **Pick.**
    - From `pile:ready` only: `P1`, then `P2`, then `P3`, oldest first within each. Reserve one slot for the oldest
-     `P2` that has waited over 30 days.
+     `P2` that has waited over 30 days. Skip an item that an open PR from an earlier round still carries.
    - Items on one seam share a lane and a PR.
    - Size the round by review effort, not item count: at most 5 items and 3 lanes. An item touching a security
      boundary, storage or a migration is a round by itself.
@@ -163,7 +165,7 @@ gh pr list -R FaultMaven/faultmaven --state all --limit 200 --search "created:>=
 A skipped item resumes from its PR's newest `## Merge-ready`, `## Delta` or `## Review`. If that names an older head,
 only the commits since it get a delta (step 4.5), never a new review; with none of them, it resumes at *Verify*.
 An item with a `## Plan — round <N>` but no PR resumes from that plan, in its
-existing worktree. When only the branch exists, use `git worktree add <path> fix/<n>-<slug>`.
+existing worktree. When only the branch exists, add its worktree as *Lane rules* says.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
@@ -221,7 +223,8 @@ existing worktree. When only the branch exists, use `git worktree add <path> fix
 
    Each finding is exactly one of:
    - **fixed:** it is part of this item. It breaks the invariant; or it is a defect in code this PR adds; or it is a
-     test or guard this PR ships that cannot fail; or it shares the item's root;
+     crash, wrong result or regression the PR causes anywhere; or it is a test or guard this PR ships that cannot
+     fail; or it shares the item's root;
    - **filed:** it is true, valid and not part of this item (*Filing what you find*, below);
    - **declined:** one line in the PR body saying why. Either it is not true (not reproduced, and not shown at
      `path:line` on `origin/main` or the PR head), or it is not valid (as defined below), or an open issue already
@@ -268,12 +271,12 @@ existing worktree. When only the branch exists, use `git worktree add <path> fix
      `completedAt` is `0001-01-01T00:00:00Z`).
    - **An outside-service outage:** wait it out (check the service's status page). If it outlasts the round,
      report the PR as `waiting on <service>`.
-   - **A failure the merge base also has:** it is `main`'s. File it as a `P1` issue, `main red: <check> at <sha>`,
-     and build it as an item of this round in the next free lane, reviewed like any item. The PRs it blocks are
-     reported as `waiting on main`.
+   - **A failure the merge base also has:** it is `main`'s. File it as a ready `P1` issue, `main red: <check> at
+     <sha>` (search first), and post a `## Note — main red` on the Queue. The PRs it blocks are reported as
+     `waiting on main`. The repair is proposed and approved like any item, unless the owner pins it.
 
-   **The vouched-head check.** The head you vouch for must be the last reviewed head (the head named in the last
-   `## Review` or `## Delta`), plus only clean merges of `main` and commits that change no file. Only the word
+   **The vouched-head check.** The head you vouch for must be the last reviewed head (the head in the heading of the
+   last `## Review` or `## Delta`), plus only clean merges of `main` and commits that change no file. Only the word
    `clean` passes; anything else is a code change, and gets a delta first:
 
    ```bash
@@ -345,9 +348,11 @@ Every report states those four numbers and lists every issue filed. Then stop: t
 ## Lane rules (sent verbatim)
 
 - **Implement the plan; do not re-plan.** Where the code disagrees with the plan, stop and report what you found.
-- **Worktree** (`W=/home/swhouse/product/faultmaven/.claude/worktrees/<n>`): `git fetch origin main`, then
-  `git worktree add -b fix/<n>-<slug> $W origin/main`. If `$W` exists, work in it; if only the branch exists,
-  `git worktree add $W fix/<n>-<slug>`. Never work in the main checkout, and never delete its `./data`.
+- **Worktree**, as one command:
+  `git fetch origin main && git worktree add -b fix/<n>-<slug> /home/swhouse/product/faultmaven/.claude/worktrees/<n> origin/main`.
+  If that worktree exists, work in it. If only the branch exists:
+  `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<n> fix/<n>-<slug>`. Never work in the main
+  checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
   the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
   moved. Not the whole suite: CI runs it.
