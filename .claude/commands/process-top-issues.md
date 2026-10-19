@@ -160,8 +160,9 @@ gh pr list -R FaultMaven/faultmaven --state all --limit 200 --search "created:>=
   --json number,headRefName,state --jq '.[] | select(.state != "CLOSED") | select(.headRefName | test("/<n>-"))'
 ```
 
-A skipped item resumes from the newest `## Merge-ready`, `## Delta` or `## Review` naming its PR's current head,
-or from *Verify* when there is none. An item with a `## Plan — round <N>` but no PR resumes from that plan, in its
+A skipped item resumes from its PR's newest `## Merge-ready`, `## Delta` or `## Review`. If that names an older head,
+only the commits since it get a delta (step 4.5), never a new review; with none of them, it resumes at *Verify*.
+An item with a `## Plan — round <N>` but no PR resumes from that plan, in its
 existing worktree. When only the branch exists, use `git worktree add <path> fix/<n>-<slug>`.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
@@ -188,8 +189,8 @@ existing worktree. When only the branch exists, use `git worktree add <path> fix
      changing a contract's major version, or between options of very different size is not yours: pull the item
      with the question;
    - **a design critique,** for a plan that changes a contract, a schema or what a user sees, makes a design choice
-     a ruling left open, is estimated over 300 product lines, or changes this file (always). That means one Fable
-     critique before a lane is sent: the Agent tool with `model: "fable"`, read-only, briefed to challenge the plan
+     a ruling left open, is estimated over 300 product lines, or changes this file (always). It reviews the plan,
+     not the written change, which the review covers. That means one Fable critique before a lane is sent: the Agent tool with `model: "fable"`, read-only, briefed to challenge the plan
      rather than approve it. Post it as `## Design critique` with what you declined and why. A declined point about
      a decision reserved for the owner pulls the item with that question.
 
@@ -245,6 +246,9 @@ existing worktree. When only the branch exists, use `git worktree add <path> fix
 
    - **A delta with any `fixed` finding** gets one more fix and delta. A second delta with any `fixed` finding pulls
      the item. So does passing twice the size budget.
+   - **Never review the same code twice.** An item gets at most one design critique, one adversarial review and two
+     deltas. A re-entry, a refresh or a new commit is a delta of only what is new. A whole-PR review is never
+     repeated, and never run in place of a delta. Anything beyond that is a pull to the owner.
    - **Any code commit after the reviewed head gets a delta before merge-ready.** That covers fixes, conflict
      resolutions and changes the owner asks for (step 1). A clean merge of `main` needs only CI.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
@@ -311,13 +315,9 @@ To **pull** an item:
 **Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
 - **File it** when it is:
   - **true:** reproduced, or shown at `path:line` on `origin/main`;
-  - **valid:** any one of these:
-    - it would be `P1` or `P2` by *State*;
-    - it is a `P3` with a named trigger, written as a `condition —` line: the dependency bump, the client or the
-      configuration that would make it reachable;
-    - it hides a failure, such as a test that never runs or a check that cannot fail.
-
-    A shape nothing can reach, which no named event would make reachable, is not valid;
+  - **valid:** a real defect or gap, reachable today or latent. A latent one is a ready `P3` whose body says what
+    would make it reachable, if that is known. A style preference, or a simplification that changes no outcome, is
+    not valid;
   - **not part of the item:** a different root.
 
   File it as you find it, with `Found while working on #<n>`, the evidence, a pile and a priority.
