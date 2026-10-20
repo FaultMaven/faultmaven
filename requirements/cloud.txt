@@ -87,7 +87,7 @@ catalogue==2.0.10
     #   spacy
     #   srsly
     #   thinc
-certifi==2026.2.25
+certifi==2026.10.19
     # via
     #   geventhttpclient
     #   httpcore
@@ -465,7 +465,7 @@ pathspec==1.0.4
     # via black
 phonenumbers==9.0.28
     # via presidio-analyzer
-pillow==12.3.0
+pillow==13.0.0
     # via matplotlib
 platformdirs==4.9.6
     # via black
