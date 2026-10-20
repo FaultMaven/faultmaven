@@ -1967,7 +1967,6 @@ def mock_case_store():
     store.add_case_participant = AsyncMock(return_value=True)
     store.remove_case_participant = AsyncMock(return_value=True)
     store.update_case_activity = AsyncMock(return_value=True)
-    store.cleanup_expired_cases = AsyncMock(return_value=0)
     store.get_case_analytics = AsyncMock(return_value={})
     return store
 
@@ -1989,7 +1988,6 @@ def mock_case_service():
     service.list_user_cases = AsyncMock(return_value=([], 0))
     service.search_cases = AsyncMock(return_value=[])
     service.get_case_analytics = AsyncMock(return_value={})
-    service.cleanup_expired_cases = AsyncMock(return_value=0)
     service.hard_delete_case = AsyncMock(return_value=True)
     service.delete_case = AsyncMock(return_value=True)
     service.count_user_cases = AsyncMock(return_value=0)

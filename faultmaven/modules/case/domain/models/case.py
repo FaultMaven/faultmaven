@@ -4,7 +4,14 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from .causal import CausalEdge, CausalNode
 from .chat_data import ChatDataOffer
@@ -586,6 +593,20 @@ class Case(BaseModel):
         if not self.turn_history:
             return None
         return self.turn_history[-1].momentum
+
+    #: Whether this object was loaded from, or saved to, the case store
+    #: (#1016). Never serialised. A save that finds no row for a stored case
+    #: refuses rather than re-inserting it: the case was deleted.
+    _persisted: bool = PrivateAttr(default=False)
+
+    @property
+    def is_persisted(self) -> bool:
+        """True once a repository loaded this case or committed its save."""
+        return self._persisted
+
+    def mark_persisted(self) -> None:
+        """Called by a repository's loader and after a committed save."""
+        self._persisted = True
 
     @property
     def effective_driver_id(self) -> Optional[str]:

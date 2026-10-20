@@ -71,7 +71,6 @@ def mock_repo():
     repo.update_activity_timestamp = AsyncMock()
     repo.update_metadata_fields = AsyncMock(return_value=True)
     repo.get_analytics = AsyncMock(return_value={})
-    repo.cleanup_expired = AsyncMock(return_value=0)
     repo.count_user_cases_on_date = AsyncMock(return_value=0)
     return repo
 
@@ -458,7 +457,8 @@ class TestGetOrCreateCaseForSession:
 
 
 class TestHardDeleteCase:
-    """Test case deletion: access control, idempotency, Working Memory cleanup."""
+    """Test case deletion: access control and idempotency. The stores and the
+    audit row: ``tests/unit/modules/case/test_case_deletion_1016.py``."""
 
     @pytest.mark.asyncio
     async def test_deletes_case_as_owner(self, service, mock_repo):
@@ -469,20 +469,12 @@ class TestHardDeleteCase:
         mock_repo.delete.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_idempotent_for_missing_case(self, service, mock_repo):
+    async def test_missing_case_is_not_found(self, service, mock_repo):
+        """The route answers it 204, as for a case already deleted."""
         mock_repo.get.return_value = None
-        result = await service.hard_delete_case("case_nonexistent1", user_id="user_123")
-        assert result is True  # Idempotent behavior
-
-    @pytest.mark.asyncio
-    async def test_cleans_up_vector_store(self, service, mock_repo):
-        case = _make_case(user_id="user_123")
-        mock_repo.get.return_value = case
-        mock_vector_store = AsyncMock()
-        service.case_vector_store = mock_vector_store
-
-        await service.hard_delete_case("case_abc123abc123", user_id="user_123")
-        mock_vector_store.delete_case_collection.assert_awaited_once()
+        with pytest.raises(NotFoundError):
+            await service.hard_delete_case("case_nonexistent1", user_id="user_123")
+        mock_repo.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_empty_case_id(self, service):
@@ -1344,17 +1336,6 @@ class TestCaseShareCreation:
             organization_id=None,
             created_by="u",
         )  # must not raise
-
-    @pytest.mark.asyncio
-    async def test_hard_delete_cascades_shares(self, mock_repo, mock_session_store):
-        case = _make_case(user_id="owner")
-        mock_repo.get = AsyncMock(return_value=case)
-        mock_repo.delete = AsyncMock(return_value=True)
-        svc, _, share_repo = self._share_write_service(
-            mock_repo, mock_session_store, teams=[]
-        )
-        await svc.hard_delete_case(case.case_id, user_id="owner")
-        share_repo.delete_for_resource.assert_awaited_once_with("case", case.case_id)
 
     @pytest.mark.asyncio
     async def test_hard_delete_without_share_repo(self, service, mock_repo):

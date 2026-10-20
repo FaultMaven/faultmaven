@@ -9,6 +9,7 @@ Usage:
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -271,7 +272,17 @@ class FilesystemStorageBackend(IFileStorageBackend):
         )
 
     async def list_keys(self, prefix: str = "") -> List[str]:
-        """List stored keys under a prefix by walking the storage root.
+        """List stored keys under a prefix.
+
+        Walks only the directory the prefix names (everything up to its last
+        ``/``; the storage root when it has none), so one case's listing does
+        not walk every tenant's tree. A directory that cannot be read RAISES:
+        ``rglob`` skipped one silently, which let the case delete report a
+        case's uploads erased while the files sat in an unreadable directory
+        (#1016). With no prefix (the orphan sweep, the deployment wipe) the walk
+        covers the whole root, so one unreadable directory anywhere makes the
+        listing raise: those callers fail loudly instead of acting on a partial
+        listing. A base directory that does not exist yet lists nothing.
 
         Args:
             prefix: Only return keys starting with this string.
@@ -279,24 +290,35 @@ class FilesystemStorageBackend(IFileStorageBackend):
         Returns:
             Storage keys relative to the storage root, POSIX-separated so
             they round-trip through the same form ``store_file`` accepted.
+
+        Raises:
+            OSError: a directory under the base could not be read.
         """
+
+        def _refuse(error: OSError) -> None:
+            raise error
 
         def _walk() -> List[str]:
             # The existence check belongs in here too: on a network mount even
             # a stat is a blocking round-trip.
-            if not self.storage_root.exists():
+            head = prefix.rpartition("/")[0]
+            base = self._get_full_path(head) if head else self.storage_root
+            if not base.is_dir():
                 return []
 
             keys = []
-            for path in self.storage_root.rglob("*"):
-                if not path.is_file():
-                    continue
-                key = path.relative_to(self.storage_root).as_posix()
-                if key.startswith(prefix):
-                    keys.append(key)
+            for directory, _dirs, names in os.walk(base, onerror=_refuse):
+                for name in names:
+                    path = Path(directory) / name
+                    # A broken link is not a stored object (as with rglob).
+                    if not path.is_file():
+                        continue
+                    key = path.relative_to(self.storage_root).as_posix()
+                    if key.startswith(prefix):
+                        keys.append(key)
             return keys
 
-        # rglob over a large evidence tree is blocking I/O — keep it off the
+        # A walk over a large evidence tree is blocking I/O — keep it off the
         # event loop like every other sweep in this codebase.
         return await asyncio.to_thread(_walk)
 

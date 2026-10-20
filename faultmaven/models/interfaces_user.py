@@ -111,6 +111,9 @@ class AuditEventType(str, Enum):
     # could write this case, and since when" must not require parsing
     # `details`. One row per case whose effective driver actually changed.
     CASE_DRIVER_CHANGED = "case_driver_changed"
+    # A case was hard-deleted, every store first (#1016). Written in the
+    # DELETE's transaction; ``details`` names what was cleared and what not.
+    CASE_DELETED = "case_deleted"
     KB_DOCUMENT_SHARED = "kb_document_shared"
     TEAM_CREATED = "team_created"
 

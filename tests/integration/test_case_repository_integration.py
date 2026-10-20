@@ -37,6 +37,7 @@ from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
     NodeType,
 )
+from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
@@ -311,7 +312,9 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     assert retrieved_updated.state == CaseState.INVESTIGATING
 
     # Step 4: Delete case
-    deleted = await db_repository.delete(case.case_id)
+    deleted = await db_repository.delete(
+        case.case_id, deletion=CaseDeletion(case.case_id, case.enterprise_id, None)
+    )
     assert deleted is True
 
     # Verify deletion
@@ -582,7 +585,10 @@ async def test_get_nonexistent_case(db_repository: SQLiteCaseRepository):
 @pytest.mark.integration
 async def test_delete_nonexistent_case(db_repository: SQLiteCaseRepository):
     """Test deleting a case that doesn't exist."""
-    result = await db_repository.delete("case_doesnotexist")
+    result = await db_repository.delete(
+        "case_doesnotexist",
+        deletion=CaseDeletion("case_doesnotexist", "ent_none", None),
+    )
     assert result is False
 
 

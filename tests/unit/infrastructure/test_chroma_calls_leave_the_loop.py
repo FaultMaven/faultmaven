@@ -133,6 +133,7 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         CaseVectorStore,
         lambda s: s.delete_case_collection("c1"),
     ),
+    ("case.erase_case", CaseVectorStore, lambda s: s.erase_case("c1", "ent-1")),
     (
         "case.list_case_collection_ids",
         CaseVectorStore,
@@ -234,6 +235,7 @@ _PUBLIC_METHODS = {
         "add_documents",
         "search",
         "delete_case_collection",
+        "erase_case",
         "list_case_collection_ids",
         "cleanup_orphaned_collections",
         "get_case_document_count",

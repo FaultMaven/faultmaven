@@ -26,10 +26,13 @@ decision to a hint.
 A stale `linked: false` is then not merely tolerated but self-healing: the
 object is protected exactly while its `uploaded_files` row lives, and
 `uploaded_files.case_id` is `ON DELETE CASCADE` (enforced on SQLite too — the
-engine sets `PRAGMA foreign_keys=ON`), so deleting the case leaves an ordinary
-unreferenced orphan this sweep reclaims on schedule. Nothing leaks. That is a
-promise `docs/operations/evidence-job-scheduling.md` makes to operators, so
-`TestDriftIsSelfHealing` pins all three of its legs.
+engine sets `PRAGMA foreign_keys=ON`), so a row removed without its object
+leaves an ordinary unreferenced orphan this sweep reclaims on schedule. That is
+a promise `docs/operations/evidence-job-scheduling.md` makes to operators, so
+`TestDriftIsSelfHealing` pins all three of its legs. A case delete does not
+rely on it: it removes every object under the case's prefix, `linked: true`
+or not, before the row (`FileStorageService.erase_case`, #1016), because this
+sweep never reclaims a `linked: true` object.
 
 The cross-check is deliberately **additive** — it only ever protects. The
 inverse rewrite ("the DB is the authority, so delete what it does not

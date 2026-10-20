@@ -356,6 +356,21 @@ class CaseRedactionContext:
         return sum(len(v) for v in self._forward.values())
 
 
+class CaseRedactionRegistryEraser:
+    """The case delete's eraser for the registry (#1016): the registry holds
+    the case's ORIGINAL PII values, so it goes with the case. A Redis error
+    raises, which keeps the case row for a retry."""
+
+    store_name = "pii_redaction_registry"
+
+    def __init__(self, redis_client: Any):
+        self.redis_client = redis_client
+
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        key = f"{CaseRedactionContext.REDIS_KEY_PREFIX}:{case_id}"
+        return int(await self.redis_client.delete(key))
+
+
 async def load_case_redaction(
     case_id: str, sanitizer: Any, redis_client: Any
 ) -> CaseRedactionContext:

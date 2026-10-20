@@ -535,16 +535,49 @@ class FileStorageService(BaseService):
         # Generate date folder
         date_folder = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Sanitize enterprise_id and case_id
-        safe_enterprise_id = self._sanitize_path_component(enterprise_id)
-        safe_case_id = self._sanitize_path_component(case_id)
-
         # Build the backend key (always POSIX-separated)
-        storage_key = "/".join(
-            (safe_enterprise_id, safe_case_id, date_folder, stored_filename)
+        storage_key = (
+            f"{self._case_prefix(enterprise_id, case_id)}{date_folder}/"
+            f"{stored_filename}"
         )
 
         return stored_filename, storage_key
+
+    def _case_prefix(self, enterprise_id: str, case_id: str) -> str:
+        """``{enterprise_id}/{case_id}/``, sanitized: the prefix every key of
+        the case's uploads starts with. The trailing slash keeps ``case_abc``
+        from matching ``case_abcd``."""
+        return (
+            f"{self._sanitize_path_component(enterprise_id)}/"
+            f"{self._sanitize_path_component(case_id)}/"
+        )
+
+    #: The store's name in the ``case_deleted`` audit row (``ICaseStoreEraser``).
+    store_name = "uploads"
+
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        """Delete every object under the case's prefix, files and sidecars
+        alike (#1016), and return how many were deleted.
+
+        Listed rather than read from ``uploaded_files``, so a blob a failed
+        turn left behind, which no row names, goes too. A key that is already
+        gone (its file's delete took a backend companion with it, or a retry
+        after a half-finished pass) is not an error.
+
+        Raises:
+            ServiceError: the backend could not list or delete.
+        """
+        prefix = self._case_prefix(enterprise_id, case_id)
+        deleted = 0
+        try:
+            for key in await self.backend.list_keys(prefix=prefix):
+                if await self.backend.delete_file(key):
+                    deleted += 1
+        except Exception as e:
+            self.log_error("erase_case", e, case_id=case_id)
+            raise ServiceError(f"Failed to erase the uploads of case {case_id}: {e}")
+        self.log_operation("erase_case", case_id=case_id, deleted=deleted)
+        return deleted
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for safe storage.

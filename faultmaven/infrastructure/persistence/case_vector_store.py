@@ -2,8 +2,10 @@
 Case-Specific Vector Store for Session Working Memory
 
 Creates ChromaDB collections per case_id for user-uploaded documents
-and extracted evidence. Collections are lifecycle-managed — created on
-demand, deleted when the case closes.
+and extracted evidence. Collections are created on demand and deleted when
+the case is deleted (``erase_case``, before the row, #1016); a closed case
+keeps its collection. The orphan sweep (``infrastructure/tasks/case_cleanup``,
+single-tenant only) reclaims a collection whose case row is gone.
 
 Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
@@ -276,24 +278,39 @@ class CaseVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
-    async def delete_case_collection(self, case_id: str) -> None:
-        """Delete entire case collection (called when case closes/archives)."""
+    #: The store's name in the ``case_deleted`` audit row (``ICaseStoreEraser``).
+    store_name = "case_vectors"
 
-        def _delete_wrapper():
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        """The case delete's eraser (#1016): 1 if a collection was deleted, 0
+        if the case had none. Raises when ChromaDB cannot delete it."""
+        return 1 if await self.delete_case_collection(case_id) else 0
+
+    async def delete_case_collection(self, case_id: str) -> bool:
+        """Delete the case's collection: ``True`` if deleted, ``False`` if
+        there was none.
+
+        Only "the collection is absent" is flattened, as in
+        ``_get_existing_collection``; any other error (transport, server)
+        propagates, so the case delete fails rather than leaving its vectors
+        behind a 204 (#1016).
+        """
+
+        def _delete_wrapper() -> bool:
             collection_name = self._get_collection_name(case_id)
 
             try:
                 self.client.delete_collection(name=collection_name)
-                self.logger.info(
-                    f"Deleted case collection: {collection_name}",
-                    extra={"case_id": case_id, "collection": collection_name},
-                )
-            except Exception as e:
-                self.logger.debug(
-                    f"Collection {collection_name} not found or already deleted: {e}"
-                )
+            except NotFoundError:
+                self.logger.debug(f"No collection to delete: {collection_name}")
+                return False
+            self.logger.info(
+                f"Deleted case collection: {collection_name}",
+                extra={"case_id": case_id, "collection": collection_name},
+            )
+            return True
 
-        await self.call_external(
+        return await self.call_external(
             operation_name="delete_case_collection",
             call_func=_delete_wrapper,
             # A write: awaited to its end, so its caller never compensates

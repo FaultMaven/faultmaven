@@ -800,7 +800,7 @@ async def wipe_objects() -> tuple[int, str | None]:
 
     **One key that cannot be deleted must not end the sweep.** The filesystem
     backend refuses a key whose resolved path leaves the storage root (#1235),
-    and ``list_keys`` can hand us exactly such a key: ``rglob`` yields a file
+    and ``list_keys`` can hand us exactly such a key: the listing yields a file
     symlink inside the root and ``is_file()`` follows it, so a link pointing
     outside is listed and then refused (measured). Letting that raise out of the
     loop stopped the wipe at the offending key and left every object after it in

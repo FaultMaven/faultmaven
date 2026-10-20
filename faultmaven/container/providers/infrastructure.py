@@ -322,8 +322,9 @@ def create_kb_chromadb_client(settings: FaultMavenSettings):
 def create_evidence_chromadb_client(settings: FaultMavenSettings):
     """Create ChromaDB client for ephemeral case evidence collections.
 
-    Stores: case_{case_id} collections (dynamic, one per active case).
-    Lifecycle: ephemeral — deleted on case closure, excluded from backups.
+    Stores: case_{case_id} collections (dynamic, one per case).
+    Lifecycle: deleted with the case (``DELETE /cases/{id}``, #1016), excluded
+    from backups.
     """
     persist_dir = getattr(
         settings.database, "chromadb_evidence_persist_dir", "./data/chroma-evidence"

@@ -432,8 +432,10 @@ class CaseRepository(ABC):
         ...
 
     @abstractmethod
-    async def delete(self, case_id: str) -> bool:
-        """Delete a case by ID. Returns True if deleted, False if not found."""
+    async def delete(self, case_id: str, *, deletion: CaseDeletion) -> bool:
+        """Delete the row, its share rows and its case_deleted audit row in one
+        transaction (#1016). Returns False, auditing nothing, if not found.
+        The service clears every other store first."""
         ...
 
     @abstractmethod
@@ -476,16 +478,6 @@ class CaseRepository(ABC):
         """Get analytics/statistics for a case."""
         ...
 
-    # Maintenance (1 method)
-    @abstractmethod
-    async def cleanup_expired(
-        self,
-        days_inactive: int = 90,
-        limit: int = 100
-    ) -> int:
-        """Cleanup expired/inactive cases. Returns count of deleted cases."""
-        ...
-
     # Transaction Support (1 method)
     @abstractmethod
     async def begin_transaction(self):
@@ -498,7 +490,7 @@ class CaseRepository(ABC):
     #   - Agent execution + tool-call ops
 ```
 
-**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
+**Illustrated above: 10 methods** (5 CRUD + 2 messages + 3 specialized). The full interface adds report, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
 
 ---
 

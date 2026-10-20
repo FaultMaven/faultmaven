@@ -112,13 +112,13 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 
 **Purpose**: Ephemeral per-case document storage during active troubleshooting
 **Collections**: `case_{case_id}` (dynamic, one per case)
-**Lifecycle**: Case lifetime — deleted when case closes/archives
+**Lifecycle**: Case lifetime — deleted when the case is deleted (`DELETE /cases/{id}`, before the row, #1016); a closed case keeps its collection
 **Implementation**: `faultmaven/infrastructure/persistence/case_vector_store.py` (CaseVectorStore)
 
 **Characteristics**:
 
 - Collections created on-demand when first document added
-- Deleted when case closes via `delete_case_collection()`
+- Deleted with the case via `CaseVectorStore.erase_case()`; a ChromaDB error fails the delete and keeps the case for a retry
 - Case-scoped search (only within current case)
 - Used by the `answer_from_case_evidence` tool
 
@@ -391,8 +391,8 @@ await case_vector_store.add_documents(case_id, documents)
 1. **Immediate deletion** when a case is explicitly deleted:
 
    ```python
-   # Called from CaseService.delete_case()
-   await case_vector_store.delete_case_collection(case_id)
+   # Called from CaseService.hard_delete_case(), before the row (#1016)
+   await case_vector_store.erase_case(case_id, enterprise_id)
    ```
 
 2. **Scheduled orphan sweep (opt-in)** — an *optional* in-process background job compares live ChromaDB collections against the active-case-ID set in the database and deletes any `case_*` collection without a matching active case, as a safety net. It is **disabled by default** (`server.run_scheduler=False`, "operational neutrality"); when enabled it runs every 6 hours. The `bootstrap/lifespan.py` lifespan only starts it when `run_scheduler` is true, and it refuses to start under the multi-tenant provider (the sweep is cross-tenant, ADR-010 P3). Operators who leave it off can instead run the equivalent CLI job (`python -m faultmaven.jobs.run`) or an external scheduler:
@@ -418,7 +418,7 @@ await case_vector_store.add_documents(case_id, documents)
 
 - The database is the single source of truth for case liveness. The vector store does not duplicate state.
 - Terminal cases (RESOLVED / CLOSED) and archived cases keep their vectors — users may still query the evidence via `answer_from_case_evidence`. Cleanup happens only when the case row is **deleted** (or has been deleted and the sweep catches an orphan collection).
-- The 6-hour sweep is a safety net for cases where `delete_case` ran but `delete_case_collection` failed (e.g., ChromaDB transient unavailability) or for cases deleted directly at the database level (admin action, test cleanup).
+- The 6-hour sweep is a safety net for cases deleted directly at the database level (admin action, test cleanup) and for a collection a turn in flight wrote after the delete cleared it. A ChromaDB failure during `DELETE /cases/{id}` fails the delete and keeps the case for a retry (#1016), so it leaves no orphan.
 
 **Configuration**: the sweep interval is set in [main.py](../../faultmaven/main.py) via `start_case_cleanup_scheduler(..., interval_hours=6)`. See [case-evidence-store.md](../case-and-session/case-evidence-store.md) for the full design.
 
