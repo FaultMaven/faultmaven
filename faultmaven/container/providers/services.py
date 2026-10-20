@@ -90,16 +90,18 @@ def create_case_service(
         logger.debug("Case service using minimal implementation (no repository)")
         return minimal_factory()
 
+    # Outside the fallback below: a case service that cannot clear a case's
+    # stores must fail startup, not degrade to one that clears none (#1016).
+    erasers, not_configured = case_store_erasers(
+        session_store=session_store,
+        file_storage_service=file_storage_service,
+        case_vector_store=case_vector_store,
+        redis_client=redis_client,
+        settings=settings,
+    )
     try:
         from faultmaven.modules.case.domain.services.case_service import CaseService
 
-        erasers, not_configured = case_store_erasers(
-            session_store=session_store,
-            file_storage_service=file_storage_service,
-            case_vector_store=case_vector_store,
-            redis_client=redis_client,
-            settings=settings,
-        )
         service = CaseService(
             case_repository=case_repository,
             session_store=session_store,

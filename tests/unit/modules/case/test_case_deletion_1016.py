@@ -11,6 +11,7 @@ fakeredis, SQLite); the SQL repositories' half is
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List
@@ -283,6 +284,19 @@ class TestUploads:
         assert len(await backend.list_keys(prefix="ent_b/case_abc/")) >= 2
         assert await storage.erase_case("case_abc", "ent_a") == 0
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
+    async def test_an_unreadable_case_directory_raises(self, tmp_path: Path):
+        """``rglob`` skipped it silently, so the delete reported 0 erased."""
+        storage = FileStorageService(backend=FilesystemStorageBackend(str(tmp_path)))
+        await storage.store_file(b"log", "one.log", "ent_a", "case_abc", "text/plain")
+        day = next((tmp_path / "ent_a" / "case_abc").iterdir())
+        day.chmod(0)
+        try:
+            with pytest.raises(ServiceError):
+                await storage.erase_case("case_abc", "ent_a")
+        finally:
+            day.chmod(0o755)
+
     async def test_a_backend_error_raises(self):
         backend = SimpleNamespace(
             get_storage_type=lambda: SimpleNamespace(value="s3"),
@@ -391,6 +405,17 @@ class TestRunbookConversion:
 
 
 class TestComposition:
+    def test_an_eraser_that_cannot_be_built_fails_startup(self, tmp_path, monkeypatch):
+        """Not the ``MinimalCaseService`` fallback, whose delete clears nothing."""
+        from faultmaven.container.providers import services
+
+        def refuse(**_):
+            raise RuntimeError("cannot build the erasers")
+
+        monkeypatch.setattr(services, "case_store_erasers", refuse)
+        with pytest.raises(RuntimeError, match="cannot build the erasers"):
+            self._build(tmp_path, skip=True, case_vector_store=None)
+
     def _build(self, tmp_path, *, skip, case_vector_store):
         from faultmaven.config.settings import get_settings
 

@@ -47,11 +47,12 @@ class CaseDeletion:
     cleared: Dict[str, int] = field(default_factory=dict)
     not_configured: Tuple[str, ...] = ()
 
-    def audit_details(self) -> str:
-        """The audit row's ``details`` JSON."""
+    def audit_details(self, shares_removed: int = 0) -> str:
+        """The audit row's ``details`` JSON. ``shares_removed`` is the number
+        of ``resource_shares`` rows the delete's own transaction removed."""
         return json.dumps(
             {
-                "cleared": self.cleared,
+                "cleared": {**self.cleared, "resource_shares": shares_removed},
                 "not_configured": list(self.not_configured),
                 "not_cleared": NOT_CLEARED,
             }

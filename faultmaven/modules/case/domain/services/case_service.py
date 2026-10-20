@@ -950,11 +950,21 @@ class CaseService(CaseDriverMixin, ICaseService):
         go by their FK cascade. A save of a copy loaded before the delete is
         refused rather than re-inserting it.
 
-        Residual, while a turn or a runbook conversion is in flight on the
-        case (#2096 refuses the delete then):
+        Residual: writers that can land after the erasers ran, among them
+        (#2096 refuses the delete while a turn is in flight):
 
         - a turn already past its load can still write a vector collection or
-          an upload blob after the erasers ran, although its save is refused;
+          an upload blob, although its save is refused;
+        - a turn re-saves the PII redaction registry during its preparation,
+          without waiting for its commit
+          (``investigation_service/service.py``,
+          ``milestone_engine/turn_completion.py``), which re-creates
+          ``redaction:registry:{case_id}``;
+        - a resume (``link_session_to_case``) that passed its access check
+          before the delete re-writes the session pointer;
+        - proactive vectorization (``milestone_engine/vectorization.py``) runs
+          as an asyncio task that outlives its turn, so it can re-create the
+          ``case_{id}`` collection with no turn in flight;
         - a background conversion
           (``core/investigation/milestone_engine/runbook_creation.py``) can
           persist its job between the conversion eraser and the row delete;

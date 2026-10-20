@@ -880,7 +880,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 case_id=case_id,
                 enterprise_id=deletion.enterprise_id,
                 actor_user_id=deletion.actor_user_id,
-                details=deletion.audit_details(),
+                details=deletion.audit_details,
             )
         except Exception as e:
             await self.db.rollback()

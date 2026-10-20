@@ -167,7 +167,9 @@ class RedisSessionStore(ISessionStore):
         ``value`` serialised as ``set`` stores it (``json.dumps``)."""
         stored = json.dumps(value)
         deleted = 0
-        async for key in self.redis_client.scan_iter(match=f"{self.prefix}{match}"):
+        async for key in self.redis_client.scan_iter(
+            match=f"{self.prefix}{match}", count=1000
+        ):
             deleted += int(
                 await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, stored)
             )

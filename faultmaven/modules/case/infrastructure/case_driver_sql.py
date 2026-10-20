@@ -15,7 +15,7 @@ The functions take primitives, not domain objects, so this infrastructure
 module needs nothing from the domain layer.
 """
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from sqlalchemy import text
 
@@ -149,11 +149,12 @@ async def delete_case(
     case_id: str,
     enterprise_id: str,
     actor_user_id: Optional[str],
-    details: str,
+    details: Callable[[int], str],
 ) -> bool:
     """Delete the case's share rows and its row, audit it, commit. ``False``
-    (and a rollback) when there was no row, so nothing is audited."""
-    await db.execute(_DELETE_SHARES, {"case_id": case_id})
+    (and a rollback) when there was no row, so nothing is audited.
+    ``details`` is given how many share rows this transaction deleted."""
+    shares = await db.execute(_DELETE_SHARES, {"case_id": case_id})
     result = await db.execute(_DELETE_CASE, {"case_id": case_id})
     if (result.rowcount or 0) != 1:
         await db.rollback()
@@ -163,7 +164,7 @@ async def delete_case(
         case_id=case_id,
         enterprise_id=enterprise_id,
         actor_user_id=actor_user_id,
-        details=details,
+        details=details(shares.rowcount or 0),
         event_type=AuditEventType.CASE_DELETED,
         event_category=AuditCategory.DATA_ACCESS,
     )

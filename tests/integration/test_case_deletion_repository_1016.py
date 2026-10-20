@@ -125,7 +125,7 @@ async def world(request, tmp_path: Path):
             Case(user_id=creator, enterprise_id=enterprise, title="Disk full", **extra),
         )
 
-    async def share(case_id):
+    async def share(case_id, team="team_a"):
         async with admin.begin() as conn:
             await conn.execute(
                 text(
@@ -133,7 +133,7 @@ async def world(request, tmp_path: Path):
                     "resource_id, scope_type, scope_id, enterprise_id) VALUES "
                     "(:s, 'case', :c, 'team', :t, :e)"
                 ),
-                {"s": uuid4().hex[:32], "c": case_id, "t": "team_a", "e": enterprise},
+                {"s": uuid4().hex[:32], "c": case_id, "t": team, "e": enterprise},
             )
 
     def deletion(case_id, actor=creator):
@@ -176,6 +176,7 @@ async def _audit_rows(world, case_id):
 async def test_delete_takes_the_shares_and_writes_one_audit_row(world):
     doomed, other = await world.new_case(), await world.new_case()
     await world.share(doomed.case_id)
+    await world.share(doomed.case_id, "team_b")
     await world.share(other.case_id)
 
     assert await world.call(
@@ -197,7 +198,8 @@ async def test_delete_takes_the_shares_and_writes_one_audit_row(world):
         "case",
     )
     parsed = json.loads(details)
-    assert parsed["cleared"] == {"uploads": 2}
+    # The two share rows its own transaction removed are counted (F7).
+    assert parsed["cleared"] == {"uploads": 2, "resource_shares": 2}
     assert set(parsed["not_cleared"]) == {
         "idempotency_replay_cache",
         "llm_response_cache",
@@ -245,3 +247,12 @@ async def test_a_save_after_the_delete_does_not_bring_the_case_back(world):
     )
     fresh = await world.new_case()
     assert await world.call("get", fresh.case_id) is not None
+
+
+async def test_an_unshared_case_audits_no_share_rows(world):
+    case = await world.new_case()
+    assert await world.call(
+        "delete", case.case_id, deletion=world.deletion(case.case_id)
+    )
+    ((*_, details),) = await _audit_rows(world, case.case_id)
+    assert json.loads(details)["cleared"]["resource_shares"] == 0
