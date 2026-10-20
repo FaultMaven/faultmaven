@@ -456,10 +456,14 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     Imports live here (not at module scope) so a broken import surfaces as a
     named failure inside a test rather than a collection error with no context.
     """
+    from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
     from faultmaven.infrastructure.persistence.user_repository import (
         InMemoryUserRepository,
         PostgreSQLUserRepository,
         SessionlessUserRepository,
+    )
+    from faultmaven.infrastructure.security.case_redaction import (
+        CaseRedactionRegistryEraser,
     )
     from faultmaven.models.interfaces_case import ICaseService
     from faultmaven.modules.auth.contracts import (
@@ -500,6 +504,11 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         ICaseDriverRelease,
         ICaseMetadataReader,
         ICaseRepository,
+        ICaseStoreEraser,
+    )
+    from faultmaven.modules.case.domain.services.case_erasure import (
+        SessionPointerEraser,
+        UnavailableStoreEraser,
     )
     from faultmaven.modules.case.domain.services.case_service import CaseService
     from faultmaven.modules.case.infrastructure.case_metadata_reader import (
@@ -518,9 +527,15 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
+    from faultmaven.modules.evidence.domain.services.file_storage_service import (
+        FileStorageService,
+    )
     from faultmaven.modules.knowledge.contracts import (
         IConversionService,
         IKnowledgeService,
+    )
+    from faultmaven.modules.knowledge.domain.services.conversion_service.case_erasure import (  # noqa: E501
+        RunbookConversionEraser,
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
@@ -547,7 +562,6 @@ def _build_registry() -> Dict[str, RegistryEntry]:
                     "resume_case_in_session",
                     "search_cases",
                     "get_case_analytics",
-                    "cleanup_expired_cases",
                 )
             ),
         ),
@@ -578,6 +592,17 @@ def _build_registry() -> Dict[str, RegistryEntry]:
                 InMemoryUserRepository,
                 PostgreSQLUserRepository,
                 SessionlessUserRepository,
+            ),
+        ),
+        RegistryEntry(
+            interface=ICaseStoreEraser,
+            reals=(
+                CaseVectorStore,
+                FileStorageService,
+                CaseRedactionRegistryEraser,
+                SessionPointerEraser,
+                UnavailableStoreEraser,
+                RunbookConversionEraser,
             ),
         ),
         RegistryEntry(interface=ICaseDriverRelease, reals=(CaseService,)),
@@ -642,14 +667,15 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
         "'register' name, which is not this port."
     ),
     "ICaseStore": (
-        "No subclass and no full implementation. CaseService shares 7 of its "
-        "15 method names (create_case, get_case, update_case, search_cases, "
-        "get_case_messages_enhanced, cleanup_expired_cases, get_case_analytics) "
+        "No subclass and no full implementation. CaseService shares 6 of its "
+        "14 method names (create_case, get_case, update_case, search_cases, "
+        "get_case_messages_enhanced, get_case_analytics) "
         "but is not a store and implements none of the persistence members. "
         "The overlap was 9 until #1412 retired CaseService.add_message_to_case "
-        "and .get_case_messages, which had no callers; this port still declares "
-        "both, and whether IT should exist at all is a separate question from "
-        "whether that dead concrete code should."
+        "and .get_case_messages, which had no callers, and 7 until #1016 "
+        "removed cleanup_expired_cases with the port's declaration of it; this "
+        "port still declares the #1412 pair, and whether IT should exist at "
+        "all is a separate question from whether that dead concrete code should."
     ),
     "ICaseNotificationService": (
         "No subclass and no full implementation — no class provides any of "
@@ -863,7 +889,7 @@ class TestContractRegistry:
         Every reason in EXCLUDED_INTERFACES asserts the same claim: nothing
         subclasses the port and no class provides ALL of its members. This
         enforces exactly that. Sharing SOME member names is expected and does
-        not trip the gate (CaseService shares 7 of ICaseStore's 15); providing
+        not trip the gate (CaseService shares 6 of ICaseStore's 14); providing
         all of them means the port now has an implementation and belongs in
         the registry.
 

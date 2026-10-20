@@ -36,8 +36,9 @@ async def _upsert_case_record(db, case: Case) -> None:
 
     Optimistic concurrency control: first attempts an UPDATE with a
     version predicate; raises StaleCaseException on version mismatch;
-    falls back to INSERT when no row exists for ``case_id``. The
-    in-memory ``case.version`` is bumped on successful update so
+    falls back to INSERT when no row exists for ``case_id`` and the case
+    was never stored (a stored one was deleted: StaleCaseException, #1016).
+    The in-memory ``case.version`` is bumped on successful update so
     subsequent saves within the same flow work without reloading.
 
     ``closure_reason``, ``last_activity_at``, ``resolved_at`` and
@@ -104,6 +105,12 @@ async def _upsert_case_record(db, case: Case) -> None:
         {"case_id": case.case_id},
     )
     row = probe.fetchone()
+    if row is None and case.is_persisted:
+        # Stored once, gone now: the case was deleted (#1016). Re-inserting it
+        # would bring a deleted case back; the caller reloads and gets 404.
+        raise StaleCaseException(
+            case_id=case.case_id, expected_version=expected_version, actual_version=0
+        )
     if row is None:
         # New case — INSERT with version = 1.
         insert_query = text("""

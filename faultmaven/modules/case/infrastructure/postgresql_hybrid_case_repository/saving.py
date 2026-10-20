@@ -53,7 +53,9 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
 
     OCC: attempts UPDATE with a version predicate first; raises
     StaleCaseException on version mismatch; falls back to INSERT
-    when no row exists. On success mutates `case.version` in place.
+    when no row exists and the case was never stored (a stored one was
+    deleted: StaleCaseException, #1016). On success mutates `case.version`
+    in place.
 
     Post-redesign (storage redesign 2026-04): persists ``description``,
     ``investigation_strategy``, ``current_turn``,
@@ -124,6 +126,12 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
         {"case_id": case.case_id},
     )
     row = probe.fetchone()
+    if row is None and case.is_persisted:
+        # Stored once, gone now: the case was deleted (#1016). Re-inserting it
+        # would bring a deleted case back; the caller reloads and gets 404.
+        raise StaleCaseException(
+            case_id=case.case_id, expected_version=expected_version, actual_version=0
+        )
     if row is None:
         # New case — plain INSERT with version = 1.
         insert_query = text(f"""

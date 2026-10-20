@@ -551,4 +551,6 @@ async def _row_to_case(
     if row.closed_at:
         case_data["closed_at"] = row.closed_at
 
-    return Case(**case_data)
+    case = Case(**case_data)
+    case.mark_persisted()
+    return case

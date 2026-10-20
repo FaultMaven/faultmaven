@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseDeletion,
     CaseDriverChange,
     CaseEntity,
     CaseReport,
@@ -266,6 +267,7 @@ class SQLiteCaseRepository(CaseRepository):
                     raise
 
             await self.db.commit()
+            case.mark_persisted()
             return case
 
         except (StaleCaseException, TurnReceiptExistsError):
@@ -666,13 +668,17 @@ class SQLiteCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(f"Failed to list storage refs: {e}") from e
 
-    async def delete(self, case_id: str) -> bool:
-        """Delete case by ID."""
+    async def delete(self, case_id: str, *, deletion: CaseDeletion) -> bool:
+        """Delete the row, its share rows and its ``case_deleted`` audit row in
+        one transaction (#1016); child tables go by their FK cascade."""
         try:
-            query = text("DELETE FROM cases WHERE case_id = :case_id")
-            result = await self.db.execute(query, {"case_id": case_id})
-            await self.db.commit()
-            return result.rowcount > 0
+            return await case_driver_sql.delete_case(
+                self.db,
+                case_id=case_id,
+                enterprise_id=deletion.enterprise_id,
+                actor_user_id=deletion.actor_user_id,
+                details=deletion.audit_details(),
+            )
         except Exception as e:
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
@@ -1371,37 +1377,6 @@ class SQLiteCaseRepository(CaseRepository):
             raise RepositoryException(
                 f"Failed to get analytics for case {case_id}: {e}"
             ) from e
-
-    async def cleanup_expired(
-        self, max_age_days: int = 90, batch_size: int = 100
-    ) -> int:
-        """Delete closed cases whose ``closed_at`` is older than max_age_days.
-
-        Post-redesign: ``closed_at`` is a first-class column. The DELETE
-        compares it directly against the cutoff datetime.
-        """
-        try:
-            query = text("""
-                DELETE FROM cases
-                WHERE case_id IN (
-                    SELECT case_id
-                    FROM cases
-                    WHERE state = 'closed'
-                    AND closed_at IS NOT NULL
-                    AND closed_at < datetime('now', '-' || :max_age_days || ' days')
-                    LIMIT :batch_size
-                )
-            """)
-
-            result = await self.db.execute(
-                query, {"max_age_days": max_age_days, "batch_size": batch_size}
-            )
-            await self.db.commit()
-            return result.rowcount
-
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(f"Failed to cleanup expired cases: {e}") from e
 
     # ========================================================================
     # Private Helper Methods

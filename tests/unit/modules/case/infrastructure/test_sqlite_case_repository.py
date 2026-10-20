@@ -38,6 +38,7 @@ from faultmaven.modules.case.domain.models.causal import (
     NodeType,
     ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
@@ -851,14 +852,20 @@ class TestDelete:
         case = _make_case()
         await repository.save(case)
 
-        result = await repository.delete(case.case_id)
+        result = await repository.delete(
+            case.case_id,
+            deletion=CaseDeletion(case.case_id, case.enterprise_id, None),
+        )
 
         assert result is True
         assert await repository.get(case.case_id) is None
 
     @pytest.mark.asyncio
     async def test_delete_returns_false_when_missing(self, repository):
-        result = await repository.delete("case_doesnotexist")
+        result = await repository.delete(
+            "case_doesnotexist",
+            deletion=CaseDeletion("case_doesnotexist", "ent_alpha", None),
+        )
         assert result is False
 
     @pytest.mark.asyncio
@@ -868,7 +875,9 @@ class TestDelete:
         repo.db.execute.side_effect = RuntimeError("disk gone")
 
         with pytest.raises(RepositoryException, match="Failed to delete case"):
-            await repo.delete("case_abc")
+            await repo.delete(
+                "case_abc", deletion=CaseDeletion("case_abc", "ent_alpha", None)
+            )
 
 
 # ============================================================
@@ -1101,35 +1110,6 @@ class TestActivityTimestamp:
 
         with pytest.raises(RepositoryException, match="Failed to update activity"):
             await repo.update_activity_timestamp("case_x")
-
-
-# ============================================================
-# cleanup_expired
-# ============================================================
-
-
-class TestCleanupExpired:
-    """
-    cleanup_expired deletes closed cases whose closure timestamp is older
-    than `max_age_days`. `closed_at` lives inside the metadata JSON column,
-    extracted via json_extract in the DELETE query.
-    """
-
-    @pytest.mark.asyncio
-    async def test_cleanup_no_expired_cases(self, repository):
-        # No cases in the table → deletes nothing, returns 0.
-        deleted = await repository.cleanup_expired(max_age_days=90)
-        assert deleted == 0
-
-    @pytest.mark.asyncio
-    async def test_cleanup_wraps_errors(self, async_session):
-        repo = SQLiteCaseRepository(async_session)
-        repo.db = AsyncMock()
-        repo.db.execute.side_effect = RuntimeError("boom")
-        repo.db.rollback = AsyncMock()
-
-        with pytest.raises(RepositoryException, match="Failed to cleanup expired"):
-            await repo.cleanup_expired()
 
 
 # ============================================================

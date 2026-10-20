@@ -26,6 +26,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 
 
 @pytest.fixture
@@ -611,7 +612,9 @@ class TestSQLiteCaseRepository:
         assert await repo.get(case_id) is not None
 
         # Delete
-        result = await repo.delete(case_id)
+        result = await repo.delete(
+            case_id, deletion=CaseDeletion(case_id, case.enterprise_id, None)
+        )
         assert result is True
 
         # Verify it's gone

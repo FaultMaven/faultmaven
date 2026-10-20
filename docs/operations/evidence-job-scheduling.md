@@ -32,7 +32,7 @@ revisited, and it goes stale in *both* directions:
   — the sweep used to delete a file the case still referenced. The DB
   cross-check makes that impossible; the rescue is counted as
   `skipped_db_referenced` and logged with the file's key. The drift is then
-  self-healing: the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally.
+  self-healing: the object is protected exactly while its `uploaded_files` row exists. A case delete removes every object under the case's key prefix before the row (#1016), so it leaves nothing behind; a row removed any other way (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`) leaves an ordinary unreferenced orphan the sweep reclaims normally.
 - stale `linked: true` with no row behind it. On a measured production corpus
   of 850 candidates, 160 had no row and **every one of them** said
   `linked: true`. So the tidier-sounding inverse — "the DB is the authority,
@@ -1161,7 +1161,7 @@ upstream.
    transient 5xx is enough).
 
 **Resolution:** fix the upstream storage flakiness. Nothing needs doing to the
-affected objects themselves — the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally. There is no leak and no loss to
+affected objects themselves — the object is protected exactly while its `uploaded_files` row exists. A case delete removes every object under the case's key prefix before the row (#1016), so it leaves nothing behind; a row removed any other way (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`) leaves an ordinary unreferenced orphan the sweep reclaims normally. There is no leak and no loss to
 clean up; the urgency is entirely about the backend write that failed.
 
 ### Sweep Refused (`status="failed"`, exit 1)

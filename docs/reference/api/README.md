@@ -1730,10 +1730,19 @@ the answer an absent case gets.
 
 **Delete Case**
 
-Permanently delete a case and all associated data.
+Permanently delete a case and all associated data, or fail and keep it.
 
-This endpoint provides hard delete functionality. Once deleted,
-the case and all associated data are permanently removed.
+Every store that holds the case's data is cleared before the case itself:
+its evidence search index, its uploaded files, its PII redaction
+registry, the sessions pointing at it, its team shares and its runbook
+conversion jobs and drafts (a published runbook is kept). An audit record
+names who deleted it and what was cleared.
+
+If any store cannot be cleared, the request answers 500
+`DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A
+failed delete can leave a case that reads normally while some of its
+files and its evidence search are already gone, until a retry completes
+the delete.
 
 The operation is idempotent - subsequent requests will return
 204 No Content even if the case has already been deleted, and so does a

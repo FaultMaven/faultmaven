@@ -222,18 +222,6 @@ class ICaseStore(ABC):
         pass
 
     @abstractmethod
-    async def cleanup_expired_cases(self, batch_size: int = 100) -> int:
-        """Clean up expired cases.
-
-        Args:
-            batch_size: Maximum number of cases to process in one batch
-
-        Returns:
-            Number of cases cleaned up
-        """
-        pass
-
-    @abstractmethod
     async def get_case_analytics(self, case_id: str) -> Dict[str, Any]:
         """Get analytics data for a case.
 
@@ -453,24 +441,20 @@ class ICaseService(ABC):
     async def hard_delete_case(
         self, case_id: str, user_id: Optional[str] = None
     ) -> bool:
-        """Permanently delete a case and all associated data.
-
-        This method performs a hard delete of the case, removing:
-        - The case record
-        - All associated messages
-        - All uploaded data files
-        - All index entries
-        - Any cached data
-
-        The operation is idempotent - subsequent calls will return True
-        even if the case has already been deleted.
+        """Permanently delete a case and every store's data for it, or fail
+        and keep the case (#1016). Every store is cleared before the row;
+        a store that cannot be cleared raises and the row stays.
 
         Args:
             case_id: Case identifier
             user_id: Optional user ID for access control
 
         Returns:
-            True if case was deleted successfully (or already deleted)
+            True if deleted; False if ``user_id`` sees the case but did not
+            create it.
+
+        Raises:
+            NotFoundError: no such case, or ``user_id`` cannot see it.
         """
         pass
 
@@ -571,15 +555,6 @@ class ICaseService(ABC):
 
         Returns:
             CaseMessagesResponse with messages and metadata
-        """
-        pass
-
-    @abstractmethod
-    async def cleanup_expired_cases(self) -> int:
-        """Clean up expired cases.
-
-        Returns:
-            Number of cases cleaned up
         """
         pass
 

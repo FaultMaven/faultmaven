@@ -8,7 +8,8 @@ turn's save fails with a version conflict) and writes its
 
 It also holds the read an account deletion asks first: how many cases the
 account CREATED, since ``cases.user_id`` refuses the delete while any exist
-(#1923).
+(#1923), and a case's own hard delete: its share rows, its row and its
+``case_deleted`` audit row in ONE transaction (#1016).
 
 The functions take primitives, not domain objects, so this infrastructure
 module needs nothing from the domain layer.
@@ -39,8 +40,14 @@ _DRIVEN_BY = text(
 
 _CREATED_BY = text("SELECT count(*) FROM cases WHERE user_id = :user_id")
 
-# ``created_at`` takes the column's server default. ``event_category`` is
-# AUTHORIZATION: a driver change moves who may write the case.
+_DELETE_SHARES = text(
+    "DELETE FROM resource_shares WHERE resource_type = 'case' "
+    "AND resource_id = :case_id"
+)
+
+_DELETE_CASE = text("DELETE FROM cases WHERE case_id = :case_id")
+
+# ``created_at`` takes the column's server default.
 _AUDIT = text(
     "INSERT INTO user_audit_log (user_id, enterprise_id, event_type, "
     "event_category, resource_type, resource_id, details, success) VALUES "
@@ -56,14 +63,17 @@ async def _audit(
     enterprise_id: str,
     actor_user_id: Optional[str],
     details: str,
+    event_type: AuditEventType = AuditEventType.CASE_DRIVER_CHANGED,
+    # AUTHORIZATION for a driver change: it moves who may write the case.
+    event_category: AuditCategory = AuditCategory.AUTHORIZATION,
 ) -> None:
     await db.execute(
         _AUDIT,
         {
             "user_id": actor_user_id,
             "enterprise_id": enterprise_id,
-            "event_type": AuditEventType.CASE_DRIVER_CHANGED.value,
-            "event_category": AuditCategory.AUTHORIZATION.value,
+            "event_type": event_type.value,
+            "event_category": event_category.value,
             "case_id": case_id,
             "details": details,
             "success": True,
@@ -128,6 +138,34 @@ async def release_driver(
         enterprise_id=enterprise_id,
         actor_user_id=actor_user_id,
         details=details,
+    )
+    await db.commit()
+    return True
+
+
+async def delete_case(
+    db: Any,
+    *,
+    case_id: str,
+    enterprise_id: str,
+    actor_user_id: Optional[str],
+    details: str,
+) -> bool:
+    """Delete the case's share rows and its row, audit it, commit. ``False``
+    (and a rollback) when there was no row, so nothing is audited."""
+    await db.execute(_DELETE_SHARES, {"case_id": case_id})
+    result = await db.execute(_DELETE_CASE, {"case_id": case_id})
+    if (result.rowcount or 0) != 1:
+        await db.rollback()
+        return False
+    await _audit(
+        db,
+        case_id=case_id,
+        enterprise_id=enterprise_id,
+        actor_user_id=actor_user_id,
+        details=details,
+        event_type=AuditEventType.CASE_DELETED,
+        event_category=AuditCategory.DATA_ACCESS,
     )
     await db.commit()
     return True

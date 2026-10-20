@@ -895,6 +895,16 @@ class ISessionStore(ABC):
         """
         pass
 
+    @abstractmethod
+    async def delete_keys_holding(self, match: str, value: Any) -> int:
+        """Delete every key matching the glob ``match`` whose stored value is
+        ``value``, each by compare-and-delete, so a key re-pointed elsewhere
+        meanwhile is kept. ``match`` and ``value`` are given as to ``set``:
+        unprefixed, unserialised. Returns how many were deleted; raises when
+        the store cannot be read or written.
+        """
+        pass
+
 
 class IConfiguration(ABC):
     """Interface for centralized configuration management.

@@ -138,7 +138,7 @@ results = await knowledge_vector_store.search(
 **Ephemeral Storage**:
 
 - Collections created on-demand when first document added
-- Deleted when case closes (immediate via `delete_case_collection`) or swept by `cleanup_orphaned_collections(active_case_ids)` (reactive pattern — not scheduled)
+- Deleted when the case is deleted (immediate via `delete_case_collection`, #1016) or swept by `cleanup_orphaned_collections(active_case_ids)` (reactive pattern — not scheduled)
 - No cross-case sharing
 
 > **Note**: The 7-day grace period TTL, `schedule_cleanup`, `get_expired_collections`, and daily cleanup job described below in "Future / Not Implemented" are **aspirational — not implemented**. The live `CaseVectorStore` uses immediate deletion (`delete_case_collection`) and a reactive orphan sweep (`cleanup_orphaned_collections(active_case_ids)`). Collection metadata carries only `case_id` + `created_at` — no `expiry_date` or `cleanup_after` fields. See [deployment-schema-strategy.md §5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the open decision on whether to implement scheduled TTL cleanup.

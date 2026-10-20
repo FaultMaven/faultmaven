@@ -24,6 +24,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def case_store_erasers(
+    *,
+    session_store: Any | None,
+    file_storage_service: Any | None,
+    case_vector_store: Any | None,
+    redis_client: Any | None,
+    settings: FaultMavenSettings,
+) -> tuple[list[Any], tuple[str, ...]]:
+    """The case delete's erasers (#1016) in the order it runs them, and the
+    stores this deployment does not have.
+
+    Only the case vector store can be absent by configuration: under
+    ``SKIP_SERVICE_CHECKS`` none is built, so nothing in the process writes
+    vectors. Any other missing store is a construction failure, bound as an
+    eraser that raises so every delete fails instead of skipping it.
+    """
+    from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.infrastructure.security.case_redaction import (
+        CaseRedactionRegistryEraser,
+    )
+    from faultmaven.modules.case.domain.services.case_erasure import (
+        SessionPointerEraser,
+        UnavailableStoreEraser,
+    )
+    from faultmaven.modules.knowledge.domain.services.conversion_service.case_erasure import (
+        RunbookConversionEraser,
+    )
+
+    def bound(store_name: str, store: Any | None, build=lambda store: store) -> Any:
+        if store is None:
+            return UnavailableStoreEraser(store_name, "its service was not constructed")
+        return build(store)
+
+    erasers = [
+        bound("session_pointers", session_store, SessionPointerEraser),
+        RunbookConversionEraser(get_db_session),
+        bound("uploads", file_storage_service),
+    ]
+    not_configured: tuple[str, ...] = ()
+    if case_vector_store is None and settings.server.skip_service_checks:
+        not_configured = ("case_vectors",)
+    else:
+        erasers.append(bound("case_vectors", case_vector_store))
+    erasers.append(
+        bound("pii_redaction_registry", redis_client, CaseRedactionRegistryEraser)
+    )
+    return erasers, not_configured
+
+
 def create_case_service(
     case_repository: Any | None,
     session_store: Any | None,
@@ -33,6 +82,8 @@ def create_case_service(
     team_service: Any | None = None,
     share_repository: Any | None = None,
     account_reader: Any | None = None,
+    file_storage_service: Any | None = None,
+    redis_client: Any | None = None,
 ) -> Any:
     """Create case service for case persistence and management."""
     if not case_repository:
@@ -42,10 +93,18 @@ def create_case_service(
     try:
         from faultmaven.modules.case.domain.services.case_service import CaseService
 
+        erasers, not_configured = case_store_erasers(
+            session_store=session_store,
+            file_storage_service=file_storage_service,
+            case_vector_store=case_vector_store,
+            redis_client=redis_client,
+            settings=settings,
+        )
         service = CaseService(
             case_repository=case_repository,
             session_store=session_store,
-            case_vector_store=case_vector_store,
+            store_erasers=erasers,
+            stores_not_configured=not_configured,
             settings=settings,
             team_service=team_service,  # Team-membership resolution (None in standalone)
             share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
@@ -1475,6 +1534,9 @@ def register_services(container: BaseDIContainer) -> None:
         account_reader=getattr(
             getattr(container, "user_store", None), "user_repository", None
         ),
+        # The stores a case delete clears before the row (#1016).
+        file_storage_service=container.get_service("file_storage_service"),
+        redis_client=redis_client,
     )
     container._register_service("case_service", case_service)
 

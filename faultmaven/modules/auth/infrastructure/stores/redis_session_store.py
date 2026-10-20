@@ -19,6 +19,14 @@ from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
+#: Compare-and-delete: delete the key only while it still holds the value.
+_DELETE_IF_HOLDS = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
 
 class RedisSessionStore(ISessionStore):
     """Redis implementation of the ISessionStore interface.
@@ -153,6 +161,17 @@ class RedisSessionStore(ISessionStore):
         except Exception as e:
             logger.error(f"Redis increment operation failed for key {key}: {e}")
             raise ConnectionError(f"Redis operation failed: {e}")
+
+    async def delete_keys_holding(self, match: str, value: Any) -> int:
+        """SCAN the prefixed ``match`` and compare-and-delete each key against
+        ``value`` serialised as ``set`` stores it (``json.dumps``)."""
+        stored = json.dumps(value)
+        deleted = 0
+        async for key in self.redis_client.scan_iter(match=f"{self.prefix}{match}"):
+            deleted += int(
+                await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, stored)
+            )
+        return deleted
 
     # High-level session management methods
 

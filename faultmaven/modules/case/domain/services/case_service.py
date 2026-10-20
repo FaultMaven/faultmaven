@@ -18,7 +18,7 @@ Core Responsibilities:
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -49,7 +49,9 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_KB_SOURCES,
+    CaseDeletion,
     ICaseAccountReader,
+    ICaseStoreEraser,
     MessageRowKind,
     TurnReceipt,
     append_message_row,
@@ -59,6 +61,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_driver import CaseDriverMixin
+from faultmaven.modules.case.domain.services.case_erasure import session_pointer_key
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -126,12 +129,13 @@ class CaseService(CaseDriverMixin, ICaseService):
         self,
         case_repository: CaseRepository,
         session_store: Optional[ISessionStore] = None,
-        case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         max_cases_per_user: int = 100,
         team_service: Optional[Any] = None,
         share_repository: Optional[Any] = None,
         account_reader: Optional[ICaseAccountReader] = None,
+        store_erasers: Sequence[ICaseStoreEraser] = (),
+        stores_not_configured: Sequence[str] = (),
     ):
         """
         Initialize the Case Service
@@ -139,7 +143,6 @@ class CaseService(CaseDriverMixin, ICaseService):
         Args:
             case_repository: Case repository for persistence (reports are handled via repository)
             session_store: Optional session store for integration
-            case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
             max_cases_per_user: Maximum cases per user
             team_service: Optional team-membership resolver (``list_all_user_team_ids``).
@@ -151,10 +154,15 @@ class CaseService(CaseDriverMixin, ICaseService):
                 display names for the case rows and the facts that make an
                 account a driver candidate (ADR-020 D4/D5). Absent, names read
                 null and only the creator is a candidate.
+            store_erasers: One ``ICaseStoreEraser`` per store holding a case's
+                data, run in this order before the row is deleted (#1016).
+            stores_not_configured: Stores this deployment does not have, named
+                as such in the ``case_deleted`` audit row.
         """
         self.repository = case_repository
         self.session_store = session_store
-        self.case_vector_store = case_vector_store
+        self.store_erasers = tuple(store_erasers)
+        self.stores_not_configured = tuple(stores_not_configured)
         self._settings = settings
         self.team_service = team_service
         self.share_repository = share_repository
@@ -308,7 +316,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             if session_id and self.session_store:
                 try:
                     await self.session_store.set(
-                        f"session:{session_id}:current_case_id",
+                        session_pointer_key(session_id),
                         case.case_id,
                         ttl=86400,  # 24 hours
                     )
@@ -608,7 +616,14 @@ class CaseService(CaseDriverMixin, ICaseService):
                         elif hasattr(case, key):
                             setattr(case, key, value)
 
-                await update_case_with_retry(self.repository, case_id, apply)
+                from faultmaven.modules.case.exceptions import CaseNotFoundError
+
+                try:
+                    await update_case_with_retry(self.repository, case_id, apply)
+                except CaseNotFoundError:
+                    # Deleted between the gate and the retry's fresh load: the
+                    # answer an absent case gets, as ``close_case`` gives it.
+                    raise NotFoundError("Case", case_id)
             # else: no recognized fields — treat as no-op success (matches
             # pre-split behavior for forward compatibility with callers
             # that pass unrelated keys).
@@ -654,7 +669,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             if not force_new and self.session_store:
                 try:
                     existing_case_id = await self.session_store.get(
-                        f"session:{session_id}:current_case_id"
+                        session_pointer_key(session_id)
                     )
                     if existing_case_id:
                         # Verify case still exists and is accessible
@@ -760,7 +775,7 @@ class CaseService(CaseDriverMixin, ICaseService):
 
             try:
                 await self.session_store.set(
-                    f"session:{session_id}:current_case_id",
+                    session_pointer_key(session_id),
                     case_id,
                     ttl=86400,  # 24 hours
                 )
@@ -924,96 +939,62 @@ class CaseService(CaseDriverMixin, ICaseService):
     async def hard_delete_case(
         self, case_id: str, user_id: Optional[str] = None
     ) -> bool:
-        """
-        Permanently delete a case and all associated data
+        """Delete a case completely, or fail and keep it (#1016).
 
-        This method performs a hard delete of the case, removing:
-        - The case record
-        - All associated messages
-        - All uploaded data files
-        - All index entries
-        - Any cached data
+        Every store that holds the case's data is cleared BEFORE the row, by
+        ``store_erasers`` in their bound order: session pointers, runbook
+        conversion, uploads, case vectors, PII registry. The first eraser that
+        raises propagates, so the row stays and a retry can finish the delete.
+        The row then goes in one transaction with its share rows and its
+        ``case_deleted`` audit row (``ICaseRepository.delete``); child tables
+        go by their FK cascade. A save of a copy loaded before the delete is
+        refused rather than re-inserting it.
 
-        The operation is idempotent - subsequent calls will return True
-        even if the case has already been deleted.
+        Residual, while a turn or a runbook conversion is in flight on the
+        case (#2096 refuses the delete then):
 
-        Args:
-            case_id: Case identifier
-            user_id: Optional user ID for access control
+        - a turn already past its load can still write a vector collection or
+          an upload blob after the erasers ran, although its save is refused;
+        - a background conversion
+          (``core/investigation/milestone_engine/runbook_creation.py``) can
+          persist its job between the conversion eraser and the row delete;
+          that job survives with ``case_id`` NULL.
 
         Returns:
-            True if case was deleted successfully (or already deleted)
+            True when deleted, False when ``user_id`` can see the case but did
+            not create it (delete is governance, ADR-020 D2).
+
+        Raises:
+            NotFoundError: no such case, or ``user_id`` cannot see it (the
+                route answers 204, as for a case already deleted).
+            Anything a store or the repository raises: the case is kept.
         """
         if not case_id:
             raise ValidationException("Case ID cannot be empty")
 
-        try:
-            # Check if case exists and user has permissions
-            if user_id:
-                case = await self.get_case(case_id, user_id)
-                if not case:
-                    # Case not found or no access - idempotent behavior
-                    return True
+        case = await self._resolve_case_for_access(case_id, user_id)
+        if user_id and case.user_id != user_id:
+            logger.warning(
+                f"User {user_id} denied delete access to case {case_id} "
+                "(not the creator)"
+            )
+            return False
 
-                # Delete is governance: the CREATOR's, whoever drives
-                # (ADR-020 D2). A reader — the driver included — is refused.
-                if case.user_id != user_id:
-                    logger.warning(
-                        f"User {user_id} denied delete access to case {case_id} "
-                        "(not the creator)"
-                    )
-                    return False
-
-            # Perform hard delete through repository
-            # Note: Reports are automatically deleted via CASCADE FK constraint (TD-001: reports stored in PostgreSQL)
-            success = await self.repository.delete(case_id)
-
-            if success:
-                logger.info(f"Hard deleted case {case_id}")
-
-                # Cascade the polymorphic team-share rows (ADR-013 §D4). The
-                # share table has no FK on its polymorphic target columns, so the
-                # cascade is app-enforced here, mirroring the KB delete path. An
-                # orphan share row is harmless to reads (the allowlist resolves
-                # ids that then match no case), but leaving them is untidy and
-                # would resurface if a case_id were ever reused.
-                if self.share_repository:
-                    try:
-                        await self.share_repository.delete_for_resource("case", case_id)
-                    except Exception as e:
-                        logger.error(f"Failed to delete shares for case {case_id}: {e}")
-
-                # Clean up Case Working Memory (delete vector store collection)
-                if self.case_vector_store:
-                    try:
-                        await self.case_vector_store.delete_case_collection(case_id)
-                        logger.info(
-                            f"Deleted Working Memory collection for deleted case {case_id}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to delete Working Memory for case {case_id}: {e}"
-                        )
-                        # Don't fail the delete operation if cleanup fails
-
-                # TODO: Cascade delete other associated data:
-                # - Delete uploaded data files
-                # - Remove from search indexes
-                # - Clear cached conversation context
-                # - Remove session associations
-                # This should be implemented when full data integration is available
-
-            # Always return True for idempotent behavior
-            # Even if delete failed, we consider it "successful" for idempotency
-            return True
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to hard delete case {case_id}: {e}")
-            # For idempotent behavior, return True even on error
-            # The case might not exist or might already be deleted
-            return True
+        cleared: Dict[str, int] = {}
+        for eraser in self.store_erasers:
+            cleared[eraser.store_name] = await eraser.erase_case(
+                case_id, case.enterprise_id
+            )
+        deletion = CaseDeletion(
+            case_id=case_id,
+            enterprise_id=case.enterprise_id,
+            actor_user_id=user_id,
+            cleared=cleared,
+            not_configured=self.stores_not_configured,
+        )
+        if await self.repository.delete(case_id, deletion=deletion):
+            logger.info(f"Hard deleted case {case_id}: cleared {cleared}")
+        return True
 
     @trace("case_service_close_case")
     async def close_case(self, case_id: str, user_id: str) -> Case:
@@ -1520,29 +1501,6 @@ class CaseService(CaseDriverMixin, ICaseService):
         except Exception as e:
             logger.error(f"Failed to get analytics for case {case_id}: {e}")
             return {}
-
-    @trace("case_service_cleanup_expired")
-    async def cleanup_expired_cases(self) -> int:
-        """
-        Clean up expired cases
-
-        Returns:
-            Number of cases cleaned up
-        """
-        try:
-            # Delegate to repository - it handles cleanup efficiently
-            cleaned_count = await self.repository.cleanup_expired(
-                max_age_days=90, batch_size=100
-            )
-
-            if cleaned_count > 0:
-                logger.info(f"Cleaned up {cleaned_count} expired cases")
-
-            return cleaned_count
-
-        except Exception as e:
-            logger.error(f"Failed to cleanup expired cases: {e}")
-            return 0
 
     @trace("case_service_list_cases_by_session")
     async def list_cases_by_session(

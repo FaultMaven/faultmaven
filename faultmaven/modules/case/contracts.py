@@ -248,8 +248,15 @@ class ICaseRepository(Protocol):
         """
         ...
 
-    async def delete(self, case_id: str) -> bool:
-        """Delete case by ID."""
+    async def delete(self, case_id: str, *, deletion: "CaseDeletion") -> bool:
+        """Delete the case row (#1016), in ONE transaction with its
+        ``resource_shares`` rows and its ``case_deleted`` audit row, built from
+        ``deletion``. Commits only when the row was there; otherwise rolls back
+        and returns ``False``, so a second, concurrent delete audits nothing.
+
+        The row goes last: ``CaseService.hard_delete_case`` clears every other
+        store first and calls this only when all of them were cleared.
+        """
         ...
 
     async def search(
@@ -355,12 +362,6 @@ class ICaseRepository(Protocol):
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for a case."""
-        ...
-
-    async def cleanup_expired(
-        self, max_age_days: int = 90, batch_size: int = 100
-    ) -> int:
-        """Clean up expired/old cases."""
         ...
 
     async def add_report(self, report: CaseReport) -> CaseReport:
@@ -521,6 +522,7 @@ from faultmaven.modules.case.domain.models.conclusion import (
     mechanism_for_display,
     normalize_stored_report_content,
 )
+from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
     DocumentType,
@@ -711,6 +713,27 @@ class ICaseCreatorCount(Protocol):
         ...
 
 
+class ICaseStoreEraser(Protocol):
+    """Clears one store of everything it holds for a case (#1016).
+
+    ``CaseService.hard_delete_case`` runs every eraser before the case row is
+    deleted, and deletes the row only when all of them returned. Each lives in
+    the module that owns its store and is bound by the composition root.
+    """
+
+    #: The store's name in the ``case_deleted`` audit row.
+    store_name: str
+
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        """Remove what the store holds for ``case_id``; return how many items
+        were removed (0 when there was nothing to remove).
+
+        Raises when the store cannot be cleared, which keeps the case row so a
+        retry can finish the delete. Idempotent: a second run removes 0.
+        """
+        ...
+
+
 class CaseAccount(Protocol):
     """The account fields the case module reads: names for the case rows
     (ADR-020 D5) and the facts that make an account a driver candidate (D4).
@@ -752,6 +775,7 @@ __all__ = [
     "ICaseDriverRelease",
     "ICaseCreatorCount",
     "ICaseAccountReader",
+    "ICaseStoreEraser",
     "CaseAccount",
     "CaseMetadataUnavailableError",
     "CaseMetadataNotGrantedError",
@@ -788,6 +812,7 @@ __all__ = [
     # Case domain models
     "Case",
     "CaseAction",
+    "CaseDeletion",
     "CaseDriverChange",
     "CaseDriverChangeReason",
     "CaseMetadata",

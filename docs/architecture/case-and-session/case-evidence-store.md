@@ -51,7 +51,7 @@ Concise Answer with Citations
    - Prevents pollution of main agent's context
 
 3. **Deletion-Triggered Cleanup + Orphan Sweep**
-   - `CaseService.delete_case()` calls `CaseVectorStore.delete_case_collection(case_id)` to remove the chunks
+   - `CaseService.hard_delete_case()` calls `CaseVectorStore.erase_case()` to remove the chunks before the case row; a ChromaDB error fails the delete and keeps the case (#1016)
    - A background orphan-detection job (default 6h interval) sweeps any case collection whose `case_id` is not in the active-cases set, as a safety net for missed deletions
    - Archived or terminal-state cases retain their evidence and remain queryable
 

@@ -83,7 +83,7 @@ modules/case/infrastructure/
 ├── postgresql_hybrid_case_repository/    # PostgreSQL implementation: repository.py (class), rows.py, loading.py, saving.py
 ├── sessionless_case_repository.py        # Sessionless repository variant
 ├── case_scope.py                         # Read-scope SQL: the owned ∪ shared-to-my-teams visible-id allowlist (+ driven_only = access=write)
-├── case_driver_sql.py                    # The driver writes (ADR-020): versioned reassign / conditional release + their audit row, both dialects
+├── case_driver_sql.py                    # The audited case writes, both dialects: the driver (ADR-020) versioned reassign / conditional release, and the hard delete (#1016) row + shares + case_deleted row
 ├── case_metadata_reader.py               # PostgreSQL-only cross-enterprise operator list (multi): reads the SECURITY DEFINER metadata functions
 └── created_bounds.py                     # Creation-date window bounds, normalized to UTC, one place for every repository
 infrastructure/persistence/

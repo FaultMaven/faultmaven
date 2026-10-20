@@ -17,6 +17,7 @@ from faultmaven.modules.case.domain.models.conclusion import (
     RootCauseConclusion,
     WorkingConclusion,
 )
+from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
     EscalationState,
@@ -452,19 +453,9 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete(self, case_id: str) -> bool:
-        """
-        Delete case by ID.
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            True if deleted, False if not found
-
-        Raises:
-            RepositoryException: If deletion fails
-        """
+    async def delete(self, case_id: str, *, deletion: CaseDeletion) -> bool:
+        """Delete the case row with its share rows and its ``case_deleted``
+        audit row, one transaction (#1016). See ``ICaseRepository.delete``."""
         pass
 
     @abstractmethod
@@ -818,30 +809,6 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def cleanup_expired(
-        self, max_age_days: int = 90, batch_size: int = 100
-    ) -> int:
-        """
-        Clean up expired/old cases.
-
-        Implementation note: Different backends may use different strategies:
-        - Redis: Use TTL
-        - PostgreSQL: Query by closed_at date
-        - In-Memory: Iterate and filter
-
-        Args:
-            max_age_days: Maximum age in days for closed cases
-            batch_size: Maximum cases to process in one batch
-
-        Returns:
-            Number of cases deleted
-
-        Raises:
-            RepositoryException: If cleanup fails
-        """
-        pass
-
-    @abstractmethod
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """
         Save report to persistence layer.
@@ -1032,6 +999,8 @@ class InMemoryCaseRepository(CaseRepository):
         # The ``case_driver_changed`` audit rows the SQL repositories write
         # with each driver change (ADR-020 D4), in write order.
         self.driver_changes: List[CaseDriverChange] = []
+        # The ``case_deleted`` audit rows, likewise (#1016).
+        self.deletions: List[CaseDeletion] = []
 
     async def save(
         self,
@@ -1096,6 +1065,14 @@ class InMemoryCaseRepository(CaseRepository):
             )
         )
         try:
+            if existing is None and case.is_persisted:
+                # The SQL repositories' refusal: a stored case that is gone was
+                # deleted, and a save must not bring it back (#1016).
+                raise StaleCaseException(
+                    case_id=case.case_id,
+                    expected_version=case.version,
+                    actual_version=0,
+                )
             if existing is not None and existing.version != case.version:
                 raise StaleCaseException(
                     case_id=case.case_id,
@@ -1116,6 +1093,7 @@ class InMemoryCaseRepository(CaseRepository):
             # ``reassign_driver`` / ``release_driver``.
             case.driver_id = existing.driver_id
 
+        case.mark_persisted()
         self._cases[case.case_id] = case
         for report in reports:
             self._store_report(report)
@@ -1333,9 +1311,9 @@ class InMemoryCaseRepository(CaseRepository):
 
         return count
 
-    async def delete(self, case_id: str) -> bool:
+    async def delete(self, case_id: str, *, deletion: CaseDeletion) -> bool:
         """Delete case from memory, and its receipts with it (the table's
-        ``ON DELETE CASCADE``)."""
+        ``ON DELETE CASCADE``), recording the audit row."""
         if case_id in self._cases:
             del self._cases[case_id]
             self._receipts = {
@@ -1343,6 +1321,7 @@ class InMemoryCaseRepository(CaseRepository):
                 for key, receipt in self._receipts.items()
                 if key[1] != case_id
             }
+            self.deletions.append(deletion)
             return True
         return False
 
@@ -1663,34 +1642,6 @@ class InMemoryCaseRepository(CaseRepository):
             analytics["resolution_time_seconds"] = duration
 
         return analytics
-
-    async def cleanup_expired(
-        self, max_age_days: int = 90, batch_size: int = 100
-    ) -> int:
-        """Clean up expired cases from memory."""
-        from datetime import timedelta, timezone
-
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-        deleted_count = 0
-
-        # Collect case IDs to delete (avoid modifying dict during iteration)
-        to_delete = []
-        for case_id, case in self._cases.items():
-            if (
-                case.state == CaseState.CLOSED
-                and case.closed_at
-                and case.closed_at < cutoff_date
-            ):
-                to_delete.append(case_id)
-                if len(to_delete) >= batch_size:
-                    break
-
-        # Delete collected cases
-        for case_id in to_delete:
-            del self._cases[case_id]
-            deleted_count += 1
-
-        return deleted_count
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Add report to memory."""

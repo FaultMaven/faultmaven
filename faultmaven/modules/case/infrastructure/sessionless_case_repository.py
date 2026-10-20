@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseDeletion,
     CaseDriverChange,
     CaseEntity,
     CaseState,
@@ -181,6 +182,7 @@ class SessionlessCaseRepository(CaseRepository):
                     exc,
                     receipt.turn_number,
                 )
+                case.mark_persisted()
                 return case
             raise
         return saved
@@ -300,11 +302,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.list_by_user(user_id, limit, offset, status_filter)
 
-    async def delete(self, case_id: str) -> bool:
-        """Delete case with new session per operation."""
+    async def delete(self, case_id: str, *, deletion: CaseDeletion) -> bool:
+        """The row, its shares and its audit row: one session, one transaction
+        (#1016)."""
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.delete(case_id)
+            return await repo.delete(case_id, deletion=deletion)
 
     async def list_evidence_by_time_window(
         self,
@@ -536,14 +539,6 @@ class SessionlessCaseRepository(CaseRepository):
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
             return await repo.get_analytics(case_id)
-
-    async def cleanup_expired(
-        self, max_age_days: int = 90, batch_size: int = 100
-    ) -> int:
-        """Clean up expired/old cases."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.cleanup_expired(max_age_days, batch_size)
 
     async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
         """Count cases created by user on a specific date."""
