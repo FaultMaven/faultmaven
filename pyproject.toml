@@ -59,8 +59,10 @@ dependencies = [
     "httpx>=0.28.1",
     # [speedups]: aiodns/c-ares keeps DNS resolution off the shared thread
     # executor (aiohttp falls back to ThreadedResolver without it, contending
-    # with BGE-M3 encode work); >=3.14: request-smuggling/parse GHSA fixes
-    "aiohttp[speedups]>=3.14.0",
+    # with BGE-M3 encode work); >=3.14: request-smuggling/parse GHSA fixes;
+    # CVE-2026-111064, GHSA-2g87-pp6c-29x5, CVE-2026-111063 (fixed in 3.14.4);
+    # >=3.14.5: floor = lock pin (#2098)
+    "aiohttp[speedups]>=3.14.5",
     "aiofiles>=23.2.1",
     # Floor raised past CVE-2026-63374 / CVE-2026-64847 (both fixed in 4.14.2).
     # The lockfiles are what pip-audit reads, but a consumer resolving from this

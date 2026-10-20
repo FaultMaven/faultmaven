@@ -6,7 +6,7 @@ aiofiles==25.1.0
     # via faultmaven (pyproject.toml)
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.14.3
+aiohttp==3.14.5
     # via faultmaven (pyproject.toml)
 aiosignal==1.4.0
     # via aiohttp
@@ -705,7 +705,7 @@ werkzeug==3.1.9
     #   locust
 wsproto==1.3.2
     # via simple-websocket
-yarl==1.23.0
+yarl==1.25.1
     # via aiohttp
 zipp==3.23.1
     # via importlib-metadata
