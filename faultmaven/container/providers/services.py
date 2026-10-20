@@ -90,8 +90,8 @@ def create_case_service(
         logger.debug("Case service using minimal implementation (no repository)")
         return minimal_factory()
 
-    # Outside the fallback below: a case service that cannot clear a case's
-    # stores must fail startup, not degrade to one that clears none (#1016).
+    # Outside the fallback below: an error building the erasers propagates out of
+    # this function instead of degrading to a case service that clears no store (#1016).
     erasers, not_configured = case_store_erasers(
         session_store=session_store,
         file_storage_service=file_storage_service,

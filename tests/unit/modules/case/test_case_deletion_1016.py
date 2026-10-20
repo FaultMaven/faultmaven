@@ -171,7 +171,7 @@ class TestHardDeleteCase:
 
 
 def json_of(deletion):
-    return json.loads(deletion.audit_details())
+    return json.loads(deletion.audit_details(0))
 
 
 # ============================================================
@@ -296,6 +296,27 @@ class TestUploads:
                 await storage.erase_case("case_abc", "ent_a")
         finally:
             day.chmod(0o755)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
+    async def test_another_enterprises_unreadable_directory_is_not_walked(
+        self, tmp_path: Path
+    ):
+        backend = FilesystemStorageBackend(str(tmp_path))
+        storage = FileStorageService(backend=backend)
+        await storage.store_file(b"log", "a.log", "ent_a", "case_a", "text/plain")
+        await storage.store_file(b"log", "b.log", "ent_b", "case_b", "text/plain")
+        day = next((tmp_path / "ent_b" / "case_b").iterdir())
+        day.chmod(0o000)
+        try:
+            await storage.erase_case("case_a", "ent_a")
+            assert await backend.list_keys(prefix="ent_a/") == []
+        finally:
+            day.chmod(0o755)
+
+    async def test_a_case_that_never_had_an_upload_erases_nothing(self, tmp_path: Path):
+        storage = FileStorageService(backend=FilesystemStorageBackend(str(tmp_path)))
+        await storage.store_file(b"log", "a.log", "ent_a", "case_other", "text/plain")
+        assert await storage.erase_case("case_never", "ent_a") == 0
 
     async def test_a_backend_error_raises(self):
         backend = SimpleNamespace(

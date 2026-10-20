@@ -951,7 +951,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         refused rather than re-inserting it.
 
         Residual: writers that can land after the erasers ran, among them
-        (#2096 refuses the delete while a turn is in flight):
+        (#2096 tracks refusing the delete while a turn is in flight):
 
         - a turn already past its load can still write a vector collection or
           an upload blob, although its save is refused;

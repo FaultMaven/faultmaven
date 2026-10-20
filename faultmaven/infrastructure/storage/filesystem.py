@@ -279,7 +279,10 @@ class FilesystemStorageBackend(IFileStorageBackend):
         not walk every tenant's tree. A directory that cannot be read RAISES:
         ``rglob`` skipped one silently, which let the case delete report a
         case's uploads erased while the files sat in an unreadable directory
-        (#1016). A base directory that does not exist yet lists nothing.
+        (#1016). With no prefix (the orphan sweep, the deployment wipe) the walk
+        covers the whole root, so one unreadable directory anywhere makes the
+        listing raise: those callers fail loudly instead of acting on a partial
+        listing. A base directory that does not exist yet lists nothing.
 
         Args:
             prefix: Only return keys starting with this string.

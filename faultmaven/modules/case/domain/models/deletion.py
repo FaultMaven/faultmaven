@@ -47,7 +47,7 @@ class CaseDeletion:
     cleared: Dict[str, int] = field(default_factory=dict)
     not_configured: Tuple[str, ...] = ()
 
-    def audit_details(self, shares_removed: int = 0) -> str:
+    def audit_details(self, shares_removed: int) -> str:
         """The audit row's ``details`` JSON. ``shares_removed`` is the number
         of ``resource_shares`` rows the delete's own transaction removed."""
         return json.dumps(

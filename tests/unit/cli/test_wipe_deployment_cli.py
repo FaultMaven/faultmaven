@@ -880,7 +880,7 @@ async def test_one_refused_key_does_not_end_the_sweep(monkeypatch):
     reason to abandon the rest.
 
     The filesystem backend refuses a key whose resolved path leaves the storage
-    root (#1235), and ``list_keys`` can hand us exactly such a key: ``rglob``
+    root (#1235), and ``list_keys`` can hand us exactly such a key: the listing
     yields a file symlink inside the root and ``is_file()`` follows it, so a
     link pointing outside is listed and then refused. Before the per-key guard
     the raise ended the loop, so ``c`` here was never attempted, ``--wipe``
