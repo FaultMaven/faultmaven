@@ -1047,6 +1047,7 @@ ADVERSARIAL_LINES = {
 
 @pytest.mark.unit
 class TestAdversarialLines:
+    @pytest.mark.performance
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
     def test_the_reader_is_linear(self, name):
         """The reader alone, as a growth SHAPE, from ~128 B of the unit up.
@@ -1284,6 +1285,7 @@ class TestTheUserSlot:
             None,
         )
 
+    @pytest.mark.performance
     @pytest.mark.parametrize(
         "lead",
         [

@@ -78,12 +78,28 @@ thing to know about it is **where it runs**:
 
 | | `tests/benchmarks/` | `tests/performance/` |
 |---|---|---|
-| `Test Standalone` (`-m "not cloud and not benchmark"`) | excluded | **collected** |
-| `Test Cloud` (`-m "not benchmark"`) | excluded | **collected** |
-| its own workflow | `benchmarks.yml` | none |
+| `Test Standalone` (`-m "not cloud and not benchmark and not performance"`, `--ignore=tests/performance`) | excluded | excluded |
+| `Test Cloud` (`-m "not benchmark and not performance"`, `--ignore=tests/performance`) | excluded | excluded |
+| per pull request, `benchmarks.yml` `benchmarks` job (not required) | "Run benchmarks" (`-m benchmark`) | "Run wall-clock tests" (`pytest tests/ -m performance`) |
+| nightly, `benchmarks.yml` `nightly-absolute` | absolute targets | absolute targets |
 
-So a wall-clock threshold there reds a **required** check on a diff that
-changed nothing — #908's failure with the merge blocked (#1557). It
+Until #2090 both required jobs collected `tests/performance/`, so a
+wall-clock threshold there could red a **required** check on a diff that
+changed nothing — #908's failure with the merge blocked (#1557), and 11 of
+`main`'s 19 red runs since 2026-09-15. `tests/performance/conftest.py` now
+marks every test there `performance`, new modules included, and the defensive
+real-timing growth checks outside it carry the marker too
+(`test_url_query_redaction.py`, `test_sshd_auth_anchoring.py`, and
+`TestTheGrowthHelper`, the growth helper's self-tests), so one marker selects
+them all; the required jobs also `--ignore` the directory. Named to stay in
+the required jobs (#2090): by the owner's ruling, `test_runbook_regex_redos.py`,
+which pins the real ReDoS of #1395/#1405, and `test_secret_patterns_1980.py`;
+by the plan, the revocation TTL tests in `test_revocation_store_contract.py`,
+which pin the deadline rule.
+`TestWorkflowWiring` evaluates both required jobs' `-m` expressions and
+checks the per-PR step, which records its rows as the
+`wallclock-rows-performance` artifact for a re-anchor
+(`tests/wallclock/collect.py`). The directory
 carries its own `tests/performance/budgets.py` — 28 rows on the same
 two-number shape: 21 anchored by #1557 2-3x above 29 measured runs
 (median utilisation 0.29% before, 30.7% after), and 7 moved in by #1579,

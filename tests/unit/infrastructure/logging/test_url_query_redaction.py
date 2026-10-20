@@ -109,6 +109,7 @@ class TestRedactUrls:
             "for url 'https://g.com/s?<redacted>'"
         )
 
+    @pytest.mark.performance
     def test_a_long_near_miss_line_does_not_blow_up(self):
         """‼ Polynomial ReDoS guard, with a measured anchor.
 
@@ -127,8 +128,8 @@ class TestRedactUrls:
         runner under four xdist workers clears it says nothing about the
         regex. From 256 B to 16 KB of near-miss it reads ~8, linear's value
         (7.8-8.3 here, idle and on a 2x oversubscribed box; bound ~22.6). Its
-        total growth there, ~8-9 untraced and ~5.5 under coverage as CI runs
-        it, is under the helper's gate (~11.5, #1781), so the window moves up
+        total growth there, ~8-9 untraced and ~5.5 under coverage, is
+        under the helper's gate (~11.5, #1781), so the window moves up
         once, to 2 KB-128 KB. The scheme-class pattern, restored, reads at
         least 51 at the same sizes.
         """

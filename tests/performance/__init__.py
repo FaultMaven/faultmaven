@@ -14,8 +14,8 @@ unit and integration tests the same gates run:
 - vocabulary and timestamp extraction, and extraction beside a 64 KB
   hostile line against ``TIER1_TIMEOUT_SECONDS``
 
-‼ Unlike ``tests/benchmarks/``, this directory IS collected by both
-required CI gates (``-m "not benchmark"`` does not exclude it), so every
+‼ Until #2090 this directory WAS collected by both required CI gates
+(``-m "not benchmark"`` did not exclude it), so every
 wall-clock comparison here goes through
 ``tests/wallclock``'s ``assert_latency_within`` against a row of
 ``budgets.py`` — calibration-scaled so runner speed cancels, and anchored

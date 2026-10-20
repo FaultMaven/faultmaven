@@ -69,7 +69,7 @@ from typing import Dict, Tuple
 #: value is a single file, as the A/B job uses it.
 RECORD_ENV = "FM_WALLCLOCK_RECORD"
 
-#: Names the job profile (``standalone``, ``cloud``, ``nightly``) written
+#: Names the job profile (``performance``, ``nightly``) written
 #: into every row, so rows from different jobs are never pooled by accident.
 PROFILE_ENV = "FM_WALLCLOCK_PROFILE"
 

@@ -19,7 +19,7 @@ def _row(**overrides):
         "kind": "regression budget",
         "scale": 4.0,
         "raw_ratio": 4.0,
-        "profile": "standalone",
+        "profile": "performance",
         "sha": "abc",
     }
     row.update(overrides)

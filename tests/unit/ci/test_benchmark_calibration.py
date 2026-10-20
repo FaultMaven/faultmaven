@@ -4,7 +4,9 @@
 benchmark"`) and runs in a workflow of its own, so nothing in the ordinary
 suite exercises it. This file does — it is deliberately unmarked so it runs
 in `Test Standalone`/`Test Cloud`, where a broken calibration is cheap to
-find rather than being discovered by a benchmark job a week later.
+find rather than being discovered by a benchmark job a week later. The one
+exception is `TestTheGrowthHelper`, which times real workloads and so is
+marked `performance` (#2090).
 
 What it holds down, and why each one:
 
@@ -58,6 +60,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import warnings
@@ -66,6 +69,7 @@ from typing import List, Tuple
 
 import pytest
 import yaml
+from _pytest.mark.expression import Expression
 
 import tests.conftest as root_conftest
 from tests.benchmarks import budgets as budget_table
@@ -81,16 +85,19 @@ from tests.wallclock.budgets import (
     LatencyBudget,
     ThroughputBudget,
 )
+from tests.wallclock.collect import PROPOSE_PROFILES
+from tests.wallclock.record import PROFILE_ENV, RECORD_ENV
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_DIR = REPO_ROOT / "tests" / "benchmarks"
 
 #: ‼ The second directory is the whole of #1557. ``tests/benchmarks/`` is
 #: excluded from both required CI gates by ``-m "not benchmark"``;
-#: ``tests/performance/`` is not, so a hand-rolled threshold there reds a
-#: REQUIRED check on a diff that changed nothing. #1555 scanned only the
-#: first, and when #1557 pointed the FIRST version of the scan at the
-#: second it reported **zero** violations against **27** live ones —
+#: ``tests/performance/`` was not until #2090, so a hand-rolled threshold
+#: there could red a REQUIRED check on a diff that changed nothing. #1555
+#: scanned only the first, and when #1557 pointed the FIRST version of the
+#: scan at the second it reported **zero** violations against **27** live
+#: ones —
 #: because the vocabulary it matched on (``latency``, ``elapsed``, ``p95``,
 #: ``_ms``…) was built from the benchmark suite's variable names and none
 #: of ``tests/performance/``'s (``per_record_time``, ``time_per_call``,
@@ -104,6 +111,7 @@ GUARDED_DIRS = (BENCHMARK_DIR, PERFORMANCE_DIR)
 WALLCLOCK_DIR = REPO_ROOT / "tests" / "wallclock"
 
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "benchmarks.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-cd.yml"
 
 
 #: Both suites' tables in one mapping, for the properties that hold of
@@ -135,8 +143,9 @@ def _clean_calibration():
     ‼ ``reset_calibration_cache()`` clears ``_scale_used``, which is
     SESSION state: the terminal-summary hook keys on it to decide whether
     to print the scale a red was measured against. pytest collects
-    ``tests/performance/`` before ``tests/unit/``, so in BOTH required
-    gates the calibrated budgets are asserted before this module runs —
+    ``tests/performance/`` before ``tests/unit/``, so in benchmarks.yml's
+    ``pytest tests/ -m performance`` step (and in both required gates until
+    #2090) the calibrated budgets are asserted before this module runs —
     and a bare reset here erased the fact for the whole session, so a red
     performance test shipped with no scale line at all. Measured on the
     first version of this branch: ``pytest tests/performance
@@ -788,7 +797,7 @@ class TestTerminalSummary:
         assert any("2.00x" in line for line in reporter.lines), reporter.lines
 
     def test_this_modules_fixture_does_not_erase_an_earlier_scale(self):
-        """‼ ``tests/performance/`` runs BEFORE this file in both gates.
+        """‼ ``tests/performance/`` runs BEFORE this file in a run of both.
 
         Its budgets are what set the flag the summary keys on, and
         this module's own fixture used to clear it on the way past — so
@@ -869,7 +878,7 @@ class TestTerminalSummary:
 # them — `per_record_time`, `time_per_call`, `overhead_percentage`. A guard
 # keyed on what a variable is CALLED is defeated by calling it something
 # else, which is not a hypothetical: it had already happened, in the one
-# directory that runs in both required gates.
+# directory that ran in both required gates.
 #
 # So the rule below keys on the SHAPE of the comparison and nothing else,
 # and it is an over-approximation on purpose. Measured cost over the
@@ -1279,9 +1288,9 @@ class TestOneComparisonSite:
     def test_the_performance_suite_is_in_scope_at_all(self):
         """‼ The #1557 defect itself, as a test.
 
-        `tests/performance/` is collected by both required CI gates and
-        `tests/benchmarks/` is not, so this is the directory where a
-        hand-rolled threshold does damage. It was outside the scan for the
+        `tests/performance/` was collected by both required CI gates until
+        #2090 and `tests/benchmarks/` was not, so this is the directory where
+        a hand-rolled threshold did damage. It was outside the scan for the
         whole of #1555.
         """
         assert PERFORMANCE_DIR in GUARDED_DIRS
@@ -1551,8 +1560,8 @@ class TestEveryMeasurementIsJudged:
 
 # ------------------------------------------ no statistic is one window (#1916)
 #
-# Both required gates run ``tests/performance/`` under xdist beside the whole
-# suite, and one timed window cannot tell a preempted runner from a
+# Both required gates ran ``tests/performance/`` under xdist beside the whole
+# suite until #2090, and one timed window cannot tell a preempted runner from a
 # regression: #1916 failed a row on ONE ``asyncio.gather`` that stalled for
 # 1.2 s. So every judged statistic there is taken over several windows by
 # ``tests/wallclock/sampling.py``, which hands each window its clock and
@@ -1878,10 +1887,11 @@ class TestTheSampler:
 #
 # Everything above watches ``tests/benchmarks/`` and ``tests/performance/``.
 # Both required gates run ``pytest tests/`` and deselect only the
-# ``benchmark`` marker, so every OTHER directory under ``tests/`` runs there
-# too — and #1579 counted 50 hand-rolled wall-clock thresholds in 18 files of
-# it. After #1651 put both gates under ``pytest-xdist`` two of them went red
-# on unrelated commits within hours (``2.98 < 2.0``; ``3.7x`` against 3.0).
+# ``benchmark`` and (since #2090) ``performance`` markers, so every OTHER
+# directory under ``tests/`` runs there too — and #1579 counted 50
+# hand-rolled wall-clock thresholds in 18 files of it. After #1651 put both
+# gates under ``pytest-xdist`` two of them went red on unrelated commits
+# within hours (``2.98 < 2.0``; ``3.7x`` against 3.0).
 #
 # The rule used above cannot simply be pointed at the rest of ``tests/``.
 # It flags every ordering comparison in a directory, which is right where
@@ -3869,6 +3879,7 @@ class TestTheGrowthMeasurement:
 # ---- behaviour: the helper, measured
 
 
+@pytest.mark.performance
 class TestTheGrowthHelper:
     """``assert_linear_growth`` is a judge; these hold it to both columns."""
 
@@ -4387,6 +4398,40 @@ EVENT_SHAPES = [
 
 PAIR = ("benchmarks", "nightly-absolute")
 
+#: ci-cd.yml's two required jobs that run the whole tree (Test PostgreSQL
+#: selects only ``-m postgres``, Test Packaging only tests/installation/). No
+#: wall-clock test may run in them: its verdict is the runner's (#2090).
+REQUIRED_PYTEST_JOBS = ("test-standalone", "test-cloud")
+
+
+def _pytest_invocations(run: str) -> List[List[str]]:
+    """Every ``pytest`` command in a step's ``run`` script, as its argv.
+
+    Comment lines go, backslash continuations are joined, a line that starts
+    with ``pytest`` is split as the shell splits it, and a pipe ends it.
+    """
+    lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
+    commands = []
+    for line in "\n".join(lines).replace("\\\n", " ").splitlines():
+        if line.split()[:1] == ["pytest"]:
+            argv = shlex.split(line, comments=True)
+            commands.append(argv[: argv.index("|")] if "|" in argv else argv)
+    return commands
+
+
+def _selects(argv: List[str], marks: set) -> bool:
+    """Whether the command's ``-m`` keeps an item carrying ``marks``.
+
+    Evaluated by pytest's own expression engine, never matched as text:
+    ``"not performance"`` contains ``"performance"``. The last ``-m`` wins, as
+    on pytest's command line; with none, only the ini's ``not real_llm`` applies.
+    """
+    flags = [i for i, arg in enumerate(argv) if arg == "-m"]
+    if not flags:
+        return True
+    expression = Expression.compile(argv[flags[-1] + 1])
+    return expression.evaluate(lambda name, **_kwargs: name in marks)
+
 
 class TestTheConditionEvaluator:
     """The detector's own correctness, before it is trusted with the pair.
@@ -4568,6 +4613,50 @@ class TestWorkflowWiring:
         triggers = workflow.get("on") or workflow[True]
         crons = [entry["cron"] for entry in triggers["schedule"]]
         assert crons == ["0 2 * * *"], crons
+
+    @pytest.mark.parametrize("job_id", REQUIRED_PYTEST_JOBS)
+    def test_a_required_job_runs_no_wall_clock_test(self, job_id):
+        """#2090, the required half: both jobs deselect ``performance``.
+
+        The control: an item without the marker is still selected, so an
+        expression that deselects everything does not pass. ``--ignore``
+        keeps a new module in ``tests/performance/`` out before it is marked.
+        """
+        job = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"][job_id]
+        commands = [
+            argv
+            for step in job["steps"]
+            for argv in _pytest_invocations(step.get("run") or "")
+        ]
+        assert commands, f"{job_id} runs no pytest command"
+        for argv in commands:
+            assert not _selects(argv, {"unit", "performance"}), argv
+            assert _selects(argv, {"unit"}), argv
+            assert "--ignore=tests/performance" in argv, argv
+
+    def test_the_per_pr_job_runs_and_records_every_wall_clock_test(self):
+        """#2090, the other half: what the required jobs drop runs per PR.
+
+        Some step of the ``benchmarks`` job runs the whole tree with an
+        expression that keeps ``performance``, drops nothing by ``-k``,
+        ``--ignore*`` or ``--deselect`` (``--ignore=tests/unit`` alone drops
+        the growth checks), and records rows under a profile ``--propose`` reads.
+        """
+        job = self._workflow()["jobs"]["benchmarks"]
+        recording = [
+            argv
+            for step in job["steps"]
+            if (step.get("env") or {}).get(PROFILE_ENV) in PROPOSE_PROFILES
+            and RECORD_ENV in step["env"]
+            for argv in _pytest_invocations(step.get("run") or "")
+            if _selects(argv, {"performance"})
+            and {"tests", "tests/"} & set(argv)
+            and not any(a.startswith(("-k", "--ignore", "--deselect")) for a in argv)
+        ]
+        assert recording, (
+            "no step of the benchmarks job runs `pytest tests/` selecting "
+            f"`performance` with {RECORD_ENV} set"
+        )
 
 
 def test_absolute_env_var_is_not_set_in_this_process():
