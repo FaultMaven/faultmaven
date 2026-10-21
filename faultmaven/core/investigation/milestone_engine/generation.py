@@ -123,6 +123,15 @@ STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
 
 
+def _reads_as_cut(text: str) -> bool:
+    """Whether *text*, parsed as JSON, ran out (``is_truncated_json_error``)."""
+    try:
+        json.loads(text, strict=False)
+    except json.JSONDecodeError as exc:
+        return is_truncated_json_error(exc, text)
+    return False
+
+
 class StructuredOutputGenerator:
     """Drives the tool-augmented and single-shot structured-output generation paths, holding the class constants (MAX_TOOL_ITERATIONS, TOOL_RESULT_MAX_CHARS, MAX_DEEP_ANALYSIS) that bound them."""
 
@@ -933,13 +942,17 @@ class StructuredOutputGenerator:
                 # A forced call's reply with no tool call, neither cut nor
                 # refused: forcing did not hold, whatever answered (#1755). The
                 # first keeps every tool unless the next iteration is final.
+                stop = normalize_stop_reason(getattr(response, "stop_reason", None))
                 keep_tools = (
                     choice == "required"
                     and not ceiling_reached
                     and not prose_nudged
                     and iteration + 1 < self.MAX_TOOL_ITERATIONS
-                    and normalize_stop_reason(getattr(response, "stop_reason", None))
-                    not in (StopReason.MAX_TOKENS, StopReason.CONTENT_FILTER)
+                    and stop not in (StopReason.MAX_TOKENS, StopReason.CONTENT_FILTER)
+                    and not (
+                        stop is StopReason.UNKNOWN
+                        and _reads_as_cut(json_payload_text(response.content or ""))
+                    )
                 )
                 logger.warning(
                     "Tool loop: LLM returned no tool calls at iteration %d, "
@@ -969,25 +982,18 @@ class StructuredOutputGenerator:
                 if echoed:
                     messages.append({"role": "assistant", "content": echo})
                 # Then a user nudge directing the tool call: without a fresh
-                # user instruction most models read "already answered". It
-                # joins a last user turn (strict-alternation templates).
-                joined = not echoed and messages[-1].get("role") == "user"
-                # Fixed text naming the offered tools: no case content.
-                nudge = non_case_text(
-                    ("\n\n" if joined else "")
-                    + (
-                        _tool_call_nudge(tool_names, schema_tool_name, echoed)
-                        if keep_tools
-                        else _schema_tool_nudge(schema_tool_name, echoed)
-                    )
-                )
-                if joined:
-                    messages[-1] = {
-                        **messages[-1],
-                        "content": messages[-1]["content"] + nudge,
+                # user instruction most models read "already answered".
+                messages.append(
+                    {
+                        "role": "user",
+                        # Fixed text naming the offered tools: no case content.
+                        "content": non_case_text(
+                            _tool_call_nudge(tool_names, schema_tool_name, echoed)
+                            if keep_tools
+                            else _schema_tool_nudge(schema_tool_name, echoed)
+                        ),
                     }
-                else:
-                    messages.append({"role": "user", "content": nudge})
+                )
 
                 prose_nudged = keep_tools
                 force_schema_next = not keep_tools
@@ -1788,7 +1794,8 @@ class StructuredOutputGenerator:
         # truncated body the first attempt stored would otherwise be served back
         # instantly and the raised cap would never reach the provider (#513).
         max_tokens_state = {"value": STRUCTURED_OUTPUT_MAX_TOKENS, "bumped": False}
-        # At most one re-ask (#1755) across every attempt below.
+        # One re-ask per structured call (#1755), across every attempt below;
+        # #662's minimal-prompt degrade is a call of its own.
         reask_state = {"used": False}
 
         def _on_truncation(exc: Exception) -> OutputTruncationError:

@@ -450,7 +450,8 @@ class RoleEnforcement:
     enforced ``STRUCTURED_OUTPUT_PROVIDER``; it is per-role because the engine
     does not apply that override uniformly (see ``resolve_enforcement_classes``).
     ``forcing_requested_only``: the provider sends this model's forced tool use
-    as an instruction, not enforced (#1755); ``enforcement`` is unchanged by it.
+    as an instruction, not enforced (#1755); it counts as ``degraded``, and
+    ``enforcement`` is unchanged by it.
     """
 
     role: str
@@ -467,8 +468,9 @@ class RoleEnforcement:
 
     @property
     def degraded(self) -> bool:
-        """Unenforced AND nothing else carries the schema-bound calls."""
-        return self.unenforced and not self.compensated
+        """Unenforced, or only requesting forced tool use (#1755), AND nothing
+        else carries the schema-bound calls."""
+        return (self.unenforced or self.forcing_requested_only) and not self.compensated
 
 
 @dataclass(frozen=True)

@@ -383,7 +383,6 @@ def test_requested_only_forcing_is_named_at_startup(caplog):
     [role] = resolve_enforcement_classes(settings, registry).roles
     assert role.enforcement == "function_calling"
     assert role.forcing_requested_only is True
-    assert not role.degraded
 
 
 def _opus_registry(**others):
@@ -414,6 +413,21 @@ def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
     assert len(requested) == 1
     assert any("BEST_EFFORT" in m for m in messages)
     assert resolve_enforcement_classes(settings, registry).degraded_roles
+
+
+def test_a_model_that_only_requests_forcing_reports_degraded():
+    """Owner ruling (#1755): like an unenforced role, with or without the
+    override that only requests forcing too."""
+    opus = "claude-opus-5-5"
+    for settings, registry in (
+        (
+            _enforcement_settings(so_provider_name="anthropic", so_model=opus),
+            _opus_registry(fireworks=_EnforcementProvider("best_effort")),
+        ),
+        (_enforcement_settings("anthropic", opus), _opus_registry()),
+    ):
+        resolved = resolve_enforcement_classes(settings, registry)
+        assert resolved.roles and resolved.degraded_roles == resolved.roles
 
 
 def test_one_requested_only_warning_per_model(caplog):

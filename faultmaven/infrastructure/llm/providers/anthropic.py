@@ -659,10 +659,10 @@ class AnthropicProvider(BaseLLMProvider):
                         # engine handles a forced call's reply that carries
                         # no tool call, neither cut nor refused, on any
                         # provider (#1755):
-                        #   - on the single-shot structured path, it is
-                        #     re-asked once with an instruction naming the
-                        #     schema tool unless its text is itself the JSON
-                        #     answer; a second miss fails the attempt;
+                        #   - on the single-shot structured path, it gets one
+                        #     re-ask per structured call, naming the schema
+                        #     tool, unless its text is itself the JSON answer;
+                        #     a second miss fails the attempt;
                         #   - on a forced (DA) tool-loop iteration whose next
                         #     iteration is not the final one, it is nudged
                         #     with every tool still offered; a second

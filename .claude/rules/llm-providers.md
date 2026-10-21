@@ -80,8 +80,9 @@ STRICT (OpenAI gpt-4o+, Gemini 1.5+) or Anthropic, which is FUNCTION_CALLING
 tool use. Above the forcing ceiling the tool is requested by instruction, not
 enforced, and startup warns (`forced_tool_choice_enforced()`). The engine does
 not rely on forcing: a forced call's reply with no tool call, neither cut nor
-refused, is re-asked once on the single-shot FUNCTION_CALLING path (other
-single-shot strategies are unchanged), or nudged with every tool on a DA
+refused, gets one re-ask per structured call on the single-shot
+FUNCTION_CALLING path (#662's minimal-prompt degrade is a call of its own;
+other single-shot strategies are unchanged), or is nudged with every tool on a DA
 iteration whose next iteration is not the final one, on every provider (#1755).
 BEST_EFFORT providers (Fireworks incl.
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap

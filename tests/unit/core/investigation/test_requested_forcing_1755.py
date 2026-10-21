@@ -281,22 +281,36 @@ async def test_a_refused_or_cut_da_reply_takes_the_schema_only_path(stop, calls)
 
 
 @pytest.mark.parametrize("blank", ["", "\n\n"])
-async def test_a_blank_da_reply_joins_a_last_user_turn_and_follows_a_tool_one(blank):
-    # Iteration 0: the last message is the prompt, so the nudge joins it.
+async def test_a_blank_da_reply_is_not_echoed_and_its_nudge_is_its_own_turn(blank):
     engine, sent = _engine([_reply(blank), ANSWER], reports_enforced=True)
     assert (await _da_turn(engine)).agent_response == "disk"
-    roles = [m["role"] for m in sent[1]["messages"]]
-    assert roles == ["system", "user"]
-    joined = sent[1]["messages"][-1]["content"]
-    assert joined.startswith("Search the uploaded log") and TOOLS_NUDGE in joined
-    assert ECHO_NUDGE not in joined
+    first, second = sent
+    assert [m["role"] for m in second["messages"]] == ["system", "user", "user"]
+    nudge = second["messages"][-1]["content"]
+    assert TOOLS_NUDGE in nudge and ECHO_NUDGE not in nudge
+    # Append-only: no earlier message dict was replaced.
+    assert all(a is b for a, b in zip(first["messages"], second["messages"]))
 
-    # After a tool result the nudge is its own user turn.
     engine, sent = _engine([SEARCH_CALL, _reply(blank), ANSWER], reports_enforced=True)
     assert (await _da_turn(engine)).agent_response == "disk"
     *_, tool_turn, nudge = sent[2]["messages"]
     assert (tool_turn["role"], nudge["role"]) == ("tool", "user")
     assert TOOLS_NUDGE in nudge["content"] and ECHO_NUDGE not in nudge["content"]
+
+
+async def test_with_no_stop_reason_a_cut_looking_da_body_takes_todays_path():
+    cut = _reply('{"agent_response": "the kubelet', stop=StopReason.UNKNOWN)
+    engine, sent = _engine([cut, ANSWER], reports_enforced=True)
+    assert (await _da_turn(engine)).agent_response == "disk"
+    assert [_offered(call) for call in sent] == [
+        ["search_file", "_Answer"],
+        ["_Answer"],
+    ]
+
+    prose = _reply(PROSE, stop=StopReason.UNKNOWN)
+    engine, sent = _engine([prose, ANSWER], reports_enforced=True)
+    assert (await _da_turn(engine)).agent_response == "disk"
+    assert _offered(sent[1]) == ["search_file", "_Answer"]
 
 
 async def test_the_reply_before_the_final_iteration_gets_the_schema_nudge():
