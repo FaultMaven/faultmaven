@@ -111,11 +111,11 @@ Find the newest proposal or result on the Queue:
    - Give every open issue that lacks a pile label or a priority label the missing one(s). Skip `tracking`.
    - Move to ready any blocked item whose blocking issue has closed or whose condition holds (run each you can).
    - Close a tracker whose tracked work has all closed.
-   - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on a line
-     starting `**Alerts:**` in the body of the open core issue that covers it, or file one core issue per root whose
-     first two lines are `**Repo: FaultMaven/<r>.**` and `**Alerts:** <URLs>`, verified by the alert page and manifest.
-     A private repo's issue names only the alert kind and count. Raise secret-scanning alerts with the owner in session,
-     never in writing. Report `unknown`/`unavailable` lines. Dismiss nothing without the owner's ruling on the issue.
+   - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on a body line
+     starting `**Alerts:**` in the open core issue covering it, or file one per root opening `**Repo: FaultMaven/<r>.**`
+     then that line, verified by the alert page and manifest. Anything written about a private repo's alert names only
+     its kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the non-secret
+     `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - From `pile:ready` only: `P1`, then `P2`, then `P3`, oldest first within each. Reserve one slot for the oldest
      `P2` that has waited over 30 days. Skip an item that an open PR from an earlier round still carries.

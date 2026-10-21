@@ -327,6 +327,7 @@ def test_lag_needs_every_version_outside_every_range(mod, ranges, version, cls):
         ("Gemfile.lock", "pillow==3.0.0\n"),  # a manifest it does not read
         (REQ, "pillow==3.0.0\npillow==latest\n"),  # an InvalidVersion
         (REQ, "pillow>=1.0\npillow==3.0.0\n"),  # a ranged line beside an exact one
+        (REQ, "  pillow>=1.0\npillow==3.0.0\n"),  # the same, the ranged line indented
     ],
 )
 def test_an_unreadable_manifest_or_version_is_not_lag(mod, manifest, text):
@@ -544,7 +545,7 @@ QUEUE = "queue: alerts 1 (secret scanning excluded): untracked groups "
 
 @pytest.mark.parametrize(
     "issues_fail, expected",
-    [(False, "1, unknown 0, unavailable 0"), (True, "0, unknown 1, unavailable 1")],
+    [(False, "1, unknown 0, unavailable 1"), (True, "0, unknown 1, unavailable 2")],
 )
 def test_the_queue_line_leaves_secret_scanning_out_of_every_count(
     mod, issues_fail, expected
@@ -553,11 +554,15 @@ def test_the_queue_line_leaves_secret_scanning_out_of_every_count(
     for secrets in (False, True):
         gh = fake(mod, CORE, dependabot(CORE, 1))
         gh.errors.update({f"{CORE}/issues": "HTTP 502"} if issues_fail else {})
+        gh.errors[f"{SLACK}/pulls"] = "HTTP 502"  # its only alerts are secrets, if any
         if secrets:
             gh.pages[f"{CORE}/secret-scanning/alerts"] = [[secret(CORE, 17)]]
+            gh.pages[f"{SLACK}/secret-scanning/alerts"] = [[secret(SLACK, 3)]]
             gh.errors[f"{COPILOT}/secret-scanning/alerts"] = "HTTP 502: Bad Gateway"
         reports.append(mod.sweep(gh, NOW))
     assert [report.split("\n")[-1] for report in reports] == [QUEUE + expected] * 2
+    pulls = f"unavailable: {SLACK} pulls: gh: HTTP 502"
+    assert [pulls in report.split("\n") for report in reports] == [True, True]
     assert summary(reports[0]) != summary(reports[1])
 
 

@@ -415,6 +415,8 @@ class Sweep:
             ]
         except FetchError as exc:
             self.note(CORE, "issues", exc.line)
+        for repo in REPOS:  # every one, so no alert (a secret's) decides what is read
+            self.repo_prs(repo)
         alerts = [
             to_alert(repo, kind, item)
             for repo in REPOS
