@@ -663,12 +663,13 @@ class AnthropicProvider(BaseLLMProvider):
                         #     re-asked once with an instruction naming the
                         #     schema tool unless its text is itself the JSON
                         #     answer; a second miss fails the attempt;
-                        #   - on a forced (DA) tool-loop iteration that is not
-                        #     the last, it is nudged with every tool still
-                        #     offered; a second consecutive one gets the
-                        #     schema-only iteration. Only a final or
-                        #     force-schema iteration reaches the loop's
-                        #     "provider ignored tool_choice=required" path.
+                        #   - on a forced (DA) tool-loop iteration whose next
+                        #     iteration is not the final one, it is nudged
+                        #     with every tool still offered; a second
+                        #     consecutive one gets the schema-only iteration.
+                        #     Only a final or force-schema iteration reaches
+                        #     the loop's "provider ignored
+                        #     tool_choice=required" path.
                         #
                         # Keys other than type and name (e.g.
                         # disable_parallel_tool_use, valid with auto) are the

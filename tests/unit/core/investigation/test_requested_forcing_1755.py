@@ -191,6 +191,48 @@ async def test_the_reasked_echo_is_bounded_like_a_tool_result():
     assert echo == "x" * cap + "\n[truncated]"
 
 
+async def test_a_whitespace_reply_is_reasked_as_empty():
+    engine, sent = _engine([_reply("\n\n"), ANSWER], reports_enforced=True)
+
+    assert (await _single_shot(engine)).agent_response == "disk"
+    [only] = sent[1]["messages"]
+    assert only["role"] == "user" and ECHO_NUDGE not in only["content"]
+
+
+async def test_a_tool_call_whose_arguments_fail_to_parse_is_not_reasked():
+    bad = _reply(tool="_Answer", stop=StopReason.TOOL_CALLS)
+    bad.tool_calls[0].function["arguments"] = '{agent_response: "disk"}'
+    engine, sent = _engine([bad, ANSWER], reports_enforced=False)
+    with pytest.raises(MilestoneEngineError):
+        await _single_shot(engine)
+    assert len(sent) == 1
+
+
+async def test_an_empty_reply_is_reasked_once_per_call_across_the_ladder():
+    engine, sent = _engine([_reply("")] * 6, reports_enforced=True)
+    with pytest.raises(MilestoneEngineError):
+        await _single_shot(engine)
+
+    shapes = [(c["max_tokens"], "messages" in c) for c in sent]
+    cap = STRUCTURED_OUTPUT_MAX_TOKENS
+    # main's ladder (cap, 2 x cap) plus exactly one re-ask, at the first cap.
+    assert shapes == [(cap, False), (cap, True), (cap * 2, False)]
+
+
+async def test_with_no_stop_reason_a_cut_looking_body_ladders_and_prose_is_reasked():
+    cut = _reply('{"agent_response": "the kubelet', stop=StopReason.UNKNOWN)
+    engine, sent = _engine([cut, ANSWER], reports_enforced=True)
+    assert (await _single_shot(engine)).agent_response == "disk"
+    assert sent[1]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
+    assert sent[1]["bypass_cache"] is True and "messages" not in sent[1]
+
+    prose = _reply(PROSE, stop=StopReason.UNKNOWN)
+    engine, sent = _engine([prose, ANSWER], reports_enforced=True)
+    assert (await _single_shot(engine)).agent_response == "disk"
+    assert sent[1]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+    assert sent[1]["messages"][1]["content"] == PROSE
+
+
 # --- DA tool loop ------------------------------------------------------------
 
 SEARCH = {"type": "function", "function": {"name": "search_file", "parameters": {}}}
@@ -224,12 +266,37 @@ async def test_a_da_turn_keeps_every_tool_through_one_reply_without_a_tool_call(
     assert _offered(third) == ["_Answer"]
     assert "calling the `_Answer` tool" in third["messages"][-1]["content"]
 
-    # An empty reply is not echoed, and the nudge does not point at it.
-    engine, sent = _engine([_reply(""), ANSWER], reports_enforced=True)
+
+@pytest.mark.parametrize(
+    "stop,calls",  # the loop retries a cut once at a bigger cap
+    [(StopReason.CONTENT_FILTER, 1), (StopReason.MAX_TOKENS, 2)],
+)
+async def test_a_refused_or_cut_da_reply_takes_the_schema_only_path(stop, calls):
+    replies = [_reply(PROSE, stop=stop)] * calls + [ANSWER]
+    engine, sent = _engine(replies, reports_enforced=True)
+
     assert (await _da_turn(engine)).agent_response == "disk"
-    *_, before, nudge = sent[1]["messages"]
-    assert before["role"] == "user" and TOOLS_NUDGE in nudge["content"]
-    assert ECHO_NUDGE not in nudge["content"]
+    assert _offered(sent[-1]) == ["_Answer"]
+    assert TOOLS_NUDGE not in sent[-1]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("blank", ["", "\n\n"])
+async def test_a_blank_da_reply_joins_a_last_user_turn_and_follows_a_tool_one(blank):
+    # Iteration 0: the last message is the prompt, so the nudge joins it.
+    engine, sent = _engine([_reply(blank), ANSWER], reports_enforced=True)
+    assert (await _da_turn(engine)).agent_response == "disk"
+    roles = [m["role"] for m in sent[1]["messages"]]
+    assert roles == ["system", "user"]
+    joined = sent[1]["messages"][-1]["content"]
+    assert joined.startswith("Search the uploaded log") and TOOLS_NUDGE in joined
+    assert ECHO_NUDGE not in joined
+
+    # After a tool result the nudge is its own user turn.
+    engine, sent = _engine([SEARCH_CALL, _reply(blank), ANSWER], reports_enforced=True)
+    assert (await _da_turn(engine)).agent_response == "disk"
+    *_, tool_turn, nudge = sent[2]["messages"]
+    assert (tool_turn["role"], nudge["role"]) == ("tool", "user")
+    assert TOOLS_NUDGE in nudge["content"] and ECHO_NUDGE not in nudge["content"]
 
 
 async def test_the_reply_before_the_final_iteration_gets_the_schema_nudge():

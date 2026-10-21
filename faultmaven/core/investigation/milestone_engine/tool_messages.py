@@ -56,19 +56,13 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
 
 
 def _schema_tool_nudge(schema_tool_name: str, echoed: bool = True) -> str:
-    """The user turn after a reply without a tool call, directing the
-    schema-tool call. *echoed*: the reply is echoed just above it; an empty
-    reply is not, and then nothing points at "the text above" (#1755)."""
-    use_echo = (
-        "Use the text above as the `agent_response` field and fill in the "
-        "remaining required fields. "
-        if echoed
-        else ""
-    )
+    """The user turn after a reply without a tool call; *echoed*: that reply
+    is echoed just above it (a blank one is not, #1755)."""
+    use_echo = "Use the text above as the `agent_response` field and fill in the "
     return (
         f"You must now produce your structured response by calling the "
         f"`{schema_tool_name}` tool. "
-        + use_echo
+        + (use_echo + "remaining required fields. " if echoed else "")
         + "Do not reply with plain text — only a tool call is acceptable."
     )
 
@@ -76,8 +70,7 @@ def _schema_tool_nudge(schema_tool_name: str, echoed: bool = True) -> str:
 def _tool_call_nudge(
     tool_names: list[str], schema_tool_name: str, echoed: bool = True
 ) -> str:
-    """The user turn after a first reply without a tool call on a forced,
-    non-final iteration (#1755): every tool stays offered."""
+    """The nudge that keeps every tool offered (#1755)."""
     offered = ", ".join(f"`{name}`" for name in tool_names)
     return (
         f"Do not reply with plain text — only a tool call is acceptable. "

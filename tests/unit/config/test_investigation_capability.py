@@ -386,29 +386,45 @@ def test_requested_only_forcing_is_named_at_startup(caplog):
     assert not role.degraded
 
 
-def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
-    """#1755 review: chat on fireworks, STRUCTURED_OUTPUT_PROVIDER on
-    anthropic opus-5-5. The override carries the schema-bound calls, so its
-    model is the one whose forcing must be named."""
+def _opus_registry(**others):
     from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
     from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 
     opus = "claude-opus-5-5"
     config = ProviderConfig(name="anthropic", models=[opus], default_model=opus)
-    registry = _PerProviderRegistry(
-        {
-            "fireworks": _EnforcementProvider("best_effort"),
-            "anthropic": AnthropicProvider(config),
-        }
+    return _PerProviderRegistry({"anthropic": AnthropicProvider(config), **others})
+
+
+def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
+    """#1755 review: chat on fireworks, STRUCTURED_OUTPUT_PROVIDER on
+    anthropic opus-5-5. The override only requests its schema tool, so it does
+    not compensate the best-effort chat model, and nothing calls it native."""
+    registry = _opus_registry(fireworks=_EnforcementProvider("best_effort"))
+    settings = _enforcement_settings(
+        so_provider_name="anthropic", so_model="claude-opus-5-5"
     )
-    settings = _enforcement_settings(so_provider_name="anthropic", so_model=opus)
-    with caplog.at_level(_logging.WARNING):
+    with caplog.at_level(_logging.INFO):
         warn_best_effort_enforcement(settings, registry)
-    [warning] = [r for r in caplog.records if r.levelno == _logging.WARNING]
-    assert "STRUCTURED_OUTPUT_PROVIDER model anthropic/claude-opus-5-5" in (
-        warning.message
+    messages = [r.message for r in caplog.records if r.levelno >= _logging.INFO]
+    assert not [m for m in messages if "acceptable" in m]
+    requested = [m for m in messages if "requested by instruction" in m]
+    assert requested == [
+        m for m in requested if "STRUCTURED_OUTPUT_PROVIDER model anthropic/" in m
+    ]
+    assert len(requested) == 1
+    assert any("BEST_EFFORT" in m for m in messages)
+    assert resolve_enforcement_classes(settings, registry).degraded_roles
+
+
+def test_one_requested_only_warning_per_model(caplog):
+    opus = "claude-opus-5-5"
+    settings = _enforcement_settings(
+        "anthropic", opus, so_provider_name="anthropic", so_model=opus
     )
-    assert "requested by instruction, not enforced" in warning.message
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, _opus_registry())
+    [warning] = [r.message for r in caplog.records if r.levelno >= _logging.INFO]
+    assert warning.startswith("STRUCTURED_OUTPUT_PROVIDER and investigation/chat")
 
 
 def test_a_forcing_probe_that_raises_is_logged(caplog):

@@ -351,15 +351,18 @@ unless it is at or below the entry). Otherwise:
   prefix is unchanged. It sits in `system` rather than in a message because
   the tool loop resends its message list on every iteration.
 - **`auto` asks; it does not force.** A reply can still carry no tool call.
-  The engine decides from the reply, on any provider (#1755): a forced call's
-  reply with no tool call, whose stop reason is neither `MAX_TOKENS` nor
-  `CONTENT_FILTER`, is forcing that did not hold. On the single-shot structured
-  path such a reply, unless its text is itself the JSON answer, is re-asked
-  once: the reply echoed (bounded at `TOOL_RESULT_MAX_CHARS`, none when empty)
-  and the tool loop's instruction to call the schema tool. A second miss fails
-  the attempt. On a forced (DA) tool-loop iteration that is not the last, the
-  first such reply is nudged with every tool still offered, and a second
-  consecutive one gets the loop's schema-only iteration (`force_schema_next`).
+  The engine decides from the reply (#1755): a forced call's reply with no tool
+  call, whose stop reason is neither `MAX_TOKENS` nor `CONTENT_FILTER` (with no
+  stop reason, whose body does not read as cut), is forcing that did not hold.
+  On the single-shot FUNCTION_CALLING path such a reply, unless its text is
+  itself the JSON answer, gets at most one re-ask per call: the reply echoed
+  (bounded at `TOOL_RESULT_MAX_CHARS`, none when blank) and the tool loop's
+  instruction to call the schema tool. Every other single-shot strategy is
+  unchanged. On a forced (DA) tool-loop iteration whose next iteration is not
+  the final one, on every provider (a no-tool reply under Gemini's `mode: ANY`
+  is the same fact), the first such reply is nudged with every tool still
+  offered, and a second consecutive one gets the schema-only iteration
+  (`force_schema_next`).
   Only a final or force-schema iteration reaches the loop's "provider ignored
   `tool_choice=required`" path. The startup structured-output advisory reads
   `AnthropicProvider.forced_tool_choice_enforced()` and warns that the schema

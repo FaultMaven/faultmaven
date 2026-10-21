@@ -210,7 +210,7 @@ or absent with the marker accounting for it.
 4. The loop runs for up to 4 iterations. Each iteration either:
    - Executes a tool call and feeds the result back to the LLM. Only a tool the call offered is executed; a call naming any other tool (one the registry lacks, or a registered one the turn withheld) gets a tool error stating the offered set, and is counted `unknown_tool`
    - Terminates when the LLM returns a structured response via `schema_tool`
-5. If the LLM returns no tool calls, its text response is captured and the next iteration forces the schema tool. On a forced iteration that is not the last, a reply neither cut (`MAX_TOKENS`) nor refused (`CONTENT_FILTER`) means the forcing did not hold, whatever provider answered (#1755): the first such reply is instead nudged with every tool still offered, and a second consecutive one forces the schema tool. An empty reply is not echoed.
+5. If the LLM returns no tool calls, its text response is captured and the next iteration forces the schema tool. On a forced iteration whose next iteration is not the final one, a reply neither cut (`MAX_TOKENS`) nor refused (`CONTENT_FILTER`) means the forcing did not hold, whatever provider answered (#1755): the first such reply is instead nudged with every tool still offered, and a second consecutive one forces the schema tool. A blank reply is not echoed.
 
 **Investigation Tools** (registered in `_create_investigation_tools()`):
 
