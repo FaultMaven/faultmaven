@@ -494,6 +494,17 @@ class AnthropicProvider(BaseLLMProvider):
         # No model-specific logic needed - all Claude models have the same capability
         return StructuredOutputCapability.FUNCTION_CALLING
 
+    def forced_tool_choice_enforced(self, model: Optional[str] = None) -> bool:
+        """False above the forcing ceiling, where ``_generate`` sends a forced
+        ``tool_choice`` as ``auto`` plus an instruction naming the tool: the
+        tool call is requested, not enforced (#1695, #1755)."""
+        return self._accepts_forced_tool_choice(self._selected_model(model))
+
+    def _selected_model(self, model: Optional[str]) -> str:
+        """The model a call is sent to: the caller's, else the configured
+        default, else ``claude-sonnet-4-6``."""
+        return model or self.config.default_model or "claude-sonnet-4-6"
+
     def _base_request_body(
         self, model: str, max_tokens: int, temperature: float
     ) -> dict:
@@ -530,9 +541,7 @@ class AnthropicProvider(BaseLLMProvider):
         start_time = time.time()
 
         # Use specified model or default
-        selected_model = model or self.config.default_model
-        if not selected_model:
-            selected_model = "claude-sonnet-4-6"
+        selected_model = self._selected_model(model)
         self._log_request_shape(selected_model)
 
         # Prepare headers for Anthropic API
@@ -645,16 +654,19 @@ class AnthropicProvider(BaseLLMProvider):
                         # changes exactly when the tool set does, and an
                         # unchanged tool set sends a byte-identical block.
                         #
-                        # "auto" asks; it does not force. A reply that still
-                        # carries no tool call:
-                        #   - on the single-shot structured path, fails that
-                        #     attempt: the text-JSON parse recovers only a
-                        #     reply that is itself JSON, and a prose reply
-                        #     does not (engine side: #1755);
-                        #   - on a non-final tool-loop iteration, gets the
-                        #     loop's nudge and force_schema_next. Only a final
-                        #     or force-schema iteration reaches the loop's
-                        #     "provider ignored tool_choice=required" path.
+                        # "auto" asks; it does not force, and
+                        # forced_tool_choice_enforced says so to the engine
+                        # (#1755). A reply that still carries no tool call:
+                        #   - on the single-shot structured path, is re-asked
+                        #     once with an instruction naming the schema tool
+                        #     unless its text is itself the JSON answer; a
+                        #     second miss fails the attempt;
+                        #   - on a forced (DA) tool-loop iteration, is nudged
+                        #     with every tool still offered; a second
+                        #     consecutive one gets the schema-only iteration.
+                        #     Only a final or force-schema iteration reaches
+                        #     the loop's "provider ignored
+                        #     tool_choice=required" path.
                         #
                         # Keys other than type and name (e.g.
                         # disable_parallel_tool_use, valid with auto) are the
@@ -728,21 +740,23 @@ class AnthropicProvider(BaseLLMProvider):
             # downgrading the forcing to "auto" — trades a soundness property
             # for an experiment knob, in two ways:
             #   1. On the SINGLE-SHOT structured path
-            #      (milestone_engine/generation.py ~:1737 sets
+            #      (generate_structured_output's FUNCTION_CALLING branch sets
             #      tool_choice="required" for FUNCTION_CALLING providers,
-            #      which is every Anthropic call) there is NO prose→schema
-            #      recovery: an "auto" answer in prose leaves tool_calls
-            #      empty, model_validate_json raises, with_retry exhausts and
-            #      the turn fails. The nudge-retry loop is tool-loop-only.
-            #   2. On DA turns, force_tool_use exists to enforce "gather
-            #      evidence before concluding". Dropping it re-opens the
-            #      premature-conclusion failure mode the startup tool-calling
-            #      gate is built to prevent.
+            #      which is every Anthropic call) a prose reply is re-asked
+            #      only where forced_tool_choice_enforced is False, and on
+            #      this model it is True: an "auto" answer in prose would
+            #      leave tool_calls empty and fail the turn.
+            #   2. On DA turns, forcing rules out a prose reply, and a prose
+            #      reply on an enforcing model sends the loop to its
+            #      schema-only iteration, stripping the evidence tools. (The
+            #      schema tool is offered from iteration 0, so forcing never
+            #      guaranteed evidence before the conclusion by itself.)
             # Consequence, stated deliberately: forced-schema turns on a
-            # model that accepts forcing cannot carry thinking at all. Making
-            # them able to would require prose→schema recovery on the
-            # single-shot path — an engine-wide change affecting every
-            # provider, and an owner decision (#1116).
+            # model that accepts forcing cannot carry thinking at all. The
+            # owner accepted that gap (#1116, 2026-10-21): Anthropic's native
+            # structured outputs and strict tools reject the Investigation
+            # schemas ("compiled grammar is too large", measured), so no
+            # enforced schema path exists to carry thinking instead.
             forced_choice = request_body.get("tool_choice")
             forced = isinstance(forced_choice, dict) and forced_choice.get("type") in (
                 "any",
@@ -754,8 +768,9 @@ class AnthropicProvider(BaseLLMProvider):
                     "forced tool use (tool_choice=%s) and Anthropic rejects "
                     "forced tool use with thinking enabled. Keeping the "
                     "forcing — dropping it would disarm schema forcing on the "
-                    "single-shot structured path (no prose recovery there) "
-                    "and the evidence-before-conclusion guarantee on DA turns. "
+                    "single-shot structured path (no prose recovery on a "
+                    "model that accepts forcing) and let a prose reply strip "
+                    "the evidence tools on DA turns. "
                     "Thinking off is sent as %s.",
                     forced_choice,
                     off_control.label,

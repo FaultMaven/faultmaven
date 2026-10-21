@@ -54,8 +54,17 @@ SITES: dict[tuple[str, str], tuple[int, str]] = {
         3,
         "the DA system instruction (_build_da_system_instruction: the offered "
         "tool names, the schema tool's name and fixed guidance), the recovery "
-        "nudge naming the schema tool, and the fixed stand-in for an empty "
+        "nudge naming the schema tool (or, where forcing is only requested, "
+        "the offered tools, #1755), and the fixed stand-in for an empty "
         "assistant reply",
+    ),
+    (
+        _GENERATION,
+        "StructuredOutputGenerator._generate_structured_output_inner.llm_operation",
+    ): (
+        2,
+        "the single-shot re-ask (#1755): the nudge naming the schema tool "
+        "(_schema_tool_nudge) and the fixed stand-in for an empty reply",
     ),
     (_GENERATION, "StructuredOutputGenerator._generate_structured_output_inner"): (
         1,

@@ -151,6 +151,30 @@ def test_claude_version_parses_family_and_version(model, expected):
     assert AnthropicProvider._claude_version(model) == expected
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,enforced",
+    [
+        ("claude-opus-5-5", False),
+        ("claude-fable-5-1", False),
+        ("claude-sonnet-5-5", False),
+        ("claude-haiku-5-5", False),
+        ("claude-sonnet-4-6", True),
+    ],
+)
+async def test_forced_tool_choice_enforced_says_what_the_body_sends(model, enforced):
+    """#1755: the engine reads this to know whether ``required`` holds, so it
+    must agree with the wire: ``any`` where forcing is sent, ``auto`` plus the
+    instruction where it is only requested. ``None`` asks about the default."""
+    provider = AnthropicProvider(_config(model))
+    assert provider.forced_tool_choice_enforced(model) is enforced
+    assert provider.forced_tool_choice_enforced() is enforced
+
+    body = await _sent_body(model, tools=[SCHEMA_TOOL], tool_choice="required")
+    assert body["tool_choice"]["type"] == ("any" if enforced else "auto")
+
+
 # =========================================================================
 # The per-model table: temperature, tool_choice and the instruction block
 # =========================================================================

@@ -350,12 +350,18 @@ unless it is at or below the entry). Otherwise:
   the tool set does. The block trails the cached system block, so the cached
   prefix is unchanged. It sits in `system` rather than in a message because
   the tool loop resends its message list on every iteration.
-- **`auto` asks; it does not force.** A reply can still carry no tool call.
-  On the single-shot structured path that fails the attempt: the text-JSON
-  parse recovers only a reply that is itself JSON, and a prose reply does not
-  (engine side: #1755). On a non-final tool-loop iteration the reply gets the
-  loop's nudge and `force_schema_next`. Only a final or force-schema iteration
-  reaches the loop's "provider ignored `tool_choice=required`" path.
+- **`auto` asks; it does not force.** A reply can still carry no tool call,
+  and `AnthropicProvider.forced_tool_choice_enforced()` returns False for such a
+  model, so the engine knows (#1755). On the single-shot structured path a
+  reply without the tool call, whose text is not itself the JSON answer, is
+  re-asked once, with the reply echoed and the tool loop's instruction to call
+  the schema tool; a second miss fails the attempt. On a forced (DA) tool-loop
+  iteration the first prose reply is nudged with every tool still offered, and
+  a second consecutive one gets the loop's schema-only iteration
+  (`force_schema_next`). Only a final or force-schema iteration reaches the
+  loop's "provider ignored `tool_choice=required`" path. The startup
+  structured-output advisory warns that the schema tool is requested by
+  instruction, not enforced.
 - **Thinking is not refused.** With `ANTHROPIC_THINKING_MODE=adaptive`, the
   "thinking refused under forced tool use" rule applies only where forcing is
   actually sent. A model above the forcing ceiling runs `auto` and carries
@@ -377,8 +383,10 @@ sent `adaptive` (#1756).
 `additionalProperties: false` on every object and rejects
 `minimum`/`maximum`/`maxLength`. Of the six engine schemas as
 `pydantic_to_openai_tools` builds them, none carries `additionalProperties:
-false` and five carry those constraints. Making them compatible is part of
-#1116's structured-output decision.
+false` and five carry those constraints. Even made compatible, the four
+`InvestigationResponse_*` schemas exceed Anthropic's grammar limits: the docs
+allow 24 optional and 16 union-typed parameters per request, and these schemas
+have 61–97 and 57–90. The owner accepted the gap (#1116).
 
 **Thinking shape.**
 

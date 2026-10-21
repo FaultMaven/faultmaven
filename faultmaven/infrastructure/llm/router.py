@@ -1034,6 +1034,26 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         return primary_provider.supports_tool_calling(model)
 
+    def forced_tool_choice_enforced(
+        self, model: Optional[str] = None, provider_override: Optional[str] = None
+    ) -> bool:
+        """Whether the provider a call lands on enforces ``tool_choice="required"``
+        on *model* (#1755).
+
+        Delegates to *provider_override* when it names a registered provider
+        (the registry then routes there exclusively), else to the primary
+        provider of the fallback chain. True when there is none, which leaves
+        the engine's behaviour unchanged.
+        """
+        self.registry._ensure_initialized()
+        providers = self.registry._providers
+        name = provider_override if provider_override in providers else None
+        if name is None:
+            fallback_chain = self.registry.get_fallback_chain()
+            name = fallback_chain[0] if fallback_chain else None
+        provider = providers.get(name) if name else None
+        return True if provider is None else provider.forced_tool_choice_enforced(model)
+
     def get_structured_output_capability(self, model: Optional[str] = None):
         """
         Get the structured output capability for the primary provider/model.

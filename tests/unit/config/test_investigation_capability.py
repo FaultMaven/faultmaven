@@ -357,6 +357,35 @@ def test_function_calling_counts_as_enforced(caplog):
     assert not caplog.records
 
 
+def test_requested_only_forcing_is_named_at_startup(caplog):
+    """#1755: above Anthropic's forcing ceiling the schema tool is requested by
+    instruction, not enforced. The class stays FUNCTION_CALLING; the advisory
+    says so, and a model that accepts forcing stays silent."""
+    from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+
+    def _resolved(model):
+        config = ProviderConfig(name="anthropic", models=[model], default_model=model)
+        registry = _PerProviderRegistry({"anthropic": AnthropicProvider(config)})
+        return _enforcement_settings("anthropic", model), registry
+
+    settings, registry = _resolved("claude-sonnet-4-6")
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    assert not caplog.records
+
+    settings, registry = _resolved("claude-opus-5-5")
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    [warning] = caplog.records
+    assert "anthropic/claude-opus-5-5" in warning.message
+    assert "requested by instruction, not enforced" in warning.message
+    [role] = resolve_enforcement_classes(settings, registry).roles
+    assert role.enforcement == "function_calling"
+    assert role.forcing_requested_only is True
+    assert not role.degraded
+
+
 def test_da_override_checks_both_roles_separately(caplog):
     """DA on a best-effort provider + chat on STRICT → exactly one warning,
     for the investigation role only."""

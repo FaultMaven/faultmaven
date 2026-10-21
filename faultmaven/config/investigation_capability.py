@@ -397,6 +397,17 @@ def _enforcement_class(registry: Any, provider_name: str, model: str) -> Optiona
     return value if isinstance(value, str) else None
 
 
+def _forcing_requested_only(registry: Any, provider_name: str, model: str) -> bool:
+    """True when the provider says forced tool use on *model* is only requested,
+    by instruction, not enforced (#1755). False on ignorance."""
+    try:
+        provider = registry.get_provider(provider_name)
+        probe = getattr(provider, "forced_tool_choice_enforced", None)
+        return probe is not None and probe(model) is False
+    except Exception:
+        return False
+
+
 def _base_model(llm: Any, provider_name: str) -> str:
     """The provider's BASE ``{PROVIDER}_MODEL``, or ``""``.
 
@@ -427,6 +438,8 @@ class RoleEnforcement:
     records whether this role's schema-bound calls are actually carried by an
     enforced ``STRUCTURED_OUTPUT_PROVIDER``; it is per-role because the engine
     does not apply that override uniformly (see ``resolve_enforcement_classes``).
+    ``forcing_requested_only``: the provider sends this model's forced tool use
+    as an instruction, not enforced (#1755); ``enforcement`` is unchanged by it.
     """
 
     role: str
@@ -434,6 +447,7 @@ class RoleEnforcement:
     model: str
     enforcement: Optional[str] = None
     compensated: bool = False
+    forcing_requested_only: bool = False
 
     @property
     def unenforced(self) -> bool:
@@ -534,6 +548,9 @@ def resolve_enforcement_classes(
                 model=model,
                 enforcement=_enforcement_class(registry, provider, model),
                 compensated=compensated,
+                forcing_requested_only=_forcing_requested_only(
+                    registry, provider, model
+                ),
             )
             for role, provider, model, compensated in pairs
         )
@@ -555,10 +572,22 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
     Pure and never raises; logs at WARNING when an unenforced role is
     uncompensated, at INFO when a STRUCTURED_OUTPUT_PROVIDER override actually
     carries that role's schema-bound calls (the documented escape hatch), and
-    stays silent when the class cannot be determined.
+    stays silent when the class cannot be determined. Separately, it warns
+    for a role whose model only requests forced tool use (#1755).
     """
     resolved = resolve_enforcement_classes(settings, registry)
     for role in resolved.roles:
+        if role.forcing_requested_only:
+            logger.warning(
+                "%s model %s/%s rejects forced tool use: the schema tool is "
+                "requested by instruction, not enforced. A reply without the "
+                "tool call is re-asked once before it fails the turn, and a "
+                "directed-analysis turn keeps its evidence tools through one "
+                "prose reply.",
+                role.role,
+                role.provider,
+                role.model,
+            )
         if not role.unenforced:
             continue
         if role.compensated:

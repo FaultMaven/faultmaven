@@ -15,8 +15,8 @@ Behind config, DEFAULT OFF. Pins, all asserted on the OUTGOING request payload
      caller FORCED tool use it FAILS CLOSED instead: thinking is refused and
      the forcing is left exactly as the caller set it, because dropping the
      forcing would disarm schema forcing on the single-shot structured path
-     (no prose→schema recovery there) and the evidence-before-conclusion
-     guarantee on DA turns.
+     (no prose→schema recovery on a model that accepts forcing) and let a
+     prose reply strip the evidence tools on DA turns.
   3. "enabled" mode budget validation — thinking bills INSIDE max_tokens
      (fm#1094): a budget that is >= max_tokens, leaves less than the answer
      floor, or is below the API minimum of 1024 downgrades the call to
@@ -215,10 +215,12 @@ class TestAdaptiveThinking:
 
         Downgrading the forcing to auto instead would disarm schema forcing on
         the single-shot structured path (milestone_engine sets
-        tool_choice="required" for FUNCTION_CALLING providers and has NO
-        prose→schema recovery there — the turn fails), and would drop the
-        evidence-before-conclusion guarantee force_tool_use enforces on DA
-        turns. A soundness property is never traded for an experiment knob.
+        tool_choice="required" for FUNCTION_CALLING providers and re-asks a
+        prose reply only where forced_tool_choice_enforced is False, which it
+        is not on this model — the turn fails), and on DA turns would let a
+        prose reply send the loop to its schema-only iteration, stripping the
+        evidence tools. A soundness property is never traded for an
+        experiment knob.
         """
         provider = AnthropicProvider(_config(thinking_mode="adaptive"))
 
