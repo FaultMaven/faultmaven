@@ -111,6 +111,7 @@ from .stage_gates import (
     _coerce_intervention_quadrant,
     _determine_action_type,
     _normalise_id_ref,
+    _same_fix_action,
     _settled_working_conclusion,
     _solution_cause_validated,
     _supersede_pending_solution_offers,
@@ -1457,18 +1458,11 @@ class ResponseApplier:
                 "SOLUTIONS NOT ACCEPTED: the reported problem was found not "
                 "present, so there is nothing to fix or mitigate.",
             )
-        # The action ids this apply mints, in ``solutions_to_add`` order: what
-        # an ``accepted_action_ref`` of ``new_index_N`` names (#2105). Reset
-        # per apply, so a replayed bundle resolves against its own.
+        # The action each ``solutions_to_add`` entry is, in order (minted, or
+        # kept when it restates the same fix): what an ``accepted_action_ref``
+        # of ``new_index_N`` names (#2105). Reset per apply, so a replayed
+        # bundle resolves against its own.
         metadata["minted_action_ids"] = []
-        # And the SOLUTIONs pending before this apply supersedes any: one of
-        # them named by its ACTION_ID is still the one the user ran.
-        metadata["pending_solution_ids_at_apply_start"] = [
-            a.action_id
-            for a in case.proposed_actions
-            if a.state == "pending"
-            and a.action_type == InvestigationActionType.SOLUTION
-        ]
         if (
             not staging
             and not false_alarm
@@ -1623,6 +1617,12 @@ class ResponseApplier:
                 # solution_proposed latched). Runs BEFORE the append so the
                 # new offer never supersedes itself.
                 if action_type == InvestigationActionType.SOLUTION:
+                    # The same fix restated keeps its action (#2105), and
+                    # ``new_index_N`` names that action.
+                    same = _same_fix_action(case, s_item.description)
+                    if same is not None:
+                        metadata["minted_action_ids"].append(same.action_id)
+                        continue
                     _supersede_pending_solution_offers(case, reason="reproposal")
 
                 proposed_action = ProposedAction(

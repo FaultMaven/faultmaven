@@ -11,9 +11,6 @@ from typing import (
     Sequence,
 )
 
-from faultmaven.core.investigation.causal_graph.similarity import (
-    hypothesis_statements_duplicate,
-)
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
@@ -392,6 +389,42 @@ def _supersede_pending_solution_offers(
     return count, newest_turn
 
 
+def _same_fix_action(case: Case, description: str) -> Optional[ProposedAction]:
+    """The SOLUTION action a re-proposal with ``description`` IS, or None.
+
+    Models re-send the standing fix every turn in the same words (#1136). Minted
+    as a new action, the copy superseded the original, so the fix the user ran
+    was refused as superseded, and a copy of an executed fix read as a second
+    fix to register (#2105). The same fix keeps one action: the pending offer,
+    or an accepted fix whose latest window has not FAILED (after a failed
+    window the same fix applied again is a new attempt). Same text only,
+    whitespace-collapsed and case-folded: a fuzzy match would drop a
+    genuinely new offer, and a reworded fix is a new offer. The ``Solution``
+    row is minted either way (#1136)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        FIX_FAILED,
+        latest_fix_window,
+    )
+
+    def text(value: str) -> str:
+        return " ".join(value.split()).casefold()
+
+    wanted = text(description or "")
+    if not wanted:
+        return None
+    states = {"pending"}
+    if latest_fix_window(case).state != FIX_FAILED:
+        states.add("accepted")
+    for action in reversed(case.proposed_actions):
+        if (
+            action.action_type == InvestigationActionType.SOLUTION
+            and action.state in states
+            and text(action.description) == wanted
+        ):
+            return action
+    return None
+
+
 def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
     """Retire stale DIAGNOSTIC pending asks a SOLUTION offer shadowed (INV-33).
 
@@ -664,43 +697,6 @@ _GATE_ACTION_TYPE: dict[str, InvestigationActionType] = {
 }
 
 
-def _restates(a: ProposedAction, b: ProposedAction) -> bool:
-    """Whether two actions are one fix in other words: same type, and the test
-    ``_restates_standing_solution`` applies (``hypothesis_statements_duplicate``)."""
-    return (
-        a.action_type == b.action_type
-        and bool(a.description and b.description)
-        and hypothesis_statements_duplicate(a.description, b.description)
-    )
-
-
-def _retire_as_reproposal(case: Case, action: ProposedAction) -> None:
-    action.state = "superseded"
-    action.superseded_reason = "reproposal"
-    action.superseded_in_turn = case.current_turn
-
-
-def _unless_a_registered_fix(
-    case: Case, action: ProposedAction
-) -> Optional[ProposedAction]:
-    """``action``, unless it restates a fix already registered whose window has
-    not failed: then it is a re-assertion, absorbed, and the restating offer is
-    retired (an offer of a fix already run is dead). After a FAILED window the
-    same fix applied again is a new attempt (#2105)."""
-    from faultmaven.core.investigation.cause_assurance import (
-        FIX_FAILED,
-        latest_fix_window,
-    )
-
-    if any(
-        other.state == "accepted" and _restates(action, other)
-        for other in case.proposed_actions
-    ) and (latest_fix_window(case).state != FIX_FAILED):
-        _retire_as_reproposal(case, action)
-        return None
-    return action
-
-
 def _resolve_solution_acceptance(
     case: Case, ref: Any, metadata: dict[str, Any]
 ) -> Optional[ProposedAction]:
@@ -709,14 +705,17 @@ def _resolve_solution_acceptance(
     A fix attempt is a record: each SOLUTION the user carried out registers
     once, for the action the acceptance names (``accepted_action_ref``: an
     ACTION_ID, or ``new_index_N`` for the Nth of this response's
-    ``solutions_to_add``, resolved against the ids the solutions step minted
-    in this apply, ``metadata["minted_action_ids"]``).
+    ``solutions_to_add``, resolved against the actions the solutions step
+    minted or kept in this apply, ``metadata["minted_action_ids"]``).
 
-    - The ref names a pending SOLUTION: that action.
+    - The ref names a pending SOLUTION, or one superseded as a ``reproposal``:
+      that action. Supersession retires an offer and never decides whether a
+      fix ran.
     - The ref names an accepted SOLUTION: None, silently. A re-assertion of a
       registered fix, which models emit every turn.
     - The ref names anything else (no such action, a DIAGNOSTIC, a MITIGATION,
-      a superseded or rejected action): None, with one feedback line.
+      a SOLUTION withdrawn when its license fell, M5, or a rejected one): None,
+      with one feedback line.
     - No ref, and no fix registered yet: the pending SOLUTION (INV-32 keeps
       at most one), as before #2105; none pending gets the no-pending notice.
     - No ref, and a fix registered before: None. The engine cannot tell a
@@ -724,11 +723,8 @@ def _resolve_solution_acceptance(
       a second fix; when a SOLUTION is pending, one line names it, worded as a
       condition so it is no prompt to claim an execution nobody reported.
 
-    An ACTION_ID pending when the response arrived names the fix the user ran
-    even when this response's re-proposal superseded it: it is restored and
-    registered, and this apply's restatement of it retired. A pending SOLUTION
-    that restates a registered fix is a re-assertion unless that fix's window
-    failed (``_unless_a_registered_fix``).
+    A re-sent fix in the same words is no second fix: it keeps its action
+    (``_same_fix_action``), so its name resolves to the one the user ran.
     """
     solution = _GATE_ACTION_TYPE["solution_accepted"]
     pending = [
@@ -740,7 +736,7 @@ def _resolve_solution_acceptance(
     if ref is None:
         if not case.progress.solution_accepted:
             if pending:
-                return _unless_a_registered_fix(case, pending[-1])
+                return pending[-1]
             logger.warning(
                 f"Rejected stage-gate milestone 'solution_accepted' for case "
                 f"{case.case_id}: no pending SOLUTION ProposedAction exists"
@@ -778,21 +774,16 @@ def _resolve_solution_acceptance(
     action = next((a for a in case.proposed_actions if a.action_id == action_id), None)
     if (
         action is not None
+        and action.action_type == solution
         and action.state == "superseded"
-        and action.superseded_in_turn == case.current_turn
-        and action.action_id in metadata.get("pending_solution_ids_at_apply_start", ())
+        and action.superseded_reason == "reproposal"
     ):
         action.state = "pending"
         action.superseded_reason = None
         action.superseded_in_turn = None
-        minted = metadata.get("minted_action_ids") or ()
-        for other in case.proposed_actions:
-            if other.action_id in minted and other.state == "pending":
-                if _restates(other, action):
-                    _retire_as_reproposal(case, other)
     if action is not None and action.action_type == solution:
         if action.state == "pending":
-            return _unless_a_registered_fix(case, action)
+            return action
         if action.state == "accepted":
             return None
     if action is None:

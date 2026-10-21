@@ -44,6 +44,8 @@ from faultmaven.core.investigation.prompts.templates.treatment import (
 )
 from faultmaven.core.investigation.schemas import (
     EvidenceTrail,
+    HypothesisEvidenceLinkToAdd,
+    HypothesisUpdate,
     InvestigationResponse_Treatment,
     MilestoneJustifications,
     MilestoneUpdates,
@@ -56,6 +58,8 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import (
     Case,
+    EvidenceStance,
+    HypothesisState,
     InvestigationActionType,
     ProblemStatus,
     SolutionType,
@@ -255,12 +259,6 @@ async def test_a_ref_naming_a_downgraded_diagnostic_is_refused():
             id="unknown-id",
         ),
         pytest.param(
-            [_fix("restart the pool"), _fix(_SECOND)],
-            _accepted("new_index_0"),
-            "a superseded SOLUTION",
-            id="superseded-in-the-same-response",
-        ),
-        pytest.param(
             [_fix(_SECOND)],
             MilestoneUpdates(accepted_action_ref="new_index_0"),
             "accepted_action_ref new_index_0 was ignored: it is read only with "
@@ -280,6 +278,26 @@ async def test_a_ref_naming_anything_else_registers_nothing(
     assert len(case.action_attempts) == 1
     assert "solution_accepted" not in meta["milestones_completed"]
     assert said in meta["system_feedback"]
+
+
+async def test_a_fix_superseded_by_a_different_one_in_the_same_response_registers():
+    """``new_index_0`` names X; Y, a different fix, superseded it as an offer.
+    The user ran X: supersession never decides whether a fix ran."""
+    eng, case = await _relapsed()
+
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix("restart the pool"), _fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    states = [(a.description, a.state, a.accepted_in_turn) for a in _solutions(case)]
+    assert states[1:] == [
+        ("restart the pool", "accepted", 14),
+        (_SECOND, "pending", None),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +511,8 @@ def _pending(case):
 
 
 async def test_a_fix_named_by_id_and_reproposed_in_the_same_words_registers():
-    """P1: the response re-sends the fix it names, superseding it first."""
+    """P1: the response re-sends the fix it names; the same fix keeps its
+    action, so the name still finds it pending."""
     eng, case = _identified()
     await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
     (offer,) = _solutions(case)
@@ -587,13 +606,14 @@ async def test_a_resent_bundle_before_any_verdict_is_a_reassertion():
         milestones=_accepted("new_index_0"),
     )
 
+    assert len(_solutions(case)) == 1  # the restatement minted no action
     assert _accepted_turns(case) == [6]
     assert len(case.action_attempts) == 1
     assert _pending(case) == []
 
 
 async def test_the_same_fix_applied_again_after_a_failed_window_registers():
-    """P5b."""
+    """P5b: after a FAILED window the same fix is a new attempt, minted."""
     eng, case = await _relapsed()
 
     await _turn(
@@ -604,7 +624,80 @@ async def test_the_same_fix_applied_again_after_a_failed_window_registers():
         milestones=_accepted("new_index_0"),
     )
 
+    assert len(_solutions(case)) == 2
     assert _accepted_turns(case) == [6, 14]
+
+
+@pytest.mark.parametrize(
+    "restated, minted",
+    [(" Raise  MAX_CONNECTIONS to 100 ", False), ("set max_connections to 100", True)],
+    ids=["same-text", "reworded-control"],
+)
+async def test_a_pending_fix_restated_keeps_its_action(restated, minted):
+    """The same text, whitespace and case aside, keeps the pending action;
+    a reworded fix is a new offer, as #1136 rules."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (offer,) = _solutions(case)
+
+    await _turn(eng, case, 6, solutions_to_add=[_fix(restated)])
+
+    assert len(case.solutions) == 2  # the Solution row is minted either way
+    if minted:
+        assert offer.state == "superseded"
+        assert [a.description for a in _pending(case)] == [restated]
+    else:
+        assert _solutions(case) == [offer]
+        assert offer.state == "pending"
+
+
+async def test_a_fix_superseded_on_an_earlier_turn_registers_by_name():
+    """X offered, then Y offered; the user reports running X."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_SECOND)])
+    assert (x.state, x.superseded_reason) == ("superseded", "reproposal")
+
+    await _turn(eng, case, 7, milestones=_accepted(x.action_id))
+
+    assert (x.state, x.accepted_in_turn) == ("accepted", 7)
+    assert [a.description for a in _pending(case)] == [_SECOND]
+
+
+async def test_a_fix_withdrawn_when_its_license_fell_is_refused():
+    """M5: the cause the offer rested on was refuted, so the offer was
+    withdrawn (``license_lost``), not replaced."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    hyp = next(iter(case.hypotheses.values()))
+    link = HypothesisEvidenceLinkToAdd(
+        hypothesis_id_ref=hyp.hypothesis_id,
+        evidence_id_ref="new_index_0",
+        stance=EvidenceStance.REFUTES,
+        reasoning="the limit was raised and checkout still fails",
+    )
+    refute = HypothesisUpdate(
+        hypothesis_id=hyp.hypothesis_id,
+        state=HypothesisState.REFUTED,
+        refutation_reason="checkout fails with the limit far above the pool",
+    )
+    await _turn(
+        eng,
+        case,
+        6,
+        _ev(_PRESENT, "checkout returns 503 with max_connections at 500"),
+        hypothesis_evidence_links=[link],
+        hypotheses_to_update=[refute],
+    )
+    assert (x.state, x.superseded_reason) == ("superseded", "license_lost")
+
+    meta = await _turn(eng, case, 7, milestones=_accepted(x.action_id))
+
+    assert x.accepted_in_turn is None
+    assert case.action_attempts == []
+    assert f"{x.action_id}, a superseded SOLUTION" in meta["system_feedback"]
 
 
 @pytest.mark.parametrize("shape", ["first-fix", "after-a-relapse"])
@@ -643,6 +736,11 @@ async def test_an_acceptance_naming_an_earlier_staged_fix_is_never_held_bare(sha
 
     assert _accepted_turns(case) == before
     assert len(case.action_attempts) == len(before)
+    # The line's recovery: naming X's ACTION_ID registers X; Y stays pending.
+    x = next(a for a in _solutions(case) if a.description == _SECOND)
+    await _turn(eng, case, turn + 3, milestones=_accepted(x.action_id))
+    assert (x.state, x.accepted_in_turn) == ("accepted", turn + 3)
+    assert [a.description for a in _pending(case)] == ["restart the pool"]
 
 
 async def test_the_reasoning_strip_takes_the_ref_with_the_signal():
