@@ -17,10 +17,12 @@ code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
 - ``untracked``: everything else.
 
 Files and commits are read from each repo's default branch. A fetch refused
-because the feature is off is ``disabled``; any other failure is printed as
-``unavailable`` and counted, and never read as "nothing there". Rows for a
-repo that is not public print no package, advisory or severity, and no row
-names a secret type, so a paste of the output leaks neither.
+because the feature is off is ``disabled`` (reported for public repos only);
+any other failure is printed as ``unavailable`` and counted, and never read as
+"nothing there". Rows for a repo that is not public print no package, advisory
+or severity, no row names a secret type, and a private repo outside the map is
+never named, so a paste of the output leaks none of them. The last line,
+``queue:``, leaves secret scanning out of every count, for the public Queue.
 
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
@@ -64,7 +66,8 @@ PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
 
-TXT_PIN = re.compile(r"^([\w.-]+)(?:\[[^\]]*\])?==([^\s;]+)[ \t]*(?:;.*)?$", re.M)
+# A requirement line in a .txt manifest: name, extras, then the rest of the line.
+REQ_LINE = re.compile(r"^[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?(.*)$", re.M)
 # A quoted requirement in pyproject.toml: name, extras, then the rest of the string.
 REQUIREMENT = re.compile(
     r"""(["'])[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?((?:(?!\1).)*)\1"""
@@ -122,14 +125,13 @@ def same_package(a: dict, b: dict) -> bool:
 def resolved_versions(manifest_path: str, text: str, package: str) -> list[str]:
     """Every version the manifest resolves ``package`` at; [] when it cannot say."""
     base = manifest_path.rsplit("/", 1)[-1]
-    if base.endswith(".txt"):
-        pins = TXT_PIN.findall(text)
-        return [ver for name, ver in pins if norm(name) == norm(package)]
-    if base == "pyproject.toml":  # every declaration must be an exact pin
-        found = REQUIREMENT.findall(text)
-        pins = [
-            EXACT_PIN.match(rest) for _, n, _, rest in found if norm(n) == norm(package)
-        ]
+    if base.endswith(".txt") or base == "pyproject.toml":
+        # Every declaration of the package must be an exact pin.
+        if base.endswith(".txt"):
+            found = [(name, rest) for name, _, rest in REQ_LINE.findall(text)]
+        else:
+            found = [(name, rest) for _, name, _, rest in REQUIREMENT.findall(text)]
+        pins = [EXACT_PIN.match(rest) for n, rest in found if norm(n) == norm(package)]
         return [pin.group(1) for pin in pins] if all(pins) else []
     versions, section = [], ""
     for line in text.split("\n") if base == "pnpm-lock.yaml" else []:
@@ -152,8 +154,9 @@ def in_range(version: Version, spec: str) -> bool:
 
 
 def outside_every_range(versions: list[str], ranges: list[str]) -> bool:
-    """False for no versions, no ranges, an npm prerelease or anything unparseable."""
-    if not versions or not ranges or any("-" in v for v in versions):
+    """False for no versions, no ranges, an npm prerelease (``-``), a PEP 440 local
+    version (``+``) or anything unparseable."""
+    if not versions or not ranges or any(c in v for v in versions for c in "-+"):
         return False
     try:
         return not any(in_range(Version(v), r) for v in versions for r in ranges)
@@ -210,20 +213,21 @@ class Sweep:
         self.issues: list[tuple[str, str]] | None = None
         self.public: set[str] = set()
         self.disabled: dict[str, list[str]] = {}
-        self.unavailable: list[str] = []
+        self.unavailable: list[tuple[bool, str]] = []  # (from secret scanning, line)
 
     def note(self, repo: str, what: str, line: str, private_as: str = "") -> None:
-        """Record a failed fetch. A repo not known to be public gets no path: its
-        line names the kind (or ``file fetch``) and the HTTP status, else the first
-        stderr line with every path-like word dropped."""
+        """Record a failed fetch. For a repo not known to be public the line names
+        the kind (or ``file fetch``) and only ``HTTP <nnn>``, else ``fetch failed``;
+        a private repo outside the map is not named at all."""
+        secret = what == "secret-scanning"
         if repo in self.public:
-            self.unavailable.append(f"unavailable: {repo} {what}: {line}")
+            self.unavailable.append((secret, f"unavailable: {repo} {what}: {line}"))
             return
         status = re.search(r"HTTP \d{3}", line)
-        words = [word for word in line.split() if "/" not in word]
-        reason = status.group(0) if status else " ".join(words) or "no detail"
-        label = private_as or what
-        self.unavailable.append(f"unavailable: {repo} {PRIVATE} {label}: {reason}")
+        reason = status.group(0) if status else "fetch failed"
+        named = f"{repo} {PRIVATE} {private_as or what}"
+        named = named if repo in REPOS else "a private repo outside the map"
+        self.unavailable.append((secret, f"unavailable: {named}: {reason}"))
 
     def file(self, repo: str, path: str) -> str | None:
         """A default-branch file; None when it is missing (404); else Unreadable."""
@@ -336,13 +340,13 @@ class Sweep:
         try:
             return fetch(self.run, alerts_path(repo, kind))
         except FetchError as exc:
-            if exc.disabled:
-                self.disabled.setdefault(kind, []).append(repo)
-            else:
+            if not exc.disabled:
                 self.note(repo, kind, exc.line)
+            elif repo in self.public:  # a private repo's posture leaves no trace
+                self.disabled.setdefault(kind, []).append(repo)
             return []
 
-    def outside_line(self, repo: str) -> str:
+    def outside_counts(self, repo: str) -> dict[str, int | str]:
         counts: dict[str, int | str] = {}
         for kind in ("dependabot", "code-scanning"):
             try:
@@ -351,21 +355,27 @@ class Sweep:
                 if not exc.disabled:
                     self.note(repo, kind, exc.line)
                 counts[kind] = "disabled" if exc.disabled else "unavailable"
-        if repo in self.public:
-            shown = " ".join(f"{kind} {n}" for kind, n in counts.items())
-        else:  # one total, so a private repo's scanning configuration stays unsaid
-            failed = "unavailable" in counts.values()
-            total = sum(n for n in counts.values() if isinstance(n, int))
-            shown = f"{PRIVATE} alerts {'unavailable' if failed else total}"
-        return f"outside the map: {repo} {shown} — see #2129"
+        return counts
+
+    def outside_lines(self, repos: list[str]) -> list[str]:
+        """One line per public repo; the private ones fold into one unnamed total."""
+        lines = []
+        for repo in (r for r in repos if r in self.public):
+            shown = " ".join(f"{k} {n}" for k, n in self.outside_counts(repo).items())
+            lines.append(f"outside the map: {repo} {shown} — see #2129")
+        if hidden := [r for r in repos if r not in self.public]:
+            counts = [n for r in hidden for n in self.outside_counts(r).values()]
+            total = sum(n for n in counts if isinstance(n, int))
+            alerts = "unavailable" if "unavailable" in counts else total
+            plural = "s" if len(hidden) != 1 else ""
+            lines.append(
+                f"outside the map: {len(hidden)} private repo{plural}, alerts {alerts}"
+            )
+        return lines
 
     def disabled_line(self, kind: str, repos: list[str]) -> str:
-        """Public repos by name; private ones only counted (their posture stays unsaid)."""
-        names = [repo for repo in repos if repo in self.public]
-        if hidden := len(repos) - len(names):
-            names.append(f"{hidden} private repo{'s' if hidden > 1 else ''}")
         listed = (
-            f"{', '.join(names[:-1])} and {names[-1]}" if len(names) > 1 else names[0]
+            f"{', '.join(repos[:-1])} and {repos[-1]}" if len(repos) > 1 else repos[0]
         )
         return f"disabled: {kind} in {listed}"
 
@@ -393,9 +403,8 @@ class Sweep:
         except (ValueError, KeyError, TypeError):
             listed, code = {}, 1
         if code:
-            self.unavailable.append(
-                f"unavailable: {ORG} repo list: {FetchError(err).line}"
-            )
+            line = f"unavailable: {ORG} repo list: {FetchError(err).line}"
+            self.unavailable.append((False, line))
         self.public = {name for name, seen in listed.items() if seen == "PUBLIC"}
         try:
             issues = fetch(self.run, f"repos/{ORG}/{CORE}/issues?{OPEN}")
@@ -414,7 +423,7 @@ class Sweep:
         ]
         for alert in alerts:
             self.classify(alert)
-        outside = [self.outside_line(r) for r in sorted(set(listed) - set(REPOS))]
+        outside = self.outside_lines(sorted(set(listed) - set(REPOS)))
 
         groups: dict[tuple[str, str, str, str], list[Alert]] = {}
         for a in alerts:
@@ -422,7 +431,7 @@ class Sweep:
         rows = sorted(self.row(members) for members in groups.values())
         count = {c: sum(a.cls == c for a in alerts) for c in CLASSES}
         untracked_groups = sum(1 for _, cells in rows if cells[5] == "untracked")
-        lines = [*self.unavailable]
+        lines = [line for _, line in self.unavailable]
         lines += [
             self.disabled_line(k, self.disabled[k]) for k in KINDS if k in self.disabled
         ]
@@ -439,6 +448,17 @@ class Sweep:
             f" · lag {count['lag']} · untracked {count['untracked']} ({untracked_groups} groups)"
             f" · unknown {count['unknown']} · disabled {sum(map(len, self.disabled.values()))}"
             f" · unavailable {len(self.unavailable)}"
+        )
+        # Safe to post on the public Queue: secret scanning is left out of every count.
+        shared = [a for a in alerts if a.kind != "secret-scanning"]
+        groups_u = sum(
+            1 for _, c in rows if c[5] == "untracked" and c[1] != "secret-scanning"
+        )
+        unknown = sum(a.cls == "unknown" for a in shared)
+        failed = sum(1 for secret, _ in self.unavailable if not secret)
+        lines.append(
+            f"queue: alerts {len(shared)} (secret scanning excluded): untracked groups"
+            f" {groups_u}, unknown {unknown}, unavailable {failed}"
         )
         return "\n".join(lines)
 

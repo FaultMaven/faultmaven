@@ -111,11 +111,11 @@ Find the newest proposal or result on the Queue:
    - Give every open issue that lacks a pile label or a priority label the missing one(s). Skip `tracking`.
    - Move to ready any blocked item whose blocking issue has closed or whose condition holds (run each you can).
    - Close a tracker whose tracked work has all closed.
-   - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on an
-     `**Alerts:**` line in the body of the open issue that covers it, or file one core issue per root that starts
-     `**Repo: FaultMaven/<r>.**` / `**Alerts:** <URLs>` (verified by the alert page and its manifest line). For a
-     private repo, name only the alert kind and count. Raise a secret-scanning alert with the owner in session, never
-     in writing. Report `unavailable` lines in the proposal. Dismiss nothing without the owner's recorded ruling.
+   - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on a line
+     starting `**Alerts:**` in the body of the open core issue that covers it, or file one core issue per root whose
+     first two lines are `**Repo: FaultMaven/<r>.**` and `**Alerts:** <URLs>`, verified by the alert page and manifest.
+     A private repo's issue names only the alert kind and count. Raise secret-scanning alerts with the owner in session,
+     never in writing. Report `unknown`/`unavailable` lines. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - From `pile:ready` only: `P1`, then `P2`, then `P3`, oldest first within each. Reserve one slot for the oldest
      `P2` that has waited over 30 days. Skip an item that an open PR from an earlier round still carries.
@@ -137,7 +137,7 @@ Find the newest proposal or result on the Queue:
    ### Yours to run
    ### Settled from last round
    ### Scorecard
-   open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · alerts <t>: untracked groups <u>, filed <f>, unavailable <m> · last round: closed <x>, filed <y>
+   open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · alerts: <the sweep's `queue:` line>, filed <f> · last round: closed <x>, filed <y>
    ```
 
 ## 3. Take the answers
