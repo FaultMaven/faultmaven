@@ -212,15 +212,26 @@ class Sweep:
         self.disabled: dict[str, list[str]] = {}
         self.unavailable: list[str] = []
 
+    def note(self, repo: str, what: str, line: str, private_as: str = "") -> None:
+        """Record a failed fetch. A repo not known to be public gets no path: its
+        line names the kind (or ``file fetch``) and the HTTP status, else the first
+        stderr line with every path-like word dropped."""
+        if repo in self.public:
+            self.unavailable.append(f"unavailable: {repo} {what}: {line}")
+            return
+        status = re.search(r"HTTP \d{3}", line)
+        words = [word for word in line.split() if "/" not in word]
+        reason = status.group(0) if status else " ".join(words) or "no detail"
+        label = private_as or what
+        self.unavailable.append(f"unavailable: {repo} {PRIVATE} {label}: {reason}")
+
     def file(self, repo: str, path: str) -> str | None:
         """A default-branch file; None when it is missing (404); else Unreadable."""
         if (repo, path) not in self.files:
             code, out, err = self.run([*RAW, f"repos/{ORG}/{repo}/contents/{path}"])
             failed = bool(code) and "(HTTP 404)" not in err
             if failed:
-                self.unavailable.append(
-                    f"unavailable: {repo} {path}: {FetchError(err).line}"
-                )
+                self.note(repo, path, FetchError(err).line, private_as="file fetch")
             self.files[(repo, path)] = (failed, None if code else out)
         failed, text = self.files[(repo, path)]
         if failed:
@@ -244,7 +255,7 @@ class Sweep:
                 reason = (
                     FetchError(err).line if code else f"no commit date ({out.strip()})"
                 )
-                self.unavailable.append(f"unavailable: {repo} commits {path}: {reason}")
+                self.note(repo, f"commits {path}", reason, private_as="file fetch")
         age = self.ages[(repo, path)]
         if age is None:
             raise Unreadable(path)
@@ -294,7 +305,7 @@ class Sweep:
                     for p in pulls
                 ]
             except FetchError as exc:
-                self.unavailable.append(f"unavailable: {repo} pulls: {exc.line}")
+                self.note(repo, "pulls", exc.line)
                 self.prs[repo] = None
         return self.prs[repo]
 
@@ -328,7 +339,7 @@ class Sweep:
             if exc.disabled:
                 self.disabled.setdefault(kind, []).append(repo)
             else:
-                self.unavailable.append(f"unavailable: {repo} {kind}: {exc.line}")
+                self.note(repo, kind, exc.line)
             return []
 
     def outside_line(self, repo: str) -> str:
@@ -338,7 +349,7 @@ class Sweep:
                 counts[kind] = len(fetch(self.run, alerts_path(repo, kind)))
             except FetchError as exc:
                 if not exc.disabled:
-                    self.unavailable.append(f"unavailable: {repo} {kind}: {exc.line}")
+                    self.note(repo, kind, exc.line)
                 counts[kind] = "disabled" if exc.disabled else "unavailable"
         if repo in self.public:
             shown = " ".join(f"{kind} {n}" for kind, n in counts.items())
@@ -394,7 +405,7 @@ class Sweep:
                 if "pull_request" not in i
             ]
         except FetchError as exc:
-            self.unavailable.append(f"unavailable: {CORE} issues: {exc.line}")
+            self.note(CORE, "issues", exc.line)
         alerts = [
             to_alert(repo, kind, item)
             for repo in REPOS

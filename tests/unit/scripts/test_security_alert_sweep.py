@@ -537,7 +537,7 @@ def test_no_private_repos_scanning_configuration_is_named(mod):
     gh.errors["priv-c/dependabot/alerts"] = "HTTP 502: Bad Gateway"
     lines = mod.sweep(gh, NOW).split("\n")
     assert lines[:3] == [
-        "unavailable: priv-c dependabot: gh: HTTP 502: Bad Gateway",
+        "unavailable: priv-c (private) dependabot: HTTP 502",
         "disabled: code-scanning in 2 private repos",
         "disabled: secret-scanning in faultmaven-copilot and 2 private repos",
     ]
@@ -551,6 +551,37 @@ def test_no_private_repos_scanning_configuration_is_named(mod):
         line for line in lines for r in private if r in line and "disab" in line
     ]
     assert lines[-1].endswith(" · disabled 5 · unavailable 1")
+
+
+BAD_GATEWAY = (
+    "HTTP 502: Bad Gateway (https://api.github.com/repos/FaultMaven/r/contents/x/y)"
+)
+RESET = "error reading requirements/dev.txt: connection reset"
+
+
+@pytest.mark.parametrize(
+    "visibility, failing, stderr, expected",
+    [
+        ("PRIVATE", f"contents/{REQ}", BAD_GATEWAY, "(private) file fetch: HTTP 502"),
+        (
+            "PRIVATE",
+            "commits",
+            RESET,
+            "(private) file fetch: gh: error reading connection reset",
+        ),
+        ("PUBLIC", f"contents/{REQ}", BAD_GATEWAY, f"{REQ}: gh: {BAD_GATEWAY}"),
+    ],
+)
+def test_a_private_repos_failed_fetch_names_no_path(
+    mod, visibility, failing, stderr, expected
+):
+    repo = "faultmaven-kb-toolkit"
+    gh = fake(mod, repo, dependabot(repo, 1), files={(repo, REQ): "pillow==2.0.0\n"})
+    gh.visibility[repo] = visibility
+    gh.errors[f"{repo}/{failing}"] = stderr
+    report = mod.sweep(gh, NOW)
+    assert report.split("\n")[0] == f"unavailable: {repo} {expected}"
+    assert ("requirements" in report) == (visibility == "PUBLIC")
 
 
 def test_the_sweep_only_reads(mod):
