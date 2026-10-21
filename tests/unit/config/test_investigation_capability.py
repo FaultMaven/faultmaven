@@ -386,6 +386,45 @@ def test_requested_only_forcing_is_named_at_startup(caplog):
     assert not role.degraded
 
 
+def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
+    """#1755 review: chat on fireworks, STRUCTURED_OUTPUT_PROVIDER on
+    anthropic opus-5-5. The override carries the schema-bound calls, so its
+    model is the one whose forcing must be named."""
+    from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+
+    opus = "claude-opus-5-5"
+    config = ProviderConfig(name="anthropic", models=[opus], default_model=opus)
+    registry = _PerProviderRegistry(
+        {
+            "fireworks": _EnforcementProvider("best_effort"),
+            "anthropic": AnthropicProvider(config),
+        }
+    )
+    settings = _enforcement_settings(so_provider_name="anthropic", so_model=opus)
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    [warning] = [r for r in caplog.records if r.levelno == _logging.WARNING]
+    assert "STRUCTURED_OUTPUT_PROVIDER model anthropic/claude-opus-5-5" in (
+        warning.message
+    )
+    assert "requested by instruction, not enforced" in warning.message
+
+
+def test_a_forcing_probe_that_raises_is_logged(caplog):
+    class _Raising(_EnforcementProvider):
+        def forced_tool_choice_enforced(self, model=None):
+            raise RuntimeError("probe broke")
+
+    settings = _enforcement_settings("anthropic", "claude-x")
+    registry = _PerProviderRegistry({"anthropic": _Raising("function_calling")})
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    [warning] = caplog.records
+    assert "anthropic/claude-x" in warning.message
+    assert "probe broke" in warning.message
+
+
 def test_da_override_checks_both_roles_separately(caplog):
     """DA on a best-effort provider + chat on STRICT → exactly one warning,
     for the investigation role only."""

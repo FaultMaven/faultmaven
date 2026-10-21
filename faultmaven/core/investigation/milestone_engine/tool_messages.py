@@ -55,53 +55,36 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
     return pydantic_to_strict_openai_tools(schema_model)
 
 
-def _forced_tool_choice_enforced(
-    provider: Any, model: Any = None, provider_override: Any = None
-) -> bool:
-    """Whether the call's ``tool_choice="required"`` is enforced, or only
-    requested, on the provider and model it lands on (#1755).
-
-    True unless the provider says False: a provider without the predicate,
-    one that raises, or a stand-in answering asynchronously keeps the
-    behaviour this engine has always had.
-    """
-    probe = getattr(provider, "forced_tool_choice_enforced", None)
-    if probe is None:
-        return True
-    try:
-        if provider_override:
-            enforced = probe(model, provider_override=provider_override)
-        else:
-            enforced = probe(model)
-    except Exception:
-        return True
-    if inspect.iscoroutine(enforced):
-        enforced.close()
-        return True
-    return enforced is not False
-
-
-def _schema_tool_nudge(schema_tool_name: str) -> str:
-    """The user turn that follows a reply without a tool call, directing the
-    schema-tool call; the reply is echoed just above it."""
+def _schema_tool_nudge(schema_tool_name: str, echoed: bool = True) -> str:
+    """The user turn after a reply without a tool call, directing the
+    schema-tool call. *echoed*: the reply is echoed just above it; an empty
+    reply is not, and then nothing points at "the text above" (#1755)."""
+    use_echo = (
+        "Use the text above as the `agent_response` field and fill in the "
+        "remaining required fields. "
+        if echoed
+        else ""
+    )
     return (
         f"You must now produce your structured response by calling the "
-        f"`{schema_tool_name}` tool. Use the text above as the `agent_response` "
-        "field and fill in the remaining required fields. Do not reply with "
-        "plain text — only a tool call is acceptable."
+        f"`{schema_tool_name}` tool. "
+        + use_echo
+        + "Do not reply with plain text — only a tool call is acceptable."
     )
 
 
-def _tool_call_nudge(tool_names: list[str], schema_tool_name: str) -> str:
-    """The user turn after a first prose reply on a forced iteration whose
-    forcing was only requested (#1755): every tool stays offered."""
-    evidence = ", ".join(f"`{name}`" for name in tool_names)
+def _tool_call_nudge(
+    tool_names: list[str], schema_tool_name: str, echoed: bool = True
+) -> str:
+    """The user turn after a first reply without a tool call on a forced,
+    non-final iteration (#1755): every tool stays offered."""
+    offered = ", ".join(f"`{name}`" for name in tool_names)
     return (
         f"Do not reply with plain text — only a tool call is acceptable. "
-        f"Call one of the evidence tools ({evidence}) to gather what you "
-        f"need, or, once you have it, call the `{schema_tool_name}` tool with "
-        f"your structured response, using the text above as its "
-        f"`agent_response` field."
+        f"Call one of the offered tools ({offered}) to gather what you need, "
+        f"or, once you have it, call the `{schema_tool_name}` tool with your "
+        "structured response"
+        + (", using the text above as its `agent_response` field." if echoed else ".")
     )
 
 

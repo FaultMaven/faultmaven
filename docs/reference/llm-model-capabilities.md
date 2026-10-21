@@ -350,18 +350,20 @@ unless it is at or below the entry). Otherwise:
   the tool set does. The block trails the cached system block, so the cached
   prefix is unchanged. It sits in `system` rather than in a message because
   the tool loop resends its message list on every iteration.
-- **`auto` asks; it does not force.** A reply can still carry no tool call,
-  and `AnthropicProvider.forced_tool_choice_enforced()` returns False for such a
-  model, so the engine knows (#1755). On the single-shot structured path a
-  reply without the tool call, whose text is not itself the JSON answer, is
-  re-asked once, with the reply echoed and the tool loop's instruction to call
-  the schema tool; a second miss fails the attempt. On a forced (DA) tool-loop
-  iteration the first prose reply is nudged with every tool still offered, and
-  a second consecutive one gets the loop's schema-only iteration
-  (`force_schema_next`). Only a final or force-schema iteration reaches the
-  loop's "provider ignored `tool_choice=required`" path. The startup
-  structured-output advisory warns that the schema tool is requested by
-  instruction, not enforced.
+- **`auto` asks; it does not force.** A reply can still carry no tool call.
+  The engine decides from the reply, on any provider (#1755): a forced call's
+  reply with no tool call, whose stop reason is neither `MAX_TOKENS` nor
+  `CONTENT_FILTER`, is forcing that did not hold. On the single-shot structured
+  path such a reply, unless its text is itself the JSON answer, is re-asked
+  once: the reply echoed (bounded at `TOOL_RESULT_MAX_CHARS`, none when empty)
+  and the tool loop's instruction to call the schema tool. A second miss fails
+  the attempt. On a forced (DA) tool-loop iteration that is not the last, the
+  first such reply is nudged with every tool still offered, and a second
+  consecutive one gets the loop's schema-only iteration (`force_schema_next`).
+  Only a final or force-schema iteration reaches the loop's "provider ignored
+  `tool_choice=required`" path. The startup structured-output advisory reads
+  `AnthropicProvider.forced_tool_choice_enforced()` and warns that the schema
+  tool is requested by instruction, not enforced.
 - **Thinking is not refused.** With `ANTHROPIC_THINKING_MODE=adaptive`, the
   "thinking refused under forced tool use" rule applies only where forcing is
   actually sent. A model above the forcing ceiling runs `auto` and carries

@@ -861,9 +861,9 @@ class BaseLLMProvider(ABC):
         """Whether ``tool_choice="required"`` is ENFORCED on *model* (the
         provider default if None), or only requested (#1755). A provider that
         cannot send forcing on some models overrides this (Anthropic above its
-        forcing ceiling sends ``auto`` plus an instruction), and the engine then
-        handles a reply without a tool call. Independent of
-        ``get_structured_output_capability``."""
+        forcing ceiling sends ``auto`` plus an instruction). Read by the startup
+        advisory only: the engine decides from each reply, whatever answered.
+        Independent of ``get_structured_output_capability``."""
         return True
 
     def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:

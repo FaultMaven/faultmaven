@@ -654,19 +654,21 @@ class AnthropicProvider(BaseLLMProvider):
                         # changes exactly when the tool set does, and an
                         # unchanged tool set sends a byte-identical block.
                         #
-                        # "auto" asks; it does not force, and
-                        # forced_tool_choice_enforced says so to the engine
-                        # (#1755). A reply that still carries no tool call:
-                        #   - on the single-shot structured path, is re-asked
-                        #     once with an instruction naming the schema tool
-                        #     unless its text is itself the JSON answer; a
-                        #     second miss fails the attempt;
-                        #   - on a forced (DA) tool-loop iteration, is nudged
-                        #     with every tool still offered; a second
-                        #     consecutive one gets the schema-only iteration.
-                        #     Only a final or force-schema iteration reaches
-                        #     the loop's "provider ignored
-                        #     tool_choice=required" path.
+                        # "auto" asks; it does not force (the startup
+                        # advisory reads forced_tool_choice_enforced). The
+                        # engine handles a forced call's reply that carries
+                        # no tool call, neither cut nor refused, on any
+                        # provider (#1755):
+                        #   - on the single-shot structured path, it is
+                        #     re-asked once with an instruction naming the
+                        #     schema tool unless its text is itself the JSON
+                        #     answer; a second miss fails the attempt;
+                        #   - on a forced (DA) tool-loop iteration that is not
+                        #     the last, it is nudged with every tool still
+                        #     offered; a second consecutive one gets the
+                        #     schema-only iteration. Only a final or
+                        #     force-schema iteration reaches the loop's
+                        #     "provider ignored tool_choice=required" path.
                         #
                         # Keys other than type and name (e.g.
                         # disable_parallel_tool_use, valid with auto) are the
@@ -742,15 +744,14 @@ class AnthropicProvider(BaseLLMProvider):
             #   1. On the SINGLE-SHOT structured path
             #      (generate_structured_output's FUNCTION_CALLING branch sets
             #      tool_choice="required" for FUNCTION_CALLING providers,
-            #      which is every Anthropic call) a prose reply is re-asked
-            #      only where forced_tool_choice_enforced is False, and on
-            #      this model it is True: an "auto" answer in prose would
-            #      leave tool_calls empty and fail the turn.
-            #   2. On DA turns, forcing rules out a prose reply, and a prose
-            #      reply on an enforcing model sends the loop to its
-            #      schema-only iteration, stripping the evidence tools. (The
-            #      schema tool is offered from iteration 0, so forcing never
-            #      guaranteed evidence before the conclusion by itself.)
+            #      which is every Anthropic call) a reply without the tool
+            #      call is re-asked once and then fails the turn; forcing is
+            #      what keeps it from arising.
+            #   2. On DA turns, forcing rules out a prose reply, and a
+            #      repeated prose reply sends the loop to its schema-only
+            #      iteration, stripping the evidence tools. (The schema tool
+            #      is offered from iteration 0, so forcing never guaranteed
+            #      evidence before the conclusion by itself.)
             # Consequence, stated deliberately: forced-schema turns on a
             # model that accepts forcing cannot carry thinking at all. The
             # owner accepted that gap (#1116, 2026-10-21): Anthropic's native
@@ -768,9 +769,9 @@ class AnthropicProvider(BaseLLMProvider):
                     "forced tool use (tool_choice=%s) and Anthropic rejects "
                     "forced tool use with thinking enabled. Keeping the "
                     "forcing — dropping it would disarm schema forcing on the "
-                    "single-shot structured path (no prose recovery on a "
-                    "model that accepts forcing) and let a prose reply strip "
-                    "the evidence tools on DA turns. "
+                    "single-shot structured path (prose gets one re-ask, "
+                    "then fails the turn) and let prose replies strip the "
+                    "evidence tools on DA turns. "
                     "Thinking off is sent as %s.",
                     forced_choice,
                     off_control.label,

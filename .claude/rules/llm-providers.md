@@ -78,9 +78,10 @@ empty/degraded investigations. **Use an enforcing provider as `CHAT_PROVIDER`**:
 STRICT (OpenAI gpt-4o+, Gemini 1.5+) or Anthropic, which is FUNCTION_CALLING
 (the schema tool, no `strict`) and enforced only where the model accepts forced
 tool use. Above the forcing ceiling the tool is requested by instruction, not
-enforced: `forced_tool_choice_enforced()` says so, the engine re-asks a reply
-without the tool call once, a DA turn keeps its evidence tools through one prose
-reply, and startup warns (#1755). BEST_EFFORT providers (Fireworks incl.
+enforced, and startup warns (`forced_tool_choice_enforced()`). The engine does
+not rely on forcing: a forced call's reply with no tool call, neither cut nor
+refused, is re-asked once (single shot) or nudged with every tool on a DA
+iteration that is not the last, on any provider (#1755). BEST_EFFORT providers (Fireworks incl.
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
 Capability is reported per-provider via `get_structured_output_capability()`.

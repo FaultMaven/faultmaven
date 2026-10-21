@@ -1,16 +1,18 @@
-"""Forced tool use that the provider only REQUESTS (#1755).
+"""A forced call whose reply carries no tool call (#1755).
 
-Above Anthropic's forcing ceiling the adapter sends ``tool_choice="required"``
-as ``auto`` plus an instruction, and ``forced_tool_choice_enforced`` says so.
-The engine must then handle what a request can return: a reply without the
-tool call is re-asked once before it fails the turn (single shot), and a DA
-turn keeps its evidence tools through one prose reply (tool loop). A body is
-truncated only when the provider said it was cut. With enforcement, nothing
-changes. Every double here is a provider reporting the predicate both ways.
+The engine knows it sent ``tool_choice="required"``. A reply that carries no
+tool call and was neither cut (``MAX_TOKENS``) nor refused (``CONTENT_FILTER``)
+is forcing that did not hold, whatever provider answered it: Anthropic above
+its forcing ceiling sends ``auto`` plus an instruction, and an
+OpenAI-compatible server may ignore ``tool_choice``. The single shot re-asks it
+once; a DA iteration that is not the last nudges it with every tool. Every
+other strategy, and every reply that carries the tool call, behaves as on
+``main``. The provider predicate is for the startup advisory only, so the
+doubles here set it to the answer the PR's first head would have acted on.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from pydantic import BaseModel
@@ -20,6 +22,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.generation import (
     STRUCTURED_OUTPUT_MAX_TOKENS,
+    StructuredOutputGenerator,
 )
 from faultmaven.infrastructure.llm.providers import StopReason
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
@@ -28,6 +31,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
     StructuredOutputStrategy,
 )
+from faultmaven.models.interfaces import ToolResult
 from tests.model_content import disabled_redaction, vetted
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -38,6 +42,8 @@ class _Answer(BaseModel):
 
 
 PROSE = "The kubelet on node-3 is out of disk."
+ECHO_NUDGE = "Use the text above"
+TOOLS_NUDGE = "Call one of the offered tools (`search_file`)"
 
 
 def _reply(content="", tool=None, args=None, stop=StopReason.STOP) -> LLMResponse:
@@ -45,7 +51,7 @@ def _reply(content="", tool=None, args=None, stop=StopReason.STOP) -> LLMRespons
     if tool is not None:
         calls = [
             ToolCall(
-                id="call_1",
+                id=f"call_{tool}",
                 type="function",
                 function={"name": tool, "arguments": json.dumps(args or {})},
             )
@@ -65,13 +71,18 @@ def _reply(content="", tool=None, args=None, stop=StopReason.STOP) -> LLMRespons
 ANSWER = _reply(
     tool="_Answer", args={"agent_response": "disk"}, stop=StopReason.TOOL_CALLS
 )
+SEARCH_CALL = _reply(
+    tool="search_file", args={"query": "disk"}, stop=StopReason.TOOL_CALLS
+)
 
 
-def _engine(enforced: bool, replies: list) -> tuple[MilestoneEngine, list]:
+def _engine(replies, *, reports_enforced, mode=StructuredOutputMode.FUNCTION_CALLING):
+    registry = MagicMock()
+    registry.execute_tool = AsyncMock(return_value=ToolResult(success=True, data="ok"))
     repo = MagicMock()
     repo.save = AsyncMock()
     engine = MilestoneEngine(
-        llm_provider=AsyncMock(), repository=repo, investigation_tools=MagicMock()
+        llm_provider=AsyncMock(), repository=repo, investigation_tools=registry
     )
     engine.deps.llm_error_handler = LLMErrorHandler(
         RetryConfig(max_retries=3, base_delay_seconds=0.0, max_delay_seconds=0.0)
@@ -80,12 +91,12 @@ def _engine(enforced: bool, replies: list) -> tuple[MilestoneEngine, list]:
     provider.get_structured_output_strategy = MagicMock(
         return_value=StructuredOutputStrategy(
             capability=StructuredOutputCapability.FUNCTION_CALLING,
-            mode=StructuredOutputMode.FUNCTION_CALLING,
+            mode=mode,
             include_schema_in_prompt=False,
             response_format=None,
         )
     )
-    provider.forced_tool_choice_enforced = Mock(return_value=enforced)
+    provider.forced_tool_choice_enforced = Mock(return_value=reports_enforced)
     queue, sent = list(replies), []
 
     async def _route(**kwargs):
@@ -110,56 +121,74 @@ async def _single_shot(engine):
 # --- Single shot -------------------------------------------------------------
 
 
-async def test_a_prose_reply_is_reasked_once_with_the_instruction():
-    engine, sent = _engine(enforced=False, replies=[_reply(PROSE), ANSWER])
+async def test_a_prose_reply_is_reasked_once_whatever_provider_answered():
+    engine, sent = _engine([_reply(PROSE), ANSWER], reports_enforced=True)
 
-    result = await _single_shot(engine)
-
-    assert result.agent_response == "disk"
+    assert (await _single_shot(engine)).agent_response == "disk"
     first, second = sent
-    assert first["bypass_cache"] is False
-    assert second["bypass_cache"] is True
-    assert "prompt" not in second
     user, echo, nudge = second["messages"]
-    assert user["content"] == first["prompt"]
+    assert user["content"] == first["prompt"] and "prompt" not in second
     assert echo == {"role": "assistant", "content": PROSE}
-    assert nudge["role"] == "user"
     assert "calling the `_Answer` tool" in nudge["content"]
-    assert second["tools"] == first["tools"]
-    assert second["tool_choice"] == "required"
+    assert ECHO_NUDGE in nudge["content"]
+    assert (second["tools"], second["tool_choice"]) == (first["tools"], "required")
+    engine.deps.llm_provider.forced_tool_choice_enforced.assert_not_called()
 
 
-async def test_two_misses_fail_after_two_calls_and_enforcement_never_reasks():
-    engine, sent = _engine(enforced=False, replies=[_reply(PROSE), _reply(PROSE)])
+async def test_two_misses_fail_after_two_calls():
+    engine, sent = _engine([_reply(PROSE), _reply(PROSE)], reports_enforced=True)
     with pytest.raises(MilestoneEngineError):
         await _single_shot(engine)
     assert len(sent) == 2
 
-    engine, sent = _engine(enforced=True, replies=[_reply(PROSE), ANSWER])
-    with pytest.raises(MilestoneEngineError):
-        await _single_shot(engine)
-    assert len(sent) == 1
 
+async def test_an_empty_reply_is_reasked_with_no_echo_and_no_cap_bump():
+    engine, sent = _engine([_reply(""), ANSWER], reports_enforced=False)
 
-async def test_an_empty_body_is_truncation_only_when_the_provider_said_so():
-    # END_TURN: not a cut, so no cap bump; the not-enforced double re-asks.
-    engine, sent = _engine(enforced=False, replies=[_reply(""), ANSWER])
     assert (await _single_shot(engine)).agent_response == "disk"
-    assert sent[1]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
-    assert "messages" in sent[1]
+    first, second = sent
+    assert second["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+    [only] = second["messages"]
+    assert only["role"] == "user"
+    assert only["content"].startswith(first["prompt"])
+    assert "calling the `_Answer` tool" in only["content"]
+    assert ECHO_NUDGE not in only["content"]
 
-    # ...and the enforced double fails it at once rather than climbing.
-    engine, sent = _engine(enforced=True, replies=[_reply(""), ANSWER])
+
+async def test_an_empty_stop_reply_under_strict_still_climbs_the_ladder():
+    """Every non-FUNCTION_CALLING strategy behaves as on main."""
+    engine, sent = _engine(
+        [_reply(""), _reply('{"agent_response": "disk"}')],
+        reports_enforced=True,
+        mode=StructuredOutputMode.JSON_SCHEMA_STRICT,
+    )
+
+    assert (await _single_shot(engine)).agent_response == "disk"
+    assert sent[1]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
+    assert sent[1]["bypass_cache"] is True and "messages" not in sent[1]
+
+
+async def test_a_refused_or_cut_reply_is_not_reasked():
+    refusal = _reply("I can't help with that.", stop=StopReason.CONTENT_FILTER)
+    engine, sent = _engine([refusal, ANSWER], reports_enforced=False)
     with pytest.raises(MilestoneEngineError):
         await _single_shot(engine)
     assert len(sent) == 1
 
-    # MAX_TOKENS: the provider said it was cut, so the ladder still runs.
     cut = _reply("", stop=StopReason.MAX_TOKENS)
-    engine, sent = _engine(enforced=False, replies=[cut, ANSWER])
+    engine, sent = _engine([cut, ANSWER], reports_enforced=False)
     assert (await _single_shot(engine)).agent_response == "disk"
     assert sent[1]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
     assert "messages" not in sent[1]
+
+
+async def test_the_reasked_echo_is_bounded_like_a_tool_result():
+    cap = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
+    engine, sent = _engine([_reply("x" * (cap * 3)), ANSWER], reports_enforced=True)
+
+    assert (await _single_shot(engine)).agent_response == "disk"
+    echo = sent[1]["messages"][1]["content"]
+    assert echo == "x" * cap + "\n[truncated]"
 
 
 # --- DA tool loop ------------------------------------------------------------
@@ -182,42 +211,34 @@ async def _da_turn(engine):
     )
 
 
-async def test_a_da_turn_keeps_its_evidence_tools_through_one_prose_reply():
-    engine, sent = _engine(
-        enforced=False, replies=[_reply(PROSE), _reply(PROSE), ANSWER]
-    )
+async def test_a_da_turn_keeps_every_tool_through_one_reply_without_a_tool_call():
+    replies = [_reply(PROSE), _reply(PROSE), ANSWER]
+    engine, sent = _engine(replies, reports_enforced=True)
 
     assert (await _da_turn(engine)).agent_response == "disk"
     first, second, third = sent
     assert _offered(second) == _offered(first) == ["search_file", "_Answer"]
     assert second["tool_choice"] == "required"
-    nudge = second["messages"][-1]["content"]
-    assert "`search_file`" in nudge and "`_Answer`" in nudge
-    # A second consecutive prose reply takes today's schema-only path.
+    assert TOOLS_NUDGE in second["messages"][-1]["content"]
+    # A second consecutive one takes the schema-only path.
     assert _offered(third) == ["_Answer"]
     assert "calling the `_Answer` tool" in third["messages"][-1]["content"]
 
-    # With enforcement, unchanged: one prose reply gets the schema-only call.
-    engine, sent = _engine(enforced=True, replies=[_reply(PROSE), ANSWER])
+    # An empty reply is not echoed, and the nudge does not point at it.
+    engine, sent = _engine([_reply(""), ANSWER], reports_enforced=True)
     assert (await _da_turn(engine)).agent_response == "disk"
-    assert _offered(sent[1]) == ["_Answer"]
+    *_, before, nudge = sent[1]["messages"]
+    assert before["role"] == "user" and TOOLS_NUDGE in nudge["content"]
+    assert ECHO_NUDGE not in nudge["content"]
 
 
-# --- Router delegation -------------------------------------------------------
+async def test_the_reply_before_the_final_iteration_gets_the_schema_nudge():
+    last = StructuredOutputGenerator.MAX_TOOL_ITERATIONS
+    replies = [SEARCH_CALL] * (last - 1) + [_reply(PROSE), ANSWER]
+    engine, sent = _engine(replies, reports_enforced=False)
 
-
-async def test_the_router_asks_the_provider_the_call_lands_on():
-    primary = Mock(forced_tool_choice_enforced=Mock(return_value=True))
-    override = Mock(forced_tool_choice_enforced=Mock(return_value=False))
-    registry = MagicMock(_providers={"gemini": primary, "anthropic": override})
-    registry.get_fallback_chain.return_value = ["gemini"]
-    with patch(
-        "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
-    ):
-        from faultmaven.infrastructure.llm.router import LLMRouter
-
-        router = LLMRouter()
-        assert router.forced_tool_choice_enforced("m") is True
-        assert router.forced_tool_choice_enforced("m", "anthropic") is False
-        assert router.forced_tool_choice_enforced("m", "unregistered") is True
-    override.forced_tool_choice_enforced.assert_called_once_with("m")
+    assert (await _da_turn(engine)).agent_response == "disk"
+    final = sent[last]
+    assert _offered(final) == ["_Answer"]
+    assert "calling the `_Answer` tool" in final["messages"][-1]["content"]
+    assert TOOLS_NUDGE not in final["messages"][-1]["content"]
