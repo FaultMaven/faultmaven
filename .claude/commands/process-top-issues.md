@@ -5,14 +5,12 @@ description: Run one round of issue processing — settle the last round, propos
 # /process-top-issues
 
 **Purpose:** work the backlog down by fixing what matters most at its root, keep `main` green, and keep each fix no
-larger than the defect needs. Nothing is hidden or closed to lower the count.
-The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you hand over must have
-been through the full review chain in step 4.
+larger than the defect needs. Nothing is hidden or closed to lower the count. The owner merges on your `## Merge-ready`
+comment without reading the diff, so every PR you hand over must have been through the full review chain in step 4.
 
 This file is self-contained. Memory notes point here and never restate it; where they disagree, this file wins.
-**Changing this file:**
-- you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the owner merges it;
-- an edit replaces or tightens an existing rule where it can, and the file stays under 380 lines.
+**Changing this file:** you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the
+owner merges it; an edit replaces or tightens an existing rule where it can, and the file stays under 380 lines.
 
 **Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
 and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
@@ -36,11 +34,10 @@ Reviewers are independent agents: they never wrote or planned what they review.
 - **Every open issue outside `tracking` carries one priority label.** It is re-set by these definitions whenever the
   item moves between piles, unless the owner set it or a ruling states it:
   - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
-    normal use (a wrong result, a 5xx, lost work);
+    normal use (a wrong result, a 5xx, lost work). A `P0` label, if the owner uses one, is read as `P1`, ranked first;
   - `P2`: any other defect reachable today;
   - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
     any item, and a ruled feature takes the priority its ruling states (ask if it states none).
-  - A `P0` label, if the owner uses one, is read as `P1`, ranked first.
 - **An issue closes only for a reason:**
   - it is fixed;
   - it duplicates another issue;
@@ -51,8 +48,7 @@ Reviewers are independent agents: they never wrote or planned what they review.
   Nothing closes an issue to lower the count: not age, not a timer, not silence.
 - **A blocked item's body** has one line in one of these forms:
   - `**Blocked on:** #N …`;
-  - `**Blocked on:** an owner ruling on …` (also used for a pull and a PR closed unmerged, with the question that
-    settles it);
+  - `**Blocked on:** an owner ruling on …` (also for a pull or a PR closed unmerged, with the question that settles it);
   - `**Blocked on:** condition — <a check you can run>` (a future event too, e.g. "redis-py ≥ 8 is pinned").
 - **Authorship is read from headings**, because you post with the owner's account:
   - Your comments carry exactly one of these headings:
@@ -113,9 +109,13 @@ Find the newest proposal or result on the Queue:
 
 1. **Sort.**
    - Give every open issue that lacks a pile label or a priority label the missing one(s). Skip `tracking`.
-   - Move to ready any blocked item whose blocking issue has closed.
-   - Run each condition you can, and move items whose condition holds.
+   - Move to ready any blocked item whose blocking issue has closed or whose condition holds (run each you can).
    - Close a tracker whose tracked work has all closed.
+   - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on a body line
+     starting `**Alerts:**` in the open core issue covering it, or file one per root opening `**Repo: FaultMaven/<r>.**`
+     then that line, verified by the alert page and manifest. Anything written about a private repo's alert names only
+     its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
+     non-secret `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - From `pile:ready` only: `P1`, then `P2`, then `P3`, oldest first within each. Reserve one slot for the oldest
      `P2` that has waited over 30 days. Skip an item that an open PR from an earlier round still carries.
@@ -137,7 +137,7 @@ Find the newest proposal or result on the Queue:
    ### Yours to run
    ### Settled from last round
    ### Scorecard
-   open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · last round: closed <x>, filed <y>
+   open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · alerts: <the sweep's `queue:` line>, filed <f> · last round: closed <x>, filed <y>
    ```
 
 ## 3. Take the answers
