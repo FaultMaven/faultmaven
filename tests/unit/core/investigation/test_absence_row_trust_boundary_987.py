@@ -197,7 +197,7 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     """Flat axis — the second entry point (#987's second finding).
 
     Guarding only the node axis would have left the identical cascade one
-    stance choice away: a REFUTES here reaches ``_net_refuted`` →
+    stance choice away: a REFUTES here reaches ``cause_refuted_by_evidence`` →
     ``_hypothesis_disconfirmed`` → M6 exactly as the node-axis link reached
     ``derive_node_states``.
     """
@@ -719,7 +719,7 @@ def test_evidence_based_disconfirmation_demotes_without_any_fix_record():
     """REGRESSION (review finding 1): an ordinary evidence-based
     disconfirmation must NOT require a fix record.
 
-    `_disconfirmed_cause_trigger` fires on `_net_refuted` — the cause outweighed
+    `_disconfirmed_cause_trigger` fires on `cause_refuted_by_evidence` — the cause outweighed
     by its own contradicting evidence — which asserts nothing about any fix.
     The first cut of the #987 precondition gate covered the whole trigger, so a
     net-refuted cause with no ProposedAction stayed VALIDATED at

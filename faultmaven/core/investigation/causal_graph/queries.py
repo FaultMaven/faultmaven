@@ -64,6 +64,23 @@ def _state(node_id: str, nodes: dict[str, CausalNode]) -> NodeState | None:
     return n.node_state if n else None
 
 
+def chain_evidence_links(case: "Case", hyp: "Hypothesis") -> list:
+    """``hyp``'s own evidence links, then those of its chain: its root and the
+    rungs of its path to the problem. Never the PROBLEM node, which ends every
+    path: a link there bears on every chained hypothesis at once. Read by the
+    model-refutation ground (``refuting_evidence_on_record``) and M6's evidence
+    arm (``cause_evidence_tally``), so both weigh the same links."""
+    links = list(hyp.evidence_links)
+    chain_ids = list(hyp.path or [])
+    if hyp.root_node_id and hyp.root_node_id not in chain_ids:
+        chain_ids.insert(0, hyp.root_node_id)
+    for node_id in chain_ids:
+        node = case.causal_nodes.get(node_id)
+        if node is not None and node.node_type != NodeType.PROBLEM:
+            links.extend(node.evidence_links)
+    return links
+
+
 def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str]:
     """The VALIDATED causes co-necessary (M7 AND-set) with a chain, as statements.
 

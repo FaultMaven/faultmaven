@@ -4,8 +4,10 @@ from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
+    ENGINE_EVIDENCE_AUTHOR,
     MECHANISTIC_RCC_LIKELIHOOD,
     root_counterfactually_confirmed,
+    stance_declared_confident,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
@@ -29,6 +31,7 @@ from faultmaven.modules.case.contracts import (
 from .clusters import mece_contested_root_ids
 from .projection import _STANDING_HYP_STATES, _standing_hypotheses
 from .queries import (
+    chain_evidence_links,
     conjuncts_for_chain,
     is_chain_root_identified,
     mechanism_for_chain,
@@ -44,25 +47,56 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, Hypothesis
 
 
-def _net_refuted(hyp: Hypothesis) -> bool:
-    """Decisive-disconfirmation test for M6: refuting evidence at least matches
-    supporting evidence (and there is at least one refuting link).
+def cause_evidence_tally(case: Case, hyp: Hypothesis) -> tuple[int, int]:
+    """``(refuting, supporting)``: the evidence rows that bear on ``hyp`` as a
+    cause, the balance M6's evidence arm and the conclusion retraction weigh
+    (P4, #2106).
 
-    A *lone* refuting link among a body of supporting evidence is NOT decisive —
-    treating it as such tears down a legitimately grounded cause that merely
-    attracted one contrary data point during search (a real false-demotion risk).
-    A refutation that flips or ties the support balance is. With no links at all
-    this is False (absence of evidence is not disconfirmation).
+    - **Links:** the hypothesis's and its chain's (``chain_evidence_links``:
+      the root and the path rungs, never the PROBLEM node). A cause's support
+      often sits on its root node, not on the hypothesis; weighing only the
+      hypothesis's own links let one contrary link outweigh none.
+    - **Rows:** on record only; a link to a row not on the case counts for
+      nothing. Engine-authored rows are excluded: the engine's failed-fix row
+      is the counterfactual and record arms' claim (#987), never this one's.
+    - **Confidence:** a REFUTES counts only when declared confident
+      (``stance_declared_confident``, at or above
+      ``CAUSAL_STANCE_CONFIDENCE_MIN``): a self-hedge is not evidence against.
+      A SUPPORTS counts at any confidence.
+    - **Rows, not links:** each side counts a row once, however many of the
+      hypothesis's or the chain's links name it.
     """
-    refuting = sum(
-        1 for link in hyp.evidence_links if link.stance == EvidenceStance.REFUTES
-    )
-    if refuting == 0:
-        return False
-    supporting = sum(
-        1 for link in hyp.evidence_links if link.stance == EvidenceStance.SUPPORTS
-    )
-    return refuting >= supporting
+    on_record = {
+        e.evidence_id
+        for e in case.evidence
+        if getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
+    }
+    refuting: set[str] = set()
+    supporting: set[str] = set()
+    for link in chain_evidence_links(case, hyp):
+        if link.evidence_id not in on_record:
+            continue
+        if link.stance == EvidenceStance.REFUTES and stance_declared_confident(link):
+            refuting.add(link.evidence_id)
+        elif link.stance == EvidenceStance.SUPPORTS:
+            supporting.add(link.evidence_id)
+    return len(refuting), len(supporting)
+
+
+def cause_refuted_by_evidence(case: Case, hyp: Hypothesis) -> bool:
+    """Whether the evidence refutes ``hyp`` as a cause: strictly more confident
+    refuting rows than supporting ones (``cause_evidence_tally``), the node
+    rule's ``refutes > supports``.
+
+    A refute that only ties the support is no disconfirmation, and neither is
+    a hedged one, so a body of support anywhere on the chain is weighed before
+    the cause falls. A lone confident refute against no support still refutes.
+    With no rows at all this is False: absence of evidence is not
+    disconfirmation. The model's explicit REFUTED on one confident row
+    (``refuting_evidence_on_record``, INV-47) is a separate, unchanged path.
+    """
+    refuting, supporting = cause_evidence_tally(case, hyp)
+    return refuting > supporting
 
 
 def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
@@ -104,12 +138,12 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     )
 
 
-def _hypothesis_disconfirmed(hyp: Hypothesis) -> bool:
-    """Hypothesis-side disconfirmation: REFUTED, or net-refuted (refuting
-    evidence at least matches support, ``_net_refuted``). The single definition
+def _hypothesis_disconfirmed(case: Case, hyp: Hypothesis) -> bool:
+    """Hypothesis-side disconfirmation: REFUTED, or refuted by the evidence on
+    it and its chain (``cause_refuted_by_evidence``). The single definition
     shared by the M6 trigger and the RCC retraction below so the two cannot
     drift; the M6 trigger layers a node-side counterfactual clause on top."""
-    return hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)
+    return hyp.state == HypothesisState.REFUTED or cause_refuted_by_evidence(case, hyp)
 
 
 def retract_disconfirmed_rcc(case: Case) -> bool:
@@ -136,7 +170,7 @@ def retract_disconfirmed_rcc(case: Case) -> bool:
     if not vhid:
         return False
     hyp = case.hypotheses.get(vhid)
-    if hyp is not None and _hypothesis_disconfirmed(hyp):
+    if hyp is not None and _hypothesis_disconfirmed(case, hyp):
         # §7.6 / INV-34: an LLM conclusion linked to its cause (link_llm_rcc_to_cause)
         # is retracted here just like an engine one when that cause is disconfirmed.
         if getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:

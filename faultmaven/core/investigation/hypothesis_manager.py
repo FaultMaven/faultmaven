@@ -654,7 +654,7 @@ class HypothesisManager:
         is derived from the chain root node's state
         (``project_hypothesis_states_from_roots``, the sole producer of a
         VALIDATED hypothesis), and refutation is owned by the explicit lifecycle
-        (``refute_hypothesis`` / M6 ``_net_refuted``). The flat likelihood
+        (``refute_hypothesis`` / M6 ``cause_refuted_by_evidence``). The flat likelihood
         thresholds set neither state independent of the causal graph anymore.
 
         Remaining soft transitions (prior/anchoring management, kept):

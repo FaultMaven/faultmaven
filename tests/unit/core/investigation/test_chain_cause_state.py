@@ -184,16 +184,16 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     return case
 
 
-def _record_failed_fix(case, *, fix_turn=2, persist_turn=3):
-    """Record the FAILED TREATMENT these M6 tests narrate but never persisted.
+def _record_failed_fix(case, *, fix_turn=6, outcome_turn=7):
+    """Record the FAILED TREATMENT these M6 tests narrate, "fix applied, D
+    persists", as a live case records it (#1927's record arm): the fix
+    executed at ``fix_turn``, then at ``outcome_turn`` the cause re-checked
+    gone and the reported problem still present, both rows on record.
 
-    M6 is a destructive transition and since #987 it establishes its
-    preconditions rather than inferring them: an accepted actionable
-    ProposedAction (the user executed a fix) plus a SYMPTOM_EVIDENCE row
-    at/after it (the problem is observed still present). Before #987 the
-    fixtures asserted "fix applied, D persists" only in a reasoning string,
-    which is precisely the gap that let M6 mint that sentence as a fact on a
-    case where the fix had SUCCEEDED.
+    Before #2106 these tests linked a REFUTES to a row never added to the case,
+    a shape the live link pass refuses to produce; M6's evidence arm counts
+    only rows on record, and a lone refute no longer outweighs the root's two
+    supports.
     """
     from faultmaven.modules.case.contracts import (
         InvestigationActionType,
@@ -205,14 +205,25 @@ def _record_failed_fix(case, *, fix_turn=2, persist_turn=3):
             case_id=case.case_id,
             action_type=InvestigationActionType.SOLUTION,
             description="apply the fix",
-            proposed_in_turn=fix_turn,
+            proposed_in_turn=fix_turn - 1,
+            accepted_in_turn=fix_turn,
             state="accepted",
         )
     )
-    case.evidence.append(
-        _evidence("ev_still_failing", EvidenceCategory.SYMPTOM_EVIDENCE)
+    cause_gone = _evidence(
+        "ev_cause_gone",
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        summary="the root cause is no longer present after the fix",
     )
-    case.evidence[-1].collected_at_turn = persist_turn
+    still_failing = _evidence(
+        "ev_still_failing",
+        EvidenceCategory.SYMPTOM_EVIDENCE,
+        summary="orders failing again after the fix, connection pool exhausted",
+    )
+    for row in (cause_gone, still_failing):
+        row.collected_at_turn = outcome_turn
+        case.evidence.append(row)
+    case.current_turn = outcome_turn
     return case
 
 
@@ -350,19 +361,10 @@ def test_attach_engine_refutation_creates_durable_absence_evidence():
 
 def test_demote_via_evidence_refutes_and_retracts():
     case, root, hyp = _chain_case()
-    _record_failed_fix(case)
     _recompute_cause_state_from_chain(case)  # grounds it → IDENTIFIED
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    # failed treatment: the hypothesis is net-refuted
-    hyp.evidence_links.append(
-        HypothesisEvidenceLink(
-            hypothesis_id=hyp.hypothesis_id,
-            evidence_id=_eid("fail"),
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, D persists",
-            stance_confidence=0.9,
-        )
-    )
+    # failed treatment: fix applied, D persists — on the record
+    _record_failed_fix(case)
     acted = demote_disconfirmed_cause_via_evidence(case)
     assert acted is True
     assert case.root_cause_conclusion is None  # retracted
@@ -376,20 +378,11 @@ def test_turn28_no_resurrection_chain_derived():
     stays REFUTED on the NEXT recompute — it is not re-validated from the stale
     supporting evidence. (The turn-28 bug was exactly this resurrection.)"""
     case, root, hyp = _chain_case()
-    _record_failed_fix(case)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
-    # Treatment fails: net-refute the hypothesis, then recompute.
-    hyp.evidence_links.append(
-        HypothesisEvidenceLink(
-            hypothesis_id=hyp.hypothesis_id,
-            evidence_id=_eid("fail"),
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, D persists",
-            stance_confidence=0.9,
-        )
-    )
+    # Treatment fails (fix applied, D persists, on the record), then recompute.
+    _record_failed_fix(case)
     _recompute_cause_state_from_chain(case)
     assert root.node_state == NodeState.REFUTED
     assert case.progress.cause_state != CauseState.IDENTIFIED
