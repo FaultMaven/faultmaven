@@ -31,6 +31,7 @@ from faultmaven.modules.case.contracts import (
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
+    ProposedAction,
     SolutionType,
     WorkingConclusion,
 )
@@ -545,7 +546,8 @@ def _flag_absence_inside_a_failed_fix_window(
     can resolve the case. Without this notice the user's "it's fine now" and
     the model's absence rows would loop against the readiness gate, which no
     longer counts them. The way forward is a recorded fix: a SolutionToAdd for
-    what the user changed, and ``solution_accepted`` once they say it ran. The
+    what the user changed, and ``solution_accepted`` naming it
+    (``accepted_action_ref``, #2105) once they say it ran. The
     M5 license that admits the SolutionToAdd survives the demoted cause through
     a root_cause_conclusion — on a NEW hypothesis when the cause is the same
     one re-applied correctly — which is the intended re-licensing path. A
@@ -606,8 +608,10 @@ def _flag_absence_inside_a_failed_fix_window(
         "SYSTEM: The fix executed at turn "
         f"{window.fix_turn} did not hold: {shape}. Absence evidence recorded "
         "after that cannot confirm a resolution. If the user has applied (or "
-        "will apply) a new fix, record it: propose it as a SolutionToAdd and "
-        f"set solution_accepted once the user says it ran{cause} record the "
+        "will apply) a new fix, record it: propose it as a SolutionToAdd and, "
+        "once the user says it ran, set solution_accepted with "
+        "accepted_action_ref naming it (new_index_N in the response that "
+        f"proposes it, else its ACTION_ID){cause} record the "
         "cause gone and the problem gone after it. If the problem is only "
         "quiet after a workaround, offer to close instead.",
         prepend=True,
@@ -657,18 +661,120 @@ _GATE_ACTION_TYPE: dict[str, InvestigationActionType] = {
 }
 
 
+def _resolve_solution_acceptance(
+    case: Case, ref: Any, metadata: dict[str, Any]
+) -> Optional[ProposedAction]:
+    """The SOLUTION a ``solution_accepted`` registers, or None (#2105).
+
+    A fix attempt is a record: each SOLUTION the user carried out registers
+    once, for the action the acceptance names (``accepted_action_ref``: an
+    ACTION_ID, or ``new_index_N`` for the Nth of this response's
+    ``solutions_to_add``, resolved against the ids the solutions step minted
+    in this apply, ``metadata["minted_action_ids"]``).
+
+    - The ref names a pending SOLUTION: that action.
+    - The ref names an accepted SOLUTION: None, silently. A re-assertion of a
+      registered fix, which models emit every turn.
+    - The ref names anything else (no such action, a DIAGNOSTIC, a MITIGATION,
+      a superseded or rejected action): None, with one feedback line.
+    - No ref, and no fix registered yet: the pending SOLUTION (INV-32 keeps
+      at most one), as before #2105; none pending gets the no-pending notice.
+    - No ref, and a fix registered before: None. The engine cannot tell a
+      re-assertion from a new execution, so a bare re-emission never registers
+      a second fix; when a SOLUTION is pending, one line names it, worded as a
+      condition so it is no prompt to claim an execution nobody reported.
+    """
+    solution = _GATE_ACTION_TYPE["solution_accepted"]
+    pending = [
+        a
+        for a in case.proposed_actions
+        if a.state == "pending" and a.action_type == solution
+    ]
+    ref = _normalise_id_ref(ref) or None
+    if ref is None:
+        if not case.progress.solution_accepted:
+            if pending:
+                return pending[-1]
+            logger.warning(
+                f"Rejected stage-gate milestone 'solution_accepted' for case "
+                f"{case.case_id}: no pending SOLUTION ProposedAction exists"
+            )
+            _add_system_feedback(
+                metadata,
+                "SYSTEM: 'solution_accepted' was not registered — no "
+                "SOLUTION proposal is currently pending (it may have been "
+                "downgraded, withdrawn or superseded since it was made). If "
+                "the user has already carried out the fix and the root cause "
+                "stands established, register it in ONE response: re-propose "
+                "it as a SolutionToAdd and set solution_accepted with "
+                "accepted_action_ref new_index_N naming it, justified by "
+                "their report; do not ask them to accept it again. If the root "
+                "cause is not established, re-ground it with evidence first. If "
+                "the problem is already resolved, record the confirming "
+                "evidence instead: causal_absence for the cause gone and "
+                "symptom_absence for the reported problem gone.",
+            )
+        elif pending:
+            action_id = pending[-1].action_id
+            _add_system_feedback(
+                metadata,
+                "SYSTEM: 'solution_accepted' was not registered again: a fix is "
+                f"already registered, and SOLUTION {action_id} is pending. Only "
+                f"if the user reported carrying out {action_id}, set "
+                f"accepted_action_ref to {action_id} with solution_accepted; "
+                "otherwise leave solution_accepted unset.",
+            )
+        return None
+
+    from .turn_records import _resolve_id_ref  # turn_records imports this module
+
+    action_id = _resolve_id_ref(ref, metadata.get("minted_action_ids") or [], "act")
+    action = next((a for a in case.proposed_actions if a.action_id == action_id), None)
+    if action is not None and action.action_type == solution:
+        if action.state == "pending":
+            return action
+        if action.state == "accepted":
+            return None
+    if action is None:
+        what = "no action on this case"
+    elif action.action_type == InvestigationActionType.MITIGATION:
+        what = f"{action.action_id}, a MITIGATION (set mitigation_accepted for it)"
+    elif action.action_type != solution:
+        what = f"{action.action_id}, a {action.action_type.value.upper()}"
+        if action.downgrade_reason:
+            what += " (downgraded; see its ENGINE_NOTE)"
+    else:
+        what = f"{action.action_id}, a {action.state} SOLUTION"
+    logger.warning(
+        f"Rejected stage-gate milestone 'solution_accepted' for case "
+        f"{case.case_id}: accepted_action_ref {ref!r} names {what}"
+    )
+    _add_system_feedback(
+        metadata,
+        f"SYSTEM: 'solution_accepted' was not registered: accepted_action_ref "
+        f"{ref} names {what}. It must name the pending SOLUTION the user "
+        "carried out: its ACTION_ID, or new_index_N for one this response "
+        "proposes.",
+    )
+    return None
+
+
 def _apply_stage_gate_side_effects(
     case: Case,
     completed_gates: set[str],
     user_message: str,
     metadata: dict[str, Any],
+    *,
+    solution_action: Optional[ProposedAction] = None,
 ) -> None:
     """Apply side effects when stage-gate milestones are completed.
 
     When the LLM sets a stage-gate milestone, we:
-    1. Mark the pending ProposedAction OF THE GATE'S TYPE as "accepted" —
-       ``solution_accepted`` accepts the most recent pending SOLUTION,
-       the mitigation-accept signal the most recent pending MITIGATION.
+    1. Mark the ProposedAction OF THE GATE'S TYPE as "accepted" —
+       ``solution_accepted`` accepts ``solution_action``, the SOLUTION
+       ``_resolve_solution_acceptance`` resolved (#2105: the one named, not
+       the most recent pending), the mitigation-accept signal the most
+       recent pending MITIGATION.
        Type-matched targeting (INV-32 hardening): the old any-type pick
        could stamp "accepted" on a never-executed SOLUTION when the user
        reported a mitigation (or vice versa), and an accepted offer is a
@@ -690,10 +796,13 @@ def _apply_stage_gate_side_effects(
 
     for target_type in target_types:
         pending_action = None
-        for action in reversed(case.proposed_actions):
-            if action.state == "pending" and action.action_type == target_type:
-                pending_action = action
-                break
+        if target_type == InvestigationActionType.SOLUTION:
+            pending_action = solution_action
+        else:
+            for action in reversed(case.proposed_actions):
+                if action.state == "pending" and action.action_type == target_type:
+                    pending_action = action
+                    break
         if pending_action is None:
             continue
         pending_action.state = "accepted"
@@ -835,10 +944,14 @@ def _apply_stage_gate_signals(
     rejected that bundle (the guard read a pre-solutions snapshot) while
     telling the LLM to re-propose what it had just proposed.
 
-    Idempotency FIRST, guards second: a re-emitted, already-registered signal
-    is absorbed silently — LLMs re-assert standing booleans, and rejecting
-    the re-emission produced false "was not registered" feedback that invited
-    a redundant re-proposal.
+    ``solution_accepted`` resolves to one action (``_resolve_solution_acceptance``,
+    #2105): the SOLUTION its ``accepted_action_ref`` names registers, so a
+    second fix after a failed one opens its own window; a re-assertion naming
+    a registered fix, or a bare re-emission once one is registered, is
+    absorbed — LLMs re-assert standing booleans, and rejecting the re-emission
+    produced false "was not registered" feedback that invited a redundant
+    re-proposal. The mitigation signals keep their single-record latch
+    (INV-24).
 
     Type-matched guards (INV-32, via ``_GATE_ACTION_TYPE``): a gate registers
     only against a pending action of ITS type — the old any-type check let
@@ -861,31 +974,23 @@ def _apply_stage_gate_signals(
         )
 
     # --- solution_accepted --------------------------------------------
+    # Resolved to ONE action (#2105): a fix attempt is a record, registered
+    # once per execution for the action named. ``progress.solution_accepted``
+    # is the persisted projection of "a fix was registered", written here.
+    solution_action = None
+    ref = getattr(m, "accepted_action_ref", None)
     if getattr(m, "solution_accepted", False):
-        if p.solution_accepted:
-            pass  # already registered — idempotent re-emission, silent
-        elif not _has_pending(_GATE_ACTION_TYPE["solution_accepted"]):
-            logger.warning(
-                f"Rejected stage-gate milestone 'solution_accepted' for case "
-                f"{case.case_id}: no pending SOLUTION ProposedAction exists"
-            )
-            _add_system_feedback(
-                metadata,
-                "SYSTEM: 'solution_accepted' was not registered — no "
-                "SOLUTION proposal is currently pending (it may have been "
-                "downgraded, withdrawn or superseded since it was made). If "
-                "the user has already carried out the fix and the root cause "
-                "stands established, register it in ONE response: re-propose "
-                "it as a SolutionToAdd and set solution_accepted, justified by "
-                "their report; do not ask them to accept it again. If the root "
-                "cause is not established, re-ground it with evidence first. If "
-                "the problem is already resolved, record the confirming "
-                "evidence instead: causal_absence for the cause gone and "
-                "symptom_absence for the reported problem gone.",
-            )
-        else:
+        solution_action = _resolve_solution_acceptance(case, ref, metadata)
+        if solution_action is not None:
             p.solution_accepted = True
             metadata["milestones_completed"].append("solution_accepted")
+    elif _normalise_id_ref(ref):
+        _add_system_feedback(
+            metadata,
+            f"SYSTEM: accepted_action_ref {_normalise_id_ref(ref)} was ignored: "
+            "it is read only with solution_accepted. Set both only when the "
+            "user reports carrying out that fix.",
+        )
 
     # --- mitigation signals (redesign R2: materialize progress.mitigation;
     # the milestone NAMEs still enter milestones_completed for telemetry) ---
@@ -991,7 +1096,11 @@ def _apply_stage_gate_signals(
     } & set(metadata["milestones_completed"])
     if stage_gate_completed:
         _apply_stage_gate_side_effects(
-            case, stage_gate_completed, user_message, metadata
+            case,
+            stage_gate_completed,
+            user_message,
+            metadata,
+            solution_action=solution_action,
         )
 
 

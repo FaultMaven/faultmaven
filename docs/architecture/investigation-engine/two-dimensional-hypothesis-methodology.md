@@ -739,11 +739,11 @@ every non-survivor is *absolutely* excluded — before stamping
 `validation_method=DEDUCTIVE`. Guard #3's "absolute" bar is itself engine-computed:
 `derive_node_states` drives a sibling's `belief` to `0` **only** on a counterfactual
 (absence-based) refutation declared at `stance_confidence >=
-CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is ordinary refuting
-evidence, not the decisive grade — the refute-side twin of the §7.1 support
-filter; INV-30), so a merely-correlational net-refute — or a hedged
-counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and blocks the
-deduction. A mis-asserted
+CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is not the
+decisive grade — the refute-side twin of the §7.1 support filter; INV-30 — and,
+since #2106, no refuting evidence at all), so a merely-correlational net-refute
+— or a hedged counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and
+blocks the deduction. A mis-asserted
 exhaustiveness therefore cannot fabricate a validation on its own — the differential
 must have genuinely collapsed — and guard #4 (counterfactual before RESOLVED, and
 harvest is RESOLVED-only) is the downstream backstop against a missed family.
@@ -951,18 +951,26 @@ plus persisted history: a counterfactual REFUTES carries decisive force only at
 `stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN` — the refute-side twin of
 the §7.1 support filter (INV-30). A self-hedged "I think the fix didn't work"
 must not single-handedly refute a node, zero a sibling's belief for
-proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6); it
-still counts as *ordinary* refuting evidence (feeding `refutes > supports` and
-`_net_refuted`). The engine's own M6 links carry no declared confidence and are
-decisive by construction.
+proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6).
+Since #2106 a hedged REFUTES, absence-backed or not, counts in no refutation
+balance at all (P4, one floor for every destructive outcome): not the node's
+`refutes > supports`, where it is only *bearing* (a node with nothing else reads
+INCONCLUSIVE) and so neither refutes a node nor holds a grounded one out of
+VALIDATED, and not M6's evidence arm below. The engine's own M6 links carry no
+declared confidence and are decisive by construction.
 
 **M6 establishes its preconditions; it does not infer them (INV-42, #987).**
 The demotion trigger carries two materially different claims and the engine
 records only what it can substantiate:
 
-- **Evidence-based** — the hypothesis is REFUTED or net-refuted by its OWN
-  links. This asserts nothing about any fix, is grounded in the graph, and
-  demotes **unconditionally**. Its durable record names the tally it derived
+- **Evidence-based** — the hypothesis is REFUTED, or refuted by the evidence on
+  it and its chain (`cause_refuted_by_evidence`, #2106): rows on record, never
+  the engine's own, linked to the hypothesis, its root or a rung of its path,
+  with strictly more confident REFUTES rows than SUPPORTS rows (a SUPPORTS
+  counts at any confidence). A body
+  of support on the root is weighed, so one contrary link does not tear a
+  grounded cause down. This asserts nothing about any fix, is grounded in the
+  graph, and demotes **unconditionally**. Its durable record names the tally it derived
   from. (Gating *this* arm on fix evidence was the over-broad first cut of the
   #987 fix, and it left a net-refuted cause standing as identified with its
   conclusion intact — the NO-INCORRECT-CONCLUSION breach in the opposite
@@ -1069,7 +1077,9 @@ records only what it can substantiate:
   new one rather than another confirmation, which would loop. When the model
   records absence evidence inside a failed window, the engine tells it to
   record the new fix instead (a `SolutionToAdd`, then `solution_accepted`
-  once the user says it ran). The M5 license that admits that SolutionToAdd
+  with `accepted_action_ref` naming it once the user says it ran: each fix
+  attempt registers once, for the action named, so the new fix opens its own
+  window, #2105). The M5 license that admits that SolutionToAdd
   survives the demoted cause through a `root_cause_conclusion` — on a new
   hypothesis when the same cause was addressed again, correctly this time —
   which is the intended re-licensing path. A case whose problem only went
@@ -1808,8 +1818,8 @@ The stamp adds two root-scoped bars on top of the metadata bar. The
 **per-root refutation window** (`_root_disconfirmation_turn`, strict `>`):
 the cited row must be NEWER than any refutation recorded against the root
 being confirmed — any author, any confidence. A hedged self-claimed failed
-fix does not demote the root (§7.2), but the top grade is never minted from
-a row recorded at-or-before it; only the user's strictly-newer post-refute
+fix neither demotes the root nor counts against it (§7.2, #2106), but the top
+grade is never minted from a row recorded at-or-before it; only the user's strictly-newer post-refute
 gone⇒gone completes `CONFIRMED`. And **content-level bearing**
 (`_select_bearing_row`): the citation is the NEWEST candidate not
 affirmatively **about a different chain** (≥2 shared content tokens with

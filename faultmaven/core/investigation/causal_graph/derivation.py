@@ -59,11 +59,13 @@ def derive_node_states(case: Case) -> bool:
 
     - **REFUTED** — a counterfactual disconfirmation bears on it (a
       ``CAUSAL_ABSENCE_EVIDENCE`` REFUTES link at ``stance_confidence >=
-      CAUSAL_STANCE_CONFIDENCE_MIN`` — §7.2 strongest grade, decisive; a
-      self-hedged one is ordinary refuting evidence, the refute-side twin of
-      the §7.1 SUPPORTS filter), OR its links net-refute it ``refutes >
-      supports`` (strict; a correlational tie is INCONCLUSIVE, not a
-      disproof). ``validation_method=NONE``, ``actionable=False``.
+      CAUSAL_STANCE_CONFIDENCE_MIN`` — §7.2 strongest grade, decisive), OR
+      its links net-refute it ``refutes > supports`` (strict; a correlational
+      tie is INCONCLUSIVE, not a disproof). Only REFUTES declared at or above
+      ``CAUSAL_STANCE_CONFIDENCE_MIN`` count: a self-hedged refute, absence-
+      backed or not, is no evidence against in either direction — it neither
+      refutes nor holds a grounded node out of VALIDATED (3(a), #2106).
+      ``validation_method=NONE``, ``actionable=False``.
     - **VALIDATED** — not refuted, causally grounded, net-supporting
       (``supports > refutes``), every AND-set feeding it is fully VALIDATED
       (M7 proof, strict), AND — for a ROOT — its statement carries novel content
@@ -85,7 +87,7 @@ def derive_node_states(case: Case) -> bool:
       satisfies its M1/M4/refutation model-validators on reload
       (``CausalNode(**...)``; ``validate_assignment`` is off in memory).
     - **INCONCLUSIVE** — has bearing evidence but neither validates nor refutes
-      (including a support/refute tie).
+      (including a support/refute tie, and a node with only hedged refutes).
     - **CANDIDATE** — no bearing evidence yet (the lazy default; a freshly
       emitted, untested rung).
 
@@ -120,6 +122,7 @@ def derive_node_states(case: Case) -> bool:
                 causal_support_ev_ids,
                 raw_causal_links,
                 counterfactual_refutes,
+                hedged_refutes,
             ) = _node_evidence_tally(node, evidence_by_id)
             deductively_valid = (
                 node.node_state == NodeState.VALIDATED
@@ -176,7 +179,8 @@ def derive_node_states(case: Case) -> bool:
                 # conclusion). The LLM refines the statement; the engine never
                 # validates the symptom as its own cause.
                 target_state = NodeState.INCONCLUSIVE
-            elif supports or refutes:
+            elif supports or refutes or hedged_refutes:
+                # Bearing but indecisive — a hedged refute included (3(a)).
                 target_state = NodeState.INCONCLUSIVE
             else:
                 target_state = NodeState.CANDIDATE

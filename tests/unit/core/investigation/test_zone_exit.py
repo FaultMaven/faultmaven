@@ -260,7 +260,11 @@ class TestPendingActionHygiene:
         stale = _diagnostic(case, turn=3)
         offer = _pending_solutions(case)[0]
         _apply_stage_gate_side_effects(
-            case, {"solution_accepted"}, user_message="I ran it", metadata={}
+            case,
+            {"solution_accepted"},
+            user_message="I ran it",
+            metadata={},
+            solution_action=offer,
         )
         assert offer.state == "accepted"
         assert stale.state == "superseded"

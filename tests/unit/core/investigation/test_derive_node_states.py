@@ -201,10 +201,11 @@ def test_counterfactual_absence_refutes_decisively_over_support():
 
 def test_hedged_counterfactual_refute_is_not_decisive():
     """INV-30 refute side: a self-HEDGED absence-REFUTES (below
-    CAUSAL_STANCE_CONFIDENCE_MIN) loses the §7.2 decisive power — against an
-    equal causal SUPPORTS the node is a correlational TIE (INCONCLUSIVE), not
-    REFUTED — and it must not zero the node's belief (which would let
-    proof-by-exclusion count the node as absolutely excluded)."""
+    CAUSAL_STANCE_CONFIDENCE_MIN) loses the §7.2 decisive power, and under
+    decision 3(a) (#2106) it is no evidence against at all: it does not hold
+    the grounded node out of VALIDATED, and it must not zero the node's belief
+    (which would let proof-by-exclusion count the node as absolutely
+    excluded)."""
     sup = _evidence("ev_sup_h", EvidenceCategory.CAUSAL_EVIDENCE)
     absent = _evidence("ev_absent_h", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
     n = _node(
@@ -216,13 +217,14 @@ def test_hedged_counterfactual_refute_is_not_decisive():
     )
     case = _case([n], evidence=[sup, absent])
     derive_node_states(case)
-    assert n.node_state == NodeState.INCONCLUSIVE
+    assert n.node_state == NodeState.VALIDATED
     assert n.belief == 0.5  # untouched — no absolute exclusion from a hedge
 
 
-def test_hedged_counterfactual_still_counts_as_ordinary_refute():
-    """The hedge withdraws DECISIVE force only: alone (refutes > supports) a
-    hedged absence-REFUTES still refutes through the ordinary net bar."""
+def test_hedged_counterfactual_alone_is_bearing_not_a_refute():
+    """Decision 3(a) (#2106): a hedged absence-REFUTES is not counted in the
+    ``refutes > supports`` balance, so alone it does not refute the node. It
+    still bears on it: the node reads INCONCLUSIVE, not CANDIDATE."""
     absent = _evidence("ev_absent_o", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
     n = _node(
         _nid(0x82),
@@ -230,7 +232,7 @@ def test_hedged_counterfactual_still_counts_as_ordinary_refute():
     )
     case = _case([n], evidence=[absent])
     derive_node_states(case)
-    assert n.node_state == NodeState.REFUTED
+    assert n.node_state == NodeState.INCONCLUSIVE
 
 
 def test_unset_confidence_counterfactual_refute_stays_decisive():
@@ -252,7 +254,8 @@ def test_unset_confidence_counterfactual_refute_stays_decisive():
 
 def test_explicit_zero_confidence_counterfactual_is_not_decisive():
     """An EXPLICIT 0.0 is a declared no-confidence link — filtered, same as
-    the SUPPORTS side."""
+    the SUPPORTS side, and (3(a), #2106) out of the balance too: the grounded
+    node validates."""
     sup = _evidence("ev_sup_z", EvidenceCategory.CAUSAL_EVIDENCE)
     absent = _evidence("ev_absent_z", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
     n = _node(
@@ -264,7 +267,7 @@ def test_explicit_zero_confidence_counterfactual_is_not_decisive():
     )
     case = _case([n], evidence=[sup, absent])
     derive_node_states(case)
-    assert n.node_state == NodeState.INCONCLUSIVE
+    assert n.node_state == NodeState.VALIDATED
 
 
 def test_no_evidence_stays_candidate():

@@ -12,10 +12,11 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     EvidenceCategory,
+    InvestigationActionType,
     InvestigationProgress,
 )
 
-from .stage_gates import CATEGORY_MILESTONE_MAP
+from .stage_gates import CATEGORY_MILESTONE_MAP, _normalise_id_ref
 
 logger = logging.getLogger(__name__)
 
@@ -256,22 +257,45 @@ def _infer_milestones(
 
 
 def _milestone_already_recorded(
-    progress: InvestigationProgress, milestone: str
+    progress: InvestigationProgress,
+    milestone: str,
+    *,
+    names_new_fix: bool = False,
 ) -> bool:
     """Whether the case already records ``milestone`` as reached.
 
     Covers the boolean fields of ``MilestoneUpdates``. A name it does not know
     reads as not recorded, so a milestone added to the schema later is still
-    validated rather than waved through.
+    validated rather than waved through. ``solution_accepted`` that names a
+    fix not yet registered (``names_new_fix``, ``_names_new_fix``) is a new
+    registration, not a restatement, so it is justified like the first
+    (#2105).
     """
     mitigation = progress.mitigation
     recorded = {
         "symptom_verified": progress.symptom_verified,
-        "solution_accepted": progress.solution_accepted,
+        "solution_accepted": progress.solution_accepted and not names_new_fix,
         "mitigation_accepted": mitigation is not None and mitigation.accepted,
         "mitigation_verified": mitigation is not None and mitigation.verified,
     }
     return bool(recorded.get(milestone, False))
+
+
+def _names_new_fix(case: Case, milestones: Any) -> bool:
+    """Whether ``accepted_action_ref`` names a fix this acceptance would
+    register: a pending SOLUTION on the case, or ``new_index_N``, an action
+    this response mints."""
+    ref = _normalise_id_ref(getattr(milestones, "accepted_action_ref", None))
+    if not ref:
+        return False
+    if ref.startswith("new_index_"):
+        return True
+    return any(
+        a.action_id == ref
+        and a.state == "pending"
+        and a.action_type == InvestigationActionType.SOLUTION
+        for a in getattr(case, "proposed_actions", None) or []
+    )
 
 
 def validate_reasoning_first(
@@ -350,11 +374,14 @@ def validate_reasoning_first(
     # gate absorb a restatement themselves.
     completed_milestones = []
     milestone_dict = milestones.model_dump(exclude_none=True)
+    names_new_fix = _names_new_fix(case, milestones)
     for milestone_name, value in milestone_dict.items():
         if (
             isinstance(value, bool)
             and value is True
-            and not _milestone_already_recorded(case.progress, milestone_name)
+            and not _milestone_already_recorded(
+                case.progress, milestone_name, names_new_fix=names_new_fix
+            )
         ):
             completed_milestones.append(milestone_name)
 

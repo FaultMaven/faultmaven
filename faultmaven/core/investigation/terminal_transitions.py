@@ -1107,9 +1107,9 @@ def _execute_resolved_transition(case: Case, user_id: str):
     # classifies as PROPOSED at the conversion boundary — surfaced, flagged
     # unconfirmed — which is the honest ceiling until a per-action outcome
     # signal exists. Known recall cost, accepted: a revised fix the user DID
-    # run on the TREATMENT failure path (no stage gate fires there because
-    # ``solution_accepted`` is already latched) now also reads PROPOSED
-    # rather than falsely-certain APPLIED.
+    # run but the model never named (``accepted_action_ref``; after a first
+    # fix a bare ``solution_accepted`` registers nothing, #2105) also reads
+    # PROPOSED rather than falsely-certain APPLIED.
     case.atomic_update(
         state=CaseState.RESOLVED,
         resolved_at=now,

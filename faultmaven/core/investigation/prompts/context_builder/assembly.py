@@ -781,6 +781,7 @@ def build_investigation_context(
         if action is not None:
             action_type_upper = action.action_type.value.upper()
             pending_action_str = "<pending_action>\n"
+            pending_action_str += f"ACTION_ID: {action.action_id}\n"
             pending_action_str += f"ACTION_TYPE: {action_type_upper}\n"
             pending_action_str += f"DESCRIPTION: {action.description}\n"
             if action.commands:
@@ -795,8 +796,11 @@ def build_investigation_context(
                     "submits results of executing this mitigation)\n"
                 )
             elif action_type_upper == "SOLUTION":
+                # Named by its id (#2105): after a first fix is registered, a
+                # bare solution_accepted registers nothing.
                 pending_action_str += (
-                    "MILESTONE_TO_SET: solution_accepted (set True when user "
+                    "MILESTONE_TO_SET: solution_accepted, with "
+                    f"accepted_action_ref: {action.action_id} (set when user "
                     "submits results of executing this solution)\n"
                 )
             # Surface engine-issued downgrade reason if present so the

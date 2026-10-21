@@ -505,7 +505,7 @@ def _apply_hypothesis_evidence_links(
     chain axis in ``causal_graph.ingest_emitted_chain`` because the
     invariant belongs to the evidence ROW, not to the link target: a
     REFUTES on a success-confirmation absence row reaches
-    ``_net_refuted`` → ``_hypothesis_disconfirmed`` → M6 from here just as
+    ``cause_refuted_by_evidence`` → ``_hypothesis_disconfirmed`` → M6 from here just as
     it reached ``derive_node_states`` from there, so guarding one axis only
     would leave the #987 cascade one stance choice away.
     """

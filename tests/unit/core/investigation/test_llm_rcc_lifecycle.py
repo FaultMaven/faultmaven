@@ -357,6 +357,38 @@ def _record_failed_fix(case, *, fix_turn=2, persist_turn=3):
     return case
 
 
+def _fix_failed_on_the_record(case, *, fix_turn=6, outcome_turn=7):
+    """The failed treatment the M6 tests below narrate, "fix applied, symptom
+    persists", as a live case records it (#1927's record arm): the fix executed
+    at ``fix_turn``, then at ``outcome_turn`` the cause re-checked gone and the
+    reported problem still present, both rows on record. Before #2106 those
+    tests linked a REFUTES to a row never added to the case, a shape the live
+    link pass refuses to produce, which M6's evidence arm no longer counts."""
+    from faultmaven.modules.case.contracts import (
+        InvestigationActionType,
+        ProposedAction,
+    )
+
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="restore the connection release call",
+            proposed_in_turn=fix_turn - 1,
+            accepted_in_turn=fix_turn,
+            state="accepted",
+        )
+    )
+    cause_gone = _evidence("cause_gone", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    cause_gone.summary = "pool connections are released again after the fix"
+    still_failing = _evidence("still_failing", EvidenceCategory.SYMPTOM_EVIDENCE)
+    still_failing.summary = "checkout orders still failing with 500s after the fix"
+    for row in (cause_gone, still_failing):
+        row.collected_at_turn = outcome_turn
+        case.evidence.append(row)
+    case.current_turn = outcome_turn
+
+
 def _identified_case():
     """A case grounded to IDENTIFIED via a validated root (X)."""
     root = _root("cn_0000000000a1", _POOL_LEAK, support_labels=["s1", "s2"])
@@ -403,17 +435,8 @@ def test_recompute_keeps_regrounded_conclusion_on_other_standing_cause():
 
 def test_m6_clears_conclusion_naming_the_disconfirmed_cause():
     case, root_x, hyp_x = _identified_case()
-    _record_failed_fix(case)
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK, vhid=hyp_x.hypothesis_id)
-    hyp_x.evidence_links.append(
-        HypothesisEvidenceLink(
-            hypothesis_id=hyp_x.hypothesis_id,
-            evidence_id=_eid("fail"),
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, symptom persists",
-            stance_confidence=0.9,
-        )
-    )
+    _fix_failed_on_the_record(case)
     with patch(
         "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"
@@ -428,17 +451,8 @@ def test_m6_clears_unlinked_conclusion_on_sole_disconfirmed_cause():
     unlinkable, M6's max-likelihood proxy resolves to it and clears it (safe
     blanket — NO-INCORRECT-CONCLUSION over a preserved guess)."""
     case, root_x, hyp_x = _identified_case()
-    _record_failed_fix(case)
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK)  # no vhid
-    hyp_x.evidence_links.append(
-        HypothesisEvidenceLink(
-            hypothesis_id=hyp_x.hypothesis_id,
-            evidence_id=_eid("fail"),
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, symptom persists",
-            stance_confidence=0.9,
-        )
-    )
+    _fix_failed_on_the_record(case)
     with patch(
         "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"

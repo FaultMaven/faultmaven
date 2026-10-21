@@ -6,6 +6,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     counterfactual_link_decisive,
     root_counterfactually_confirmed,
+    stance_declared_confident,
 )
 from faultmaven.core.investigation.cause_assurance import (
     cached_content_tokens as _cached_content_tokens,
@@ -61,9 +62,9 @@ _MIS_EXACT_MAX = 15
 
 def _node_evidence_tally(
     node: CausalNode, evidence_by_id: dict[str, EvidenceCategory | None]
-) -> tuple[int, int, list[str], int, int]:
+) -> tuple[int, int, list[str], int, int, int]:
     """``(supports, refutes, causal_support_ev_ids, raw_causal_links,
-    counterfactual_refutes)`` for a node from its rung links.
+    counterfactual_refutes, hedged_refutes)`` for a node from its rung links.
 
     Counts only links whose backing evidence row actually exists (a dangling
     ``evidence_id`` is ignored, never assumed). ``causal_support_ev_ids`` is the
@@ -81,10 +82,17 @@ def _node_evidence_tally(
     ordinary refuting evidence, not the decisive grade) — a counterfactual
     disconfirmation (the cause was addressed yet ``D`` persisted), the §7.2
     strongest grade, which refutes DECISIVELY (it is not outweighed by
-    correlational support). A hedged absence-REFUTES still counts in
-    ``refutes``.
+    correlational support).
+
+    ``refutes`` counts only REFUTES links declared confident
+    (``stance_declared_confident``), absence-backed or not: a self-hedge is not
+    evidence against, so it never moves a node toward REFUTED nor holds a
+    grounded one out of VALIDATED (decision 3(a), #2106). It is counted in
+    ``hedged_refutes`` instead, which is only BEARING: a node whose rung
+    evidence is all hedged refutes reads INCONCLUSIVE, not CANDIDATE.
     """
     supports = refutes = raw_causal_links = counterfactual_refutes = 0
+    hedged_refutes = 0
     causal_support_ev_ids: list[str] = []
     for link in node.evidence_links:
         if link.evidence_id not in evidence_by_id:
@@ -105,6 +113,9 @@ def _node_evidence_tally(
                 ):
                     causal_support_ev_ids.append(link.evidence_id)
         elif link.stance == EvidenceStance.REFUTES:
+            if not stance_declared_confident(link):
+                hedged_refutes += 1
+                continue
             refutes += 1
             if evidence_by_id[
                 link.evidence_id
@@ -118,6 +129,7 @@ def _node_evidence_tally(
         causal_support_ev_ids,
         raw_causal_links,
         counterfactual_refutes,
+        hedged_refutes,
     )
 
 
@@ -258,6 +270,7 @@ def root_support_block_reasons(case: Case) -> dict[str, str]:
             causal_support_ev_ids,
             raw_causal_links,
             counterfactual_refutes,
+            _hedged_refutes,
         ) = _node_evidence_tally(node, evidence_by_id)
         if counterfactual_refutes >= 1 or refutes > supports:
             continue  # refuted territory — nothing to complete
@@ -358,6 +371,7 @@ def restatement_held_root_ids(case: Case) -> set[str]:
             causal_support_ev_ids,
             _raw_causal_links,
             counterfactual_refutes,
+            _hedged_refutes,
         ) = _node_evidence_tally(node, evidence_by_id)
         if counterfactual_refutes >= 1 or refutes >= supports:
             continue  # refuted territory / no net support — a different story

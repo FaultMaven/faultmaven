@@ -301,7 +301,9 @@ REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
 
 4. **`state_updates.milestones.solution_accepted`** — set to True (the
    user applied the proposed fix; their confirmation is the compliance
-   signal). The engine handles the other two gate milestones automatically:
+   signal), with `accepted_action_ref` set to `new_index_0`, naming the
+   Solution of step 3 (after an earlier fix, an acceptance that names no
+   action registers nothing). The engine handles the other two gate milestones automatically:
    `solution_proposed` is derived by the engine from the standing
    SolutionToAdd proposal from step 3, and `solution_verified` is set when
    the user confirms the proposed_transition in step 6 below (see

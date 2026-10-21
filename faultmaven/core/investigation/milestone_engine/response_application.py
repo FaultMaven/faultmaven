@@ -110,6 +110,7 @@ from .stage_gates import (
     _case_has_symptom_evidence,
     _coerce_intervention_quadrant,
     _determine_action_type,
+    _normalise_id_ref,
     _settled_working_conclusion,
     _solution_cause_validated,
     _supersede_pending_solution_offers,
@@ -198,6 +199,38 @@ _STAGED_GATE_SIGNALS = (
     "mitigation_accepted",
     "mitigation_verified",
 )
+
+
+def _staged_action_ref(ref: Any, kept: list[int]) -> Any:
+    """``accepted_action_ref`` as the replay must read it (#2105). An ACTION_ID
+    is unchanged. A ``new_index_N`` names the Nth of the response's
+    ``solutions_to_add``, but the staged list keeps only the fixes not staged
+    before (``kept``, their original positions), so N is re-indexed into it.
+    One naming a fix staged on an earlier turn is dropped: that fix is minted
+    by its own bundle's replay, and a bundle resolves only against its own
+    minted ids."""
+    ref = _normalise_id_ref(ref)
+    if not ref or not ref.startswith("new_index_"):
+        return ref
+    try:
+        index = int(ref.removeprefix("new_index_"))
+    except ValueError:
+        return ref
+    if index in kept:
+        return f"new_index_{kept.index(index)}"
+    return None
+
+
+def _without_signals(milestones: Any, names: list[str]) -> Any:
+    """``milestones`` with the gate signals ``names`` withheld. A withheld
+    ``solution_accepted`` takes its ``accepted_action_ref`` with it: the ref is
+    read only with the signal, so left behind it would be answered as sent
+    alone."""
+    update: dict[str, Any] = {name: None for name in names}
+    if "solution_accepted" in update:
+        update["accepted_action_ref"] = None
+    return milestones.model_copy(update=update)
+
 
 #: What a refused hypothesis's ``new_index_N`` slot resolves to: no hypothesis,
 #: so a link or update naming it is skipped by its consumer's existence check.
@@ -317,6 +350,9 @@ class ResponseApplier:
                     if hasattr(milestones, field_name):
                         setattr(milestones, field_name, None)
                         stripped.append(field_name)
+                if "solution_accepted" in stripped:
+                    # Read only with the signal (``_without_signals``).
+                    milestones.accepted_action_ref = None
                 # Drop only the stripped milestones' justifications; keep the rest.
                 # ``milestone_justifications`` is a model now, so clearing a
                 # justification is setting its field to None rather than popping
@@ -822,18 +858,20 @@ class ResponseApplier:
         if refutations:
             subset["hypotheses_to_update"] = refutations
         # The same fix re-sent on a later hold turn is staged once.
+        kept: list[int] = []
         if "solutions_to_add" in subset:
             staged_before = {
                 (item.get("description") or "").strip().casefold()
                 for bundle in case.problem_verification.pending_revision.staged
                 for item in bundle.updates.get("solutions_to_add", [])
             }
-            fresh = [
-                item
-                for item in subset["solutions_to_add"]
+            kept = [
+                index
+                for index, item in enumerate(subset["solutions_to_add"])
                 if (item.get("description") or "").strip().casefold()
                 not in staged_before
             ]
+            fresh = [subset["solutions_to_add"][index] for index in kept]
             if fresh:
                 subset["solutions_to_add"] = fresh
             else:
@@ -854,6 +892,11 @@ class ResponseApplier:
                 claims.update({name: True for name in held})
                 if held:
                     metadata["staged_gate_signals"] = held
+                ref = _staged_action_ref(
+                    getattr(milestones, "accepted_action_ref", None), kept
+                )
+                if "solution_accepted" in held and ref:
+                    claims["accepted_action_ref"] = ref
             if claims:
                 subset["milestones"] = claims
         if not subset:
@@ -1400,6 +1443,10 @@ class ResponseApplier:
                 "SOLUTIONS NOT ACCEPTED: the reported problem was found not "
                 "present, so there is nothing to fix or mitigate.",
             )
+        # The action ids this apply mints, in ``solutions_to_add`` order: what
+        # an ``accepted_action_ref`` of ``new_index_N`` names (#2105). Reset
+        # per apply, so a replayed bundle resolves against its own.
+        metadata["minted_action_ids"] = []
         if (
             not staging
             and not false_alarm
@@ -1492,9 +1539,9 @@ class ResponseApplier:
                             "fix as a SolutionToAdd; the conclusion counts once "
                             "the symptom is verified and no rival cause is "
                             "contested. If the user already applied that fix, "
-                            "also set solution_accepted from their report rather "
-                            "than asking again. Or propose a WORKAROUND "
-                            "mitigation."
+                            "also set solution_accepted from their report, with "
+                            "accepted_action_ref naming it. Or propose a "
+                            "WORKAROUND mitigation."
                         )
                     )
 
@@ -1565,6 +1612,7 @@ class ResponseApplier:
                     downgrade_reason=downgrade_reason,
                 )
                 case.proposed_actions.append(proposed_action)
+                metadata["minted_action_ids"].append(proposed_action.action_id)
 
                 # solution_proposed is DERIVED at the end-of-turn assessment
                 # recompute from live SOLUTION offers (INV-32) — the former
@@ -1581,9 +1629,7 @@ class ResponseApplier:
             held = metadata.get("staged_gate_signals")
             if held:
                 # Held with the solutions they accept (step 2d).
-                gate_signals = gate_signals.model_copy(
-                    update={name: None for name in held}
-                )
+                gate_signals = _without_signals(gate_signals, held)
                 _add_system_feedback(
                     metadata,
                     f"{', '.join(held)} and the solutions this response proposed "
@@ -1604,9 +1650,7 @@ class ResponseApplier:
                 # Nothing is accepted or verified against a symptom the
                 # evidence showed was never present — and a verified mitigation
                 # would bar the very finding it was recorded under.
-                gate_signals = gate_signals.model_copy(
-                    update={name: None for name in refused_signals}
-                )
+                gate_signals = _without_signals(gate_signals, refused_signals)
                 _add_system_feedback(
                     metadata,
                     f"{', '.join(refused_signals)} NOT ACCEPTED: the evidence "
