@@ -114,8 +114,8 @@ Find the newest proposal or result on the Queue:
    - Run `.venv/bin/python scripts/security_alert_sweep.py`. Put each `untracked` group's alert URLs on a body line
      starting `**Alerts:**` in the open core issue covering it, or file one per root opening `**Repo: FaultMaven/<r>.**`
      then that line, verified by the alert page and manifest. Anything written about a private repo's alert names only
-     its kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the non-secret
-     `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
+     its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
+     non-secret `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - From `pile:ready` only: `P1`, then `P2`, then `P3`, oldest first within each. Reserve one slot for the oldest
      `P2` that has waited over 30 days. Skip an item that an open PR from an earlier round still carries.
