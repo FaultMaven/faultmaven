@@ -49,6 +49,7 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Treatment,
     MilestoneJustifications,
     MilestoneUpdates,
+    ProblemVerificationUpdate,
     SolutionToAdd,
 )
 from faultmaven.core.investigation.terminal_transitions import (
@@ -58,10 +59,12 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import (
     Case,
+    ConfidenceLevel,
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
     ProblemStatus,
+    RootCauseConclusion,
     SolutionType,
     UploadedFile,
 )
@@ -665,12 +668,8 @@ async def test_a_fix_superseded_on_an_earlier_turn_registers_by_name():
     assert [a.description for a in _pending(case)] == [_SECOND]
 
 
-async def test_a_fix_withdrawn_when_its_license_fell_is_refused():
-    """M5: the cause the offer rested on was refuted, so the offer was
-    withdrawn (``license_lost``), not replaced."""
-    eng, case = _identified()
-    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
-    (x,) = _solutions(case)
+async def _refute_the_cause(eng, case, turn) -> dict:
+    """The model refutes the identified cause on a row on record (INV-47)."""
     hyp = next(iter(case.hypotheses.values()))
     link = HypothesisEvidenceLinkToAdd(
         hypothesis_id_ref=hyp.hypothesis_id,
@@ -683,14 +682,23 @@ async def test_a_fix_withdrawn_when_its_license_fell_is_refused():
         state=HypothesisState.REFUTED,
         refutation_reason="checkout fails with the limit far above the pool",
     )
-    await _turn(
+    return await _turn(
         eng,
         case,
-        6,
+        turn,
         _ev(_PRESENT, "checkout returns 503 with max_connections at 500"),
         hypothesis_evidence_links=[link],
         hypotheses_to_update=[refute],
     )
+
+
+async def test_a_fix_withdrawn_when_its_license_fell_is_refused():
+    """M5: the cause the offer rested on was refuted, so the offer was
+    withdrawn (``license_lost``), not replaced."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    await _refute_the_cause(eng, case, 6)
     assert (x.state, x.superseded_reason) == ("superseded", "license_lost")
 
     meta = await _turn(eng, case, 7, milestones=_accepted(x.action_id))
@@ -789,3 +797,141 @@ async def test_a_fix_that_worked_after_one_that_failed_is_no_failure_cycle():
 
     assert [w.state for w in fix_windows(case)][1:] == ["failed", "failed"]
     assert monitor._detect_fix_failure_cycle(case, "solution") is True
+
+
+# ---------------------------------------------------------------------------
+# PR #2143 delta on 0a32ef889 (R1-R4).
+# ---------------------------------------------------------------------------
+
+
+async def test_a_superseded_fix_named_after_a_first_fix_must_be_justified():
+    """R1: the justification check asks the gate's own question. Naming X,
+    superseded by Y, would register X, so it is justified like naming Y."""
+    eng, case = await _relapsed()
+    await _turn(eng, case, 14, solutions_to_add=[_fix("restart the pool")])
+    x = _pending(case)[-1]
+    await _turn(eng, case, 15, solutions_to_add=[_fix(_SECOND)])
+    y = _pending(case)[-1]
+    assert (x.state, x.superseded_reason) == ("superseded", "reproposal")
+
+    for named in (x, y):
+        valid, _errors, offending = validate_reasoning_first(
+            _response(_accepted(named.action_id)), case
+        )
+        assert (valid, offending) == (False, {"solution_accepted"})
+
+
+@pytest.mark.parametrize(
+    "resent, accepted",
+    [(_FIRST, [6, 14, 15]), (_SECOND, [6, 14])],
+    ids=["earlier-failed-fix-reapplied", "control-latest-fix-restated"],
+)
+async def test_an_accepted_fix_keeps_its_action_only_while_its_window_is_latest(
+    resent, accepted
+):
+    """R2: A failed (relapse at 13), B ran at 14. A applied again is a new
+    attempt; B re-sent before its window decides is a re-assertion."""
+    eng, case = await _relapsed()
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    await _turn(
+        eng,
+        case,
+        15,
+        solutions_to_add=[_fix(resent)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert _accepted_turns(case) == accepted
+    assert len(case.action_attempts) == len(accepted)
+
+
+async def test_a_superseded_fix_does_not_register_after_the_license_fell():
+    """R3: X superseded by Y, then the cause refuted (Y withdrawn). Naming X
+    registers nothing: a permanent fix needs an established cause."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_SECOND)])
+    await _refute_the_cause(eng, case, 7)
+    assert (x.state, x.superseded_reason) == ("superseded", "reproposal")
+
+    meta = await _turn(eng, case, 8, milestones=_accepted(x.action_id))
+
+    assert x.accepted_in_turn is None
+    assert case.progress.solution_accepted is False
+    assert len(fix_windows(case)) == 1  # no fix window opened
+    assert (
+        f"{x.action_id} targets a root cause that is no longer established"
+        in meta["system_feedback"]
+    )
+
+
+@pytest.mark.parametrize("resend", [True, False])
+async def test_a_hold_turn_naming_the_pending_fix_registers_it_once(resend):
+    """R4 (probe I): a revision waits; the response names pending X by its
+    ACTION_ID, with or without re-sending it."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_SECOND)])
+    (x,) = _solutions(case)
+    propose_revision(
+        case,
+        text="checkout returns 503 under peak load",
+        evidence_ids=[case.evidence[-1].evidence_id],
+        basis="the 503s come back only at peak",
+        offer_key="rev_r4",
+    )
+    resent = {"solutions_to_add": [_fix(_SECOND)]} if resend else {}
+
+    await _turn(eng, case, 6, milestones=_accepted(x.action_id), **resent)
+    case.current_turn = 7
+    await confirm_revision(eng.responses, case, {})
+
+    assert len(case.action_attempts) == 1
+    assert [a.description for a in _solutions(case) if a.state == "accepted"] == [
+        _SECOND
+    ]
+
+
+async def test_a_named_fix_re_sent_with_a_revised_statement_registers_on_the_replay():
+    """R4 (probe K, the reachable shape): the license is the model's
+    conclusion, so a revision is admissible. One response names pending X by
+    its ACTION_ID, re-sends X and revises the statement; the hold withdraws X,
+    and the replay's copy of X is the fix the name means."""
+    eng, case = _engine(), _case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Connection pool exhaustion under load",
+        mechanism="Pool capped at 5; traffic saturated it",
+        likelihood=0.85,
+        confidence_level=ConfidenceLevel.CONFIDENT,
+    )
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_SECOND)])
+    (x,) = _solutions(case)
+
+    await _turn(
+        eng,
+        case,
+        6,
+        _ev(_PRESENT, "logins return 401 only at peak load after the change"),
+        verification_updates=ProblemVerificationUpdate(
+            revised_problem_statement="a third of logins fail with 401 at peak load",
+            revision_evidence_ids=["new_index_0"],
+            revision_basis="the 401s come back only at peak",
+        ),
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted(x.action_id),
+    )
+    assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+    case.current_turn = 7
+    await confirm_revision(eng.responses, case, {})
+
+    (attempt,) = case.action_attempts
+    (registered,) = [a for a in _solutions(case) if a.state == "accepted"]
+    assert (registered.description, registered.accepted_in_turn) == (_SECOND, 7)
+    assert attempt.action_id == registered.action_id

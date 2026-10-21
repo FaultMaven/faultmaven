@@ -115,6 +115,7 @@ from .stage_gates import (
     _settled_working_conclusion,
     _solution_cause_validated,
     _supersede_pending_solution_offers,
+    fix_text,
     llm_claimable_milestones,
 )
 from .statement_revision import REPLAY_METADATA_KEY
@@ -894,6 +895,25 @@ class ResponseApplier:
                     getattr(milestones, "accepted_action_ref", None)
                 )
                 ref = _staged_action_ref(sent, kept)
+                named = next(
+                    (
+                        a
+                        for a in case.proposed_actions
+                        if a.action_id == ref
+                        and a.state == "pending"
+                        and a.action_type == InvestigationActionType.SOLUTION
+                    ),
+                    None,
+                )
+                if named is not None:
+                    # The hold may withdraw the named offer before the replay
+                    # mints its re-sent copy: name the copy the bundle stages.
+                    staged = [
+                        fix_text(item.get("description"))
+                        for item in subset.get("solutions_to_add", [])
+                    ]
+                    if fix_text(named.description) in staged:
+                        ref = f"new_index_{staged.index(fix_text(named.description))}"
                 if "solution_accepted" in held and sent and not ref:
                     # Held bare, the replay would register some other pending
                     # fix, or none: an acceptance is never held without its name.

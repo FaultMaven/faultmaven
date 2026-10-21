@@ -216,8 +216,9 @@ class ProgressMonitor:
                 can fire (default 8)
             exhaustion_stall_threshold: Turns without progress needed for
                 exhaustion (default 5)
-            fix_failure_threshold: Accepted-but-unverified fix attempts
-                before FIX_FAILURE_CYCLE fires (default 2)
+            fix_failure_threshold: Failed fix windows (SOLUTION), or
+                accepted-but-unverified mitigations, before FIX_FAILURE_CYCLE
+                fires (default 2)
         """
         self.transparency_threshold = transparency_threshold
         self.category_anchoring_threshold = category_anchoring_threshold

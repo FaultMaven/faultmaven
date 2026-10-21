@@ -110,7 +110,7 @@ While in transparent mode, the system also checks for specific agent-internal fa
 | **HYPOTHESIS_DEADLOCK** | DIAGNOSIS, TREATMENT | 3+ hypotheses, all INCONCLUSIVE | Retire all inconclusive hypotheses — gives LLM a clean slate |
 | **HYPOTHESIS_ANCHORING** | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category | Ban the anchored category and suggest alternatives from `ProgressMonitor.ALL_CATEGORIES` (`code`, `config`, `environment`, `network`, `data`, `database`, `hardware`, `security`, `external`, `human`, `other`) — adds a constraint the LLM doesn't have on its own |
 | **EXHAUSTED** | DIAGNOSIS | 2+ categories explored, 2+ hypotheses refuted, 2+ evidence items, no validated hypothesis, **both** `current_turn ≥ 8` AND `turns_without_progress ≥ 5` | Agent produces structured handoff — summary of findings, what remains uncertain, options for user |
-| **FIX_FAILURE_CYCLE** | MITIGATION, TREATMENT | 2+ accepted proposed actions, verification milestone not set | Agent summarizes what was tried and presents options |
+| **FIX_FAILURE_CYCLE** | MITIGATION, TREATMENT | TREATMENT: 2+ fix windows FAILED (`fix_windows`; a later fix that worked is no cycle). MITIGATION: 2+ accepted MITIGATION actions, the record not verified | Agent summarizes what was tried and presents options |
 | **ACTION_LOOP** | All stages | Identical structural output across 5+ consecutive turns | Prompt injection (current); tool blocking (future) |
 
 These patterns are checked **only while transparent mode is active** — if progress is being made (silent mode), there is no reason to check for failure patterns.
@@ -144,7 +144,7 @@ Transparent Mode (progress stalled)
 | `action_loop_threshold` | 5 | Turns with identical structural output before ACTION_LOOP fires |
 | `exhaustion_min_turns` | 8 | Minimum total turns before EXHAUSTED can fire (first threshold) |
 | `exhaustion_stall_threshold` | 5 | Turns without progress also required for EXHAUSTED (second threshold — both must be met) |
-| `fix_failure_threshold` | 2 | Accepted-but-unverified fix attempts before FIX_FAILURE_CYCLE fires |
+| `fix_failure_threshold` | 2 | Failed fix windows (TREATMENT), or accepted-but-unverified mitigations, before FIX_FAILURE_CYCLE fires |
 
 ---
 

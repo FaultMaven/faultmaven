@@ -396,9 +396,9 @@ def _same_fix_action(case: Case, description: str) -> Optional[ProposedAction]:
     as a new action, the copy superseded the original, so the fix the user ran
     was refused as superseded, and a copy of an executed fix read as a second
     fix to register (#2105). The same fix keeps one action: the pending offer,
-    or an accepted fix whose latest window has not FAILED (after a failed
-    window the same fix applied again is a new attempt). Same text only,
-    whitespace-collapsed and case-folded: a fuzzy match would drop a
+    or the accepted fix whose window is the latest and has not FAILED (once its
+    window failed, or a later fix ran, the same fix applied again is a new
+    attempt). Same text only (``fix_text``): a fuzzy match would drop a
     genuinely new offer, and a reworded fix is a new offer. The ``Solution``
     row is minted either way (#1136)."""
     from faultmaven.core.investigation.cause_assurance import (
@@ -406,23 +406,31 @@ def _same_fix_action(case: Case, description: str) -> Optional[ProposedAction]:
         latest_fix_window,
     )
 
-    def text(value: str) -> str:
-        return " ".join(value.split()).casefold()
-
-    wanted = text(description or "")
+    wanted = fix_text(description)
     if not wanted:
         return None
-    states = {"pending"}
-    if latest_fix_window(case).state != FIX_FAILED:
-        states.add("accepted")
+    window = latest_fix_window(case)
     for action in reversed(case.proposed_actions):
         if (
             action.action_type == InvestigationActionType.SOLUTION
-            and action.state in states
-            and text(action.description) == wanted
+            and fix_text(action.description) == wanted
+            and (
+                action.state == "pending"
+                or (
+                    action.state == "accepted"
+                    and action.accepted_in_turn == window.fix_turn
+                    and window.state != FIX_FAILED
+                )
+            )
         ):
             return action
     return None
+
+
+def fix_text(value: str | None) -> str:
+    """A fix description as identity compares it: whitespace-collapsed and
+    case-folded (``_same_fix_action``, and a staged ref's mapping)."""
+    return " ".join((value or "").split()).casefold()
 
 
 def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
@@ -697,6 +705,52 @@ _GATE_ACTION_TYPE: dict[str, InvestigationActionType] = {
 }
 
 
+def _named_action(
+    case: Case, ref: str, metadata: Optional[dict[str, Any]]
+) -> Optional[ProposedAction]:
+    """The action ``ref`` names: an ACTION_ID, or ``new_index_N`` against the
+    apply's ``minted_action_ids``."""
+    from .turn_records import _resolve_id_ref  # turn_records imports this module
+
+    action_id = _resolve_id_ref(
+        ref, (metadata or {}).get("minted_action_ids") or [], "act"
+    )
+    return next((a for a in case.proposed_actions if a.action_id == action_id), None)
+
+
+def acceptance_registers(
+    case: Case, ref: Any, metadata: Optional[dict[str, Any]]
+) -> bool:
+    """Whether a ``solution_accepted`` naming ``ref`` registers a fix (#2105):
+    the answer the gate acts on (``_resolve_solution_acceptance``) and the
+    justification check reads, so a registration is justified like the first.
+    Side-effect free.
+
+    The ref names a SOLUTION that is pending, or that a newer offer superseded
+    (``reproposal``) while the M5 license still holds: supersession retires an
+    offer and never decides whether a fix ran, but a permanent fix registers
+    only on an established cause. ``metadata`` is the apply's; asked before the
+    solutions step (``None``), a ``new_index_N`` names an action this response
+    mints, which is pending."""
+    ref = _normalise_id_ref(ref)
+    if not ref:
+        return False
+    if metadata is None and ref.startswith("new_index_"):
+        return True
+    action = _named_action(case, ref, metadata)
+    if action is None or action.action_type != _GATE_ACTION_TYPE["solution_accepted"]:
+        return False
+    if action.state == "pending":
+        return True
+    return (
+        action.state == "superseded"
+        and action.superseded_reason == "reproposal"
+        and _solution_cause_validated(
+            case, working_conclusion=_settled_working_conclusion(case, metadata or {})
+        )
+    )
+
+
 def _resolve_solution_acceptance(
     case: Case, ref: Any, metadata: dict[str, Any]
 ) -> Optional[ProposedAction]:
@@ -708,9 +762,10 @@ def _resolve_solution_acceptance(
     ``solutions_to_add``, resolved against the actions the solutions step
     minted or kept in this apply, ``metadata["minted_action_ids"]``).
 
-    - The ref names a pending SOLUTION, or one superseded as a ``reproposal``:
-      that action. Supersession retires an offer and never decides whether a
-      fix ran.
+    - The ref names a SOLUTION that ``acceptance_registers``: pending, or
+      superseded as a ``reproposal`` while the M5 license holds. Supersession
+      retires an offer and never decides whether a fix ran; once the license
+      fell, one line says so.
     - The ref names an accepted SOLUTION: None, silently. A re-assertion of a
       registered fix, which models emit every turn.
     - The ref names anything else (no such action, a DIAGNOSTIC, a MITIGATION,
@@ -768,23 +823,24 @@ def _resolve_solution_acceptance(
             )
         return None
 
-    from .turn_records import _resolve_id_ref  # turn_records imports this module
-
-    action_id = _resolve_id_ref(ref, metadata.get("minted_action_ids") or [], "act")
-    action = next((a for a in case.proposed_actions if a.action_id == action_id), None)
-    if (
-        action is not None
-        and action.action_type == solution
-        and action.state == "superseded"
-        and action.superseded_reason == "reproposal"
-    ):
-        action.state = "pending"
-        action.superseded_reason = None
-        action.superseded_in_turn = None
+    action = _named_action(case, ref, metadata)
+    if acceptance_registers(case, ref, metadata):
+        if action.state == "superseded":
+            action.state = "pending"
+            action.superseded_reason = None
+            action.superseded_in_turn = None
+        return action
     if action is not None and action.action_type == solution:
-        if action.state == "pending":
-            return action
         if action.state == "accepted":
+            return None
+        if action.superseded_reason == "reproposal":
+            _add_system_feedback(
+                metadata,
+                f"SYSTEM: 'solution_accepted' was not registered: {action.action_id} "
+                "targets a root cause that is no longer established, and a "
+                "permanent fix needs one (M5). Re-ground the root cause with "
+                "evidence first, or propose a temporary mitigation (WORKAROUND).",
+            )
             return None
     if action is None:
         what = "no action on this case"

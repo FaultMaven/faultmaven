@@ -12,11 +12,10 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     EvidenceCategory,
-    InvestigationActionType,
     InvestigationProgress,
 )
 
-from .stage_gates import CATEGORY_MILESTONE_MAP, _normalise_id_ref
+from .stage_gates import CATEGORY_MILESTONE_MAP, acceptance_registers
 
 logger = logging.getLogger(__name__)
 
@@ -282,19 +281,10 @@ def _milestone_already_recorded(
 
 
 def _names_new_fix(case: Case, milestones: Any) -> bool:
-    """Whether ``accepted_action_ref`` names a fix this acceptance would
-    register: a pending SOLUTION on the case, or ``new_index_N``, an action
-    this response mints."""
-    ref = _normalise_id_ref(getattr(milestones, "accepted_action_ref", None))
-    if not ref:
-        return False
-    if ref.startswith("new_index_"):
-        return True
-    return any(
-        a.action_id == ref
-        and a.state == "pending"
-        and a.action_type == InvestigationActionType.SOLUTION
-        for a in getattr(case, "proposed_actions", None) or []
+    """Whether the response's acceptance would register a fix: the gate's own
+    answer (``acceptance_registers``), asked before the solutions step."""
+    return acceptance_registers(
+        case, getattr(milestones, "accepted_action_ref", None), None
     )
 
 
