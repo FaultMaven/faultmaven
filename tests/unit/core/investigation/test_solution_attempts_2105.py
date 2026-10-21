@@ -25,6 +25,7 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
 from faultmaven.core.investigation.problem_status import propose_revision
+from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
@@ -43,6 +44,7 @@ from faultmaven.core.investigation.prompts.templates.treatment import (
 )
 from faultmaven.core.investigation.schemas import (
     EvidenceTrail,
+    InvestigationResponse_Treatment,
     MilestoneJustifications,
     MilestoneUpdates,
     SolutionToAdd,
@@ -57,6 +59,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     ProblemStatus,
     SolutionType,
+    UploadedFile,
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.loading import (
     _row_to_case,
@@ -78,6 +81,10 @@ from tests.unit.core.investigation.fix_turns_2039 import (
     _turn,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _FILE_ID,
+    _identified_case,
+)
 from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
     _apply,
     _case,
@@ -419,6 +426,12 @@ async def test_a_second_attempt_round_trips_on_the_postgresql_row_mapping():
 # ---------------------------------------------------------------------------
 
 
+def _between(text: str, start: str, end: str) -> str:
+    """The passage of ``text`` from ``start`` up to ``end``: one prompt site."""
+    begin = text.index(start)
+    return text[begin : text.index(end, begin)]
+
+
 async def test_every_prompt_site_that_registers_a_fix_names_the_ref():
     eng, case = await _relapsed()
     # The failed-window notice: an absence row after the relapse.
@@ -429,15 +442,252 @@ async def test_every_prompt_site_that_registers_a_fix_names_the_ref():
     # The M5 downgrade reason.
     downgraded = _case()
     await _apply(_engine(), downgraded, _TSU(solutions_to_add=[_fix(_SECOND)]))
+    treatment = treatment_instructions(DEFAULT_GIVEN)
 
     for text in (
         failed["system_feedback"],
         no_pending["system_feedback"],
         downgraded.proposed_actions[0].downgrade_reason,
-        treatment_instructions(DEFAULT_GIVEN),
+        _between(
+            treatment, "4. **`state_updates.milestones.solution_accepted`", "5. **"
+        ),
+        _between(treatment, "User only APPLIED the fix", "User ASKS to resolve"),
         rca_diagnosis_block(DEFAULT_GIVEN),
         _get_diagnosis_focus_emphasis(case.progress, case),
         INVESTIGATION_BASE,
         SCHEMA_INSTRUCTIONS,
     ):
         assert "accepted_action_ref" in text
+
+
+# ---------------------------------------------------------------------------
+# PR #2143 review: what the user ran is the action named (F1, F3), an
+# acceptance is never held bare (F2), the reasoning strip takes the ref with
+# the signal (F8), and a fix that worked is no failure cycle (F5).
+# ---------------------------------------------------------------------------
+
+_FIRST = "raise max_connections to 100"
+
+
+def _identified():
+    """The #1927 case at turn 5: the cause identified, no fix proposed yet."""
+    case, _root, _hyp = _identified_case()
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=_FILE_ID, filename="c.log", size_bytes=1, uploaded_at_turn=1
+        )
+    )
+    return _engine(), case
+
+
+def _states(case):
+    return [(a.description, a.state, a.accepted_in_turn) for a in _solutions(case)]
+
+
+def _accepted_turns(case):
+    return sorted(a.accepted_in_turn for a in _solutions(case) if a.state == "accepted")
+
+
+def _pending(case):
+    return [a for a in _solutions(case) if a.state == "pending"]
+
+
+async def test_a_fix_named_by_id_and_reproposed_in_the_same_words_registers():
+    """P1: the response re-sends the fix it names, superseding it first."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (offer,) = _solutions(case)
+
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted(offer.action_id),
+    )
+
+    assert (offer.state, offer.accepted_in_turn) == ("accepted", 6)
+    assert _pending(case) == []
+    assert [t.action_id for t in case.action_attempts] == [offer.action_id]
+
+
+async def test_a_named_fix_resent_every_turn_registers_once():
+    """P2."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (offer,) = _solutions(case)
+
+    for turn in (6, 7, 8):
+        await _turn(
+            eng,
+            case,
+            turn,
+            solutions_to_add=[_fix(_FIRST)],
+            milestones=_accepted(offer.action_id),
+        )
+
+    assert _accepted_turns(case) == [6]
+    assert len(case.action_attempts) == 1
+
+
+async def test_a_second_fix_named_by_id_and_reproposed_registers():
+    """P3."""
+    eng, case, _root, _hyp = await _fixed_and_relieved()
+    await _turn(
+        eng,
+        case,
+        13,
+        _ev(_PRESENT, "checkout returns 503 again"),
+        solutions_to_add=[_fix(_SECOND)],
+    )
+    second = _pending(case)[-1]
+
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted(second.action_id),
+    )
+
+    assert (second.state, second.accepted_in_turn) == ("accepted", 14)
+    assert _accepted_turns(case) == [6, 14]
+
+
+async def test_a_named_fix_registers_beside_a_different_new_offer():
+    """P4: the new offer is a different fix, so it stays pending."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (offer,) = _solutions(case)
+
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted(offer.action_id),
+    )
+
+    assert (offer.state, offer.accepted_in_turn) == ("accepted", 6)
+    assert [a.description for a in _pending(case)] == [_SECOND]
+
+
+async def test_a_resent_bundle_before_any_verdict_is_a_reassertion():
+    """P5: the registered fix re-sent with ``new_index_0`` before its window
+    has a verdict registers nothing and leaves no dead offer pending."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    await _turn(eng, case, 6, milestones=_accepted())
+
+    await _turn(
+        eng,
+        case,
+        7,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert _accepted_turns(case) == [6]
+    assert len(case.action_attempts) == 1
+    assert _pending(case) == []
+
+
+async def test_the_same_fix_applied_again_after_a_failed_window_registers():
+    """P5b."""
+    eng, case = await _relapsed()
+
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert _accepted_turns(case) == [6, 14]
+
+
+@pytest.mark.parametrize("shape", ["first-fix", "after-a-relapse"])
+async def test_an_acceptance_naming_an_earlier_staged_fix_is_never_held_bare(shape):
+    """F2: the named fix was staged on an earlier hold turn, so this bundle
+    cannot name it. Held bare, the replay registered the newest pending fix
+    (before any fix) or nothing (after one)."""
+    if shape == "first-fix":
+        eng, case = _identified()
+        turn, before = 6, []
+    else:
+        eng, case = await _relapsed()
+        turn, before = 14, [6]
+    propose_revision(
+        case,
+        text="checkout returns 503 under peak load",
+        evidence_ids=[case.evidence[-1].evidence_id],
+        basis="the 503s come back only at peak",
+        offer_key="rev_2143",
+    )
+    await _turn(eng, case, turn, solutions_to_add=[_fix(_SECOND)])
+    meta = await _turn(
+        eng,
+        case,
+        turn + 1,
+        solutions_to_add=[_fix(_SECOND), _fix("restart the pool")],
+        milestones=_accepted("new_index_0"),
+    )
+    assert (
+        "solution_accepted was not held: accepted_action_ref new_index_0 names no "
+        "fix this response stages"
+    ) in meta["system_feedback"]
+
+    case.current_turn = turn + 2
+    await confirm_revision(eng.responses, case, {})
+
+    assert _accepted_turns(case) == before
+    assert len(case.action_attempts) == len(before)
+
+
+async def test_the_reasoning_strip_takes_the_ref_with_the_signal():
+    """F8: an unjustified acceptance is stripped, and its ref with it, so the
+    gate does not answer it as a ref sent alone."""
+    eng, case = await _relapsed()
+    await _turn(eng, case, 14, solutions_to_add=[_fix(_SECOND)])
+    second = _pending(case)[-1]
+    case.current_turn = 15
+    response = InvestigationResponse_Treatment(
+        agent_response="Noted.",
+        evidence_trail=EvidenceTrail(
+            evidence_analyzed=[], milestone_justifications=MilestoneJustifications()
+        ),
+        state_updates=_TSU(milestones=_accepted(second.action_id)),
+    )
+
+    _case_out, meta = await eng.responses.process_response_structured(
+        case, "I ran it", response
+    )
+
+    assert response.state_updates.milestones.accepted_action_ref is None
+    assert (
+        "Milestones ['solution_accepted'] were NOT recorded" in meta["system_feedback"]
+    )
+    assert "was ignored" not in meta["system_feedback"]
+    assert second.state == "pending"
+
+
+async def test_a_fix_that_worked_after_one_that_failed_is_no_failure_cycle():
+    """F5: the monitor counts FAILED fix windows, not accepted actions."""
+    eng, case = await _relapsed()
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+    await _cause_and_problem_gone(eng, case, 15)
+    monitor = ProgressMonitor()
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+    assert monitor._detect_fix_failure_cycle(case, "solution") is False
+
+    await _turn(eng, case, 16, _ev(_PRESENT, "checkout returns 503 again at peak"))
+
+    assert [w.state for w in fix_windows(case)][1:] == ["failed", "failed"]
+    assert monitor._detect_fix_failure_cycle(case, "solution") is True

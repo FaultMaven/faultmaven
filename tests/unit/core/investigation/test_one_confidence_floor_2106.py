@@ -135,6 +135,28 @@ async def test_one_unhedged_refute_is_weighed_against_the_chain_but_backs_a_refu
     _assert_demoted(case, root, hyp)
 
 
+async def test_a_row_supporting_the_hypothesis_and_its_root_counts_once():
+    """F9: rows, not links. ``pool_log`` already supports the root; linked to
+    the hypothesis too it is still one of two supporting rows, so three
+    confident refutes outnumber the support (as links, 3 against 3 would not)."""
+    eng, case, root, hyp = await _fixed_and_relieved()
+    rows, links = _hyp_refutes(hyp, 3, confidence=0.9)
+    pool_log = root.evidence_links[0].evidence_id
+    links.append(
+        HypothesisEvidenceLinkToAdd(
+            hypothesis_id_ref=hyp.hypothesis_id,
+            evidence_id_ref=pool_log,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="the connection limit log",
+        )
+    )
+
+    await _turn(eng, case, 13, *rows, hypothesis_evidence_links=links)
+
+    assert pool_log in {link.evidence_id for link in hyp.evidence_links}
+    _assert_demoted(case, root, hyp)
+
+
 async def test_control_confident_refutes_outnumbering_the_support_demote():
     eng, case, root, hyp = await _fixed_and_relieved()
     rows, links = _hyp_refutes(hyp, 3, confidence=0.9)

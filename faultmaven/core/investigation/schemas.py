@@ -1139,9 +1139,9 @@ class NodeEvidenceLinkToAdd(BaseModel):
             "Confidence in the stance assessment (0.0-1.0). A SUPPORTS link "
             "below 0.6 is treated as correlational color, NOT causal "
             "grounding — it will not count toward validating the node. A "
-            "REFUTES link on a causal_absence row below 0.6 counts as "
-            "ordinary refuting evidence, NOT a decisive counterfactual "
-            "disconfirmation. Omit to mean full confidence on a NEW link, or "
+            "REFUTES link below 0.6 is not counted against the node: it "
+            "neither refutes it nor keeps it from validating. Omit to mean "
+            "full confidence on a NEW link, or "
             "to keep the existing value when re-emitting a link."
         ),
     )

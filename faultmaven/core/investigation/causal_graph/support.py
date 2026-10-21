@@ -78,8 +78,7 @@ def _node_evidence_tally(
     supported"). ``counterfactual_refutes`` is the subset of REFUTES links
     backed by ``CAUSAL_ABSENCE_EVIDENCE`` AND declared at ``stance_confidence
     >= CAUSAL_STANCE_CONFIDENCE_MIN`` (``counterfactual_link_decisive`` — the
-    refute-side twin of the SUPPORTS filter: a self-hedged counterfactual is
-    ordinary refuting evidence, not the decisive grade) — a counterfactual
+    refute-side twin of the SUPPORTS filter) — a counterfactual
     disconfirmation (the cause was addressed yet ``D`` persisted), the §7.2
     strongest grade, which refutes DECISIVELY (it is not outweighed by
     correlational support).

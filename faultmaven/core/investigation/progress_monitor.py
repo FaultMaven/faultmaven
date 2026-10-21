@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_MIN_REFUTED,
     EXHAUSTION_MIN_TURNS,
@@ -643,9 +644,18 @@ class ProgressMonitor:
         """
         Detect repeated fix attempts that don't work.
 
-        Triggers when N+ proposed actions of the given type have been accepted
-        but the corresponding verification milestone has not been set.
+        A SOLUTION attempt is a record with its own fix window (#2105), so this
+        triggers on N+ FAILED windows (``fix_windows``): a later fix that
+        worked is not a failure cycle. A mitigation keeps the older reading,
+        N+ accepted MITIGATION actions with the record not verified.
         """
+        if action_type == "solution":
+            failed = sum(1 for w in fix_windows(case) if w.state == FIX_FAILED)
+            if failed < self.fix_failure_threshold:
+                return False
+            logger.warning(f"Fix failure cycle detected: {failed} fix windows failed")
+            return True
+
         if not case.proposed_actions:
             return False
 
@@ -667,8 +677,6 @@ class ProgressMonitor:
             # mitigation record, not a progress boolean.
             _stab = case.progress.mitigation
             verified = bool(_stab is not None and _stab.verified)
-        elif action_type == "solution":
-            verified = case.progress.solution_verified
         else:
             return False
 

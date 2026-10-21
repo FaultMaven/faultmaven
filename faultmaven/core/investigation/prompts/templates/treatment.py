@@ -477,7 +477,8 @@ shows both. That verification IS the pair of rows, a
 `causal_absence_evidence` row and a `symptom_absence_evidence` row (see EVIDENCE
 TYPES FOR THIS STAGE); emit them in the same turn you propose. The absence rows
 record a VERIFICATION — never a mere application or a bare request:
-- User only APPLIED the fix ("I ran it") → that's `solution_accepted`: record it,
+- User only APPLIED the fix ("I ran it") → that's `solution_accepted`, with
+  `accepted_action_ref` naming the ACTION_ID of the fix they ran: record it,
   stay in TREATMENT, do not emit an absence row or propose resolved.
 - User ASKS to resolve, or says it worked, without that verification → do NOT
   fabricate the rows; propose the transition and let the confirmation step ask

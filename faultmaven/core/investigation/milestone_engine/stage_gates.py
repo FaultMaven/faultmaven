@@ -11,6 +11,9 @@ from typing import (
     Sequence,
 )
 
+from faultmaven.core.investigation.causal_graph.similarity import (
+    hypothesis_statements_duplicate,
+)
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
@@ -661,6 +664,43 @@ _GATE_ACTION_TYPE: dict[str, InvestigationActionType] = {
 }
 
 
+def _restates(a: ProposedAction, b: ProposedAction) -> bool:
+    """Whether two actions are one fix in other words: same type, and the test
+    ``_restates_standing_solution`` applies (``hypothesis_statements_duplicate``)."""
+    return (
+        a.action_type == b.action_type
+        and bool(a.description and b.description)
+        and hypothesis_statements_duplicate(a.description, b.description)
+    )
+
+
+def _retire_as_reproposal(case: Case, action: ProposedAction) -> None:
+    action.state = "superseded"
+    action.superseded_reason = "reproposal"
+    action.superseded_in_turn = case.current_turn
+
+
+def _unless_a_registered_fix(
+    case: Case, action: ProposedAction
+) -> Optional[ProposedAction]:
+    """``action``, unless it restates a fix already registered whose window has
+    not failed: then it is a re-assertion, absorbed, and the restating offer is
+    retired (an offer of a fix already run is dead). After a FAILED window the
+    same fix applied again is a new attempt (#2105)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        FIX_FAILED,
+        latest_fix_window,
+    )
+
+    if any(
+        other.state == "accepted" and _restates(action, other)
+        for other in case.proposed_actions
+    ) and (latest_fix_window(case).state != FIX_FAILED):
+        _retire_as_reproposal(case, action)
+        return None
+    return action
+
+
 def _resolve_solution_acceptance(
     case: Case, ref: Any, metadata: dict[str, Any]
 ) -> Optional[ProposedAction]:
@@ -683,6 +723,12 @@ def _resolve_solution_acceptance(
       re-assertion from a new execution, so a bare re-emission never registers
       a second fix; when a SOLUTION is pending, one line names it, worded as a
       condition so it is no prompt to claim an execution nobody reported.
+
+    An ACTION_ID pending when the response arrived names the fix the user ran
+    even when this response's re-proposal superseded it: it is restored and
+    registered, and this apply's restatement of it retired. A pending SOLUTION
+    that restates a registered fix is a re-assertion unless that fix's window
+    failed (``_unless_a_registered_fix``).
     """
     solution = _GATE_ACTION_TYPE["solution_accepted"]
     pending = [
@@ -694,7 +740,7 @@ def _resolve_solution_acceptance(
     if ref is None:
         if not case.progress.solution_accepted:
             if pending:
-                return pending[-1]
+                return _unless_a_registered_fix(case, pending[-1])
             logger.warning(
                 f"Rejected stage-gate milestone 'solution_accepted' for case "
                 f"{case.case_id}: no pending SOLUTION ProposedAction exists"
@@ -730,9 +776,23 @@ def _resolve_solution_acceptance(
 
     action_id = _resolve_id_ref(ref, metadata.get("minted_action_ids") or [], "act")
     action = next((a for a in case.proposed_actions if a.action_id == action_id), None)
+    if (
+        action is not None
+        and action.state == "superseded"
+        and action.superseded_in_turn == case.current_turn
+        and action.action_id in metadata.get("pending_solution_ids_at_apply_start", ())
+    ):
+        action.state = "pending"
+        action.superseded_reason = None
+        action.superseded_in_turn = None
+        minted = metadata.get("minted_action_ids") or ()
+        for other in case.proposed_actions:
+            if other.action_id in minted and other.state == "pending":
+                if _restates(other, action):
+                    _retire_as_reproposal(case, other)
     if action is not None and action.action_type == solution:
         if action.state == "pending":
-            return action
+            return _unless_a_registered_fix(case, action)
         if action.state == "accepted":
             return None
     if action is None:

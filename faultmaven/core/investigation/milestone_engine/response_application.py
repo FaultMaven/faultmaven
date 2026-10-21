@@ -889,12 +889,26 @@ class ResponseApplier:
                     for name in _STAGED_GATE_SIGNALS
                     if getattr(milestones, name, None) is True
                 ]
+                sent = _normalise_id_ref(
+                    getattr(milestones, "accepted_action_ref", None)
+                )
+                ref = _staged_action_ref(sent, kept)
+                if "solution_accepted" in held and sent and not ref:
+                    # Held bare, the replay would register some other pending
+                    # fix, or none: an acceptance is never held without its name.
+                    held.remove("solution_accepted")
+                    _add_system_feedback(
+                        metadata,
+                        f"SYSTEM: solution_accepted was not held: accepted_action_ref "
+                        f"{sent} names no fix this response stages (a fix staged on "
+                        "an earlier turn cannot be named by new_index_N). Once the "
+                        "revised problem statement is confirmed, set "
+                        "solution_accepted with accepted_action_ref naming that "
+                        "fix's ACTION_ID.",
+                    )
                 claims.update({name: True for name in held})
                 if held:
                     metadata["staged_gate_signals"] = held
-                ref = _staged_action_ref(
-                    getattr(milestones, "accepted_action_ref", None), kept
-                )
                 if "solution_accepted" in held and ref:
                     claims["accepted_action_ref"] = ref
             if claims:
@@ -1447,6 +1461,14 @@ class ResponseApplier:
         # an ``accepted_action_ref`` of ``new_index_N`` names (#2105). Reset
         # per apply, so a replayed bundle resolves against its own.
         metadata["minted_action_ids"] = []
+        # And the SOLUTIONs pending before this apply supersedes any: one of
+        # them named by its ACTION_ID is still the one the user ran.
+        metadata["pending_solution_ids_at_apply_start"] = [
+            a.action_id
+            for a in case.proposed_actions
+            if a.state == "pending"
+            and a.action_type == InvestigationActionType.SOLUTION
+        ]
         if (
             not staging
             and not false_alarm
