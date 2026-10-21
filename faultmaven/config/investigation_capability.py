@@ -595,7 +595,7 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
     uncompensated, at INFO when a STRUCTURED_OUTPUT_PROVIDER override actually
     carries that role's schema-bound calls (the documented escape hatch), and
     stays silent when the class cannot be determined. It also warns once per
-    model that only requests forced tool use (#1755).
+    model that only requests forced tool use (#1755), unless compensated.
     """
     resolved = resolve_enforcement_classes(settings, registry)
     requested_only: dict = {}  # (provider, model) -> labels: one warning each
@@ -604,7 +604,18 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
             (resolved.structured_output_provider, resolved.structured_output_model)
         ] = ["STRUCTURED_OUTPUT_PROVIDER"]
     for role in resolved.roles:
-        if role.forcing_requested_only:
+        if role.forcing_requested_only and role.compensated:
+            logger.info(
+                "%s model %s/%s rejects forced tool use, but "
+                "STRUCTURED_OUTPUT_PROVIDER=%s (%s) carries the "
+                "schema-bound calls with native enforcement — acceptable.",
+                role.role,
+                role.provider,
+                role.model,
+                resolved.structured_output_provider,
+                resolved.structured_output_model,
+            )
+        elif role.forcing_requested_only:
             requested_only.setdefault((role.provider, role.model), []).append(role.role)
     for (provider, model), labels in requested_only.items():
         logger.warning(

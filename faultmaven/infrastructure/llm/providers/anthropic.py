@@ -746,8 +746,8 @@ class AnthropicProvider(BaseLLMProvider):
             #      (generate_structured_output's FUNCTION_CALLING branch sets
             #      tool_choice="required" for FUNCTION_CALLING providers,
             #      which is every Anthropic call) a reply without the tool
-            #      call is re-asked once and then fails the turn; forcing is
-            #      what keeps it from arising.
+            #      call gets one re-ask per structured call, and a second miss
+            #      fails the attempt; forcing is what keeps it from arising.
             #   2. On DA turns, forcing rules out a prose reply, and a
             #      repeated prose reply sends the loop to its schema-only
             #      iteration, stripping the evidence tools. (The schema tool

@@ -441,6 +441,31 @@ def test_one_requested_only_warning_per_model(caplog):
     assert warning.startswith("STRUCTURED_OUTPUT_PROVIDER and investigation/chat")
 
 
+def test_a_compensated_requested_only_model_is_reported_at_info(caplog):
+    """#1755 delta: a strict STRUCTURED_OUTPUT_PROVIDER carries the schema-bound
+    calls of a chat model that only requests forcing, as it does for an
+    unenforced one: INFO, acceptable. Uncompensated, it still warns."""
+    opus = "claude-opus-5-5"
+    settings = _enforcement_settings("anthropic", opus, so_provider_name="openai")
+    registry = _opus_registry(openai=_EnforcementProvider("strict"))
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+    assert not [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    [info] = [r.message for r in caplog.records if r.levelno == _logging.INFO]
+    assert f"investigation/chat model anthropic/{opus}" in info
+    assert "acceptable" in info
+    assert not resolve_enforcement_classes(settings, registry).degraded_roles
+
+    caplog.clear()
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(
+            _enforcement_settings("anthropic", opus), _opus_registry()
+        )
+    [warning] = [r for r in caplog.records if r.levelno >= _logging.INFO]
+    assert warning.levelno == _logging.WARNING
+    assert "requested by instruction, not enforced" in warning.message
+
+
 def test_a_forcing_probe_that_raises_is_logged(caplog):
     class _Raising(_EnforcementProvider):
         def forced_tool_choice_enforced(self, model=None):

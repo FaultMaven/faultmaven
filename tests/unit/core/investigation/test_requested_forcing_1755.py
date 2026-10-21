@@ -307,10 +307,19 @@ async def test_with_no_stop_reason_a_cut_looking_da_body_takes_todays_path():
         ["_Answer"],
     ]
 
-    prose = _reply(PROSE, stop=StopReason.UNKNOWN)
-    engine, sent = _engine([prose, ANSWER], reports_enforced=True)
+    # A fenced cut body is judged on its payload, not on the fence.
+    fenced = _reply('```json\n{"agent_response": "the kubelet', stop=StopReason.UNKNOWN)
+    engine, sent = _engine([fenced, ANSWER], reports_enforced=True)
     assert (await _da_turn(engine)).agent_response == "disk"
-    assert _offered(sent[1]) == ["search_file", "_Answer"]
+    assert _offered(sent[1]) == ["_Answer"]
+
+    # Prose, and a complete object, did not run out: every tool stays.
+    for body in (PROSE, '{"agent_response": "the kubelet"}'):
+        engine, sent = _engine(
+            [_reply(body, stop=StopReason.UNKNOWN), ANSWER], reports_enforced=True
+        )
+        assert (await _da_turn(engine)).agent_response == "disk"
+        assert _offered(sent[1]) == ["search_file", "_Answer"]
 
 
 async def test_the_reply_before_the_final_iteration_gets_the_schema_nudge():
