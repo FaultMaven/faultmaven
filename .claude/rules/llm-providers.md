@@ -78,7 +78,9 @@ empty/degraded investigations. **Use an enforcing provider as `CHAT_PROVIDER`**:
 STRICT (OpenAI gpt-4o+, Gemini 1.5+) or Anthropic, which is FUNCTION_CALLING
 (the schema tool, no `strict`) and enforced only where the model accepts forced
 tool use. Above the forcing ceiling the tool is requested by instruction, not
-enforced, and startup warns (`forced_tool_choice_enforced()`). The engine does
+enforced, and startup warns (`forced_tool_choice_enforced()`) unless an
+enforcing `STRUCTURED_OUTPUT_PROVIDER` carries the role's schema-bound calls,
+which it logs at INFO. The engine does
 not rely on forcing: a forced call's reply with no tool call, neither cut nor
 refused, gets one re-ask per structured call on the single-shot
 FUNCTION_CALLING path (#662's minimal-prompt degrade is a call of its own;

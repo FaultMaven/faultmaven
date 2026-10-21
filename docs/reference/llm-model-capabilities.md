@@ -366,7 +366,9 @@ unless it is at or below the entry). Otherwise:
   Only a final or force-schema iteration reaches the loop's "provider ignored
   `tool_choice=required`" path. The startup structured-output advisory reads
   `AnthropicProvider.forced_tool_choice_enforced()` and warns that the schema
-  tool is requested by instruction, not enforced.
+  tool is requested by instruction, not enforced, unless an enforcing
+  `STRUCTURED_OUTPUT_PROVIDER` carries the role's schema-bound calls, which it
+  logs at INFO.
 - **Thinking is not refused.** With `ANTHROPIC_THINKING_MODE=adaptive`, the
   "thinking refused under forced tool use" rule applies only where forcing is
   actually sent. A model above the forcing ceiling runs `auto` and carries
