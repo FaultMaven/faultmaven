@@ -1,11 +1,12 @@
 """Tests for scripts/security_alert_sweep.py (#2120).
 
-The sweep classifies every open Security-tab alert as tracked, exception, lag or
-untracked, and /process-top-issues files every untracked group. Each test pins a
-rule against the naive form that misread live data: a trailing period on a
-``**Repo:**`` line, ``faultmaven`` as a substring of every repo name, ``CodeQL #1``
-inside ``CodeQL #12``, a GHSA named in prose, a pnpm lock holding a second
-vulnerable version, and ``gh --paginate`` printing one array per page.
+The sweep classifies every open Security-tab alert as exception, lag, tracked,
+unknown or untracked, and /process-top-issues acts on every untracked group.
+Each test pins one rule against the naive form that misread live data or a
+review probe: a URL in prose, a failed fetch read as "nothing there", a 502 read
+as a missing file, an npm prerelease compared as a post-release, an advisory's
+other vulnerable ranges, a U+0085 inside a JSON string, and private detail or a
+secret type in a paste of the output.
 
 ``gh`` is replaced by ``FakeGh``, which answers as gh 2.46 does, so nothing here
 reaches the network.
@@ -13,6 +14,7 @@ reaches the network.
 
 import importlib.util
 import json
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,24 +36,42 @@ def mod():
     return module
 
 
+def iso(moment):
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 class FakeGh:
     """``gh`` as 2.46 behaves: ``--paginate`` alone prints one JSON array per page,
-    concatenated; with ``--jq '.[]'`` it prints one object per line across pages; a
-    refused call exits 1 with ``gh: <message> (HTTP <code>)`` on stderr."""
+    concatenated; ``--jq '.[]'`` prints one object per line across pages, leaving
+    non-ASCII (U+0085 included) unescaped; a refused call exits 1 with
+    ``gh: <message> (HTTP <code>)`` on stderr."""
 
     def __init__(self, repos):
-        self.repos, self.calls = list(repos), []
+        self.visibility = {name: "PUBLIC" for name in repos}
         self.pages: dict[str, list[list[dict]]] = {}
         self.files: dict[tuple[str, str], str] = {}
+        self.commits: dict[tuple[str, str], str] = {}  # default: a day ago
         self.errors: dict[str, str] = {}
+        self.calls: list[list[str]] = []
 
     def __call__(self, args):
         self.calls.append(args)
         if args[:2] == ["repo", "list"]:
-            return 0, "".join(f"{name}\n" for name in self.repos), ""
-        path = args[-1].split("?")[0].removeprefix("repos/FaultMaven/")
+            if "repo list" in self.errors:
+                return 1, "", f"gh: {self.errors['repo list']}\n"
+            listing = [{"name": n, "visibility": v} for n, v in self.visibility.items()]
+            return 0, json.dumps(listing), ""
+        path, _, query = args[-1].removeprefix("repos/FaultMaven/").partition("?")
         if path in self.errors:
             return 1, '{"message": "..."}', f"gh: {self.errors[path]}\n"
+        if path.endswith("/commits"):
+            manifest = urllib.parse.parse_qs(query)["path"][0]
+            default = iso(NOW - timedelta(days=1))
+            return (
+                0,
+                self.commits.get((path[: -len("/commits")], manifest), default) + "\n",
+                "",
+            )
         if "Accept: application/vnd.github.raw" in args:
             text = self.files.get(tuple(path.split("/contents/")))
             return (
@@ -59,45 +79,44 @@ class FakeGh:
             )
         pages = self.pages.get(path, [[]])[: None if "--paginate" in args else 1]
         if args[args.index("--jq") + 1 :][:1] == [".[]"]:
-            return 0, "".join(json.dumps(o) + "\n" for page in pages for o in page), ""
+            lines = (json.dumps(o, ensure_ascii=False) + "\n" for p in pages for o in p)
+            return 0, "".join(lines), ""
         return 0, "".join(json.dumps(page) for page in pages), ""
 
 
-def dependabot(
-    repo, n, package="pillow", ghsa=GHSA, manifest=REQ, fixed="2.0.0", age=1
-):
-    created = (NOW - timedelta(days=age)).isoformat().replace("+00:00", "Z")
+def dependabot(repo, n, package="pillow", ghsa=GHSA, manifest=REQ, ranges=("< 2.0.0",)):
     package_info = {"ecosystem": "npm" if manifest == LOCK else "pip", "name": package}
+    vulnerable = [
+        {"package": package_info, "vulnerable_version_range": r} for r in ranges
+    ]
     return {
         "number": n,
         "html_url": f"https://github.com/FaultMaven/{repo}/security/dependabot/{n}",
-        "created_at": created,
         "dependency": {"manifest_path": manifest, "package": package_info},
-        "security_advisory": {"ghsa_id": ghsa, "severity": "high"},
-        "security_vulnerability": {
-            "first_patched_version": {"identifier": fixed} if fixed else None
+        "security_advisory": {
+            "ghsa_id": ghsa,
+            "severity": "high",
+            "vulnerabilities": vulnerable,
         },
+        "security_vulnerability": {"first_patched_version": {"identifier": "2.0.0"}},
     }
 
 
-def codeql(repo, n):
-    url = f"https://github.com/FaultMaven/{repo}/security/code-scanning/{n}"
-    rule = {"id": "py/stack-trace-exposure", "security_severity_level": "medium"}
-    return {
-        "number": n,
-        "html_url": url,
-        "created_at": "2026-09-02T10:24:57Z",
-        "rule": rule,
+def secret(repo, n):
+    url = f"https://github.com/FaultMaven/{repo}/security/secret-scanning/{n}"
+    kind = {
+        "secret_type": "openai_api_key",
+        "secret_type_display_name": "OpenAI API Key",
     }
+    return {"number": n, "html_url": url, **kind}
 
 
-def issue(n, body, title="an issue"):
-    return {"number": n, "title": title, "body": body}
+def issue(n, body):
+    return {"number": n, "title": "an issue", "body": body}
 
 
-def fake(mod, repo, *alerts, issues=(), files=None, pulls=None):
+def fake(mod, repo, *alerts, issues=(), files=None, pulls=None, kind="dependabot"):
     gh = FakeGh(mod.REPOS)
-    kind = "dependabot" if "dependency" in alerts[0] else "code-scanning"
     gh.pages[f"{repo}/{kind}/alerts"] = [list(alerts)]
     gh.pages[f"{CORE}/issues"] = [list(issues)]
     gh.files.update(files or {})
@@ -109,95 +128,95 @@ def fake(mod, repo, *alerts, issues=(), files=None, pulls=None):
 def table(report):
     """The report's table rows, as dicts."""
     keys = ("repo", "kind", "what", "advisory", "severity", "cls", "detail", "urls")
-    rows = [line.strip("|").split(" | ") for line in report.splitlines()]
+    rows = [line.strip("|").split(" | ") for line in report.split("\n")]
     rows = [r for r in rows if len(r) == len(keys)][1:]  # drop the header
     return [dict(zip(keys, (cell.strip() for cell in r), strict=True)) for r in rows]
 
 
-def row(mod, repo, alert, **setup):
-    """Sweep one alert and return its group's row."""
-    (only,) = table(mod.sweep(fake(mod, repo, alert, **setup), NOW))
+def row(mod, gh):
+    """Sweep and return the one row."""
+    (only,) = table(mod.sweep(gh, NOW))
     return only
 
 
-# --- Repo parsing -------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "body, repos",
-    [
-        (
-            "**Repo: FaultMaven/faultmaven-website.** Filed here.",
-            {"faultmaven-website"},
-        ),
-        (
-            "**Repos: FaultMaven/fm-sre-simulator and FaultMaven/faultmaven-slack-agent.**",
-            {"fm-sre-simulator", SLACK},
-        ),
-        ("No repo line; it mentions FaultMaven/faultmaven-copilot.", {CORE}),
-    ],
-)
-def test_an_issue_names_its_repos_on_its_repo_line_or_is_core(mod, body, repos):
-    assert mod.issue_tracker(issue(1, body)).repos == repos
-
-
-def test_a_copilot_issue_tracks_a_copilot_alert_but_not_a_core_one(mod):
-    """``faultmaven`` is a substring of every repo name: the repo test is set membership."""
-    body = f"**Repo: FaultMaven/faultmaven-copilot.**\n\n| #1 | pillow | {GHSA} |"
-    tracker = [issue(7, body)]
-    assert row(mod, CORE, dependabot(CORE, 1), issues=tracker)["cls"] == "untracked"
-    assert row(mod, COPILOT, dependabot(COPILOT, 1), issues=tracker)["detail"] == "#7"
+def cls_of(mod, repo, alert, **setup):
+    return row(mod, fake(mod, repo, alert, **setup))["cls"]
 
 
 # --- Tracked ------------------------------------------------------------------
+
+URL = "https://github.com/FaultMaven/faultmaven/security/dependabot/1"
 
 
 @pytest.mark.parametrize(
     "body, cls",
     [
-        (f"| Alert | Advisory |\n|---|---|\n| #1 | {GHSA} |", "tracked"),
-        (f"**Alerts:** {GHSA} in requirements/dev.txt", "tracked"),
-        (f"The OS store keeps the root {GHSA} revokes.", "untracked"),  # #2112
-        (f"Out of scope: pillow {GHSA} (#1) is accepted.", "untracked"),
+        (f"**Repo: FaultMaven/faultmaven.**\n**Alerts:** {URL} and more", "tracked"),
+        (f"Some prose.\n**Alerts:** {URL}\r\n", "tracked"),
+        (f"**Alerts:** {URL}2", "untracked"),  # alert #12, not #1
+        (f"The alert {URL} is out of scope.", "untracked"),
+        (f"| #1 | pillow | {URL} |", "untracked"),
+        (f"> **Alerts:** {URL}", "untracked"),  # quoted from elsewhere
+        (f"Prose\u0085**Alerts:** {URL}", "untracked"),  # U+0085 is not a line break
+        (f"| Alert | Advisory |\n|---|---|\n| #1 | {GHSA} |", "untracked"),
+        (f"Dependabot #1 is fixed by {GHSA}.", "untracked"),
     ],
 )
-def test_a_ghsa_tracks_only_in_a_table_row_or_an_alerts_line(mod, body, cls):
-    assert row(mod, CORE, dependabot(CORE, 1), issues=[issue(7, body)])["cls"] == cls
+def test_only_an_alerts_line_carrying_the_url_tracks(mod, body, cls):
+    assert cls_of(mod, CORE, dependabot(CORE, 1), issues=[issue(7, body)]) == cls
+
+
+def test_a_core_pr_in_the_issue_list_does_not_track_as_an_issue(mod):
+    pr = {**issue(8, f"**Alerts:** {URL}"), "pull_request": {"url": "..."}}
+    assert cls_of(mod, CORE, dependabot(CORE, 1), issues=[pr]) == "untracked"
 
 
 @pytest.mark.parametrize(
-    "title, cls",
+    "title, body", [("fix(deps): pillow", f"Fixes {URL}."), (f"Fix {URL}", None)]
+)
+def test_an_open_pr_in_the_alerts_own_repo_carrying_the_url_tracks(mod, title, body):
+    pulls = {CORE: [{"number": 50, "title": title, "body": body}]}
+    got = row(mod, fake(mod, CORE, dependabot(CORE, 1), pulls=pulls))
+    assert (got["cls"], got["detail"]) == ("tracked", "PR faultmaven#50")
+
+
+def test_a_pr_in_another_repo_does_not_track(mod):
+    pulls = {COPILOT: [{"number": 51, "title": "x", "body": URL}]}
+    assert cls_of(mod, CORE, dependabot(CORE, 1), pulls=pulls) == "untracked"
+
+
+def test_a_u0085_inside_a_json_string_does_not_split_the_line(mod):
+    body = f"Next\u0085line, and more.\n**Alerts:** {URL}"
+    assert cls_of(mod, CORE, dependabot(CORE, 1), issues=[issue(7, body)]) == "tracked"
+
+
+# --- Unknown ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failing, pin",
     [
-        ("raw errors on the bind page (CodeQL #1)", "tracked"),
-        ("CodeQL #12", "untracked"),
+        (f"{CORE}/issues", "1.0.0"),
+        (f"{CORE}/pulls", "1.0.0"),
+        (f"{CORE}/contents/{REQ}", "2.0.0"),
+        (f"{CORE}/contents/package.json", "2.0.0"),
+        (f"{CORE}/commits", "2.0.0"),  # the manifest's last commit, for the lag bound
     ],
 )
-def test_a_scanning_key_matches_at_a_word_boundary(mod, title, cls):
-    tracker = issue(9, "**Repo: FaultMaven/faultmaven-slack-agent.**", title)
-    assert row(mod, SLACK, codeql(SLACK, 1), issues=[tracker])["cls"] == cls
+def test_a_source_that_failed_makes_the_alert_unknown(mod, failing, pin):
+    gh = fake(mod, CORE, dependabot(CORE, 1), files={(CORE, REQ): f"pillow=={pin}\n"})
+    gh.errors[failing] = "HTTP 502: Bad Gateway (https://api.github.com/...)"
+    report = mod.sweep(gh, NOW)
+    got = table(report)[0]
+    assert (got["cls"], got["urls"]) == ("unknown", URL)
+    assert report.split("\n")[0].startswith("unavailable: faultmaven ")
+    assert " · unknown 1 · disabled 0 · unavailable 1" in report.split("\n")[-1]
 
 
-@pytest.mark.parametrize("suffix, cls", [("", "tracked"), ("12", "untracked")])
-def test_the_filed_form_tracks_its_alert_url_and_not_a_longer_one(mod, suffix, cls):
-    url = dependabot(COPILOT, 1)["html_url"]
-    body = f"**Repo: FaultMaven/faultmaven-copilot.**\n**Alerts:** {url}{suffix}\n"
-    tracker = [issue(7, body)]
-    assert row(mod, COPILOT, dependabot(COPILOT, 1), issues=tracker)["cls"] == cls
-
-
-def test_an_open_pr_in_the_alerts_own_repo_tracks_it_by_url_only(mod):
-    alert = dependabot(COPILOT, 3, manifest=LOCK)
-    pr = {"number": 50, "title": "fix(deps)", "body": f"Fixes {alert['html_url']}"}
-    assert (
-        row(mod, COPILOT, alert, pulls={COPILOT: [pr]})["detail"]
-        == "PR faultmaven-copilot#50"
-    )
-
-    alert = dependabot(CORE, 3)
-    keyed = {"number": 51, "title": "Dependabot #3", "body": None}
-    elsewhere = {"number": 52, "title": "x", "body": alert["html_url"]}
-    pulls = {CORE: [keyed], COPILOT: [elsewhere]}
-    assert row(mod, CORE, alert, pulls=pulls)["cls"] == "untracked"
+def test_a_missing_file_is_not_a_failure(mod):
+    report = mod.sweep(fake(mod, CORE, dependabot(CORE, 1)), NOW)  # every file 404s
+    assert table(report)[0]["cls"] == "untracked"
+    assert report.split("\n")[-1].endswith(" · unknown 0 · disabled 0 · unavailable 0")
 
 
 # --- Lag ----------------------------------------------------------------------
@@ -216,10 +235,26 @@ def test_an_open_pr_in_the_alerts_own_repo_tracks_it_by_url_only(mod):
 )
 def test_a_manifest_pinning_only_fixed_versions_is_lag(mod, manifest, text):
     alert = dependabot(CORE, 1, "Pillow", manifest=manifest)
-    got = row(mod, CORE, alert, files={(CORE, manifest): text})
+    got = row(mod, fake(mod, CORE, alert, files={(CORE, manifest): text}))
     assert (got["cls"], got["urls"]) == ("lag", "—")
     assert got["detail"].startswith("main resolves 2.")
-    assert got["detail"].endswith(">= 2.0.0 · 1d old")
+    assert got["detail"].endswith(
+        ", outside every vulnerable range · manifest changed 1.0d ago"
+    )
+
+
+PYPROJECT = """[project]
+dependencies = ["pillow>=1.0; python_version < '3.12'"]
+
+[project.optional-dependencies]
+images = ["Pillow[avif]==2.0.0"]
+"""
+
+
+def test_a_pyproject_needs_every_declaration_exactly_pinned(mod):
+    alert = dependabot(CORE, 1, manifest="pyproject.toml")
+    files = {(CORE, "pyproject.toml"): PYPROJECT}
+    assert cls_of(mod, CORE, alert, files=files) == "untracked"
 
 
 PNPM = """lockfileVersion: '9.0'
@@ -240,44 +275,87 @@ snapshots:
     dependencies: {}
 """
 SECOND = "\n  dompurify@3.4.13:\n    resolution: {integrity: sha512-z}\n"
+PRERELEASE = "\n  dompurify@3.4.16-0:\n    resolution: {integrity: sha512-z}\n"
 
 
 @pytest.mark.parametrize(
-    "package, fixed, extra, cls",
+    "package, extra, cls",
     [
-        ("dompurify", "3.4.16", "", "lag"),  # the 3.4.13 snapshots key is ignored
-        ("dompurify", "3.4.16", SECOND, "untracked"),  # one instance below the fix
-        ("@babel/core", "7.29.0", "", "lag"),  # a quoted, scoped key
-        ("next", "15.5.27", "", "untracked"),  # only in snapshots: not resolved
+        ("dompurify", "", "lag"),  # the 3.4.13 snapshots key is ignored
+        ("dompurify", SECOND, "untracked"),  # one instance below the fix
+        (
+            "dompurify",
+            PRERELEASE,
+            "untracked",
+        ),  # PEP 440 reads 3.4.16-0 as 3.4.16.post0
+        ("@babel/core", "", "lag"),  # a quoted, scoped key
+        ("next", "", "untracked"),  # only in snapshots: not resolved
     ],
 )
 def test_pnpm_lag_reads_every_packages_key_and_no_snapshots_key(
-    mod, package, fixed, extra, cls
+    mod, package, extra, cls
 ):
-    alert = dependabot(COPILOT, 1, package, manifest=LOCK, fixed=fixed)
+    ranges = ("< 3.4.16",) if package == "dompurify" else ("< 7.0.0",)
+    alert = dependabot(COPILOT, 1, package, manifest=LOCK, ranges=ranges)
     files = {(COPILOT, LOCK): PNPM.replace("EXTRA", extra)}
-    assert row(mod, COPILOT, alert, files=files)["cls"] == cls
+    assert cls_of(mod, COPILOT, alert, files=files) == cls
 
 
 @pytest.mark.parametrize(
-    "manifest, text, fixed",
+    "ranges, version, cls",
     [
-        ("Gemfile.lock", "pillow==2.0.0\n", "2.0.0"),  # a manifest it does not read
-        (REQ, "pillow==2.0.0\npillow==latest\n", "2.0.0"),  # an InvalidVersion
-        (REQ, "pillow==9.0.0\n", None),  # no patched release
-        (REQ, "pillow==1.9.9\n", "2.0.0"),
+        (("< 1.2.5", ">= 2.0.0, < 2.1.3"), "2.0.0", "untracked"),  # in the second range
+        (("< 1.2.5", ">= 2.0.0, < 2.1.3"), "2.1.3", "lag"),
+        (("<= 2.0.0",), "2.0.0", "untracked"),
+        (("> 1.0.0, <= 1.5.0",), "1.0.0", "lag"),
+        (("= 2.0.0",), "2.0.0", "untracked"),
+        (("= 2.0.0",), "2.0.1", "lag"),
+        (("< 2.0.0", "garbage"), "3.0.0", "untracked"),
+        (("< 2.0.0-rc.1",), "3.0.0", "untracked"),
+        ((), "3.0.0", "untracked"),
     ],
 )
-def test_anything_short_of_every_version_fixed_is_not_lag(mod, manifest, text, fixed):
-    alert = dependabot(CORE, 1, manifest=manifest, fixed=fixed)
-    assert row(mod, CORE, alert, files={(CORE, manifest): text})["cls"] == "untracked"
+def test_lag_needs_every_version_outside_every_range(mod, ranges, version, cls):
+    alert = dependabot(CORE, 1, ranges=ranges)
+    other = {"ecosystem": "pip", "name": "not-pillow"}
+    alert["security_advisory"]["vulnerabilities"].append(
+        {"package": other, "vulnerable_version_range": "< 99.0"}
+    )
+    files = {(CORE, REQ): f"pillow=={version}\n"}
+    assert cls_of(mod, CORE, alert, files=files) == cls
 
 
-@pytest.mark.parametrize("age, cls", [(7, "lag"), (8, "untracked")])
-def test_lag_older_than_seven_days_is_untracked_with_its_age(mod, age, cls):
-    alert = dependabot(CORE, 1, age=age)
-    got = row(mod, CORE, alert, files={(CORE, REQ): "pillow==2.0.0\n"})
-    assert (got["cls"], f"{age}d old" in got["detail"]) == (cls, True)
+@pytest.mark.parametrize(
+    "manifest, text",
+    [
+        ("Gemfile.lock", "pillow==3.0.0\n"),  # a manifest it does not read
+        (REQ, "pillow==3.0.0\npillow==latest\n"),  # an InvalidVersion
+    ],
+)
+def test_an_unreadable_manifest_or_version_is_not_lag(mod, manifest, text):
+    alert = dependabot(CORE, 1, manifest=manifest)
+    assert cls_of(mod, CORE, alert, files={(CORE, manifest): text}) == "untracked"
+
+
+def test_no_patched_release_is_not_lag(mod):
+    alert = dependabot(CORE, 1, ranges=("< 1.0.0",))
+    alert["security_vulnerability"]["first_patched_version"] = None
+    files = {(CORE, REQ): "pillow==3.0.0\n"}
+    assert cls_of(mod, CORE, alert, files=files) == "untracked"
+
+
+@pytest.mark.parametrize(
+    "age, cls, shown",
+    [
+        (timedelta(days=7), "lag", "7.0d"),
+        (timedelta(days=7, hours=1), "untracked", "7.0d"),
+    ],
+)
+def test_lag_counts_seven_days_from_the_manifests_last_commit(mod, age, cls, shown):
+    gh = fake(mod, CORE, dependabot(CORE, 1), files={(CORE, REQ): "pillow==2.0.0\n"})
+    gh.commits[(CORE, REQ)] = iso(NOW - age)
+    got = row(mod, gh)
+    assert (got["cls"], f"manifest changed {shown} ago" in got["detail"]) == (cls, True)
 
 
 # --- Exception ----------------------------------------------------------------
@@ -288,10 +366,8 @@ def test_lag_older_than_seven_days_is_untracked_with_its_age(mod, age, cls):
 )
 def test_an_ignore_ghsas_entry_is_an_exception_in_its_own_repo_only(mod, repo, cls):
     config = json.dumps({"pnpm": {"auditConfig": {"ignoreGhsas": [GHSA]}}})
-    alert = dependabot(repo, 1, "braces", manifest=LOCK, fixed=None)
-    assert (
-        row(mod, repo, alert, files={(COPILOT, "package.json"): config})["cls"] == cls
-    )
+    alert = dependabot(repo, 1, "braces", manifest=LOCK)
+    assert cls_of(mod, repo, alert, files={(COPILOT, "package.json"): config}) == cls
 
 
 EXCEPTIONS = """# Vulnerability Exceptions
@@ -317,74 +393,168 @@ def test_the_exceptions_doc_counts_above_closed_exceptions_for_core_only(
     mod, repo, ghsa, cls
 ):
     files = {(CORE, mod.EXCEPTIONS_DOC): EXCEPTIONS}
-    assert row(mod, repo, dependabot(repo, 1, ghsa=ghsa), files=files)["cls"] == cls
+    assert cls_of(mod, repo, dependabot(repo, 1, ghsa=ghsa), files=files) == cls
 
 
-# --- Fetch --------------------------------------------------------------------
+# --- Redaction ----------------------------------------------------------------
+
+
+def test_a_private_repos_row_names_no_package_advisory_severity_or_version(mod):
+    repo = "faultmaven-kb-toolkit"  # its packages here are invented
+    alerts = [
+        dependabot(repo, 1, "examplepkg"),
+        dependabot(repo, 2, "examplepkg", "GHSA-x"),
+    ]
+    gh = fake(mod, repo, *alerts, files={(repo, REQ): "examplepkg==2.0.0\n"})
+    gh.visibility[repo] = "PRIVATE"
+    gh.commits[(repo, REQ)] = iso(NOW - timedelta(days=30))  # stale: names the version
+    gh.pages[f"{CORE}/issues"] = [[issue(7, f"**Alerts:** {alerts[0]['html_url']}")]]
+    report = mod.sweep(gh, NOW)
+    rows = table(report)
+    assert [(r["what"], r["advisory"], r["severity"]) for r in rows] == [
+        ("(private)",) * 3
+    ] * 2
+    assert [(r["cls"], r["detail"]) for r in rows] == [
+        ("untracked", "(private)"),
+        ("tracked", "#7"),
+    ]
+    assert rows[0]["urls"] == alerts[1]["html_url"]
+    for detail in ("examplepkg", "GHSA", "2.0.0", "high"):
+        assert detail not in report
+
+
+def test_a_failed_repo_list_is_unavailable_and_every_row_reads_private(mod):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh.errors["repo list"] = "HTTP 502: Bad Gateway"
+    report = mod.sweep(gh, NOW)
+    assert row(mod, gh)["what"] == "(private)"
+    lines = report.split("\n")
+    assert lines[0] == "unavailable: FaultMaven repo list: gh: HTTP 502: Bad Gateway"
+    assert lines[-1].endswith(" · unavailable 1")
+
+
+@pytest.mark.parametrize("visibility", ["PUBLIC", "PRIVATE"])
+def test_no_row_names_a_secret_type(mod, visibility):
+    gh = fake(mod, CORE, secret(CORE, 17), kind="secret-scanning")
+    gh.visibility[CORE] = visibility
+    report = mod.sweep(gh, NOW)
+    got = row(mod, gh)
+    assert (got["kind"], got["cls"]) == ("secret-scanning", "untracked")
+    assert got["detail"] == "raise with the owner in session"
+    assert "openai" not in report.lower()
+
+
+# --- Fetch, groups and scope --------------------------------------------------
 
 
 def test_every_page_of_issues_is_read(mod):
     gh = fake(mod, CORE, dependabot(CORE, 1))
     page_one = [issue(n, "unrelated") for n in range(200, 300)]
-    gh.pages[f"{CORE}/issues"] = [page_one, [issue(150, f"| #1 | {GHSA} |")]]
-    assert [r["detail"] for r in table(mod.sweep(gh, NOW))] == ["#150"]
+    gh.pages[f"{CORE}/issues"] = [page_one, [issue(150, f"**Alerts:** {URL}")]]
+    assert row(mod, gh)["detail"] == "#150"
 
 
 def test_failed_fetches_are_counted_and_the_other_repos_still_classify(mod):
     gh = fake(mod, CORE, dependabot(CORE, 1))
     gh.errors.update(
         {
-            "fm-sre-simulator/code-scanning/alerts": "Code Security must be enabled (HTTP 403)",
-            "fm-sre-simulator/secret-scanning/alerts": "Secret scanning is disabled (HTTP 404)",
+            "faultmaven-website/code-scanning/alerts": "Code Security must be enabled (HTTP 403)",
+            "faultmaven-website/secret-scanning/alerts": "Secret scanning is disabled (HTTP 404)",
             f"{COPILOT}/dependabot/alerts": "Resource not accessible by integration (HTTP 403)",
         }
     )
     report = mod.sweep(gh, NOW)
-    lines = report.splitlines()
+    lines = report.split("\n")
     assert lines[:3] == [
         f"unavailable: {COPILOT} dependabot: gh: Resource not accessible by integration (HTTP 403)",
-        "disabled: code-scanning in fm-sre-simulator",
-        "disabled: secret-scanning in fm-sre-simulator",
+        "disabled: code-scanning in faultmaven-website",
+        "disabled: secret-scanning in faultmaven-website",
     ]
     assert [r["cls"] for r in table(report)] == ["untracked"]
     assert lines[-1] == (
         "alerts 1: tracked 0 · exception 0 · lag 0 · untracked 1 (1 groups)"
-        " · disabled 2 · unavailable 1"
+        " · unknown 0 · disabled 2 · unavailable 1"
     )
 
 
-# --- Groups, scope and output -------------------------------------------------
-
-
-def test_a_group_takes_its_worst_class_and_lists_only_the_regressed_alert(mod):
-    manifests = ("requirements/cloud.txt", REQ, "requirements/test.txt")
+def test_a_group_takes_its_worst_class_and_lists_only_what_needs_action(mod):
+    manifests = (
+        "requirements/cloud.txt",
+        REQ,
+        "requirements/test.txt",
+        "x/requirements.txt",
+    )
     alerts = [dependabot(CORE, n, manifest=m) for n, m in enumerate(manifests, 1)]
-    pins = ("pillow==2.0.0\n", "pillow==2.0.0\n", "pillow==1.0.0\n")
-    files = {(CORE, m): pin for m, pin in zip(manifests, pins, strict=True)}
-    report = mod.sweep(fake(mod, CORE, *alerts, files=files), NOW)
+    files = {(CORE, m): "pillow==2.0.0\n" for m in manifests[:2]}
+    files[(CORE, manifests[2])] = "pillow==1.0.0\n"
+    gh = fake(mod, CORE, *alerts, files=files)
+    report = mod.sweep(gh, NOW)
     (group,) = table(report)
-    assert (group["cls"], group["urls"]) == ("untracked", alerts[2]["html_url"])
-    assert report.splitlines()[-1].startswith(
-        "alerts 3: tracked 0 · exception 0 · lag 2 · untracked 1 (1 groups)"
+    assert (group["cls"], group["urls"]) == (
+        "untracked",
+        " ".join(a["html_url"] for a in alerts[2:]),
+    )
+    gh = fake(mod, CORE, *alerts, files=files)
+    gh.errors[f"{CORE}/contents/{manifests[3]}"] = "HTTP 502: Bad Gateway"
+    assert row(mod, gh)["cls"] == "unknown"  # worse than untracked
+    assert report.split("\n")[-1].startswith(
+        "alerts 4: tracked 0 · exception 0 · lag 2 · untracked 2 (1 groups)"
     )
 
 
 def test_a_repo_outside_the_map_is_counted_on_one_line_and_not_classified(mod):
     outside = "fm-agent-service"
     gh = fake(mod, outside, dependabot(outside, 1), dependabot(outside, 2))
-    gh.repos.append(outside)
-    gh.errors[f"{outside}/code-scanning/alerts"] = "Code Security must be enabled"
+    gh.visibility[outside] = "PUBLIC"
+    gh.errors[f"{outside}/code-scanning/alerts"] = "no analysis found (HTTP 404)"
     report = mod.sweep(gh, NOW)
-    expected = (
-        f"outside the map: {outside} dependabot 2 code-scanning disabled — see #2129"
+    lines = report.split("\n")
+    assert (
+        f"outside the map: {outside} dependabot 2 code-scanning unavailable — see #2129"
+        in lines
     )
-    assert expected in report.splitlines()
+    assert (
+        lines[0]
+        == f"unavailable: {outside} code-scanning: gh: no analysis found (HTTP 404)"
+    )
     assert table(report) == []
-    assert report.splitlines()[-1].startswith("alerts 0:")
+    assert lines[-1].startswith("alerts 0:") and lines[-1].endswith(" · unavailable 1")
+
+
+def test_no_private_repos_scanning_configuration_is_named(mod):
+    """Fixture visibility and posture are invented; no real repo's configuration."""
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    mapped, outside = ("faultmaven-dashboard", SLACK), ("priv-a", "priv-b", "priv-c")
+    gh.visibility.update({repo: "PRIVATE" for repo in mapped + outside})
+    off = "Code Security must be enabled (HTTP 403)"
+    for repo in mapped:
+        gh.errors[f"{repo}/code-scanning/alerts"] = off
+        gh.errors[f"{repo}/secret-scanning/alerts"] = "Secret scanning is disabled"
+    off_secrets = "Secret scanning is disabled"
+    gh.errors[f"{COPILOT}/secret-scanning/alerts"] = off_secrets  # recorded first
+    gh.errors["priv-a/code-scanning/alerts"] = off
+    gh.pages["priv-b/code-scanning/alerts"] = [[{"number": 1}]]
+    gh.errors["priv-c/dependabot/alerts"] = "HTTP 502: Bad Gateway"
+    lines = mod.sweep(gh, NOW).split("\n")
+    assert lines[:3] == [
+        "unavailable: priv-c dependabot: gh: HTTP 502: Bad Gateway",
+        "disabled: code-scanning in 2 private repos",
+        "disabled: secret-scanning in faultmaven-copilot and 2 private repos",
+    ]
+    assert lines[-4:-1] == [
+        "outside the map: priv-a (private) alerts 0 — see #2129",
+        "outside the map: priv-b (private) alerts 1 — see #2129",
+        "outside the map: priv-c (private) alerts unavailable — see #2129",
+    ]
+    private = mapped + outside
+    assert not [
+        line for line in lines for r in private if r in line and "disab" in line
+    ]
+    assert lines[-1].endswith(" · disabled 5 · unavailable 1")
 
 
 def test_the_sweep_only_reads(mod):
-    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh = fake(mod, CORE, dependabot(CORE, 1), files={(CORE, REQ): "pillow==2.0.0\n"})
     mod.sweep(gh, NOW)
     writes = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
     assert all(call[0] == "api" or call[:2] == ["repo", "list"] for call in gh.calls)

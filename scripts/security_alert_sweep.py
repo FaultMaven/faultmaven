@@ -1,37 +1,39 @@
 #!/usr/bin/env python3
 """List every open Security-tab alert across the FaultMaven repositories and classify it.
 
-``/process-top-issues`` runs this in step 2 (*Sort*) each round and files every
-``untracked`` group as a core issue naming the repo (#2120). It is read-only:
-it files, comments on and dismisses nothing. Each open Dependabot,
+``/process-top-issues`` runs this in step 2 (*Sort*) each round (#2120). It is
+read-only: it files, comments on and dismisses nothing. Each open Dependabot,
 code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
 
 - ``exception`` (Dependabot): its GHSA is in the repo's ``package.json``
   ``pnpm.auditConfig.ignoreGhsas`` or, for core, in ``EXCEPTIONS_DOC`` above
   its ``## Closed exceptions`` heading;
-- ``lag`` (Dependabot): the manifest resolves the package only at versions at
-  or above the first patched one, and the alert is at most ``LAG_DAYS`` old;
-- ``tracked``: an open core issue whose ``**Repo: FaultMaven/<r>.**`` /
-  ``**Repos: … and ….**`` line names the alert's repo (core when it has none)
-  carries the alert's URL, its ``Dependabot #<n>`` / ``CodeQL #<n>`` /
-  ``secret scanning #<n>`` key, or its GHSA in a table row or an
-  ``**Alerts:**`` line; or an open PR in the alert's repo carries its URL;
+- ``lag`` (Dependabot): every version the manifest resolves lies outside every
+  vulnerable range the advisory lists for the package, and the manifest's last
+  commit is at most ``LAG_DAYS`` old;
+- ``tracked``: a line starting ``**Alerts:**`` in an open core issue, or an
+  open PR in the alert's own repo, carries the alert's URL;
+- ``unknown``: a source one of those answers needs could not be read;
 - ``untracked``: everything else.
 
-Files are read from each repo's default branch. A fetch refused because the
-feature is off is ``disabled``; any other failure is ``unavailable``, printed
-and counted, and never read as zero alerts.
+Files and commits are read from each repo's default branch. A fetch refused
+because the feature is off is ``disabled``; any other failure is printed as
+``unavailable`` and counted, and never read as "nothing there". Rows for a
+repo that is not public print no package, advisory or severity, and no row
+names a secret type, so a paste of the output leaks neither.
 
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
 
 import json
+import operator
 import re
 import subprocess
 import sys
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from packaging.version import InvalidVersion, Version
 
@@ -50,23 +52,26 @@ REPOS = (
     "fm-sre-simulator",
     "faultmaven-doc-internal",
 )
-KEY_WORD = {
-    "dependabot": "Dependabot",
-    "code-scanning": "CodeQL",
-    "secret-scanning": "secret scanning",
-}
+KINDS = ("dependabot", "code-scanning", "secret-scanning")
 DISABLED = ("Code Security must be enabled", "Secret scanning is disabled")
-LAG_DAYS = 7
+LAG_DAYS = timedelta(days=7)
 OPEN = "state=open&per_page=100"
 EXCEPTIONS_DOC = "docs/operations/security/vulnerability-exceptions.md"
-CLASSES = ("lag", "exception", "tracked", "untracked")  # worst last
-REPO_LIST = f"repo list {ORG} --no-archived --limit 1000 --json name --jq .[].name"
+CLASSES = ("lag", "exception", "tracked", "untracked", "unknown")  # worst last
+REPO_LIST = f"repo list {ORG} --no-archived --limit 1000 --json name,visibility"
+RAW = ["api", "-H", "Accept: application/vnd.github.raw"]
+PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
+OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+OPS["="] = operator.eq
 
-REPO_LINE = re.compile(r"^\*\*Repos?:\s+([^*\n]+)\*\*", re.M)
-REPO_NAME = re.compile(rf"{ORG}/([\w.-]*[\w-])")
 TXT_PIN = re.compile(r"^([\w.-]+)(?:\[[^\]]*\])?==([^\s;]+)[ \t]*(?:;.*)?$", re.M)
-TOML_PIN = re.compile(r"""(["'])([\w.-]+)(?:\[[^\]]*\])?==([^\s;"']+)[^"'\n]*\1""")
+# A quoted requirement in pyproject.toml: name, extras, then the rest of the string.
+REQUIREMENT = re.compile(
+    r"""(["'])[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?((?:(?!\1).)*)\1"""
+)
+EXACT_PIN = re.compile(r"^\s*==\s*([^\s;,]+)\s*(?:;.*)?$")
 PNPM_KEY = re.compile(r"""^  (['"]?)(@?[^@'"\s]+)@([^'"\s]+?)\1:(?:\s|$)""")
+CONSTRAINT = re.compile(r"^(<=|>=|<|>|=)\s*(\S+)$")
 
 Runner = Callable[[list[str]], tuple[int, str, str]]
 
@@ -79,16 +84,23 @@ def gh(args: list[str]) -> tuple[int, str, str]:
 class FetchError(Exception):
     def __init__(self, stderr: str):
         self.disabled = any(message in stderr for message in DISABLED)
-        self.line = (stderr.strip().splitlines() or ["no output"])[0]
+        self.line = stderr.strip().split("\n")[0] or "no output"
         super().__init__(self.line)
 
 
+class Unreadable(Exception):
+    """A source an alert's class depends on could not be read: the class is unknown."""
+
+
 def fetch(run: Runner, path: str) -> list[dict]:
-    """Every element of a list endpoint: ``--jq '.[]'`` prints one per line, all pages."""
+    """Every element of a list endpoint: ``--jq '.[]'`` prints one per line, all pages.
+
+    Split on ``\\n`` only: ``splitlines`` also splits on U+0085 inside a JSON string.
+    """
     code, out, err = run(["api", "--paginate", "--jq", ".[]", path])
     if code:
         raise FetchError(err)
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+    return [json.loads(line) for line in out.split("\n") if line.strip()]
 
 
 def alerts_path(repo: str, kind: str) -> str:
@@ -100,17 +112,27 @@ def norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def same_package(a: dict, b: dict) -> bool:
+    if a["ecosystem"] != b["ecosystem"]:
+        return False
+    pip = a["ecosystem"] == "pip"
+    return norm(a["name"]) == norm(b["name"]) if pip else a["name"] == b["name"]
+
+
 def resolved_versions(manifest_path: str, text: str, package: str) -> list[str]:
-    """Every version the manifest resolves ``package`` at; [] for one this cannot read."""
+    """Every version the manifest resolves ``package`` at; [] when it cannot say."""
     base = manifest_path.rsplit("/", 1)[-1]
     if base.endswith(".txt"):
         pins = TXT_PIN.findall(text)
         return [ver for name, ver in pins if norm(name) == norm(package)]
-    if base == "pyproject.toml":
-        pins = TOML_PIN.findall(text)
-        return [ver for _, name, ver in pins if norm(name) == norm(package)]
+    if base == "pyproject.toml":  # every declaration must be an exact pin
+        found = REQUIREMENT.findall(text)
+        pins = [
+            EXACT_PIN.match(rest) for _, n, _, rest in found if norm(n) == norm(package)
+        ]
+        return [pin.group(1) for pin in pins] if all(pins) else []
     versions, section = [], ""
-    for line in text.splitlines() if base == "pnpm-lock.yaml" else []:
+    for line in text.split("\n") if base == "pnpm-lock.yaml" else []:
         if line and not line[0].isspace():
             section = line.rstrip()  # only `packages:` keys; `snapshots:` has peers
         elif section == "packages:" and (key := PNPM_KEY.match(line)):
@@ -118,26 +140,25 @@ def resolved_versions(manifest_path: str, text: str, package: str) -> list[str]:
     return versions
 
 
-@dataclass
-class Tracker:
-    label: str
-    repos: set[str]
-    text: str  # where a URL counts
-    rows: str = ""  # where a GHSA counts: table rows and **Alerts:** lines
-    keys: bool = True  # whether `Dependabot #<n>`-style keys count
+def in_range(version: Version, spec: str) -> bool:
+    """Whether ``version`` meets every constraint of ``spec`` (``>= 1.0, < 2.0``)."""
+    for part in spec.split(","):
+        match = CONSTRAINT.match(part.strip())
+        if not match or "-" in match.group(2):
+            raise InvalidVersion(part)
+        if not OPS[match.group(1)](version, Version(match.group(2))):
+            return False
+    return True
 
 
-def issue_tracker(issue: dict) -> Tracker:
-    body = issue.get("body") or ""
-    named = REPO_LINE.search(body)
-    repos = set(REPO_NAME.findall(named.group(1))) if named else {CORE}
-    rows = [
-        line.strip()
-        for line in body.splitlines()
-        if re.match(r"\s*\|.*\|\s*$", line) or line.lstrip().startswith("**Alerts:**")
-    ]
-    text = f"{issue.get('title') or ''}\n{body}"
-    return Tracker(f"#{issue['number']}", repos, text, "\n".join(rows).lower())
+def outside_every_range(versions: list[str], ranges: list[str]) -> bool:
+    """False for no versions, no ranges, an npm prerelease or anything unparseable."""
+    if not versions or not ranges or any("-" in v for v in versions):
+        return False
+    try:
+        return not any(in_range(Version(v), r) for v in versions for r in ranges)
+    except InvalidVersion:
+        return False
 
 
 @dataclass
@@ -148,7 +169,6 @@ class Alert:
     what: str
     advisory: str
     severity: str
-    age: int
     cls: str = ""
     detail: str = ""
 
@@ -157,9 +177,8 @@ class Alert:
         return self.item["html_url"]
 
 
-def to_alert(repo: str, kind: str, item: dict, now: datetime) -> Alert:
-    created = datetime.fromisoformat(item["created_at"].replace("Z", "+00:00"))
-    advisory = severity = "—"
+def to_alert(repo: str, kind: str, item: dict) -> Alert:
+    what = advisory = severity = "—"  # a secret's type is never read
     if kind == "dependabot":
         package = item["dependency"]["package"]
         pip = package.get("ecosystem") == "pip"
@@ -170,43 +189,74 @@ def to_alert(repo: str, kind: str, item: dict, now: datetime) -> Alert:
         rule = item.get("rule") or {}
         what = rule.get("id") or "?"
         severity = rule.get("security_severity_level") or rule.get("severity") or "—"
-    else:
-        what = item.get("secret_type_display_name") or item.get("secret_type") or "?"
-    return Alert(repo, kind, item, what, advisory, severity, (now - created).days)
+    return Alert(repo, kind, item, what, advisory, severity)
 
 
-def names_alert(tracker: Tracker, alert: Alert) -> bool:
-    if re.search(re.escape(alert.url) + r"(?!\w)", tracker.text):
-        return True
-    key = rf"\b{KEY_WORD[alert.kind]} #{alert.item['number']}\b"
-    if tracker.keys and re.search(key, tracker.text, re.I):
-        return True
-    return alert.kind == "dependabot" and alert.advisory.lower() in tracker.rows
+def carries(text: str, url: str) -> bool:
+    return re.search(re.escape(url) + r"(?!\w)", text) is not None
+
+
+def alert_lines(body: str) -> list[str]:
+    """The only issue lines that track an alert: those starting ``**Alerts:**``."""
+    return [line for line in body.split("\n") if line.startswith("**Alerts:**")]
 
 
 class Sweep:
     def __init__(self, run: Runner, now: datetime):
         self.run, self.now = run, now
-        self.files: dict[tuple[str, str], str | None] = {}
-        self.prs: dict[str, list[Tracker]] = {}
-        self.issues: list[Tracker] = []
+        self.files: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self.ages: dict[tuple[str, str], timedelta | None] = {}
+        self.prs: dict[str, list[tuple[str, str]] | None] = {}
+        self.issues: list[tuple[str, str]] | None = None
+        self.public: set[str] = set()
         self.disabled: dict[str, list[str]] = {}
         self.unavailable: list[str] = []
 
     def file(self, repo: str, path: str) -> str | None:
-        """A file on the repo's default branch, or None when it cannot be read."""
+        """A default-branch file; None when it is missing (404); else Unreadable."""
         if (repo, path) not in self.files:
-            raw = ["api", "-H", "Accept: application/vnd.github.raw"]
-            code, out, _ = self.run([*raw, f"repos/{ORG}/{repo}/contents/{path}"])
-            self.files[(repo, path)] = None if code else out
-        return self.files[(repo, path)]
+            code, out, err = self.run([*RAW, f"repos/{ORG}/{repo}/contents/{path}"])
+            failed = bool(code) and "(HTTP 404)" not in err
+            if failed:
+                self.unavailable.append(
+                    f"unavailable: {repo} {path}: {FetchError(err).line}"
+                )
+            self.files[(repo, path)] = (failed, None if code else out)
+        failed, text = self.files[(repo, path)]
+        if failed:
+            raise Unreadable(path)
+        return text
+
+    def manifest_age(self, repo: str, path: str) -> timedelta:
+        """Time since the manifest's last commit on the default branch."""
+        if (repo, path) not in self.ages:
+            query = f"path={urllib.parse.quote(path, safe='/')}&per_page=1"
+            jq = ["--jq", ".[0].commit.committer.date"]
+            code, out, err = self.run(
+                ["api", *jq, f"repos/{ORG}/{repo}/commits?{query}"]
+            )
+            try:
+                when = datetime.fromisoformat(out.strip().replace("Z", "+00:00"))
+                self.ages[(repo, path)] = None if code else self.now - when
+            except (ValueError, TypeError):
+                self.ages[(repo, path)] = None
+            if self.ages[(repo, path)] is None:
+                reason = (
+                    FetchError(err).line if code else f"no commit date ({out.strip()})"
+                )
+                self.unavailable.append(f"unavailable: {repo} commits {path}: {reason}")
+        age = self.ages[(repo, path)]
+        if age is None:
+            raise Unreadable(path)
+        return age
 
     def exception_detail(self, alert: Alert) -> str:
         ghsa = alert.advisory.lower()
         try:
             config = json.loads(self.file(alert.repo, "package.json") or "{}")
-            ignored = config["pnpm"]["auditConfig"]["ignoreGhsas"]
-            if ghsa in {g.lower() for g in ignored}:
+            if ghsa in {
+                g.lower() for g in config["pnpm"]["auditConfig"]["ignoreGhsas"]
+            }:
                 return "pnpm.auditConfig.ignoreGhsas"
         except (ValueError, KeyError, TypeError, AttributeError):
             pass
@@ -215,54 +265,61 @@ class Sweep:
         open_part = closed.split(doc or "", maxsplit=1)[0].lower()
         return EXCEPTIONS_DOC.rsplit("/", 1)[-1] if ghsa in open_part else ""
 
-    def lag_detail(self, alert: Alert) -> str:
-        """``main resolves <versions> >= <fixed>`` when every version is fixed, else ''."""
-        patched = alert.item["security_vulnerability"].get("first_patched_version")
-        fixed = (patched or {}).get("identifier")
+    def lag_detail(self, alert: Alert) -> tuple[str, timedelta] | None:
+        """``(main resolves <versions> ..., manifest age)`` when it is fixed on main."""
+        if not alert.item["security_vulnerability"].get("first_patched_version"):
+            return None
         path = alert.item["dependency"]["manifest_path"]
-        text = self.file(alert.repo, path) if fixed else None
-        name = alert.item["dependency"]["package"]["name"]
-        versions = resolved_versions(path, text, name) if text else []
-        try:
-            if not versions or any(Version(v) < Version(fixed) for v in versions):
-                return ""
-        except InvalidVersion:
-            return ""
-        return f"main resolves {', '.join(sorted(set(versions)))} >= {fixed}"
+        package = alert.item["dependency"]["package"]
+        text = self.file(alert.repo, path)
+        versions = resolved_versions(path, text, package["name"]) if text else []
+        vulnerable = alert.item["security_advisory"].get("vulnerabilities") or []
+        ranges = [
+            v["vulnerable_version_range"]
+            for v in vulnerable
+            if same_package(v["package"], package)
+        ]
+        if not outside_every_range(versions, ranges):
+            return None
+        resolved = ", ".join(sorted(set(versions)))
+        age = self.manifest_age(alert.repo, path)
+        return f"main resolves {resolved}, outside every vulnerable range", age
 
-    def repo_prs(self, repo: str) -> list[Tracker]:
+    def repo_prs(self, repo: str) -> list[tuple[str, str]] | None:
         if repo not in self.prs:
             try:
                 pulls = fetch(self.run, f"repos/{ORG}/{repo}/pulls?{OPEN}")
+                self.prs[repo] = [
+                    (f"PR {repo}#{p['number']}", f"{p.get('title')}\n{p.get('body')}")
+                    for p in pulls
+                ]
             except FetchError as exc:
                 self.unavailable.append(f"unavailable: {repo} pulls: {exc.line}")
-                pulls = []
-            self.prs[repo] = []
-            # Only a URL counts in a PR: `Dependabot #<n>` keys and GHSAs do not.
-            for p in pulls:
-                text = f"{p.get('title') or ''}\n{p.get('body') or ''}"
-                label = f"PR {repo}#{p['number']}"
-                self.prs[repo].append(Tracker(label, {repo}, text, keys=False))
+                self.prs[repo] = None
         return self.prs[repo]
 
     def classify(self, alert: Alert) -> None:
+        try:
+            alert.cls, alert.detail = self.verdict(alert)
+        except Unreadable:
+            alert.cls, alert.detail = "unknown", "a source is unavailable (above)"
+
+    def verdict(self, alert: Alert) -> tuple[str, str]:
         stale = ""
         if alert.kind == "dependabot":
             if detail := self.exception_detail(alert):
-                alert.cls, alert.detail = "exception", detail
-                return
-            if (lag := self.lag_detail(alert)) and alert.age <= LAG_DAYS:
-                alert.cls, alert.detail = "lag", f"{lag} · {alert.age}d old"
-                return
-            stale = f"{lag}, but the alert is {alert.age}d old" if lag else ""
-        candidates = self.issues + self.repo_prs(alert.repo)
-        found = [
-            t.label
-            for t in candidates
-            if alert.repo in t.repos and names_alert(t, alert)
-        ]
-        alert.cls = "tracked" if found else "untracked"
-        alert.detail = ", ".join(found) if found else stale
+                return "exception", detail
+            if lag := self.lag_detail(alert):
+                resolved, age = lag
+                days = f"{age / timedelta(days=1):.1f}d"
+                if age <= LAG_DAYS:
+                    return "lag", f"{resolved} · manifest changed {days} ago"
+                stale = f"{resolved}, but the manifest changed {days} ago"
+        prs = self.repo_prs(alert.repo)
+        if self.issues is None or prs is None:
+            raise Unreadable("trackers")
+        found = [label for label, text in self.issues + prs if carries(text, alert.url)]
+        return ("tracked", ", ".join(found)) if found else ("untracked", stale)
 
     def collect(self, repo: str, kind: str) -> list[dict]:
         try:
@@ -275,68 +332,102 @@ class Sweep:
             return []
 
     def outside_line(self, repo: str) -> str:
-        counts = []
+        counts: dict[str, int | str] = {}
         for kind in ("dependabot", "code-scanning"):
             try:
-                counts.append(f"{kind} {len(fetch(self.run, alerts_path(repo, kind)))}")
+                counts[kind] = len(fetch(self.run, alerts_path(repo, kind)))
             except FetchError as exc:
-                state = "disabled" if exc.disabled else f"unavailable ({exc.line})"
-                counts.append(f"{kind} {state}")
-        return f"outside the map: {repo} {' '.join(counts)} — see #2129"
+                if not exc.disabled:
+                    self.unavailable.append(f"unavailable: {repo} {kind}: {exc.line}")
+                counts[kind] = "disabled" if exc.disabled else "unavailable"
+        if repo in self.public:
+            shown = " ".join(f"{kind} {n}" for kind, n in counts.items())
+        else:  # one total, so a private repo's scanning configuration stays unsaid
+            failed = "unavailable" in counts.values()
+            total = sum(n for n in counts.values() if isinstance(n, int))
+            shown = f"{PRIVATE} alerts {'unavailable' if failed else total}"
+        return f"outside the map: {repo} {shown} — see #2129"
+
+    def disabled_line(self, kind: str, repos: list[str]) -> str:
+        """Public repos by name; private ones only counted (their posture stays unsaid)."""
+        names = [repo for repo in repos if repo in self.public]
+        if hidden := len(repos) - len(names):
+            names.append(f"{hidden} private repo{'s' if hidden > 1 else ''}")
+        listed = (
+            f"{', '.join(names[:-1])} and {names[-1]}" if len(names) > 1 else names[0]
+        )
+        return f"disabled: {kind} in {listed}"
+
+    def row(self, members: list[Alert]) -> tuple[int, tuple[str, ...]]:
+        first = members[0]
+        cls = max((a.cls for a in members), key=CLASSES.index)
+        shown = [a for a in members if a.cls != "lag"] or members
+        details = ", ".join(dict.fromkeys(a.detail for a in shown if a.detail))
+        cells = [first.repo, first.kind, first.what, first.advisory, first.severity]
+        if first.repo not in self.public:  # a private or unlisted repo
+            cells[2:] = [PRIVATE] * 3
+            tracked = [a.detail for a in shown if a.cls == "tracked"]
+            details = ", ".join(dict.fromkeys(tracked)) or PRIVATE
+        if first.kind == "secret-scanning":
+            details = SECRET_NOTE
+        urls = " ".join(a.url for a in shown if a.cls in ("untracked", "unknown"))
+        return -CLASSES.index(cls), (*cells, cls, details or "—", urls or "—")
 
     def report(self) -> str:
-        try:
-            issues = fetch(self.run, f"repos/{ORG}/{CORE}/issues?{OPEN}")
-            self.issues = [issue_tracker(i) for i in issues if "pull_request" not in i]
-        except FetchError as exc:
-            self.unavailable.append(f"unavailable: {CORE} issues: {exc.line}")
-        alerts = [
-            to_alert(repo, kind, item, self.now)
-            for repo in REPOS
-            for kind in KEY_WORD
-            for item in self.collect(repo, kind)
-        ]
-        for alert in alerts:
-            self.classify(alert)
         code, out, err = self.run(REPO_LIST.split())
+        try:
+            listed = (
+                {} if code else {r["name"]: r["visibility"] for r in json.loads(out)}
+            )
+        except (ValueError, KeyError, TypeError):
+            listed, code = {}, 1
         if code:
             self.unavailable.append(
                 f"unavailable: {ORG} repo list: {FetchError(err).line}"
             )
-        unmapped = [] if code else sorted(set(out.split()) - set(REPOS))
-        outside = [self.outside_line(repo) for repo in unmapped]
+        self.public = {name for name, seen in listed.items() if seen == "PUBLIC"}
+        try:
+            issues = fetch(self.run, f"repos/{ORG}/{CORE}/issues?{OPEN}")
+            self.issues = [
+                (f"#{i['number']}", "\n".join(alert_lines(i.get("body") or "")))
+                for i in issues
+                if "pull_request" not in i
+            ]
+        except FetchError as exc:
+            self.unavailable.append(f"unavailable: {CORE} issues: {exc.line}")
+        alerts = [
+            to_alert(repo, kind, item)
+            for repo in REPOS
+            for kind in KINDS
+            for item in self.collect(repo, kind)
+        ]
+        for alert in alerts:
+            self.classify(alert)
+        outside = [self.outside_line(r) for r in sorted(set(listed) - set(REPOS))]
 
         groups: dict[tuple[str, str, str, str], list[Alert]] = {}
         for a in alerts:
             groups.setdefault((a.repo, a.kind, a.what, a.advisory), []).append(a)
-        rows = []
-        for (repo, kind, what, advisory), members in groups.items():
-            cls = max((a.cls for a in members), key=CLASSES.index)
-            shown = [a for a in members if a.cls != "lag"] or members
-            detail = ", ".join(dict.fromkeys(a.detail for a in shown if a.detail))
-            urls = " ".join(a.url for a in shown if a.cls == "untracked")
-            cells = (repo, kind, what, advisory, members[0].severity, cls)
-            cells += (detail or "—", urls or "—")
-            rows.append((-CLASSES.index(cls), cells))
-
+        rows = sorted(self.row(members) for members in groups.values())
         count = {c: sum(a.cls == c for a in alerts) for c in CLASSES}
         untracked_groups = sum(1 for _, cells in rows if cells[5] == "untracked")
         lines = [*self.unavailable]
         lines += [
-            f"disabled: {kind} in {', '.join(r)}" for kind, r in self.disabled.items()
+            self.disabled_line(k, self.disabled[k]) for k in KINDS if k in self.disabled
         ]
         lines += [
             "",
-            "| repo | kind | package or rule | advisory | severity | class | tracked by / detail | untracked alerts |",
+            "| repo | kind | package or rule | advisory | severity | class | tracked by / detail | untracked or unknown alerts |",
             "|---|---|---|---|---|---|---|---|",
-            *("| " + " | ".join(cells) + " |" for _, cells in sorted(rows)),
+            *("| " + " | ".join(cells) + " |" for _, cells in rows),
             "",
             *outside,
         ]
         lines.append(
             f"alerts {len(alerts)}: tracked {count['tracked']} · exception {count['exception']}"
             f" · lag {count['lag']} · untracked {count['untracked']} ({untracked_groups} groups)"
-            f" · disabled {sum(map(len, self.disabled.values()))} · unavailable {len(self.unavailable)}"
+            f" · unknown {count['unknown']} · disabled {sum(map(len, self.disabled.values()))}"
+            f" · unavailable {len(self.unavailable)}"
         )
         return "\n".join(lines)
 
