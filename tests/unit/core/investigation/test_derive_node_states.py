@@ -8,7 +8,6 @@ the M7 AND-gate — never from a fabricated EMPIRICAL grade.
 
 import hashlib
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 
@@ -20,8 +19,6 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     Evidence,
@@ -32,13 +29,12 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
-    ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -95,26 +91,14 @@ def _evidence(label, category) -> Evidence:
 
 
 def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="X fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="X fails", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="X fails",
+        symptom="X fails",
+        causal_nodes={n.node_id: n for n in nodes},
+        causal_edges=edges or [],
+        evidence=evidence or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
     )
-    case.causal_nodes = {n.node_id: n for n in nodes}
-    case.causal_edges = edges or []
-    case.evidence = evidence or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    return case
 
 
 # ---------------------------------------------------------------------------

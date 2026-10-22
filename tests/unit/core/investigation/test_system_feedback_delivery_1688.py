@@ -73,6 +73,7 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.case_builders import inquiry_case
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import NO_TOOLS
 
@@ -129,10 +130,9 @@ def _with_notice(case: Case) -> Case:
 
 
 def _inquiry_case() -> Case:
-    return Case(
+    return inquiry_case(
         case_id="case_1688aaaaaaaa",
         title="Feedback delivery",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="etcdInsufficientMembers alerts",

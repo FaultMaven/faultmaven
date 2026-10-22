@@ -7,8 +7,8 @@ pad the action-loop / momentum windows.
 
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import UNSET, inquiry_case
 
 
 def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:
@@ -16,10 +16,13 @@ def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:
 
 
 def _case(turns) -> Case:
-    c = Case(enterprise_id="o", title="t", description="d", state=CaseState.INQUIRY)
-    c.turn_history = turns
-    c.current_turn = turns[-1].turn_number if turns else 0
-    return c
+    return inquiry_case(
+        case_id=UNSET,
+        user_id=UNSET,
+        description="d",
+        turn_history=turns,
+        current_turn=turns[-1].turn_number if turns else 0,
+    )
 
 
 def test_skipped_turn_not_counted_as_investigative_progress():

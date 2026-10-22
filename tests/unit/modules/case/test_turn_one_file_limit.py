@@ -28,7 +28,6 @@ the app's normalized envelope.
 """
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -49,6 +48,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
 from faultmaven.modules.case.api.routes.router import router as case_router
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import inquiry_case
 
 TURNS_URL = "/api/v1/cases/case_abc123def456/turns"
 
@@ -56,13 +56,11 @@ TURNS_URL = "/api/v1/cases/case_abc123def456/turns"
 def _make_case() -> Case:
     # A real (non-placeholder) title, so the inline auto-titling pass returns
     # immediately instead of reaching for an LLM provider.
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    return inquiry_case(
         title="Checkout latency spike",
         description="p99 latency tripled after the 14:02 deploy",
         user_id="test-user-123",
         enterprise_id="org_test123",
-        state=CaseState.INQUIRY,
         current_turn=0,
     )
 

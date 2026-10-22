@@ -69,9 +69,9 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
     InvestigationStage,
-    ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import investigating_case, make_case
 from tests.unit.core.investigation.given_tools import ENTITY_GIVEN
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -171,7 +171,7 @@ def _case(
     symptom_statement: str = "checkout pods restart every ~40s",
     state: CaseState = CaseState.INVESTIGATING,
 ) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_aabb11223344",
         title=title,
         description=description,
@@ -181,18 +181,12 @@ def _case(
         current_stage=(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None
         ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Checkout crash-looping",
-        ),
+        statement="Checkout crash-looping",
         evidence=[_evidence()],
         uploaded_files=[_file()],
         current_turn=1,
+        symptom=symptom_statement,
     )
-    case.problem_verification = ProblemVerification(
-        symptom_statement=symptom_statement, severity="HIGH"
-    )
-    return case
 
 
 def _terminal_case(title: str = "Checkout crash-looping") -> Case:
@@ -203,7 +197,7 @@ def _terminal_case(title: str = "Checkout crash-looping") -> Case:
     the terminal test quietly used the INVESTIGATING default instead.
     """
     now = datetime.now(timezone.utc)
-    return Case(
+    return make_case(
         case_id="case_aabb11223344",
         title=title,
         description="Pods restart every 40s since the 10:40 deploy",

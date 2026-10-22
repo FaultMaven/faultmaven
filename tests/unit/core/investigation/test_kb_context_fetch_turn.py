@@ -41,13 +41,13 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_message
 )
 from faultmaven.modules.case.contracts import MESSAGE_METADATA_KB_SOURCES
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import (
     ProblemStatus,
     ProblemVerification,
 )
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_service import CaseService
+from tests.case_builders import UNSET, inquiry_case, investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -64,16 +64,14 @@ def _entry(doc: str, excerpt: str = "Rotate the logs before resizing.") -> dict:
 
 
 def _case(*, current_turn: int = 3, kb_context=None, messages=None) -> Case:
-    case = Case(
+    case = inquiry_case(
         case_id="case_aabb11223344",
         title="Disk full",
         description="d",
-        user_id="u",
         enterprise_id="ent_1",
-        state=CaseState.INQUIRY,
         current_turn=current_turn,
+        kb_context=kb_context,
     )
-    case.kb_context = kb_context
     if messages is not None:
         case.messages = messages
     return case
@@ -125,10 +123,9 @@ class TestThePromptSelection:
 
 
 def _investigating_case(kb_context) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_5db5417fe445",
         title="Disk full",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="disk full on the data volume",
@@ -138,15 +135,12 @@ def _investigating_case(kb_context) -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
+        inquiry=UNSET,
+        statement="disk full",
+        progress=InvestigationProgress(),
+        current_turn=7,
+        kb_context=kb_context,
     )
-    case.inquiry.proposed_problem_statement = "disk full"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 7
-    case.kb_context = kb_context
-    return case
 
 
 def _generating_engine() -> MilestoneEngine:

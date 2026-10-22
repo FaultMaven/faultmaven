@@ -18,7 +18,6 @@ records one offer holding the blocks as the user wrote them. These pin:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
     block_key,
 )
+from tests.case_builders import UNSET, investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -77,18 +77,14 @@ def _block(first: str, last: str) -> ChatDataBlock:
 
 
 def _case(**overrides) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_000000001930",
-        user_id="u",
         enterprise_id="e",
-        title="t",
-        description="d",
-        state=CaseState.INQUIRY,
         current_turn=4,
+        inquiry=UNSET,
+        statement="api pods crash",
+        confirmed_at=UNSET,
     )
-    case.inquiry.proposed_problem_statement = "api pods crash"
-    case.inquiry.problem_statement_confirmed = True
-    case.state = CaseState.INVESTIGATING
     for key, value in overrides.items():
         setattr(case, key, value)
     return case
@@ -432,10 +428,9 @@ class TestTheReplayCannotMint:
 
 
 def _investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_5db5417fe930",
         title="API down",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="api pods crash",
@@ -445,14 +440,11 @@ def _investigating_case() -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
+        inquiry=UNSET,
+        statement="api pods crash",
+        progress=InvestigationProgress(),
+        current_turn=7,
     )
-    case.inquiry.proposed_problem_statement = "api pods crash"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 7
-    return case
 
 
 def _engine(blocks) -> MilestoneEngine:

@@ -51,15 +51,15 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
     classify_solution_outcome,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
 
 def _make_investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_00000000abcd",
         title="Terminal confirmation integrity",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="Terminal confirmation integrity test",
@@ -70,13 +70,9 @@ def _make_investigating_case() -> Case:
             urgency_level="high",
         ),
         inquiry=InquiryData(thread_id="thread_test"),
+        statement="Test problem",
+        progress=InvestigationProgress(),
     )
-    case.inquiry.proposed_problem_statement = "Test problem"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    return case
 
 
 # =============================================================================

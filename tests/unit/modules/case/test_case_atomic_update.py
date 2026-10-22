@@ -18,13 +18,13 @@ from faultmaven.modules.case.domain.models.problem import (
     ProblemVerification,
 )
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from tests.case_builders import investigating_case
 
 
 def _make_investigating_case() -> Case:
-    return Case(
+    return investigating_case(
         case_id="case_abcdef123456",
         title="Test Case",
-        state=CaseState.INVESTIGATING,
         user_id="user_test",
         enterprise_id="org_test",
         description="Investigating something concrete",
@@ -35,11 +35,8 @@ def _make_investigating_case() -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            thread_id="thread_test",
-            proposed_problem_statement="Test symptom",
-        ),
+        inquiry=InquiryData(thread_id="thread_test"),
+        statement="Test symptom",
     )
 
 

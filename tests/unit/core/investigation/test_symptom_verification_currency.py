@@ -29,11 +29,11 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     ProblemStatus,
     ProblemVerification,
     TemporalState,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -43,29 +43,20 @@ NOW = datetime(2026, 8, 4, 19, 36, 17, tzinfo=timezone.utc)
 
 
 def _case(*, verified=True, temporal=TemporalState.ONGOING, evidence=()) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout 500s",
-            problem_statement_confirmed=True,
-        ),
+        statement="checkout 500s",
         problem_verification=ProblemVerification(
             symptom_statement="checkout 500s",
             severity=CaseSeverity.HIGH,
             temporal_state=temporal,
         ),
+        problem_status=(
+            ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
+        ),
+        evidence=list(evidence),
     )
-    case.progress.problem_status = (
-        ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
-    )
-    case.evidence = list(evidence)
-    return case
 
 
 def _ev(category, observed, source="iso8601") -> Evidence:

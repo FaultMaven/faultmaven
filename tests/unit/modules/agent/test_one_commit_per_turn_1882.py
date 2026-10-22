@@ -72,6 +72,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (
     _make_resolved_case,
     _make_runbook_ready,
@@ -224,17 +225,15 @@ def _verification() -> ProblemVerification:
 
 
 def _inquiry_case() -> Case:
-    case = Case(
+    return inquiry_case(
         case_id=CASE_ID,
         title="Checkout 503s",
-        state=CaseState.INQUIRY,
         user_id=USER_ID,
         enterprise_id="00000000-0000-0000-0000-000000000002",
         description="checkout 503s",
         problem_verification=_verification(),
+        current_turn=4,
     )
-    case.current_turn = 4
-    return case
 
 
 def _investigating_case() -> Case:

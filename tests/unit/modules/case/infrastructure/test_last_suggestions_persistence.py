@@ -54,6 +54,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import make_case
 from tests.model_content import disabled_redaction
 
 # ============================================================
@@ -87,7 +88,6 @@ def repository(async_session) -> SQLiteCaseRepository:
 
 def _make_case(**overrides) -> Case:
     defaults = dict(
-        case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
         driver_id=None,
         enterprise_id="ent_alpha",
@@ -95,7 +95,7 @@ def _make_case(**overrides) -> Case:
         title="Clarification round-trip",
     )
     defaults.update(overrides)
-    return Case(**defaults)
+    return make_case(**defaults)
 
 
 def _clarification_suggestions() -> list[dict]:

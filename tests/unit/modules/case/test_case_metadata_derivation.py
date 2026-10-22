@@ -32,6 +32,7 @@ from faultmaven.modules.case.domain.models.progress import (
     investigation_stage,
 )
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import UNSET, make_case
 
 pytestmark = pytest.mark.unit
 
@@ -70,17 +71,20 @@ _ALL_HISTORIES = _HISTORIES + list(_random_histories())
 
 def _case(numbers, flags, current_turn) -> Case:
     """A case as the loader builds it, BEFORE the load-time repair."""
-    case = Case(enterprise_id="ent_1", title="t")
-    case.turn_history = [
-        TurnProgress(
-            turn_number=number,
-            outcome=TurnOutcome.OUT_OF_BAND if flag else TurnOutcome.CONVERSATION,
-            progress_made=False,
-        )
-        for number, flag in zip(numbers, flags)
-    ]
-    case.current_turn = current_turn
-    return case
+    return make_case(
+        case_id=UNSET,
+        user_id=UNSET,
+        enterprise_id="ent_1",
+        turn_history=[
+            TurnProgress(
+                turn_number=number,
+                outcome=TurnOutcome.OUT_OF_BAND if flag else TurnOutcome.CONVERSATION,
+                progress_made=False,
+            )
+            for number, flag in zip(numbers, flags)
+        ],
+        current_turn=current_turn,
+    )
 
 
 def _stored(**overrides):

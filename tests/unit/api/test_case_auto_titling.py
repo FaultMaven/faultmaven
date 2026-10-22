@@ -25,7 +25,6 @@ import io
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -51,6 +50,7 @@ from faultmaven.modules.case.api.title_generation import (
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import make_case
 from tests.utils import regex_only_sanitizer
 
 TENANT_ORG = "org_tenant_alpha"
@@ -62,7 +62,6 @@ SANITIZER = regex_only_sanitizer()
 
 def _make_case(**overrides) -> Case:
     defaults = {
-        "case_id": f"case_{uuid4().hex[:12]}",
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
@@ -70,7 +69,7 @@ def _make_case(**overrides) -> Case:
         "state": CaseState.INQUIRY,
     }
     defaults.update(overrides)
-    return Case(**defaults)
+    return make_case(**defaults)
 
 
 def _service_for(case: Case) -> AsyncMock:

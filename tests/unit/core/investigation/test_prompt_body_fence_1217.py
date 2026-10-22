@@ -61,13 +61,12 @@ from faultmaven.core.investigation.prompts.templates.investigation import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -141,17 +140,13 @@ def _evidence(
 
 
 def _case(files, evidence, turn: int = 1) -> Case:
-    return Case(
+    return investigating_case(
         case_id="case_aabb11223344",
         title="Test Case",
         description="Test description",
         user_id="user_123",
         enterprise_id="org_123",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test description",
-        ),
+        statement="Test description",
         evidence=evidence,
         uploaded_files=files,
         current_turn=turn,

@@ -16,24 +16,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
 from faultmaven.core.investigation.causal_graph.support import root_restates_case_frame
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeType,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -60,21 +56,7 @@ def _case(
     live case actually has — ``templates/diagnosis.py`` mandates ``root_node_ref`` on
     every hypothesis, so an unattached one only survives the fm#1091 refusal.
     """
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement=symptom,
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement=symptom, severity=CaseSeverity.HIGH
-        ),
-    )
+    case = investigating_case(statement=symptom, symptom=symptom)
 
     def _add_hyp(stmt: str, root_node_id: str | None) -> None:
         h = Hypothesis(

@@ -83,7 +83,7 @@ def bound_tenant():
 
 def _case(**overrides):
     from faultmaven.modules.case.contracts import CaseState
-    from faultmaven.modules.case.domain.models.case import Case
+    from tests.case_builders import make_case
 
     defaults = dict(
         case_id=CASE_ID,
@@ -95,7 +95,7 @@ def _case(**overrides):
         current_turn=0,
     )
     defaults.update(overrides)
-    return Case(**defaults)
+    return make_case(**defaults)
 
 
 def _service(ledger, monkeypatch, *, case=None, default=30):

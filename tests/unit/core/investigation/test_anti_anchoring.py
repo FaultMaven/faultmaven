@@ -15,8 +15,6 @@ diversify. It fires only on a genuine stall:
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import (
@@ -33,8 +31,6 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     EvidenceNeed,
     EvidenceStance,
@@ -43,16 +39,15 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NeedPriority,
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
-    ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -67,23 +62,9 @@ def _engine() -> MilestoneEngine:
 
 
 def _case(current_turn: int = 10) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="db slow",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="db slow", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="db slow", symptom="db slow", current_turn=current_turn
     )
-    case.current_turn = current_turn
-    return case
 
 
 def _hyp(

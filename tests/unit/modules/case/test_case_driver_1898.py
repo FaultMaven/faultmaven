@@ -38,6 +38,7 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
+from tests.case_builders import make_case
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -159,7 +160,7 @@ async def _case(repository, *, driver_id=None, case_id=CASE_ID, state=None, **ex
             closed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
     fields.update(extra)
-    return await repository.save(Case(**fields))
+    return await repository.save(make_case(**fields))
 
 
 @pytest.fixture

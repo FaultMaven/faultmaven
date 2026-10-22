@@ -35,6 +35,7 @@ from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -52,16 +53,14 @@ def _turn(n: int, outcome: TurnOutcome) -> TurnProgress:
 
 def _case(*outcomes: TurnOutcome, messages=None) -> Case:
     """A case whose turn N has ``outcomes[N - 1]``."""
-    case = Case(
+    case = inquiry_case(
         case_id="case_aabb11223344",
         title="OOM",
         description="d",
-        user_id="u",
         enterprise_id="ent_1",
-        state=CaseState.INQUIRY,
         current_turn=len(outcomes),
+        turn_history=[_turn(i, o) for i, o in enumerate(outcomes, start=1)],
     )
-    case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
     if messages is not None:
         case.messages = messages
     return case

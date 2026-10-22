@@ -19,20 +19,17 @@ from faultmaven.core.investigation.prompts.context_builder.causal_graph_block im
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeState,
     NodeType,
-    ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -87,26 +84,15 @@ def _hyp(
 
 
 def _case(nodes=None, edges=None, hyps=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="orders failing",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="orders failing", severity=CaseSeverity.HIGH
-        ),
+        statement="orders failing",
+        symptom="orders failing",
+        causal_nodes={n.node_id: n for n in (nodes or [])},
+        causal_edges=edges or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
     )
-    case.causal_nodes = {n.node_id: n for n in (nodes or [])}
-    case.causal_edges = edges or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    return case
 
 
 # ---------------------------------------------------------------------------

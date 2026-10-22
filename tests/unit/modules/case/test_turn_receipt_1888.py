@@ -101,6 +101,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.case_builders import UNSET, investigating_case
 from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (
     _make_resolved_case,
     _make_runbook_ready,
@@ -130,10 +131,9 @@ def _user(user_id: str) -> UserDTO:
 
 
 def _investigating_case(case_id: str = CASE_ID) -> Case:
-    case = Case(
+    return investigating_case(
         case_id=case_id,
         title="Checkout 503s",
-        state=CaseState.INQUIRY,
         user_id=OWNER,
         enterprise_id=ENTERPRISE,
         description="checkout 503s",
@@ -143,13 +143,12 @@ def _investigating_case(case_id: str = CASE_ID) -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
+        inquiry=UNSET,
+        statement="checkout returns 503",
+        confirmed_at=UNSET,
+        progress=InvestigationProgress(),
+        current_turn=4,
     )
-    case.inquiry.proposed_problem_statement = "checkout returns 503"
-    case.inquiry.problem_statement_confirmed = True
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 4
-    return case
 
 
 def _runbook_ready_case() -> Case:

@@ -9,7 +9,6 @@ production level, and transcript prose riding along into the aggregator.
 import hashlib
 import logging
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 
@@ -38,35 +37,19 @@ from faultmaven.modules.case.domain.models.hypothesis import (
     HypothesisGenerationMode,
     HypothesisState,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
 from faultmaven.modules.case.domain.models.turn import TurnOutcome
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
 
 def _case(current_turn: int = 5, turns_without_progress: int = 0) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="db slow",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="db slow", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="db slow",
+        symptom="db slow",
+        current_turn=current_turn,
+        turns_without_progress=turns_without_progress,
     )
-    case.current_turn = current_turn
-    case.turns_without_progress = turns_without_progress
-    return case
 
 
 def _hex(label: str, width: int = 12) -> str:

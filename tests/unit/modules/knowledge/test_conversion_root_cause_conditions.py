@@ -14,12 +14,8 @@ from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
     RootCauseConclusion,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
 from faultmaven.modules.knowledge.domain.models.conversion import CaseConversionRequest
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -27,22 +23,13 @@ _LIMIT = "the v2.14.0 release halved the checkout-api memory limit to 512Mi"
 
 
 def _case(conditions: list[str]) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_aa0000000003",
-        user_id="u",
-        enterprise_id="o",
         title="Checkout OOM kills",
         description="checkout-api crash-loops after v2.14.0.",
-        state=CaseState.INVESTIGATING,
         created_at=datetime(2026, 8, 18, 10, 0, 0, tzinfo=UTC),
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout-api crash-loops",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout-api crash-loops after v2.14.0",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="checkout-api crash-loops",
+        symptom="checkout-api crash-loops after v2.14.0",
     )
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="checkout-api v2.14.0 retains an unbounded orderSummaryCache",

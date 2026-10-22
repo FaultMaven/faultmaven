@@ -34,10 +34,11 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import InquiryResponse
-from faultmaven.modules.case.contracts import Case, CaseState, UploadedFile
+from faultmaven.modules.case.contracts import Case, UploadedFile
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _upsert_uploaded_files,
 )
+from tests.case_builders import UNSET, inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -71,16 +72,14 @@ def _complete_row(file_id: str = FILE_ID) -> UploadedFile:
 
 
 def _case(rows) -> Case:
-    case = Case(
+    return inquiry_case(
         case_id="case_aabb11223344",
+        user_id=UNSET,
         enterprise_id="org_123",
-        title="t",
         description="d",
-        state=CaseState.INQUIRY,
+        uploaded_files=list(rows),
+        current_turn=REUPLOAD_TURN,
     )
-    case.uploaded_files = list(rows)
-    case.current_turn = REUPLOAD_TURN
-    return case
 
 
 def _attachment(file_id: str = FILE_ID, *, is_novel: bool) -> dict:

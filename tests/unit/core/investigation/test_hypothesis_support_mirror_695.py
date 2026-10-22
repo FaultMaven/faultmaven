@@ -14,7 +14,6 @@ resolved ``validated_hypothesis_id`` on a clean, non-fragmented solved case).
 import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
@@ -33,8 +32,6 @@ from faultmaven.core.investigation.milestone_engine.chain_emission import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     ConfidenceLevel,
     Evidence,
@@ -46,15 +43,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -132,28 +128,16 @@ def _hlink(
 
 
 def _case(*, nodes=None, evidence=None, hyps=None) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="mTLS handshake fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="mTLS handshake fails", severity=CaseSeverity.HIGH
-        ),
-    )
-    case.current_turn = 4
     # Chain emission is cause work: accepted only on a verified problem.
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    case.causal_nodes = {n.node_id: n for n in (nodes or [])}
-    case.evidence = evidence or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    return case
+    return investigating_case(
+        statement="mTLS handshake fails",
+        symptom="mTLS handshake fails",
+        current_turn=4,
+        problem_status=ProblemStatus.VERIFIED,
+        causal_nodes={n.node_id: n for n in (nodes or [])},
+        evidence=evidence or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
+    )
 
 
 def _node_ev_ids(node) -> set:

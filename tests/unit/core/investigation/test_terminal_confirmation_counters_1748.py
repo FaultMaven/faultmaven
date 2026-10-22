@@ -24,7 +24,6 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import get_args
@@ -71,6 +70,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.exceptions import StaleCaseException
+from tests.case_builders import UNSET, investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -628,10 +628,9 @@ USER_ID = "user_test"
 
 
 def _investigating_case(pending: str = "resolved") -> Case:
-    case = Case(
+    case = investigating_case(
         case_id=CASE_ID,
         title="Terminal confirmation counters",
-        state=CaseState.INQUIRY,
         user_id=USER_ID,
         enterprise_id="org_test",
         description="pool exhaustion",
@@ -641,13 +640,11 @@ def _investigating_case(pending: str = "resolved") -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
+        inquiry=UNSET,
+        statement="pool exhaustion",
+        progress=InvestigationProgress(),
+        current_turn=7,
     )
-    case.inquiry.proposed_problem_statement = "pool exhaustion"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 7
     propose_transition(case, to_state=pending, summary="Resolve it?")
     return case
 

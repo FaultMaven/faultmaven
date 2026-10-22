@@ -22,7 +22,6 @@ still permits the good one), because a gate that cannot fail proves nothing:
 
 from datetime import datetime, timezone
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
@@ -43,8 +42,6 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
 from faultmaven.modules.case.contracts import (
     CONFIRMED_ESTABLISHED_BY,
     Case,
-    CaseSeverity,
-    CaseState,
     CauseState,
     Evidence,
     EvidenceCategory,
@@ -54,15 +51,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     InvestigationActionType,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     ProposedAction,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -76,25 +72,13 @@ pytestmark = pytest.mark.unit
 
 
 def _case() -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
+    return investigating_case(
         title="IRSA AssumeRoleWithWebIdentity fails",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="IRSA exchange fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="IRSA AssumeRoleWithWebIdentity fails in prod-west-2",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="IRSA exchange fails",
+        symptom="IRSA AssumeRoleWithWebIdentity fails in prod-west-2",
+        current_turn=9,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.current_turn = 9
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _evidence(ev_id, category, turn, summary, collected_by="llm") -> Evidence:

@@ -23,7 +23,6 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
     commit_turn_plan,
 )
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,
@@ -33,19 +32,19 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
+from tests.case_builders import UNSET, inquiry_case
 
 pytestmark = [pytest.mark.unit]
 
 
 def _case(turn: int = 3) -> Case:
-    case = Case(
+    return inquiry_case(
         case_id="case_aabbccddeeff",
+        user_id=UNSET,
         enterprise_id="ent_1882",
         title="Plumbing case",
-        state=CaseState.INQUIRY,
+        current_turn=turn,
     )
-    case.current_turn = turn
-    return case
 
 
 def _report(case: Case) -> CaseReport:

@@ -47,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -224,10 +225,9 @@ def mock_repo():
 def _investigating_case() -> Case:
     """An INVESTIGATING case carrying a symptom evidence row, so the only
     reason the validator can reject a claim is a missing justification."""
-    case = Case(
+    case = investigating_case(
         case_id="case_aaaaaaaa1677",
         title="Reasoning feedback test",
-        state=CaseState.INVESTIGATING,
         user_id="user_123",
         enterprise_id="org_123",
         description="billing-exporter fails to start on metrics-01",
@@ -237,11 +237,8 @@ def _investigating_case() -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            thread_id="thread_123",
-            proposed_problem_statement="billing-exporter fails to start",
-        ),
+        inquiry=InquiryData(thread_id="thread_123"),
+        statement="billing-exporter fails to start",
     )
     case.evidence.append(
         Evidence(

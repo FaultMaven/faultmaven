@@ -39,8 +39,6 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.terminal_transitions import _cause_identified
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     ConfidenceLevel,
@@ -53,16 +51,15 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
     WorkingConclusion,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -134,29 +131,17 @@ def _hyp(
 
 
 def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing with 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout orders failing with 500s",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="checkout orders failing with 500s",
+        symptom="checkout orders failing with 500s",
+        causal_nodes={n.node_id: n for n in (nodes or [])},
+        causal_edges=edges or [],
+        evidence=evidence or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.causal_nodes = {n.node_id: n for n in (nodes or [])}
-    case.causal_edges = edges or []
-    case.evidence = evidence or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _llm_rcc(root_cause, *, vhid=None, likelihood=0.85) -> RootCauseConclusion:

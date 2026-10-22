@@ -17,38 +17,19 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     EvidenceNeed,
-    InquiryData,
     NeedObtainability,
     NeedPurpose,
     NeedState,
-    ProblemVerification,
 )
-from tests.utils import generate_case_id, generate_evidence_id
+from tests.case_builders import investigating_case
+from tests.utils import generate_evidence_id
 
 pytestmark = pytest.mark.unit
 
 
 def _case() -> Case:
-    case = Case(
-        case_id=generate_case_id(),
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="x",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="x", severity=CaseSeverity.HIGH
-        ),
-    )
-    case.current_turn = 5
-    return case
+    return investigating_case(statement="x", symptom="x", current_turn=5)
 
 
 def _need(

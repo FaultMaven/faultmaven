@@ -35,13 +35,11 @@ from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
-    ProblemVerification,
     RootCauseConclusion,
     Solution,
     SolutionType,
 )
+from tests.case_builders import UNSET, investigating_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -104,20 +102,14 @@ def _ready_readiness(monkeypatch):
 
 def _case() -> Case:
     """A real ``Case`` with enough content to build a similarity query."""
-    case = Case(
+    case = investigating_case(
+        case_id=UNSET,
         user_id=OWNER,
         enterprise_id=ORG,
         title="Connection pool exhausted under load",
         description="DB queries timing out",
-        state=CaseState.INVESTIGATING,
-        problem_verification=ProblemVerification(
-            symptom_statement="Timeout errors",
-            severity="HIGH",
-        ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Timeout",
-        ),
+        symptom="Timeout errors",
+        statement="Timeout",
     )
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Misconfigured connection pool timeout",

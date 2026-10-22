@@ -13,18 +13,17 @@ Run:
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import inquiry_case
 
 # ============================================================
 # case_scope_where — the predicate builder
@@ -120,13 +119,8 @@ def repository(async_session) -> SQLiteCaseRepository:
 
 
 def _make_case(*, user_id: str, title: str = "Broker connection refused") -> Case:
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id=user_id,
-        enterprise_id="org_alpha",
-        title=title,
-        description="",
-        state=CaseState.INQUIRY,
+    return inquiry_case(
+        user_id=user_id, enterprise_id="org_alpha", title=title, description=""
     )
 
 

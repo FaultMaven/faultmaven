@@ -28,10 +28,12 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
     UploadedFile,
 )
+from tests.case_builders import UNSET, make_case
 
 
 def _make_case() -> Case:
-    return Case(
+    return make_case(
+        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         title="Test",

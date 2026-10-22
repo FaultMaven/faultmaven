@@ -27,12 +27,11 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
     UploadedFile,
 )
+from tests.case_builders import UNSET, investigating_case, make_case
 
 
 def _case() -> Case:
-    return Case(
-        user_id="u", enterprise_id="o", title="t", description="VM will not start"
-    )
+    return make_case(case_id=UNSET, description="VM will not start")
 
 
 def _evidence() -> Evidence:
@@ -173,31 +172,23 @@ def test_floor_sits_under_the_structured_output_cap():
 # ---------------------------------------------------------------------------
 # Turn level: process_turn on an engine WITH tools registered
 # ---------------------------------------------------------------------------
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from tests.model_content import disabled_redaction
 
 
 def _investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_1116a0b1c2d3",
         title="VM will not start",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="libvirt cannot write its PID file",
-        problem_verification=ProblemVerification(
-            symptom_statement="VM fails to start", severity="high"
-        ),
+        symptom="VM fails to start",
+        inquiry=UNSET,
+        statement="VM fails to start",
+        progress=InvestigationProgress(),
+        current_turn=8,
     )
-    case.inquiry.proposed_problem_statement = "VM fails to start"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 8
-    return case
 
 
 def _tool_engine() -> MilestoneEngine:

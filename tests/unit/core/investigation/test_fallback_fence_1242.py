@@ -82,15 +82,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     InvestigationStage,
-    ProblemVerification,
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.documentation import JournalEntry
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.case_builders import investigating_case
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import NO_TOOLS
 
@@ -246,7 +245,7 @@ def _case(
 ) -> Case:
     now = datetime.now(timezone.utc)
     terminal = state in (CaseState.RESOLVED, CaseState.CLOSED)
-    case = Case(
+    return investigating_case(
         case_id="case_aabb11223344",
         title="Checkout crash-looping",
         description=description,
@@ -256,10 +255,7 @@ def _case(
         current_stage=(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None
         ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement=proposed,
-        ),
+        statement=proposed,
         evidence=[_evidence()] if with_upload else [],
         uploaded_files=[_file(structural_index)] if with_upload else [],
         current_turn=1,
@@ -268,12 +264,12 @@ def _case(
         last_activity_at=now,
         resolved_at=now if terminal else None,
         closed_at=now if terminal else None,
+        symptom=(
+            "checkout pods restart every ~40s"
+            if state == CaseState.INVESTIGATING
+            else None
+        ),
     )
-    if state == CaseState.INVESTIGATING:
-        case.problem_verification = ProblemVerification(
-            symptom_statement="checkout pods restart every ~40s", severity="HIGH"
-        )
-    return case
 
 
 def _render(channel: str, payload: str, state: CaseState = CaseState.INVESTIGATING):

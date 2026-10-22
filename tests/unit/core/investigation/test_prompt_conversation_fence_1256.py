@@ -67,11 +67,9 @@ from faultmaven.core.investigation.prompts.templates.investigation import (
 from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
     InvestigationStage,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -131,22 +129,16 @@ _TOKEN_RE = re.compile(rf'{FENCE_ATTR}="([0-9a-f]+)"')
 
 
 def _case(messages=None, current_turn=2) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_aabb11223344",
         title="Checkout crash-looping",
         description="Pods restart every 40s since the 10:40 deploy",
         user_id="user_123",
         enterprise_id="org_123",
-        state=CaseState.INVESTIGATING,
         current_stage=InvestigationStage.DIAGNOSIS,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Checkout crash-looping",
-        ),
+        statement="Checkout crash-looping",
         current_turn=current_turn,
-    )
-    case.problem_verification = ProblemVerification(
-        symptom_statement="checkout pods restart every ~40s", severity="HIGH"
+        symptom="checkout pods restart every ~40s",
     )
     if messages is not None:
         case.messages = messages

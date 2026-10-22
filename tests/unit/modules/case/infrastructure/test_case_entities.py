@@ -30,13 +30,13 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import inquiry_case
 
 # ============================================================
 # Fixtures
@@ -77,12 +77,11 @@ def _make_case(
     user_id: str = "user_alpha",
     organization_id: str = "org_alpha",
 ) -> Case:
-    return Case(
-        case_id=case_id or f"case_{uuid4().hex[:12]}",
+    return inquiry_case(
+        case_id=case_id or None,
         user_id=user_id,
         enterprise_id=organization_id,
         title="Test case",
-        state=CaseState.INQUIRY,
     )
 
 

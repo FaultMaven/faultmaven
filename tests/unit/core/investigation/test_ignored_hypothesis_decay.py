@@ -33,15 +33,12 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -60,23 +57,9 @@ def _engine() -> MilestoneEngine:
 
 
 def _case(current_turn: int) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="db slow",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="db slow", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="db slow", symptom="db slow", current_turn=current_turn
     )
-    case.current_turn = current_turn
-    return case
 
 
 def _hyp(

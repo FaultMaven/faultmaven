@@ -13,7 +13,7 @@ rather than a Mock, so every engine stage downstream processes genuine typed
 objects (a Mock would accept any shape and hide drift).
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,10 +35,10 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import UNSET, investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -70,7 +70,8 @@ def _deferred_response():
 
 
 def _case(*, confirmed: bool) -> Case:
-    case = Case(
+    case = investigating_case(
+        case_id=UNSET,
         title="Cross-account AssumeRole failures",
         enterprise_id="org_test",
         user_id="user_test",
@@ -81,12 +82,10 @@ def _case(*, confirmed: bool) -> Case:
             temporal_state="ongoing",
             urgency_level="high",
         ),
+        inquiry=UNSET,
+        progress=InvestigationProgress(),
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.progress.problem_status = ProblemStatus.VERIFIED
     # cause_state is RE-DERIVED from the causal graph every turn, so presetting
     # it is overwritten before the proposer runs (observed: the first draft of
     # this test set IDENTIFIED and the trace still read `cause_state=unknown`,

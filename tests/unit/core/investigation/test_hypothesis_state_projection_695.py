@@ -11,7 +11,6 @@ owned by the explicit/M6 refutation lifecycle and is never projected or clobbere
 import hashlib
 import inspect
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 
@@ -23,8 +22,6 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     Evidence,
     EvidenceCategory,
@@ -33,12 +30,11 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeState,
     NodeType,
-    ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -86,25 +82,13 @@ def _hyp(state: HypothesisState, root_node_id: str | None) -> Hypothesis:
 
 
 def _case(*, nodes=None, hyps=None) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="X fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="X fails", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="X fails",
+        symptom="X fails",
+        current_turn=5,
+        causal_nodes={n.node_id: n for n in (nodes or [])},
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
     )
-    case.current_turn = 5
-    case.causal_nodes = {n.node_id: n for n in (nodes or [])}
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    return case
 
 
 # --------------------------------------------------------------------------- #

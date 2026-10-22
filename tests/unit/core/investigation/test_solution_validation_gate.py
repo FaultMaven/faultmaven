@@ -54,13 +54,12 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     SolutionType,
 )
+from tests.case_builders import UNSET, investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -91,16 +90,12 @@ pytestmark = pytest.mark.unit
 
 
 def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
-    case = Case(
+    case = investigating_case(
+        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
-        title="t",
         description="pods crashing",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="pods crashing",
-            problem_statement_confirmed=True,
-        ),
+        statement="pods crashing",
     )
     case.progress.cause_state = cause_state
     if with_symptom:

@@ -32,8 +32,6 @@ from faultmaven.core.investigation.prompts.context_builder.causal_graph_block im
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     CauseState,
@@ -46,15 +44,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -121,29 +118,17 @@ def _hyp(root_node_id, statement, *, hypothesis_id) -> Hypothesis:
 
 
 def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing with 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout orders failing with 500s",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="checkout orders failing with 500s",
+        symptom="checkout orders failing with 500s",
+        causal_nodes={n.node_id: n for n in nodes},
+        causal_edges=edges or [],
+        evidence=evidence or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.causal_nodes = {n.node_id: n for n in nodes}
-    case.causal_edges = edges or []
-    case.evidence = evidence or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _problem(case_id="cn_00000000000d") -> CausalNode:

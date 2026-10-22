@@ -13,7 +13,6 @@ turn. No live LLM: the engine's generator is stubbed.
 """
 
 import hashlib
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -78,7 +77,6 @@ from faultmaven.core.investigation.verification_status import (
 from faultmaven.models.case_ui import CaseUIResponse_Resolved
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
     CaseState,
     CausalNode,
     CauseState,
@@ -91,14 +89,12 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     MitigationRecord,
     NeedPurpose,
     NeedState,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     StatementRecordKind,
     UploadedFile,
     ValidationMethod,
@@ -111,6 +107,7 @@ from faultmaven.modules.case.domain.services.case_ui_adapter import (
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -129,23 +126,14 @@ CAUSE = "the orders service connection pool is capped at 5 connections"
 
 
 def _case(status: ProblemStatus = ProblemStatus.UNVERIFIED) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_0000000000aa",
-        user_id="u",
         enterprise_id="e",
-        title="t",
         description=STATEMENT,
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement=STATEMENT,
-            problem_statement_confirmed=True,
-            problem_statement_confirmed_at=datetime.now(UTC),
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement=STATEMENT, severity=CaseSeverity.HIGH
-        ),
+        statement=STATEMENT,
+        symptom=STATEMENT,
+        current_turn=4,
     )
-    case.current_turn = 4
     case.uploaded_files.append(
         UploadedFile(
             file_id=_FILE_ID,

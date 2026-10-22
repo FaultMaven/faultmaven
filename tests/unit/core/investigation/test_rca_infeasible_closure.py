@@ -46,6 +46,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -82,20 +83,16 @@ def _make_case(
         verified=mitigation_verified,
         completed_at_turn=1 if mitigation_verified else None,
     )
-    return Case(
+    return investigating_case(
         case_id="case_1234567890ab",
         title="Test Case",
-        state=CaseState.INVESTIGATING,
         user_id="user_123",
         enterprise_id="org_123",
         description="Test description",
         problem_verification=pv,
         progress=InvestigationProgress(mitigation=mitigation),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            thread_id="thread_123",
-            proposed_problem_statement="Test symptom",
-        ),
+        inquiry=InquiryData(thread_id="thread_123"),
+        statement="Test symptom",
     )
 
 

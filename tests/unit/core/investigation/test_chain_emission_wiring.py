@@ -6,7 +6,6 @@ to its root.
 """
 
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
@@ -19,45 +18,29 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     Solution,
     SolutionType,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
 
 def _case() -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="Deploy fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="Deploy to on-prem job fails",
-            severity=CaseSeverity.HIGH,
-        ),
-    )
-    case.current_turn = 4
     # Chain emission is cause work: accepted only on a verified problem.
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
+    return investigating_case(
+        statement="Deploy fails",
+        symptom="Deploy to on-prem job fails",
+        current_turn=4,
+        problem_status=ProblemStatus.VERIFIED,
+    )
 
 
 # ---------------------------------------------------------------------------

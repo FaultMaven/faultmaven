@@ -960,23 +960,19 @@ class _Repository:
 
 
 def _investigating_case(*, suggestions: bool, material: bool):
-    from faultmaven.modules.case.contracts import CaseState, InquiryData, UploadedFile
-    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.contracts import UploadedFile
     from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+    from tests.case_builders import investigating_case
 
     now = datetime.now(timezone.utc)
-    case = Case(
+    case = investigating_case(
         case_id="case_1998a3000001",
         title="Nightly OOM kills of postgres",
         description="postgres is OOM-killed nightly",
         user_id=USER,
         enterprise_id=ENTERPRISE,
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            problem_statement_confirmed_at=now,
-            proposed_problem_statement="Nightly OOM kills",
-        ),
+        statement="Nightly OOM kills",
+        confirmed_at=now,
         current_turn=1,
         turn_history=[
             TurnProgress(

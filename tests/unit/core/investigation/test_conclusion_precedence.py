@@ -32,8 +32,6 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     CauseAssuranceGrade,
@@ -47,15 +45,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -133,32 +130,20 @@ def _hyp(root_node_id, statement, *, hypothesis_id, path=None) -> Hypothesis:
 
 
 def _case(nodes=(), edges=(), evidence=(), hyps=()) -> Case:
-    case = Case(
-        case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing with 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout orders failing with 500s",
-            severity=CaseSeverity.HIGH,
-        ),
-    )
-    case.causal_nodes = {n.node_id: n for n in nodes}
-    case.causal_edges = list(edges)
-    case.evidence = list(evidence)
-    case.hypotheses = {h.hypothesis_id: h for h in hyps}
     # The cause-identification anchor; these fixtures model an investigation that
     # has already verified its symptom, so the tests exercise precedence rather
     # than the anchor.
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
+    return investigating_case(
+        case_id="case_000000000001",
+        current_turn=5,
+        statement="checkout orders failing with 500s",
+        symptom="checkout orders failing with 500s",
+        causal_nodes={n.node_id: n for n in nodes},
+        causal_edges=list(edges),
+        evidence=list(evidence),
+        hypotheses={h.hypothesis_id: h for h in hyps},
+        problem_status=ProblemStatus.VERIFIED,
+    )
 
 
 def _validated_root_case():

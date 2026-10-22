@@ -23,14 +23,12 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
 from faultmaven.modules.case.contracts import (
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import investigating_case
 
 _EV_COUNTER = 0
 
@@ -81,17 +79,13 @@ def _make_case(evidence_list):
                     structural_index=getattr(ev, "__test_structural_index__", None),
                 )
             )
-    return Case(
+    return investigating_case(
         case_id="case_aabb11223344",
         title="Test Case",
         description="Test description",
         user_id="user_123",
         enterprise_id="org_123",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test description",
-        ),
+        statement="Test description",
         evidence=evidence_list,
         uploaded_files=uploaded_files,
     )
