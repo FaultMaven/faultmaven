@@ -1,4 +1,5 @@
-"""One confidence floor for every destructive outcome (#2106, design D4 + 3(a)).
+"""One confidence floor for demoting a cause or a node (#2106, design D4 + 3(a);
+the likelihood update is open, #2154).
 
 M6's evidence arm and the conclusion retraction used to weigh the hypothesis's
 OWN links at any confidence, so one self-hedged REFUTES against no direct
@@ -221,10 +222,12 @@ def test_the_conclusion_retraction_weighs_the_chain_above_the_floor():
     """``retract_disconfirmed_rcc`` (every recompute): the model's conclusion
     names an ACTIVE hypothesis whose one support is on its root, so the cause
     was never identified and M6 never runs. One REFUTES on the hypothesis,
-    hedged or confident (1 against 1), leaves the conclusion; confident
-    refutes outnumbering the chain's support retract it."""
+    hedged or confident (1 against 1), leaves the conclusion, and so do two
+    hedged ones (no confident refute counts); confident refutes outnumbering
+    the chain's support retract it."""
     for refutes, confidence, retracted in (
         (1, _HEDGE, False),
+        (2, _HEDGE, False),
         (1, 0.9, False),
         (2, 0.9, True),
     ):
