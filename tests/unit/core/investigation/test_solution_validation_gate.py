@@ -59,7 +59,7 @@ from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     SolutionType,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -91,7 +91,6 @@ pytestmark = pytest.mark.unit
 
 def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
     case = investigating_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         description="pods crashing",

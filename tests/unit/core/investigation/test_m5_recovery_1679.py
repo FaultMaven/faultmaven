@@ -55,7 +55,7 @@ from faultmaven.modules.case.domain.models.solution import (
     ProposedAction,
     SolutionType,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -130,7 +130,6 @@ def _case(
     is not held at the evidence-free prior cap.
     """
     case = investigating_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         description="billing-exporter fails to start",

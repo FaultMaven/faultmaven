@@ -27,7 +27,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.report.domain.services.report_recommendation_service import (
     ReportRecommendationService,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -73,7 +73,6 @@ def _available_embedder():
 
 def _case() -> Case:
     return investigating_case(
-        case_id=UNSET,
         user_id="case-owner-9",  # deliberately NOT the requester
         enterprise_id=ENTERPRISE,
         title="Connection pool exhausted under load",

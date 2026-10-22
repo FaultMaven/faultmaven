@@ -32,7 +32,7 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from tests.case_builders import UNSET, inquiry_case
+from tests.case_builders import inquiry_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -40,7 +40,7 @@ pytestmark = [pytest.mark.unit]
 def _case(turn: int = 3) -> Case:
     return inquiry_case(
         case_id="case_aabbccddeeff",
-        user_id=UNSET,
+        user_id=None,
         enterprise_id="ent_1882",
         title="Plumbing case",
         current_turn=turn,

@@ -8,7 +8,7 @@ pad the action-loop / momentum windows.
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
-from tests.case_builders import UNSET, inquiry_case
+from tests.case_builders import inquiry_case
 
 
 def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:
@@ -17,8 +17,7 @@ def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:
 
 def _case(turns) -> Case:
     return inquiry_case(
-        case_id=UNSET,
-        user_id=UNSET,
+        user_id=None,
         description="d",
         turn_history=turns,
         current_turn=turns[-1].turn_number if turns else 0,

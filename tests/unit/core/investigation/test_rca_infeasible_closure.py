@@ -40,7 +40,6 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     InvestigationProgress,
     MitigationRecord,
     ProblemStatus,
@@ -91,7 +90,6 @@ def _make_case(
         description="Test description",
         problem_verification=pv,
         progress=InvestigationProgress(mitigation=mitigation),
-        inquiry=InquiryData(thread_id="thread_123"),
         statement="Test symptom",
     )
 

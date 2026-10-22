@@ -78,7 +78,7 @@ def _make_case(
     organization_id: str = "org_alpha",
 ) -> Case:
     return inquiry_case(
-        case_id=case_id or None,
+        case_id=case_id or f"case_{uuid4().hex[:12]}",
         user_id=user_id,
         enterprise_id=organization_id,
         title="Test case",

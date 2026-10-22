@@ -40,7 +40,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
     RepositoryException,
     SQLiteCaseRepository,
 )
-from tests.case_builders import UNSET, inquiry_case
+from tests.case_builders import inquiry_case
 from tests.utils import seed_enterprises
 
 pytestmark = [pytest.mark.unit]
@@ -139,7 +139,7 @@ async def _committed(sessions, case_id: str) -> dict:
 
 def _case() -> Case:
     return inquiry_case(
-        user_id=UNSET, enterprise_id=ENTERPRISE, title="Turn commit case"
+        user_id=None, enterprise_id=ENTERPRISE, title="Turn commit case"
     )
 
 

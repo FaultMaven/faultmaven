@@ -43,11 +43,9 @@ from faultmaven.modules.case.contracts import MESSAGE_METADATA_KB_SOURCES
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.problem import (
     ProblemStatus,
-    ProblemVerification,
 )
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_service import CaseService
-from tests.case_builders import UNSET, inquiry_case, investigating_case
+from tests.case_builders import inquiry_case, investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -129,15 +127,11 @@ def _investigating_case(kb_context) -> Case:
         user_id="user_test",
         enterprise_id="org_test",
         description="disk full on the data volume",
-        problem_verification=ProblemVerification(
-            symptom_statement="disk full on the data volume",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=UNSET,
+        symptom="disk full on the data volume",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         statement="disk full",
-        progress=InvestigationProgress(),
         current_turn=7,
         kb_context=kb_context,
     )

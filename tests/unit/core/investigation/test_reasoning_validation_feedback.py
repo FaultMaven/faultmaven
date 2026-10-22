@@ -41,11 +41,9 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     InvestigationProgress,
     MitigationRecord,
     ProblemStatus,
-    ProblemVerification,
 )
 from tests.case_builders import investigating_case
 
@@ -231,13 +229,9 @@ def _investigating_case() -> Case:
         user_id="user_123",
         enterprise_id="org_123",
         description="billing-exporter fails to start on metrics-01",
-        problem_verification=ProblemVerification(
-            symptom_statement="billing-exporter fails to start",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_123"),
+        symptom="billing-exporter fails to start",
+        temporal_state="ongoing",
+        urgency="high",
         statement="billing-exporter fails to start",
     )
     case.evidence.append(

@@ -39,7 +39,7 @@ from faultmaven.modules.case.contracts import (
     Solution,
     SolutionType,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -103,7 +103,6 @@ def _ready_readiness(monkeypatch):
 def _case() -> Case:
     """A real ``Case`` with enough content to build a similarity query."""
     case = investigating_case(
-        case_id=UNSET,
         user_id=OWNER,
         enterprise_id=ORG,
         title="Connection pool exhausted under load",

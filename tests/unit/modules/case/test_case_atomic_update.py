@@ -13,11 +13,6 @@ import pytest
 
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from tests.case_builders import investigating_case
 
 
@@ -28,14 +23,9 @@ def _make_investigating_case() -> Case:
         user_id="user_test",
         enterprise_id="org_test",
         description="Investigating something concrete",
-        progress=InvestigationProgress(),
-        problem_verification=ProblemVerification(
-            symptom_statement="Test symptom",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_test"),
+        symptom="Test symptom",
+        temporal_state="ongoing",
+        urgency="high",
         statement="Test symptom",
     )
 

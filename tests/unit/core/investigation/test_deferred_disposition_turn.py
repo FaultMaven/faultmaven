@@ -35,10 +35,8 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -71,19 +69,14 @@ def _deferred_response():
 
 def _case(*, confirmed: bool) -> Case:
     case = investigating_case(
-        case_id=UNSET,
         title="Cross-account AssumeRole failures",
         enterprise_id="org_test",
         user_id="user_test",
         description="data-processor pods cannot assume the cross-account role",
-        problem_verification=ProblemVerification(
-            symptom_statement="AssumeRoleWithWebIdentity fails for the pods",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=UNSET,
-        progress=InvestigationProgress(),
+        symptom="AssumeRoleWithWebIdentity fails for the pods",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         problem_status=ProblemStatus.VERIFIED,
     )
     # cause_state is RE-DERIVED from the causal graph every turn, so presetting

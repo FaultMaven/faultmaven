@@ -59,8 +59,8 @@ def _case(*outcomes: TurnOutcome, messages=None) -> Case:
         description="d",
         enterprise_id="ent_1",
         current_turn=len(outcomes),
-        turn_history=[_turn(i, o) for i, o in enumerate(outcomes, start=1)],
     )
+    case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
     if messages is not None:
         case.messages = messages
     return case

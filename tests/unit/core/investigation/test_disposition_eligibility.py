@@ -44,7 +44,6 @@ from faultmaven.modules.case.domain.models.conclusion import (
 )
 from faultmaven.modules.case.domain.models.evidence import Evidence
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -79,7 +78,6 @@ def _make_investigating_case() -> Case:
         description="Test problem",
         statement="Test problem",
         symptom="Test symptom",
-        progress=InvestigationProgress(),
     )
 
 

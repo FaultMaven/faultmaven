@@ -256,6 +256,7 @@ def _case(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None
         ),
         statement=proposed,
+        confirmed_at=datetime.now(timezone.utc),
         evidence=[_evidence()] if with_upload else [],
         uploaded_files=[_file(structural_index)] if with_upload else [],
         current_turn=1,

@@ -45,7 +45,7 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
 )
 from faultmaven.core.investigation.schemas import InquiryResponse
 from faultmaven.modules.case.contracts import Case, TurnOutcome, UploadedFile
-from tests.case_builders import UNSET, inquiry_case
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -80,7 +80,7 @@ def _row(file_id: str = FILE_ID, turn: int = TURN) -> UploadedFile:
 def _case(rows) -> Case:
     return inquiry_case(
         case_id="case_aabb11223344",
-        user_id=UNSET,
+        user_id=None,
         enterprise_id="org_123",
         description="d",
         uploaded_files=list(rows),

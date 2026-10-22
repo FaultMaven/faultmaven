@@ -20,7 +20,7 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     CATEGORY_MILESTONE_MAP,
 )
 from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
-from tests.case_builders import UNSET, make_case
+from tests.case_builders import make_case
 
 _LEGACY = ("mitigation_evidence", "solution_evidence")
 _QUARTET = {
@@ -129,7 +129,6 @@ def _ev(category: EvidenceCategory, idx: int = 1) -> Evidence:
 
 def _case(*evidence: Evidence) -> Case:
     return make_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         description="Pods are crashing",

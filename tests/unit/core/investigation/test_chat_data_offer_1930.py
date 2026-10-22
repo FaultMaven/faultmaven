@@ -43,12 +43,10 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     ChatDataOffer,
     ChatDataOfferState,
-    InvestigationProgress,
-    ProblemVerification,
     UploadedFile,
     block_key,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -81,10 +79,10 @@ def _case(**overrides) -> Case:
         case_id="case_000000001930",
         enterprise_id="e",
         current_turn=4,
-        inquiry=UNSET,
+        confirm_after_build=True,
         statement="api pods crash",
-        confirmed_at=UNSET,
     )
+    case.inquiry.problem_statement_confirmed_at = None
     for key, value in overrides.items():
         setattr(case, key, value)
     return case
@@ -434,15 +432,11 @@ def _investigating_case() -> Case:
         user_id="user_test",
         enterprise_id="org_test",
         description="api pods crash",
-        problem_verification=ProblemVerification(
-            symptom_statement="api pods crash",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=UNSET,
+        symptom="api pods crash",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         statement="api pods crash",
-        progress=InvestigationProgress(),
         current_turn=7,
     )
 

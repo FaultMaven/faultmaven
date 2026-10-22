@@ -46,7 +46,6 @@ from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.modules.case.contracts import (
     CaseState,
-    InvestigationProgress,
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import (
@@ -54,7 +53,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 from tests.model_content import disabled_redaction
 
 #: A redaction context that redacts nothing: the terminal Q&A path takes the
@@ -115,9 +114,8 @@ def _case(with_evidence: bool = True) -> Case:
         title="VM will not start",
         description="libvirt cannot write its PID file",
         symptom="VM fails to start",
-        inquiry=UNSET,
+        confirm_after_build=True,
         statement="VM fails to start",
-        progress=InvestigationProgress(),
         current_turn=8,
     )
     if with_evidence:

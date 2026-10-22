@@ -128,8 +128,8 @@ def _case(
         statement="intermittent latency",
         symptom="intermittent latency",
         turns_without_progress=turns_without_progress,
-        evidence=[_ev(f"e{i}") for i in range(n_evidence)],
     )
+    case.evidence = [_ev(f"e{i}") for i in range(n_evidence)]
 
     cats = list(HypothesisCategory)[:n_categories]
     hyps = [_hyp(cats[i % max(len(cats), 1)], i) for i in range(n_hypotheses)]

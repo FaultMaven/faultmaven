@@ -182,6 +182,7 @@ def _case(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None
         ),
         statement="Checkout crash-looping",
+        confirmed_at=datetime.now(timezone.utc),
         evidence=[_evidence()],
         uploaded_files=[_file()],
         current_turn=1,

@@ -10,7 +10,7 @@ import pytest
 
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
-from tests.case_builders import UNSET, make_case
+from tests.case_builders import make_case
 
 
 def _tp(n: int, outcome: TurnOutcome = TurnOutcome.CONVERSATION) -> TurnProgress:
@@ -18,15 +18,15 @@ def _tp(n: int, outcome: TurnOutcome = TurnOutcome.CONVERSATION) -> TurnProgress
 
 
 def _case(nums: list[int], current_turn: int | None = None) -> Case:
-    return make_case(
-        case_id=UNSET,
-        user_id=UNSET,
+    case = make_case(
+        user_id=None,
         enterprise_id="org1",
-        turn_history=[_tp(n) for n in nums],
         current_turn=(
             current_turn if current_turn is not None else (nums[-1] if nums else 0)
         ),
     )
+    case.turn_history = [_tp(n) for n in nums]
+    return case
 
 
 def _nums(case: Case) -> list[int]:

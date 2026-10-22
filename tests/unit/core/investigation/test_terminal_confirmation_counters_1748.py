@@ -67,10 +67,8 @@ from faultmaven.modules.case.contracts import (
     TurnOutcome,
     TurnProgress,
 )
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.exceptions import StaleCaseException
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -634,15 +632,11 @@ def _investigating_case(pending: str = "resolved") -> Case:
         user_id=USER_ID,
         enterprise_id="org_test",
         description="pool exhaustion",
-        problem_verification=ProblemVerification(
-            symptom_statement="pool exhaustion",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=UNSET,
+        symptom="pool exhaustion",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         statement="pool exhaustion",
-        progress=InvestigationProgress(),
         current_turn=7,
     )
     propose_transition(case, to_state=pending, summary="Resolve it?")

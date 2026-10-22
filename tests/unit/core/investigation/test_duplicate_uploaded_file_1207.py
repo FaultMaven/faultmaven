@@ -38,7 +38,7 @@ from faultmaven.modules.case.contracts import Case, UploadedFile
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _upsert_uploaded_files,
 )
-from tests.case_builders import UNSET, inquiry_case
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +74,7 @@ def _complete_row(file_id: str = FILE_ID) -> UploadedFile:
 def _case(rows) -> Case:
     return inquiry_case(
         case_id="case_aabb11223344",
-        user_id=UNSET,
+        user_id=None,
         enterprise_id="org_123",
         description="d",
         uploaded_files=list(rows),

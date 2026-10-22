@@ -43,7 +43,6 @@ from faultmaven.modules.case.domain.models.problem import (
     KnowledgeResolution,
     ProblemVerification,
 )
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     earned_edge_refusal,
@@ -66,15 +65,11 @@ def _make_investigating_case() -> Case:
         user_id="user_test",
         enterprise_id="org_test",
         description="Invariant test description",
-        problem_verification=ProblemVerification(
-            symptom_statement="Test symptom",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_test"),
+        symptom="Test symptom",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         statement="Invariant test problem",
-        progress=InvestigationProgress(),
     )
 
 

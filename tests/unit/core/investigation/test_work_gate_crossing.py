@@ -92,17 +92,18 @@ def _hyp(category: HypothesisCategory, seed: int) -> Hypothesis:
 
 
 def _case(*, n_hypotheses: int, n_categories: int, n_evidence: int) -> Case:
-    cats = list(HypothesisCategory)[: max(n_categories, 1)]
-    return investigating_case(
+    case = investigating_case(
         current_turn=3,
         statement="intermittent latency",
         symptom="intermittent latency",
-        evidence=[_ev(i) for i in range(n_evidence)],
-        hypotheses={
-            (h := _hyp(cats[i % len(cats)], i)).hypothesis_id: h
-            for i in range(n_hypotheses)
-        },
     )
+    case.evidence = [_ev(i) for i in range(n_evidence)]
+    cats = list(HypothesisCategory)[: max(n_categories, 1)]
+    case.hypotheses = {
+        (h := _hyp(cats[i % len(cats)], i)).hypothesis_id: h
+        for i in range(n_hypotheses)
+    }
+    return case
 
 
 def test_no_crossing_below_the_work_gate(counter):

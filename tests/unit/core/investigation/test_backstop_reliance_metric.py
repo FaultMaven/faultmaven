@@ -47,7 +47,6 @@ def _case() -> Case:
         case_id="case_ba0c05704e10",
         title="backstop-reliance test",
         statement="p",
-        progress=InvestigationProgress(),
     )
 
 

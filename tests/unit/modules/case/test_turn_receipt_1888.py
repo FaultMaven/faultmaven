@@ -84,8 +84,6 @@ from faultmaven.modules.case.contracts import (
     TurnReceipt,
     TurnReceiptExistsError,
 )
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure import (
@@ -101,7 +99,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (
     _make_resolved_case,
     _make_runbook_ready,
@@ -131,24 +129,21 @@ def _user(user_id: str) -> UserDTO:
 
 
 def _investigating_case(case_id: str = CASE_ID) -> Case:
-    return investigating_case(
+    case = investigating_case(
         case_id=case_id,
         title="Checkout 503s",
         user_id=OWNER,
         enterprise_id=ENTERPRISE,
         description="checkout 503s",
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout returns 503",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=UNSET,
+        symptom="checkout returns 503",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
         statement="checkout returns 503",
-        confirmed_at=UNSET,
-        progress=InvestigationProgress(),
         current_turn=4,
     )
+    case.inquiry.problem_statement_confirmed_at = None
+    return case
 
 
 def _runbook_ready_case() -> Case:

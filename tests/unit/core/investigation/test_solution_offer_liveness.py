@@ -83,7 +83,7 @@ from faultmaven.modules.case.domain.models.solution import (
     ProposedAction,
     SolutionType,
 )
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -100,7 +100,6 @@ def _make_case(*, established: bool = True) -> Case:
     established-cause license (survives the empty-graph chain recompute,
     unlike a flat cause_state=IDENTIFIED)."""
     case = investigating_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         description="pods crashing",

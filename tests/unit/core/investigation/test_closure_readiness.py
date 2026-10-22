@@ -35,7 +35,6 @@ from faultmaven.modules.case.domain.models.conclusion import (
     RootCauseConclusion,
 )
 from faultmaven.modules.case.domain.models.evidence import Evidence
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import investigating_case
 
@@ -51,7 +50,6 @@ def _make_investigating_case() -> Case:
         enterprise_id="org_test",
         description="Test description",
         statement="Test problem",
-        progress=InvestigationProgress(),
     )
 
 

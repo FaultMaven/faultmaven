@@ -68,7 +68,7 @@ from faultmaven.modules.case.domain.models.problem import (
     InvestigationStage,
 )
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
-from tests.case_builders import UNSET, investigating_case
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
@@ -86,7 +86,6 @@ _KEY = "hyp_bbbbbbbbbbbb"
 def _case(stage=InvestigationStage.DIAGNOSIS, *, key_refuted: bool) -> Case:
     now = datetime.now(UTC)
     case = investigating_case(
-        case_id=UNSET,
         description="a third of logins fail with 401",
         current_turn=3,
         symptom="a third of logins fail with 401",

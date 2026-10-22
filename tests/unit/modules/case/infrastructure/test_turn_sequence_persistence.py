@@ -57,12 +57,13 @@ def _tp(n: int) -> TurnProgress:
 
 
 def _case(turns: list[int], current_turn: int) -> Case:
-    return inquiry_case(
+    case = inquiry_case(
         enterprise_id="org",
         description="d",
-        turn_history=[_tp(n) for n in turns],
         current_turn=current_turn,
     )
+    case.turn_history = [_tp(n) for n in turns]
+    return case
 
 
 @pytest.mark.asyncio

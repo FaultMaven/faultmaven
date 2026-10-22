@@ -35,8 +35,6 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
-    ProblemVerification,
 )
 from tests.case_builders import investigating_case
 
@@ -57,13 +55,9 @@ def _case() -> Case:
         user_id="user_123",
         enterprise_id="org_123",
         description="p95 went from 200ms to 4s after the deploy",
-        problem_verification=ProblemVerification(
-            symptom_statement="p95 latency 4s since the deploy",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_123"),
+        symptom="p95 latency 4s since the deploy",
+        temporal_state="ongoing",
+        urgency="high",
         statement="p95 latency 4s since the deploy",
         current_turn=CURRENT_TURN,
     )

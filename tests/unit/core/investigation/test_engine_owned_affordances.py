@@ -44,7 +44,7 @@ from faultmaven.modules.case.domain.models.problem import (
     ProblemConfirmation,
     UrgencyLevel,
 )
-from tests.case_builders import UNSET, investigating_case, make_case
+from tests.case_builders import investigating_case, make_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -76,7 +76,6 @@ def _inquiry_case(
             assessed_at_turn=1,
         )
     return make_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         title="Test",
@@ -88,10 +87,8 @@ def _inquiry_case(
 def _investigating_case(*, symptom_verified: bool = False) -> Case:
     """INVESTIGATING-stage case in the unified opportunistic flow (no path
     fork)."""
-    from faultmaven.modules.case.contracts import InvestigationProgress
 
     return investigating_case(
-        case_id=UNSET,
         user_id="u1",
         enterprise_id="o1",
         title="Test",
@@ -106,7 +103,6 @@ def _investigating_case(*, symptom_verified: bool = False) -> Case:
             ),
         ),
         statement="Production API is returning 500s",
-        progress=InvestigationProgress(),
         problem_status=(
             ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
         ),

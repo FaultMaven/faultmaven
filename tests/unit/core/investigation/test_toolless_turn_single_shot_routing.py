@@ -27,11 +27,11 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
     UploadedFile,
 )
-from tests.case_builders import UNSET, investigating_case, make_case
+from tests.case_builders import investigating_case, make_case
 
 
 def _case() -> Case:
-    return make_case(case_id=UNSET, description="VM will not start")
+    return make_case(description="VM will not start")
 
 
 def _evidence() -> Evidence:
@@ -172,7 +172,6 @@ def test_floor_sits_under_the_structured_output_cap():
 # ---------------------------------------------------------------------------
 # Turn level: process_turn on an engine WITH tools registered
 # ---------------------------------------------------------------------------
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from tests.model_content import disabled_redaction
 
 
@@ -184,9 +183,8 @@ def _investigating_case() -> Case:
         enterprise_id="org_test",
         description="libvirt cannot write its PID file",
         symptom="VM fails to start",
-        inquiry=UNSET,
+        confirm_after_build=True,
         statement="VM fails to start",
-        progress=InvestigationProgress(),
         current_turn=8,
     )
 

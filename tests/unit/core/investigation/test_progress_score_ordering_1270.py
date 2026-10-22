@@ -51,7 +51,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
+from faultmaven.modules.case.contracts import Case, CaseState
 from tests.case_builders import inquiry_case
 
 
@@ -98,7 +98,6 @@ def _inquiry_case() -> Case:
         user_id="user_123",
         enterprise_id="org_123",
         description="",
-        inquiry=InquiryData(thread_id="thread_1270"),
     )
 
 

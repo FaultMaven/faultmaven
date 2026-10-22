@@ -44,14 +44,15 @@ def _turn(n: int, outcome: TurnOutcome) -> TurnProgress:
 
 def _case(*outcomes: TurnOutcome) -> Case:
     """A case whose turn N has ``outcomes[N - 1]``."""
-    return inquiry_case(
+    case = inquiry_case(
         case_id="case_aabb11223344",
         title="OOM",
         description="d",
         enterprise_id="ent_1",
         current_turn=len(outcomes),
-        turn_history=[_turn(i, o) for i, o in enumerate(outcomes, start=1)],
     )
+    case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
+    return case
 
 
 def _file(turn: int, file_id: str = "file_aabb11223344") -> UploadedFile:
