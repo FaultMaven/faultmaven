@@ -359,7 +359,7 @@ orjson==3.11.8
     # via chromadb
 overrides==7.7.0
     # via chromadb
-packaging==26.1
+packaging==26.3
     # via
     #   black
     #   build
@@ -434,7 +434,7 @@ pyod==3.2.1
     # via faultmaven (pyproject.toml)
 pyparsing==3.3.2
     # via matplotlib
-pypdf==6.19.0
+pypdf==6.21.2
     # via faultmaven (pyproject.toml)
 pypika==0.51.1
     # via chromadb
