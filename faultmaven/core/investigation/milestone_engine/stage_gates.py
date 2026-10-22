@@ -167,7 +167,10 @@ def _should_force_tools(
     #708: a fresh evidence-bearing upload reroutes to ``directed_analysis``
     AND satisfies ``_has_searchable_material`` via its UploadedFile, so tools
     are forced on the delivering turn instead of leaving it on
-    ``tool_choice=auto`` where the agent can skip analysis.
+    ``tool_choice=auto`` where the agent can reply in prose. Forcing requires
+    a call to any offered tool, the schema tool included, so it does not by
+    itself guarantee evidence before the conclusion; what it rules out is the
+    prose reply that would send the loop to its schema-only iteration.
     """
     return (
         processing_mode == "directed_analysis"

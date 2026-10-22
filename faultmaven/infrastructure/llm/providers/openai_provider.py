@@ -136,8 +136,9 @@ class OpenAIProvider(BaseLLMProvider):
     # Effort for a caller-declared INFERENCE intent (#1118). ``"medium"`` is
     # the API's own default level for reasoning models — the intent knob
     # re-requests the model's default rather than inventing an allocation.
-    # No production call site declares INFERENCE yet (#1116 owns that
-    # decision); the mapping exists so the experiment is expressible.
+    # The single-shot diagnostic turn (core/investigation/milestone_engine/
+    # turn_generation.py) declares INFERENCE with
+    # TOOLLESS_INFERENCE_OUTPUT_FLOOR; this is its translation.
     _INFERENCE_REASONING_EFFORT = "medium"
 
     # The two spellings of the /chat/completions generation cap. Exactly one is

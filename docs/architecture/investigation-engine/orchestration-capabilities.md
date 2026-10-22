@@ -204,13 +204,13 @@ or absent with the marker accounting for it.
 
 1. A turn gets tools when `investigation_tools` is registered **and** the turn has something for them to target. A turn with no searchable material takes the single-shot structured path instead — see [§5.5](#55-generation-path-selection-v61). On the loop, the LLM decides which tool to invoke based on the user's question and tool descriptions.
 2. `tool_choice` varies by query context:
-   - **Directed Analysis + evidence**: `tool_choice="required"` — LLM must search evidence before answering
+   - **Directed Analysis + evidence**: `tool_choice="required"` — LLM must call a tool. The schema tool is one of them and can end the loop at any iteration, so forcing rules out a prose reply rather than guaranteeing evidence before the conclusion
    - **All other turns** (knowledge queries, triage, terminal Q&A): `tool_choice="auto"` — LLM decides whether to use tools
 3. The LLM receives investigation tools plus the schema tool as function-calling tools, with a system instruction that includes Type A/B/C question routing, evidence-vs-knowledge distinction, and OBSERVATION + ANALYSIS response format. A **terminal Q&A turn** is the exception (#1964): it is offered only the registered tools in `TERMINAL_QA_TOOLS` (a subset of the registry, the read-only lookups in the table below) and gets a short read-only system message naming exactly those, with no question routing or search mandate — see [investigation-lifecycle-logic.md §1.7.2](./investigation-lifecycle-logic.md#172-terminal-mode).
 4. The loop runs for up to 4 iterations. Each iteration either:
    - Executes a tool call and feeds the result back to the LLM. Only a tool the call offered is executed; a call naming any other tool (one the registry lacks, or a registered one the turn withheld) gets a tool error stating the offered set, and is counted `unknown_tool`
    - Terminates when the LLM returns a structured response via `schema_tool`
-5. If the LLM returns no tool calls (auto mode), its text response is captured and the next iteration forces the schema tool.
+5. If the LLM returns no tool calls, its text response is captured and the next iteration forces the schema tool. On a forced iteration whose next iteration is not the final one, a reply neither cut (`MAX_TOKENS`; with no stop reason, a body that reads as cut is treated as cut and takes the schema-only iteration) nor refused (`CONTENT_FILTER`) means the forcing did not hold, whatever provider answered (#1755): the first such reply is instead nudged with every tool still offered, and a second consecutive one forces the schema tool. A blank reply is not echoed.
 
 **Investigation Tools** (registered in `_create_investigation_tools()`):
 

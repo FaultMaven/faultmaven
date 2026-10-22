@@ -51,11 +51,18 @@ SITES: dict[tuple[str, str], tuple[int, str]] = {
         "the elision marker, _TOOL_LOOP_ELISION_MARKER: a module constant",
     ),
     (_GENERATION, "StructuredOutputGenerator._tool_augmented_generate"): (
-        3,
+        2,
         "the DA system instruction (_build_da_system_instruction: the offered "
-        "tool names, the schema tool's name and fixed guidance), the recovery "
-        "nudge naming the schema tool, and the fixed stand-in for an empty "
-        "assistant reply",
+        "tool names, the schema tool's name and fixed guidance), and the "
+        "recovery nudge naming the schema tool or the offered tools (#1755)",
+    ),
+    (
+        _GENERATION,
+        "StructuredOutputGenerator._generate_structured_output_inner.llm_operation",
+    ): (
+        1,
+        "the single-shot re-ask's nudge naming the schema tool "
+        "(_schema_tool_nudge, #1755)",
     ),
     (_GENERATION, "StructuredOutputGenerator._generate_structured_output_inner"): (
         1,

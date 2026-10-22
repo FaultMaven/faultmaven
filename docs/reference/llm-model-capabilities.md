@@ -351,11 +351,24 @@ unless it is at or below the entry). Otherwise:
   prefix is unchanged. It sits in `system` rather than in a message because
   the tool loop resends its message list on every iteration.
 - **`auto` asks; it does not force.** A reply can still carry no tool call.
-  On the single-shot structured path that fails the attempt: the text-JSON
-  parse recovers only a reply that is itself JSON, and a prose reply does not
-  (engine side: #1755). On a non-final tool-loop iteration the reply gets the
-  loop's nudge and `force_schema_next`. Only a final or force-schema iteration
-  reaches the loop's "provider ignored `tool_choice=required`" path.
+  The engine decides from the reply (#1755): a forced call's reply with no tool
+  call, whose stop reason is neither `MAX_TOKENS` nor `CONTENT_FILTER` (with no
+  stop reason, whose body does not read as cut), is forcing that did not hold.
+  On the single-shot FUNCTION_CALLING path such a reply, unless its text is
+  itself the JSON answer, gets at most one re-ask per structured call (#662's
+  minimal-prompt degrade is a call of its own): the reply echoed (bounded at
+  `TOOL_RESULT_MAX_CHARS`, none when blank) and the tool loop's instruction to
+  call the schema tool. Every other single-shot strategy is unchanged. On a forced (DA) tool-loop iteration whose next iteration is not
+  the final one, on every provider (a no-tool reply under Gemini's `mode: ANY`
+  is the same fact), the first such reply is nudged with every tool still
+  offered (a blank reply is not echoed; its nudge is its own user turn), and a
+  second consecutive one gets the schema-only iteration (`force_schema_next`).
+  Only a final or force-schema iteration reaches the loop's "provider ignored
+  `tool_choice=required`" path. The startup structured-output advisory reads
+  `AnthropicProvider.forced_tool_choice_enforced()` and warns that the schema
+  tool is requested by instruction, not enforced, unless an enforcing
+  `STRUCTURED_OUTPUT_PROVIDER` carries the role's schema-bound calls, which it
+  logs at INFO.
 - **Thinking is not refused.** With `ANTHROPIC_THINKING_MODE=adaptive`, the
   "thinking refused under forced tool use" rule applies only where forcing is
   actually sent. A model above the forcing ceiling runs `auto` and carries
@@ -377,8 +390,10 @@ sent `adaptive` (#1756).
 `additionalProperties: false` on every object and rejects
 `minimum`/`maximum`/`maxLength`. Of the six engine schemas as
 `pydantic_to_openai_tools` builds them, none carries `additionalProperties:
-false` and five carry those constraints. Making them compatible is part of
-#1116's structured-output decision.
+false` and five carry those constraints. Even made compatible, the four
+`InvestigationResponse_*` schemas exceed Anthropic's grammar limits: the docs
+allow 24 optional and 16 union-typed parameters per request, and these schemas
+have 61–97 and 57–90. The owner accepted the gap (#1116).
 
 **Thinking shape.**
 

@@ -74,8 +74,19 @@ from large schema-constrained LLM responses. **STRICT** providers enforce the
 schema natively (tool calling / `json_schema` response_format) — the engine gets
 valid state. **BEST_EFFORT** providers only request the schema in-prompt: the
 model can omit required fields, the engine drops the `state_updates`, and you get
-empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
-(OpenAI, Anthropic, Gemini 1.5+). BEST_EFFORT providers (Fireworks incl.
+empty/degraded investigations. **Use an enforcing provider as `CHAT_PROVIDER`**:
+STRICT (OpenAI gpt-4o+, Gemini 1.5+) or Anthropic, which is FUNCTION_CALLING
+(the schema tool, no `strict`) and enforced only where the model accepts forced
+tool use. Above the forcing ceiling the tool is requested by instruction, not
+enforced, and startup warns (`forced_tool_choice_enforced()`) unless an
+enforcing `STRUCTURED_OUTPUT_PROVIDER` carries the role's schema-bound calls,
+which it logs at INFO. The engine does
+not rely on forcing: a forced call's reply with no tool call, neither cut nor
+refused, gets one re-ask per structured call on the single-shot
+FUNCTION_CALLING path (#662's minimal-prompt degrade is a call of its own;
+other single-shot strategies are unchanged), or is nudged with every tool on a DA
+iteration whose next iteration is not the final one, on every provider (#1755).
+BEST_EFFORT providers (Fireworks incl.
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
 Capability is reported per-provider via `get_structured_output_capability()`.

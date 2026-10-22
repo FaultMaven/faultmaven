@@ -55,6 +55,32 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
     return pydantic_to_strict_openai_tools(schema_model)
 
 
+def _schema_tool_nudge(schema_tool_name: str, echoed: bool = True) -> str:
+    """The user turn after a reply without a tool call; *echoed*: that reply
+    is echoed just above it (a blank one is not, #1755)."""
+    use_echo = "Use the text above as the `agent_response` field and fill in the "
+    return (
+        f"You must now produce your structured response by calling the "
+        f"`{schema_tool_name}` tool. "
+        + (use_echo + "remaining required fields. " if echoed else "")
+        + "Do not reply with plain text — only a tool call is acceptable."
+    )
+
+
+def _tool_call_nudge(
+    tool_names: list[str], schema_tool_name: str, echoed: bool = True
+) -> str:
+    """The nudge that keeps every tool offered (#1755)."""
+    offered = ", ".join(f"`{name}`" for name in tool_names)
+    return (
+        f"Do not reply with plain text — only a tool call is acceptable. "
+        f"Call one of the offered tools ({offered}) to gather what you need, "
+        f"or, once you have it, call the `{schema_tool_name}` tool with your "
+        "structured response"
+        + (", using the text above as its `agent_response` field." if echoed else ".")
+    )
+
+
 #: What a terminal Q&A turn's system message says about each tool it may be
 #: offered (#1964): one line per tool of ``TERMINAL_QA_TOOLS``
 #: (``terminal_turns.py``, where the set and its reasons live), and only the

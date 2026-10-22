@@ -33,6 +33,8 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
     _build_schema_tool,
+    _schema_tool_nudge,
+    _tool_call_nudge,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import (
     NO_TOOLS,
@@ -62,7 +64,7 @@ from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
     record_provider_call,
 )
-from faultmaven.infrastructure.llm.providers import StopReason
+from faultmaven.infrastructure.llm.providers import StopReason, normalize_stop_reason
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
@@ -119,6 +121,15 @@ STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 # body and well under STRUCTURED_OUTPUT_MAX_TOKENS, so the floor never raises
 # the cap and only forbids a starvable partition.
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
+
+
+def _reads_as_cut(text: str) -> bool:
+    """Whether *text*, parsed as JSON, ran out (``is_truncated_json_error``)."""
+    try:
+        json.loads(text, strict=False)
+    except json.JSONDecodeError as exc:
+        return is_truncated_json_error(exc, text)
+    return False
 
 
 class StructuredOutputGenerator:
@@ -647,6 +658,7 @@ class StructuredOutputGenerator:
         # exactly when it matters (the crossing response usually contains tool
         # calls, which would immediately reset force_schema_next).
         ceiling_reached = False
+        prose_nudged = False  # keep_tools spent (#1755); reset on a tool call
 
         for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
             is_final = iteration == self.MAX_TOOL_ITERATIONS
@@ -659,7 +671,8 @@ class StructuredOutputGenerator:
             else:
                 tools_for_call = all_tools
 
-            # DA turns: "required" — LLM must search evidence before answering
+            # DA turns: "required" — LLM must call a tool (an evidence tool or
+            #   the schema tool, which can end the loop at any iteration)
             # Other turns: "auto" — LLM decides whether to use tools
             # Final/force-schema/ceiling iterations always use "required" (schema only)
             if is_final or force_schema_next or ceiling_reached:
@@ -926,10 +939,26 @@ class StructuredOutputGenerator:
                         model=self.deps.da_model,
                     )
 
+                # A forced call's reply with no tool call, neither cut nor
+                # refused: forcing did not hold, whatever answered (#1755). The
+                # first keeps every tool unless the next iteration is final.
+                stop = normalize_stop_reason(getattr(response, "stop_reason", None))
+                keep_tools = (
+                    choice == "required"
+                    and not ceiling_reached
+                    and not prose_nudged
+                    and iteration + 1 < self.MAX_TOOL_ITERATIONS
+                    and stop not in (StopReason.MAX_TOKENS, StopReason.CONTENT_FILTER)
+                    and not (
+                        stop is StopReason.UNKNOWN
+                        and _reads_as_cut(json_payload_text(response.content or ""))
+                    )
+                )
                 logger.warning(
                     "Tool loop: LLM returned no tool calls at iteration %d, "
-                    "will force schema on next iteration",
+                    "will %s on next iteration",
                     iteration,
+                    "offer every tool again" if keep_tools else "force schema",
                 )
 
                 # Append the plain text response so the LLM knows what it said.
@@ -947,39 +976,32 @@ class StructuredOutputGenerator:
                 # not enabled for that call). Re-prompting without the prior
                 # reasoning is the safe direction and is the intended
                 # behaviour, not an oversight (#1116).
-                messages.append(
-                    {
-                        "role": "assistant",
-                        # The model's own text, echoed (#1998); the stand-in
-                        # when it wrote none is fixed text.
-                        "content": model_output(response)["content"]
-                        or non_case_text("I should use a tool to proceed."),
-                    }
-                )
-                # Append a user nudge that explicitly directs the schema-tool
-                # call. Without this the conversation ends on an assistant
-                # message with no fresh user instruction — most models read that
-                # as "already answered" and either repeat themselves or return
-                # empty content, defeating the recovery.
+                # The model's own text, echoed (#1998); a blank one is not.
+                echo = model_output(response)["content"]
+                echoed = bool(echo.strip())
+                if echoed:
+                    messages.append({"role": "assistant", "content": echo})
+                # Then a user nudge directing the tool call: without a fresh
+                # user instruction most models read "already answered".
                 messages.append(
                     {
                         "role": "user",
-                        # Fixed text naming the schema tool: no case content.
+                        # Fixed text naming the offered tools: no case content.
                         "content": non_case_text(
-                            f"You must now produce your structured response by "
-                            f"calling the `{schema_tool_name}` tool. Use the text "
-                            f"above as the `agent_response` field and fill in the "
-                            f"remaining required fields. Do not reply with plain "
-                            f"text — only a tool call is acceptable."
+                            _tool_call_nudge(tool_names, schema_tool_name, echoed)
+                            if keep_tools
+                            else _schema_tool_nudge(schema_tool_name, echoed)
                         ),
                     }
                 )
 
-                force_schema_next = True
+                prose_nudged = keep_tools
+                force_schema_next = not keep_tools
                 continue
 
-            # Reset the flag on successful tool usage
+            # Reset the flags on successful tool usage
             force_schema_next = False
+            prose_nudged = False
 
             # Check if LLM called the schema tool (termination signal)
             for tc in response.tool_calls:
@@ -1772,6 +1794,9 @@ class StructuredOutputGenerator:
         # truncated body the first attempt stored would otherwise be served back
         # instantly and the raised cap would never reach the provider (#513).
         max_tokens_state = {"value": STRUCTURED_OUTPUT_MAX_TOKENS, "bumped": False}
+        # One re-ask per structured call (#1755), across every attempt below;
+        # #662's minimal-prompt degrade is a call of its own.
+        reask_state = {"used": False}
 
         def _on_truncation(exc: Exception) -> OutputTruncationError:
             """Raise the cap for the next attempt and return the typed signal.
@@ -1813,8 +1838,8 @@ class StructuredOutputGenerator:
                 cap_reached=False,
             )
 
-        # Define the LLM operation for retry
-        async def llm_operation():
+        # Define the LLM operation for retry; ``reask_of``: a re-ask (#1755).
+        async def llm_operation(reask_of: Any = None):
             # Build generate parameters based on strategy mode
             current_max_tokens = max_tokens_state["value"]
             generate_params = {
@@ -1876,6 +1901,33 @@ class StructuredOutputGenerator:
                 # Use response_format for JSON modes (STRICT, BEST_EFFORT, NONE)
                 if strategy.response_format:
                     generate_params["response_format"] = strategy.response_format
+
+            if reask_of is not None:
+                # The re-ask (#1755), a ``messages`` call the cache never answers:
+                # the reply echoed, bounded like a tool result, then the nudge.
+                # A blank reply is not echoed: the nudge joins the prompt.
+                echo = model_output(reask_of)["content"]
+                if not echo.strip():
+                    echo = None
+                elif len(echo) > self.TOOL_RESULT_MAX_CHARS:
+                    echo = echo[: self.TOOL_RESULT_MAX_CHARS] + fixed_text_like(
+                        echo, TOOL_RESULT_TRUNCATED_MARKER
+                    )
+                schema_tool = generate_params["tools"][0]["function"]["name"]
+                nudge = non_case_text(
+                    ("" if echo else "\n\n")
+                    + _schema_tool_nudge(schema_tool, bool(echo))
+                )
+                del generate_params["prompt"]
+                generate_params["messages"] = (
+                    [
+                        {"role": "user", "content": final_prompt},
+                        {"role": "assistant", "content": echo},
+                        {"role": "user", "content": nudge},
+                    ]
+                    if echo
+                    else [{"role": "user", "content": final_prompt + nudge}]
+                )
 
             try:
                 response = await route_model_call(
@@ -1997,6 +2049,30 @@ class StructuredOutputGenerator:
                 # A refusal is a programming error, never a fallback (#1998).
                 raise
             except Exception as validation_error:
+                # A forced call came back without the tool call, neither cut nor
+                # refused: forcing did not hold, whatever answered (#1755). One
+                # re-ask, before the truncation checks; with no stop reason, a
+                # body that reads as cut is left to them.
+                stop = normalize_stop_reason(getattr(response, "stop_reason", None))
+                should_reask = (
+                    not reask_state["used"]
+                    and strategy.mode == StructuredOutputMode.FUNCTION_CALLING
+                    and not isinstance(response, str)
+                    and not getattr(response, "tool_calls", None)
+                    and stop not in (StopReason.MAX_TOKENS, StopReason.CONTENT_FILTER)
+                    and not (
+                        stop is StopReason.UNKNOWN
+                        and is_truncated_json_error(validation_error, content)
+                    )
+                )
+                if should_reask:
+                    reask_state["used"] = True
+                    logger.warning(
+                        "Structured output: a forced call returned no schema "
+                        "tool call; re-asking once with the instruction (#1755)"
+                    )
+                    return await llm_operation(reask_of=response)
+
                 # A body that ran out is the recoverable case: raise the cap and
                 # retry. Decided POSITIONALLY against the content we just tried
                 # to parse, not by matching words in the message — CPython's

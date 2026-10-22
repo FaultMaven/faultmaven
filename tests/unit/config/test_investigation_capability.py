@@ -357,6 +357,129 @@ def test_function_calling_counts_as_enforced(caplog):
     assert not caplog.records
 
 
+def test_requested_only_forcing_is_named_at_startup(caplog):
+    """#1755: above Anthropic's forcing ceiling the schema tool is requested by
+    instruction, not enforced. The class stays FUNCTION_CALLING; the advisory
+    says so, and a model that accepts forcing stays silent."""
+    from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+
+    def _resolved(model):
+        config = ProviderConfig(name="anthropic", models=[model], default_model=model)
+        registry = _PerProviderRegistry({"anthropic": AnthropicProvider(config)})
+        return _enforcement_settings("anthropic", model), registry
+
+    settings, registry = _resolved("claude-sonnet-4-6")
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    assert not caplog.records
+
+    settings, registry = _resolved("claude-opus-5-5")
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    [warning] = caplog.records
+    assert "anthropic/claude-opus-5-5" in warning.message
+    assert "requested by instruction, not enforced" in warning.message
+    [role] = resolve_enforcement_classes(settings, registry).roles
+    assert role.enforcement == "function_calling"
+    assert role.forcing_requested_only is True
+
+
+def _opus_registry(**others):
+    from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+
+    opus = "claude-opus-5-5"
+    config = ProviderConfig(name="anthropic", models=[opus], default_model=opus)
+    return _PerProviderRegistry({"anthropic": AnthropicProvider(config), **others})
+
+
+def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
+    """#1755 review: chat on fireworks, STRUCTURED_OUTPUT_PROVIDER on
+    anthropic opus-5-5. The override only requests its schema tool, so it does
+    not compensate the best-effort chat model, and nothing calls it native."""
+    registry = _opus_registry(fireworks=_EnforcementProvider("best_effort"))
+    settings = _enforcement_settings(
+        so_provider_name="anthropic", so_model="claude-opus-5-5"
+    )
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+    messages = [r.message for r in caplog.records if r.levelno >= _logging.INFO]
+    assert not [m for m in messages if "acceptable" in m]
+    requested = [m for m in messages if "requested by instruction" in m]
+    assert requested == [
+        m for m in requested if "STRUCTURED_OUTPUT_PROVIDER model anthropic/" in m
+    ]
+    assert len(requested) == 1
+    assert any("BEST_EFFORT" in m for m in messages)
+    assert resolve_enforcement_classes(settings, registry).degraded_roles
+
+
+def test_a_model_that_only_requests_forcing_reports_degraded():
+    """Owner ruling (#1755): like an unenforced role, with or without the
+    override that only requests forcing too."""
+    opus = "claude-opus-5-5"
+    for settings, registry in (
+        (
+            _enforcement_settings(so_provider_name="anthropic", so_model=opus),
+            _opus_registry(fireworks=_EnforcementProvider("best_effort")),
+        ),
+        (_enforcement_settings("anthropic", opus), _opus_registry()),
+    ):
+        resolved = resolve_enforcement_classes(settings, registry)
+        assert resolved.roles and resolved.degraded_roles == resolved.roles
+
+
+def test_one_requested_only_warning_per_model(caplog):
+    opus = "claude-opus-5-5"
+    settings = _enforcement_settings(
+        "anthropic", opus, so_provider_name="anthropic", so_model=opus
+    )
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, _opus_registry())
+    [warning] = [r.message for r in caplog.records if r.levelno >= _logging.INFO]
+    assert warning.startswith("STRUCTURED_OUTPUT_PROVIDER and investigation/chat")
+
+
+def test_a_compensated_requested_only_model_is_reported_at_info(caplog):
+    """#1755 delta: a strict STRUCTURED_OUTPUT_PROVIDER carries the schema-bound
+    calls of a chat model that only requests forcing, as it does for an
+    unenforced one: INFO, acceptable. Uncompensated, it still warns."""
+    opus = "claude-opus-5-5"
+    settings = _enforcement_settings("anthropic", opus, so_provider_name="openai")
+    registry = _opus_registry(openai=_EnforcementProvider("strict"))
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+    assert not [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    [info] = [r.message for r in caplog.records if r.levelno == _logging.INFO]
+    assert f"investigation/chat model anthropic/{opus}" in info
+    assert "acceptable" in info
+    assert not resolve_enforcement_classes(settings, registry).degraded_roles
+
+    caplog.clear()
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(
+            _enforcement_settings("anthropic", opus), _opus_registry()
+        )
+    [warning] = [r for r in caplog.records if r.levelno >= _logging.INFO]
+    assert warning.levelno == _logging.WARNING
+    assert "requested by instruction, not enforced" in warning.message
+
+
+def test_a_forcing_probe_that_raises_is_logged(caplog):
+    class _Raising(_EnforcementProvider):
+        def forced_tool_choice_enforced(self, model=None):
+            raise RuntimeError("probe broke")
+
+    settings = _enforcement_settings("anthropic", "claude-x")
+    registry = _PerProviderRegistry({"anthropic": _Raising("function_calling")})
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    [warning] = caplog.records
+    assert "anthropic/claude-x" in warning.message
+    assert "probe broke" in warning.message
+
+
 def test_da_override_checks_both_roles_separately(caplog):
     """DA on a best-effort provider + chat on STRICT → exactly one warning,
     for the investigation role only."""
