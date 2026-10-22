@@ -21,7 +21,7 @@ Own all testing work: unit tests, integration tests, E2E tests, scenario generat
 
 **`faultmaven`** — Python, FastAPI
 
-Testing stack: pytest, pytest-asyncio, httpx (AsyncClient), pytest-cov, factory_boy, respx, unittest.mock
+Testing stack: pytest, pytest-asyncio, httpx (AsyncClient), pytest-cov, respx, unittest.mock
 
 Module test structure:
 ```
@@ -69,7 +69,7 @@ Key modules to test: auth, case, knowledge, agent, evidence, api-gateway, invest
 - Always use `@pytest.mark.asyncio` for async tests
 - Use `AsyncMock` for async dependencies
 - Follow Arrange-Act-Assert pattern
-- Use factories for complex test objects
+- Build complex test objects with plain keyword-override builder functions; no factory library
 - Clean up resources in fixture teardown
 - Use markers: `@pytest.mark.integration`, `@pytest.mark.api`, `@pytest.mark.security`, `@pytest.mark.performance`
 

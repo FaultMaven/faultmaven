@@ -33,7 +33,7 @@ Python ≥ 3.11 (`requires-python`; classifiers cover 3.11–3.13). License: FSL
 | Auth | PyJWT, bcrypt, RBAC, OAuth 2.0 with PKCE |
 | Observability | Opik (tracing), Prometheus (metrics), structlog (logging) |
 | Security | Presidio (PII redaction), cryptography |
-| Testing | pytest, pytest-asyncio, pytest-cov, factory-boy, locust |
+| Testing | pytest, pytest-asyncio, pytest-cov, locust |
 | Code Quality | ruff (lint + import sorting via its `I` rules), black, mypy, import-linter |
 
 Version floors: `pyproject.toml`. The pins CI installs: `requirements/dev.txt` (ruff, black and FastAPI versions matter for the gates below).
