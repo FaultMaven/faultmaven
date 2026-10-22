@@ -41,7 +41,8 @@ class FakeGh:
     concatenated; ``--jq '.[]'`` prints one object per line across pages, leaving
     non-ASCII (U+0085 included) unescaped; a refused call exits 1 with
     ``gh: <message> (HTTP <code>)`` on stderr. A workflow's ``/runs`` applies
-    GitHub's ``event``, ``status`` and ``per_page`` filters, newest first."""
+    GitHub's ``event``, ``status`` and ``per_page`` filters, newest first, and the
+    workflow's ``created_at`` carries milliseconds, as GitHub's does."""
 
     def __init__(self, repos):
         self.visibility = {name: "PUBLIC" for name in repos}
@@ -49,6 +50,7 @@ class FakeGh:
         self.files: dict[tuple[str, str], str] = {}
         self.commits: dict[tuple[str, str], str] = {}  # default: a day ago
         self.runs: dict[str, list[dict]] = {}  # default: a success a day ago
+        self.workflows: dict[str, float] = {}  # age in days; default: 1
         self.errors: dict[str, str] = {}
         self.calls: list[list[str]] = []
 
@@ -70,6 +72,10 @@ class FakeGh:
                 self.commits.get((path[: -len("/commits")], manifest), default) + "\n",
                 "",
             )
+        if path.endswith(".yml"):
+            age = timedelta(days=self.workflows.get(path.split("/")[0], 1))
+            created = iso(NOW - age).replace("Z", ".000Z")
+            return 0, json.dumps({"state": "active", "created_at": created}), ""
         if path.endswith("/runs"):
             want = urllib.parse.parse_qs(query)
             runs = [
@@ -609,7 +615,8 @@ def test_a_private_repos_failed_fetch_names_no_path(
 # --- Scheduled audits (#2159) -------------------------------------------------
 
 DASHBOARD, WEBSITE = "faultmaven-dashboard", "faultmaven-website"
-RUNS = "actions/workflows/scheduled-audit.yml/runs"
+WORKFLOW = "actions/workflows/scheduled-audit.yml"
+RUNS = f"{WORKFLOW}/runs"
 NOT_FOUND = "Not Found (HTTP 404)"  # the workflow is not on the default branch
 
 
@@ -658,6 +665,27 @@ def test_a_repos_line_reads_its_newest_completed_scheduled_audit(
         f"scheduled audit: {COPILOT} success 1.0d ago",
         f"scheduled audit: {WEBSITE} success 1.0d ago",
     ]
+    assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+
+
+@pytest.mark.parametrize(
+    "runs, days, error, shown, failing",
+    [
+        ([], 3, None, "none yet, stale", 1),  # a schedule that never fires
+        ([], 2, None, "none yet", 0),  # the same bound as a stale run
+        ([wf_run(event="pull_request")], 1, None, "none yet", 0),
+        ([], 1, "HTTP 502: Bad Gateway", "unavailable: gh: HTTP 502: Bad Gateway", 1),
+        ([wf_run()], 3, "HTTP 502", "success 1.0d ago", 0),  # read only for none yet
+    ],
+)
+def test_none_yet_goes_stale_with_the_workflows_own_age(
+    mod, runs, days, error, shown, failing
+):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh.runs[DASHBOARD], gh.workflows[DASHBOARD] = runs, days
+    gh.errors.update({f"{DASHBOARD}/{WORKFLOW}": error} if error else {})
+    report = mod.sweep(gh, NOW)
+    assert scheduled(report)[0] == f"scheduled audit: {DASHBOARD} {shown}"
     assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
 
 

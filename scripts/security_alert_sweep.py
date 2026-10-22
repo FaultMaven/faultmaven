@@ -27,7 +27,8 @@ never named, so a paste of the output leaks none of them. The last line,
 Each repo in ``AUDITED`` also gets a ``scheduled audit:`` line (#2159): the
 conclusion and age of the newest completed ``schedule`` run of its daily
 lockfile audit, flagged ``stale`` past ``AUDIT_STALE``; ``none yet`` before the
-first, ``unavailable`` when the read fails. A repo not known to be public is not
+first, ``stale`` too once the workflow itself is that old (a schedule that never
+fires); ``unavailable`` when a read fails. A repo not known to be public is not
 read and only counted. ``queue:`` counts the failing ones.
 
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
@@ -72,12 +73,10 @@ PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
 AUDITED = ("faultmaven-dashboard", "faultmaven-copilot", "faultmaven-website")
+AUDIT_WORKFLOW = "actions/workflows/scheduled-audit.yml"
 # Completed runs only: a run still in progress hides no earlier result.
-AUDIT_RUNS = (
-    "actions/workflows/scheduled-audit.yml/runs"
-    "?event=schedule&status=completed&per_page=1"
-)
-AUDIT_STALE = timedelta(days=2)  # a disabled schedule, or GitHub's 60-day stop
+AUDIT_RUNS = f"{AUDIT_WORKFLOW}/runs?event=schedule&status=completed&per_page=1"
+AUDIT_STALE = timedelta(days=2)  # a schedule disabled, never firing, or stopped
 
 # A requirement line in a .txt manifest: name, extras, then the rest of the line.
 REQ_LINE = re.compile(r"^[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?(.*)$", re.M)
@@ -117,6 +116,14 @@ def fetch(run: Runner, path: str) -> list[dict]:
     if code:
         raise FetchError(err)
     return [json.loads(line) for line in out.split("\n") if line.strip()]
+
+
+def fetch_object(run: Runner, path: str) -> dict:
+    """One object endpoint, unpaginated."""
+    code, out, err = run(["api", path])
+    if code:
+        raise FetchError(err)
+    return json.loads(out)
 
 
 def alerts_path(repo: str, kind: str) -> str:
@@ -387,23 +394,25 @@ class Sweep:
         return lines
 
     def audit_line(self, repo: str) -> tuple[bool, str]:
-        """``(failing, line)``: failed, stale and unavailable fail; none yet does not."""
-        code, out, err = self.run(["api", f"repos/{ORG}/{repo}/{AUDIT_RUNS}"])
-        head = f"scheduled audit: {repo}"
-        if code:  # a 404 too: the workflow is not on the default branch
-            return True, f"{head} unavailable: {FetchError(err).line}"
+        """``(failing, line)``: failed, stale and unavailable fail; none yet does not
+        until the workflow itself is stale, a schedule that never fires."""
+        head, path = f"scheduled audit: {repo}", f"repos/{ORG}/{repo}/"
         try:
-            runs = json.loads(out)["workflow_runs"]
-            if not runs:
-                return False, f"{head} none yet"
-            created = runs[0]["created_at"].replace("Z", "+00:00")
+            runs = fetch_object(self.run, path + AUDIT_RUNS)["workflow_runs"]
+            newest = runs[0] if runs else fetch_object(self.run, path + AUDIT_WORKFLOW)
+            created = newest["created_at"].replace("Z", "+00:00")
             age = self.now - datetime.fromisoformat(created)
-            conclusion = runs[0]["conclusion"]
+        except FetchError as exc:  # a 404 too: the workflow is not on main
+            return True, f"{head} unavailable: {exc.line}"
         except (ValueError, KeyError, TypeError, AttributeError):
             return True, f"{head} unavailable: unreadable response"
         stale = age > AUDIT_STALE
-        shown = f"{head} {conclusion} {age / timedelta(days=1):.1f}d ago"
-        return conclusion != "success" or stale, shown + (", stale" if stale else "")
+        flag = ", stale" if stale else ""
+        if not runs:
+            return stale, f"{head} none yet{flag}"
+        conclusion = runs[0].get("conclusion")
+        shown = f"{head} {conclusion} {age / timedelta(days=1):.1f}d ago{flag}"
+        return conclusion != "success" or stale, shown
 
     def audit_lines(self) -> tuple[int, list[str]]:
         """``(failing, lines)``. A repo not known to be public is not read: it folds
