@@ -312,7 +312,7 @@ def setup_protection_middleware(
         # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``: this
         # runs once during application bootstrap, and ``setup_info`` is
         # returned to ``main.py``, which logs two of its keys and parks the
-        # dict in ``app.extra["protection_info"]``. No route, dependency or
+        # dict in ``app.state.protection_info``. No route, dependency or
         # middleware reads that key into a body — ``GET /admin/config/status``
         # reports the installed posture by inspecting the live middleware
         # stack instead. (The sibling handler above writes the same key and

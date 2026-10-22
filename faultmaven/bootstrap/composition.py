@@ -218,7 +218,7 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     logger.info("✅ DI container initialized successfully with authentication services")
 
     # Make container available to app for access by other components
-    app.extra["di_container"] = container
+    app.state.di_container = container
 
     # ============================================================
     # Bootstrap Application (deployment-agnostic architecture)

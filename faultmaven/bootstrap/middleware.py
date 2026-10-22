@@ -232,7 +232,7 @@ def setup_middleware(app):
                 logger.info(f"✅ Protection middleware enabled: {middleware_names}")
             else:
                 logger.info("ℹ️ Protection middleware disabled")
-        app.extra["protection_info"] = protection_info
+        app.state.protection_info = protection_info
     except Exception as e:
         # Never gated on ``logging_enabled``: a swallowed setup failure must not
         # be a zero-output event. Under the carve-out below this line is the only

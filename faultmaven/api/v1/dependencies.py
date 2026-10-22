@@ -124,9 +124,9 @@ async def get_evidence_reclassifier(request: Request):
 
 
 async def get_case_repository(request: Request) -> Optional[Any]:
-    """Get CaseRepository instance from app.extra (TD-001: use for report persistence)"""
+    """Get CaseRepository instance from app.state (TD-001: use for report persistence)"""
     try:
-        container = request.app.extra.get("di_container")
+        container = getattr(request.app.state, "di_container", None)
         if container:
             return getattr(container, "case_repository", None)
         return None
@@ -170,9 +170,9 @@ async def get_oauth_service(request: Request):
 
 
 async def get_case_vector_store(request: Request):
-    """Get CaseVectorStore instance from app.extra"""
+    """Get CaseVectorStore instance from app.state"""
     try:
-        container = request.app.extra.get("di_container")
+        container = getattr(request.app.state, "di_container", None)
         if container:
             return getattr(container, "case_vector_store", None)
         return None
@@ -221,7 +221,7 @@ async def get_tracer(request: Request):
     return request.app.state.tracer
 
 
-# ``get_protection_system`` used to sit here, reading app.extra["protection_system"].
+# ``get_protection_system`` used to read the retired protection-system slot.
 # Both writers of that slot were on the ``ProtectionSystem`` path, which never ran
 # and is gone (#974); the live path writes ``protection_info`` instead. With no
 # writer left the accessor could only ever raise 503, and no route depended on it.
@@ -310,9 +310,9 @@ async def get_classification_engine(request: Request):
 
 
 async def get_llm_provider(request: Request):
-    """Get LLM provider instance from app.extra (Composition Root)"""
+    """Get LLM provider instance from app.state (Composition Root)"""
     try:
-        container = request.app.extra.get("di_container")
+        container = getattr(request.app.state, "di_container", None)
         if container:
             return getattr(container, "llm_provider", None)
         return None

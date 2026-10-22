@@ -67,7 +67,7 @@ logger = get_logger(__name__)
 # — imported rather than redeclared, so there is still exactly one. See the
 # comment beside it there.
 from .api.models import BackendCapabilities
-from .api.route_enumeration import iter_served_routes
+from .api.route_enumeration import iter_served_endpoints, iter_served_routes
 
 # Admin routes
 from .api.routes.admin import router as admin_users_router
@@ -196,11 +196,16 @@ logger.info("✅ Case endpoints added")
 from .api.middleware.route_policy import declare_route_policy
 from .modules.case.api.routes.conversation import submit_turn
 
-_TURN_ROUTE_PATHS = [
-    route.path
-    for route in app.routes
-    if getattr(route, "endpoint", None) is submit_turn
-]
+
+def _paths_for_endpoint(app: FastAPI, endpoint: object) -> list[str]:
+    return [
+        served.path
+        for served in iter_served_endpoints(app)
+        if served.endpoint is endpoint
+    ]
+
+
+_TURN_ROUTE_PATHS = _paths_for_endpoint(app, submit_turn)
 if len(_TURN_ROUTE_PATHS) != 1:
     # Declaring nothing would leave the turn route replayable from the
     # middleware's cache with nothing to say so; refuse to compose instead.
@@ -934,45 +939,23 @@ async def health_check():
             "services": {"session_manager": "unknown", "api": "running"},
         }
 
-    # Add session manager health and metrics
-    try:
-        if "session_manager" in app.extra:
-            session_manager = app.extra["session_manager"]
-            session_metrics = session_manager.get_session_metrics()
-
-            # Determine session manager health status
-            session_status = "healthy"
-            if session_metrics["active_sessions"] > 1000:
-                session_status = "degraded"
-            elif session_metrics["memory_usage_mb"] > session_manager.max_memory_mb:
-                session_status = "degraded"
-
-            health_status["services"]["session_manager"] = {
-                "status": session_status,
-                "metrics": session_metrics,
-            }
-    except Exception as e:
-        logger.warning(f"Failed to get session manager health: {e}")
-        health_status["services"]["session_manager"] = "unknown"
-
     # Add DI container health if available
     try:
-        if "di_container" in app.extra:
-            container_instance = app.extra["di_container"]
-            if hasattr(container_instance, "health_check"):
-                container_health = container_instance.health_check()
-                health_status["services"]["di_container"] = container_health["status"]
-                health_status["container_components"] = container_health.get(
-                    "components", {}
-                )
+        container_instance = getattr(app.state, "di_container", None)
+        if hasattr(container_instance, "health_check"):
+            container_health = container_instance.health_check()
+            health_status["services"]["di_container"] = container_health["status"]
+            health_status["container_components"] = container_health.get(
+                "components", {}
+            )
 
-                # Add container initialization status for debugging
-                health_status["container_initialized"] = getattr(
-                    container_instance, "_initialized", False
-                )
-                health_status["container_initializing"] = getattr(
-                    container_instance, "_initializing", False
-                )
+            # Add container initialization status for debugging
+            health_status["container_initialized"] = getattr(
+                container_instance, "_initialized", False
+            )
+            health_status["container_initializing"] = getattr(
+                container_instance, "_initializing", False
+            )
     except Exception as e:
         logger.warning(f"Failed to get DI container health: {e}")
         health_status["services"]["di_container"] = "unknown"

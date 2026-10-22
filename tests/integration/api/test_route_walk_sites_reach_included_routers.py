@@ -463,6 +463,13 @@ SITES = {
         _api_canary("/debug/canary"),
         _call("faultmaven.api.routes.admin_config", "_debug_endpoints_are_mounted"),
     ),
+    "main._paths_for_endpoint": Site(
+        "faultmaven/main.py::_paths_for_endpoint",
+        lambda: _app("/direct"),
+        _api_canary("/pre/canary-turn"),
+        lambda app: "/pre/canary-turn"
+        in _call("faultmaven.main", "_paths_for_endpoint")(app, _handler),
+    ),
     "GET /debug/routes (main.debug_routes)": Site(
         "faultmaven/main.py::debug_routes",
         _debug_app,

@@ -138,7 +138,7 @@ async def lifespan(app: FastAPI):
         logger.info("Configuration validated successfully")
 
         # Make configuration available to app
-        app.extra["settings"] = settings
+        app.state.settings = settings
     except Exception as e:
         logger.error(f"Configuration initialization failed: {e}")
         raise
@@ -349,7 +349,7 @@ async def lifespan(app: FastAPI):
                     logger.info(
                         "✅ Case cleanup scheduler started (RUN_SCHEDULER=true, single-process mode)"
                     )
-                    app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
+                    app.state.case_cleanup_scheduler = case_cleanup_scheduler
             else:
                 logger.debug(
                     "Case cleanup scheduler skipped (missing case_vector_store or case_repository)"
@@ -542,19 +542,6 @@ async def lifespan(app: FastAPI):
             await stop_llm_usage_retention_scheduler(llm_usage_retention_task)
         except Exception as e:
             logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
-
-    # Cleanup resources
-    if "session_manager" in app.extra:
-        # Cleanup any active sessions
-        session_manager = app.extra["session_manager"]
-        try:
-            cleaned_count = await session_manager.cleanup_inactive_sessions()
-            logger.info(f"Cleaned up {cleaned_count} expired sessions during shutdown")
-
-            # Close session manager (stops scheduler and connections)
-            await session_manager.close()
-        except Exception as e:
-            logger.error(f"Error during session cleanup: {e}")
 
     # Cleanup Phase 2 monitoring components
     try:

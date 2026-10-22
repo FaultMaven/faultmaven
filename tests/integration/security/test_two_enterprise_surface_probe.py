@@ -1183,11 +1183,11 @@ def _wire_services(app, chroma) -> None:
         # is written (#1981).
         sanitizer=sanitizer,
     )
-    # ``get_case_repository`` reads the repository off ``app.extra`` rather than
-    # ``app.state`` — the reports read path is the only consumer. A namespace is
+    # ``get_case_repository`` reads the repository off ``app.state`` — the
+    # reports read path is the only consumer. A namespace is
     # the whole of what that accessor uses (``getattr(container, name, None)``);
     # a real DIContainer would drag in the LLM stack for no additional coverage.
-    app.extra["di_container"] = SimpleNamespace(
+    app.state.di_container = SimpleNamespace(
         case_repository=case_repository,
         case_vector_store=None,
         runbook_kb=None,

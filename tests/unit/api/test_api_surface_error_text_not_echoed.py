@@ -155,7 +155,7 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
         "setup_info",
     ): (
         "Not a response. Bootstrap-only: `main.py` logs two keys and parks the "
-        "dict in `app.extra['protection_info']`, which no route, dependency or "
+        "dict in `app.state.protection_info`, which no route, dependency or "
         "middleware reads into a body."
     ),
     (

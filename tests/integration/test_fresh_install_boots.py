@@ -43,6 +43,8 @@ _CHILD = textwrap.dedent("""
     from faultmaven.main import app
     from faultmaven.config.settings import get_settings
 
+    vars(app).pop("extra", None)
+
     from faultmaven.infrastructure.llm.usage_ledger import get_installed_usage_ledger
 
     result = {"gate_live": not _is_test_environment(get_settings())}
@@ -108,6 +110,8 @@ def _boot_a_fresh_install(root: Path) -> dict:
         # credential gate beside it is live too. Presence is what it checks.
         "CHAT_PROVIDER": "gemini",
         "GEMINI_API_KEY": "dummy-key-for-boot-probe",
+        # The probe does not need the production image's preloaded model.
+        "PRELOAD_MODELS": "[]",
     }
 
     completed = subprocess.run(
@@ -208,3 +212,23 @@ class TestTheGateRunsAfterTheMigrationsItDependsOn:
             "is what creates the table it probes — a first-ever install would "
             "refuse to boot (#828 delta review)."
         )
+
+
+def test_fastapi_app_extra_is_not_used():
+    import ast
+
+    repo_root = Path(__file__).resolve().parents[2]
+    accesses = []
+    for source_root in ("faultmaven", "tests"):
+        for path in (repo_root / source_root).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            accesses.extend(
+                f"{path.relative_to(repo_root)}:{node.lineno}"
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute) and node.attr == "extra"
+            )
+
+    assert not accesses, (
+        "FastAPI app state must use app.state; found "
+        "deprecated attribute accesses at: " + ", ".join(accesses)
+    )

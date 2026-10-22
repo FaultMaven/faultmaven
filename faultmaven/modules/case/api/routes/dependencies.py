@@ -141,7 +141,7 @@ async def _di_get_runbook_kb_dependency(request: Request):
     is overridden, silently reinstating the empty-result dedup.
     """
     try:
-        container = request.app.extra.get("di_container")
+        container = getattr(request.app.state, "di_container", None)
         if container:
             return getattr(container, "runbook_kb", None)
         return None

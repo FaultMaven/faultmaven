@@ -500,7 +500,7 @@ def _rate_limiting_installed(app) -> bool:
       no longer affects what is installed. Wrong in both directions, and never
       right except by accident.
     * ``settings.protection`` — that is PII redaction, a different subsystem.
-    * ``app.extra["protection_info"]`` — a record of what setup *intended*, and
+    * ``app.state.protection_info`` — a record of what setup *intended*, and
       absent entirely on the paths that skip or fail setup.
 
     ``user_middleware`` cannot disagree with what is installed, because it is
@@ -530,7 +530,7 @@ def _installed_bypass_headers(app) -> Optional[List[str]]:
 
     Read from the ``ProtectionSettings`` the middleware was actually installed
     with, for the reason ``_rate_limiting_installed`` gives about
-    ``app.extra["protection_info"]``: that dict records what setup *intended*
+    ``app.state.protection_info``: that dict records what setup *intended*
     and is absent on the paths that skip or fail setup. ``user_middleware``
     holds the kwargs Starlette will build the stack from, so it cannot disagree
     with what runs — and it is readable without starting the app, which
