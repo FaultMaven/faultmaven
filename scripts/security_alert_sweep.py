@@ -26,10 +26,12 @@ never named, so a paste of the output leaks none of them. The last line,
 
 Each repo in ``AUDITED`` also gets a ``scheduled audit:`` line (#2159): the
 conclusion and age of the newest completed ``schedule`` run of its daily
-lockfile audit, flagged ``stale`` past ``AUDIT_STALE``; ``none yet`` before the
-first, ``stale`` too once the workflow itself is that old (a schedule that never
-fires); ``unavailable`` when a read fails. A repo not known to be public is not
-read and only counted. ``queue:`` counts the failing ones.
+lockfile audit; without one, ``none yet``, aged from the workflow file's last
+commit on the default branch, or ``not on main``. Past ``AUDIT_STALE`` either
+age adds ``stale``, and a workflow GitHub does not report ``active`` adds its
+``state``. ``queue:`` counts every line but a fresh ``success`` or ``none yet``,
+a failed read (``unavailable``) included. A repo not known to be public is not
+read and only counted.
 
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
@@ -73,9 +75,11 @@ PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
 AUDITED = ("faultmaven-dashboard", "faultmaven-copilot", "faultmaven-website")
+AUDIT_FILE = ".github/workflows/scheduled-audit.yml"
 AUDIT_WORKFLOW = "actions/workflows/scheduled-audit.yml"
 # Completed runs only: a run still in progress hides no earlier result.
 AUDIT_RUNS = f"{AUDIT_WORKFLOW}/runs?event=schedule&status=completed&per_page=1"
+AUDIT_COMMITS = f"commits?path={AUDIT_FILE}&per_page=1"  # on the default branch
 AUDIT_STALE = timedelta(days=2)  # a schedule disabled, never firing, or stopped
 
 # A requirement line in a .txt manifest: name, extras, then the rest of the line.
@@ -393,26 +397,41 @@ class Sweep:
             )
         return lines
 
+    def audit_committed(self, path: str) -> str:
+        """The audit file's last commit date on the default branch, or "" for none:
+        gh's ``--jq`` prints an empty line for a missing value."""
+        jq = ["--jq", ".[0].commit.committer.date"]
+        code, out, err = self.run(["api", *jq, path + AUDIT_COMMITS])
+        if code:
+            raise FetchError(err)
+        return out.strip()
+
     def audit_line(self, repo: str) -> tuple[bool, str]:
-        """``(failing, line)``: failed, stale and unavailable fail; none yet does not
-        until the workflow itself is stale, a schedule that never fires."""
+        """``(failing, line)``. GitHub registers a workflow at its first run on any
+        branch, so ``none yet`` is aged from the file's last commit on main."""
         head, path = f"scheduled audit: {repo}", f"repos/{ORG}/{repo}/"
         try:
+            state = str(fetch_object(self.run, path + AUDIT_WORKFLOW)["state"])
             runs = fetch_object(self.run, path + AUDIT_RUNS)["workflow_runs"]
-            newest = runs[0] if runs else fetch_object(self.run, path + AUDIT_WORKFLOW)
-            created = newest["created_at"].replace("Z", "+00:00")
-            age = self.now - datetime.fromisoformat(created)
-        except FetchError as exc:  # a 404 too: the workflow is not on main
+            conclusion = runs[0]["conclusion"] if runs else None
+            when = runs[0]["created_at"] if runs else self.audit_committed(path)
+            age = None
+            if when or runs:
+                age = self.now - datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except FetchError as exc:  # a 404 too: a failed read is never "not there"
             return True, f"{head} unavailable: {exc.line}"
         except (ValueError, KeyError, TypeError, AttributeError):
             return True, f"{head} unavailable: unreadable response"
-        stale = age > AUDIT_STALE
-        flag = ", stale" if stale else ""
-        if not runs:
-            return stale, f"{head} none yet{flag}"
-        conclusion = runs[0].get("conclusion")
-        shown = f"{head} {conclusion} {age / timedelta(days=1):.1f}d ago{flag}"
-        return conclusion != "success" or stale, shown
+        flags = ["stale"] if age is not None and age > AUDIT_STALE else []
+        flags += [] if state == "active" else [state]
+        if age is None:  # no commit on the default branch touches the file
+            shown = "not on main"
+        elif runs:
+            shown = f"{conclusion} {age / timedelta(days=1):.2f}d ago"
+        else:
+            shown = "none yet"
+        failing = bool(flags) or age is None or (bool(runs) and conclusion != "success")
+        return failing, ", ".join([f"{head} {shown}", *flags])
 
     def audit_lines(self) -> tuple[int, list[str]]:
         """``(failing, lines)``. A repo not known to be public is not read: it folds

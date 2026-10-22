@@ -40,9 +40,9 @@ class FakeGh:
     """``gh`` as 2.46 behaves: ``--paginate`` alone prints one JSON array per page,
     concatenated; ``--jq '.[]'`` prints one object per line across pages, leaving
     non-ASCII (U+0085 included) unescaped; a refused call exits 1 with
-    ``gh: <message> (HTTP <code>)`` on stderr. A workflow's ``/runs`` applies
-    GitHub's ``event``, ``status`` and ``per_page`` filters, newest first, and the
-    workflow's ``created_at`` carries milliseconds, as GitHub's does."""
+    ``gh: <message> (HTTP <code>)`` on stderr; ``--jq`` prints an empty line for a
+    missing value (a path no commit touches). A workflow's ``/runs`` applies
+    GitHub's ``event``, ``status`` and ``per_page`` filters, newest first."""
 
     def __init__(self, repos):
         self.visibility = {name: "PUBLIC" for name in repos}
@@ -50,7 +50,7 @@ class FakeGh:
         self.files: dict[tuple[str, str], str] = {}
         self.commits: dict[tuple[str, str], str] = {}  # default: a day ago
         self.runs: dict[str, list[dict]] = {}  # default: a success a day ago
-        self.workflows: dict[str, float] = {}  # age in days; default: 1
+        self.states: dict[str, str] = {}  # a workflow's state; default: active
         self.errors: dict[str, str] = {}
         self.calls: list[list[str]] = []
 
@@ -73,9 +73,8 @@ class FakeGh:
                 "",
             )
         if path.endswith(".yml"):
-            age = timedelta(days=self.workflows.get(path.split("/")[0], 1))
-            created = iso(NOW - age).replace("Z", ".000Z")
-            return 0, json.dumps({"state": "active", "created_at": created}), ""
+            state = self.states.get(path.split("/")[0], "active")
+            return 0, json.dumps({"state": state}), ""
         if path.endswith("/runs"):
             want = urllib.parse.parse_qs(query)
             runs = [
@@ -616,8 +615,9 @@ def test_a_private_repos_failed_fetch_names_no_path(
 
 DASHBOARD, WEBSITE = "faultmaven-dashboard", "faultmaven-website"
 WORKFLOW = "actions/workflows/scheduled-audit.yml"
+AUDIT_FILE = ".github/workflows/scheduled-audit.yml"
 RUNS = f"{WORKFLOW}/runs"
-NOT_FOUND = "Not Found (HTTP 404)"  # the workflow is not on the default branch
+NOT_FOUND = "Not Found (HTTP 404)"  # a failed read, never "not there"
 
 
 def wf_run(conclusion="success", days=1.0, status="completed", event="schedule"):
@@ -636,14 +636,14 @@ def scheduled(report):
 @pytest.mark.parametrize(
     "runs, shown, failing",
     [
-        ([wf_run()], "success 1.0d ago", 0),
-        ([wf_run("failure", 0.5)], "failure 0.5d ago", 1),
-        ([wf_run("cancelled")], "cancelled 1.0d ago", 1),  # any non-success
-        ([wf_run(days=2)], "success 2.0d ago", 0),
-        ([wf_run(days=2.5)], "success 2.5d ago, stale", 1),
-        ([wf_run("failure", 3)], "failure 3.0d ago, stale", 1),  # counted once
+        ([wf_run()], "success 1.00d ago", 0),
+        ([wf_run("failure", 0.5)], "failure 0.50d ago", 1),
+        ([wf_run("cancelled")], "cancelled 1.00d ago", 1),  # any non-success
+        ([wf_run(days=2)], "success 2.00d ago", 0),
+        ([wf_run(days=2.03)], "success 2.03d ago, stale", 1),
+        ([wf_run("failure", 3)], "failure 3.00d ago, stale", 1),  # counted once
         # A run in progress hides no earlier result, and is not the schedule's yet.
-        ([wf_run(status="in_progress"), wf_run("failure")], "failure 1.0d ago", 1),
+        ([wf_run(status="in_progress"), wf_run("failure")], "failure 1.00d ago", 1),
         ([wf_run(status="queued")], "none yet", 0),
         ([wf_run(event="workflow_dispatch"), wf_run(event="push")], "none yet", 0),
         ([], "none yet", 0),
@@ -662,31 +662,66 @@ def test_a_repos_line_reads_its_newest_completed_scheduled_audit(
     report = mod.sweep(gh, NOW)
     assert scheduled(report) == [
         f"scheduled audit: {DASHBOARD} {shown}",
-        f"scheduled audit: {COPILOT} success 1.0d ago",
-        f"scheduled audit: {WEBSITE} success 1.0d ago",
+        f"scheduled audit: {COPILOT} success 1.00d ago",
+        f"scheduled audit: {WEBSITE} success 1.00d ago",
     ]
     assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+
+
+def dashboard(mod, gh):
+    """The dashboard's line, after its name, and the queue's failing count."""
+    report = mod.sweep(gh, NOW)
+    line = scheduled(report)[0].removeprefix(f"scheduled audit: {DASHBOARD} ")
+    return line, int(summary(report, "queue: ").rsplit(" ", 1)[1])
 
 
 @pytest.mark.parametrize(
     "runs, days, error, shown, failing",
     [
+        ([], None, None, "not on main", 1),
+        # Today, before the merge: a PR run registered the workflow, main lacks it.
+        ([wf_run(event="pull_request")], None, None, "not on main", 1),
         ([], 3, None, "none yet, stale", 1),  # a schedule that never fires
         ([], 2, None, "none yet", 0),  # the same bound as a stale run
-        ([wf_run(event="pull_request")], 1, None, "none yet", 0),
+        ([], 1, None, "none yet", 0),
         ([], 1, "HTTP 502: Bad Gateway", "unavailable: gh: HTTP 502: Bad Gateway", 1),
-        ([wf_run()], 3, "HTTP 502", "success 1.0d ago", 0),  # read only for none yet
+        ([wf_run()], None, None, "success 1.00d ago", 0),  # read only for none yet
     ],
 )
-def test_none_yet_goes_stale_with_the_workflows_own_age(
+def test_none_yet_is_aged_from_the_files_last_commit_on_main(
     mod, runs, days, error, shown, failing
 ):
     gh = fake(mod, CORE, dependabot(CORE, 1))
-    gh.runs[DASHBOARD], gh.workflows[DASHBOARD] = runs, days
-    gh.errors.update({f"{DASHBOARD}/{WORKFLOW}": error} if error else {})
-    report = mod.sweep(gh, NOW)
-    assert scheduled(report)[0] == f"scheduled audit: {DASHBOARD} {shown}"
-    assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+    gh.runs[DASHBOARD] = runs
+    committed = "" if days is None else iso(NOW - timedelta(days=days))
+    gh.commits[(DASHBOARD, AUDIT_FILE)] = committed
+    gh.errors.update({f"{DASHBOARD}/commits": error} if error else {})
+    assert dashboard(mod, gh) == (shown, failing)
+
+
+@pytest.mark.parametrize(
+    "state, runs, shown, failing",
+    [
+        ("active", [wf_run()], "success 1.00d ago", 0),
+        ("disabled_manually", [wf_run()], "success 1.00d ago, disabled_manually", 1),
+        (
+            "disabled_inactivity",
+            [wf_run(days=61)],
+            "success 61.00d ago, stale, disabled_inactivity",
+            1,
+        ),
+        ("disabled_manually", [], "none yet, disabled_manually", 1),
+        (None, [wf_run()], "unavailable: gh: HTTP 502: Bad Gateway", 1),
+    ],
+)
+def test_a_workflow_not_active_adds_its_state_and_fails_whatever_the_run_says(
+    mod, state, runs, shown, failing
+):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh.runs[DASHBOARD], gh.states[DASHBOARD] = runs, state or "active"
+    bad = {f"{DASHBOARD}/{WORKFLOW}": "HTTP 502: Bad Gateway"}
+    gh.errors.update({} if state else bad)
+    assert dashboard(mod, gh) == (shown, failing)
 
 
 def test_failing_audits_move_only_the_queue_lines_new_count(mod):
@@ -706,8 +741,8 @@ def test_a_repo_not_known_public_is_counted_and_neither_read_nor_named(mod):
     gh.runs[DASHBOARD] = [wf_run("failure")]
     report = mod.sweep(gh, NOW)
     assert scheduled(report) == [
-        f"scheduled audit: {COPILOT} success 1.0d ago",
-        f"scheduled audit: {WEBSITE} success 1.0d ago",
+        f"scheduled audit: {COPILOT} success 1.00d ago",
+        f"scheduled audit: {WEBSITE} success 1.00d ago",
         "scheduled audit: 1 repo not known public",
     ]
     assert DASHBOARD not in report and "failure" not in report
@@ -715,7 +750,8 @@ def test_a_repo_not_known_public_is_counted_and_neither_read_nor_named(mod):
     gh.errors["repo list"] = "HTTP 502: Bad Gateway"  # no repo is known public
     hidden = ["scheduled audit: 3 repos not known public"]
     assert scheduled(mod.sweep(gh, NOW)) == hidden
-    assert not [call for call in gh.calls if RUNS in call[-1] and DASHBOARD in call[-1]]
+    reads = [call[-1] for call in gh.calls if "scheduled-audit" in call[-1]]
+    assert reads and not [read for read in reads if DASHBOARD in read]
 
 
 def test_the_sweep_only_reads(mod):
