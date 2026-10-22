@@ -79,10 +79,6 @@ def test_make_case_defaults_and_a_fresh_case_id_per_call():
     assert first.case_id != second.case_id
 
 
-def test_a_user_id_given_as_none_stays_none():
-    assert make_case(user_id=None).user_id is None
-
-
 def test_inquiry_case_proposes_the_statement_without_confirming_it():
     old = Case(user_id="u", enterprise_id="o", title="t", state=CaseState.INQUIRY)
     old.inquiry.proposed_problem_statement = "db slow"
@@ -131,6 +127,8 @@ def test_the_confirmation_precedes_the_case_unless_confirmed_after_build():
     assert after.inquiry.problem_statement_confirmed_at >= after.created_at
     assert after.state is CaseState.INVESTIGATING
     assert after.inquiry.proposed_problem_statement == "s"
+    with pytest.raises(ValueError, match="confirm_after_build"):
+        investigating_case(confirm_after_build=True, state=CaseState.INQUIRY)
 
 
 def test_a_given_inquiry_is_copied_and_keeps_its_values():

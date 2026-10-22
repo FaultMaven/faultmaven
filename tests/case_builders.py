@@ -89,8 +89,8 @@ def investigating_case(
     confirmation time (now, unless given or already set). The statement is
     confirmed on the inquiry before the case is built, so the confirmation
     precedes the case's own timestamps. With ``confirm_after_build`` the case
-    is built in INQUIRY first, then confirmed and moved to ``state``, the way
-    Gate 1 moves a live case.
+    is built in INQUIRY first, then confirmed and moved to INVESTIGATING, the
+    way Gate 1 moves a live case; any other ``state`` is refused.
 
     ``symptom`` builds the ``problem_verification``, with ``severity``,
     ``temporal_state`` and ``urgency`` (its ``urgency_level``).
@@ -103,6 +103,8 @@ def investigating_case(
             severity=severity,
             **{name: value for name, value in given.items() if value is not None},
         )
+    if confirm_after_build and state is not CaseState.INVESTIGATING:
+        raise ValueError("confirm_after_build moves the case to INVESTIGATING only")
     inquiry = _own_inquiry(fields)
     if confirm_after_build:
         if inquiry is not None:
