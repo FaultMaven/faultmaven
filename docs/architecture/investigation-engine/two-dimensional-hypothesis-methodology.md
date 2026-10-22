@@ -127,7 +127,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
-| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — the latest fix window FAILED — an executed SOLUTION, the cause seen removed after it, then `D` seen persisting with no problem-gone row in between (INV-42; a relapse — `D` seen gone after the fix, then back — fails the window for the gate and disproves nothing, #2039) — and it reads that off the record itself, without a model refutation. The readiness gate reads the same windows, so the two cannot disagree about whether a fix FAILED (§7.3, #1927). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
+| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — the latest fix window FAILED — an executed SOLUTION, the cause seen removed after it, then `D` seen persisting with no problem-gone row in between (INV-42; a relapse — `D` seen gone after the fix, then back — fails the window for the gate and disproves nothing, #2039) — and it reads that off the record itself, without a model refutation. The readiness gate reads the same windows, so the two cannot disagree about whether a fix FAILED (§7.3, #1927). The EVIDENCE arm (a hypothesis REFUTED, or out-weighed by confident refuting rows on it and its chain, #2106) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
 | **M7** | An **AND-node** is `validated` ⇔ *all* co-necessary members are validated; refuting *any one* member refutes the chain. | Withholds validation until members prove out (normal flow); any refutation prunes. | Schema + engine |
 
 Each F / S / R rule in §4–§7 exists to make one or more of these hold; §9
@@ -739,11 +739,11 @@ every non-survivor is *absolutely* excluded — before stamping
 `validation_method=DEDUCTIVE`. Guard #3's "absolute" bar is itself engine-computed:
 `derive_node_states` drives a sibling's `belief` to `0` **only** on a counterfactual
 (absence-based) refutation declared at `stance_confidence >=
-CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is ordinary refuting
-evidence, not the decisive grade — the refute-side twin of the §7.1 support
-filter; INV-30), so a merely-correlational net-refute — or a hedged
-counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and blocks the
-deduction. A mis-asserted
+CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is not the
+decisive grade — the refute-side twin of the §7.1 support filter; INV-30 — and,
+since #2106, outside the node's refute balance), so a merely-correlational net-refute
+— or a hedged counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and
+blocks the deduction. A mis-asserted
 exhaustiveness therefore cannot fabricate a validation on its own — the differential
 must have genuinely collapsed — and guard #4 (counterfactual before RESOLVED, and
 harvest is RESOLVED-only) is the downstream backstop against a missed family.
@@ -951,18 +951,29 @@ plus persisted history: a counterfactual REFUTES carries decisive force only at
 `stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN` — the refute-side twin of
 the §7.1 support filter (INV-30). A self-hedged "I think the fix didn't work"
 must not single-handedly refute a node, zero a sibling's belief for
-proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6); it
-still counts as *ordinary* refuting evidence (feeding `refutes > supports` and
-`_net_refuted`). The engine's own M6 links carry no declared confidence and are
-decisive by construction.
+proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6).
+Since #2106 a hedged REFUTES, absence-backed or not, counts in none of the
+balances that demote a cause or a node (P4): not the node's `refutes > supports`,
+where it is only *bearing* (a node with nothing else reads INCONCLUSIVE) and so
+neither refutes a node nor holds a grounded one out of VALIDATED, and not M6's
+evidence arm below or the conclusion retraction (`cause_refuted_by_evidence`).
+The flat likelihood update (`update_likelihood_from_evidence`) still counts it,
+and can retire an ACTIVE hypothesis on hedged refutes alone; whether the floor
+covers that path is open (#2154). The engine's own M6 links carry no declared
+confidence and are decisive by construction.
 
 **M6 establishes its preconditions; it does not infer them (INV-42, #987).**
 The demotion trigger carries two materially different claims and the engine
 records only what it can substantiate:
 
-- **Evidence-based** — the hypothesis is REFUTED or net-refuted by its OWN
-  links. This asserts nothing about any fix, is grounded in the graph, and
-  demotes **unconditionally**. Its durable record names the tally it derived
+- **Evidence-based** — the hypothesis is REFUTED, or refuted by the evidence on
+  it and its chain (`cause_refuted_by_evidence`, #2106): rows on record, never
+  the engine's own, linked to the hypothesis, its root or a rung of its path,
+  with strictly more confident REFUTES rows than SUPPORTS rows (a SUPPORTS
+  counts at any confidence). A body
+  of support on the root is weighed, so one contrary link does not tear a
+  grounded cause down. This asserts nothing about any fix, is grounded in the
+  graph, and demotes **unconditionally**. Its durable record names the tally it derived
   from. (Gating *this* arm on fix evidence was the over-broad first cut of the
   #987 fix, and it left a net-refuted cause standing as identified with its
   conclusion intact — the NO-INCORRECT-CONCLUSION breach in the opposite
@@ -1086,7 +1097,7 @@ records only what it can substantiate:
   outcome, and the problem is ongoing by definition. One more reader of the
   rows remains by design: the evidence arm's engine row still sets the
   disconfirmation window (§9.5), which can hold a SUCCEEDED window's rows
-  back when the cause is refuted by its own links.
+  back when the cause is refuted by the evidence on its chain.
 
 Refusing the counterfactual arm never leaves a disproven cause standing — the
 hypothesis's own state still governs, so a refuted cause stops grounding
@@ -1808,8 +1819,8 @@ The stamp adds two root-scoped bars on top of the metadata bar. The
 **per-root refutation window** (`_root_disconfirmation_turn`, strict `>`):
 the cited row must be NEWER than any refutation recorded against the root
 being confirmed — any author, any confidence. A hedged self-claimed failed
-fix does not demote the root (§7.2), but the top grade is never minted from
-a row recorded at-or-before it; only the user's strictly-newer post-refute
+fix neither demotes the root nor counts against it (§7.2, #2106), but the top
+grade is never minted from a row recorded at-or-before it; only the user's strictly-newer post-refute
 gone⇒gone completes `CONFIRMED`. And **content-level bearing**
 (`_select_bearing_row`): the citation is the NEWEST candidate not
 affirmatively **about a different chain** (≥2 shared content tokens with

@@ -39,13 +39,16 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
-    NodeType,
     RootCauseConclusion,
 )
 
 from .projection import _standing_hypotheses
-from .queries import _state
-from .rcc import _hypothesis_disconfirmed, _representative_cause_hypothesis
+from .queries import _state, chain_evidence_links
+from .rcc import (
+    _hypothesis_disconfirmed,
+    _representative_cause_hypothesis,
+    cause_evidence_tally,
+)
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, Hypothesis
@@ -91,7 +94,8 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
     """Shared M6 trigger for both demote paths. Returns the trigger (see
     ``_M6Trigger``) when a grounded (``cause_state=IDENTIFIED``) case's representative
     cause is disconfirmed, else None. Disconfirmation is the hypothesis being
-    REFUTED or net-refuted (``_net_refuted``); and — only when ``node_side``
+    REFUTED or refuted by the evidence on it and its chain
+    (``cause_refuted_by_evidence``); and — only when ``node_side``
     (the chain-mode case the prompt mandates) — its ROOT node carrying a
     counterfactual (CAUSAL_ABSENCE) refutation, or the case record
     establishing a failed fix of it, even when the flat hypothesis was
@@ -105,9 +109,10 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
     **``kind`` distinguishes the materially different claims that share this
     trigger (#987):**
 
-    - ``"evidence"`` — the hypothesis is REFUTED or net-refuted by its OWN
-      evidence links. This asserts nothing about any fix; it is grounded in the
-      links themselves and needs no external precondition.
+    - ``"evidence"`` — the hypothesis is REFUTED, or confident refuting rows on
+      it and its chain outnumber the supporting ones (``cause_evidence_tally``;
+      engine rows excluded). This asserts nothing about any fix; it is grounded
+      in the rows themselves and needs no external precondition.
     - ``"counterfactual"`` — the FAILED-FIX claim: the root carries a
       counterfactual (CAUSAL_ABSENCE) refutation, i.e. "the cause was addressed
       yet the problem persisted". That claim is about events outside the graph,
@@ -136,7 +141,7 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
         return None
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     reason = (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200]
-    if _hypothesis_disconfirmed(hyp):
+    if _hypothesis_disconfirmed(case, hyp):
         return _M6Trigger(hyp, reason, "evidence")
     if not node_side or root is None:
         return None
@@ -231,16 +236,8 @@ def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:
     own failed-fix row (#1930), so a ground found here is data, never an
     argument."""
     on_record = {e.evidence_id for e in case.evidence}
-    links = list(hyp.evidence_links)
-    chain_ids = list(hyp.path or [])
-    if hyp.root_node_id and hyp.root_node_id not in chain_ids:
-        chain_ids.insert(0, hyp.root_node_id)
-    for node_id in chain_ids:
-        node = case.causal_nodes.get(node_id)
-        if node is not None and node.node_type != NodeType.PROBLEM:
-            links.extend(node.evidence_links)
     found: list[str] = []
-    for link in links:
+    for link in chain_evidence_links(case, hyp):
         if (
             link.stance == EvidenceStance.REFUTES
             and link.evidence_id in on_record
@@ -251,18 +248,17 @@ def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:
     return found
 
 
-def _evidence_disconfirmation_provenance(hyp) -> str:
+def _evidence_disconfirmation_provenance(case: Case, hyp: Hypothesis) -> str:
     """Provenance for an EVIDENCE-based M6 demotion (#987).
 
-    The honest record when the cause fell to its own links rather than to a
-    failed fix: what the engine derived, and the tally it derived it from. It
-    deliberately makes NO claim about a fix having been applied — that is the
+    The honest record when the cause fell to its own evidence rather than to a
+    failed fix: what the engine derived, and the tally it derived it from — the
+    one M6's evidence arm reads (``cause_evidence_tally``). It deliberately
+    makes NO claim about a fix having been applied — that is the
     counterfactual arm's claim, and asserting it here unestablished is exactly
     the fabrication this campaign removed.
     """
-    links = getattr(hyp, "evidence_links", None) or []
-    refuting = sum(1 for link in links if link.stance == EvidenceStance.REFUTES)
-    supporting = sum(1 for link in links if link.stance == EvidenceStance.SUPPORTS)
+    refuting, supporting = cause_evidence_tally(case, hyp)
     if getattr(hyp, "state", None) == HypothesisState.REFUTED:
         detail = (
             f"the hypothesis was refuted "
@@ -270,8 +266,8 @@ def _evidence_disconfirmation_provenance(hyp) -> str:
         )
     else:
         detail = (
-            f"its evidence links net-refute it "
-            f"({refuting} refuting vs {supporting} supporting)"
+            f"the evidence on it and its chain net-refutes it "
+            f"({refuting} confident refuting vs {supporting} supporting)"
         )
     return f"the identified cause no longer stands — {detail}"[:400]
 
@@ -337,8 +333,9 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     **SCOPE — the counterfactual (failed-fix) arm ONLY.** This is a precondition
     for the CLAIM "a fix was applied and the problem persisted", which is about
     events outside the graph. It is NOT a precondition for demotion in general:
-    an EVIDENCE-based disconfirmation (the hypothesis REFUTED or net-refuted by
-    its own links) is grounded in the graph and demotes unconditionally — see
+    an EVIDENCE-based disconfirmation (the hypothesis REFUTED, or refuted by
+    the evidence on its chain) is grounded in the graph and demotes
+    unconditionally — see
     ``_disconfirmed_cause_trigger``'s ``kind``. Gating both on fix-application
     evidence was the over-broad first cut of this fix, and it left a net-refuted
     cause standing as IDENTIFIED with its conclusion intact.
@@ -483,8 +480,8 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     Each disconfirmation KIND records only what the engine can substantiate
     (#987):
 
-    - ``evidence`` — the hypothesis is refuted/net-refuted by its OWN links.
-      Fires unconditionally (it was always evidence-grounded) and records an
+    - ``evidence`` — the hypothesis is REFUTED, or refuted by the evidence on
+      it and its chain (``cause_refuted_by_evidence``). Fires unconditionally (it was always evidence-grounded) and records an
       evidence-based inference. Gating THIS on fix-application evidence was the
       over-broad first cut of the #987 fix: it left a net-refuted cause standing
       as IDENTIFIED with its conclusion intact.
@@ -513,7 +510,7 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     hyp, reason, kind = trigger.hyp, trigger.reason, trigger.kind
 
     if kind == "evidence":
-        provenance = _evidence_disconfirmation_provenance(hyp)
+        provenance = _evidence_disconfirmation_provenance(case, hyp)
     elif kind == "record":
         provenance = _failed_fix_provenance(trigger.window)
         m6_record_disconfirmation_total.inc()

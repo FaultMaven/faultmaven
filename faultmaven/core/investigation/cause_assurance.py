@@ -411,10 +411,13 @@ def counterfactual_link_decisive(link) -> bool:
     LLM self-claim, and a self-HEDGED counterfactual must not single-handedly
     refute a node, zero a sibling's belief for proof-by-exclusion (§7.1.1 guard
     #3 — a hedged refute enabling a deductive validation of the survivor is a
-    conclusion-grade action), or demote the identified cause (M6). A hedged
-    absence-REFUTES still counts as ORDINARY refuting evidence (it feeds
-    ``refutes > supports`` and ``_net_refuted``) — the decisive single-shot
-    power is what the confidence bar gates. ``None`` reads as unset → full
+    conclusion-grade action), or demote the identified cause (M6). Nor does a
+    hedged REFUTES, absence-backed or not, count in the balances that demote a
+    cause or a node (#2106): the node tally's ``refutes > supports``, M6's
+    evidence arm and the conclusion retraction (``cause_refuted_by_evidence``)
+    leave it out, so there it is only bearing. The flat likelihood update
+    (``update_likelihood_from_evidence``) still counts it (#2154, open).
+    ``None`` reads as unset → full
     confidence (the engine's own M6 links carry no declared confidence and are
     decisive by construction); an EXPLICIT 0.0 stays filtered."""
     return stance_declared_confident(link)

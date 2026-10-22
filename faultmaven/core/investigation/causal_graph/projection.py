@@ -127,7 +127,7 @@ def project_hypothesis_states_from_roots(case: Case) -> HypothesisProjection:
         ACTIVE (a stale projection — e.g. the root lost validation to an
         evidence tie or the restatement guard on a pre-guard persisted case).
     ``REFUTED``/``RETIRED`` are NEVER touched: refutation is owned by the
-    explicit lifecycle (``refute_hypothesis`` / M6 ``_net_refuted`` / an
+    explicit lifecycle (``refute_hypothesis`` / M6 ``cause_refuted_by_evidence`` / an
     explicit user-or-LLM refute), which is already evidence-grounded and can
     legitimately refute a hypothesis whose root node is not itself REFUTED. A
     hypothesis with no ``root_node_id`` can never be VALIDATED — the graph is
