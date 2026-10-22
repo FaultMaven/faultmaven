@@ -273,6 +273,15 @@ class TestTheNonce:
         assert f.data(payload) is payload
 
 
+#: A fenced conversation block, as #1256's tail path renders it.
+_HISTORY_OPEN = f'<conversation_history {FENCE_ATTR}="aaaaaaaa">'
+_HISTORY_CLOSE = f'</conversation_history {FENCE_ATTR}="aaaaaaaa">'
+_HISTORY = (
+    f"{_HISTORY_OPEN}\nTURN 1:\nUSER: hello\nTURN 2:\nUSER: still broken\n"
+    f"{_HISTORY_CLOSE}"
+)
+
+
 class TestReseal:
     """``reseal`` on hand-built sections: the repair the channel sweeps in
     ``TestTruncationCannotStripTheFence`` rely on end to end."""
@@ -364,31 +373,43 @@ class TestReseal:
             f'</entity_highlights {FENCE_ATTR}="{token}">'
         )
 
+    def test_reseal_still_drops_a_block_whose_opening_delimiter_was_cut(self):
+        """The head-side contract is unchanged. The interpolated fragment here
+        needs its f-prefix: without it the string is a literal ``{FENCE_ATTR}``
+        that no cut could ever produce, and the case passes vacuously — which
+        is what it did before the #1256 review caught it."""
+        cut = f'Top entities extracted.\n<conversation_history {FENCE_ATTR}="aaa'
+        assert "{FENCE_ATTR}" not in cut, "the f-prefix is the point of this test"
+        assert reseal(cut, _HISTORY) == ""
+        for other in ("[...]", ""):
+            assert reseal(other, _HISTORY) == ""
+
+    def test_reseal_still_re_closes_a_head_truncated_block(self):
+        cut = f"{_HISTORY_OPEN}\nTURN 1:\nUSER: hello"
+        out = reseal(cut, _HISTORY)
+        assert out.startswith(cut), "reseal must only ever append"
+        assert out.rstrip().endswith(_HISTORY_CLOSE)
+
 
 class TestSplitFencedIsWhatMakesShrinkingPossible:
     """``reseal`` keeps its head-only contract; the tail path does not use it.
 
-    An earlier round of this PR tried to repair a tail cut by prepending the
+    An earlier round of #1256's fix tried to repair a tail cut by prepending the
     opening delimiter. That works only while the kept tail is longer than the
     closing delimiter (~40 characters); below it neither delimiter survives and
     the section is dropped. Reserving the delimiters and shrinking the body has
     no such floor, so ``split_fenced`` replaced the repair.
     """
 
-    TOKEN = "aaaaaaaa"
-    OPEN = f'<conversation_history {FENCE_ATTR}="{TOKEN}">'
-    CLOSE = f'</conversation_history {FENCE_ATTR}="{TOKEN}">'
-    ORIGINAL = f"{OPEN}\nTURN 1:\nUSER: hello\nTURN 2:\nUSER: still broken\n{CLOSE}"
-
     def test_a_complete_fenced_element_splits_into_three(self):
-        parts = split_fenced(self.ORIGINAL)
+        parts = split_fenced(_HISTORY)
         assert parts is not None
         opening, body, closing = parts
-        assert opening == self.OPEN
-        assert closing == self.CLOSE
+        assert opening == _HISTORY_OPEN
+        assert closing == _HISTORY_CLOSE
         assert "still broken" in body
         # Lossless: the three parts reassemble the input exactly.
-        assert opening + body + closing == self.ORIGINAL
+        assert opening + body + closing == _HISTORY
 
     @pytest.mark.parametrize(
         "text",
@@ -398,28 +419,11 @@ class TestSplitFencedIsWhatMakesShrinkingPossible:
             "<progress_indicators>\n- symptom_verified\n</progress_indicators>",
             # A fenced OPEN whose close was cut — the head-truncation shape,
             # which reseal still owns.
-            f"{OPEN}\nTURN 1:\nUSER: hello",
+            f"{_HISTORY_OPEN}\nTURN 1:\nUSER: hello",
             # A fenced CLOSE with no open — the tail shape. Not splittable
             # either, which is exactly why the tail path shrinks instead.
-            f"[...truncated...]USER: still broken\n{CLOSE}",
+            f"[...truncated...]USER: still broken\n{_HISTORY_CLOSE}",
         ],
     )
     def test_anything_that_is_not_a_complete_element_returns_none(self, text):
         assert split_fenced(text) is None
-
-    def test_reseal_still_drops_a_block_whose_opening_delimiter_was_cut(self):
-        """The head-side contract is unchanged. The interpolated fragment here
-        needs its f-prefix: without it the string is a literal ``{FENCE_ATTR}``
-        that no cut could ever produce, and the case passes vacuously — which
-        is what it did before the #1256 review caught it."""
-        cut = f'Top entities extracted.\n<conversation_history {FENCE_ATTR}="aaa'
-        assert "{FENCE_ATTR}" not in cut, "the f-prefix is the point of this test"
-        assert reseal(cut, self.ORIGINAL) == ""
-        for other in ("[...]", ""):
-            assert reseal(other, self.ORIGINAL) == ""
-
-    def test_reseal_still_re_closes_a_head_truncated_block(self):
-        cut = f"{self.OPEN}\nTURN 1:\nUSER: hello"
-        out = reseal(cut, self.ORIGINAL)
-        assert out.startswith(cut), "reseal must only ever append"
-        assert out.rstrip().endswith(self.CLOSE)
