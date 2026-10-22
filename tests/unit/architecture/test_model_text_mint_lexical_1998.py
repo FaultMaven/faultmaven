@@ -73,6 +73,8 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import pytest
 
+from tests.source_tree import PACKAGE_ROOT, parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.architecture, pytest.mark.security]
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -138,7 +140,11 @@ _TEXT_PATTERNS = [
 ]
 
 
-def _parse(source: str) -> ast.Module:
+def _parse(source: str | Path) -> ast.Module:
+    if isinstance(source, Path):
+        if source.is_relative_to(PACKAGE_ROOT):
+            return parse_file(source)
+        source = source.read_text(encoding="utf-8")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
         return ast.parse(source)
@@ -157,7 +163,7 @@ def dispatch_private_names() -> frozenset:
 
 
 def _private_names_of(rel: str) -> frozenset:
-    tree = _parse((_ROOT / rel).read_text(encoding="utf-8"))
+    tree = _parse(_ROOT / rel)
     names: Set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -258,7 +264,9 @@ def _names_a_module(value: str, path: str) -> Optional[str]:
     return None
 
 
-def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
+def violations(
+    source: str, path: str, tree: Optional[ast.Module] = None
+) -> List[Tuple[int, str, str]]:
     """``(line, rule, what)`` for every spelled way ``source`` reaches the mint.
 
     ``path`` is repo-relative; it resolves relative imports.
@@ -269,7 +277,7 @@ def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
             for pattern, what in _TEXT_PATTERNS:
                 if pattern.search(line):
                     found.append((lineno, "text", what))
-    tree = _parse(source)
+    tree = _parse(source) if tree is None else tree
     # Only the type-test rule reads parents, and it needs the class's name as
     # an identifier — which, unlike a string, is spelled in the source.
     parents = (
@@ -403,7 +411,8 @@ def _scan() -> Tuple[dict, dict, int]:
         if rel in EXEMPT:
             continue
         source = path.read_text(encoding="utf-8")
-        hits, covered = apply_exemptions(rel, source, violations(source, rel))
+        tree = _parse(path)
+        hits, covered = apply_exemptions(rel, source, violations(source, rel, tree))
         if hits:
             found[rel] = hits
         exempted.update(covered)
@@ -451,7 +460,8 @@ def test_the_exempt_files_exist_and_mint():
     """A positive control on the exemption: both files exist and use the mint."""
     for rel in EXEMPT:
         text = (_ROOT / rel).read_text(encoding="utf-8")
-        assert violations(text, rel), f"{rel} no longer mints: drop its exemption"
+        tree = _parse(_ROOT / rel)
+        assert violations(text, rel, tree), f"{rel} no longer mints: drop its exemption"
 
 
 def test_the_private_names_are_read_from_the_module():

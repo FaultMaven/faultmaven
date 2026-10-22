@@ -35,12 +35,13 @@ from coming back is pinned here, on the side that owns it:
 """
 
 import ast
-import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 import pytest
+
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -246,21 +247,14 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-@functools.lru_cache(maxsize=1)
-def _parsed() -> Tuple[Tuple[str, ast.AST], ...]:
-    """Every module under faultmaven/, parsed once for all the scans here."""
-    trees = []
+def _trees() -> Iterator[Tuple[str, ast.AST]]:
+    """Every module under faultmaven/, for all the scans here."""
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
         except SyntaxError:  # pragma: no cover - defensive
             continue
-        trees.append((str(path.relative_to(REPO_ROOT)), tree))
-    return tuple(trees)
-
-
-def _trees() -> Iterator[Tuple[str, ast.AST]]:
-    return iter(_parsed())
+        yield str(path.relative_to(REPO_ROOT)), tree
 
 
 def _iter_emitters() -> Iterator[Emitter]:
@@ -530,7 +524,7 @@ def test_deduplication_no_longer_has_an_unlabelled_409_path():
     dead — but it emitted a 409 with no header, and dedup runs on the turn POST.
     """
     path = SOURCE_ROOT / "api/middleware/deduplication.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parse_file(path)
 
     # Checked on the AST, not as substrings: the removal is explained in a
     # comment in that file, and a substring scan would match the explanation.

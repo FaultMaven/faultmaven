@@ -133,7 +133,7 @@ def _refers(node: ast.AST, docstrings: set) -> bool:
     return False
 
 
-def send_sites(source: str, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
+def send_sites(source: str | Path, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
     """``{"path::Qual.name": defs}`` for every function in ``source`` that names
     the seam or the dispatch; ``defs`` is the function's def and every def
     enclosing it, innermost first (a closure's handlers live in the function
@@ -166,7 +166,7 @@ def _scan() -> Dict[str, Tuple[ast.AST, ...]]:
     for rel, path in _files():
         if rel == _DISPATCH:
             continue
-        found.update(send_sites(path.read_text(encoding="utf-8"), rel))
+        found.update(send_sites(path, rel))
     return found
 
 

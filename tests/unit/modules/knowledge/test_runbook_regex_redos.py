@@ -53,6 +53,7 @@ import re
 
 import pytest
 
+from tests.source_tree import PACKAGE_ROOT, parse_file
 from tests.wallclock import assert_linear_growth
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -604,7 +605,10 @@ def _inline_grammar_sites(path: pathlib.Path) -> list[str]:
     Looking at what is PASSED TO ``re`` rather than at how it is spelled
     removes all of those at once.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    if path.is_relative_to(PACKAGE_ROOT):
+        tree = parse_file(path)
+    else:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
     sites = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):

@@ -43,6 +43,7 @@ from pathlib import Path
 import pytest
 
 from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
+from tests.source_tree import parse_file
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _LLM_RULES = _PROJECT_ROOT / ".claude/rules/llm-providers.md"
@@ -117,7 +118,7 @@ def _declared_intent(node: ast.AST) -> str | None:
     return None
 
 
-def _declares_in(source: str) -> list[str]:
+def _declares_in(source: str | Path) -> list[str]:
     """Every declaring call in ``source``, rendered as the table renders it.
 
     A declaration is a call keyword ``reasoning_intent=<names an intent>``.
@@ -126,7 +127,8 @@ def _declares_in(source: str) -> list[str]:
     a ``ValueError`` at the router and a refused lift at the Gemini provider.
     """
     declares: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+    tree = parse_file(source) if isinstance(source, Path) else ast.parse(source)
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
@@ -155,7 +157,7 @@ def _declared_call_sites() -> Counter:
     """
     found: Counter = Counter()
     for path in sorted(_PACKAGE.rglob("*.py")):
-        for declares in _declares_in(path.read_text(encoding="utf-8")):
+        for declares in _declares_in(path):
             found[(str(path.relative_to(_PACKAGE)), declares)] += 1
     return found
 
@@ -197,7 +199,7 @@ def _engine_constant(name: str) -> int:
     Parsed rather than imported: the engine pulls in most of the application,
     and this guard needs one integer.
     """
-    tree = ast.parse(_ENGINE.read_text(encoding="utf-8"))
+    tree = parse_file(_ENGINE)
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
             for target in node.targets:

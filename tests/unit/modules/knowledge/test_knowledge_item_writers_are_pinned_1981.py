@@ -20,6 +20,8 @@ import warnings
 
 import pytest
 
+from tests.source_tree import PACKAGE_ROOT, parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -162,6 +164,8 @@ def _parse(path: pathlib.Path) -> ast.AST | None:
         # parsing it is all this does.
         warnings.simplefilter("ignore")
         try:
+            if path.is_relative_to(PACKAGE_ROOT):
+                return parse_file(path)
             return ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             return None

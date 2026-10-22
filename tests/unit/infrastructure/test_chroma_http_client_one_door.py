@@ -48,6 +48,8 @@ from typing import List, Optional, Tuple
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit]
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -125,9 +127,9 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _scan_source(source: str) -> List[Site]:
+def _scan_source(source: str | Path) -> List[Site]:
     scanner = _Scanner()
-    scanner.visit(ast.parse(source))
+    scanner.visit(parse_file(source) if isinstance(source, Path) else ast.parse(source))
     return scanner.sites
 
 
@@ -141,7 +143,7 @@ def _scan_package() -> Tuple[List[Tuple[str, Site]], List[str]]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         relative = path.relative_to(_REPO).as_posix()
         scanned.append(relative)
-        for site in _scan_source(path.read_text(encoding="utf-8")):
+        for site in _scan_source(path):
             hits.append((relative, site))
     return hits, scanned
 

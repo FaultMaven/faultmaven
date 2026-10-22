@@ -61,6 +61,7 @@ from tests.error_text_ast import (
     http_exception_leak_sites,
     returned_body_leak_sites,
 )
+from tests.source_tree import parse_file
 
 _PKG = pathlib.Path(faultmaven.__file__).parent
 _REPO = _PKG.parent
@@ -216,7 +217,7 @@ def _surface() -> tuple[pathlib.Path, ...]:
         if path in found:
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
         except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
             continue
         if _defines_a_response_producer(tree):
@@ -304,7 +305,7 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
     if not lines:
         return []
 
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parse_file(path)
     enclosing: dict[int, str] = {}
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -393,7 +394,7 @@ def test_the_surface_scan_is_not_vacuous():
     surface = _surface()
     handlers = 0
     for path in surface:
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        for node in ast.walk(parse_file(path)):
             if isinstance(node, ast.ExceptHandler) and node.name:
                 handlers += 1
 

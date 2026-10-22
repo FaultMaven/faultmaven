@@ -173,9 +173,7 @@ class TestTheScanLookedWhereTheRuleCanBeViolated:
         guard into a tautology.
         """
         access_log = PACKAGE_ROOT / "api/middleware/logging.py"
-        sinks = scan_actor_sinks(
-            access_log.read_text(encoding="utf-8"), "api/middleware/logging.py"
-        )
+        sinks = scan_actor_sinks(access_log, "api/middleware/logging.py")
         assert {f.field for f in sinks} >= {
             "user_id",
             "enterprise_id",

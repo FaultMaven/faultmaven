@@ -132,6 +132,8 @@ import pathlib
 import re
 from typing import NamedTuple
 
+from tests.source_tree import parse_file
+
 # HTTPException(status_code, detail=None, headers=None) — the positional
 # index of each argument when it is not passed by keyword.
 _STATUS_POSITION = 0
@@ -602,7 +604,7 @@ def _package_exception_classes() -> frozenset[str]:
     trees: list[ast.AST] = []
     for path in pathlib.Path(faultmaven.__file__).parent.rglob("*.py"):
         try:
-            trees.append(ast.parse(path.read_text(encoding="utf-8")))
+            trees.append(parse_file(path))
         except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
             continue
     return _classes_deriving(trees, _BUILTIN_EXCEPTIONS)
@@ -944,7 +946,7 @@ def _gated(statuses: tuple[ast.AST | None, ...], broad: bool) -> bool:
 
 
 def _parse(path: pathlib.Path) -> ast.AST:
-    """One tree per call of a public entry point.
+    """The file's one tree, shared by every pass and every caller.
 
     Load-bearing, not tidiness: the passes below share node-identity sets to
     avoid attributing one site to two of them, and ``id()`` is only comparable
@@ -953,7 +955,7 @@ def _parse(path: pathlib.Path) -> ast.AST:
     ``modules/case/api/routes/`` as leaks — a false positive produced by the
     guard's plumbing rather than by its rule.
     """
-    return ast.parse(path.read_text(encoding="utf-8"))
+    return parse_file(path)
 
 
 def _except_handlers(tree: ast.AST):
@@ -1293,7 +1295,7 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
     line numbers out of order, which reads as a bug in the guard.
     """
     offenders: list[str] = []
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = _parse(path)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue

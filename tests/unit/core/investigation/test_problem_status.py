@@ -25,6 +25,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     ProblemStatus,
 )
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -111,7 +112,7 @@ def test_problem_status_has_one_writer():
     offenders = {}
     writer_lines: list[int] = []
     for path in _PACKAGE.rglob("*.py"):
-        lines = _status_writes(ast.parse(path.read_text(), filename=str(path)))
+        lines = _status_writes(parse_file(path))
         if path.resolve() == _WRITER:
             writer_lines = lines
         elif lines:

@@ -52,6 +52,7 @@ from typing import Dict, List, Set, Tuple
 import pytest
 
 import faultmaven
+from tests.source_tree import parse_file
 
 #: The one file allowed to sign. Both generator implementations live here, each
 #: holding its own key, which is what makes key and algorithm impossible to
@@ -151,8 +152,7 @@ def find_jwt_encode_calls(root: Path) -> Tuple[Dict[str, List[int]], int]:
 
     for path in sorted(root.rglob("*.py")):
         scanned += 1
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
+        tree = parse_file(path)
         finder = _JWTEncodeFinder()
         finder.visit(tree)
         if finder.hits:

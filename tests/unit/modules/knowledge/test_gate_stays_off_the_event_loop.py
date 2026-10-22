@@ -24,6 +24,8 @@ import pathlib
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
 #: The synchronous gate entry points — the roots of the reach set below.
@@ -113,7 +115,7 @@ def _reach_set(sources: list[pathlib.Path]) -> set[str]:
     calls: dict[str, set[str]] = {}
     for path in sources:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
         except SyntaxError:  # pragma: no cover - a parse failure is its own bug
             continue
         collector = _Defs()
@@ -194,7 +196,7 @@ def test_no_async_function_calls_the_gate_synchronously():
     parsed = 0
     for path in sources:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
         except SyntaxError:  # pragma: no cover
             continue
         parsed += 1
@@ -513,14 +515,14 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
     """
     import ast
 
-    source = (
+    tree = parse_file(
         _repo_root()
         / "faultmaven/modules/knowledge/domain/services/conversion_service/service.py"
-    ).read_text(encoding="utf-8")
+    )
 
     target = next(
         node
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "update_draft"
     )
     sessions = [n for n in ast.walk(target) if isinstance(n, ast.AsyncWith)]

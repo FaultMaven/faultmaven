@@ -65,6 +65,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -317,7 +319,9 @@ def _dump_carries(node: ast.Call, turn_names: set[str]) -> bool:
     return False
 
 
-def _parse(source: str) -> ast.Module:
+def _parse(source: str | Path) -> ast.Module:
+    if isinstance(source, Path):
+        return parse_file(source)
     # A module with an invalid escape in a non-raw string warns on every
     # parse; that is the module's business, not this census's.
     with warnings.catch_warnings():
@@ -325,7 +329,7 @@ def _parse(source: str) -> ast.Module:
         return ast.parse(source)
 
 
-def read_sites(source: str) -> Counter:
+def read_sites(source: str | Path) -> Counter:
     """``{function qualname: reads}`` for one module's source."""
     tree = _parse(source)
     parents = {
@@ -385,13 +389,13 @@ def _scan() -> tuple[Counter, int]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         files += 1
         rel = path.relative_to(_ROOT).as_posix()
-        for scope, count in read_sites(path.read_text(encoding="utf-8")).items():
+        for scope, count in read_sites(path).items():
             sites[(rel, scope)] = count
     return sites, files
 
 
 def _function(path: str, qualname: str) -> ast.AST:
-    node: ast.AST = _parse((_ROOT / path).read_text(encoding="utf-8"))
+    node: ast.AST = _parse(_ROOT / path)
     for part in qualname.split("."):
         node = next(
             child

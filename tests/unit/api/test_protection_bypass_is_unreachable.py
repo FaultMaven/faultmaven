@@ -59,6 +59,7 @@ from faultmaven.config.protection import (
 )
 from faultmaven.config.settings import Environment
 from faultmaven.models.protection import ProtectionSettings, RateLimitConfig
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -392,7 +393,7 @@ def test_one_module_installs_the_rate_limiter():
 
     installers = set()
     for path in modules:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_file(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -430,7 +431,7 @@ def test_the_bypass_header_list_has_one_consumer():
 
     seen = set()
     for path in modules:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_file(path)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Attribute)

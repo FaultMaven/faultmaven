@@ -76,6 +76,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -198,13 +200,15 @@ def _is_site(node: ast.AST, parents: dict) -> bool:
     return False
 
 
-def _parse(source: str) -> ast.Module:
+def _parse(source: str | Path) -> ast.Module:
+    if isinstance(source, Path):
+        return parse_file(source)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
         return ast.parse(source)
 
 
-def call_sites(source: str) -> Counter:
+def call_sites(source: str | Path) -> Counter:
     """``{function qualname: provider calls}`` for one module's source."""
     tree = _parse(source)
     parents = {
@@ -229,7 +233,7 @@ def _scan() -> tuple[Counter, int]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         files += 1
         rel = path.relative_to(_ROOT).as_posix()
-        for scope, count in call_sites(path.read_text(encoding="utf-8")).items():
+        for scope, count in call_sites(path).items():
             sites[(rel, scope)] = count
     return sites, files
 
@@ -237,7 +241,7 @@ def _scan() -> tuple[Counter, int]:
 def _function(path: str, qualname: str) -> ast.AST:
     """The def or class at ``qualname`` — the same naming ``call_sites`` uses,
     so a closure nested inside an ``if`` or a loop is found by its scope."""
-    tree = _parse((_ROOT / path).read_text(encoding="utf-8"))
+    tree = _parse(_ROOT / path)
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
     }

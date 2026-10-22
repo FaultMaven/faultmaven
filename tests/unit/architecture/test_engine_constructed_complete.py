@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -87,7 +88,7 @@ def test_no_engine_dependency_is_assigned_after_construction():
     for path in sorted(_ROOT.rglob("*.py")):
         if _ENGINE_PACKAGE in path.parents:
             continue
-        hits = _late_assignments(ast.parse(path.read_text()), deps)
+        hits = _late_assignments(parse_file(path), deps)
         if hits:
             offenders[str(path.relative_to(_ROOT.parent))] = hits
     assert not offenders, (

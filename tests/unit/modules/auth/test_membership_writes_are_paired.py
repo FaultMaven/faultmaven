@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = pytest.mark.unit
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "faultmaven"
@@ -83,7 +85,7 @@ def _call_sites(method: str) -> set[str]:
     """Package-relative paths of every file containing a ``.<method>(`` call."""
     found: set[str] = set()
     for path in PACKAGE_ROOT.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_file(path)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
