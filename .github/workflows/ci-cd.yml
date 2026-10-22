@@ -182,7 +182,7 @@ jobs:
       - name: Validate key tool versions in lockfile
         run: |
           echo "Checking pinned tool versions..."
-          grep -q "^black==26.3.1$" requirements/test.txt || (echo "ERROR: black not pinned to 26.3.1 in lockfile" && exit 1)
+          grep -q "^black==26.10.1$" requirements/test.txt || (echo "ERROR: black not pinned to 26.10.1 in lockfile" && exit 1)
           grep -q "^ruff==0.9.10$" requirements/test.txt || (echo "ERROR: ruff not pinned to 0.9.10 in lockfile" && exit 1)
           echo "✓ Tool versions verified"
 

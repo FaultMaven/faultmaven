@@ -87,6 +87,9 @@ dependencies = [
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=1.0.0",
+    # >=1.45.1: TraceState.from_header parses an unbounded tracestate header
+    # in quadratic time (GHSA-xcq7-p3pf-p88h).
+    "opentelemetry-api>=1.45.1",
     # Floored at the release the lockfiles pin and the image is built with.
     # The security floor is 5.6.0: below it, loading a model from a path that
     # exists on local disk runs that directory's Python even with
@@ -230,7 +233,7 @@ test = [
     "bandit>=1.7.0",
 
     # Code quality (for CI checks)
-    "black==26.3.1",  # Pinned for consistent formatting across environments
+    "black==26.10.1",  # Pinned for consistent formatting across environments
     "ruff==0.9.10",    # Pinned — CI env-check gates on this exact version in the lockfile
     # Installed, but NOT configured and NOT invoked: ruff replaced flake8 here in
     # #179, and no CI job, pre-commit hook or script runs it. There is deliberately
@@ -252,7 +255,7 @@ test = [
 dev = [
     # Code quality and formatting
     "ruff==0.9.10",             # Fast Python linter and formatter (pinned to match CI)
-    "black==26.3.1",           # Code formatter (pinned to match CI)
+    "black==26.10.1",          # Code formatter (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
 
     # Pre-commit hooks
