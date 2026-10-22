@@ -1,10 +1,11 @@
-"""Tests for scripts/security_alert_sweep.py (#2120).
+"""Tests for scripts/security_alert_sweep.py (#2120, scheduled audits #2159).
 
 Each test pins one rule against the naive form that misread live data or a review
 probe: a URL in prose, a failed fetch read as "nothing there", a 502 read as a
 missing file, npm prereleases and PEP 440 local versions, an advisory's other
 ranges, a U+0085 inside a JSON string, and private detail, posture or a secret
-type in a paste of the output. ``FakeGh`` answers as gh 2.46 does, offline.
+type in a paste of the output; a dispatch or a run in progress read as the
+schedule's result. ``FakeGh`` answers as gh 2.46 does, offline.
 """
 
 import importlib.util
@@ -39,13 +40,15 @@ class FakeGh:
     """``gh`` as 2.46 behaves: ``--paginate`` alone prints one JSON array per page,
     concatenated; ``--jq '.[]'`` prints one object per line across pages, leaving
     non-ASCII (U+0085 included) unescaped; a refused call exits 1 with
-    ``gh: <message> (HTTP <code>)`` on stderr."""
+    ``gh: <message> (HTTP <code>)`` on stderr. A workflow's ``/runs`` applies
+    GitHub's ``event``, ``status`` and ``per_page`` filters, newest first."""
 
     def __init__(self, repos):
         self.visibility = {name: "PUBLIC" for name in repos}
         self.pages: dict[str, list[list[dict]]] = {}
         self.files: dict[tuple[str, str], str] = {}
         self.commits: dict[tuple[str, str], str] = {}  # default: a day ago
+        self.runs: dict[str, list[dict]] = {}  # default: a success a day ago
         self.errors: dict[str, str] = {}
         self.calls: list[list[str]] = []
 
@@ -67,6 +70,16 @@ class FakeGh:
                 self.commits.get((path[: -len("/commits")], manifest), default) + "\n",
                 "",
             )
+        if path.endswith("/runs"):
+            want = urllib.parse.parse_qs(query)
+            runs = [
+                r
+                for r in self.runs.get(path.split("/")[0], [wf_run()])
+                if [r["event"]] == want["event"]
+                and [r["status"]] == want.get("status", [r["status"]])
+            ]
+            page = {"workflow_runs": runs[: int(want["per_page"][0])]}
+            return 0, json.dumps(page), ""
         if "Accept: application/vnd.github.raw" in args:
             text = self.files.get(tuple(path.split("/contents/")))
             return (
@@ -560,7 +573,8 @@ def test_the_queue_line_leaves_secret_scanning_out_of_every_count(
             gh.pages[f"{SLACK}/secret-scanning/alerts"] = [[secret(SLACK, 3)]]
             gh.errors[f"{COPILOT}/secret-scanning/alerts"] = "HTTP 502: Bad Gateway"
         reports.append(mod.sweep(gh, NOW))
-    assert [report.split("\n")[-1] for report in reports] == [QUEUE + expected] * 2
+    last = QUEUE + expected + ", scheduled audits failing 0"
+    assert [report.split("\n")[-1] for report in reports] == [last] * 2
     pulls = f"unavailable: {SLACK} pulls: gh: HTTP 502"
     assert [pulls in report.split("\n") for report in reports] == [True, True]
     assert summary(reports[0]) != summary(reports[1])
@@ -590,6 +604,90 @@ def test_a_private_repos_failed_fetch_names_no_path(
     report = mod.sweep(gh, NOW)
     assert report.split("\n")[0] == f"unavailable: {repo} {expected}"
     assert ("requirements" in report) == (visibility == "PUBLIC")
+
+
+# --- Scheduled audits (#2159) -------------------------------------------------
+
+DASHBOARD, WEBSITE = "faultmaven-dashboard", "faultmaven-website"
+RUNS = "actions/workflows/scheduled-audit.yml/runs"
+NOT_FOUND = "Not Found (HTTP 404)"  # the workflow is not on the default branch
+
+
+def wf_run(conclusion="success", days=1.0, status="completed", event="schedule"):
+    return {
+        "event": event,
+        "status": status,
+        "conclusion": conclusion if status == "completed" else None,
+        "created_at": iso(NOW - timedelta(days=days)),
+    }
+
+
+def scheduled(report):
+    return [line for line in report.split("\n") if line.startswith("scheduled audit:")]
+
+
+@pytest.mark.parametrize(
+    "runs, shown, failing",
+    [
+        ([wf_run()], "success 1.0d ago", 0),
+        ([wf_run("failure", 0.5)], "failure 0.5d ago", 1),
+        ([wf_run("cancelled")], "cancelled 1.0d ago", 1),  # any non-success
+        ([wf_run(days=2)], "success 2.0d ago", 0),
+        ([wf_run(days=2.5)], "success 2.5d ago, stale", 1),
+        ([wf_run("failure", 3)], "failure 3.0d ago, stale", 1),  # counted once
+        # A run in progress hides no earlier result, and is not the schedule's yet.
+        ([wf_run(status="in_progress"), wf_run("failure")], "failure 1.0d ago", 1),
+        ([wf_run(status="queued")], "none yet", 0),
+        ([wf_run(event="workflow_dispatch"), wf_run(event="push")], "none yet", 0),
+        ([], "none yet", 0),
+        ([{**wf_run(), "created_at": None}], "unavailable: unreadable response", 1),
+        (NOT_FOUND, f"unavailable: gh: {NOT_FOUND}", 1),
+    ],
+)
+def test_a_repos_line_reads_its_newest_completed_scheduled_audit(
+    mod, runs, shown, failing
+):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    if isinstance(runs, str):
+        gh.errors[f"{DASHBOARD}/{RUNS}"] = runs
+    else:
+        gh.runs[DASHBOARD] = runs
+    report = mod.sweep(gh, NOW)
+    assert scheduled(report) == [
+        f"scheduled audit: {DASHBOARD} {shown}",
+        f"scheduled audit: {COPILOT} success 1.0d ago",
+        f"scheduled audit: {WEBSITE} success 1.0d ago",
+    ]
+    assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+
+
+def test_failing_audits_move_only_the_queue_lines_new_count(mod):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh.errors.update({f"{repo}/{RUNS}": NOT_FOUND for repo in mod.AUDITED})
+    report = mod.sweep(gh, NOW)
+    assert len(scheduled(report)) == 3
+    assert summary(report).endswith(" · unknown 0 · disabled 0 · unavailable 0")
+    assert summary(report, "queue: ").endswith(
+        "unknown 0, unavailable 0, scheduled audits failing 3"
+    )
+
+
+def test_a_repo_not_known_public_is_counted_and_neither_read_nor_named(mod):
+    gh = fake(mod, CORE, dependabot(CORE, 1))
+    gh.visibility[DASHBOARD] = "PRIVATE"
+    gh.runs[DASHBOARD] = [wf_run("failure")]
+    report = mod.sweep(gh, NOW)
+    assert scheduled(report) == [
+        f"scheduled audit: {COPILOT} success 1.0d ago",
+        f"scheduled audit: {WEBSITE} success 1.0d ago",
+        "scheduled audit: 1 repo not known public",
+    ]
+    assert DASHBOARD not in report and "failure" not in report
+    assert summary(report, "queue: ").endswith(", scheduled audits failing 1")
+    gh.errors["repo list"] = "HTTP 502: Bad Gateway"  # no repo is known public
+    hidden = ["scheduled audit: 3 repos not known public"]
+    assert scheduled(mod.sweep(gh, NOW)) == hidden
+    assert not [call for call in gh.calls if RUNS in call[-1] and DASHBOARD in call[-1]]
 
 
 def test_the_sweep_only_reads(mod):

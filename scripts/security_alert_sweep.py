@@ -24,6 +24,12 @@ or severity, no row names a secret type, and a private repo outside the map is
 never named, so a paste of the output leaks none of them. The last line,
 ``queue:``, leaves secret scanning out of every count, for the public Queue.
 
+Each repo in ``AUDITED`` also gets a ``scheduled audit:`` line (#2159): the
+conclusion and age of the newest completed ``schedule`` run of its daily
+lockfile audit, flagged ``stale`` past ``AUDIT_STALE``; ``none yet`` before the
+first, ``unavailable`` when the read fails. A repo not known to be public is not
+read and only counted. ``queue:`` counts the failing ones.
+
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
 
@@ -65,6 +71,13 @@ RAW = ["api", "-H", "Accept: application/vnd.github.raw"]
 PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
+AUDITED = ("faultmaven-dashboard", "faultmaven-copilot", "faultmaven-website")
+# Completed runs only: a run still in progress hides no earlier result.
+AUDIT_RUNS = (
+    "actions/workflows/scheduled-audit.yml/runs"
+    "?event=schedule&status=completed&per_page=1"
+)
+AUDIT_STALE = timedelta(days=2)  # a disabled schedule, or GitHub's 60-day stop
 
 # A requirement line in a .txt manifest: name, extras, then the rest of the line.
 REQ_LINE = re.compile(r"^[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?(.*)$", re.M)
@@ -373,6 +386,35 @@ class Sweep:
             )
         return lines
 
+    def audit_line(self, repo: str) -> tuple[bool, str]:
+        """``(failing, line)``: failed, stale and unavailable fail; none yet does not."""
+        code, out, err = self.run(["api", f"repos/{ORG}/{repo}/{AUDIT_RUNS}"])
+        head = f"scheduled audit: {repo}"
+        if code:  # a 404 too: the workflow is not on the default branch
+            return True, f"{head} unavailable: {FetchError(err).line}"
+        try:
+            runs = json.loads(out)["workflow_runs"]
+            if not runs:
+                return False, f"{head} none yet"
+            created = runs[0]["created_at"].replace("Z", "+00:00")
+            age = self.now - datetime.fromisoformat(created)
+            conclusion = runs[0]["conclusion"]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return True, f"{head} unavailable: unreadable response"
+        stale = age > AUDIT_STALE
+        shown = f"{head} {conclusion} {age / timedelta(days=1):.1f}d ago"
+        return conclusion != "success" or stale, shown + (", stale" if stale else "")
+
+    def audit_lines(self) -> tuple[int, list[str]]:
+        """``(failing, lines)``. A repo not known to be public is not read: it folds
+        into one unnamed line and counts as failing, so no paste shows its runs."""
+        read = [self.audit_line(repo) for repo in AUDITED if repo in self.public]
+        lines = [line for _, line in read]
+        if hidden := len(AUDITED) - len(read):
+            plural = "s" if hidden != 1 else ""
+            lines.append(f"scheduled audit: {hidden} repo{plural} not known public")
+        return sum(failing for failing, _ in read) + hidden, lines
+
     def disabled_line(self, kind: str, repos: list[str]) -> str:
         listed = (
             f"{', '.join(repos[:-1])} and {repos[-1]}" if len(repos) > 1 else repos[0]
@@ -426,6 +468,7 @@ class Sweep:
         for alert in alerts:
             self.classify(alert)
         outside = self.outside_lines(sorted(set(listed) - set(REPOS)))
+        audits_failing, audits = self.audit_lines()
 
         groups: dict[tuple[str, str, str, str], list[Alert]] = {}
         for a in alerts:
@@ -444,6 +487,7 @@ class Sweep:
             *("| " + " | ".join(cells) + " |" for _, cells in rows),
             "",
             *outside,
+            *audits,
         ]
         lines.append(
             f"alerts {len(alerts)}: tracked {count['tracked']} · exception {count['exception']}"
@@ -460,7 +504,8 @@ class Sweep:
         failed = sum(1 for secret, _ in self.unavailable if not secret)
         lines.append(
             f"queue: alerts {len(shared)} (secret scanning excluded): untracked groups"
-            f" {groups_u}, unknown {unknown}, unavailable {failed}"
+            f" {groups_u}, unknown {unknown}, unavailable {failed},"
+            f" scheduled audits failing {audits_failing}"
         )
         return "\n".join(lines)
 
