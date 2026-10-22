@@ -5,6 +5,7 @@ import ast
 
 import pytest
 
+from tests import source_tree
 from tests.source_tree import PACKAGE_ROOT, parse_file, parse_source
 
 pytestmark = pytest.mark.unit
@@ -16,12 +17,16 @@ def test_a_package_file_is_parsed_once():
     assert parse_file(PACKAGE_ROOT / "__init__.py") is parse_file(spelled_twice)
 
 
-def test_new_text_at_the_same_path_is_parsed_again():
-    """Keyed on the text, not a timestamp: a same-length rewrite re-parses."""
-    path = PACKAGE_ROOT / "_probe_2171.py"
-    before = parse_source("x = 1\n", path)
+def test_a_rewritten_package_file_is_read_and_parsed_again(tmp_path, monkeypatch):
+    """Keyed on the text read now, not a timestamp or a stored copy."""
+    monkeypatch.setattr(source_tree, "PACKAGE_ROOT", tmp_path.resolve())
+    path = tmp_path / "module.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    before = parse_file(path)
+    assert parse_file(path) is before
+    path.write_text("y = 2\n", encoding="utf-8")
 
-    after = parse_source("y = 2\n", path)
+    after = parse_file(path)
 
     assert after is not before
     assert ast.dump(after) == ast.dump(ast.parse("y = 2\n"))
@@ -41,7 +46,10 @@ def test_a_file_outside_the_package_is_not_kept(tmp_path):
     assert parse_file(path) is not parse_file(path)
 
 
-def test_a_source_files_own_warnings_still_surface():
-    """The linter does not select W605, so the parse's warning is the signal."""
+@pytest.mark.parametrize("where", ["package", "outside"])
+def test_a_source_files_own_warnings_still_surface(where, tmp_path):
+    """The linter does not select W605, so the parse's warning is the signal,
+    for a package file and for any other."""
+    root = PACKAGE_ROOT if where == "package" else tmp_path
     with pytest.warns((DeprecationWarning, SyntaxWarning), match="invalid escape"):
-        parse_source('x = "\\d"\n', PACKAGE_ROOT / "_probe_warns.py")
+        parse_source('x = "\\d"\n', root / "_probe_warns.py")
