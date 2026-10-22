@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.case import Case
+from tests.unit.core.investigation.fence_readers import strip_fence
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 # ============================================================
@@ -205,13 +206,13 @@ class TestSlidingWindowConfig:
 class TestNoEvidence:
     """Test evidence context with no evidence."""
 
-    def test_no_evidence_shows_placeholder(self, fence_read):
+    def test_no_evidence_shows_placeholder(self):
         """0 evidence items → 'No formal evidence collected yet.'"""
         case = _make_case_with_evidence([])
         result = _build_evidence_context(case)
         assert "No formal evidence collected yet." in result
-        assert "<evidence_collected>" in fence_read.unfenced(result)
-        assert "</evidence_collected>" in fence_read.unfenced(result)
+        assert "<evidence_collected>" in strip_fence(result)
+        assert "</evidence_collected>" in strip_fence(result)
 
 
 # ============================================================
@@ -270,7 +271,7 @@ class TestInquiryUploadedFilesBlock:
         defaults.update(overrides)
         return UploadedFile(**defaults)
 
-    def test_emits_uploaded_file_block_with_file_id_attribute(self, fence_read):
+    def test_emits_uploaded_file_block_with_file_id_attribute(self):
         """uploaded_file element exposes file_id (not evidence_id) to match the
         <evidence file_id="..."> convention used during INVESTIGATING."""
         case = _make_inquiry_case_with_uploaded_files([self._file()])
@@ -279,13 +280,13 @@ class TestInquiryUploadedFilesBlock:
         assert "<uploaded_file" in result
         assert 'file_id="file_aabbccdd1122"' in result
         assert 'evidence_id="' not in result
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert "ERROR: OOM at 14:03" in result
         # search_map and file_meta also surface so the agent can plan
         # search_file queries from the preprocessed hints.
-        assert "<search_map>" in fence_read.unfenced(result)
+        assert "<search_map>" in strip_fence(result)
         assert "[search: OOM]" in result
-        assert "<file_meta>" in fence_read.unfenced(result)
+        assert "<file_meta>" in strip_fence(result)
         assert "line_count=2048" in result
 
     def test_marks_uploaded_file_file_backed(self):
@@ -354,7 +355,7 @@ class TestInquiryUploadedFilesBlock:
 class TestTierA:
     """Test Tier A — recent data evidence with full structural_index."""
 
-    def test_single_recent_document_includes_structural_index(self, fence_read):
+    def test_single_recent_document_includes_structural_index(self):
         """1 recent DOCUMENT evidence → Tier A with full structural_index."""
         ev = _make_evidence(
             summary="Error burst detected in application logs",
@@ -367,11 +368,11 @@ class TestTierA:
         assert f'id="{ev.evidence_id}"' in result
         assert 'file_id="' in result
         assert 'data_type="logs"' in result
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert "CRIME SCENE EXTRACTION" in result
-        assert "<summary>" in fence_read.unfenced(result)
+        assert "<summary>" in strip_fence(result)
 
-    def test_recent_submitted_data_is_tier_a(self, fence_read):
+    def test_recent_submitted_data_is_tier_a(self):
         """SUBMITTED_DATA form is also treated as Tier A (data evidence)."""
         ev = _make_evidence(
             summary="Search result finding",
@@ -381,7 +382,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert 'file_id="' in result
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert "timeout" in result
 
     def test_three_recent_items_all_tier_a(self):
@@ -403,7 +404,7 @@ class TestTierA:
             assert f'id="{evidence[i].evidence_id}"' in result
             assert f"Structural index for item {i}" in result
 
-    def test_empty_structural_index_omits_tag(self, fence_read):
+    def test_empty_structural_index_omits_tag(self):
         """Evidence with empty preprocessed_content omits <file_extract> tag."""
         ev = _make_evidence(
             extract="",
@@ -413,7 +414,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert f'id="{ev.evidence_id}"' in result
-        assert "<summary>" in fence_read.unfenced(result)
+        assert "<summary>" in strip_fence(result)
         # Should NOT include an empty structural_index tag
         # (because structural_index.strip() is empty)
 
@@ -452,7 +453,7 @@ class TestTruncation:
             <= EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
         )
 
-    def test_total_budget_causes_tier_a_downgrade(self, fence_read):
+    def test_total_budget_causes_tier_a_downgrade(self):
         """When total budget exceeded, remaining Tier A items downgrade to Tier B."""
         # Create 3 items each with large structural index that together exceed budget
         large_content = "Y" * 5500  # Each ~5500 chars, 3 items = ~16500 > 16000
@@ -468,7 +469,7 @@ class TestTruncation:
         result = _build_evidence_context(case)
 
         # At least the first items should have structural_index
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         # Total result should be within reasonable bounds
         assert (
             len(result) < EVIDENCE_CONTEXT_MAX_TOTAL_CHARS + 5000
@@ -1177,7 +1178,7 @@ class TestVerbatimQuoteRendering:
     Pins the rendering contract introduced by the third-pass review so
     future refactors can't silently regress either path."""
 
-    def test_tier_a_renders_both_file_extract_and_verbatim_quote(self, fence_read):
+    def test_tier_a_renders_both_file_extract_and_verbatim_quote(self):
         """File-backed evidence with both a structural index and an LLM
         quote → both blocks appear, structural index first."""
         ev = _make_evidence(
@@ -1188,19 +1189,19 @@ class TestVerbatimQuoteRendering:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
 
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert "Structural index content for service-A.log" in result
         assert (
             "<verbatim_quote>[14:02:15] OOM killer fired, pid=4321 service-a"
-            "</verbatim_quote>" in fence_read.unfenced(result)
+            "</verbatim_quote>" in strip_fence(result)
         )
         # Ordering: file_extract precedes verbatim_quote so the LLM reads
         # the orientation content first and the claim-grounding quote second.
-        assert fence_read.unfenced(result).find("<file_extract>") < fence_read.unfenced(
-            result
-        ).find("<verbatim_quote>")
+        assert strip_fence(result).find("<file_extract>") < strip_fence(result).find(
+            "<verbatim_quote>"
+        )
 
-    def test_tier_a_omits_verbatim_quote_when_extract_is_none(self, fence_read):
+    def test_tier_a_omits_verbatim_quote_when_extract_is_none(self):
         """File-backed evidence with no LLM quote → no <verbatim_quote>
         tag rendered (avoid empty elements that clutter the prompt)."""
         ev = _make_evidence(
@@ -1210,10 +1211,10 @@ class TestVerbatimQuoteRendering:
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
-        assert "<file_extract>" in fence_read.unfenced(result)
-        assert "<verbatim_quote>" not in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
+        assert "<verbatim_quote>" not in strip_fence(result)
 
-    def test_tier_c_renders_verbatim_quote_for_a_fileless_row(self, fence_read):
+    def test_tier_c_renders_verbatim_quote_for_a_fileless_row(self):
         """A fileless row (ENGINE_INFERENCE) with an extract →
         ``<verbatim_quote>`` carries it. Suppressing it would lose the only
         content this row has."""
@@ -1230,7 +1231,7 @@ class TestVerbatimQuoteRendering:
         assert "HTTP/1.1 503 Service Unavailable" in result
         assert (
             "<verbatim_quote>HTTP/1.1 503 Service Unavailable - "
-            "upstream connect error</verbatim_quote>" in fence_read.unfenced(result)
+            "upstream connect error</verbatim_quote>" in strip_fence(result)
         )
         # Tier C is never file-backed — no file behind it.
         assert 'file_backed="true"' not in result
@@ -1263,7 +1264,7 @@ class TestProcessingModeOrientation:
     role="orientation" to signal it's a map for the LLM, not the answer.
     """
 
-    def test_da_mode_adds_role_orientation(self, fence_read):
+    def test_da_mode_adds_role_orientation(self):
         """processing_mode='directed_analysis' → <file_extract role="orientation">."""
         ev = _make_evidence(
             summary="Nginx errors",
@@ -1272,10 +1273,10 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
-        assert '<file_extract role="orientation">' in fence_read.unfenced(result)
+        assert '<file_extract role="orientation">' in strip_fence(result)
         assert "CRIME SCENE: 502 errors" in result
 
-    def test_triage_mode_no_role_attribute(self, fence_read):
+    def test_triage_mode_no_role_attribute(self):
         """processing_mode='triage' → <file_extract> (no role)."""
         ev = _make_evidence(
             summary="Nginx errors",
@@ -1284,10 +1285,10 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="triage")
 
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert 'role="orientation"' not in result
 
-    def test_none_mode_no_role_attribute(self, fence_read):
+    def test_none_mode_no_role_attribute(self):
         """processing_mode=None (default) → <file_extract> (no role)."""
         ev = _make_evidence(
             summary="Nginx errors",
@@ -1296,10 +1297,10 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)  # no processing_mode arg
 
-        assert "<file_extract>" in fence_read.unfenced(result)
+        assert "<file_extract>" in strip_fence(result)
         assert 'role="orientation"' not in result
 
-    def test_orientation_role_only_on_tier_a(self, fence_read):
+    def test_orientation_role_only_on_tier_a(self):
         """role='orientation' applies to Tier A items only; Tier B has no structural_index."""
         evidence = [
             _make_evidence(
@@ -1313,7 +1314,7 @@ class TestProcessingModeOrientation:
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
         # Tier A (recent 3): should have role="orientation"
-        assert '<file_extract role="orientation">' in fence_read.unfenced(result)
+        assert '<file_extract role="orientation">' in strip_fence(result)
         # The older items (Tier B) should be summary-only — no structural_index at all
 
 
