@@ -158,7 +158,7 @@ assembled prompt rather than joining it. Verified by execution in #1228, and
 RE-verified for #1242 because the mint moved — a budget sweep from 1,000 to
 24,000 ``prompt_target_tokens`` emitted 39 fallback and 8 main prompts, each
 with exactly one live token, no unclosed fenced delimiter and no absorbed one
-(``tests/unit/core/investigation/test_fallback_fence_1242.py``).
+(``tests/unit/core/investigation/prompts/test_fenced_channels.py``).
 
 The fallback's SIZE has to fit the budget of the call that falls back to it,
 because ``_assemble_allocated``'s overflow arms return it without re-measuring
