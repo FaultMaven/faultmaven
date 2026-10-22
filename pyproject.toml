@@ -84,6 +84,9 @@ dependencies = [
     # Logging (structured logging for all editions)
     "structlog>=24.1.0",
     "python-json-logger>=2.0.7",
+    # Direct import (logging/config.py reads the current trace span);
+    # >=1.45.1: unbounded tracestate header parse GHSA fix (GHSA-xcq7-p3pf-p88h)
+    "opentelemetry-api>=1.45.1",
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=1.0.0",
@@ -230,7 +233,7 @@ test = [
     "bandit>=1.7.0",
 
     # Code quality (for CI checks)
-    "black==26.3.1",  # Pinned for consistent formatting across environments
+    "black==26.10.1",  # Pinned for consistent formatting across environments
     "ruff==0.9.10",    # Pinned — CI env-check gates on this exact version in the lockfile
     # Installed, but NOT configured and NOT invoked: ruff replaced flake8 here in
     # #179, and no CI job, pre-commit hook or script runs it. There is deliberately
@@ -252,7 +255,7 @@ test = [
 dev = [
     # Code quality and formatting
     "ruff==0.9.10",             # Fast Python linter and formatter (pinned to match CI)
-    "black==26.3.1",           # Code formatter (pinned to match CI)
+    "black==26.10.1",          # Code formatter (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
 
     # Pre-commit hooks

@@ -60,7 +60,7 @@ beautifulsoup4==4.14.3
     # via faultmaven (pyproject.toml)
 bidict==0.23.1
     # via python-socketio
-black==26.3.1
+black==26.10.1
     # via faultmaven (pyproject.toml)
 blinker==1.9.0
     # via flask
@@ -259,9 +259,7 @@ idna==3.18
     #   tldextract
     #   yarl
 importlib-metadata==8.7.1
-    # via
-    #   litellm
-    #   opentelemetry-api
+    # via litellm
 importlib-resources==7.1.0
     # via chromadb
 iniconfig==2.3.0
@@ -419,25 +417,29 @@ openai==2.32.0
     #   faultmaven (pyproject.toml)
     #   litellm
     #   opik
-opentelemetry-api==1.41.0
+opentelemetry-api==1.45.1
     # via
+    #   faultmaven (pyproject.toml)
     #   chromadb
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-otlp-proto-common==1.41.0
+opentelemetry-exporter-otlp-common==0.66b1
     # via opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-exporter-otlp-proto-grpc==1.41.0
+opentelemetry-exporter-otlp-proto-common==1.45.1
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.45.1
     # via chromadb
-opentelemetry-proto==1.41.0
+opentelemetry-proto==1.45.1
     # via
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-sdk==1.41.0
+opentelemetry-sdk==1.45.1
     # via
     #   chromadb
+    #   opentelemetry-exporter-otlp-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-semantic-conventions==0.62b0
+opentelemetry-semantic-conventions==0.66b1
     # via opentelemetry-sdk
 opik==1.11.14
     # via faultmaven (pyproject.toml)
