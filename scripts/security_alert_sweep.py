@@ -24,6 +24,15 @@ or severity, no row names a secret type, and a private repo outside the map is
 never named, so a paste of the output leaks none of them. The last line,
 ``queue:``, leaves secret scanning out of every count, for the public Queue.
 
+Each repo in ``AUDITED`` also gets a ``scheduled audit:`` line (#2159): the
+conclusion and age of the newest completed ``schedule`` run of its daily
+lockfile audit; without one, ``none yet``, aged from the workflow file's last
+commit on the default branch, or ``not on main``. Past ``AUDIT_STALE`` either
+age adds ``stale``, and a workflow GitHub does not report ``active`` adds its
+``state``. ``queue:`` counts every line but a fresh ``success`` or ``none yet``,
+a failed read (``unavailable``) included. A repo not known to be public is not
+read and only counted.
+
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
 
@@ -65,6 +74,13 @@ RAW = ["api", "-H", "Accept: application/vnd.github.raw"]
 PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
+AUDITED = ("faultmaven-dashboard", "faultmaven-copilot", "faultmaven-website")
+AUDIT_FILE = ".github/workflows/scheduled-audit.yml"
+AUDIT_WORKFLOW = "actions/workflows/scheduled-audit.yml"
+# Completed runs only: a run still in progress hides no earlier result.
+AUDIT_RUNS = f"{AUDIT_WORKFLOW}/runs?event=schedule&status=completed&per_page=1"
+AUDIT_COMMITS = f"commits?path={AUDIT_FILE}&per_page=1"  # on the default branch
+AUDIT_STALE = timedelta(days=2)  # a schedule disabled, never firing, or stopped
 
 # A requirement line in a .txt manifest: name, extras, then the rest of the line.
 REQ_LINE = re.compile(r"^[ \t]*([A-Za-z0-9][\w.-]*)[ \t]*(\[[^\]]*\])?(.*)$", re.M)
@@ -104,6 +120,14 @@ def fetch(run: Runner, path: str) -> list[dict]:
     if code:
         raise FetchError(err)
     return [json.loads(line) for line in out.split("\n") if line.strip()]
+
+
+def fetch_object(run: Runner, path: str) -> dict:
+    """One object endpoint, unpaginated."""
+    code, out, err = run(["api", path])
+    if code:
+        raise FetchError(err)
+    return json.loads(out)
 
 
 def alerts_path(repo: str, kind: str) -> str:
@@ -373,6 +397,54 @@ class Sweep:
             )
         return lines
 
+    def audit_committed(self, path: str) -> str:
+        """The audit file's last commit date on the default branch, or "" for none:
+        gh's ``--jq`` prints an empty line for a missing value."""
+        jq = ["--jq", ".[0].commit.committer.date"]
+        code, out, err = self.run(["api", *jq, path + AUDIT_COMMITS])
+        if code:
+            raise FetchError(err)
+        return out.strip()
+
+    def audit_line(self, repo: str) -> tuple[bool, str]:
+        """``(failing, line)``. GitHub registers a workflow at its first run on any
+        branch, so ``none yet`` is aged from the file's last commit on main."""
+        head, path = f"scheduled audit: {repo}", f"repos/{ORG}/{repo}/"
+        try:
+            state = fetch_object(self.run, path + AUDIT_WORKFLOW)["state"]
+            if not isinstance(state, str):
+                raise TypeError(state)
+            runs = fetch_object(self.run, path + AUDIT_RUNS)["workflow_runs"]
+            conclusion = runs[0]["conclusion"] if runs else None
+            when = runs[0]["created_at"] if runs else self.audit_committed(path)
+            age = None
+            if when or runs:
+                age = self.now - datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except FetchError as exc:  # a 404 too: a failed read is never "not there"
+            return True, f"{head} unavailable: {exc.line}"
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return True, f"{head} unavailable: unreadable response"
+        flags = ["stale"] if age is not None and age > AUDIT_STALE else []
+        flags += [] if state == "active" else [state]
+        if age is None:  # no commit on the default branch touches the file
+            shown = "not on main"
+        elif runs:
+            shown = f"{conclusion} {age / timedelta(days=1):.2f}d ago"
+        else:
+            shown = "none yet"
+        failing = bool(flags) or age is None or (bool(runs) and conclusion != "success")
+        return failing, ", ".join([f"{head} {shown}", *flags])
+
+    def audit_lines(self) -> tuple[int, list[str]]:
+        """``(failing, lines)``. A repo not known to be public is not read: it folds
+        into one unnamed line and counts as failing, so no paste shows its runs."""
+        read = [self.audit_line(repo) for repo in AUDITED if repo in self.public]
+        lines = [line for _, line in read]
+        if hidden := len(AUDITED) - len(read):
+            plural = "s" if hidden != 1 else ""
+            lines.append(f"scheduled audit: {hidden} repo{plural} not known public")
+        return sum(failing for failing, _ in read) + hidden, lines
+
     def disabled_line(self, kind: str, repos: list[str]) -> str:
         listed = (
             f"{', '.join(repos[:-1])} and {repos[-1]}" if len(repos) > 1 else repos[0]
@@ -426,6 +498,7 @@ class Sweep:
         for alert in alerts:
             self.classify(alert)
         outside = self.outside_lines(sorted(set(listed) - set(REPOS)))
+        audits_failing, audits = self.audit_lines()
 
         groups: dict[tuple[str, str, str, str], list[Alert]] = {}
         for a in alerts:
@@ -444,6 +517,7 @@ class Sweep:
             *("| " + " | ".join(cells) + " |" for _, cells in rows),
             "",
             *outside,
+            *audits,
         ]
         lines.append(
             f"alerts {len(alerts)}: tracked {count['tracked']} · exception {count['exception']}"
@@ -460,7 +534,8 @@ class Sweep:
         failed = sum(1 for secret, _ in self.unavailable if not secret)
         lines.append(
             f"queue: alerts {len(shared)} (secret scanning excluded): untracked groups"
-            f" {groups_u}, unknown {unknown}, unavailable {failed}"
+            f" {groups_u}, unknown {unknown}, unavailable {failed},"
+            f" scheduled audits failing {audits_failing}"
         )
         return "\n".join(lines)
 
