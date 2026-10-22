@@ -162,12 +162,6 @@ email-validator==2.3.0
     # via faultmaven (pyproject.toml)
 execnet==2.1.2
     # via pytest-xdist
-factory-boy==3.3.3
-    # via faultmaven (pyproject.toml)
-faker==40.13.0
-    # via
-    #   faultmaven (pyproject.toml)
-    #   factory-boy
 fakeredis==2.35.1
     # via faultmaven (pyproject.toml)
 fastapi==0.136.0
