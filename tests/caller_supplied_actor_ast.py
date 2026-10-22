@@ -44,8 +44,9 @@ import ast
 import functools
 import pathlib
 import re
-import warnings
 from typing import Iterable, List, NamedTuple, Set
+
+from tests.source_tree import parse_file
 
 #: Attributes of a ``Request`` whose contents the caller writes.
 CALLER_CHANNEL_ATTRS = frozenset(
@@ -310,7 +311,11 @@ def _actor_labelling_functions(tree: ast.AST) -> Set[str]:
 
 def scan_source(source: str, path: str) -> List[Finding]:
     """Every actor field in ``source`` that can hold a caller-supplied value."""
-    tree = ast.parse(source)
+    return scan_tree(ast.parse(source), path)
+
+
+def scan_tree(tree: ast.AST, path: str) -> List[Finding]:
+    """:func:`scan_source` over a module already parsed."""
     tainting = _tainting_functions(tree)
     labelling = _actor_labelling_functions(tree)
     findings: List[Finding] = []
@@ -463,7 +468,11 @@ def scan_actor_sinks(source: str, path: str) -> List[Finding]:
     says how many actor fields the analysis can SEE, so a change that blinds it
     fails loudly instead of passing quietly.
     """
-    tree = ast.parse(source)
+    return scan_actor_sinks_in_tree(ast.parse(source), path)
+
+
+def scan_actor_sinks_in_tree(tree: ast.AST, path: str) -> List[Finding]:
+    """:func:`scan_actor_sinks` over a module already parsed."""
     found: List[Finding] = []
     for fn in _functions(tree):
         for node in ast.walk(fn):
@@ -499,18 +508,9 @@ def scan_package(
     Cached because several assertions ask the same question of the same tree
     and parsing the package is most of a minute. Nothing here writes, so the
     answer cannot go stale within a run.
-
-    Invalid string escapes in the sources are the linter's business, not this
-    guard's: ``ast.parse`` raises a ``DeprecationWarning`` for each one, and
-    letting them through would make this guard's output a report about escape sequences.
     """
     files = tuple(sorted(p for p in root.rglob("*.py")))
     findings: List[Finding] = []
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        warnings.simplefilter("ignore", SyntaxWarning)
-        for file in files:
-            findings += scan_source(
-                file.read_text(encoding="utf-8"), str(file.relative_to(root.parent))
-            )
+    for file in files:
+        findings += scan_tree(parse_file(file), str(file.relative_to(root.parent)))
     return tuple(sorted(set(findings))), files

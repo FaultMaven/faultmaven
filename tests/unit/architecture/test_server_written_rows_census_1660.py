@@ -58,12 +58,13 @@ from __future__ import annotations
 
 import ast
 import re
-import warnings
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
+
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 
@@ -317,17 +318,12 @@ def _dump_carries(node: ast.Call, turn_names: set[str]) -> bool:
     return False
 
 
-def _parse(source: str) -> ast.Module:
-    # A module with an invalid escape in a non-raw string warns on every
-    # parse; that is the module's business, not this census's.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
-        return ast.parse(source)
-
-
 def read_sites(source: str) -> Counter:
     """``{function qualname: reads}`` for one module's source."""
-    tree = _parse(source)
+    return read_sites_in_tree(ast.parse(source))
+
+
+def read_sites_in_tree(tree: ast.AST) -> Counter:
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
     }
@@ -385,13 +381,13 @@ def _scan() -> tuple[Counter, int]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         files += 1
         rel = path.relative_to(_ROOT).as_posix()
-        for scope, count in read_sites(path.read_text(encoding="utf-8")).items():
+        for scope, count in read_sites_in_tree(parse_file(path)).items():
             sites[(rel, scope)] = count
     return sites, files
 
 
 def _function(path: str, qualname: str) -> ast.AST:
-    node: ast.AST = _parse((_ROOT / path).read_text(encoding="utf-8"))
+    node: ast.AST = parse_file(_ROOT / path)
     for part in qualname.split("."):
         node = next(
             child
@@ -612,7 +608,7 @@ class TestTheGuardCheck:
 
     @staticmethod
     def _applied(src: str) -> set[str]:
-        return _applied_guards(_parse(src).body[0])
+        return _applied_guards(ast.parse(src).body[0])
 
     @pytest.mark.parametrize(
         "src",
@@ -763,7 +759,7 @@ def test_the_derived_requirement_catches_a_screen_left_out_of_a_declaration():
     """Positive control for the test below: the exact mis-declaration a
     defeat pass leaked at runtime — a reader of ``user_message_summary``
     declared as needing only the reply flag."""
-    fn = _parse(
+    fn = ast.parse(
         "def f(turn):\n    if turn.agent_response_synthesized:\n        return ''\n"
         "    return turn.user_message_summary"
     ).body[0]
@@ -776,7 +772,7 @@ def test_an_untied_read_derives_its_screens_too():
     declaration with no screens used to pass both checks while the
     placeholder text was quoted. The whole-record dump carries the reply
     summary as well, so it requires both screens."""
-    fn = _parse(
+    fn = ast.parse(
         "def f(turn):\n    d = turn.model_dump()\n"
         "    return d['user_message_summary']"
     ).body[0]
@@ -788,7 +784,7 @@ def test_an_untied_read_derives_its_screens_too():
 def test_an_untied_read_of_the_reply_requires_the_flag():
     """The ``_FLAG`` side: an untied read of the reply summary requires the
     reply flag as well as the skip screen that covers either summary."""
-    fn = _parse("def f(d):\n    return d['agent_response_summary']").body[0]
+    fn = ast.parse("def f(d):\n    return d['agent_response_summary']").body[0]
     assert _missing_screens(fn, _SKIP) == _FLAG
 
 

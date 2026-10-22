@@ -65,10 +65,11 @@ from tests.caller_supplied_actor_ast import (
     ACTOR_FIELDS,
     CLAIM_PREFIXES,
     Finding,
-    scan_actor_sinks,
+    scan_actor_sinks_in_tree,
     scan_package,
     scan_source,
 )
+from tests.source_tree import parse_file
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[2] / "faultmaven"
 
@@ -173,8 +174,8 @@ class TestTheScanLookedWhereTheRuleCanBeViolated:
         guard into a tautology.
         """
         access_log = PACKAGE_ROOT / "api/middleware/logging.py"
-        sinks = scan_actor_sinks(
-            access_log.read_text(encoding="utf-8"), "api/middleware/logging.py"
+        sinks = scan_actor_sinks_in_tree(
+            parse_file(access_log), "api/middleware/logging.py"
         )
         assert {f.field for f in sinks} >= {
             "user_id",

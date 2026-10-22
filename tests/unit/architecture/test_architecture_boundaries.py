@@ -21,6 +21,8 @@ from typing import Dict, List, Set
 
 import pytest
 
+from tests.source_tree import parse_file
+
 
 class TestArchitectureBoundaries:
     """Test architectural layer boundaries and dependencies"""
@@ -39,8 +41,7 @@ class TestArchitectureBoundaries:
             if file.name.startswith("__") or file.name == "dependencies.py":
                 continue
 
-            content = file.read_text()
-            tree = ast.parse(content)
+            tree = parse_file(file)
 
             for node in ast.walk(tree):
                 if isinstance(node, (ast.ImportFrom, ast.Import)):
@@ -96,8 +97,7 @@ class TestArchitectureBoundaries:
             if file.name.startswith("__"):
                 continue
 
-            content = file.read_text()
-            tree = ast.parse(content)
+            tree = parse_file(file)
 
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
@@ -139,8 +139,7 @@ class TestArchitectureBoundaries:
             ):
                 continue
 
-            content = file.read_text()
-            tree = ast.parse(content)
+            tree = parse_file(file)
 
             # Check that services import from interfaces
             has_interface_import = False
@@ -256,8 +255,7 @@ class TestCircularDependencies:
     def _get_module_imports(self, module_path: Path) -> Set[str]:
         """Get all imports from a Python module"""
         try:
-            content = module_path.read_text()
-            tree = ast.parse(content)
+            tree = parse_file(module_path)
             imports = set()
 
             for node in ast.walk(tree):

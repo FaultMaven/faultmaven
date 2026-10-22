@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.models.exceptions import ConfigurationError
+from tests.source_tree import parse_file
 
 # Late-bound: the production code under test re-imports the settings module by
 # name on every call, so these must read and reset whichever module object *it*
@@ -127,10 +128,7 @@ class ConfigurationViolationScanner:
         violations = []
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            tree = ast.parse(content, filename=str(file_path))
+            tree = parse_file(file_path)
             visitor = EnvAccessVisitor(file_path)
             visitor.visit(tree)
 

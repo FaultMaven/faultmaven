@@ -76,6 +76,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.source_tree import parse_file
 
 _FILE_ID = "file_0123456789ab"
 
@@ -95,7 +96,7 @@ def _census() -> dict[tuple[str, int], int]:
     """Every call to a builder in ``faultmaven/``: (file, line) -> arg count."""
     sites: dict[tuple[str, int], int] = {}
     for path in sorted(PACKAGE.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = parse_file(path)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)

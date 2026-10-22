@@ -42,6 +42,8 @@ from typing import Iterator, List, Optional, Tuple
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -252,7 +254,7 @@ def _parsed() -> Tuple[Tuple[str, ast.AST], ...]:
     trees = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
         except SyntaxError:  # pragma: no cover - defensive
             continue
         trees.append((str(path.relative_to(REPO_ROOT)), tree))
@@ -530,7 +532,7 @@ def test_deduplication_no_longer_has_an_unlabelled_409_path():
     dead — but it emitted a 409 with no header, and dedup runs on the turn POST.
     """
     path = SOURCE_ROOT / "api/middleware/deduplication.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parse_file(path)
 
     # Checked on the AST, not as substrings: the removal is explained in a
     # comment in that file, and a substring scan would match the explanation.

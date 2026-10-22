@@ -30,6 +30,7 @@ from faultmaven.infrastructure.persistence.user_repository import (
     PostgreSQLUserRepository,
     User,
 )
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -218,7 +219,7 @@ def test_the_cross_enterprise_read_has_exactly_one_caller():
     sits behind the operator role and records the access first."""
     callers = []
     for path in (_REPO_ROOT / "faultmaven").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = parse_file(path)
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

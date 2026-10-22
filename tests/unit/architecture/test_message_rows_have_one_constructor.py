@@ -71,6 +71,8 @@ from dataclasses import dataclass
 
 import pytest
 
+from tests.source_tree import parse_file
+
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -545,9 +547,8 @@ def _scan() -> tuple[list[Hit], int]:
     scanned = 0
     for path in sorted(_PACKAGE.rglob("*.py")):
         rel = path.relative_to(_ROOT).as_posix()
-        source = path.read_text(encoding="utf-8")
         scanned += 1
-        tree = ast.parse(source, filename=str(path))
+        tree = parse_file(path)
         scanner = _Scanner(rel)
         scanner.visit(tree)
         hits.extend(scanner.hits)

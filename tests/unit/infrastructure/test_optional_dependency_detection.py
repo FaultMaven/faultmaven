@@ -27,6 +27,7 @@ import pytest
 
 from faultmaven.utils.optional_dependency import dependency_is_usable, module_is_usable
 from tests.import_guard_ast import swallows_import_error
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -62,7 +63,7 @@ def _scan(paths) -> list[str]:
     """
     violations = []
     for path in sorted(paths):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_file(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Try) or not swallows_import_error(node):
                 continue

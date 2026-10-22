@@ -20,7 +20,6 @@ Pinned here, once, for every path that uses it:
 from __future__ import annotations
 
 import ast
-import warnings
 from pathlib import Path
 
 import pytest
@@ -34,6 +33,7 @@ from faultmaven.infrastructure.security.case_redaction import (
     should_redact,
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from tests.source_tree import parse_file
 from tests.utils import sanitize_pii_pinned
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -129,10 +129,7 @@ def _redaction_context_constructions():
     function it sits in."""
     root = Path(faultmaven.__file__).parent
     for path in sorted(root.rglob("*.py")):
-        with warnings.catch_warnings():
-            # A source file's own invalid escapes are not this test's finding.
-            warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
-            tree = ast.parse(path.read_text())
+        tree = parse_file(path)
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
