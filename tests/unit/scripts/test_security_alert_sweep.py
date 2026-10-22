@@ -685,7 +685,8 @@ def dashboard(mod, gh):
         ([], 2, None, "none yet", 0),  # the same bound as a stale run
         ([], 1, None, "none yet", 0),
         ([], 1, "HTTP 502: Bad Gateway", "unavailable: gh: HTTP 502: Bad Gateway", 1),
-        ([wf_run()], None, None, "success 1.00d ago", 0),  # read only for none yet
+        # With a scheduled run the commits are not read, so their failure shows nowhere.
+        ([wf_run()], None, "HTTP 502: Bad Gateway", "success 1.00d ago", 0),
     ],
 )
 def test_none_yet_is_aged_from_the_files_last_commit_on_main(
@@ -711,16 +712,17 @@ def test_none_yet_is_aged_from_the_files_last_commit_on_main(
             1,
         ),
         ("disabled_manually", [], "none yet, disabled_manually", 1),
-        (None, [wf_run()], "unavailable: gh: HTTP 502: Bad Gateway", 1),
+        ("fails", [wf_run()], "unavailable: gh: HTTP 502: Bad Gateway", 1),
+        (None, [wf_run()], "unavailable: unreadable response", 1),  # a null state
     ],
 )
 def test_a_workflow_not_active_adds_its_state_and_fails_whatever_the_run_says(
     mod, state, runs, shown, failing
 ):
     gh = fake(mod, CORE, dependabot(CORE, 1))
-    gh.runs[DASHBOARD], gh.states[DASHBOARD] = runs, state or "active"
-    bad = {f"{DASHBOARD}/{WORKFLOW}": "HTTP 502: Bad Gateway"}
-    gh.errors.update({} if state else bad)
+    gh.runs[DASHBOARD], gh.states[DASHBOARD] = runs, state
+    if state == "fails":
+        gh.errors[f"{DASHBOARD}/{WORKFLOW}"] = "HTTP 502: Bad Gateway"
     assert dashboard(mod, gh) == (shown, failing)
 
 

@@ -411,7 +411,9 @@ class Sweep:
         branch, so ``none yet`` is aged from the file's last commit on main."""
         head, path = f"scheduled audit: {repo}", f"repos/{ORG}/{repo}/"
         try:
-            state = str(fetch_object(self.run, path + AUDIT_WORKFLOW)["state"])
+            state = fetch_object(self.run, path + AUDIT_WORKFLOW)["state"]
+            if not isinstance(state, str):
+                raise TypeError(state)
             runs = fetch_object(self.run, path + AUDIT_RUNS)["workflow_runs"]
             conclusion = runs[0]["conclusion"] if runs else None
             when = runs[0]["created_at"] if runs else self.audit_committed(path)
