@@ -474,15 +474,9 @@ def test_m6_proxy_wipe_of_conclusion_linked_elsewhere_not_counted():
     hyp_y = _hyp(None, _TRAFFIC_SPIKE, hypothesis_id="hyp_0000000000bb")
     case.hypotheses[hyp_y.hypothesis_id] = hyp_y
     case.root_cause_conclusion = _llm_rcc(_TRAFFIC_SPIKE, vhid=hyp_y.hypothesis_id)
-    hyp_x.evidence_links.append(
-        HypothesisEvidenceLink(
-            hypothesis_id=hyp_x.hypothesis_id,
-            evidence_id=_eid("fail"),
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, symptom persists",
-            stance_confidence=0.9,
-        )
-    )
+    # X's fix failed, on the record: X is disconfirmed, so only the link to Y
+    # keeps M6 off this conclusion.
+    _fix_failed_on_the_record(case)
     with patch(
         "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"

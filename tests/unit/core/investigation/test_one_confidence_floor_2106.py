@@ -12,6 +12,11 @@ explicit REFUTED on one confident row (INV-47) is unchanged.
 import pytest
 
 from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _recompute_cause_state_from_chain,
+)
 from faultmaven.core.investigation.schemas import (
     HypothesisEvidenceLinkToAdd,
     HypothesisUpdate,
@@ -21,6 +26,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     EvidenceCategory,
     EvidenceStance,
+    HypothesisEvidenceLink,
     HypothesisState,
     NodeState,
     NodeType,
@@ -39,6 +45,13 @@ from tests.unit.core.investigation.test_derive_node_states import (
     _nid,
     _node,
 )
+from tests.unit.core.investigation.test_llm_rcc_lifecycle import _POOL_LEAK, _llm_rcc
+from tests.unit.core.investigation.test_llm_rcc_lifecycle import _case as _rcc_case
+from tests.unit.core.investigation.test_llm_rcc_lifecycle import (
+    _evidence as _rcc_evidence,
+)
+from tests.unit.core.investigation.test_llm_rcc_lifecycle import _hyp as _rcc_hyp
+from tests.unit.core.investigation.test_llm_rcc_lifecycle import _root as _rcc_root
 
 pytestmark = pytest.mark.unit
 
@@ -164,6 +177,80 @@ async def test_control_confident_refutes_outnumbering_the_support_demote():
     await _turn(eng, case, 13, *rows, hypothesis_evidence_links=links)
 
     _assert_demoted(case, root, hyp)
+    # The engine row states the tally M6 read: the chain's support included.
+    (row,) = [e for e in case.evidence if e.collected_by == ENGINE_EVIDENCE_AUTHOR]
+    assert "net-refutes it (3 confident refuting vs 2 supporting)" in row.summary
+
+
+@pytest.mark.parametrize("shape", ["refute-rows-on-both-axes", "hedged-support"])
+async def test_a_tie_over_the_chain_does_not_demote(shape):
+    """Rows, not links, on the refute side too; and a SUPPORTS counts at any
+    confidence. Each shape is a tie against the root's two supports."""
+    eng, case, root, hyp = await _fixed_and_relieved()
+    if shape == "refute-rows-on-both-axes":
+        # Two confident rows, each linked REFUTES to the hypothesis and the root.
+        rows, links = _hyp_refutes(hyp, 2, confidence=0.9)
+        _rows, node_links = _root_refutes(root, 2, 0.9)
+        updates = {
+            "hypothesis_evidence_links": links,
+            "node_evidence_links": node_links,
+        }
+    else:
+        # Three confident refutes against two root supports and one hedged support.
+        rows, links = _hyp_refutes(hyp, 3, confidence=0.9)
+        rows.append(_ev(_PRESENT, "checkout pool waits dropped after the limit change"))
+        links.append(
+            HypothesisEvidenceLinkToAdd(
+                hypothesis_id_ref=hyp.hypothesis_id,
+                evidence_id_ref="new_index_3",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="perhaps the limit was it",
+                stance_confidence=_HEDGE,
+            )
+        )
+        updates = {"hypothesis_evidence_links": links}
+
+    await _turn(eng, case, 13, *rows, **updates)
+
+    assert hyp.state != HypothesisState.REFUTED
+    assert root.node_state != NodeState.REFUTED
+    assert [e for e in case.evidence if e.collected_by == ENGINE_EVIDENCE_AUTHOR] == []
+
+
+def test_the_conclusion_retraction_weighs_the_chain_above_the_floor():
+    """``retract_disconfirmed_rcc`` (every recompute): the model's conclusion
+    names an ACTIVE hypothesis whose one support is on its root, so the cause
+    was never identified and M6 never runs. One REFUTES on the hypothesis,
+    hedged or confident (1 against 1), leaves the conclusion; confident
+    refutes outnumbering the chain's support retract it."""
+    for refutes, confidence, retracted in (
+        (1, _HEDGE, False),
+        (1, 0.9, False),
+        (2, 0.9, True),
+    ):
+        root = _rcc_root("cn_000000002106", _POOL_LEAK, support_labels=["s1"])
+        case = _rcc_case(nodes=[root], evidence=[_rcc_evidence("s1")])
+        seed_problem_node(case)
+        hyp = _rcc_hyp(root.node_id, _POOL_LEAK, hypothesis_id="hyp_000000002106")
+        case.hypotheses = {hyp.hypothesis_id: hyp}
+        case.root_cause_conclusion = _llm_rcc(_POOL_LEAK, vhid=hyp.hypothesis_id)
+        for i in range(refutes):
+            row = _rcc_evidence(f"probe{i}", EvidenceCategory.SYMPTOM_EVIDENCE)
+            case.evidence.append(row)
+            hyp.evidence_links.append(
+                HypothesisEvidenceLink(
+                    hypothesis_id=hyp.hypothesis_id,
+                    evidence_id=row.evidence_id,
+                    stance=EvidenceStance.REFUTES,
+                    reasoning="checkout fails with the release call in place",
+                    stance_confidence=confidence,
+                )
+            )
+
+        _recompute_cause_state_from_chain(case)
+
+        assert case.progress.cause_state != CauseState.IDENTIFIED
+        assert (case.root_cause_conclusion is None) is retracted, (refutes, confidence)
 
 
 # ---------------------------------------------------------------------------

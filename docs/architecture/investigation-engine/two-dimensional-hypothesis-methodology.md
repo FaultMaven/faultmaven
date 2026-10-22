@@ -741,7 +741,7 @@ every non-survivor is *absolutely* excluded — before stamping
 (absence-based) refutation declared at `stance_confidence >=
 CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is not the
 decisive grade — the refute-side twin of the §7.1 support filter; INV-30 — and,
-since #2106, no refuting evidence at all), so a merely-correlational net-refute
+since #2106, outside the node's refute balance), so a merely-correlational net-refute
 — or a hedged counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and
 blocks the deduction. A mis-asserted
 exhaustiveness therefore cannot fabricate a validation on its own — the differential
@@ -952,12 +952,15 @@ plus persisted history: a counterfactual REFUTES carries decisive force only at
 the §7.1 support filter (INV-30). A self-hedged "I think the fix didn't work"
 must not single-handedly refute a node, zero a sibling's belief for
 proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6).
-Since #2106 a hedged REFUTES, absence-backed or not, counts in no refutation
-balance at all (P4, one floor for every destructive outcome): not the node's
-`refutes > supports`, where it is only *bearing* (a node with nothing else reads
-INCONCLUSIVE) and so neither refutes a node nor holds a grounded one out of
-VALIDATED, and not M6's evidence arm below. The engine's own M6 links carry no
-declared confidence and are decisive by construction.
+Since #2106 a hedged REFUTES, absence-backed or not, counts in none of the
+balances that demote a cause or a node (P4): not the node's `refutes > supports`,
+where it is only *bearing* (a node with nothing else reads INCONCLUSIVE) and so
+neither refutes a node nor holds a grounded one out of VALIDATED, and not M6's
+evidence arm below or the conclusion retraction (`cause_refuted_by_evidence`).
+The flat likelihood update (`update_likelihood_from_evidence`) still counts it,
+and can retire an ACTIVE hypothesis on hedged refutes alone; whether the floor
+covers that path is open (#2154). The engine's own M6 links carry no declared
+confidence and are decisive by construction.
 
 **M6 establishes its preconditions; it does not infer them (INV-42, #987).**
 The demotion trigger carries two materially different claims and the engine
