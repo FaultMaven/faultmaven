@@ -112,8 +112,13 @@ dependencies = [
     # CVE-2026-71852; >=6.16.1: three denial-of-service advisories — outline
     # retrieval and XForm extraction blow up on crafted files
     # (GHSA-23w6-3w8w-8484, GHSA-763m-79hh-57f2) and TreeObject.insert_child
-    # can loop forever (GHSA-jp53-mhqp-8xcg). Reached from evidence upload.
-    "pypdf>=6.19.0",
+    # can loop forever (GHSA-jp53-mhqp-8xcg). >=6.21.1: a truncated xref
+    # table (GHSA-39mj-jf6j-2qj3), removing a tree node (GHSA-9mx8-4j7g-633p)
+    # and the PdfWriter.find_outline_item lookup (GHSA-qfv9-64jg-mh7p) loop
+    # forever, stacked stream filters exhaust memory (GHSA-7mh2-4gg2-979f),
+    # and an image claiming /DCTDecode reaches arbitrary Pillow decoders
+    # (GHSA-5hx5-vpf9-5wcv).
+    "pypdf>=6.21.1",
     "python-docx>=1.1.2",
 
     # Data processing and analysis
@@ -256,8 +261,18 @@ dev = [
     # require the patched release: >=21.7.13 fixes unverified seed-wheel
     # downloads (PYSEC-2026-4011), pyvenv.cfg injection through the prompt
     # (PYSEC-2026-4012), and shell commands run by activation scripts from a
-    # crafted path or prompt (PYSEC-2026-4013, PYSEC-2026-4014).
-    "virtualenv>=21.7.13",
+    # crafted path or prompt (PYSEC-2026-4013, PYSEC-2026-4014). >=21.14.7:
+    # four more ways a crafted environment path, name or prompt runs shell
+    # commands on activation — template placeholders rewritten inside quoted
+    # values (GHSA-8rjx-v5ww-45pp), fish quoting with POSIX rules
+    # (GHSA-c947-3pg5-gm8q), an unescaped name in zsh's PS1
+    # (GHSA-5vjq-rrrf-7h2q), and bash escaping only one PS1 pass
+    # (GHSA-vxj4-q4g9-crj7). >=21.14.9: generated POSIX console launchers
+    # read the destination path as shell syntax (GHSA-c978-59m8-c77v),
+    # permission recovery after a failed delete chmods a symlink's target
+    # (GHSA-43mp-35q3-x3fq), and the builtin creator writes through
+    # symlinked directories under the destination (GHSA-cw65-gx24-rc82).
+    "virtualenv>=21.14.9",
 
     # Architecture enforcement
     "import-linter>=2.0.0",
