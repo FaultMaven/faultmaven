@@ -549,11 +549,7 @@ def _walk_calls(callee: str) -> Iterator[tuple[str, int, ast.Call]]:
         )
         for path in sorted(root.rglob("*.py")):
             try:
-                tree = (
-                    parse_file(path)
-                    if root_name == "faultmaven"
-                    else ast.parse(path.read_text(encoding="utf-8"))
-                )
+                tree = parse_file(path)
             except SyntaxError:  # pragma: no cover - a parse error is a build break
                 continue
             for node in ast.walk(tree):

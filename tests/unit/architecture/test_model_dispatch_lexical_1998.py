@@ -99,14 +99,13 @@ import asyncio
 import sys
 import textwrap
 import unicodedata
-import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Set, Tuple
 
 import pytest
 
-from tests.source_tree import PACKAGE_ROOT, parse_file
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.architecture, pytest.mark.security]
 
@@ -147,16 +146,6 @@ def exempt(path: str) -> bool:
     )
 
 
-def _parse(source: str | Path) -> ast.Module:
-    if isinstance(source, Path):
-        if source.is_relative_to(PACKAGE_ROOT):
-            return parse_file(source)
-        source = source.read_text(encoding="utf-8")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
-        return ast.parse(source)
-
-
 @lru_cache(maxsize=1)
 def transport_names() -> frozenset:
     """A4: every coroutine the adapters' files define, ``_generate`` aside.
@@ -169,7 +158,7 @@ def transport_names() -> frozenset:
         rel = path.relative_to(_ROOT).as_posix()
         if not exempt(rel):
             continue
-        for node in ast.walk(_parse(path)):
+        for node in ast.walk(parse_file(path)):
             if isinstance(node, ast.AsyncFunctionDef) and node.name != _SEND:
                 names.add(node.name)
     return frozenset(names)
@@ -182,7 +171,7 @@ def dispatch_names() -> frozenset:
     it imports, less what it imports from the standard library and its
     ``logger``, which carry no check."""
     names: Set[str] = set()
-    for node in _parse(_ROOT / _DISPATCH).body:
+    for node in parse_file(_ROOT / _DISPATCH).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -369,11 +358,14 @@ def _route_violations(tree: ast.AST) -> List[Tuple[int, str, str]]:
     return found
 
 
-def violations(source: str | Path, path: str) -> List[Tuple[int, str, str]]:
+def violations(source: str, path: str) -> List[Tuple[int, str, str]]:
     """``(line, rule, what)`` for every spelled way ``source`` reaches past the
     dispatch. ``path`` is repo-relative: it decides the exemptions."""
+    return violations_in_tree(ast.parse(source), path)
+
+
+def violations_in_tree(tree: ast.Module, path: str) -> List[Tuple[int, str, str]]:
     found: List[Tuple[int, str, str]] = []
-    tree = _parse(source)
     if not route_reached(path):
         found.extend(_route_violations(tree))
     docstrings = _docstrings(tree)
@@ -460,7 +452,7 @@ def _scan() -> Tuple[dict, int]:
     found, files = {}, 0
     for rel, path in _files():
         files += 1
-        hits = violations(path, rel)
+        hits = violations_in_tree(parse_file(path), rel)
         if hits:
             found[rel] = hits
     return found, files
@@ -492,7 +484,7 @@ def test_the_exempt_files_are_the_adapters_and_the_dispatch():
         for rel in adapters
         if any(
             isinstance(n, ast.AsyncFunctionDef) and n.name == _SEND
-            for n in ast.walk(_parse(_ROOT / rel))
+            for n in ast.walk(parse_file(_ROOT / rel))
         )
     ]
     # base.py declares it abstract; every adapter but OpenRouter (which

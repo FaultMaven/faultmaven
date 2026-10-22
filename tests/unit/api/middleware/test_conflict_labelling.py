@@ -35,6 +35,7 @@ from coming back is pinned here, on the side that owns it:
 """
 
 import ast
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -247,14 +248,21 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _trees() -> Iterator[Tuple[str, ast.AST]]:
-    """Every module under faultmaven/, for all the scans here."""
+@functools.lru_cache(maxsize=1)
+def _parsed() -> Tuple[Tuple[str, ast.AST], ...]:
+    """Every module under faultmaven/, parsed once for all the scans here."""
+    trees = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         try:
             tree = parse_file(path)
         except SyntaxError:  # pragma: no cover - defensive
             continue
-        yield str(path.relative_to(REPO_ROOT)), tree
+        trees.append((str(path.relative_to(REPO_ROOT)), tree))
+    return tuple(trees)
+
+
+def _trees() -> Iterator[Tuple[str, ast.AST]]:
+    return iter(_parsed())
 
 
 def _iter_emitters() -> Iterator[Emitter]:

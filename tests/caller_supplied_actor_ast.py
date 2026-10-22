@@ -309,13 +309,13 @@ def _actor_labelling_functions(tree: ast.AST) -> Set[str]:
     return labelling
 
 
-def _tree(source: str | pathlib.Path) -> ast.AST:
-    return parse_file(source) if isinstance(source, pathlib.Path) else ast.parse(source)
-
-
-def scan_source(source: str | pathlib.Path, path: str) -> List[Finding]:
+def scan_source(source: str, path: str) -> List[Finding]:
     """Every actor field in ``source`` that can hold a caller-supplied value."""
-    tree = _tree(source)
+    return scan_tree(ast.parse(source), path)
+
+
+def scan_tree(tree: ast.AST, path: str) -> List[Finding]:
+    """:func:`scan_source` over a module already parsed."""
     tainting = _tainting_functions(tree)
     labelling = _actor_labelling_functions(tree)
     findings: List[Finding] = []
@@ -459,7 +459,7 @@ def scan_source(source: str | pathlib.Path, path: str) -> List[Finding]:
     return sorted(set(findings))
 
 
-def scan_actor_sinks(source: str | pathlib.Path, path: str) -> List[Finding]:
+def scan_actor_sinks(source: str, path: str) -> List[Finding]:
     """Every actor field written to a durable record, tainted or not.
 
     The liveness half of the guard. :func:`scan_source` reporting nothing is
@@ -468,7 +468,11 @@ def scan_actor_sinks(source: str | pathlib.Path, path: str) -> List[Finding]:
     says how many actor fields the analysis can SEE, so a change that blinds it
     fails loudly instead of passing quietly.
     """
-    tree = _tree(source)
+    return scan_actor_sinks_in_tree(ast.parse(source), path)
+
+
+def scan_actor_sinks_in_tree(tree: ast.AST, path: str) -> List[Finding]:
+    """:func:`scan_actor_sinks` over a module already parsed."""
     found: List[Finding] = []
     for fn in _functions(tree):
         for node in ast.walk(fn):
@@ -508,5 +512,5 @@ def scan_package(
     files = tuple(sorted(p for p in root.rglob("*.py")))
     findings: List[Finding] = []
     for file in files:
-        findings += scan_source(file, str(file.relative_to(root.parent)))
+        findings += scan_tree(parse_file(file), str(file.relative_to(root.parent)))
     return tuple(sorted(set(findings))), files

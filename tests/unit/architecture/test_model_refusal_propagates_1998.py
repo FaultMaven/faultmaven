@@ -87,11 +87,11 @@ from faultmaven.infrastructure.llm.providers.base import (
 )
 from faultmaven.infrastructure.security.model_content import RAW, ContentViolation
 from tests.model_content import FakeProvider, disabled_redaction, fake_response
+from tests.source_tree import parse_file
 from tests.unit.architecture.test_model_dispatch_lexical_1998 import (
     _docstrings,
     _files,
     _names,
-    _parse,
 )
 from tests.utils import sanitize_pii_pinned, sockets_refused
 
@@ -133,13 +133,16 @@ def _refers(node: ast.AST, docstrings: set) -> bool:
     return False
 
 
-def send_sites(source: str | Path, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
+def send_sites(source: str, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
     """``{"path::Qual.name": defs}`` for every function in ``source`` that names
     the seam or the dispatch; ``defs`` is the function's def and every def
     enclosing it, innermost first (a closure's handlers live in the function
     that calls it). ``path::<module>`` for a module-level reference. Imports
     bind the names and are not references."""
-    tree = _parse(source)
+    return send_sites_in_tree(ast.parse(source), path)
+
+
+def send_sites_in_tree(tree: ast.Module, path: str) -> Dict[str, Tuple[ast.AST, ...]]:
     docstrings = _docstrings(tree)
     found: Dict[str, Tuple[ast.AST, ...]] = {}
 
@@ -166,7 +169,7 @@ def _scan() -> Dict[str, Tuple[ast.AST, ...]]:
     for rel, path in _files():
         if rel == _DISPATCH:
             continue
-        found.update(send_sites(path, rel))
+        found.update(send_sites_in_tree(parse_file(path), rel))
     return found
 
 

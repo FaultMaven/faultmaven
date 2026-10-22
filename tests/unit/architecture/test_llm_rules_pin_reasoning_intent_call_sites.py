@@ -118,7 +118,7 @@ def _declared_intent(node: ast.AST) -> str | None:
     return None
 
 
-def _declares_in(source: str | Path) -> list[str]:
+def _declares_in(source: str) -> list[str]:
     """Every declaring call in ``source``, rendered as the table renders it.
 
     A declaration is a call keyword ``reasoning_intent=<names an intent>``.
@@ -126,8 +126,11 @@ def _declares_in(source: str | Path) -> list[str]:
     — the pair is the unit that matters, since ``INFERENCE`` without a floor is
     a ``ValueError`` at the router and a refused lift at the Gemini provider.
     """
+    return _declares_in_tree(ast.parse(source))
+
+
+def _declares_in_tree(tree: ast.AST) -> list[str]:
     declares: list[str] = []
-    tree = parse_file(source) if isinstance(source, Path) else ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -157,7 +160,7 @@ def _declared_call_sites() -> Counter:
     """
     found: Counter = Counter()
     for path in sorted(_PACKAGE.rglob("*.py")):
-        for declares in _declares_in(path):
+        for declares in _declares_in_tree(parse_file(path)):
             found[(str(path.relative_to(_PACKAGE)), declares)] += 1
     return found
 

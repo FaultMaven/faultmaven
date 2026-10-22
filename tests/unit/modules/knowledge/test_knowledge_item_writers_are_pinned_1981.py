@@ -16,11 +16,10 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-import warnings
 
 import pytest
 
-from tests.source_tree import PACKAGE_ROOT, parse_file
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -159,16 +158,10 @@ TABLE_BUILDERS = {"table", "Table"}
 
 
 def _parse(path: pathlib.Path) -> ast.AST | None:
-    with warnings.catch_warnings():
-        # A file elsewhere in the tree has an invalid escape in a string;
-        # parsing it is all this does.
-        warnings.simplefilter("ignore")
-        try:
-            if path.is_relative_to(PACKAGE_ROOT):
-                return parse_file(path)
-            return ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            return None
+    try:
+        return parse_file(path)
+    except SyntaxError:
+        return None
 
 
 def item_creators(tree: ast.AST) -> list[tuple[str, str]]:

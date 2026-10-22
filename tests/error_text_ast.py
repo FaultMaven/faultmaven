@@ -945,19 +945,6 @@ def _gated(statuses: tuple[ast.AST | None, ...], broad: bool) -> bool:
     return broad or any(_status_is_5xx(status) for status in statuses)
 
 
-def _parse(path: pathlib.Path) -> ast.AST:
-    """The file's one tree, shared by every pass and every caller.
-
-    Load-bearing, not tidiness: the passes below share node-identity sets to
-    avoid attributing one site to two of them, and ``id()`` is only comparable
-    across nodes from the SAME parse. Re-parsing per pass made every
-    ``in_handler`` lookup miss, which reported two static-message 500 arms in
-    ``modules/case/api/routes/`` as leaks — a false positive produced by the
-    guard's plumbing rather than by its rule.
-    """
-    return parse_file(path)
-
-
 def _except_handlers(tree: ast.AST):
     """Every ``except ... as <name>`` handler in the tree, with its bound name."""
     for node in ast.walk(tree):
@@ -1017,7 +1004,7 @@ def http_exception_leak_sites(path: pathlib.Path) -> list[str]:
     * the exception arrives as a PARAMETER, and the function builds an
       ``HTTPException`` carrying it — the helper twin of the first shape.
     """
-    tree = _parse(path)
+    tree = parse_file(path)
     factories = _http_exception_factories(tree)
     offenders: list[str] = []
     in_handler: set[int] = set()
@@ -1080,7 +1067,8 @@ def _raise_after_handler_leak_sites(
 
     ``in_handler`` is the set of nodes the in-handler pass already walked, so a
     site is never attributed to both. It arrives with ``tree`` rather than a
-    path because ``id()`` only compares within one parse — see ``_parse``.
+    path because ``id()`` only compares within one parse — see
+    ``tests/source_tree.py``.
     """
     offenders: list[str] = []
     for fn in ast.walk(tree):
@@ -1295,7 +1283,7 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
     line numbers out of order, which reads as a bug in the guard.
     """
     offenders: list[str] = []
-    tree = _parse(path)
+    tree = parse_file(path)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue

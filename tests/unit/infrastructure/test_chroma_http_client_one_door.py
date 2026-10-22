@@ -127,9 +127,13 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _scan_source(source: str | Path) -> List[Site]:
+def _scan_source(source: str) -> List[Site]:
+    return _scan_tree(ast.parse(source))
+
+
+def _scan_tree(tree: ast.AST) -> List[Site]:
     scanner = _Scanner()
-    scanner.visit(parse_file(source) if isinstance(source, Path) else ast.parse(source))
+    scanner.visit(tree)
     return scanner.sites
 
 
@@ -143,7 +147,7 @@ def _scan_package() -> Tuple[List[Tuple[str, Site]], List[str]]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         relative = path.relative_to(_REPO).as_posix()
         scanned.append(relative)
-        for site in _scan_source(path):
+        for site in _scan_tree(parse_file(path)):
             hits.append((relative, site))
     return hits, scanned
 

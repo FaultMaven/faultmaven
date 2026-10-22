@@ -69,7 +69,6 @@ no provider has one, and everything it calls goes through the chokepoint.
 from __future__ import annotations
 
 import ast
-import warnings
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -200,17 +199,12 @@ def _is_site(node: ast.AST, parents: dict) -> bool:
     return False
 
 
-def _parse(source: str | Path) -> ast.Module:
-    if isinstance(source, Path):
-        return parse_file(source)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
-        return ast.parse(source)
-
-
-def call_sites(source: str | Path) -> Counter:
+def call_sites(source: str) -> Counter:
     """``{function qualname: provider calls}`` for one module's source."""
-    tree = _parse(source)
+    return call_sites_in_tree(ast.parse(source))
+
+
+def call_sites_in_tree(tree: ast.AST) -> Counter:
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
     }
@@ -233,7 +227,7 @@ def _scan() -> tuple[Counter, int]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         files += 1
         rel = path.relative_to(_ROOT).as_posix()
-        for scope, count in call_sites(path).items():
+        for scope, count in call_sites_in_tree(parse_file(path)).items():
             sites[(rel, scope)] = count
     return sites, files
 
@@ -241,7 +235,7 @@ def _scan() -> tuple[Counter, int]:
 def _function(path: str, qualname: str) -> ast.AST:
     """The def or class at ``qualname`` — the same naming ``call_sites`` uses,
     so a closure nested inside an ``if`` or a loop is found by its scope."""
-    tree = _parse(_ROOT / path)
+    tree = parse_file(_ROOT / path)
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
     }
@@ -343,14 +337,14 @@ class TestTheDetector:
 
 class TestTheMeterCheck:
     def test_a_call_to_the_meter_counts(self):
-        fn = _parse(
+        fn = ast.parse(
             "async def f(p):\n    r = await send_to_model(p)\n"
             "    record_provider_call('x', 'm', r, 1.0)\n    return r"
         ).body[0]
         assert _meters(fn)
 
     def test_a_nested_closure_that_meters_counts(self):
-        fn = _parse(
+        fn = ast.parse(
             "async def f(p):\n    async def call():\n"
             "        r = await send_to_model(p)\n"
             "        metering.record_provider_call('x', 'm', r, 1.0)\n"
@@ -360,7 +354,7 @@ class TestTheMeterCheck:
         assert _meters(fn)
 
     def test_a_mention_is_not_a_call(self):
-        fn = _parse(
+        fn = ast.parse(
             "async def f(p):\n    meter = record_provider_call\n"
             "    return await send_to_model(p)"
         ).body[0]
