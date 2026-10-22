@@ -56,6 +56,7 @@ from faultmaven.exceptions import (
     LLMException,
     ServiceException,
 )
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -398,7 +399,7 @@ def _route_surface() -> list[pathlib.Path]:
     for path in _PKG.rglob("*.py"):
         if path in found:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = parse_file(path)
         if any(
             isinstance(n, ast.Call)
             and (getattr(n.func, "id", None) or getattr(n.func, "attr", None))
@@ -423,7 +424,7 @@ def _caught(node: ast.expr | None) -> set[str]:
 
 def _arms(path: pathlib.Path):
     """(enclosing function, caught-types text, handler) for every bypassing arm."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parse_file(path)
 
     def visit(node, fn):
         for child in ast.iter_child_nodes(node):
@@ -521,7 +522,7 @@ def test_every_arm_that_bypasses_the_global_handler_is_accounted_for():
 def _unlinked_service_exception_wraps() -> tuple[int, list[str]]:
     total, unlinked = 0, []
     for path in sorted(_PKG.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = parse_file(path)
         for handler in ast.walk(tree):
             if not isinstance(handler, ast.ExceptHandler):
                 continue

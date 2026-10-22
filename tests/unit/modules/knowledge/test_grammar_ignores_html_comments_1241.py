@@ -52,6 +52,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     _cause_fields,
     _iter_cause_blocks,
 )
+from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -558,7 +559,7 @@ def _matcher_sites(regex_name: str) -> list[tuple[str, int, str, bool]]:
     """
     sites: list[tuple[str, int, str, bool]] = []
     for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_file(path)
         owner = _enclosing_functions(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

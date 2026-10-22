@@ -25,6 +25,8 @@ from typing import NamedTuple
 
 import pytest
 
+from tests.source_tree import parse_file
+
 
 class Violation(NamedTuple):
     """Represents a config purity violation."""
@@ -182,8 +184,7 @@ class DotenvImportScanner:
         violations = []
 
         try:
-            content = file_path.read_text(encoding="utf-8")
-            tree = ast.parse(content, filename=str(file_path))
+            tree = parse_file(file_path)
         except (SyntaxError, UnicodeDecodeError, IOError):
             return violations
 

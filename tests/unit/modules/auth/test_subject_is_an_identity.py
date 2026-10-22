@@ -55,6 +55,7 @@ import jwt
 import pytest
 
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from tests.source_tree import parse_file
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
@@ -126,7 +127,7 @@ def _decode_sites() -> dict[tuple[str, str], int]:
     """
     found: dict[tuple[str, str], int] = {}
     for path in sorted((PROJECT_ROOT / "faultmaven").rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = parse_file(path)
         scope: list[str] = []
         relative = str(path.relative_to(PROJECT_ROOT))
 

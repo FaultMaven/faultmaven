@@ -66,6 +66,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from faultmaven.modules.knowledge.domain.write_scope import require_write_scope
+from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -548,7 +549,7 @@ def _walk_calls(callee: str) -> Iterator[tuple[str, int, ast.Call]]:
         )
         for path in sorted(root.rglob("*.py")):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
+                tree = parse_file(path)
             except SyntaxError:  # pragma: no cover - a parse error is a build break
                 continue
             for node in ast.walk(tree):
