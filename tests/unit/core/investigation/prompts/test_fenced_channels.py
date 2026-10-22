@@ -95,8 +95,6 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    ProblemVerification,
     TurnOutcome,
     TurnProgress,
     UploadedFile,
@@ -104,6 +102,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models.documentation import JournalEntry
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
+from tests.case_builders import investigating_case
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.fence_readers import (
     all_tokens,
@@ -189,17 +188,14 @@ def _case(
         evidence = [_evidence(extract="restart x40")] if with_upload else []
     now = datetime.now(timezone.utc)
     terminal = state in (CaseState.RESOLVED, CaseState.CLOSED)
-    case = Case(
+    case = investigating_case(
         case_id="case_aabb11223344",
         title=title,
         description=description,
         user_id="user_123",
         enterprise_id="org_123",
         state=state,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement=proposed,
-        ),
+        statement=proposed,
         evidence=evidence,
         uploaded_files=files,
         current_turn=turn,
@@ -208,11 +204,8 @@ def _case(
         last_activity_at=now,
         resolved_at=now if terminal else None,
         closed_at=now if terminal else None,
+        symptom=symptom_statement if state == CaseState.INVESTIGATING else None,
     )
-    if symptom_statement is not None and state == CaseState.INVESTIGATING:
-        case.problem_verification = ProblemVerification(
-            symptom_statement=symptom_statement, severity="HIGH"
-        )
     if messages is not None:
         case.messages = messages
     return case
