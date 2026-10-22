@@ -118,9 +118,14 @@ dependencies = [
     # forever, stacked stream filters exhaust memory (GHSA-7mh2-4gg2-979f),
     # and an image claiming /DCTDecode reaches arbitrary Pillow decoders
     # (GHSA-5hx5-vpf9-5wcv; Pillow is installed via pyod -> matplotlib).
-    # Reached from knowledge conversion (/knowledge/convert ->
-    # DocumentPreprocessor -> DocumentParser); evidence upload stores a PDF
-    # as binary and never parses it.
+    # pypdf parses untrusted files only in knowledge conversion
+    # (/knowledge/convert -> DocumentPreprocessor -> DocumentParser), which
+    # reaches the xref, filter and XForm advisories (GHSA-39mj-jf6j-2qj3,
+    # GHSA-7mh2-4gg2-979f, GHSA-763m-79hh-57f2). FaultMaven calls none of
+    # the writer-side, tree, outline or image paths (GHSA-jp53-mhqp-8xcg,
+    # GHSA-9mx8-4j7g-633p, GHSA-qfv9-64jg-mh7p, GHSA-23w6-3w8w-8484,
+    # GHSA-5hx5-vpf9-5wcv). Evidence upload stores a PDF as binary and never
+    # parses it.
     "pypdf>=6.21.1",
     "python-docx>=1.1.2",
 
