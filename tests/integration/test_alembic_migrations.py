@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from faultmaven.config.settings import set_env_var
 from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
@@ -161,8 +162,35 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
 #: One template database per revision a test starts from (#2171). Under this
 #: process's data root, which is per process and removed at exit.
 TEMPLATE_DIR = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "migration-templates")
-#: revision -> the real ``upgrade`` that built its template.
-_template_builds: dict[str, subprocess.CompletedProcess] = {}
+#: Each requested revision -> the ``version_num`` its build reached. ``head``,
+#: the one symbolic name the tests use, is mapped by its first build.
+_reached: dict[str, str] = {}
+#: Each reached ``version_num`` -> its read-only template.
+_templates: dict[str, str] = {}
+#: Each requested revision whose build failed -> the failure.
+_failed_builds: dict[str, str] = {}
+
+
+def _build_template(revision: str) -> None:
+    """Run the real ``upgrade <revision>`` into a new template and record it."""
+    template = os.path.join(TEMPLATE_DIR, f"{revision}.db")
+    os.makedirs(TEMPLATE_DIR, exist_ok=True)
+    build = run_alembic(f"upgrade {revision}", f"sqlite:///{template}")
+    if build.returncode != 0:
+        failure = (
+            f"{shlex.join(build.args)} failed building the template for "
+            f"{revision} (exit {build.returncode})\n"
+            f"stdout:\n{build.stdout}\nstderr:\n{build.stderr}"
+        )
+        if build.returncode > 0:  # a signal (an OOM kill) says nothing of it
+            _failed_builds[revision] = failure
+        raise RuntimeError(failure)
+    [(version,)] = query_rows(template, "SELECT version_num FROM alembic_version")
+    if revision != "head":
+        assert version == revision, f"upgrade {revision} reached {version}"
+    os.chmod(template, 0o444)
+    _templates.setdefault(version, template)
+    _reached[revision] = version
 
 
 def prepare_database(revision: str, database_url: str) -> None:
@@ -170,28 +198,28 @@ def prepare_database(revision: str, database_url: str) -> None:
 
     For a test whose subject comes after that state. The first request for a
     revision in this process runs the real ``upgrade <revision>`` (a fresh
-    ``python -m alembic``) into a new template file, and every request copies
-    it, so the schema, rows and ``alembic_version`` are that upgrade's.
-    A failed build is kept: every test that asks for the revision fails with
-    alembic's stderr, and the partial template is never copied.
+    ``python -m alembic``) into a new, read-only template, and every request
+    copies it, so the schema, rows and ``alembic_version`` are that upgrade's.
+    Both the template and each copy are checked for the revision they hold. A
+    failed build is kept, unless a signal killed it: every test that asks for
+    the revision fails with alembic's output, and the partial template is never
+    copied.
     """
-    template = os.path.join(TEMPLATE_DIR, f"{revision}.db")
-    if revision not in _template_builds:
-        os.makedirs(TEMPLATE_DIR, exist_ok=True)
-        _template_builds[revision] = run_alembic(
-            f"upgrade {revision}", f"sqlite:///{template}"
-        )
-    build = _template_builds[revision]
-    if build.returncode != 0:
-        raise RuntimeError(
-            f"upgrade {revision} failed building its template "
-            f"(exit {build.returncode}):\n{build.stderr}"
-        )
-    assert database_url.startswith("sqlite:///"), database_url
-    target = database_url.removeprefix("sqlite:///")
-    for stale in (f"{target}-wal", f"{target}-shm"):
-        Path(stale).unlink(missing_ok=True)
-    shutil.copyfile(template, target)
+    url = make_url(database_url)
+    target = url.database
+    assert url.get_backend_name() == "sqlite" and target, database_url
+    assert os.path.isabs(target), database_url
+    if revision in _failed_builds:
+        raise RuntimeError(_failed_builds[revision])
+    if revision not in _reached and revision not in _templates:
+        _build_template(revision)
+    version = _reached.get(revision, revision)
+    # Journal mode is ``delete``: a hot ``-journal`` would roll back into the copy.
+    for sidecar in ("-journal", "-wal", "-shm"):
+        Path(f"{target}{sidecar}").unlink(missing_ok=True)
+    shutil.copyfile(_templates[version], target)
+    copied = query_rows(target, "SELECT version_num FROM alembic_version")
+    assert copied == [(version,)], f"{target} holds {copied}, not {version}"
 
 
 def run_helper_script(args: str, database_url: str) -> subprocess.CompletedProcess:
@@ -337,37 +365,94 @@ class TestPrepareDatabase:
 
     @pytest.fixture
     def builds(self, monkeypatch, tmp_path) -> list[str]:
-        """A stand-in ``run_alembic`` whose ``upgrade <rev>`` creates one table
-        named ``rev`` (``rev_broken`` fails instead), with a template cache and
-        directory of this test's own. Returns the commands it ran."""
+        """A stand-in ``run_alembic`` whose ``upgrade <rev>`` reaches ``rev``
+        (``head`` reaches ``rev_b`` and ``rev_short`` reaches ``rev_a``) and
+        creates a table named after it; ``rev_broken`` fails and ``rev_killed``
+        dies by a signal. The caches and template directory are this test's
+        own. Returns the commands it ran."""
         commands: list[str] = []
 
         def build(command: str, database_url: str) -> subprocess.CompletedProcess:
             commands.append(command)
             revision = command.removeprefix("upgrade ")
+            argv = ["python", "-m", "alembic", *command.split()]
             if revision == "rev_broken":
-                return subprocess.CompletedProcess(
-                    [], 1, "", "FAILED: rev_broken\nboom"
-                )
+                return subprocess.CompletedProcess(argv, 1, "partial", "FAILED: boom")
+            if revision == "rev_killed":
+                return subprocess.CompletedProcess(argv, -9, "", "")
+            reached = {"head": "rev_b", "rev_short": "rev_a"}.get(revision, revision)
             conn = sqlite3.connect(database_url.removeprefix("sqlite:///"))
-            conn.execute(f'CREATE TABLE "{revision}" (id INTEGER)')
+            conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32))")
+            conn.execute("INSERT INTO alembic_version VALUES (?)", (reached,))
+            conn.execute(f'CREATE TABLE "{reached}" (id INTEGER)')
+            conn.commit()
             conn.close()
-            return subprocess.CompletedProcess([], 0, "", "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
 
         module = sys.modules[__name__]
         monkeypatch.setattr(module, "run_alembic", build)
-        monkeypatch.setattr(module, "_template_builds", {})
+        for cache in ("_reached", "_templates", "_failed_builds"):
+            monkeypatch.setattr(module, cache, {})
         monkeypatch.setattr(module, "TEMPLATE_DIR", str(tmp_path / "templates"))
         return commands
 
-    def test_each_revision_is_built_once_per_process(self, builds, tmp_path):
-        db = tmp_path / "test.db"
-        for revision in ("rev_a", "rev_b", "rev_a"):
-            prepare_database(revision, f"sqlite:///{db}")
-            assert get_tables(str(db)) == [revision]
-        assert builds == ["upgrade rev_a", "upgrade rev_b"]
+    @staticmethod
+    def _version(db: Path) -> list:
+        return query_rows(str(db), "SELECT version_num FROM alembic_version")
 
-    def test_a_failed_build_raises_with_its_stderr_and_stays_failed(
+    def test_each_revision_is_built_once_and_head_shares_its_id(self, builds, tmp_path):
+        db = tmp_path / "test.db"
+        for revision, reached in [
+            ("head", "rev_b"),
+            ("rev_b", "rev_b"),
+            ("rev_a", "rev_a"),
+            ("head", "rev_b"),
+            ("rev_a", "rev_a"),
+        ]:
+            prepare_database(revision, f"sqlite:///{db}")
+            assert self._version(db) == [(reached,)]
+            assert get_tables(str(db)) == ["alembic_version", reached]
+        assert builds == ["upgrade head", "upgrade rev_a"]
+
+    def test_a_template_at_another_revision_is_refused(self, builds, tmp_path):
+        url = f"sqlite:///{tmp_path / 'test.db'}"
+        with pytest.raises(AssertionError, match="upgrade rev_short reached rev_a"):
+            prepare_database("rev_short", url)
+        prepare_database("rev_b", url)
+        os.chmod(_templates["rev_b"], 0o644)
+        conn = sqlite3.connect(_templates["rev_b"])
+        conn.execute("UPDATE alembic_version SET version_num = 'rev_z'")
+        conn.commit()
+        conn.close()
+        with pytest.raises(AssertionError, match=r"holds \[\('rev_z',\)\], not rev_b"):
+            prepare_database("rev_b", url)
+
+    def test_each_copy_is_a_fresh_file(self, builds, tmp_path):
+        db = tmp_path / "test.db"
+        prepare_database("rev_a", f"sqlite:///{db}")
+        built = Path(_templates["rev_a"]).read_bytes()
+        conn = sqlite3.connect(db)
+        conn.execute('INSERT INTO "rev_a" VALUES (1)')
+        conn.commit()
+        conn.close()
+        prepare_database("rev_a", f"sqlite:///{db}")
+        assert query_rows(str(db), 'SELECT id FROM "rev_a"') == []
+        assert Path(_templates["rev_a"]).read_bytes() == built
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes through any mode")
+    def test_a_template_cannot_be_written_through_an_alias(self, builds, tmp_path):
+        prepare_database("rev_a", f"sqlite:///{tmp_path / 'test.db'}")
+        alias = tmp_path / "alias.db"
+        os.link(_templates["rev_a"], alias)
+        conn = sqlite3.connect(alias)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+                conn.execute('INSERT INTO "rev_a" VALUES (1)')
+                conn.commit()
+        finally:
+            conn.close()
+
+    def test_a_failed_build_raises_with_its_output_and_stays_failed(
         self, builds, tmp_path
     ):
         db = tmp_path / "test.db"
@@ -375,20 +460,43 @@ class TestPrepareDatabase:
             with pytest.raises(RuntimeError) as raised:
                 prepare_database("rev_broken", f"sqlite:///{db}")
             assert str(raised.value) == (
-                "upgrade rev_broken failed building its template (exit 1):\n"
-                "FAILED: rev_broken\nboom"
+                "python -m alembic upgrade rev_broken failed building the template "
+                "for rev_broken (exit 1)\nstdout:\npartial\nstderr:\nFAILED: boom"
             )
-        assert builds == ["upgrade rev_broken"]
+        # A build killed by a signal is tried again by the next request.
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match=r"rev_killed \(exit -9\)"):
+                prepare_database("rev_killed", f"sqlite:///{db}")
+        assert builds == ["upgrade rev_broken"] + ["upgrade rev_killed"] * 2
         assert not db.exists()
 
-    def test_a_stale_wal_and_shm_are_removed(self, builds, tmp_path):
+    def test_stale_sidecars_are_removed_before_the_copy(self, builds, tmp_path):
+        """A writer killed mid-transaction leaves a synced ``-journal`` holding
+        page 1 of a database with another schema, which SQLite rolls back
+        into whatever file it next finds there."""
         db = tmp_path / "test.db"
-        for suffix in ("-wal", "-shm"):
-            Path(f"{db}{suffix}").write_bytes(b"left by an earlier test")
+        conn = sqlite3.connect(db, isolation_level=None)
+        conn.execute("CREATE TABLE leftover (data BLOB)")
+        conn.execute("PRAGMA cache_size=1")  # the inserts spill: a synced journal
+        conn.execute("BEGIN")
+        conn.execute("CREATE TABLE extra (x)")  # journals page 1, the schema
+        conn.executemany("INSERT INTO leftover VALUES (randomblob(3000))", [()] * 20)
+        journal = Path(f"{db}-journal").read_bytes()
+        conn.execute("ROLLBACK")
+        conn.close()
+        Path(f"{db}-journal").write_bytes(journal)
+        for sidecar in ("-wal", "-shm"):
+            Path(f"{db}{sidecar}").write_bytes(b"left by an earlier test")
         prepare_database("rev_a", f"sqlite:///{db}")
-        assert not Path(f"{db}-wal").exists()
-        assert not Path(f"{db}-shm").exists()
-        assert get_tables(str(db)) == ["rev_a"]
+        for sidecar in ("-journal", "-wal", "-shm"):
+            assert not Path(f"{db}{sidecar}").exists()
+        assert get_tables(str(db)) == ["alembic_version", "rev_a"]
+
+    def test_only_an_absolute_sqlite_file_is_prepared(self, builds):
+        for url in ("sqlite:///relative.db", "sqlite://", "postgresql://h/db"):
+            with pytest.raises(AssertionError):
+                prepare_database("rev_a", url)
+        assert builds == []
 
 
 class TestAlembicMigrationInfrastructure:
@@ -3708,7 +3816,8 @@ class TestHelperScript:
     def test_verbose_reaches_the_commands_that_accept_it(
         self, clean_database, database_url, args
     ):
-        prepare_database("head", database_url)
+        if args == "status --verbose":  # ``heads`` reads only the scripts
+            prepare_database("head", database_url)
 
         result = run_helper_script(args, database_url)
 
