@@ -190,7 +190,7 @@ jobs:
       # never reaches the action.
       - name: Update image queue
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: FaultMaven/ci-actions/update-image-queue@4bf2cb149a846580d86ec891504b255d49e07e2d # v1.0.0
+        uses: FaultMaven/ci-actions/update-image-queue@4b5989bc5f9e1fcd5eee69cf18cfa0854a6f2894 # v1.2.0
         with:
           service: faultmaven
           sha: ${{ steps.target.outputs.sha }}
