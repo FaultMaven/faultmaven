@@ -29,6 +29,7 @@ Design Notes:
       success (fm#936).
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -339,6 +340,11 @@ def migration_database_url() -> str:
     return raw
 
 
+#: How long the at-head check may wait on the database before the migration
+#: subprocess (itself bounded at 60 s) runs anyway (#2212).
+AT_HEAD_CHECK_TIMEOUT_SECONDS = 10.0
+
+
 def find_alembic_ini() -> tuple[Optional[Path], list[Path]]:
     """The first ``alembic.ini`` that exists, of ``ALEMBIC_CONFIG`` then the project
     root's (``None`` if neither does), and the paths searched."""
@@ -349,24 +355,24 @@ def find_alembic_ini() -> tuple[Optional[Path], list[Path]]:
 
 
 def alembic_script_heads() -> frozenset[str]:
-    """The migration scripts' head revisions, read in this process.
+    """The migration scripts' head revisions, as the subprocess reads them by default.
 
-    ``script_location = alembic`` resolves against the cwd, which here need not
-    be the project root the subprocess runs in, so it is pinned to the ini's
-    directory. ``prepend_sys_path`` is cleared: ``from_config`` would prepend it
-    to this process's ``sys.path``. Raises when the scripts cannot be read.
+    With ``ALEMBIC_CONFIG`` unset, the subprocess (``cwd=project_root``, no ``-c``)
+    reads the project root's ``alembic.ini`` and resolves its ``script_location``
+    against the project root; this reads the same files from any cwd, and ignores
+    ``ALEMBIC_CONFIG``. ``prepend_sys_path`` is cleared: ``from_config`` would
+    prepend it to this process's ``sys.path``. Raises when the scripts cannot be read.
     """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    ini, searched = find_alembic_ini()
-    if ini is None:
-        raise FileNotFoundError(
-            f"alembic.ini not found in: {[str(p) for p in searched]}"
-        )
+    root = get_project_root()
+    ini = root / "alembic.ini"
+    if not ini.exists():
+        raise FileNotFoundError(f"alembic.ini not found at {ini}")
     config = Config(str(ini))
     location = config.get_main_option("script_location", "")
-    config.set_main_option("script_location", str(ini.parent / location))
+    config.set_main_option("script_location", str(root / location))
     config.set_main_option("prepend_sys_path", "")
     return frozenset(ScriptDirectory.from_config(config).get_heads())
 
@@ -397,17 +403,28 @@ async def _schema_already_at_head() -> bool:
     """True only when ``alembic_version`` holds exactly the scripts' heads (#2212).
 
     Then ``alembic upgrade head`` would change nothing and its subprocess is
-    skipped. A non-persistent URL, a fresh database, any other revision set and
-    any exception (logged, so a dead check is visible) answer False: the
-    subprocess runs as before. The one difference: a database holding both of
-    two heads boots, where ``upgrade head`` refuses.
+    skipped. ``ALEMBIC_CONFIG`` set (alembic may then read other scripts), a
+    non-persistent URL, a fresh database, any other revision set, a database read
+    slower than :data:`AT_HEAD_CHECK_TIMEOUT_SECONDS` and any exception (logged,
+    so a dead check is visible) answer False: the subprocess runs as before. The
+    one difference: a database holding both of two heads boots, where
+    ``upgrade head`` refuses.
     """
     from faultmaven.config.settings import get_settings, persistent_database_configured
 
+    if os.environ.get("ALEMBIC_CONFIG"):
+        logger.info(
+            "ALEMBIC_CONFIG is set, so the at-head check does not apply; running "
+            "the Alembic migration subprocess."
+        )
+        return False
     try:
         if not persistent_database_configured(get_settings().database.database_url):
             return False
-        current = await _database_revisions(migration_database_url())
+        current = await asyncio.wait_for(
+            _database_revisions(migration_database_url()),
+            timeout=AT_HEAD_CHECK_TIMEOUT_SECONDS,
+        )
         if not current:
             return False
         heads = alembic_script_heads()
