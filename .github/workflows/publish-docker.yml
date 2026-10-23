@@ -103,7 +103,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.target.outputs.sha }}
 
@@ -178,7 +178,7 @@ jobs:
       - name: Mint infra token (GitHub App)
         id: infra-token
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.INFRA_BOT_APP_ID }}
           private-key: ${{ secrets.INFRA_BOT_PRIVATE_KEY }}
@@ -189,7 +189,7 @@ jobs:
       # (infra#408). This step checks out that branch, and the next one pushes it.
       - name: Checkout enterprise-infra
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FaultMaven/faultmaven-enterprise-infra
           ref: image-queue
