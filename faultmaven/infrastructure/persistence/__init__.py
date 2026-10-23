@@ -1,26 +1,6 @@
-"""Persistence layer for FaultMaven.
+"""Persistence: the ORM models, the database engine and the stores built on them.
 
-This package provides database and storage implementations for the application.
-
-Modules:
-- models: SQLAlchemy ORM models for database tables
-- database: Database session management and connection pooling
-- repository_factory: Factories for knowledge item repositories. (Case
-  repositories live in ``faultmaven.modules.case.infrastructure``.)
+Import a name from the module that defines it: this ``__init__`` imports
+nothing, so importing the models (as ``alembic/env.py`` does) does not load the
+engine module (#2187).
 """
-
-from faultmaven.infrastructure.persistence.database import (
-    check_database_health,
-    close_database,
-    get_db_session,
-    init_database,
-    reset_engine,
-)
-
-__all__ = [
-    "get_db_session",
-    "init_database",
-    "close_database",
-    "reset_engine",
-    "check_database_health",
-]
