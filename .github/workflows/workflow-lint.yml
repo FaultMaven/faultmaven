@@ -7,10 +7,11 @@ name: Workflow Lint
 # `needs:` target exists, that a context or an expression is valid, or that a
 # `run:` script is sound. actionlint does.
 #
-# It does NOT check an action's inputs or outputs here. actionlint knows those
-# only for an action pinned by a tag it has a record of, and every action in
-# this fleet is pinned by commit sha, so a misspelt `with:` key or a
-# `steps.<id>.outputs.<name>` the action never emits passes it. Check those
+# It does NOT check a remote action's inputs or outputs here. actionlint knows
+# those only for a local action (`uses: ./...`, whose action.yml it reads) or
+# for a remote action pinned by a tag it has a record of. Every remote action
+# in this fleet is pinned by commit sha, so a misspelt `with:` key or a
+# `steps.<id>.outputs.<name>` that action never emits passes it. Check those
 # against the action's action.yml at the pinned sha.
 #
 # faultmaven-enterprise-infra has had this gate since infra#177; the service

@@ -161,9 +161,10 @@ jobs:
       # printed "with digest " and nothing else for as long as it existed. It
       # reads like provenance and carried none.
       #
-      # The actionlint gate does not check this reference and will not catch a
-      # regression: it resolves no outputs for an action pinned by commit sha.
-      # Keep the `id: build` reference; nothing enforces it.
+      # The actionlint gate checks that step `build` exists, not that it emits
+      # `digest`: it resolves no outputs for an action pinned by commit sha, so
+      # `steps.meta.outputs.digest` would pass it too. Keep this reference by
+      # inspection.
       - name: Image digest
         if: github.event_name != 'pull_request'
         run: echo "Published Docker images with digest ${{ steps.build.outputs.digest }}"
