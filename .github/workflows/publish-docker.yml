@@ -137,6 +137,11 @@ jobs:
             type=raw,value=sha-${{ steps.target.outputs.short }}
           labels: |
             org.opencontainers.image.revision=${{ steps.target.outputs.sha }}
+          # The default, latest=auto, adds `latest` to every non-prerelease
+          # semver tag, so tagging an older green commit would move :latest
+          # back to it. `latest` comes only from the raw line above.
+          flavor: |
+            latest=false
 
       # Build and push Docker image
       - name: Build and push Docker image
