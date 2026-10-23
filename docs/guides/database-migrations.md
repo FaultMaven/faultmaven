@@ -41,9 +41,10 @@ and its `downgrade()` removes only what it added — see
 
 `RUN_STARTUP_MIGRATIONS` defaults to `true`. With `ALEMBIC_CONFIG` unset (the
 default), startup first reads `alembic_version` and skips the subprocess when the
-database already holds exactly the scripts' heads; that read is bounded at 10
-seconds (`AT_HEAD_CHECK_TIMEOUT_SECONDS`), and any other answer, including a
-timeout, runs the subprocess. The subprocess is given 60 seconds; past that it
+database already holds exactly the scripts' heads. That read times out after 10
+seconds (`AT_HEAD_CHECK_TIMEOUT_SECONDS`), or after the driver's own wait if that
+is longer: a SQLite URL with `?timeout=30` holds it for up to 30 seconds while a
+lock persists. Any other answer, including a timeout, runs the subprocess. The subprocess is given 60 seconds; past that it
 logs `Alembic migration timed out after 60 seconds` and raises `RuntimeError`,
 and the app does not start. A failed migration stops the boot the same way.
 
