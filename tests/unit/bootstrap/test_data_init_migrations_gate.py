@@ -23,6 +23,7 @@ async def test_startup_migrations_run_when_flag_true():
     settings = SimpleNamespace(run_startup_migrations=True)
     with (
         patch.object(data_init, "ensure_data_directories"),
+        patch.object(data_init, "_schema_already_at_head", return_value=False),
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
@@ -38,11 +39,14 @@ async def test_startup_migrations_skipped_when_flag_false():
     settings = SimpleNamespace(run_startup_migrations=False)
     with (
         patch.object(data_init, "ensure_data_directories"),
+        patch.object(data_init, "_schema_already_at_head") as at_head_check,
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())
 
+    # Neither the at-head check (#2212) nor the migration runs.
+    at_head_check.assert_not_called()
     run_migrations.assert_not_called()
 
 

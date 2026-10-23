@@ -513,19 +513,12 @@ def _alembic_head() -> str | None:
     ``alembic/`` tree is not on disk.
     """
     try:
-        from alembic.config import Config
-        from alembic.script import ScriptDirectory
-        from faultmaven.bootstrap.data_init import get_project_root
+        from faultmaven.bootstrap.data_init import alembic_script_heads
 
-        ini = get_project_root() / "alembic.ini"
-        if not ini.exists():
-            return None
-        config = Config(str(ini))
-        config.set_main_option("script_location", str(ini.parent / "alembic"))
-        heads = ScriptDirectory.from_config(config).get_heads()
-        return heads[0] if len(heads) == 1 else None
+        heads = alembic_script_heads()
     except Exception:
         return None
+    return next(iter(heads)) if len(heads) == 1 else None
 
 
 # ---------------------------------------------------------------------------
