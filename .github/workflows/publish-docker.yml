@@ -8,10 +8,10 @@ on:
     workflows: ["CI/CD Pipeline"]
     types: [completed]
     branches: [ "main" ]
-  # Version releases publish directly from the tag.
+  # A version tag or a manual run publishes only a commit CI has passed: see
+  # "Resolve the commit to publish".
   push:
     tags: [ 'v*.*.*' ]
-  # Manual / emergency publish.
   workflow_dispatch:
 
 env:
@@ -27,25 +27,91 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    # Only when the triggering CI run passed (workflow_run), or a tag/manual run.
-    # Without this, a failed/cancelled CI run would still reach the publish steps.
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    # Green runs: median 2m, max 4.3m on a warm layer cache. A cold cache
+    # rebuilds the model layer, which CI's own build has taken up to 14m.
+    timeout-minutes: 30
+    # A workflow_run must come from a green PUSH run. Without this, a failed or
+    # cancelled CI run would reach the publish steps -- and the `branches`
+    # filter above matches a head branch NAME, so a pull request from a fork
+    # whose branch is called `main` passes it too. This job checks out the
+    # triggering run's commit, which for that run is the fork's code. Tags and
+    # dispatches are checked against CI in "Resolve the commit to publish".
+    if: >-
+      ${{ (github.event_name == 'workflow_run'
+           && github.event.workflow_run.conclusion == 'success'
+           && github.event.workflow_run.event == 'push')
+        || github.event_name == 'push'
+        || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: read
       packages: write
+      actions: read  # the CI-verdict lookup for a tag or a dispatch
 
     steps:
+      # The commit this run publishes.
+      #
+      # workflow_run: the commit the triggering CI run tested, NOT github.sha.
+      # For this event github.sha is main's tip when the run starts, so
+      # whenever another merge landed while CI ran, this job built and pushed
+      # :latest from a commit whose own CI had not finished. Run 39400202854,
+      # triggered by 964d775's green CI, published 1b1bb0f six minutes before
+      # 1b1bb0f's CI completed.
+      #
+      # A tag or a dispatch carries no CI verdict of its own, so it publishes
+      # only a commit with a green "CI/CD Pipeline" run from a push or from the
+      # merge queue. A mistyped tag target is refused, not shipped.
+      #
+      # The moving tags (latest and the branch name) follow only the branch's
+      # current tip. CI runs finish out of order: on 2026-10-17, 68b4b0f,
+      # ca33237 and bb70258 finished newest-first, and publishing each one as
+      # it passed would have left :latest on the oldest. The sha- tag and the
+      # image queue (which orders itself, below) take every green commit.
+      - name: Resolve the commit to publish
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_run" ]; then
+            green="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci-cd.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
+              --jq '[.workflow_runs[] | select(.event == "push" or .event == "merge_group")] | length')"
+            if [ "$green" -eq 0 ]; then
+              echo "::error::${SHA} has no successful CI/CD Pipeline run from a push or the merge queue; refusing to publish it"
+              exit 1
+            fi
+          fi
+          # A failed lookup leaves the moving tags where they are; it does not
+          # fail the publish.
+          moving=false
+          if [[ $GITHUB_REF == refs/heads/* ]]; then
+            tip="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" --jq .object.sha)" || tip=""
+            if [ "$tip" = "$SHA" ]; then
+              moving=true
+            else
+              echo "::notice::${GITHUB_REF_NAME} is at '${tip}', not ${SHA}; publishing the sha- tag only"
+            fi
+          fi
+          {
+            echo "sha=${SHA}"
+            echo "short=${SHA:0:7}"
+            echo "moving=${moving}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.target.outputs.sha }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Login to GHCR (GitHub Container Registry)
       - name: Log into GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY_GHCR }}
           username: ${{ github.actor }}
@@ -54,21 +120,26 @@ jobs:
       # Extract metadata for Docker tags and labels
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          # Not `type=sha`, and a revision label of our own: metadata-action
+          # reads both from github.sha, which is not the commit built on a
+          # workflow_run. A custom label replaces the generated one.
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && steps.target.outputs.moving == 'true' }}
+            type=ref,event=branch,enable=${{ steps.target.outputs.moving == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-,format=short
+            type=raw,value=sha-${{ steps.target.outputs.short }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.target.outputs.sha }}
 
       # Build and push Docker image
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -84,8 +155,9 @@ jobs:
       # reads like provenance and carried none.
       #
       # The actionlint gate added alongside this does NOT catch it here, and
-      # will not if it regresses: actionlint knows metadata-action@v5's outputs
-      # but not @v6's, so the bad reference is unresolvable rather than wrong.
+      # will not if it regresses: actionlint resolves no outputs for an action
+      # pinned to a commit sha (and knew metadata-action@v5's, not @v6's), so
+      # the bad reference is unresolvable rather than wrong.
       # It was caught in faultmaven-dashboard, which is still on @v5, and fixed
       # here by inspection. Keep the `id: build` reference; nothing enforces it.
       - name: Image digest
@@ -99,7 +171,7 @@ jobs:
       - name: Mint infra token (GitHub App)
         id: infra-token
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         with:
           app-id: ${{ vars.INFRA_BOT_APP_ID }}
           private-key: ${{ secrets.INFRA_BOT_PRIVATE_KEY }}
@@ -110,7 +182,7 @@ jobs:
       # (infra#408). This step checks out that branch, and the next one pushes it.
       - name: Checkout enterprise-infra
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: FaultMaven/faultmaven-enterprise-infra
           ref: image-queue
@@ -122,6 +194,10 @@ jobs:
         run: |
           sudo wget -qO /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64
+          # A release asset can be replaced after it ships, and this job holds
+          # packages: write and the infra app token. The hash is the release's
+          # own `checksums` entry for this file.
+          echo "c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
@@ -148,6 +224,7 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH_SHA: ${{ steps.target.outputs.sha }}
           TRIGGERED_BY: ${{ github.actor }}
           WORKFLOW_NAME: ${{ github.workflow }}
         run: |
@@ -156,8 +233,8 @@ jobs:
           git config user.email "faultmaven-infra-queue-bot[bot]@users.noreply.github.com"
 
           QUEUE_FILE="available-images/staging/faultmaven.yaml"
-          RUN_SHA="$GITHUB_SHA"
-          TAG="sha-${GITHUB_SHA:0:7}"
+          RUN_SHA="$PUBLISH_SHA"
+          TAG="sha-${PUBLISH_SHA:0:7}"
           REPO="$GITHUB_REPOSITORY"
           COMMIT_MSG="chore(queue): update faultmaven image to ${TAG}
 

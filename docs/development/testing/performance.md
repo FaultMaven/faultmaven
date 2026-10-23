@@ -427,8 +427,9 @@ FM_BENCHMARK_ABSOLUTE=1 pytest tests/benchmarks/ -m benchmark -v
 ### Re-anchoring `CALIBRATION_REFERENCE_SECONDS`
 
 The constant is one calibration repetition's cost on a healthy
-GitHub-hosted `ubuntu-latest` runner — the machine class these thresholds
-were tuned against. Every run prints its own value, so re-anchoring needs
+GitHub-hosted `ubuntu-24.04` runner — the machine class these thresholds
+were tuned against, and the label every job pins. Moving the pin to a new
+image is a reason to re-anchor. Every run prints its own value, so re-anchoring needs
 no special run: take the `benchmark calibration:` line from a few green
 runs and set the constant to their middle.
 

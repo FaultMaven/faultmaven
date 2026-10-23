@@ -33,6 +33,16 @@ concurrency:
 permissions:
   contents: read
 
+# Every workflow in this directory pins:
+#   - the runner image, `ubuntu-24.04`, not `ubuntu-latest`. That label moves
+#     to 26.04 over 2026-10-19 .. 2026-11-19 (actions/runner-images#14748),
+#     changing every job's system Python, Node and tools at once with no diff
+#     here. A new image arrives as a pull request that edits these labels.
+#   - each action, to a full commit sha with its release in a comment. A tag
+#     can be moved to other code; a sha cannot. Dependabot raises no alert for
+#     a sha-pinned action, so its github-actions entry in .github/dependabot.yml
+#     is what proposes new releases, fixes included.
+
 jobs:
   # ============================================================================
   # DOCS-ONLY DETECTION
@@ -59,7 +69,7 @@ jobs:
   # what makes it do so.
   # ============================================================================
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     name: Docs-Only Detection
     outputs:
@@ -67,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full history: the classification diffs against the pull request's
           # merge base, which a shallow clone does not contain.
@@ -144,16 +154,16 @@ jobs:
   # spending time on full test runs.
   # ============================================================================
   env-check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     name: Environment Smoke Check
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
 
@@ -204,16 +214,16 @@ jobs:
   # ============================================================================
   code-quality:
     needs: [env-check]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Code Quality Checks
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -280,7 +290,7 @@ jobs:
       ${{ !cancelled()
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Anchored to the measured healthy cost, like Test Cloud below, and RAISED
     # when the suite grew into the previous anchor. History (#1450):
     #
@@ -330,10 +340,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -419,7 +429,7 @@ jobs:
           coverage report --fail-under=50
 
       - name: Upload Standalone Coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
         with:
           file: ./coverage.xml
           flags: standalone
@@ -462,7 +472,7 @@ jobs:
       ${{ !cancelled()
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Anchored to the measured cost, like Test Standalone above, and RAISED
     # when the suite grew into the previous anchor. History (#1450):
     #
@@ -535,10 +545,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -619,7 +629,7 @@ jobs:
           coverage report --fail-under=50
 
       - name: Upload Cloud Coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
         with:
           file: ./coverage.xml
           flags: cloud
@@ -649,7 +659,7 @@ jobs:
       ${{ !cancelled()
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     name: Test PostgreSQL Integration
 
@@ -676,10 +686,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -720,16 +730,16 @@ jobs:
   # ============================================================================
   architecture-lint:
     needs: [env-check]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Architecture Boundary Check
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -763,7 +773,7 @@ jobs:
   # ============================================================================
   api-contract-drift:
     needs: [env-check]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: API Contract Drift Check
     env:
@@ -773,7 +783,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # HEAD and its parents, fetched together with HEAD: CONTRACT_BASE
           # is HEAD~1, and a shallow clone holds no parent. Nothing may fetch
@@ -781,7 +791,7 @@ jobs:
           fetch-depth: 2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -891,16 +901,16 @@ jobs:
   # ============================================================================
   test-packaging:
     needs: [env-check]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Test Packaging Configuration
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -917,8 +927,11 @@ jobs:
   # Build Docker image after all tests pass
   # ============================================================================
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    # 75 green runs to 2026-10-23: median 8.7m, p90 11.3m, max 13.9m. The old
+    # cap of 15 left 7% margin on a required check, and a cancelled required
+    # check blocks the merge with no diagnostic.
+    timeout-minutes: 25
     needs: [test-standalone, test-cloud, test-postgres, architecture-lint, api-contract-drift, test-packaging]
     # No docs-only condition here on purpose. GitHub skips a job whose
     # dependency was skipped, so the three suites above carry this one down
@@ -930,7 +943,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Validate Dockerfile exists
         run: |
@@ -941,10 +954,10 @@ jobs:
           echo "✅ Dockerfile found"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build Docker Image (with layer cache)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
@@ -966,16 +979,16 @@ jobs:
   # ============================================================================
   security-scan:
     needs: [env-check]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Security Scanning
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: 'pip'
