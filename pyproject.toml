@@ -220,7 +220,6 @@ test = [
 
     # Coverage and reporting
     "coverage>=7.2.0",
-    "codecov>=2.1.0",
 
     # Performance testing
     "pytest-benchmark>=4.0.0",
