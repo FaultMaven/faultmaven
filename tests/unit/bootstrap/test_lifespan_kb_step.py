@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from faultmaven.bootstrap.kb_init import BootstrapResult
 from faultmaven.bootstrap.lifespan import _bootstrap_kb_step
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 pytestmark = [pytest.mark.unit]
@@ -24,12 +25,16 @@ _LOGGER = "faultmaven.bootstrap.lifespan"
 _A_STORE = object()
 
 
-async def _run_step(caplog, *, tenant_provider, store, service, result=None):
+async def _run_step(
+    caplog, *, tenant_provider, store, service, result=None, raises=None
+):
     """Return the ``bootstrap_kb`` double and the step's warnings."""
     app = FastAPI()
     if service is not None:
         app.state.knowledge_service = service
-    bootstrap_kb = AsyncMock(return_value=result or BootstrapResult())
+    bootstrap_kb = AsyncMock(
+        return_value=result or BootstrapResult(), side_effect=raises
+    )
     with (
         patch(
             "faultmaven.container.container",
@@ -75,10 +80,29 @@ async def test_a_kb_vector_store_runs_the_bootstrap_and_reports_failures(caplog)
     bootstrap_kb.assert_awaited_once()
     kwargs = bootstrap_kb.await_args.kwargs
     assert kwargs["knowledge_service"] is service
+    assert kwargs["db_session_factory"] is get_db_session
     assert kwargs["enterprise_id"] == STANDALONE_ENTERPRISE_ID
     assert warnings == [
         "  KB bootstrap failed for global/example.md: RuntimeError: boom"
     ]
+
+
+async def test_a_raising_bootstrap_is_logged_not_raised(caplog):
+    bootstrap_kb, _ = await _run_step(
+        caplog,
+        tenant_provider=BUILTIN_SINGLE,
+        store=_A_STORE,
+        service=object(),
+        raises=RuntimeError("boom"),
+    )
+
+    bootstrap_kb.assert_awaited_once()
+    errors = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == _LOGGER and r.levelno == logging.ERROR
+    ]
+    assert errors == ["KB bootstrap raised (non-fatal): boom"]
 
 
 async def test_multi_tenancy_skips_before_the_store_is_read(caplog):

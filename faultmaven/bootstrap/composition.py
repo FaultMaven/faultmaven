@@ -432,7 +432,8 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # — the KB routes then answer 503 instead of 500ing per request. Log it at
     # the assignment: the only other line that names the condition sits in the
     # KB-bootstrap branch, which is skipped entirely under TENANT_PROVIDER=
-    # multi, so a cloud pod would otherwise start clean and stay green with no
+    # multi and when no KB vector store is composed (SKIP_SERVICE_CHECKS=true),
+    # so a cloud pod would otherwise start clean and stay green with no
     # knowledge base at all. Not raised, because must_not_degrade already
     # refused composition for every deployment that must not degrade; what is
     # left here is the self-hosted instance whose operator reads the log.
