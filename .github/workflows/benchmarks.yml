@@ -36,7 +36,10 @@ jobs:
     # Calibrated budgets (#908). Skipped on the schedule, where
     # nightly-absolute answers the wall-clock question instead.
     if: github.event_name != 'schedule' && !inputs.absolute_targets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Green runs of all four jobs top out under 5m (60 runs to 2026-10-23).
+    # Without a cap a hung run holds a runner for GitHub's 6-hour default.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -44,10 +47,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -111,7 +114,7 @@ jobs:
       # `error` on no files: a run of the timed tests that recorded nothing is
       # the defect this artifact exists to catch (#1910).
       - name: Upload wall-clock rows (performance)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: wallclock-rows-performance
@@ -147,7 +150,7 @@ jobs:
           echo "**Wall-clock tests:** $(tail -n 1 performance_output.txt 2>/dev/null || echo 'did not run')" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: benchmark-results
@@ -164,7 +167,7 @@ jobs:
         # own "Failed Benchmarks" branch unreachable and hiding the detail at
         # the one moment it matters. Siblings above already use `always()`.
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const fs = require('fs');
@@ -225,14 +228,15 @@ jobs:
     # construction: it only runs on the schedule (or on an explicit
     # dispatch).
     if: github.event_name == 'schedule' || inputs.absolute_targets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -293,7 +297,7 @@ jobs:
           FM_WALLCLOCK_PROFILE: nightly
 
       - name: Upload absolute-target results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: benchmark-results-absolute
@@ -307,7 +311,7 @@ jobs:
       # A step of its own: a multi-path artifact is rooted at the paths' common
       # ancestor, which would re-nest the four files above (#1910).
       - name: Upload wall-clock rows (nightly)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: wallclock-rows-nightly
@@ -321,7 +325,8 @@ jobs:
     # relationship; a push to `main` has no "before" to check out, and the
     # schedule has nothing to compare at all.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -437,14 +442,14 @@ jobs:
 
     steps:
       - name: Checkout head
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # `git worktree add` needs the base commit present locally, and
           # a shallow clone does not contain it.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -630,7 +635,7 @@ jobs:
 
       - name: Upload A/B results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-ab
           path: |
@@ -646,7 +651,7 @@ jobs:
         # turn a green comparison red: the verdict belongs to the next
         # step, and the job summary already carries the detail.
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const fs = require('fs');
@@ -680,14 +685,15 @@ jobs:
 
   memory-benchmarks:
     name: Memory Usage Benchmarks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -720,7 +726,7 @@ jobs:
           SKIP_SERVICE_CHECKS: 'true'
 
       - name: Upload memory benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: memory-benchmark-results
