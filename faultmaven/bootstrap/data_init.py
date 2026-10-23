@@ -345,10 +345,16 @@ def migration_database_url() -> str:
 AT_HEAD_CHECK_TIMEOUT_SECONDS = 10.0
 
 
+def _alembic_config_override() -> str:
+    """``ALEMBIC_CONFIG``, read from the environment because alembic's own CLI reads
+    it there (its ``-c`` default), not through the settings."""
+    return os.environ.get("ALEMBIC_CONFIG", "")
+
+
 def find_alembic_ini() -> tuple[Optional[Path], list[Path]]:
     """The first ``alembic.ini`` that exists, of ``ALEMBIC_CONFIG`` then the project
     root's (``None`` if neither does), and the paths searched."""
-    env_path = os.environ.get("ALEMBIC_CONFIG")
+    env_path = _alembic_config_override()
     searched = [Path(env_path)] if env_path else []
     searched.append(get_project_root() / "alembic.ini")
     return next((p for p in searched if p.exists()), None), searched
@@ -412,7 +418,7 @@ async def _schema_already_at_head() -> bool:
     """
     from faultmaven.config.settings import get_settings, persistent_database_configured
 
-    if os.environ.get("ALEMBIC_CONFIG"):
+    if _alembic_config_override():
         logger.info(
             "ALEMBIC_CONFIG is set, so the at-head check does not apply; running "
             "the Alembic migration subprocess."
