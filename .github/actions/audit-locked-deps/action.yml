@@ -1,0 +1,17 @@
+name: Audit locked dependencies
+description: >-
+  Fail-closed pip-audit of every requirements/*.txt lockfile, with the ignores
+  documented in docs/operations/security/vulnerability-exceptions.md. Needs
+  Python set up; installs its own pinned pip-audit.
+runs:
+  using: composite
+  steps:
+    # Pinned: pip-audit gates on its raw exit code, so an unpinned release
+    # could change what blocks with zero repo changes. Bump it deliberately.
+    - name: Install pip-audit
+      shell: bash
+      run: python -m pip install pip-audit==2.10.1
+
+    - name: Audit locked dependencies (pip-audit)
+      shell: bash
+      run: bash --noprofile --norc -eo pipefail "$GITHUB_ACTION_PATH/audit.sh"
