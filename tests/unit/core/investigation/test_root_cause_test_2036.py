@@ -20,7 +20,6 @@ These pins hold:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
@@ -50,18 +49,15 @@ from faultmaven.core.investigation.schemas import ProblemVerificationUpdate
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     MitigationRecord,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
@@ -74,24 +70,12 @@ def _flat(text: str) -> str:
 
 
 def _case(stage: str = "diagnosis") -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="Gateway calls to user-service fail",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="api-gateway calls to user-service return 503",
-            severity=CaseSeverity.HIGH,
-        ),
+    case = investigating_case(
+        statement="Gateway calls to user-service fail",
+        symptom="api-gateway calls to user-service return 503",
+        current_turn=4,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.current_turn = 4
-    case.progress.problem_status = ProblemStatus.VERIFIED
     if stage == "mitigation":
         case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
     elif stage == "treatment":

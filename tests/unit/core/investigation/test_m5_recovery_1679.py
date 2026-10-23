@@ -50,13 +50,12 @@ from faultmaven.modules.case.domain.models.hypothesis import (
     HypothesisGenerationMode,
     HypothesisState,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
     SolutionType,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -130,19 +129,14 @@ def _case(
     ``supported`` gives the hypothesis a confident SUPPORTS link, so a raise
     is not held at the evidence-free prior cap.
     """
-    case = Case(
+    case = investigating_case(
         user_id="u1",
         enterprise_id="o1",
-        title="t",
         description="billing-exporter fails to start",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="billing-exporter fails to start",
-            problem_statement_confirmed=True,
-        ),
+        statement="billing-exporter fails to start",
+        current_turn=4,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.current_turn = 4
-    case.progress.problem_status = ProblemStatus.VERIFIED
     case.evidence.append(
         Evidence(
             evidence_id="ev_000000000001",

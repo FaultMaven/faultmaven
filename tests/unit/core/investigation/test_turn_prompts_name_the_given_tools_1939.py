@@ -46,8 +46,6 @@ from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.modules.case.contracts import (
     CaseState,
-    InvestigationProgress,
-    ProblemVerification,
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import (
@@ -55,6 +53,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+from tests.case_builders import investigating_case
 from tests.model_content import disabled_redaction
 
 #: A redaction context that redacts nothing: the terminal Q&A path takes the
@@ -110,23 +109,15 @@ def _engine(*names: str, capable: bool = True, response=None) -> MilestoneEngine
 
 
 def _case(with_evidence: bool = True) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_1939a0b1c2d3",
         title="VM will not start",
-        state=CaseState.INQUIRY,
-        user_id="u",
-        enterprise_id="o",
         description="libvirt cannot write its PID file",
-        problem_verification=ProblemVerification(
-            symptom_statement="VM fails to start", severity="high"
-        ),
+        symptom="VM fails to start",
+        confirm_after_build=True,
+        statement="VM fails to start",
+        current_turn=8,
     )
-    case.inquiry.proposed_problem_statement = "VM fails to start"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 8
     if with_evidence:
         case.evidence.append(
             Evidence(

@@ -44,9 +44,8 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -136,23 +135,17 @@ def _case(
     post-fix rows — which are the only thing separating a resolution from a
     stabilization. ``problem_gone`` adds the user's symptom_absence row at the
     same turn (the problem leg, #1906)."""
-    case = Case(
+    case = investigating_case(
         title="Cross-account AssumeRole failures",
         enterprise_id="org_test",
         user_id="user_test",
         description="data-processor pods cannot assume the cross-account role",
-        problem_verification=ProblemVerification(
-            symptom_statement="AssumeRoleWithWebIdentity fails for the pods",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
+        symptom="AssumeRoleWithWebIdentity fails for the pods",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=(
             "The IAM OIDC provider is registered with client ID "

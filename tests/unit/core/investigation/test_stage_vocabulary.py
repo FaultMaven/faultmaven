@@ -33,8 +33,6 @@ Run:
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
@@ -49,12 +47,12 @@ from faultmaven.core.investigation.prompts.templates.investigation import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
-    InquiryData,
     InvestigationProgress,
     InvestigationStage,
     MitigationRecord,
     ProblemStatus,
 )
+from tests.case_builders import investigating_case
 
 # The display strings the deleted mapping used to produce. None of them may
 # reappear as a stage label anywhere the model can read.
@@ -72,20 +70,15 @@ def _make_case(
     directly: MITIGATION when a mitigation is accepted-but-not-verified,
     TREATMENT when a solution is accepted-but-not-verified, else DIAGNOSIS.
     """
-    inquiry = InquiryData()
-    inquiry.proposed_problem_statement = "Checkout latency spike"
-    inquiry.problem_statement_confirmed = True
-
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    case = investigating_case(
         user_id="user_test",
         enterprise_id="org_test",
         title="Test case",
         description="Checkout latency spike",
         state=state,
-        inquiry=inquiry,
+        statement="Checkout latency spike",
+        current_turn=5,
     )
-    case.current_turn = 5
     if state == CaseState.INVESTIGATING:
         case.progress.problem_status = ProblemStatus.VERIFIED
         if stage == InvestigationStage.MITIGATION:

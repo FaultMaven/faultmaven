@@ -46,10 +46,8 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
 )
 from faultmaven.modules.agent.jobs.storage_cleanup import cleanup_orphaned_files
 from faultmaven.modules.case.api.routes.evidence import list_uploaded_files
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case
 from faultmaven.modules.case.domain.models.evidence import UploadedFile
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
@@ -58,6 +56,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
     SIDECAR_SUFFIX,
     FileStorageService,
 )
+from tests.case_builders import investigating_case
 
 from .conftest import create_sample_case, drain_post_commit, make_preprocessing_result
 
@@ -629,27 +628,19 @@ class TestASuccessfulUploadTurn:
 
 
 def _investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_1878deadbeef",
         title="Gate turn carrying a new file",
-        state=CaseState.INQUIRY,
         user_id="user_1878",
         enterprise_id="00000000-0000-0000-0000-000000000002",
         description="etcdInsufficientMembers alerts",
-        problem_verification=ProblemVerification(
-            symptom_statement="recurring etcdInsufficientMembers alerts",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
+        symptom="recurring etcdInsufficientMembers alerts",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
+        statement="etcd connectivity",
+        current_turn=7,
     )
-    case.inquiry.proposed_problem_statement = "etcd connectivity"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 7
-    return case
 
 
 class TestADeterministicRouteCommitsTheRowWithItsTurn:

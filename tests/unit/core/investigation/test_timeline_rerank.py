@@ -35,8 +35,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
+from tests.case_builders import investigating_case
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,17 +97,12 @@ def _case(evidence_list: list[Evidence]) -> Case:
                     structural_index=getattr(ev, "__test_structural_index__", None),
                 )
             )
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    return investigating_case(
         title="Test",
         description="Test",
         user_id="user_1",
         enterprise_id="org_1",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test",
-        ),
+        statement="Test",
         evidence=evidence_list,
         uploaded_files=uploaded_files,
     )

@@ -48,6 +48,7 @@ from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import inquiry_case
 
 # ============================================================
 # Fixtures
@@ -78,12 +79,8 @@ def repository(async_session) -> SQLiteCaseRepository:
 
 
 def _make_case() -> Case:
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="user_alpha",
-        enterprise_id="org_alpha",
-        title="Test case",
-        state=CaseState.INQUIRY,
+    return inquiry_case(
+        user_id="user_alpha", enterprise_id="org_alpha", title="Test case"
     )
 
 

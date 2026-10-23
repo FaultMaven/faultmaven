@@ -20,37 +20,23 @@ from faultmaven.core.investigation.milestone_engine.milestone_inference import (
 from faultmaven.core.investigation.schemas import MilestoneJustifications
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
-    InquiryData,
     ProblemStatus,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
 
 def _case(verified=True) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout 500s", severity=CaseSeverity.HIGH
+        statement="checkout 500s",
+        symptom="checkout 500s",
+        problem_status=(
+            ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
         ),
     )
-    case.progress.problem_status = (
-        ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
-    )
-    return case
 
 
 # The engine deliberately does not judge the CONTENT of a justification, so any

@@ -50,6 +50,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -105,17 +106,13 @@ def _evidence(
 
 
 def _case(files, evidence, turn: int = 8) -> Case:
-    return Case(
+    return investigating_case(
         case_id="case_1969aaaaaaaa",
         title="API timeouts",
         description="Upstream timeouts since 10:00",
         user_id="user_1969",
         enterprise_id="org_1969",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="API timeouts",
-        ),
+        statement="API timeouts",
         uploaded_files=list(files),
         evidence=list(evidence),
         current_turn=turn,

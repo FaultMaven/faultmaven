@@ -21,10 +21,9 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
     JournalEntry,
 )
+from tests.case_builders import investigating_case
 
 # ============================================================
 # Helpers
@@ -39,14 +38,10 @@ def _make_investigating_case(**overrides) -> Case:
         "description": "Test description",
         "user_id": "user_123",
         "enterprise_id": "org_123",
-        "state": CaseState.INVESTIGATING,
-        "inquiry": InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test description",
-        ),
+        "statement": "Test description",
     }
     defaults.update(overrides)
-    return Case(**defaults)
+    return investigating_case(**defaults)
 
 
 def _make_journal_entry(

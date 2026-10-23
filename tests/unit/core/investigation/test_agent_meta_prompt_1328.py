@@ -61,6 +61,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import make_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = [pytest.mark.unit]
@@ -84,7 +85,7 @@ assert DIAGNOSTIC_MARKER not in AGENT_META_INSTRUCTIONS
 
 def _case(state: CaseState) -> Case:
     investigating = state == CaseState.INVESTIGATING
-    case = Case(
+    case = make_case(
         case_id="case_aabb11223344",
         title="Nightly OOM kills",
         description="postgres is OOM-killed every night around 02:00",

@@ -20,11 +20,10 @@ from faultmaven.core.investigation.problem_status import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
     InvestigationProgress,
     ProblemStatus,
 )
+from tests.case_builders import investigating_case
 from tests.source_tree import parse_file
 
 pytestmark = pytest.mark.unit
@@ -34,17 +33,11 @@ _WRITER = Path(problem_status.__file__).resolve()
 
 
 def _case() -> Case:
-    return Case(
+    return investigating_case(
         case_id="case_00000000000a",
-        user_id="u",
         enterprise_id="e",
-        title="t",
         description="checkout orders failing",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing",
-            problem_statement_confirmed=True,
-        ),
+        statement="checkout orders failing",
     )
 
 

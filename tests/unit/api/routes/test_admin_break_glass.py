@@ -41,7 +41,7 @@ from faultmaven.models.interfaces_operator_grant import (
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from tests.case_builders import inquiry_case
 
 # A realistic case id: the domain model pins these at exactly 17 characters, so
 # a toy "case-1" would fail validation before reaching the gate under test.
@@ -85,16 +85,15 @@ def _grant(**overrides) -> OperatorAccessGrant:
 
 def _case() -> Case:
     now = datetime.now(timezone.utc)
-    return Case(
+    # INQUIRY, not INVESTIGATING: the latter's cross-field validator demands
+    # a confirmed problem statement, which is irrelevant to the gate under
+    # test and would only add fixture noise.
+    return inquiry_case(
         case_id=CASE_ID,
         user_id="tenant-user-9",
         enterprise_id=GRANT_ORG,
         title="payments API 5xx spike",
         description="a description a cloud operator must not see without a grant",
-        # INQUIRY, not INVESTIGATING: the latter's cross-field validator demands
-        # a confirmed problem statement, which is irrelevant to the gate under
-        # test and would only add fixture noise.
-        state=CaseState.INQUIRY,
         created_at=now,
         updated_at=now,
     )

@@ -50,6 +50,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import make_case
 
 #: One admitted hit in exactly the shape ``_prefetch_kb_context`` writes.
 KB_CONTEXT = [
@@ -89,7 +90,6 @@ def repository(async_session) -> SQLiteCaseRepository:
 
 def _make_case(**overrides) -> Case:
     defaults = dict(
-        case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
         driver_id=None,
         enterprise_id="ent_alpha",
@@ -97,7 +97,7 @@ def _make_case(**overrides) -> Case:
         title="KB push round trip",
     )
     defaults.update(overrides)
-    return Case(**defaults)
+    return make_case(**defaults)
 
 
 def _pg_repo() -> PostgreSQLHybridCaseRepository:

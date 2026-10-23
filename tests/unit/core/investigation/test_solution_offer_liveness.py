@@ -73,7 +73,6 @@ from faultmaven.modules.case.domain.models.hypothesis import (
     HypothesisState,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.progress import (
     CauseState,
     MitigationRecord,
@@ -84,6 +83,7 @@ from faultmaven.modules.case.domain.models.solution import (
     ProposedAction,
     SolutionType,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -99,18 +99,13 @@ def _make_case(*, established: bool = True) -> Case:
     """INVESTIGATING case; ``established=True`` gives it the anchored-RCC
     established-cause license (survives the empty-graph chain recompute,
     unlike a flat cause_state=IDENTIFIED)."""
-    case = Case(
+    case = investigating_case(
         user_id="u1",
         enterprise_id="o1",
-        title="t",
         description="pods crashing",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="pods crashing",
-            problem_statement_confirmed=True,
-        ),
+        statement="pods crashing",
+        current_turn=5,
     )
-    case.current_turn = 5
     if established:
         case.progress.problem_status = ProblemStatus.VERIFIED
         case.evidence.append(

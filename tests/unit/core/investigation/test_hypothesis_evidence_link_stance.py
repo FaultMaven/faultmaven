@@ -31,7 +31,6 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
 from faultmaven.core.investigation.prompts import templates
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -40,9 +39,9 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     ProblemStatus,
 )
+from tests.case_builders import investigating_case
 
 # The documented likelihood formula (update_likelihood_from_evidence):
 # +0.15 per SUPPORTS link, -0.20 per REFUTES link, NEUTRAL inert.
@@ -59,22 +58,15 @@ EXPECTED_DELTA = {
 
 
 def _make_case() -> Case:
-    inquiry = InquiryData()
-    inquiry.proposed_problem_statement = "Test problem"
-    inquiry.problem_statement_confirmed = True
-
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    return investigating_case(
         user_id="user_test",
         enterprise_id="org_test",
         title="Test case",
         description="Test problem",
-        state=CaseState.INVESTIGATING,
-        inquiry=inquiry,
+        statement="Test problem",
+        current_turn=5,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.current_turn = 5
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _make_hypothesis(case: Case) -> Hypothesis:

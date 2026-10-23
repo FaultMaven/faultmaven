@@ -7,7 +7,6 @@ anchors ``D``; ``chain_path_to_problem`` derives a root→D path. These are pure
 """
 
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
@@ -18,14 +17,11 @@ from faultmaven.core.investigation.causal_graph.ingestion import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     EvidenceStance,
-    InquiryData,
     NodeState,
     NodeType,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -33,26 +29,12 @@ pytestmark = pytest.mark.unit
 
 
 def _case(*, with_problem=True) -> Case:
-    kwargs = dict(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
+    return investigating_case(
         enterprise_id="e",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="Deploy fails",
-            problem_statement_confirmed=True,
-        ),
+        statement="Deploy fails",
+        symptom="Deploy to on-prem job fails" if with_problem else None,
+        current_turn=4,
     )
-    if with_problem:
-        kwargs["problem_verification"] = ProblemVerification(
-            symptom_statement="Deploy to on-prem job fails",
-            severity=CaseSeverity.HIGH,
-        )
-    case = Case(**kwargs)
-    case.current_turn = 4
-    return case
 
 
 def _node(statement, node_type, produces=None, and_group=None):

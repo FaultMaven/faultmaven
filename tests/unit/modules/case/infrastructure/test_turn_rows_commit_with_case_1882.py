@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, text
@@ -21,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
@@ -42,6 +40,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
     RepositoryException,
     SQLiteCaseRepository,
 )
+from tests.case_builders import inquiry_case
 from tests.utils import seed_enterprises
 
 pytestmark = [pytest.mark.unit]
@@ -139,11 +138,8 @@ async def _committed(sessions, case_id: str) -> dict:
 
 
 def _case() -> Case:
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        enterprise_id=ENTERPRISE,
-        title="Turn commit case",
-        state=CaseState.INQUIRY,
+    return inquiry_case(
+        user_id=None, enterprise_id=ENTERPRISE, title="Turn commit case"
     )
 
 

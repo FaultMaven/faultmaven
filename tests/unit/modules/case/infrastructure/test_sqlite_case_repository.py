@@ -68,6 +68,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
     RepositoryException,
     SQLiteCaseRepository,
 )
+from tests.case_builders import make_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -110,8 +111,7 @@ def _make_case(
     description: str = "",
 ) -> Case:
     """Build a minimal Case suitable for persistence."""
-    return Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    return make_case(
         user_id=user_id,
         enterprise_id=enterprise_id,
         title=title,

@@ -38,11 +38,6 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
@@ -51,32 +46,24 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
     classify_solution_outcome,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
 
 def _make_investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_00000000abcd",
         title="Terminal confirmation integrity",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="Terminal confirmation integrity test",
-        problem_verification=ProblemVerification(
-            symptom_statement="Test symptom",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_test"),
+        symptom="Test symptom",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
+        statement="Test problem",
     )
-    case.inquiry.proposed_problem_statement = "Test problem"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    return case
 
 
 # =============================================================================

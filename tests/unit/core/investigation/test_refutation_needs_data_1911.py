@@ -46,8 +46,6 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     CauseState,
     Evidence,
@@ -57,14 +55,13 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _failed_fix,
     _identified_case,
@@ -98,23 +95,12 @@ def _engine() -> MilestoneEngine:
 
 
 def _case(status: ProblemStatus = ProblemStatus.VERIFIED) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
+    case = investigating_case(
         description="a third of logins fail with 401",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="a third of logins fail with 401",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="a third of logins fail with 401",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="a third of logins fail with 401",
+        symptom="a third of logins fail with 401",
+        current_turn=5,
     )
-    case.current_turn = 5
     case.uploaded_files.append(
         UploadedFile(
             file_id=_FILE_ID, filename="gateway.log", size_bytes=512, uploaded_at_turn=1

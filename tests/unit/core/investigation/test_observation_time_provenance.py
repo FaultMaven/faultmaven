@@ -30,12 +30,9 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
 from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
-    InquiryData,
-    ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
@@ -44,24 +41,13 @@ _ALERT_POSTED = datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc)
 
 
 def _case(uploaded=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="etcd quorum lost",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="etcd quorum lost", severity=CaseSeverity.HIGH
-        ),
+        statement="etcd quorum lost",
+        symptom="etcd quorum lost",
+        uploaded_files=uploaded or [],
     )
-    case.uploaded_files = uploaded or []
-    return case
 
 
 def _file(start=None, end=None, source="caller_declared") -> UploadedFile:

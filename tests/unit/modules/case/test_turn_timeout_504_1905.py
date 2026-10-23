@@ -35,8 +35,8 @@ from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
 from faultmaven.modules.case.api.routes.router import router
-from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -44,13 +44,12 @@ CASE_ID = "case_19050000beef"
 
 
 def _case() -> Case:
-    return Case(
+    return inquiry_case(
         case_id=CASE_ID,
         title="Checkout API 502s",
         description="",
         user_id="user_1905",
         enterprise_id="org_test",
-        state=CaseState.INQUIRY,
     )
 
 

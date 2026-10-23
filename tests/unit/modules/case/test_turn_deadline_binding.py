@@ -31,12 +31,13 @@ from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.conversation import submit_turn
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import inquiry_case
 
 CASE_ID = "case_dead1ead1abc"
 
 
 def _case() -> Case:
-    return Case(
+    return inquiry_case(
         case_id=CASE_ID,
         # Not the ``Case-YYMMDD-N`` placeholder, so auto-titling is a no-op and
         # this test measures only the binding.
@@ -44,7 +45,6 @@ def _case() -> Case:
         description="",
         user_id="user_123",
         enterprise_id="org_test",
-        state=CaseState.INQUIRY,
     )
 
 

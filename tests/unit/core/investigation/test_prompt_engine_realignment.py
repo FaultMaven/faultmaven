@@ -38,19 +38,16 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CauseState,
     ConfidenceLevel,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
@@ -122,26 +119,14 @@ def _hyp(
 
 
 def _case(hyps=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing with 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout orders failing with 500s",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="checkout orders failing with 500s",
+        symptom="checkout orders failing with 500s",
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _llm_rcc(

@@ -72,6 +72,7 @@ from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import make_case
 
 SEED_OWNER = "user_list_source"
 SEED_ENTERPRISE = "ent_list_source"
@@ -121,7 +122,7 @@ def _case(
             problem_statement_confirmed=True,
         )
     activity = _BASE - timedelta(hours=activity_rank)
-    return Case(
+    return make_case(
         case_id=f"case_{index:012d}",
         user_id=user_id,
         enterprise_id=SEED_ENTERPRISE,

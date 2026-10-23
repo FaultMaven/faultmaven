@@ -51,8 +51,6 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     Evidence,
     EvidenceCategory,
@@ -64,16 +62,15 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NeedPriority,
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
-    ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -107,24 +104,12 @@ def _ev(category: EvidenceCategory = CAUSAL) -> Evidence:
 
 
 def _case(hypotheses: list[Hypothesis], evidence: list[Evidence] = ()) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="sync stuck",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="sync stuck", severity=CaseSeverity.HIGH
-        ),
+    return investigating_case(
+        statement="sync stuck",
+        symptom="sync stuck",
+        hypotheses={h.hypothesis_id: h for h in hypotheses},
+        evidence=list(evidence),
     )
-    case.hypotheses = {h.hypothesis_id: h for h in hypotheses}
-    case.evidence = list(evidence)
-    return case
 
 
 def _hyp(

@@ -15,7 +15,6 @@ directly on the case.
 """
 
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -35,11 +34,7 @@ from faultmaven.modules.case.domain.models.hypothesis import (
     HypothesisGenerationMode,
     HypothesisState,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -97,21 +92,10 @@ def _hyp(category: HypothesisCategory, seed: int) -> Hypothesis:
 
 
 def _case(*, n_hypotheses: int, n_categories: int, n_evidence: int) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
+    case = investigating_case(
         current_turn=3,
-        inquiry=InquiryData(
-            proposed_problem_statement="intermittent latency",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="intermittent latency", severity=CaseSeverity.HIGH
-        ),
+        statement="intermittent latency",
+        symptom="intermittent latency",
     )
     case.evidence = [_ev(i) for i in range(n_evidence)]
     cats = list(HypothesisCategory)[: max(n_categories, 1)]

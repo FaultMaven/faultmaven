@@ -30,8 +30,7 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -57,23 +56,17 @@ def _make_repo():
 
 
 def _make_investigating_case() -> Case:
-    case = Case(
+    # Real callers (investigation_service) increment before handing the case
+    # to the engine — a turn-0 record is a shape no production turn has.
+    return investigating_case(
         case_id="case_1a2b3c4d5e6f",
         title="INV-40 apply-path test",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="INV-40 apply-path test description",
-        inquiry=InquiryData(
-            proposed_problem_statement="INV-40 apply-path test",
-            problem_statement_confirmed=True,
-        ),
+        statement="INV-40 apply-path test",
+        current_turn=3,
     )
-    case.state = CaseState.INVESTIGATING
-    # Real callers (investigation_service) increment before handing the case
-    # to the engine — a turn-0 record is a shape no production turn has.
-    case.current_turn = 3
-    return case
 
 
 def _make_engine(prose: str) -> MilestoneEngine:

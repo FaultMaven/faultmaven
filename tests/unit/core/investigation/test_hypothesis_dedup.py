@@ -47,18 +47,15 @@ from faultmaven.core.investigation.schemas import (
 from faultmaven.core.investigation.verification_status import work_gate_passed
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
     HypothesisCategory,
     HypothesisState,
-    InquiryData,
     ProblemStatus,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -163,26 +160,14 @@ def test_predicate_empty_statements_never_match():
 
 
 def _case(symptom_verified: bool = True) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="orders failing",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="orders failing", severity=CaseSeverity.HIGH
+    return investigating_case(
+        statement="orders failing",
+        symptom="orders failing",
+        current_turn=5,
+        problem_status=(
+            ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
         ),
     )
-    case.current_turn = 5
-    case.progress.problem_status = (
-        ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
-    )
-    return case
 
 
 def _add_hyp(case: Case, statement: str, category, state=HypothesisState.ACTIVE):

@@ -26,10 +26,8 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
@@ -37,28 +35,22 @@ from faultmaven.modules.case.domain.models.conclusion import (
     RootCauseConclusion,
 )
 from faultmaven.modules.case.domain.models.evidence import Evidence
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
 
 def _make_investigating_case() -> Case:
     """Minimal INVESTIGATING case with empty progress; tests add what they need."""
-    case = Case(
+    return investigating_case(
         case_id="case_c0bbeef0a510",
         title="Closure readiness test",
-        state=CaseState.INVESTIGATING,
         user_id="user_test",
         enterprise_id="org_test",
         description="Test description",
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test problem",
-        ),
+        statement="Test problem",
     )
-    case.progress = InvestigationProgress()
-    return case
 
 
 def _attach_root_cause(case: Case) -> None:

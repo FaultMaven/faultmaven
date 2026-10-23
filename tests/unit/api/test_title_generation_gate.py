@@ -37,6 +37,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+from tests.case_builders import make_case
 from tests.utils import regex_only_sanitizer
 
 # The Case model enforces created_at <= resolved_at, so a terminal fixture needs
@@ -48,7 +49,6 @@ _LATER = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 def _make_case(**overrides) -> Case:
     """A real Case — the gate reads nested attributes a MagicMock would fake."""
     defaults = {
-        "case_id": f"case_{uuid4().hex[:12]}",
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
@@ -56,7 +56,7 @@ def _make_case(**overrides) -> Case:
         "state": CaseState.INQUIRY,
     }
     defaults.update(overrides)
-    return Case(**defaults)
+    return make_case(**defaults)
 
 
 def _conversation(user_turns: int, words_per_turn: int = 3) -> str:

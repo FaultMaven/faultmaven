@@ -25,41 +25,31 @@ from faultmaven.core.investigation.milestone_engine.chain_emission import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalEdge,
     CausalNode,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    InquiryData,
     NodeType,
-    ProblemVerification,
     Solution,
     SolutionType,
 )
+from tests.case_builders import investigating_case
 from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
 
 
 def _investigating_case() -> Case:
-    return Case(
+    return investigating_case(
         case_id=f"case_{'0' * 12}",
         user_id="user_alpha",
         enterprise_id="org_alpha",
         title="Checkout 5xx",
         description="Checkout service returns 500s under load",
-        state=CaseState.INVESTIGATING,
         current_turn=4,
-        inquiry=InquiryData(
-            proposed_problem_statement="Checkout returns 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="Checkout returns 500s",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="Checkout returns 500s",
+        symptom="Checkout returns 500s",
     )
 
 

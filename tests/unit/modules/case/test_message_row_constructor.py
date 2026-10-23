@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     is_server_written_user_row,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from tests.case_builders import make_case
 
 pytestmark = pytest.mark.unit
 
@@ -52,7 +53,7 @@ HYDRATED_KEYS = {
 
 
 def _case() -> Case:
-    return Case(title="t", user_id="u1", enterprise_id="e1")
+    return make_case(user_id="u1", enterprise_id="e1")
 
 
 class TestUserTurn:

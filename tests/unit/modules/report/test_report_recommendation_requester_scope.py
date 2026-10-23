@@ -23,13 +23,11 @@ from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
-    ProblemVerification,
 )
 from faultmaven.modules.report.domain.services.report_recommendation_service import (
     ReportRecommendationService,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -74,20 +72,13 @@ def _available_embedder():
 
 
 def _case() -> Case:
-    return Case(
+    return investigating_case(
         user_id="case-owner-9",  # deliberately NOT the requester
         enterprise_id=ENTERPRISE,
         title="Connection pool exhausted under load",
         description="DB queries timing out",
-        state=CaseState.INVESTIGATING,
-        problem_verification=ProblemVerification(
-            symptom_statement="Timeout errors",
-            severity="HIGH",
-        ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Timeout",
-        ),
+        symptom="Timeout errors",
+        statement="Timeout",
     )
 
 

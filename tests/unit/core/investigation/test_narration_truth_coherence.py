@@ -16,8 +16,6 @@ prose string + an engine state — with no model-graded judge (LLM-agnostic
 testing invariant).
 """
 
-from uuid import uuid4
-
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
@@ -28,11 +26,8 @@ from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _narration_overclaim_notice,
 )
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -42,26 +37,16 @@ def _case(state: CaseState, *, pending_transition: dict | None = None) -> Case:
     # closure_reason cross-field validation); the guard predicate only reads
     # ``case.state``, so bypass the validators with object.__setattr__ to place
     # a bare terminal state for the read (documented Case-testing pattern).
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
+    # pending_transition is set while the case is still INVESTIGATING (here, at
+    # construction): a bare terminal state would fail the timestamp cross-field
+    # check, which ``validate_assignment`` re-runs on every set. Flip the state
+    # last via object.__setattr__.
+    case = investigating_case(
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="intermittent latency",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="intermittent latency", severity=CaseSeverity.HIGH
-        ),
+        statement="intermittent latency",
+        symptom="intermittent latency",
+        pending_transition=pending_transition,
     )
-    # Assign pending_transition while still INVESTIGATING — ``validate_assignment``
-    # re-validates the whole model on set, and a bare terminal state would fail
-    # the timestamp cross-field check. Flip the state last via object.__setattr__.
-    case.pending_transition = pending_transition
     if state is not CaseState.INVESTIGATING:
         object.__setattr__(case, "state", state)
     return case

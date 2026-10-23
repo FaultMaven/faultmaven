@@ -61,8 +61,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -119,27 +118,20 @@ def _engine() -> MilestoneEngine:
 
 
 def _investigating_case(*, pending: Optional[str] = None) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_5db5417fe445",
         title="Gate turn carrying a new file",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="etcdInsufficientMembers alerts",
-        problem_verification=ProblemVerification(
-            symptom_statement="recurring etcdInsufficientMembers alerts",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
+        symptom="recurring etcdInsufficientMembers alerts",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
+        statement="etcd connectivity",
+        current_turn=7,
+        turns_without_progress=STANDING_STALL,
     )
-    case.inquiry.proposed_problem_statement = "etcd connectivity"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    case.current_turn = 7
-    case.turns_without_progress = STANDING_STALL
     if pending:
         case.pending_transition = {
             "to_state": pending,

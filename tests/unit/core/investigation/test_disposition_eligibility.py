@@ -44,11 +44,11 @@ from faultmaven.modules.case.domain.models.conclusion import (
 )
 from faultmaven.modules.case.domain.models.evidence import Evidence
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -70,23 +70,15 @@ def _make_inquiry_case() -> Case:
 
 
 def _make_investigating_case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_de1100000002",
         title="Eligibility test (investigating)",
-        state=CaseState.INVESTIGATING,
         user_id="user_test",
         enterprise_id="org_test",
         description="Test problem",
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Test problem",
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="Test symptom", severity="HIGH"
-        ),
+        statement="Test problem",
+        symptom="Test symptom",
     )
-    case.progress = InvestigationProgress()
-    return case
 
 
 def _attach_root_cause(case: Case) -> None:

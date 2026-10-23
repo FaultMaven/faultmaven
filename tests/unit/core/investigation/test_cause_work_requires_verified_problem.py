@@ -12,7 +12,6 @@ Driven through the real ``_apply_investigation_updates`` path:
 """
 
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
@@ -41,8 +40,6 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     CauseState,
     EvidenceCategory,
@@ -50,14 +47,13 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     HypothesisCategory,
     HypothesisState,
-    InquiryData,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     UploadedFile,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -90,23 +86,12 @@ class _NoKb:
 
 
 def _case(status: ProblemStatus) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
+    case = investigating_case(
         description="checkout orders failing with 500s",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            proposed_problem_statement="checkout orders failing with 500s",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="checkout orders failing with 500s",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="checkout orders failing with 500s",
+        symptom="checkout orders failing with 500s",
+        current_turn=5,
     )
-    case.current_turn = 5
     case.uploaded_files.append(
         UploadedFile(
             file_id=_FILE_ID, filename="app.log", size_bytes=512, uploaded_at_turn=4

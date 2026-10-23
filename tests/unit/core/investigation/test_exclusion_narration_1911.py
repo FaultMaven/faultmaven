@@ -66,9 +66,9 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
-    ProblemVerification,
 )
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
@@ -85,22 +85,13 @@ _KEY = "hyp_bbbbbbbbbbbb"
 
 def _case(stage=InvestigationStage.DIAGNOSIS, *, key_refuted: bool) -> Case:
     now = datetime.now(UTC)
-    case = Case(
-        user_id="u",
-        enterprise_id="o",
-        title="t",
+    case = investigating_case(
         description="a third of logins fail with 401",
-        state=CaseState.INVESTIGATING,
         current_turn=3,
-        problem_verification=ProblemVerification(
-            symptom_statement="a third of logins fail with 401", severity="high"
-        ),
-        inquiry=InquiryData(
-            proposed_problem_statement="a third of logins fail with 401",
-            problem_statement_confirmed=True,
-            problem_statement_confirmed_at=now,
-            inquiry_turns=1,
-        ),
+        symptom="a third of logins fail with 401",
+        inquiry=InquiryData(inquiry_turns=1),
+        statement="a third of logins fail with 401",
+        confirmed_at=now,
     )
     if stage == InvestigationStage.MITIGATION:
         case.progress.mitigation = MitigationRecord(proposed_at_turn=3, accepted=True)

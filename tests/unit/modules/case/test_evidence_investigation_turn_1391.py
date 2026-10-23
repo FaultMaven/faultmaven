@@ -26,6 +26,7 @@ from faultmaven.modules.case.contracts import UploadedFile
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -43,13 +44,11 @@ def _turn(n: int, outcome: TurnOutcome) -> TurnProgress:
 
 def _case(*outcomes: TurnOutcome) -> Case:
     """A case whose turn N has ``outcomes[N - 1]``."""
-    case = Case(
+    case = inquiry_case(
         case_id="case_aabb11223344",
         title="OOM",
         description="d",
-        user_id="u",
         enterprise_id="ent_1",
-        state=CaseState.INQUIRY,
         current_turn=len(outcomes),
     )
     case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]

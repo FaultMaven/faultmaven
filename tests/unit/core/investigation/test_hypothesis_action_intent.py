@@ -30,8 +30,6 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -41,9 +39,8 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -58,25 +55,15 @@ def _make_engine() -> MilestoneEngine:
 
 
 def _make_case() -> Case:
-    inquiry = InquiryData(
-        proposed_problem_statement="Deploy to on-prem job fails",
-        problem_statement_confirmed=True,
-    )
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    return investigating_case(
         user_id="user_test",
         enterprise_id="org_test",
         title="Deploy fails",
         description="The 'Deploy to on-prem' job is failing",
-        state=CaseState.INVESTIGATING,
-        inquiry=inquiry,
-        problem_verification=ProblemVerification(
-            symptom_statement="Deploy to on-prem job fails",
-            severity=CaseSeverity.HIGH,
-        ),
+        statement="Deploy to on-prem job fails",
+        symptom="Deploy to on-prem job fails",
+        current_turn=7,
     )
-    case.current_turn = 7
-    return case
 
 
 def _hyp(state: HypothesisState, **overrides) -> Hypothesis:

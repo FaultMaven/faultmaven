@@ -11,14 +11,12 @@ Pins the two halves that live in the repository:
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -26,6 +24,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import inquiry_case
 
 
 @pytest.fixture(scope="function")
@@ -58,16 +57,12 @@ def _tp(n: int) -> TurnProgress:
 
 
 def _case(turns: list[int], current_turn: int) -> Case:
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="u",
+    case = inquiry_case(
         enterprise_id="org",
-        title="t",
         description="d",
-        state=CaseState.INQUIRY,
+        current_turn=current_turn,
     )
     case.turn_history = [_tp(n) for n in turns]
-    case.current_turn = current_turn
     return case
 
 

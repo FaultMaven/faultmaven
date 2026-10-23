@@ -29,7 +29,6 @@ import random
 import string
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -57,6 +56,7 @@ from faultmaven.modules.case.api.title_generation import (
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
+from tests.case_builders import make_case
 from tests.model_content import disabled_redaction
 from tests.utils import regex_only_sanitizer, sanitize_pii_pinned
 
@@ -74,7 +74,6 @@ _LOGGER = "faultmaven.modules.case.api.title_generation"
 
 def _case(statement: str | None = None, **overrides) -> Case:
     fields = {
-        "case_id": f"case_{uuid4().hex[:12]}",
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
@@ -82,7 +81,7 @@ def _case(statement: str | None = None, **overrides) -> Case:
         "state": CaseState.INQUIRY,
     }
     fields.update(overrides)
-    case = Case(**fields)
+    case = make_case(**fields)
     if statement:
         case.inquiry.proposed_problem_statement = statement
     return case

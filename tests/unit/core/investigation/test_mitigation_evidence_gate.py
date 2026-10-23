@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
 )
+from tests.case_builders import make_case
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -43,7 +44,7 @@ from faultmaven.modules.case.domain.models.solution import (
 def _make_case() -> Case:
     """Bare-bones case for evidence-gate testing. No path_selection or
     inquiry state needed — the gate is over `case.evidence` only."""
-    return Case(
+    return make_case(
         user_id="u1",
         enterprise_id="o1",
         title="Test",

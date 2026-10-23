@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.report.domain.services.report_recommendation_service import (
     ReportRecommendationService,
 )
+from tests.case_builders import make_case
 
 pytestmark = [pytest.mark.unit]
 
@@ -48,7 +49,7 @@ def _bound_enterprise():
 
 def _case() -> Case:
     opened = datetime(2026, 1, 1, tzinfo=UTC)
-    return Case(
+    return make_case(
         created_at=opened,
         case_id=CASE_ID,
         user_id="user-owner",

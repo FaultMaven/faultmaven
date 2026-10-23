@@ -32,6 +32,7 @@ from faultmaven.modules.case.domain.models.progress import (
     investigation_stage,
 )
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import make_case
 
 pytestmark = pytest.mark.unit
 
@@ -70,7 +71,7 @@ _ALL_HISTORIES = _HISTORIES + list(_random_histories())
 
 def _case(numbers, flags, current_turn) -> Case:
     """A case as the loader builds it, BEFORE the load-time repair."""
-    case = Case(enterprise_id="ent_1", title="t")
+    case = make_case(user_id=None, enterprise_id="ent_1", current_turn=current_turn)
     case.turn_history = [
         TurnProgress(
             turn_number=number,
@@ -79,7 +80,6 @@ def _case(numbers, flags, current_turn) -> Case:
         )
         for number, flag in zip(numbers, flags)
     ]
-    case.current_turn = current_turn
     return case
 
 

@@ -44,6 +44,7 @@ from faultmaven.modules.case.domain.models.problem import (
     ProblemConfirmation,
     UrgencyLevel,
 )
+from tests.case_builders import investigating_case, make_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -74,46 +75,38 @@ def _inquiry_case(
             impact_assessment="prod outage",
             assessed_at_turn=1,
         )
-    case = Case(
+    return make_case(
         user_id="u1",
         enterprise_id="o1",
         title="Test",
         description=proposed_statement or "",
         inquiry=inquiry,
     )
-    return case
 
 
 def _investigating_case(*, symptom_verified: bool = False) -> Case:
     """INVESTIGATING-stage case in the unified opportunistic flow (no path
     fork)."""
-    from faultmaven.modules.case.contracts import InvestigationProgress
 
-    inquiry = InquiryData(
-        proposed_problem_statement="Production API is returning 500s",
-        problem_statement_confirmed=True,
-        preliminary_urgency=PreliminaryUrgency(
-            level=UrgencyLevel.CRITICAL,
-            is_ongoing=True,
-            is_incident_report=True,
-            impact_assessment="prod outage",
-            assessed_at_turn=1,
-        ),
-    )
-    case = Case(
+    return investigating_case(
         user_id="u1",
         enterprise_id="o1",
         title="Test",
-        state=CaseState.INVESTIGATING,
         description="Production API is returning 500s",
-        inquiry=inquiry,
-        progress=InvestigationProgress(
-            problem_status=(
-                ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
-            )
+        inquiry=InquiryData(
+            preliminary_urgency=PreliminaryUrgency(
+                level=UrgencyLevel.CRITICAL,
+                is_ongoing=True,
+                is_incident_report=True,
+                impact_assessment="prod outage",
+                assessed_at_turn=1,
+            ),
+        ),
+        statement="Production API is returning 500s",
+        problem_status=(
+            ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
         ),
     )
-    return case
 
 
 # ---------------------------------------------------------------------------

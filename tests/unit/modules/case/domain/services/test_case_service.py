@@ -18,10 +18,10 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
-from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services import case_service
 from faultmaven.modules.case.domain.services.case_service import CaseService
+from tests.case_builders import make_case
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def _make_case(
     **kwargs,
 ):
     """Helper to build a Case with valid defaults."""
-    case = Case(
+    case = make_case(
         title=kwargs.get("title", "Test Case"),
         user_id=user_id,
         enterprise_id=kwargs.get("enterprise_id", "ent_default"),

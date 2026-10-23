@@ -30,7 +30,6 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
     CaseState,
     CausalEdge,
     CausalNode,
@@ -45,15 +44,14 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -155,33 +153,22 @@ def _hyp(
 
 
 def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
-    case = Case(
-        case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="orders failing",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="orders failing", severity=CaseSeverity.HIGH
-        ),
-    )
-    case.causal_nodes = {n.node_id: n for n in (nodes or [])}
-    case.causal_edges = edges or []
-    case.evidence = evidence or []
-    case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
     # Cause identification is anchored on a verified symptom. These chain fixtures
     # model an in-progress investigation that has already verified its symptom (the
     # realistic state once a causal chain root validates), so the symptom-anchor
     # precondition is satisfied and the tests exercise chain mechanics, not the
     # anchor. The anchor itself is covered by the symptom-anchor tests below.
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
+    return investigating_case(
+        case_id="case_000000000001",
+        current_turn=5,
+        statement="orders failing",
+        symptom="orders failing",
+        causal_nodes={n.node_id: n for n in (nodes or [])},
+        causal_edges=edges or [],
+        evidence=evidence or [],
+        hypotheses={h.hypothesis_id: h for h in (hyps or [])},
+        problem_status=ProblemStatus.VERIFIED,
+    )
 
 
 def _record_failed_fix(case, *, fix_turn=6, outcome_turn=7):

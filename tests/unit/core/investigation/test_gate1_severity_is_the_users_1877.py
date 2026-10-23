@@ -33,6 +33,7 @@ from faultmaven.modules.case.domain.models.problem import (
     TemporalState,
     UrgencyLevel,
 )
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -53,10 +54,9 @@ def _case(severity_guess=None, urgency=None) -> Case:
             impact_assessment="checkout down",
             assessed_at_turn=1,
         )
-    return Case(
+    return inquiry_case(
         case_id="case_1234567890ab",
         title="Checkout",
-        state=CaseState.INQUIRY,
         user_id="u1",
         enterprise_id="e1",
         description="",

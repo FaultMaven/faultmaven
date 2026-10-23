@@ -26,8 +26,6 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
-    InquiryData,
     ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
@@ -39,25 +37,17 @@ from faultmaven.modules.case.domain.models.progress import (
     CauseState,
     InvestigationProgress,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
 
 def _case() -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_ba0c05704e10",
         title="backstop-reliance test",
-        state=CaseState.INVESTIGATING,
-        user_id="u",
-        enterprise_id="o",
-        description="d",
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="p",
-        ),
+        statement="p",
     )
-    case.progress = InvestigationProgress()
-    return case
 
 
 def _rcc() -> RootCauseConclusion:

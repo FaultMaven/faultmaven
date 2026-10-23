@@ -54,15 +54,14 @@ from faultmaven.core.investigation.prompts.context_builder.evidence_needs import
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     EvidenceNeed,
-    InquiryData,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
     ProblemStatus,
 )
+from tests.case_builders import investigating_case
 from tests.utils import generate_case_id
 
 pytestmark = pytest.mark.unit
@@ -74,21 +73,11 @@ pytestmark = pytest.mark.unit
 
 
 def _case(turn: int = 10) -> Case:
-    inquiry = InquiryData()
-    inquiry.proposed_problem_statement = "Assume-role calls fail"
-    inquiry.problem_statement_confirmed = True
-    case = Case(
-        case_id=generate_case_id(),
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
-        inquiry=inquiry,
+    return investigating_case(
+        statement="Assume-role calls fail",
+        current_turn=turn,
+        problem_status=ProblemStatus.VERIFIED,
     )
-    case.current_turn = turn
-    case.progress.problem_status = ProblemStatus.VERIFIED
-    return case
 
 
 def _need(

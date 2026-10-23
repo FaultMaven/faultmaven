@@ -32,13 +32,11 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
-    ProblemVerification,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -51,26 +49,18 @@ EVIDENCE_TURN = 1
 
 def _case() -> Case:
     """INVESTIGATING at turn 3; its only symptom evidence arrived on turn 1."""
-    case = Case(
+    case = investigating_case(
         case_id="case_aaaaaaaa1751",
         title="Latency regression",
-        state=CaseState.INVESTIGATING,
         user_id="user_123",
         enterprise_id="org_123",
         description="p95 went from 200ms to 4s after the deploy",
-        problem_verification=ProblemVerification(
-            symptom_statement="p95 latency 4s since the deploy",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            thread_id="thread_123",
-            proposed_problem_statement="p95 latency 4s since the deploy",
-        ),
+        symptom="p95 latency 4s since the deploy",
+        temporal_state="ongoing",
+        urgency="high",
+        statement="p95 latency 4s since the deploy",
+        current_turn=CURRENT_TURN,
     )
-    case.current_turn = CURRENT_TURN
     case.evidence.append(
         Evidence(
             summary="checkout-api log: requests at 3.9-4.1s",

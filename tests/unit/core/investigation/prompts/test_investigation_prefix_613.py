@@ -48,8 +48,6 @@ from faultmaven.core.investigation.symptom_currency import STALE_AFTER
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     CausalNode,
     Evidence,
     EvidenceCategory,
@@ -58,13 +56,11 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     InvestigationActionType,
     JournalEntry,
     NodeState,
     NodeType,
     ProblemStatus,
-    ProblemVerification,
     ProposedAction,
     TurnOutcome,
     TurnProgress,
@@ -72,6 +68,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
     WorkingConclusion,
 )
+from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 _FILE_ID = "file_0123456789ab"
@@ -325,27 +322,20 @@ def _case(
     ``solution_accepted`` puts the case in TREATMENT, and DIAGNOSIS otherwise.
     """
     turn = 4 if later else 3
-    case = Case(
+    case = investigating_case(
         case_id="case_613aaaaaaaaa",
         title="Checkout crash-looping",
         description="Pods restart every 40s since the 10:40 deploy",
         user_id="user_613",
         enterprise_id="org_613",
-        state=CaseState.INVESTIGATING,
-        inquiry=InquiryData(
-            problem_statement_confirmed=True,
-            proposed_problem_statement="Checkout crash-looping",
-        ),
+        statement="Checkout crash-looping",
         uploaded_files=[_file()],
         evidence=[_evidence("ev_613000000001", "Pods restart every 40s", 1)],
         current_turn=turn,
-    )
-    case.problem_verification = ProblemVerification(
-        symptom_statement="checkout pods restart every ~40s",
-        severity=CaseSeverity.HIGH,
-    )
-    case.progress.problem_status = (
-        ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+        symptom="checkout pods restart every ~40s",
+        problem_status=(
+            ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+        ),
     )
     case.progress.solution_accepted = solution_accepted
     if observed is not None:

@@ -35,10 +35,10 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceStance,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.case_builders import investigating_case
 
 _FILE_ID = "file_0123456789ab"
 
@@ -46,18 +46,14 @@ pytestmark = pytest.mark.unit
 
 
 def _terminal_case(*, resolved: bool, with_graph: bool = True) -> Case:
-    case = Case(
+    case = investigating_case(
         case_id="case_aa0000000001",
         user_id="user_x",
         enterprise_id="org_x",
         title="Checkout timeouts",
         description="p99 spikes on checkout.",
-        state=CaseState.INVESTIGATING,
         created_at=datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC),
-        inquiry=InquiryData(
-            proposed_problem_statement="p99 spikes on checkout",
-            problem_statement_confirmed=True,
-        ),
+        statement="p99 spikes on checkout",
     )
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Connection pool exhausted",

@@ -47,7 +47,6 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
@@ -55,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 
 # ============================================================
 # Fixtures
@@ -71,20 +71,15 @@ def _make_case(
     The path fork is gone — there is one investigation flow with no
     prospective path commit.
     """
-    inquiry = InquiryData()
-    inquiry.proposed_problem_statement = "Test problem"
-    inquiry.problem_statement_confirmed = True
-
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+    case = investigating_case(
         user_id="user_test",
         enterprise_id="org_test",
         title="Test case",
         description="Test problem",
         state=state,
-        inquiry=inquiry,
+        statement="Test problem",
+        current_turn=5,
     )
-    case.current_turn = 5
     if state == CaseState.INVESTIGATING:
         case.progress.problem_status = (
             ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED

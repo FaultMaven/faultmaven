@@ -33,6 +33,7 @@ from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import make_case
 
 # Every type that exposes a case ``list()`` — the contract and all concrete
 # implementations must agree on the lifecycle filter being named ``state``.
@@ -83,7 +84,12 @@ def test_list_declares_include_empty_param(provider):
 
 
 def _make_case(title, user_id="u1", current_turn=1):
-    case = Case(title=title, user_id=user_id, enterprise_id="org1", description="")
+    case = make_case(
+        title=title,
+        user_id=user_id,
+        enterprise_id="org1",
+        description="",
+    )
     # Bypass Pydantic cross-field validators to set current_turn directly.
     object.__setattr__(case, "current_turn", current_turn)
     return case

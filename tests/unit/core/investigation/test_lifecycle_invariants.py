@@ -12,7 +12,6 @@ pin the new mechanism.
 """
 
 import inspect
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,11 +43,11 @@ from faultmaven.modules.case.domain.models.problem import (
     KnowledgeResolution,
     ProblemVerification,
 )
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     earned_edge_refusal,
 )
+from tests.case_builders import investigating_case
 from tests.model_content import vetted
 
 
@@ -60,27 +59,18 @@ def _make_investigating_case() -> Case:
     unrelated to the invariant under test. Each test adds whatever it
     needs.
     """
-    case = Case(
+    return investigating_case(
         case_id="case_a1b2c3d4e5f6",
         title="Invariant test",
-        state=CaseState.INQUIRY,
         user_id="user_test",
         enterprise_id="org_test",
         description="Invariant test description",
-        problem_verification=ProblemVerification(
-            symptom_statement="Test symptom",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
-        ),
-        inquiry=InquiryData(thread_id="thread_test"),
+        symptom="Test symptom",
+        temporal_state="ongoing",
+        urgency="high",
+        confirm_after_build=True,
+        statement="Invariant test problem",
     )
-    case.inquiry.proposed_problem_statement = "Invariant test problem"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
-    return case
 
 
 # =============================================================================

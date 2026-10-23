@@ -31,18 +31,15 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseSeverity,
-    CaseState,
     EvidenceStance,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
     ProblemStatus,
-    ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
 
@@ -51,24 +48,13 @@ _MISSING_FILE_ID = "file_deadbeef0000"
 
 
 def _case(uploaded=None) -> Case:
-    case = Case(
+    return investigating_case(
         case_id="case_000000000001",
-        user_id="u",
-        enterprise_id="o",
-        title="t",
-        description="d",
-        state=CaseState.INVESTIGATING,
         current_turn=5,
-        inquiry=InquiryData(
-            proposed_problem_statement="X fails",
-            problem_statement_confirmed=True,
-        ),
-        problem_verification=ProblemVerification(
-            symptom_statement="X fails", severity=CaseSeverity.HIGH
-        ),
+        statement="X fails",
+        symptom="X fails",
+        uploaded_files=uploaded or [],
     )
-    case.uploaded_files = uploaded or []
-    return case
 
 
 def _file() -> UploadedFile:

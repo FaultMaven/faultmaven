@@ -16,7 +16,6 @@ from faultmaven.core.investigation.prompts.context_builder.history import (
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.models.api_models import TurnResponse
-from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import (
     NON_INVESTIGATIVE_OUTCOMES,
@@ -24,6 +23,7 @@ from faultmaven.modules.case.domain.models.turn import (
     TurnProgress,
 )
 from faultmaven.modules.case.domain.services import case_ui_adapter
+from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
 
@@ -42,19 +42,15 @@ def _turn(n, outcome, evidence=(), milestones=()):
 
 
 def _case(*turns):
-    case = Case(
+    # INQUIRY: neither property under test reads the state, and INVESTIGATING
+    # would need a confirmed problem statement the test does not care about.
+    return inquiry_case(
         case_id="case_aabb11223344",
         title="OOM",
         description="d",
-        user_id="u",
-        enterprise_id="o",
-        # INQUIRY: neither property under test reads the state, and INVESTIGATING
-        # would need a confirmed problem statement the test does not care about.
-        state=CaseState.INQUIRY,
         current_turn=len(turns),
+        turn_history=list(turns),
     )
-    case.turn_history = list(turns)
-    return case
 
 
 class TestOutcome:
