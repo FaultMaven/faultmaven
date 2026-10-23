@@ -37,6 +37,9 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
     # --cross-tenant-maintenance`), not by web workers on the RLS-enforced app
     # role (#770).
     try:
+        # Self-contained import: the container is composed in
+        # compose_application, not bound in this scope.
+        from faultmaven.container import container
         from faultmaven.providers.tenancy.factory import BUILTIN_MULTI as _BUILTIN_MULTI
         from faultmaven.providers.tenancy.factory import (
             requested_tenant_provider as _requested_tenant_provider,
@@ -46,6 +49,17 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
             logger.info(
                 "KB bootstrap skipped under multi-tenancy: seed the platform "
                 "KB pack via the kb_seed maintenance job (#770)."
+            )
+        elif getattr(container, "knowledge_vector_store", None) is None:
+            # No KB vector store was composed. That happens only under
+            # SKIP_SERVICE_CHECKS=true on standalone: cloud refuses a
+            # store-less boot, and a ChromaDB failure aborts composition. The
+            # service would index every runbook into nothing, so each one
+            # would fail with "0 chunks", and a changed pack would delete rows
+            # it cannot re-create. Write nothing to knowledge_items (#2171).
+            logger.warning(
+                "KB bootstrap skipped: SKIP_SERVICE_CHECKS=true composes no KB "
+                "vector store, so the pack cannot be indexed"
             )
         elif getattr(app.state, "knowledge_service", None):
             from faultmaven.bootstrap.kb_init import bootstrap_kb
