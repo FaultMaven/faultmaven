@@ -18,6 +18,7 @@ Usage:
 import json
 import os
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -155,6 +156,42 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
         text=True,
     )
     return result
+
+
+#: One template database per revision a test starts from (#2171). Under this
+#: process's data root, which is per process and removed at exit.
+TEMPLATE_DIR = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "migration-templates")
+#: revision -> the real ``upgrade`` that built its template.
+_template_builds: dict[str, subprocess.CompletedProcess] = {}
+
+
+def prepare_database(revision: str, database_url: str) -> None:
+    """Make ``database_url``'s file a clean database migrated to ``revision``.
+
+    For a test whose subject comes after that state. The first request for a
+    revision in this process runs the real ``upgrade <revision>`` (a fresh
+    ``python -m alembic``) into a new template file, and every request copies
+    it, so the schema, rows and ``alembic_version`` are that upgrade's.
+    A failed build is kept: every test that asks for the revision fails with
+    alembic's stderr, and the partial template is never copied.
+    """
+    template = os.path.join(TEMPLATE_DIR, f"{revision}.db")
+    if revision not in _template_builds:
+        os.makedirs(TEMPLATE_DIR, exist_ok=True)
+        _template_builds[revision] = run_alembic(
+            f"upgrade {revision}", f"sqlite:///{template}"
+        )
+    build = _template_builds[revision]
+    if build.returncode != 0:
+        raise RuntimeError(
+            f"upgrade {revision} failed building its template "
+            f"(exit {build.returncode}):\n{build.stderr}"
+        )
+    assert database_url.startswith("sqlite:///"), database_url
+    target = database_url.removeprefix("sqlite:///")
+    for stale in (f"{target}-wal", f"{target}-shm"):
+        Path(stale).unlink(missing_ok=True)
+    shutil.copyfile(template, target)
 
 
 def run_helper_script(args: str, database_url: str) -> subprocess.CompletedProcess:
@@ -295,6 +332,65 @@ def test_head_revision_constant_matches_filesystem():
     )
 
 
+class TestPrepareDatabase:
+    """``prepare_database``'s contract, which the setup calls below rely on."""
+
+    @pytest.fixture
+    def builds(self, monkeypatch, tmp_path) -> list[str]:
+        """A stand-in ``run_alembic`` whose ``upgrade <rev>`` creates one table
+        named ``rev`` (``rev_broken`` fails instead), with a template cache and
+        directory of this test's own. Returns the commands it ran."""
+        commands: list[str] = []
+
+        def build(command: str, database_url: str) -> subprocess.CompletedProcess:
+            commands.append(command)
+            revision = command.removeprefix("upgrade ")
+            if revision == "rev_broken":
+                return subprocess.CompletedProcess(
+                    [], 1, "", "FAILED: rev_broken\nboom"
+                )
+            conn = sqlite3.connect(database_url.removeprefix("sqlite:///"))
+            conn.execute(f'CREATE TABLE "{revision}" (id INTEGER)')
+            conn.close()
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        module = sys.modules[__name__]
+        monkeypatch.setattr(module, "run_alembic", build)
+        monkeypatch.setattr(module, "_template_builds", {})
+        monkeypatch.setattr(module, "TEMPLATE_DIR", str(tmp_path / "templates"))
+        return commands
+
+    def test_each_revision_is_built_once_per_process(self, builds, tmp_path):
+        db = tmp_path / "test.db"
+        for revision in ("rev_a", "rev_b", "rev_a"):
+            prepare_database(revision, f"sqlite:///{db}")
+            assert get_tables(str(db)) == [revision]
+        assert builds == ["upgrade rev_a", "upgrade rev_b"]
+
+    def test_a_failed_build_raises_with_its_stderr_and_stays_failed(
+        self, builds, tmp_path
+    ):
+        db = tmp_path / "test.db"
+        for _ in range(2):
+            with pytest.raises(RuntimeError) as raised:
+                prepare_database("rev_broken", f"sqlite:///{db}")
+            assert str(raised.value) == (
+                "upgrade rev_broken failed building its template (exit 1):\n"
+                "FAILED: rev_broken\nboom"
+            )
+        assert builds == ["upgrade rev_broken"]
+        assert not db.exists()
+
+    def test_a_stale_wal_and_shm_are_removed(self, builds, tmp_path):
+        db = tmp_path / "test.db"
+        for suffix in ("-wal", "-shm"):
+            Path(f"{db}{suffix}").write_bytes(b"left by an earlier test")
+        prepare_database("rev_a", f"sqlite:///{db}")
+        assert not Path(f"{db}-wal").exists()
+        assert not Path(f"{db}-shm").exists()
+        assert get_tables(str(db)) == ["rev_a"]
+
+
 class TestAlembicMigrationInfrastructure:
     """Test suite for Alembic migration infrastructure."""
 
@@ -310,7 +406,7 @@ class TestAlembicMigrationInfrastructure:
 
     def test_tables_created_correctly(self, clean_database, database_url):
         """All expected tables are created after migration."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         tables = get_tables(TEST_DB)
 
@@ -322,7 +418,7 @@ class TestAlembicMigrationInfrastructure:
 
     def test_migration_revision_correct(self, clean_database, database_url):
         """Migration revision matches expected head revision."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         revision = get_current_revision(database_url)
 
@@ -332,7 +428,7 @@ class TestAlembicMigrationInfrastructure:
 
     def test_migration_rollback(self, clean_database, database_url):
         """Migration can be rolled back successfully."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         tables_before = get_tables(TEST_DB)
         assert len(tables_before) == len(
@@ -351,7 +447,7 @@ class TestAlembicMigrationInfrastructure:
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Migration can be re-applied after rollback."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
         run_alembic("downgrade base", database_url)
 
         # Re-apply
@@ -466,8 +562,7 @@ class TestFunctionOnlyRevisions:
     def test_steps_down_to_its_parent_and_up_without_touching_a_table(
         self, clean_database, database_url, revision, parent
     ):
-        result = run_alembic(f"upgrade {revision}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(revision, database_url)
         before = get_tables(TEST_DB)
 
         result = run_alembic(f"downgrade {parent}", database_url)
@@ -493,7 +588,7 @@ class TestLlmUsageLedgerRevision:
     def test_downgrade_one_removes_exactly_the_ledger(
         self, clean_database, database_url
     ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         before = get_tables(TEST_DB)
         assert set(LLM_USAGE_TABLES) <= set(before)
 
@@ -538,7 +633,7 @@ class TestLlmUsageLedgerRevision:
     ):
         """``none`` and only ``none`` carries the empty id, and there is no
         fourth kind."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             with pytest.raises(sqlite3.IntegrityError, match="llm_usage_daily_"):
@@ -550,7 +645,7 @@ class TestLlmUsageLedgerRevision:
         self, clean_database, database_url
     ):
         """A job's call: metering must not refuse what the cap would."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             self._daily(conn, "none", "", actor="")
@@ -564,7 +659,7 @@ class TestLlmUsageLedgerRevision:
 
     def test_a_turn_row_goes_with_its_case(self, clean_database, database_url):
         """Q4: turn rows are deleted with their case; nothing else holds them."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -665,8 +760,7 @@ class TestConversionSourceStorageRefRevision:
     def test_only_the_conversion_source_paths_are_cleared(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {DEFINER_SEARCH_PATH_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(DEFINER_SEARCH_PATH_REVISION, database_url)
         self._seed()
         seeded = {file_id: ref for file_id, _, ref, _ in self.SEED}
         assert self._refs() == seeded
@@ -787,8 +881,7 @@ class TestProblemStatusRevision:
     def test_upgrade_moves_the_key_retires_the_queue_and_keeps_the_links(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {CONVERSION_SOURCE_REF_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(CONVERSION_SOURCE_REF_REVISION, database_url)
         self._seed()
 
         result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
@@ -838,8 +931,7 @@ class TestProblemStatusRevision:
     def test_downgrade_restores_exactly_what_it_moved(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {CONVERSION_SOURCE_REF_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(CONVERSION_SOURCE_REF_REVISION, database_url)
         self._seed()
         before_progress = self._progress()
         result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
@@ -992,8 +1084,7 @@ class TestRunbookSeverityRevision:
     def test_upgrade_admits_info_and_keeps_rows_and_indexes(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(PROBLEM_STATUS_REVISION, database_url)
         self._seed()
         rows, indexes = self._drafts(), self._indexes()
         conn = self._connect()
@@ -1025,8 +1116,7 @@ class TestRunbookSeverityRevision:
     def test_downgrade_refuses_while_an_info_row_exists(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(RUNBOOK_SEVERITY_REVISION, database_url)
         self._seed()
         conn = self._connect()
         try:
@@ -1065,8 +1155,7 @@ class TestRunbookSeverityRevision:
         unlike 007's: dropping a table runs ON DELETE actions only for rows
         that REFERENCE it, and nothing does. If a table ever gains such a key,
         this fails and the rebuild needs 007's guard."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
         referencing = []
         for (table,) in query_rows(
             TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -1167,8 +1256,7 @@ class TestDropCaseCheckpointsRevision:
         )
 
     def test_upgrade_drops_the_table(self, clean_database, database_url):
-        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(RUNBOOK_SEVERITY_REVISION, database_url)
         assert self._schema(), "positive control: 008 has the table"
 
         result = run_alembic(f"upgrade {DROP_CASE_CHECKPOINTS_REVISION}", database_url)
@@ -1178,8 +1266,7 @@ class TestDropCaseCheckpointsRevision:
     def test_downgrade_recreates_the_table_as_the_parent_had_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(RUNBOOK_SEVERITY_REVISION, database_url)
         parent = self._schema()
         assert [name for kind, name, _ in parent if kind == "index"] == [
             "ix_case_checkpoints_case_id",
@@ -1204,8 +1291,7 @@ class TestDropCaseCheckpointsRevision:
         """Why the drop needs no ``PRAGMA foreign_keys`` guard: dropping a
         table runs ON DELETE actions only for rows that REFERENCE it, and at
         the parent revision nothing does."""
-        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(RUNBOOK_SEVERITY_REVISION, database_url)
         referencing = []
         for (table,) in query_rows(
             TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -1260,8 +1346,7 @@ class TestTurnReceiptsRevision:
     def test_upgrade_adds_the_table_and_downgrade_removes_only_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {DROP_CASE_CHECKPOINTS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(DROP_CASE_CHECKPOINTS_REVISION, database_url)
         parent = get_tables(TEST_DB)
         assert self._schema() == []
 
@@ -1284,7 +1369,7 @@ class TestTurnReceiptsRevision:
     def test_the_key_leads_with_the_enterprise(self, clean_database, database_url):
         """RLS scopes the table on the enterprise, so the unique key leads with
         it (the ``turn_usage`` lesson, data-model.md)."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         pk = sorted(
             (row[5], row[1])
             for row in query_rows(TEST_DB, 'PRAGMA table_info("turn_receipts")')
@@ -1347,8 +1432,7 @@ class TestRemoveKnowledgeSuggestionsRevision:
         )
 
     def test_upgrade_drops_the_table_and_the_column(self, clean_database, database_url):
-        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(TURN_RECEIPTS_REVISION, database_url)
         assert self._suggestions_schema(), "positive control: 010 has the table"
         assert "source_suggestion_id" in [c[0] for c in self._items_columns()]
         parent_items_indexes = self._items_indexes()
@@ -1371,8 +1455,7 @@ class TestRemoveKnowledgeSuggestionsRevision:
     def test_downgrade_recreates_both_as_the_parent_had_them(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(TURN_RECEIPTS_REVISION, database_url)
         parent_suggestions = self._suggestions_schema()
         assert [name for kind, name, _ in parent_suggestions if kind == "index"] == [
             "ix_knowledge_suggestions_case_id",
@@ -1408,8 +1491,7 @@ class TestRemoveKnowledgeSuggestionsRevision:
         """Why the drop needs no ``PRAGMA foreign_keys`` guard: dropping a
         table runs ON DELETE actions only for rows that REFERENCE it, and at
         the parent revision nothing does."""
-        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(TURN_RECEIPTS_REVISION, database_url)
         referencing = []
         for (table,) in query_rows(
             TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -1490,8 +1572,7 @@ class TestCaseDriverRevision:
     def test_upgrade_adds_the_column_and_downgrade_removes_only_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(REMOVE_SUGGESTIONS_REVISION, database_url)
         tables = get_tables(TEST_DB)
         indexes = self._cases_indexes()
         foreign_keys = self._cases_foreign_keys()
@@ -1522,7 +1603,7 @@ class TestCaseDriverRevision:
     ):
         """ON DELETE SET NULL on the driver: the creator drives again, and the
         case row survives."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute("PRAGMA foreign_keys=ON")
@@ -1638,10 +1719,7 @@ class TestCaseCreatorRestrictRevision:
     def test_upgrade_adds_the_trigger_and_downgrade_removes_only_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(
-            f"upgrade {ADMIN_CASE_METADATA_DRIVER_REVISION}", database_url
-        )
-        assert result.returncode == 0, result.stderr
+        prepare_database(ADMIN_CASE_METADATA_DRIVER_REVISION, database_url)
         tables, triggers = get_tables(TEST_DB), self._triggers()
         assert self.TRIGGER not in triggers
         assert self.NULLING_TRIGGER not in triggers
@@ -1676,7 +1754,7 @@ class TestCaseCreatorRestrictRevision:
     ):
         """The trigger holds whether or not the connection turned foreign keys
         on; the driver's ``ON DELETE SET NULL`` is the key's, so it needs them."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
@@ -1703,7 +1781,7 @@ class TestCaseCreatorRestrictRevision:
         implicit delete that fires no delete trigger with ``recursive_triggers``
         off (the sqlite3 default). The key's ``SET NULL`` still runs, as an
         UPDATE of ``cases``, and that is what is refused."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute("PRAGMA foreign_keys=ON")
@@ -1731,7 +1809,7 @@ class TestCaseCreatorRestrictRevision:
     ):
         """``fm-reassign-cases`` writes one set creator over another: the
         nulling guard lets it through."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute("PRAGMA foreign_keys=ON")
@@ -1753,7 +1831,7 @@ class TestCaseCreatorRestrictRevision:
     def test_a_bulk_delete_that_takes_a_creator_is_refused_whole(
         self, clean_database, database_url
     ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute("PRAGMA foreign_keys=ON")
@@ -1778,7 +1856,7 @@ class TestCaseCreatorRestrictRevision:
     def test_deleting_the_enterprise_still_removes_its_cases_and_users(
         self, clean_database, database_url
     ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute("PRAGMA foreign_keys=ON")
@@ -2012,8 +2090,7 @@ class TestNoEmailDerivedNamesRevision:
     def test_upgrade_relabels_only_the_derived_names(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {CASE_CREATOR_RESTRICT_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(CASE_CREATOR_RESTRICT_REVISION, database_url)
         self._seed()
         tables = get_tables(TEST_DB)
 
@@ -2030,12 +2107,7 @@ class TestNoEmailDerivedNamesRevision:
     def test_downgrade_restores_nothing_and_a_rerun_changes_nothing(
         self, clean_database, database_url
     ):
-        assert (
-            run_alembic(
-                f"upgrade {CASE_CREATOR_RESTRICT_REVISION}", database_url
-            ).returncode
-            == 0
-        )
+        prepare_database(CASE_CREATOR_RESTRICT_REVISION, database_url)
         self._seed()
         assert (
             run_alembic(
@@ -2100,8 +2172,7 @@ class TestDropInvestigationSessionsRevision:
         )
 
     def test_upgrade_drops_the_table(self, clean_database, database_url):
-        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(NO_EMAIL_DERIVED_NAMES_REVISION, database_url)
         assert self._schema(), "positive control: 016 has the table"
         tables = get_tables(TEST_DB)
 
@@ -2115,8 +2186,7 @@ class TestDropInvestigationSessionsRevision:
     def test_downgrade_recreates_the_table_as_the_parent_had_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(NO_EMAIL_DERIVED_NAMES_REVISION, database_url)
         parent = self._schema()
         assert [name for kind, name, _ in parent if kind == "index"] == [
             "ix_investigation_sessions_case_id",
@@ -2162,8 +2232,7 @@ class TestDropInvestigationSessionsRevision:
         """The four ``sessions:*`` permissions and their nine grants are deleted
         by the upgrade, nothing else in the RBAC seed moves, and the downgrade
         re-seeds exactly the parent's rows."""
-        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(NO_EMAIL_DERIVED_NAMES_REVISION, database_url)
         parent_permissions, parent_grants = self._session_rbac()
         assert {
             permission_id: (resource, action, description)
@@ -2228,8 +2297,7 @@ class TestDropInvestigationSessionsRevision:
         """Why the drop needs no ``PRAGMA foreign_keys`` guard: dropping a
         table runs ON DELETE actions only for rows that REFERENCE it, and at
         the parent revision nothing does."""
-        result = run_alembic(f"upgrade {NO_EMAIL_DERIVED_NAMES_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(NO_EMAIL_DERIVED_NAMES_REVISION, database_url)
         referencing = []
         for (table,) in query_rows(
             TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -2440,12 +2508,7 @@ class TestRunbookDraftsInTheDatabaseRevision:
     def test_upgrade_fills_discards_and_releases(
         self, clean_database, database_url, tmp_path
     ):
-        assert (
-            run_alembic(
-                f"upgrade {DROP_INVESTIGATION_SESSIONS_REVISION}", database_url
-            ).returncode
-            == 0
-        )
+        prepare_database(DROP_INVESTIGATION_SESSIONS_REVISION, database_url)
         self._seed()
         work = self._workdir(tmp_path, with_tree=True)
 
@@ -2486,12 +2549,7 @@ class TestRunbookDraftsInTheDatabaseRevision:
     def test_without_the_tree_the_upgrade_refuses_and_changes_nothing(
         self, clean_database, database_url, tmp_path
     ):
-        assert (
-            run_alembic(
-                f"upgrade {DROP_INVESTIGATION_SESSIONS_REVISION}", database_url
-            ).returncode
-            == 0
-        )
+        prepare_database(DROP_INVESTIGATION_SESSIONS_REVISION, database_url)
         self._seed()
         work = self._workdir(tmp_path, with_tree=False)
 
@@ -2518,12 +2576,7 @@ class TestRunbookDraftsInTheDatabaseRevision:
     ):
         """The guard fires only when a draft would be LOST: a database whose
         live drafts are all published migrates from anywhere."""
-        assert (
-            run_alembic(
-                f"upgrade {DROP_INVESTIGATION_SESSIONS_REVISION}", database_url
-            ).returncode
-            == 0
-        )
+        prepare_database(DROP_INVESTIGATION_SESSIONS_REVISION, database_url)
         self._seed(drafts=self.DRAFTS[:1] + self.DRAFTS[-1:])
         work = self._workdir(tmp_path, with_tree=False)
 
@@ -2540,12 +2593,7 @@ class TestRunbookDraftsInTheDatabaseRevision:
     def test_downgrade_restores_a_nullable_file_path_and_drops_the_text(
         self, clean_database, database_url, tmp_path
     ):
-        assert (
-            run_alembic(
-                f"upgrade {DROP_INVESTIGATION_SESSIONS_REVISION}", database_url
-            ).returncode
-            == 0
-        )
+        prepare_database(DROP_INVESTIGATION_SESSIONS_REVISION, database_url)
         self._seed()
         work = self._workdir(tmp_path, with_tree=True)
         assert (
@@ -2985,8 +3033,7 @@ class TestVerifiedByIsTheDisplayNameRevision:
         return dict(query_rows(TEST_DB, "SELECT id, content FROM conversion_drafts"))
 
     def _migrate_seeded(self, database_url):
-        result = run_alembic(f"upgrade {DRAFTS_IN_THE_DATABASE_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database(DRAFTS_IN_THE_DATABASE_REVISION, database_url)
         self._seed()
         return run_alembic(f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url)
 
@@ -3301,10 +3348,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
     def test_upgrade_retires_the_data_permissions_and_nothing_else(
         self, clean_database, database_url
     ):
-        result = run_alembic(
-            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
-        )
-        assert result.returncode == 0, result.stderr
+        prepare_database(VERIFIED_BY_DISPLAY_NAME_REVISION, database_url)
         parent_permissions, parent_grants = self._data_rbac()
         assert {
             permission_id: (resource, action, description)
@@ -3367,10 +3411,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
     def test_downgrade_restores_exactly_the_parent_rows(
         self, clean_database, database_url
     ):
-        result = run_alembic(
-            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
-        )
-        assert result.returncode == 0, result.stderr
+        prepare_database(VERIFIED_BY_DISPLAY_NAME_REVISION, database_url)
         parent = self._all_rbac()
         assert len(parent[0]) == 10 and len(parent[1]) == 17, "positive control"
         assert self._descriptions() == self.BASELINE_DESCRIPTIONS
@@ -3398,10 +3439,7 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         downgrade, which re-seeds only the baseline's grants, does not bring it
         back."""
         custom = "c0570000-0000-4000-8000-0000000000cc"
-        result = run_alembic(
-            f"upgrade {VERIFIED_BY_DISPLAY_NAME_REVISION}", database_url
-        )
-        assert result.returncode == 0, result.stderr
+        prepare_database(VERIFIED_BY_DISPLAY_NAME_REVISION, database_url)
         conn = sqlite3.connect(TEST_DB)
         try:
             conn.execute(
@@ -3506,7 +3544,7 @@ class TestRbacSeed:
 
     def test_system_roles_seeded_with_stable_ids(self, clean_database, database_url):
         """The three system roles exist with the IDs SYSTEM_ROLE_IDS promises."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         rows = query_rows(
             TEST_DB, "SELECT role_id, name, scope, is_system_role FROM roles"
@@ -3524,7 +3562,7 @@ class TestRbacSeed:
 
     def test_permissions_seeded_match_enum(self, clean_database, database_url):
         """Every Permission in the model is seeded as a (resource, action) row."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         rows = query_rows(TEST_DB, "SELECT resource, action FROM permissions")
         seeded = {f"{resource}:{action}" for resource, action in rows}
@@ -3533,7 +3571,7 @@ class TestRbacSeed:
 
     def test_role_permission_grants_match_model(self, clean_database, database_url):
         """role_permissions reproduces ROLE_PERMISSIONS exactly."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         rows = query_rows(
             TEST_DB,
@@ -3563,7 +3601,7 @@ class TestRbacSeed:
         the property that matters: a re-upgrade lands on exactly the seed and not
         a doubled one.
         """
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
 
         result = run_alembic("downgrade base", database_url)
@@ -3598,8 +3636,7 @@ class TestStandaloneTenancySeed:
     def test_the_default_enterprise_and_team_are_seeded(
         self, clean_database, database_url
     ):
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         from faultmaven.config import constants
 
@@ -3620,7 +3657,7 @@ class TestStandaloneTenancySeed:
         self, clean_database, database_url
     ):
         """``teams.organization_id`` is gone: a team may span cost centres."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         columns = {
             row[1]
@@ -3671,7 +3708,7 @@ class TestHelperScript:
     def test_verbose_reaches_the_commands_that_accept_it(
         self, clean_database, database_url, args
     ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        prepare_database("head", database_url)
 
         result = run_helper_script(args, database_url)
 
@@ -3722,7 +3759,7 @@ class TestDatabaseSchemaIntegrity:
 
     def test_cases_table_structure(self, clean_database, database_url):
         """Cases table has correct structure."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
@@ -3754,7 +3791,7 @@ class TestDatabaseSchemaIntegrity:
 
     def test_foreign_keys_exist(self, clean_database, database_url):
         """Foreign key relationships are created."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
@@ -3769,7 +3806,7 @@ class TestDatabaseSchemaIntegrity:
 
     def test_config_overrides_structure(self, clean_database, database_url):
         """config_overrides table has correct structure (Phase 2: + category/source)."""
-        run_alembic("upgrade head", database_url)
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
@@ -3804,8 +3841,7 @@ class TestOperatorAccessAuditAppendOnly:
         return cursor.lastrowid
 
     def test_update_and_delete_are_rejected(self, clean_database, database_url):
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -3834,8 +3870,7 @@ class TestOperatorAccessAuditAppendOnly:
     def test_unknown_action_is_rejected(self, clean_database, database_url):
         """A third, un-enumerated action would be an access category nobody
         classified as either metadata or content."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -3857,8 +3892,7 @@ class TestOperatorAccessAuditAppendOnly:
         operator who had ever been audited would fail. The column is
         deliberately not a foreign key for that reason; this pins it.
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -3932,8 +3966,7 @@ class TestOperatorAccessGrantsImmutability:
     def test_justification_columns_cannot_be_rewritten(
         self, clean_database, database_url, column
     ):
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -3955,8 +3988,7 @@ class TestOperatorAccessGrantsImmutability:
         which removes the operator's ability to end their own access early — a
         strictly worse posture than the one it was meant to enforce.
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -3983,8 +4015,7 @@ class TestOperatorAccessGrantsImmutability:
 
     def test_delete_is_rejected(self, clean_database, database_url):
         """A grant is the evidence of why an access was authorised."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4023,8 +4054,7 @@ class TestOperatorAccessGrantsImmutability:
         life for the remainder of its TTL. Nothing above the database would stop
         that; the repository's read-modify-write guard only covers its own path.
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4060,8 +4090,7 @@ class TestOperatorAccessGrantsImmutability:
         denial could be flipped into, because the rule is "denial is terminal",
         not "denial cannot become approved".
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4088,8 +4117,7 @@ class TestOperatorAccessGrantsImmutability:
         customer-approval workstream a schema change rather than a transition —
         which is the whole reason the state machine ships now.
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4123,8 +4151,7 @@ class TestOperatorAccessGrantsImmutability:
         to end their own access early — a strictly worse posture than the one the
         guard is meant to enforce.
         """
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4146,8 +4173,7 @@ class TestOperatorAccessGrantsImmutability:
     def test_unknown_approval_state_is_rejected(self, clean_database, database_url):
         """A state outside the vocabulary would be silently non-live — or worse,
         silently live — depending on which predicate read it."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
@@ -4165,8 +4191,7 @@ class TestOperatorAccessGrantsImmutability:
 
     def test_expiry_must_be_after_creation(self, clean_database, database_url):
         """A grant whose window has already closed at creation is not a window."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
+        prepare_database("head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         try:
