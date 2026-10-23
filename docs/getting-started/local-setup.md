@@ -15,8 +15,8 @@ For the quickest setup, use [Docker Compose](../../README.md#quick-start) instea
 | Component | Requirement |
 |-----------|-------------|
 | **API Backend** | Python 3.11+ |
-| **Dashboard** | Node.js 18+, npm or pnpm |
-| **Copilot** | Node.js 18+, pnpm |
+| **Dashboard** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
+| **Copilot** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
 | **LLM Provider** | API key (OpenAI, Anthropic, etc.) or Ollama |
 
 ---
