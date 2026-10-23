@@ -75,6 +75,26 @@ pytest -v
 pytest -k "test_pattern"
 ```
 
+### Line-level coverage comparisons
+
+The coverage total is reliable at the default settings, but the per-line data is not. SQLAlchemy's async engine switches greenlets on every database call, and coverage misattributes the lines that run across those switches (#2206). It records lines against the wrong file and misses real ones. Here is a default run of `tests/integration/modules/knowledge` against a greenlet-aware one:
+
+- 118 lines recorded that the greenlet-aware run says never ran;
+- 24 lines missed that did run;
+- 8 files affected.
+
+So whenever *which lines* are covered decides something, opt in. That includes a refactor's "no coverage decrease" set comparison and a review's "is this line covered". First confirm the setting is in effect, then run:
+
+```bash
+export FM_COVERAGE_CONCURRENCY=greenlet
+python -c "import coverage; print(coverage.Coverage().config.concurrency)"   # ['thread', 'greenlet']
+pytest tests/integration/modules/knowledge --cov=faultmaven --cov-report=
+```
+
+Both sides of a comparison must use the same setting. A line recorded past the end of its file is one visible symptom of the problem, but its absence proves nothing: the run above has none and is still wrong.
+
+CI leaves it off. Greenlet tracking cost about +40% to +50% on database-heavy tests, and CI's only coverage consumer is the `--fail-under` threshold, which the misattribution cannot move.
+
 ### Writing Your First Test
 
 ```python

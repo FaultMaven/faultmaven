@@ -372,6 +372,9 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["faultmaven"]
+# Opt in with FM_COVERAGE_CONCURRENCY=greenlet for line-level comparisons: without it, lines run across
+# SQLAlchemy's async greenlet switches are misattributed (#2206). The default ("thread") is what CI runs.
+concurrency = ["thread", "${FM_COVERAGE_CONCURRENCY-thread}"]
 omit = [
     "*/tests/*",
     "*/test_*.py",
