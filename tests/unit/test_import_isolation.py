@@ -5,7 +5,9 @@ importing them costs seconds and hundreds of MB resident. They belong to
 optional cloud features, but eager package ``__init__`` re-exports used to drag
 them into paths that have nothing to do with those features — most visibly the
 case persistence layer, where a single `save()` pulled the whole ML stack
-(#849).
+(#849). The migration path is held to the same rule for FaultMaven's own heavy
+modules: two re-exporting package ``__init__`` files made every `alembic`
+command that runs `env.py` load the API schemas and the job service (#2187).
 
 These are inverted import tests: they assert what must NOT be loaded. Each runs
 in a SUBPROCESS on purpose. `sys.modules` is process-global and by the time any
@@ -153,6 +155,42 @@ class TestCaseWritePathStaysLight:
             "importing faultmaven.core.investigation.terminal_transitions pulled "
             "in milestone_engine, so the package __init__ re-exports eagerly "
             "again. Keep them lazy (PEP 562 __getattr__)."
+        )
+
+
+# The faultmaven modules `alembic/env.py` imports before it runs a migration.
+ALEMBIC_ENV_IMPORTS = (
+    "faultmaven.infrastructure.persistence.models",
+    "faultmaven.config.settings",
+    "faultmaven.cli._database_gate",
+)
+
+# What the `faultmaven.infrastructure` and `persistence` package __init__ files
+# used to re-export, and the API schema module those re-exports dragged in. A
+# migration uses none of them (#2187).
+NOT_ON_THE_MIGRATION_PATH = (
+    "faultmaven.infrastructure.jobs",
+    "faultmaven.infrastructure.base_client",
+    "faultmaven.models.api",
+    "faultmaven.infrastructure.persistence.database",
+)
+
+
+@pytest.mark.unit
+class TestMigrationPathStaysLight:
+    """`alembic/env.py`'s imports must not load the job, API or engine modules."""
+
+    @pytest.fixture(scope="class")
+    def loaded(self) -> set:
+        return _modules_after_importing(*ALEMBIC_ENV_IMPORTS)
+
+    @pytest.mark.parametrize("module", NOT_ON_THE_MIGRATION_PATH)
+    def test_env_py_imports_do_not_load(self, module: str, loaded: set):
+        assert module not in loaded, (
+            f"{module!r} is imported by alembic/env.py's imports "
+            f"({' + '.join(ALEMBIC_ENV_IMPORTS)}). A package __init__ on that "
+            "path is re-exporting again; import the name from the module that "
+            "defines it. See #2187."
         )
 
 
