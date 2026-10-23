@@ -542,7 +542,7 @@ jobs:
           # three things at once — this step's working directory,
           # PYTHONPATH, and the editable install's own finder — and their
           # precedence is a property of setuptools, not of this workflow.
-          # Measured against the pinned setuptools 84.0.0, `_EditableFinder`
+          # Measured against the pinned setuptools 84.2.1, `_EditableFinder`
           # is appended AFTER `PathFinder` in `sys.meta_path`, so cwd and
           # PYTHONPATH both win and all three agree; a setuptools that
           # registered it first, or an install step that quietly failed,

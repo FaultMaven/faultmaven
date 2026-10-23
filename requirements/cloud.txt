@@ -165,7 +165,7 @@ fastapi==0.136.0
     # via faultmaven (pyproject.toml)
 fastuuid==0.14.0
     # via litellm
-filelock==3.28.0
+filelock==4.2.4
     # via
     #   huggingface-hub
     #   tldextract
@@ -684,7 +684,7 @@ sentence-transformers==6.1.0
     # via faultmaven (pyproject.toml)
 sentry-sdk==2.58.0
     # via opik
-setuptools==84.0.0
+setuptools==84.2.1
     # via
     #   faultmaven (pyproject.toml)
     #   spacy

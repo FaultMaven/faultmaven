@@ -119,7 +119,7 @@ fakeredis==2.35.1
     # via faultmaven (pyproject.toml)
 fastapi==0.136.0
     # via faultmaven (pyproject.toml)
-filelock==3.28.0
+filelock==4.2.4
     # via
     #   huggingface-hub
     #   torch
@@ -551,7 +551,7 @@ scipy==1.17.1
     #   sentence-transformers
 sentence-transformers==6.1.0
     # via faultmaven (pyproject.toml)
-setuptools==84.0.0
+setuptools==84.2.1
     # via
     #   faultmaven (pyproject.toml)
     #   torch
