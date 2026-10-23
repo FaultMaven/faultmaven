@@ -89,5 +89,7 @@ updates:
         update-types: ["major"]
     commit-message:
       prefix: "chore(deps)"
-    labels:
-      - "dependencies"
+    # No `labels:`. A named label that does not exist in the repository is
+    # silently dropped, and this repository has no `dependencies` label;
+    # left unset, Dependabot creates and applies its defaults
+    # (`dependencies`, `github_actions`).
