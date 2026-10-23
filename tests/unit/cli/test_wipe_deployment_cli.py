@@ -1040,3 +1040,26 @@ def test_the_redis_target_line_omits_the_password():
     target = wd._redis_target(_Client())
     assert target == "faultmaven-redis-master:6379/0"
     assert "s3cret" not in target
+
+
+@pytest.mark.parametrize("alembic_config", ["unset", "outside-ini", "missing-file"])
+def test_the_expected_head_is_the_repositorys_single_head(
+    alembic_config, tmp_path, monkeypatch
+):
+    """The real resolution, not a stub: the project root's ``alembic.ini`` and
+    scripts, whatever ``ALEMBIC_CONFIG`` says (#2212)."""
+    import shutil
+
+    from faultmaven.bootstrap.data_init import get_project_root
+    from tests.integration.test_alembic_migrations import HEAD_REVISION
+
+    monkeypatch.delenv("PROJECT_ROOT", raising=False)
+    if alembic_config == "unset":
+        monkeypatch.delenv("ALEMBIC_CONFIG", raising=False)
+    elif alembic_config == "outside-ini":
+        shutil.copyfile(get_project_root() / "alembic.ini", tmp_path / "alembic.ini")
+        monkeypatch.setenv("ALEMBIC_CONFIG", str(tmp_path / "alembic.ini"))
+    else:
+        monkeypatch.setenv("ALEMBIC_CONFIG", str(tmp_path / "missing.ini"))
+
+    assert wd._alembic_head() == HEAD_REVISION
