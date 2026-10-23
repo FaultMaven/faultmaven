@@ -57,6 +57,7 @@ Key modules to test: auth, case, knowledge, agent, evidence, api-gateway, invest
 - Maintain ≥71% baseline, aim for 80%+ on business logic
 - Focus on critical business logic first
 - Use `pytest --cov=faultmaven --cov-report=html` to identify gaps
+- Comparing which lines tests cover (a refactor's "no coverage decrease", a review's "is this line covered"): run both sides with `FM_COVERAGE_CONCURRENCY=greenlet`, confirm the setting took effect on each side, and check the raw data for lines past the end of their file. Without it, per-line data over async database code is misattributed (`docs/development/testing/README.md` §Line-level coverage comparisons)
 
 ### 5. API Validation
 - Validate response schemas, status codes, required fields, data types
