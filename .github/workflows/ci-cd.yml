@@ -450,7 +450,6 @@ jobs:
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \
-            --cov-report=xml \
             --cov-report=term-missing \
             -m "not cloud and not benchmark and not performance" \
             --ignore=tests/performance \
@@ -473,13 +472,6 @@ jobs:
       - name: Check Coverage Threshold
         run: |
           coverage report --fail-under=50
-
-      - name: Upload Standalone Coverage
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
-        with:
-          file: ./coverage.xml
-          flags: standalone
-          name: standalone-coverage
 
   # ============================================================================
   # CLOUD TESTING
@@ -632,7 +624,6 @@ jobs:
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \
-            --cov-report=xml \
             --cov-report=term-missing \
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
@@ -673,13 +664,6 @@ jobs:
       - name: Check Coverage Threshold
         run: |
           coverage report --fail-under=50
-
-      - name: Upload Cloud Coverage
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
-        with:
-          file: ./coverage.xml
-          flags: cloud
-          name: cloud-coverage
 
   # ============================================================================
   # POSTGRESQL INTEGRATION
