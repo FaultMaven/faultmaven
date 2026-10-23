@@ -175,6 +175,9 @@ def _build_template(revision: str) -> None:
     """Run the real ``upgrade <revision>`` into a new template and record it."""
     template = os.path.join(TEMPLATE_DIR, f"{revision}.db")
     os.makedirs(TEMPLATE_DIR, exist_ok=True)
+    # A build killed by a signal, or one that reached another revision, left a
+    # file. SQLite itself discards a stale journal beside an empty one.
+    Path(template).unlink(missing_ok=True)
     build = run_alembic(f"upgrade {revision}", f"sqlite:///{template}")
     if build.returncode != 0:
         failure = (
@@ -368,20 +371,24 @@ class TestPrepareDatabase:
         """A stand-in ``run_alembic`` whose ``upgrade <rev>`` reaches ``rev``
         (``head`` reaches ``rev_b`` and ``rev_short`` reaches ``rev_a``) and
         creates a table named after it; ``rev_broken`` fails and ``rev_killed``
-        dies by a signal. The caches and template directory are this test's
-        own. Returns the commands it ran."""
+        dies by a signal partway, leaving a file. Every build must start from
+        no file, as an upgrade from a clean database does. The caches and
+        template directory are this test's own. Returns the commands it ran."""
         commands: list[str] = []
 
         def build(command: str, database_url: str) -> subprocess.CompletedProcess:
             commands.append(command)
             revision = command.removeprefix("upgrade ")
             argv = ["python", "-m", "alembic", *command.split()]
+            path = database_url.removeprefix("sqlite:///")
+            assert not os.path.exists(path), f"{command} ran over a leftover {path}"
             if revision == "rev_broken":
                 return subprocess.CompletedProcess(argv, 1, "partial", "FAILED: boom")
             if revision == "rev_killed":
+                sqlite3.connect(path).close()
                 return subprocess.CompletedProcess(argv, -9, "", "")
             reached = {"head": "rev_b", "rev_short": "rev_a"}.get(revision, revision)
-            conn = sqlite3.connect(database_url.removeprefix("sqlite:///"))
+            conn = sqlite3.connect(path)
             conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32))")
             conn.execute("INSERT INTO alembic_version VALUES (?)", (reached,))
             conn.execute(f'CREATE TABLE "{reached}" (id INTEGER)')
@@ -416,8 +423,9 @@ class TestPrepareDatabase:
 
     def test_a_template_at_another_revision_is_refused(self, builds, tmp_path):
         url = f"sqlite:///{tmp_path / 'test.db'}"
-        with pytest.raises(AssertionError, match="upgrade rev_short reached rev_a"):
-            prepare_database("rev_short", url)
+        for _ in range(2):  # the second build starts clean, not on the first's file
+            with pytest.raises(AssertionError, match="upgrade rev_short reached rev_a"):
+                prepare_database("rev_short", url)
         prepare_database("rev_b", url)
         os.chmod(_templates["rev_b"], 0o644)
         conn = sqlite3.connect(_templates["rev_b"])
