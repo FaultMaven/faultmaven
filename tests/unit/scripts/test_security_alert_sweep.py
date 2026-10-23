@@ -664,6 +664,7 @@ def test_a_repos_line_reads_its_newest_completed_scheduled_audit(
         f"scheduled audit: {DASHBOARD} {shown}",
         f"scheduled audit: {COPILOT} success 1.00d ago",
         f"scheduled audit: {WEBSITE} success 1.00d ago",
+        f"scheduled audit: {CORE} success 1.00d ago",
     ]
     assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
 
@@ -730,10 +731,10 @@ def test_failing_audits_move_only_the_queue_lines_new_count(mod):
     gh = fake(mod, CORE, dependabot(CORE, 1))
     gh.errors.update({f"{repo}/{RUNS}": NOT_FOUND for repo in mod.AUDITED})
     report = mod.sweep(gh, NOW)
-    assert len(scheduled(report)) == 3
+    assert len(scheduled(report)) == 4
     assert summary(report).endswith(" · unknown 0 · disabled 0 · unavailable 0")
     assert summary(report, "queue: ").endswith(
-        "unknown 0, unavailable 0, scheduled audits failing 3"
+        "unknown 0, unavailable 0, scheduled audits failing 4"
     )
 
 
@@ -745,12 +746,13 @@ def test_a_repo_not_known_public_is_counted_and_neither_read_nor_named(mod):
     assert scheduled(report) == [
         f"scheduled audit: {COPILOT} success 1.00d ago",
         f"scheduled audit: {WEBSITE} success 1.00d ago",
+        f"scheduled audit: {CORE} success 1.00d ago",
         "scheduled audit: 1 repo not known public",
     ]
     assert DASHBOARD not in report and "failure" not in report
     assert summary(report, "queue: ").endswith(", scheduled audits failing 1")
     gh.errors["repo list"] = "HTTP 502: Bad Gateway"  # no repo is known public
-    hidden = ["scheduled audit: 3 repos not known public"]
+    hidden = ["scheduled audit: 4 repos not known public"]
     assert scheduled(mod.sweep(gh, NOW)) == hidden
     reads = [call[-1] for call in gh.calls if "scheduled-audit" in call[-1]]
     assert reads and not [read for read in reads if DASHBOARD in read]

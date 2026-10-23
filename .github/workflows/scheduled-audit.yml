@@ -1,0 +1,51 @@
+name: Scheduled Dependency Audit
+
+# =============================================================================
+# DAILY AUDIT OF MAIN (#2218)
+# =============================================================================
+# Security Scanning (ci-cd.yml) audits the lockfiles a pull request or a merge
+# group carries, and a main push the merge queue already passed skips it. So
+# without this run, an advisory published against main's unchanged lockfiles
+# first turns red on whichever pull request comes next, whatever it changed:
+# PYSEC-2026-4322 (brotli, #2216) did, and no Dependabot alert fires for an
+# advisory with no GHSA id. This audits main every day through the same
+# audit-locked-deps action, so it uses the gate's pin and ignores by
+# construction.
+#
+# It fails when pip-audit finds an advisory or cannot run: a scheduled run that
+# never audited must not read as clean. The Security-tab sweep
+# (scripts/security_alert_sweep.py) reports this workflow's latest scheduled
+# run every round, and counts it as failing when it failed or is over two days
+# old. GitHub may also email a failed scheduled run to whoever last edited the
+# cron line, under that account's notification settings.
+#
+# A dispatch audits the ref it is started from; only the schedule audits main.
+# =============================================================================
+
+on:
+  schedule:
+    - cron: '37 6 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/scheduled-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Scheduled Dependency Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Audit locked dependencies (pip-audit)
+        uses: ./.github/actions/audit-locked-deps
