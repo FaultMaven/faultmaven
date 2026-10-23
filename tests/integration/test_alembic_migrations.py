@@ -7,9 +7,10 @@ Tests verify:
 - Re-application after rollback
 - Helper script commands
 
-The suite is self-contained: it migrates a throwaway SQLite file via
-``sys.executable -m alembic``. No running services, no environment variables,
-and no ``alembic`` on PATH are required.
+The suite is self-contained: it migrates a throwaway SQLite file with
+``sys.executable -m alembic`` commands, each run by a child forked from one warm
+interpreter (``alembic_forkserver``). No running services, no environment
+variables, and no ``alembic`` on PATH are required.
 
 Usage:
     pytest tests/integration/test_alembic_migrations.py -v
@@ -31,6 +32,7 @@ from faultmaven.config.settings import set_env_var
 from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from tests.conftest import TEST_DATA_ROOT_ENV
+from tests.integration import alembic_forkserver
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 #: Under this process's own data root (#1772), not the checkout: one fixed file
@@ -128,11 +130,12 @@ def database_url():
 def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
     """Run an alembic command against the interpreter running these tests.
 
-    Alembic is invoked as ``sys.executable -m alembic`` so it always comes from
+    The command is ``sys.executable -m alembic``, so alembic always comes from
     the same environment as the test process. PATH is never consulted, so a
     stale or broken ``alembic`` shim elsewhere on PATH cannot hijack the run,
     and no ``.venv`` needs to exist next to this checkout (a git worktree has
-    none).
+    none). ``alembic_forkserver`` runs it in its own forked child, with this
+    argv, cwd and environment, as a fresh interpreter would (#2171).
 
     ``PYTHONPATH`` is prepended with the checkout root so ``alembic/env.py``'s
     ``import faultmaven`` binds to the tree under test even when the
@@ -147,14 +150,7 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
         else str(PROJECT_ROOT)
     )
 
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", *shlex.split(command)],
-        cwd=PROJECT_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    return result
+    return alembic_forkserver.run(shlex.split(command), cwd=PROJECT_ROOT, env=env)
 
 
 def run_helper_script(args: str, database_url: str) -> subprocess.CompletedProcess:
@@ -2409,12 +2405,8 @@ class TestRunbookDraftsInTheDatabaseRevision:
         env["PYTHONPATH"] = os.pathsep.join(
             part for part in (str(PROJECT_ROOT), env.get("PYTHONPATH")) if part
         )
-        return subprocess.run(
-            [sys.executable, "-m", "alembic", "-c", str(config), *shlex.split(command)],
-            cwd=workdir,
-            env=env,
-            capture_output=True,
-            text=True,
+        return alembic_forkserver.run(
+            ["-c", str(config), *shlex.split(command)], cwd=workdir, env=env
         )
 
     @staticmethod
