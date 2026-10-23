@@ -161,12 +161,9 @@ jobs:
       # printed "with digest " and nothing else for as long as it existed. It
       # reads like provenance and carried none.
       #
-      # The actionlint gate added alongside this does NOT catch it here, and
-      # will not if it regresses: actionlint resolves no outputs for an action
-      # pinned to a commit sha (and knew metadata-action@v5's, not @v6's), so
-      # the bad reference is unresolvable rather than wrong.
-      # It was caught in faultmaven-dashboard, which is still on @v5, and fixed
-      # here by inspection. Keep the `id: build` reference; nothing enforces it.
+      # The actionlint gate does not check this reference and will not catch a
+      # regression: it resolves no outputs for an action pinned by commit sha.
+      # Keep the `id: build` reference; nothing enforces it.
       - name: Image digest
         if: github.event_name != 'pull_request'
         run: echo "Published Docker images with digest ${{ steps.build.outputs.digest }}"
