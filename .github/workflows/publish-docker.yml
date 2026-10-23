@@ -1,8 +1,10 @@
 name: Publish Docker Image
 
 on:
-  # Publish the main image only AFTER "CI/CD Pipeline" succeeds on main — gates on
-  # the full test suite + Dockerfile build. Previously this ran on every push to
+  # Publish the main image only AFTER "CI/CD Pipeline" succeeds on main. That
+  # verdict is the full test suite + Dockerfile build, run on this exact commit
+  # either by the merge queue (the push run then skips; see env-check in
+  # ci-cd.yml) or by the push run itself. Previously this ran on every push to
   # main and could ship :latest from a commit whose tests/build had failed.
   workflow_run:
     workflows: ["CI/CD Pipeline"]

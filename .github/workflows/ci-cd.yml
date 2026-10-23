@@ -60,13 +60,14 @@ jobs:
   # which satisfies a required status check. So the filter is a job every heavy
   # job declares a condition against, not a trigger filter.
   #
-  # Pull requests only. A push to main still runs everything, because
-  # publish-docker.yml gates `:latest` on "CI/CD Pipeline" succeeding there and
-  # its comment says that gate covers the Dockerfile build; narrowing what main
-  # runs would quietly narrow that gate too. A merge-queue group runs
-  # everything for the same reason: it is the last check before main, and the
-  # fail-closed arm below (any event but `pull_request` resolves nothing) is
-  # what makes it do so.
+  # Pull requests only. publish-docker.yml gates `:latest` on "CI/CD
+  # Pipeline" succeeding on main and its comment says that gate covers the
+  # Dockerfile build, so a docs-only skip there would quietly narrow the gate.
+  # A merge-queue group runs everything for the same reason: it is the last
+  # check before main -- and the verdict a push of its commit carries, since
+  # that push skips (see env-check) -- and the fail-closed arm below (any event
+  # but `pull_request` resolves nothing) is what makes it do so. A push to main
+  # the queue did not pass runs everything.
   # ============================================================================
   changes:
     runs-on: ubuntu-24.04
@@ -152,13 +153,56 @@ jobs:
   # Fast validation that the CI environment matches expectations.
   # Catches version drift, missing lockfiles, and setup issues before
   # spending time on full test runs.
+  #
+  # It also decides whether a push to main runs anything else. The merge queue
+  # tests the exact commit it then pushes to main: same sha, same tree, same
+  # workflow. Re-testing it on the push cost ~66 job-minutes per merge and
+  # held publish-docker.yml back for 30+ minutes. So when this workflow has a
+  # green merge_group run of the pushed sha, every job that needs env-check
+  # skips (the suites and `build` follow code-quality down), and this run's
+  # success carries the queue's verdict to the publish gate. A push the queue
+  # never saw -- an admin merge, a direct push, `develop` -- finds no such run
+  # and runs everything, and so does a failed lookup.
   # ============================================================================
   env-check:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     name: Environment Smoke Check
+    permissions:
+      contents: read
+      actions: read  # the merge-queue lookup
+    outputs:
+      queue_verified: ${{ steps.queue.outputs.verified }}
 
     steps:
+      # Empty on every event but a push to main, and nothing skips.
+      - name: Did the merge queue already pass this commit?
+        id: queue
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The queue merges once the required checks pass, which can be a
+          # moment before its run is marked complete, so a pending run is
+          # waited for, briefly. Anything else that is not a success -- no run,
+          # a failed one, a failed lookup -- runs everything.
+          verified=false
+          for attempt in 1 2 3 4 5 6; do
+            conclusions="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci-cd.yml/runs?head_sha=${GITHUB_SHA}&event=merge_group&per_page=100" \
+              --jq '[.workflow_runs[] | .conclusion // "pending"] | join(" ")')" || conclusions="lookup-failed"
+            echo "attempt ${attempt}: merge_group runs of ${GITHUB_SHA}: '${conclusions}'"
+            case " ${conclusions} " in
+              *" success "*) verified=true; break ;;
+              *" pending "*) sleep 20 ;;
+              *) break ;;
+            esac
+          done
+          if [ "$verified" = true ]; then
+            echo "::notice::The merge queue already passed ${GITHUB_SHA}; this push skips the suites and build"
+          fi
+          echo "verified=${verified}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout Repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -214,6 +258,8 @@ jobs:
   # ============================================================================
   code-quality:
     needs: [env-check]
+    # A push the merge queue already passed skips; see env-check.
+    if: needs.env-check.outputs.queue_verified != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Code Quality Checks
@@ -730,6 +776,8 @@ jobs:
   # ============================================================================
   architecture-lint:
     needs: [env-check]
+    # A push the merge queue already passed skips; see env-check.
+    if: needs.env-check.outputs.queue_verified != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Architecture Boundary Check
@@ -773,6 +821,8 @@ jobs:
   # ============================================================================
   api-contract-drift:
     needs: [env-check]
+    # A push the merge queue already passed skips; see env-check.
+    if: needs.env-check.outputs.queue_verified != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: API Contract Drift Check
@@ -901,6 +951,8 @@ jobs:
   # ============================================================================
   test-packaging:
     needs: [env-check]
+    # A push the merge queue already passed skips; see env-check.
+    if: needs.env-check.outputs.queue_verified != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Test Packaging Configuration
@@ -979,6 +1031,8 @@ jobs:
   # ============================================================================
   security-scan:
     needs: [env-check]
+    # A push the merge queue already passed skips; see env-check.
+    if: needs.env-check.outputs.queue_verified != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: Security Scanning
