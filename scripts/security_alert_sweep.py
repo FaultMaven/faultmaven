@@ -74,7 +74,12 @@ RAW = ["api", "-H", "Accept: application/vnd.github.raw"]
 PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
 OPS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 OPS["="] = operator.eq
-AUDITED = ("faultmaven-dashboard", "faultmaven-copilot", "faultmaven-website")
+AUDITED = (
+    "faultmaven-dashboard",
+    "faultmaven-copilot",
+    "faultmaven-website",
+    "faultmaven",  # pip-audit of requirements/*.txt (#2218)
+)
 AUDIT_FILE = ".github/workflows/scheduled-audit.yml"
 AUDIT_WORKFLOW = "actions/workflows/scheduled-audit.yml"
 # Completed runs only: a run still in progress hides no earlier result.
