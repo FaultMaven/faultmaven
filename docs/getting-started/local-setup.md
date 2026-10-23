@@ -15,8 +15,8 @@ For the quickest setup, use [Docker Compose](../../README.md#quick-start) instea
 | Component | Requirement |
 |-----------|-------------|
 | **API Backend** | Python 3.11+ |
-| **Dashboard** | Node.js 18+, npm or pnpm |
-| **Copilot** | Node.js 18+, pnpm |
+| **Dashboard** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
+| **Copilot** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
 | **LLM Provider** | API key (OpenAI, Anthropic, etc.) or Ollama |
 
 ---
@@ -57,15 +57,15 @@ In a separate terminal:
 git clone https://github.com/FaultMaven/faultmaven-dashboard.git
 cd faultmaven-dashboard
 
-# Install dependencies
-npm install
+# Install dependencies (pnpm only: npm cannot resolve the copilot-ui git dependency)
+pnpm install
 
 # Configure API endpoint
 cp .env.example .env
 # The default VITE_API_URL=http://localhost:8090 should work for local development
 
 # Start development server
-npm run dev
+pnpm dev
 ```
 
 The Dashboard will be available at http://localhost:5173
