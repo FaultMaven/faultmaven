@@ -25,9 +25,10 @@ name: Workflow Lint
 # is worse than no lint.
 #
 # The lint itself is FaultMaven/ci-actions `lint-workflows`: the actionlint
-# release, its checksum and the `-S warning` shellcheck threshold live there,
-# and this file chooses only when it runs. Keep the three service-repo copies of
-# this file byte-identical, as with the other fleet-wide lints.
+# release, its checksum and the `-S warning` shellcheck threshold live there.
+# This file chooses when it runs, and on what runner: linux/amd64, the build
+# the action downloads. Keep the three service-repo copies of this file
+# byte-identical, as with the other fleet-wide lints.
 # =============================================================================
 
 on:
