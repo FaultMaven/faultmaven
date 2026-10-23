@@ -459,6 +459,34 @@ async def test_bootstrap_no_pack_is_safe(tmp_path: Path):
     knowledge_service.ingest_runbook.assert_not_awaited()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["KB_PACK_DIR", "baseline"])
+async def test_default_pack_dir(tmp_path: Path, monkeypatch, source):
+    """With no ``pack_dir`` (the lifespan's call), ``KB_PACK_DIR`` names the
+    pack, and when it is empty the baseline under the project root does."""
+    from faultmaven.config.settings import reset_settings
+
+    root, pack_dir = tmp_path / "root", _write_pack(tmp_path / "src")
+    if source == "baseline":
+        shutil.copytree(pack_dir, root / "resources" / "knowledge" / "pack")
+    monkeypatch.setenv("KB_PACK_DIR", str(pack_dir) if source == "KB_PACK_DIR" else "")
+    reset_settings()
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    try:
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=None),
+            enterprise_id="ent-test",
+            project_root=root,
+        )
+    finally:
+        reset_settings()
+
+    assert result.ingested == ["global/example.md"]
+
+
 def test_item_id_from_runbook_id_is_deterministic():
     assert kb_init._item_id_from_runbook_id("foo") == kb_init._item_id_from_runbook_id(
         "foo"
@@ -1420,6 +1448,21 @@ def test_pack_load_baseline_vector_rows_are_unique():
     ]
     assert rows, "baseline pack has no chunks"
     assert len(rows) == len(set(rows)), "baseline pack has duplicate vector_row(s)"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("", None), (" \t\n", None), ("/srv/kb", "/srv/kb"), (" /srv/kb\n", "/srv/kb")],
+    ids=["empty", "whitespace", "configured", "configured-padded"],
+)
+def test_resolve_pack_dir(tmp_path, configured, expected):
+    """``KB_PACK_DIR`` names the pack; blank means the baseline under the root."""
+    from faultmaven.bootstrap.kb_pack import resolve_pack_dir
+
+    baseline = tmp_path / "resources" / "knowledge" / "pack"
+    want = Path(expected) if expected else baseline
+    assert resolve_pack_dir(tmp_path, configured) == want
 
 
 def test_parse_json_dict_handles_dict_and_str_inputs():

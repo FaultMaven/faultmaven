@@ -35,7 +35,7 @@ Pre-deployed runbooks are already authored, validated, and scored — and embedd
 
 ### Trigger
 
-Runs once at API startup, immediately after the DI container has wired up `KnowledgeService`. Implementation: `bootstrap_kb()` called from `bootstrap/lifespan.py`'s lifespan (see search for `KB Bootstrap` block).
+Runs once at API startup, immediately after the DI container has wired up `KnowledgeService`: `_bootstrap_kb_step` in `bootstrap/lifespan.py` calls `bootstrap_kb()`. It skips under `TENANT_PROVIDER=multi`, where the `kb_seed` job seeds the pack instead, and when no KB vector store is composed (`SKIP_SERVICE_CHECKS=true`), where it logs one warning and writes nothing.
 
 ### Source: the KB pack (not the embedding model)
 

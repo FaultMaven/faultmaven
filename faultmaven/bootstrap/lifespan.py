@@ -19,6 +19,69 @@ from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 logger = logging.getLogger(__name__)
 
 
+async def _bootstrap_kb_step(app: FastAPI) -> None:
+    """The lifespan's KB step: ingest the shipped pack, or log why it does not.
+
+    Never raises. A failure is logged and startup continues.
+    """
+    # KB Bootstrap: atomic, idempotent ingestion of shipped runbooks.
+    # The KB pack (`KB_PACK_DIR`, default `resources/knowledge/pack`) is
+    # ingested directly into knowledge_items + ChromaDB without passing through
+    # the conversion_drafts table. Idempotent: runbooks whose content hash is
+    # unchanged are skipped on subsequent runs. See
+    # faultmaven/bootstrap/kb_init.py.
+    #
+    # Single-tenant only: the pack writes the org-free global platform tier,
+    # which under TENANT_PROVIDER=multi is seeded exclusively via the audited
+    # maintenance path (`python -m faultmaven.jobs.run kb_seed
+    # --cross-tenant-maintenance`), not by web workers on the RLS-enforced app
+    # role (#770).
+    try:
+        # Self-contained import: the container is composed in
+        # compose_application, not bound in this scope.
+        from faultmaven.container import container
+        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI as _BUILTIN_MULTI
+        from faultmaven.providers.tenancy.factory import (
+            requested_tenant_provider as _requested_tenant_provider,
+        )
+
+        if _requested_tenant_provider() == _BUILTIN_MULTI:
+            logger.info(
+                "KB bootstrap skipped under multi-tenancy: seed the platform "
+                "KB pack via the kb_seed maintenance job (#770)."
+            )
+        elif getattr(container, "knowledge_vector_store", None) is None:
+            # No KB vector store was composed. That happens only under
+            # SKIP_SERVICE_CHECKS=true on standalone: cloud refuses a
+            # store-less boot, and a ChromaDB failure aborts composition. The
+            # service would index every runbook into nothing, so each one
+            # would fail with "0 chunks", and a changed pack would delete rows
+            # it cannot re-create. Write nothing to knowledge_items (#2171).
+            logger.warning(
+                "KB bootstrap skipped: SKIP_SERVICE_CHECKS=true composes no KB "
+                "vector store, so the pack cannot be indexed"
+            )
+        elif getattr(app.state, "knowledge_service", None):
+            from faultmaven.bootstrap.kb_init import bootstrap_kb
+            from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+            from faultmaven.infrastructure.persistence.database import get_db_session
+
+            kb_result = await bootstrap_kb(
+                knowledge_service=app.state.knowledge_service,
+                db_session_factory=get_db_session,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
+            logger.info(f"✅ KB bootstrap: {kb_result!r}")
+            if kb_result.failed:
+                # Don't block startup, but make failures loud.
+                for path, reason in kb_result.failed:
+                    logger.warning(f"  KB bootstrap failed for {path}: {reason}")
+        else:
+            logger.warning("KB bootstrap skipped: knowledge_service not available")
+    except Exception as e:
+        logger.error(f"KB bootstrap raised (non-fatal): {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
@@ -366,48 +429,8 @@ async def lifespan(app: FastAPI):
     # Middleware must be added before the app starts. It is configured at import time.
     logger.info("✅ Middleware already configured")
 
-    # KB Bootstrap: atomic, idempotent ingestion of shipped runbooks.
-    # The KB pack (`KB_PACK_DIR`, default `resources/knowledge/pack`) is
-    # ingested directly into knowledge_items + ChromaDB without passing through
-    # the conversion_drafts table. Idempotent: runbooks whose content hash is
-    # unchanged are skipped on subsequent runs. See
-    # faultmaven/bootstrap/kb_init.py.
-    #
-    # Single-tenant only: the pack writes the org-free global platform tier,
-    # which under TENANT_PROVIDER=multi is seeded exclusively via the audited
-    # maintenance path (`python -m faultmaven.jobs.run kb_seed
-    # --cross-tenant-maintenance`), not by web workers on the RLS-enforced app
-    # role (#770).
-    try:
-        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI as _BUILTIN_MULTI
-        from faultmaven.providers.tenancy.factory import (
-            requested_tenant_provider as _requested_tenant_provider,
-        )
-
-        if _requested_tenant_provider() == _BUILTIN_MULTI:
-            logger.info(
-                "KB bootstrap skipped under multi-tenancy: seed the platform "
-                "KB pack via the kb_seed maintenance job (#770)."
-            )
-        elif getattr(app.state, "knowledge_service", None):
-            from faultmaven.bootstrap.kb_init import bootstrap_kb
-            from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-            from faultmaven.infrastructure.persistence.database import get_db_session
-
-            kb_result = await bootstrap_kb(
-                knowledge_service=app.state.knowledge_service,
-                db_session_factory=get_db_session,
-                enterprise_id=STANDALONE_ENTERPRISE_ID,
-            )
-            logger.info(f"✅ KB bootstrap: {kb_result!r}")
-            if kb_result.failed:
-                # Don't block startup, but make failures loud.
-                for path, reason in kb_result.failed:
-                    logger.warning(f"  KB bootstrap failed for {path}: {reason}")
-        else:
-            logger.warning("KB bootstrap skipped: knowledge_service not available")
-    except Exception as e:
-        logger.error(f"KB bootstrap raised (non-fatal): {e}", exc_info=True)
+    # KB Bootstrap: ingest the shipped runbook pack (non-fatal).
+    await _bootstrap_kb_step(app)
 
     # Funnel metrics: refresh the case-funnel gauges from the DB on an interval
     # (a projection of durable state, not transition counters -- see ADR 005).
