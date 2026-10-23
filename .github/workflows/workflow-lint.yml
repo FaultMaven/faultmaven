@@ -24,11 +24,10 @@ name: Workflow Lint
 # Blocking, not `continue-on-error`. An advisory lint whose green means nothing
 # is worse than no lint.
 #
-# SHELLCHECK_OPTS mirrors faultmaven-enterprise-infra's `-S warning` threshold,
-# deliberately. Below `warning`, the `run:` blocks across this fleet emit dozens
-# of SC2086 complaints about unquoted `$GITHUB_OUTPUT` — the shape of finding
-# that teaches people to close a gate unread. Keep the three service-repo copies
-# of this file byte-identical, as with the other fleet-wide lints.
+# The lint itself is FaultMaven/ci-actions `lint-workflows`: the actionlint
+# release, its checksum and the `-S warning` shellcheck threshold live there,
+# and this file chooses only when it runs. Keep the three service-repo copies of
+# this file byte-identical, as with the other fleet-wide lints.
 # =============================================================================
 
 on:
@@ -53,12 +52,4 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run actionlint
-        env:
-          ACTIONLINT_VERSION: '1.7.7'
-          SHELLCHECK_OPTS: '-S warning'
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C /usr/local/bin actionlint
-          actionlint -version
-          actionlint -color
+        uses: FaultMaven/ci-actions/lint-workflows@4b5989bc5f9e1fcd5eee69cf18cfa0854a6f2894 # v1.2.0
