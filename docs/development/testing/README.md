@@ -77,23 +77,35 @@ pytest -k "test_pattern"
 
 ### Line-level coverage comparisons
 
-The coverage total is reliable at the default settings, but the per-line data is not. SQLAlchemy's async engine switches greenlets on every database call, and coverage misattributes the lines that run across those switches (#2206). It records lines against the wrong file and misses real ones. Here is a default run of `tests/integration/modules/knowledge` against a greenlet-aware one:
+The coverage total is reliable at the default settings, but the per-line data is not. SQLAlchemy's async engine switches greenlets on every database call, and coverage misattributes the lines that run across those switches (#2206). It records lines against the wrong file, some of them past that file's end, and misses real ones. Measured on `tests/integration/modules/knowledge`, a default run against a greenlet-aware one:
 
-- 118 lines recorded that the greenlet-aware run says never ran;
+- 118 lines recorded that never ran;
 - 24 lines missed that did run;
-- 8 files affected.
+- 8 files affected;
+- 92 recorded lines past the end of their file, in 7 of those files.
 
-So whenever *which lines* are covered decides something, opt in. That includes a refactor's "no coverage decrease" set comparison and a review's "is this line covered". First confirm the setting is in effect, then run:
+So whenever *which lines* are covered decides something, opt in. That includes a refactor's "no coverage decrease" set comparison and a review's "is this line covered".
+
+1. Confirm the setting on each side of the comparison. A checkout older than this setting ignores the variable and prints `[]`; for such a base, add the same `concurrency` line to its `pyproject.toml` in a scratch worktree.
+2. Run.
+3. Check the raw data: no recorded line may lie past the end of its file.
 
 ```bash
 export FM_COVERAGE_CONCURRENCY=greenlet
 python -c "import coverage; print(coverage.Coverage().config.concurrency)"   # ['thread', 'greenlet']
 pytest tests/integration/modules/knowledge --cov=faultmaven --cov-report=
+python -c "
+import coverage
+cov = coverage.Coverage(); cov.load(); d = cov.get_data()   # honours COVERAGE_FILE
+assert d.measured_files(), 'no coverage data: wrong COVERAGE_FILE or directory?'
+bad = [(f, n) for f in d.measured_files() for n in d.lines(f) if n > sum(1 for _ in open(f))]
+assert not bad, bad[:5]
+"
 ```
 
-Both sides of a comparison must use the same setting. A line recorded past the end of its file is one visible symptom of the problem, but its absence proves nothing: the run above has none and is still wrong.
+Read the raw data, as the snippet does. `coverage report` and `coverage json` keep only statement lines, so they can never show a line past the end of a file. The check works per run, not per file. One such line anywhere means the run misattributed, but a file without one can still be off; the run above has a file off by 6 lines with none of its own.
 
-CI leaves it off. Greenlet tracking cost about +40% to +50% on database-heavy tests, and CI's only coverage consumer is the `--fail-under` threshold, which the misattribution cannot move.
+**CI leaves it off.** Greenlet tracking cost +39% to +52% on database-heavy tests. CI's coverage gate is `--fail-under`. The misattribution moves the total slightly (13 of 56,591 missed statements in one measurement), but it cannot flip 80% against a threshold of 50%. Both test jobs also print `--cov-report=term-missing`, a per-line listing that carries the same error, so do not read line-level conclusions from it.
 
 ### Writing Your First Test
 
