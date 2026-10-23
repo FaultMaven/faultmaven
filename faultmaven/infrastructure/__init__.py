@@ -8,12 +8,3 @@ infrastructure clients should inherit from for consistent external service
 interaction patterns with unified logging, circuit breaker protection,
 and comprehensive error handling.
 """
-
-from .base_client import BaseExternalClient, CircuitBreakerError
-from .jobs import JobService
-
-__all__ = [
-    "BaseExternalClient",
-    "CircuitBreakerError",
-    "JobService",
-]

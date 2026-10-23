@@ -8,19 +8,3 @@ Modules:
 - repository_factory: Factories for knowledge item repositories. (Case
   repositories live in ``faultmaven.modules.case.infrastructure``.)
 """
-
-from faultmaven.infrastructure.persistence.database import (
-    check_database_health,
-    close_database,
-    get_db_session,
-    init_database,
-    reset_engine,
-)
-
-__all__ = [
-    "get_db_session",
-    "init_database",
-    "close_database",
-    "reset_engine",
-    "check_database_health",
-]
