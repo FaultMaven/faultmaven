@@ -1103,7 +1103,8 @@ async def test_a_held_registration_whose_fix_the_replay_downgrades_registers_not
     assert [a.action_type for a in case.proposed_actions] == [
         InvestigationActionType.DIAGNOSTIC
     ]
-    assert f"reported running at turn 6 {_LICENSE}" in meta["system_feedback"]
+    diagnostic = case.proposed_actions[0]
+    assert f"{diagnostic.action_id} {_LICENSE}" in meta["system_feedback"]
 
 
 async def test_a_bundle_that_no_longer_validates_drops_its_carried_registration():
@@ -1405,6 +1406,74 @@ async def test_a_replayed_mitigation_attempt_keeps_the_replays_message():
         InvestigationActionType.SOLUTION: "I ran it",
         InvestigationActionType.MITIGATION: "",
     }
+
+
+@pytest.mark.parametrize("at", ["replay", "live"])
+async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
+    """Delta D1/D2: the cause is refuted, so a re-send of the failed X is minted
+    a DIAGNOSTIC (M5), by the replay of a carried decision or on a live turn
+    naming the old X. The license line; not absorbed, not "re-propose"."""
+    eng, case = await _relapsed()
+    first = _solutions(case)[0]
+    await _refute_the_cause(eng, case, 14)
+    if at == "replay":
+        case.current_turn = 15
+        _revise(case)
+        await _turn(
+            eng,
+            case,
+            15,
+            solutions_to_add=[_fix(_FIRST)],
+            milestones=_accepted("new_index_0"),
+        )
+        meta = await _confirm(eng, case, 16)
+    else:
+        meta = await _turn(
+            eng,
+            case,
+            15,
+            solutions_to_add=[_fix(_FIRST)],
+            milestones=_accepted(first.action_id),
+        )
+
+    assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
+    assert _LICENSE in meta["system_feedback"]
+    assert "re-propose it as a SolutionToAdd" not in meta["system_feedback"]
+    assert len(case.action_attempts) == 1
+
+
+async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again():
+    """Delta N1: after a first fix, Y is carried at 14; at 15 a bare acceptance
+    re-sends Y. No line names Y's ``new_index``, and naming it anyway at 16
+    carries nothing a second time."""
+    eng, case = await _relapsed()
+    case.current_turn = 14
+    _revise(case)
+    await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    bare = await _turn(
+        eng, case, 15, solutions_to_add=[_fix(_SECOND)], milestones=_accepted()
+    )
+    named = await _turn(
+        eng,
+        case,
+        16,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert "new_index_0" not in bare.get("system_feedback", "")
+    assert "held until the user confirms" not in named.get("system_feedback", "")
+    pending = case.problem_verification.pending_revision
+    assert "1 reported fix execution(s)" in staged_work_summary(pending)
+    await _confirm(eng, case, 17)
+    assert _accepted_turns(case) == [6, 14]
 
 
 async def test_every_downgrade_reason_fits_its_field_with_margin():

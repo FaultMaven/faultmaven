@@ -432,13 +432,16 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     return None
 
 
-def _newest_fix_bearer(case: Case, identity: str) -> Any:
-    """The newest SOLUTION action bearing the fix ``identity``, or None."""
+def _newest_fix_bearer(case: Case, identity: str, minted: Sequence = ()) -> Any:
+    """The newest SOLUTION, or action this apply ``minted``, bearing the fix."""
     return next(
         (
             action
             for action in reversed(case.proposed_actions)
-            if action.action_type == InvestigationActionType.SOLUTION
+            if (
+                action.action_type == InvestigationActionType.SOLUTION
+                or action in minted
+            )
             and fix_identity(action.description) == identity
         ),
         None,
@@ -941,6 +944,12 @@ def _fix_entries(proposals: Sequence[Any], held: Optional[Sequence[Any]]) -> lis
     ]
 
 
+def _carried_fixes(case: Case) -> set:
+    """The fix identities this pending revision's bundles already carry."""
+    staged = case.problem_verification.pending_revision.staged
+    return {bundle.held_fix for bundle in staged if bundle.held_fix}
+
+
 def _note_unnamed_acceptance(
     case: Case, entries: list, metadata: dict[str, Any], *, holding: bool
 ) -> None:
@@ -948,9 +957,10 @@ def _note_unnamed_acceptance(
     since models re-emit standing booleans, with one line naming what WOULD
     register, should the user have run another fix."""
     line = None
+    carried = _carried_fixes(case) if holding else set()
     for index in reversed(range(len(entries))):
         entry = entries[index]
-        if not entry.is_fix:
+        if not entry.is_fix or entry.identity in carried:
             continue
         kept = standing_fix_action(case, entry.identity) if holding else entry.action
         if kept is not None and kept.state == "accepted":
@@ -1060,7 +1070,10 @@ def _bearer_registers(
     predicate), and on a live turn only as a ``reproposal``: one withdrawn
     ``license_lost`` stays refused (ruled 2026-10-21). A decision ``carried``
     through a revision hold registers on the license whatever superseded it,
-    since the hold itself withdraws every pending fix."""
+    since the hold withdraws every pending fix. A minted DIAGNOSTIC: M5 fell."""
+    if bearer.action_type != InvestigationActionType.SOLUTION:
+        _add_system_feedback(metadata, _license_notice(bearer.action_id))
+        return False
     if bearer.state == "pending":
         return True
     if bearer.state == "accepted":
@@ -1108,6 +1121,8 @@ def _hold_settles(
 ) -> bool:
     """On a hold turn, settle now (absorb or refuse) what a hold cannot change;
     False means carry it."""
+    if identity in _carried_fixes(case):
+        return True  # carried already in this revision: once is enough
     standing = standing_fix_action(case, identity)
     if standing is not None and standing.state == "accepted":
         return True  # a re-assertion: the registered fix, kept by identity
@@ -1205,7 +1220,7 @@ def decide_fix_acceptance(
         if _registration_justified(case, metadata):
             _carry_fix(case, identity, user_message, metadata)
         return None
-    bearer = _newest_fix_bearer(case, identity)
+    bearer = _newest_fix_bearer(case, identity, proposals)
     if bearer is None:
         _refuse_fix_ref(case, metadata, ref, what)
         return None
@@ -1216,11 +1231,13 @@ def decide_fix_acceptance(
     return bearer
 
 
-def _register_carried_fix(case: Case, carried: Any, metadata: dict[str, Any]) -> Any:
-    """At the replay: the state rule on the newest SOLUTION bearing the carried
-    fix (``carried``, the staged bundle). None bears it when the replay minted
-    the held fix as a DIAGNOSTIC (M5 under the confirmed statement)."""
-    bearer = _newest_fix_bearer(case, carried.held_fix)
+def _register_carried_fix(
+    case: Case, carried: Any, metadata: dict[str, Any], proposals: Sequence[Any]
+) -> Any:
+    """At the replay: the state rule on the newest bearer of the carried fix
+    (``carried``, the staged bundle) among SOLUTIONs and what the replay minted
+    (``proposals``); the license line when none bears it."""
+    bearer = _newest_fix_bearer(case, carried.held_fix, proposals)
     if bearer is None:
         _add_system_feedback(
             metadata,
@@ -1471,7 +1488,7 @@ def _apply_stage_gate_signals(
     # --- solution_accepted: one decision (#2105) -----------------------
     carried = metadata.get(CARRIED_FIX_KEY)
     if carried is not None:
-        solution_action = _register_carried_fix(case, carried, metadata)
+        solution_action = _register_carried_fix(case, carried, metadata, proposals)
     else:
         solution_action = decide_fix_acceptance(
             case,
