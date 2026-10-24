@@ -1361,7 +1361,7 @@ class TokenRevocationModel(Base):
     """Durable token revocation state (#828).
 
     The revocation store used to live only in the cache client, which in
-    standalone is the in-process FakeRedis singleton — so an API restart
+    standalone is the in-process FakeRedis — so an API restart
     resurrected every revoked-but-unexpired token. This table is the durable
     backing the standalone store reads and writes instead; cloud keeps the
     real-Redis store, where the cache is an external service.

@@ -1810,9 +1810,9 @@ class DIContainer(BaseDIContainer):
         pool bound to the event loop it was opened on, so whoever initialized the
         container closes it before that loop ends: the API lifespan, the jobs
         runner, and the ``fm-*`` commands and dev scripts that compose
-        (``cli/_container.py``). The FakeRedis
-        stand-in is a process-wide singleton shared beyond this container, never
-        its to close.
+        (``cli/_container.py``). The FakeRedis stand-in is the event loop's
+        client, shared beyond this container with everything else on that loop,
+        and never its to close.
 
         Then the container is reset, so it is never left holding a closed client:
         the next ``initialize()`` composes afresh, with a new Redis client. A

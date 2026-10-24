@@ -80,3 +80,32 @@ def test_a_boot_takes_back_what_it_published_when_it_ends():
 
     assert all(published[name] is not None for name in ("redis_client", "job_service"))
     assert left_published == []
+
+
+def test_every_boot_in_a_process_serves_from_a_working_redis():
+    """Each boot's Redis answers on that boot's own event loop (#2241).
+
+    Every ``TestClient`` runs the app on a loop of its own. Under the
+    ``SKIP_SERVICE_CHECKS`` the CI jobs set, the container's Redis is the FakeRedis
+    stand-in, which was one client for the whole process. Under the cloud
+    lockfile's hiredis parser, every boot after the first was handed connections
+    bound to the first boot's loop. Its session writes raised, so ``dev-login``
+    answered 500, and every other Redis call failed with nothing reporting it.
+    """
+    from faultmaven.infrastructure.redis_client import is_fakeredis
+    from faultmaven.main import app
+
+    answers = []
+    for _ in range(3):
+        broker = _RealAppBoot()
+        try:
+            client = broker.client()
+            # What this test is about: on a real Redis it would pass either way.
+            assert is_fakeredis(app.state.redis_client)
+            login = client.post("/api/v1/auth/dev-login", json={"username": "admin"})
+            pinged = client.portal.call(app.state.redis_client.ping)
+            answers.append((login.status_code, pinged))
+        finally:
+            broker.release()
+
+    assert answers == [(200, True)] * 3

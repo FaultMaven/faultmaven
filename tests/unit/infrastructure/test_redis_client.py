@@ -13,11 +13,19 @@ Two guarantees are pinned here:
    revocation, rate limits), so substituting it degrades those to per-replica.
    Cloud must refuse to boot instead.
 
+3. **The FakeRedis stand-in never crosses event loops.** Its connections are
+   bound to the loop that first reads on them, so each loop gets its own client
+   on one shared server: the data is the process's, the connections the loop's
+   (#2241).
+
 Settings are REAL ``FaultMavenSettings``/``DatabaseSettings`` — a stand-in with
 a hand-written ``is_cloud`` or plain-string password would let a dead gate pass.
 """
 
+import asyncio
+import gc
 import logging
+import weakref
 
 import pytest
 
@@ -483,3 +491,81 @@ def test_sync_construction_error_does_not_leak_the_discrete_password(
         RedisClientFactory.create_client()
 
     assert "s3cr3t" not in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# The stand-in is per event loop, over one server (#2241)
+# --------------------------------------------------------------------------- #
+
+
+async def _write(key, value):
+    client = rc.get_fakeredis_client()
+    await client.set(key, value)
+    return client
+
+
+async def _read(key):
+    client = rc.get_fakeredis_client()
+    return client, await client.get(key)
+
+
+def test_one_loop_hands_every_caller_the_same_stand_in():
+    async def _twice():
+        return rc.get_fakeredis_client(), rc.get_fakeredis_client()
+
+    first, second = asyncio.run(_twice())
+
+    assert first is second
+
+
+def test_a_later_loop_gets_its_own_client_and_reads_the_same_data():
+    """The regression: a second loop was handed the first loop's connections.
+
+    Under hiredis every pool checkout reads the connection's queue, which is
+    bound to the loop that first read it, so the second loop's ``get`` raised
+    ``RuntimeError: ... bound to a different event loop``. Without hiredis the
+    same client was handed over and happened to work.
+    """
+    first = asyncio.run(_write("fm:2241", "written-in-loop-1"))
+    second, value = asyncio.run(_read("fm:2241"))
+
+    assert second is not first
+    assert value == "written-in-loop-1"
+
+
+async def _use_and_return_loop():
+    await rc.get_fakeredis_client().set("fm:2241:touched", "1")
+    return asyncio.get_running_loop()
+
+
+def test_a_closed_loop_is_not_kept_alive_by_its_client():
+    """Under hiredis a used connection's queue holds its loop; the server holds the socket."""
+    loop = asyncio.run(_use_and_return_loop())
+    gone = weakref.ref(loop)
+    del loop
+
+    asyncio.run(_use_and_return_loop())
+    gc.collect()
+
+    assert gone() is None
+
+
+def test_the_server_lets_go_of_a_closed_loops_sockets():
+    """fakeredis keeps every socket it opened until the socket is closed."""
+    for _ in range(5):
+        asyncio.run(_use_and_return_loop())
+
+    async def _sockets_held():
+        rc.get_fakeredis_client()
+        return len(rc._fakeredis_server.sockets)
+
+    assert asyncio.run(_sockets_held()) <= 1
+
+
+def test_reset_starts_an_empty_server():
+    asyncio.run(_write("fm:2241", "before-reset"))
+
+    rc.reset_fakeredis_client()
+    _, value = asyncio.run(_read("fm:2241"))
+
+    assert value is None

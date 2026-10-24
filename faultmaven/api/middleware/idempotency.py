@@ -178,7 +178,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         shared = getattr(request.app.state, "redis_client", None)
         self.redis_client = resolve_redis_client(request, injected=self.redis_client)
         # Neither injected nor the app's shared client: the factory built it for
-        # this middleware, unless it handed back the process-wide FakeRedis.
+        # this middleware, unless it handed back the loop's shared FakeRedis.
         self._owns_redis = (
             self.redis_client is not None
             and self.redis_client is not self._injected_redis

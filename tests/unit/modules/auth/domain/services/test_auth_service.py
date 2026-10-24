@@ -345,7 +345,7 @@ class TestTokenVerificationWithRevocation:
         This asserted the opposite until #1478. Failing open meant a revoked
         token was ACCEPTED whenever the store could not be read, with a log
         line as the only signal — the availability argument held only while
-        standalone's store was the in-process FakeRedis singleton and could not
+        standalone's store was the in-process FakeRedis and could not
         fail, and #828/#1469 moved it onto a SQLite table.
 
         The full posture — both deployments' real stores, the narrowed catch,

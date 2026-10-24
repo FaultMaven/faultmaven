@@ -13,37 +13,31 @@ exactly that — see ``test_the_app_under_test_carries_the_protection_stack``.
 on a process-wide constant (``rate_limiting.py``, ``_check_global_rate_limit``),
 so each test claims an address no other test uses and gets a private window.
 
-**Each test also adopts a FakeRedis of its own, and that is not tidiness.**
-``get_fakeredis_client`` returns one instance for the whole process, and the
-response queue inside it is an ``asyncio.Queue`` — bound, permanently, to the
-first event loop that runs a command on it. ``TestClient`` runs the app in a
-*new* loop per context, so from the second one onward the shared singleton hands
-the limiter a connection belonging to some earlier test's loop.
+**Each test also adopts a FakeRedis of its own.** A FakeRedis connection's
+response queue is an ``asyncio.Queue``, bound to the first event loop that awaits
+a read on it, and ``TestClient`` runs the app in a *new* loop per context. Until
+#2241, ``get_fakeredis_client`` returned one client for the whole process, so
+from the second context onward it handed the limiter a connection belonging to
+some earlier test's loop.
 
-Whether that is fatal depends on a package that is not in every lockfile. When
+Whether that was fatal depended on a package that is not in every lockfile. When
 ``hiredis`` is installed, redis-py selects its parser, and that parser's
 ``can_read_destructive()`` — called whenever a pooled connection is handed out —
-really reads the stream. The read touches the foreign-loop queue and raises
-``RuntimeError: ... is bound to a different event loop``. The limiter catches it,
+really reads the stream. The read touched the foreign-loop queue and raised
+``RuntimeError: ... is bound to a different event loop``. The limiter caught it,
 the preset these tests ran under at the time failed open, and every request was
 served unlimited: the tests below saw five ``401``\\ s and never a 429. The
-pure-Python parser never touches that queue, so nothing happens without hiredis —
+pure-Python parser never touches that queue, so nothing happened without hiredis —
 and ``hiredis`` is pinned in ``requirements/cloud.txt`` and in neither
 ``test.txt`` nor ``dev.txt``. That is the whole of why this module passed under
 the standalone lockfile and failed under the cloud one (fm#990).
 
-``Test Cloud`` no longer *resolves* Redis to the stand-in: fm#1031 gave the job
-a real server, so the client the composition root hands the app there is a real
-one, as in the deployment the lockfile describes. This module still installs a
-FakeRedis of its own, and should keep doing so — it wants a store it can bind to
-the loop it is about to run in, and it is reachable outside that job (the cloud
-lockfile on a developer's machine, with no Redis running, is the same collision).
-
-What the per-test client gives up is worth naming: these tests no longer say
-anything about the process-wide singleton surviving a change of event loop. They
-never meant to — no deployment has more than one loop, and no deployment pairs
-hiredis with FakeRedis — so the property was accidental coverage of a
-configuration that exists nowhere.
+``get_fakeredis_client`` now gives each event loop a client of its own on one
+shared server (#2241), and ``tests/unit/infrastructure/test_redis_client.py``
+pins that. This module still installs a FakeRedis of its own, because it wants a
+store that no other test has written to. Under ``Test Cloud`` the app is still
+handed the stand-in rather than the job's real Redis, because
+``SKIP_SERVICE_CHECKS`` skips Redis in the composition root (#2243).
 
 **Why the assertions are shaped the way they are.** A test that only asserted
 "the 4th request was a 429" would also pass against a limiter that refuses

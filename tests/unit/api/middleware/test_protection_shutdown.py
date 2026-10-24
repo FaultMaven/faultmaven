@@ -270,7 +270,7 @@ async def test_an_injected_client_is_kept_and_not_closed(middleware_cls, client_
     "middleware_cls", [DeduplicationMiddleware, IdempotencyMiddleware]
 )
 async def test_the_fakeredis_stand_in_is_never_closed(monkeypatch, middleware_cls):
-    """The factory's stand-in is the process-wide singleton every subsystem holds."""
+    """The factory's stand-in is the loop's shared client every subsystem holds."""
     from unittest.mock import AsyncMock
 
     from faultmaven.infrastructure.redis_client import get_fakeredis_client

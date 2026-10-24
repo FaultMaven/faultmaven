@@ -5,7 +5,7 @@ A revoked token was therefore ACCEPTED whenever the store could not be read,
 with a log line as the only signal — the silent failure of the exact control the
 store exists to provide, and indistinguishable from the control working.
 
-That was written when standalone's store was the in-process FakeRedis singleton,
+That was written when standalone's store was the in-process FakeRedis,
 which could not fail. #828/#1469 moved standalone's request-path check onto a
 SQLite table, so the path became reachable there for the first time: a write
 lock held past ``busy_timeout``, disk-full, the mid-migration window where

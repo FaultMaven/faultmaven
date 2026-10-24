@@ -12,7 +12,7 @@ admin per-user revocation) writes here, and the request-path check
   outlives the API pod, Redis expiry handles cleanup, and the deployment-wide
   store is shared across replicas.
 - :class:`SqlTokenRevocationStore` — standalone, whose cache is the in-process
-  FakeRedis singleton. That has no persistence, so an API restart resurrected
+  FakeRedis. That has no persistence, so an API restart resurrected
   every revoked-but-unexpired token for the remainder of its natural life.
   Revocation there lives in ``token_revocations`` instead, beside the account
   state (deactivation) that already survived a restart.
@@ -142,7 +142,7 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
     """Redis implementation of token revocation store.
 
     The CLOUD store. Standalone no longer constructs it: its cache is the
-    in-process FakeRedis singleton, which a restart forgets, so
+    in-process FakeRedis, which a restart forgets, so
     ``create_token_revocation_store`` gives standalone the durable SQL store
     instead (#828). It still WORKS against FakeRedis — every test in the shared
     contract suite drives this class over one — but no deployment resolves that
@@ -248,7 +248,7 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     """Database implementation of the token revocation store (#828).
 
     Used where the cache client does not outlive the process — standalone,
-    whose Redis is the in-process FakeRedis singleton. Same two granularities,
+    whose Redis is the in-process FakeRedis. Same two granularities,
     same rules, same ``ITokenRevocationStore``; the difference is only that the
     state survives a restart.
 

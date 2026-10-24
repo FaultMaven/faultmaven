@@ -5,7 +5,7 @@ owns it. A real client's pool is bound to the event loop it was opened on, and
 nothing else closed it: the API lifespan, the jobs runner and every test that
 initialized a container left it open, which surfaced on the Test Cloud job's
 real Redis as ``ResourceWarning: unclosed transport``. The FakeRedis stand-in is
-a process-wide singleton shared beyond any one container, so shutdown leaves it
+the event loop's client, shared beyond any one container, so shutdown leaves it
 alone.
 
 Shutdown also resets the container. Left marked initialized, a second lifespan

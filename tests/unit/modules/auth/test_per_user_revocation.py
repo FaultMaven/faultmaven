@@ -1014,7 +1014,7 @@ class TestServiceFailurePosture:
 
         It preferred availability under #767, on the reasoning that access
         tokens are short-lived. That reasoning was written when this
-        deployment's store was the in-process FakeRedis singleton and could not
+        deployment's store was the in-process FakeRedis and could not
         fail; #828/#1469 put standalone's check on a SQLite table and made the
         path reachable, at which point "prefer availability" meant "accept
         revoked tokens during a database blip, silently".
