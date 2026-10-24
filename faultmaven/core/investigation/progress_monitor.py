@@ -42,6 +42,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_FAILED,
+    FIX_SUCCEEDED,
+    fix_windows,
+)
 from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_MIN_REFUTED,
     EXHAUSTION_MIN_TURNS,
@@ -215,8 +220,9 @@ class ProgressMonitor:
                 can fire (default 8)
             exhaustion_stall_threshold: Turns without progress needed for
                 exhaustion (default 5)
-            fix_failure_threshold: Accepted-but-unverified fix attempts
-                before FIX_FAILURE_CYCLE fires (default 2)
+            fix_failure_threshold: Failed fix windows (SOLUTION), or
+                accepted-but-unverified mitigations, before FIX_FAILURE_CYCLE
+                fires (default 2)
         """
         self.transparency_threshold = transparency_threshold
         self.category_anchoring_threshold = category_anchoring_threshold
@@ -487,7 +493,7 @@ class ProgressMonitor:
     def _check_mitigation_repairs(self, case: Case) -> Optional[RepairAction]:
         """Check repair patterns relevant to MITIGATION stage."""
         if self._detect_fix_failure_cycle(case, action_type="mitigation"):
-            return self._repair_fix_failure_cycle(case)
+            return self._repair_fix_failure_cycle(case, "mitigation")
 
         if self._detect_action_loop(case):
             return self._repair_action_loop(case)
@@ -497,7 +503,7 @@ class ProgressMonitor:
     def _check_treatment_repairs(self, case: Case) -> Optional[RepairAction]:
         """Check repair patterns relevant to TREATMENT stage."""
         if self._detect_fix_failure_cycle(case, action_type="solution"):
-            return self._repair_fix_failure_cycle(case)
+            return self._repair_fix_failure_cycle(case, "solution")
 
         if self._detect_category_anchoring(case):
             return self._repair_anchoring(case)
@@ -643,9 +649,24 @@ class ProgressMonitor:
         """
         Detect repeated fix attempts that don't work.
 
-        Triggers when N+ proposed actions of the given type have been accepted
-        but the corresponding verification milestone has not been set.
+        A SOLUTION attempt is a record with its own fix window (#2105), so for
+        ``solution`` this triggers on N+ FAILED windows (``fix_windows``), unless
+        the latest window SUCCEEDED: a fix that worked after the failed ones is
+        no failure cycle. A latest window not yet observed (UNKNOWN) does not
+        lift it — that fix's outcome is still to be seen. A mitigation keeps the
+        older reading: N+ accepted MITIGATION actions with the record not
+        verified.
         """
+        if action_type == "solution":
+            windows = fix_windows(case)
+            if windows[-1].state == FIX_SUCCEEDED:
+                return False
+            failed = sum(1 for window in windows if window.state == FIX_FAILED)
+            if failed < self.fix_failure_threshold:
+                return False
+            logger.warning(f"Fix failure cycle detected: {failed} fix windows failed")
+            return True
+
         if not case.proposed_actions:
             return False
 
@@ -667,8 +688,6 @@ class ProgressMonitor:
             # mitigation record, not a progress boolean.
             _stab = case.progress.mitigation
             verified = bool(_stab is not None and _stab.verified)
-        elif action_type == "solution":
-            verified = case.progress.solution_verified
         else:
             return False
 
@@ -778,17 +797,18 @@ class ProgressMonitor:
             ),
         )
 
-    def _repair_fix_failure_cycle(self, case: Case) -> RepairAction:
+    def _repair_fix_failure_cycle(self, case: Case, action_type: str) -> RepairAction:
         """
-        Handle repeated fix attempts that don't work.
+        Handle repeated fix attempts that don't work. A solution's count is its
+        FAILED fix windows, as the detector reads them (#2105).
         """
         stage = case.current_stage
         stage_name = stage.value if stage else "current"
 
         failed_count = (
-            sum(1 for a in case.proposed_actions if a.state == "accepted")
-            if case.proposed_actions
-            else 0
+            sum(1 for window in fix_windows(case) if window.state == FIX_FAILED)
+            if action_type == "solution"
+            else sum(1 for a in case.proposed_actions if a.state == "accepted")
         )
 
         return RepairAction(

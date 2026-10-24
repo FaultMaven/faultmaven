@@ -1080,7 +1080,9 @@ records only what it can substantiate:
   new one rather than another confirmation, which would loop. When the model
   records absence evidence inside a failed window, the engine tells it to
   record the new fix instead (a `SolutionToAdd`, then `solution_accepted`
-  once the user says it ran). The M5 license that admits that SolutionToAdd
+  with `accepted_action_ref` naming it once the user says it ran: each fix
+  attempt registers once, for the fix named, so the new fix opens its own
+  window, #2105). The M5 license that admits that SolutionToAdd
   survives the demoted cause through a `root_cause_conclusion` — on a new
   hypothesis when the same cause was addressed again, correctly this time —
   which is the intended re-licensing path. A case whose problem only went

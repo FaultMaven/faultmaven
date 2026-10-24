@@ -916,8 +916,8 @@ user to run so the investigation can transition to Treatment.
         return """
 **INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**
 A fix has been proposed and is awaiting execution. If the user reports
-executing it, set solution_accepted=True and infer the transition to
-TREATMENT. This hold is NOT a freeze: if the user's reply instead brings new
+executing it, set solution_accepted=True with accepted_action_ref naming its
+ACTION_ID (<pending_action>), and infer the transition to TREATMENT. This hold is NOT a freeze: if the user's reply instead brings new
 evidence, questions the fix, or points at a different cause, resume root-cause
 analysis on that signal. A pending proposal never forecloses a live diagnostic
 thread.
@@ -1144,7 +1144,7 @@ The `action_type` is determined by the system when creating the ProposedAction f
 - Downgraded to `DIAGNOSTIC`, with a `downgrade_reason` the next prompts render as `ENGINE_NOTE`, when:
   - a `SOLUTION` targets a root cause that is not established (M5: none of the shared cause-identification legs holds — a validated chain root, a root-cause conclusion, a working conclusion at 0.6 or above — or a contest between rival causes suppresses them). The working conclusion is judged on this turn's hypotheses, each at the value the model's pending likelihood update for it will leave. A diagnostic test is not a fix;
   - a `MITIGATION` has no symptom evidence to target (3D).
-- A downgraded fix the user has already carried out is registered in ONE response: a `root_cause_conclusion` (it counts once the symptom is verified and no rival cause is contested), the fix again as a `SolutionToAdd`, and `solution_accepted` justified by the user's report. The stage gates run after the solutions step, so the re-proposed `SOLUTION` is accepted in the same turn, and that acceptance retires the downgraded `DIAGNOSTIC`. A re-proposal without the acceptance leaves the `DIAGNOSTIC` pending.
+- A downgraded fix the user has already carried out is registered in ONE response: a `root_cause_conclusion` (it counts once the symptom is verified and no rival cause is contested), the fix again as a `SolutionToAdd`, and `solution_accepted` justified by the user's report, its `accepted_action_ref` naming the fix (`new_index_N`). The stage gates run after the solutions step, so the re-proposed `SOLUTION` is accepted in the same turn, and that acceptance retires the downgraded `DIAGNOSTIC`. A re-proposal without the acceptance leaves the `DIAGNOSTIC` pending.
 
 The system uses `action_type` to determine which gate milestone to set when user compliance is detected.
 
@@ -1166,7 +1166,7 @@ proposed_actions: list[ProposedAction] = []
 action_attempts: list[ActionAttempt] = []
 ```
 
-This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) are **set-once monotonic** under forward-only design — once True, they stay True for the rest of the investigation. The `action_attempts` list provides per-attempt **history**, which is the right source for cycle-level analytics (multiple attempts within a single MITIGATION or TREATMENT stage).
+This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) are **monotonic** under forward-only design — once True, they stay True for the rest of the investigation. They are projections, not the record: each SOLUTION the user carries out is an attempt, registered once, in the turn it was reported, for the newest action bearing the fix its acceptance names (`MilestoneUpdates.accepted_action_ref`, an ACTION_ID or `new_index_N`), which stamps that action's `accepted_in_turn` and appends its `ActionAttempt`. A re-assertion of a registered fix is absorbed, and after the first fix a bare `solution_accepted` registers nothing (#2105), so a fix after one that did not hold opens its own window. Mitigation attempts keep the single-record latch (INV-24). The `action_attempts` list provides per-attempt **history**, which is the right source for cycle-level analytics (multiple attempts within a single MITIGATION or TREATMENT stage).
 
 This is not used for escalation thresholds (escalation is based on capability exhaustion, not a fixed counter). It provides:
 
