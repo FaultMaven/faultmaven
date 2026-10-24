@@ -29,16 +29,21 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool, text
 
 from alembic import context
 
-# Load .env file from project root
 project_root = Path(__file__).parent.parent
-env_file = project_root / ".env"
-if env_file.exists():
-    load_dotenv(env_file)
+
+# Add project root to path for model imports
+sys.path.insert(0, str(project_root))
+
+from faultmaven.config.settings import configured_database_url, load_settings_dotenv
+
+# Load .env as the app does, before anything below reads the environment: the
+# working directory's file only (run alembic from the repository root), and
+# none under FAULTMAVEN_SKIP_DOTENV (#2140).
+load_settings_dotenv()
 
 # Alembic Config object
 config = context.config
@@ -47,12 +52,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Add project root to path for model imports
-sys.path.insert(0, str(project_root))
-
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
-from faultmaven.config.settings import configured_database_url
 from faultmaven.infrastructure.persistence.models import Base
 
 target_metadata = Base.metadata

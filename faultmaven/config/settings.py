@@ -831,9 +831,10 @@ class LLMSettings(BaseSettings):
         }
         return url_map.get(provider, "")
 
+    # No ``env_file``: built by ``FaultMavenSettings``' default_factory, which
+    # ``_env_file=None`` never reaches, so a file here escaped the skip flag.
+    # ``.env`` arrives through the environment (``load_settings_dotenv``, #2140).
     model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
         "case_sensitive": False,
         "env_prefix": "",
         "extra": "ignore",
@@ -2196,9 +2197,9 @@ class ObservabilitySettings(BaseSettings):
     opik_enabled: bool = Field(default=False)
     # OPIK_TRACK_DISABLE is deliberately NOT a field here. The Opik SDK owns it:
     # OpikConfig reads it straight from os.environ (env_prefix="opik_") and
-    # derives is_tracing_active() from it, and main.py's load_dotenv() puts .env
-    # into the environment before the SDK is imported. Declaring it here too
-    # would shadow the SDK's default with a second one nothing reads.
+    # derives is_tracing_active() from it, and main.py's load_settings_dotenv()
+    # puts .env into the environment before the SDK is imported. Declaring it
+    # here too would shadow the SDK's default with a second one nothing reads.
     opik_log_raw_prompts: bool = Field(
         default=False,
         description="DANGER: Log raw LLM prompts bypassing sanitization. Only use for local debugging.",
@@ -3609,11 +3610,10 @@ def environment_settings_read() -> Dict[str, str]:
 
     * names are case-insensitive (``gemini_api_key`` is ``GEMINI_API_KEY``, and
       the last spelling wins);
-    * the dotenv file is the one the settings resolve: ``env_file`` is relative
-      to the working directory, which is not where ``get_settings``'
-      ``load_dotenv()`` looks (it walks up from this module), so a package
-      installed outside a checkout and run next to its ``.env`` has a file only
-      the settings read;
+    * the dotenv file is the one the settings resolve: ``env_file``, relative
+      to the working directory. ``load_settings_dotenv`` puts the same file into
+      the environment, but a decision can be taken before it has run, so the
+      file is read here in its own right;
     * ``FAULTMAVEN_SKIP_DOTENV`` leaves the file out, exactly as ``get_settings``
       builds the settings without it.
 
@@ -3624,6 +3624,29 @@ def environment_settings_read() -> Dict[str, str]:
         variables.update(DotEnvSettingsSource(FaultMavenSettings).env_vars)
     variables.update(EnvSettingsSource(FaultMavenSettings).env_vars)
     return {name.upper(): value or "" for name, value in variables.items()}
+
+
+def load_settings_dotenv() -> None:
+    """Load the settings' dotenv into ``os.environ``: the one dotenv loader (#2140).
+
+    Only ``FaultMavenSettings.model_config["env_file"]``, resolved against the
+    working directory as the settings resolve it: no upward search, so a ``.env``
+    above the package is never read; nothing under ``FAULTMAVEN_SKIP_DOTENV``;
+    never over a variable already set, so the OS environment wins. It goes into
+    ``os.environ`` because modules read that at import, before any settings
+    exist (the trusted-proxy list, the Opik SDK's ``OPIK_TRACK_DISABLE``).
+    ``dotenv`` is imported at call time, so a caller that replaces
+    ``dotenv.load_dotenv`` (``tests/conftest.py``) turns this off too.
+    """
+    if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
+        return
+    import dotenv
+
+    dotenv.load_dotenv(
+        Path(FaultMavenSettings.model_config["env_file"]),
+        encoding=FaultMavenSettings.model_config["env_file_encoding"],
+        override=False,
+    )
 
 
 # =============================================================================
@@ -3642,7 +3665,8 @@ def get_settings() -> FaultMavenSettings:
     via dependency injection.
 
     Configuration Loading Order:
-    1. Load .env file (if exists)
+    1. Load the working directory's .env into the environment
+       (``load_settings_dotenv``; none under FAULTMAVEN_SKIP_DOTENV)
     2. Apply preset defaults (if CONFIG_PRESET is set or zero-config detected)
     3. Environment variables override preset defaults
     4. Validate final configuration
@@ -3660,14 +3684,9 @@ def get_settings() -> FaultMavenSettings:
     global _settings_instance
     if _settings_instance is None:
         try:
-            # Ensure .env file is loaded before creating settings
-            import os
-
-            from dotenv import load_dotenv
-
             # Load .env without overriding existing environment variables.
             # This preserves the standard precedence order: OS env > .env.
-            load_dotenv()
+            load_settings_dotenv()
 
             # Apply preset defaults for zero-config experience
             # Presets are applied AFTER .env but BEFORE settings instantiation

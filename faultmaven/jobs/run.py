@@ -672,10 +672,11 @@ def main(args: Optional[List[str]] = None) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    # Load environment variables at function level, not module level
-    from dotenv import load_dotenv
+    # Load .env at function level, not module level: the working directory's
+    # file only, and none under FAULTMAVEN_SKIP_DOTENV (#2140).
+    from faultmaven.config.settings import load_settings_dotenv
 
-    load_dotenv()
+    load_settings_dotenv()
 
     parser = build_parser()
     parsed_args = parser.parse_args(args)

@@ -47,8 +47,8 @@ ALLOWLIST = {
     # the settings import so it stays trivially unit-testable and hot-path-safe.
     "LLM_PRICING_OVERRIDES",
     # Owned by the Opik SDK, not by settings.py: OpikConfig reads it from
-    # os.environ (env_prefix="opik_") and main.py's load_dotenv() puts .env there
-    # first. Mirroring it as a settings field would shadow the SDK's default.
+    # os.environ (env_prefix="opik_") and main.py's load_settings_dotenv() puts
+    # .env there first. Mirroring it as a settings field would shadow the SDK's default.
     "OPIK_TRACK_DISABLE",
     # Read via os.getenv in config/protection.py
     # (``resolve_protection_profile``), the one reader that decides which

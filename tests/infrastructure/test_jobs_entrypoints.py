@@ -888,7 +888,7 @@ class TestJobsPathBootGates:
         try:
             with (
                 patch("faultmaven.container.container", mock_container),
-                # main() calls load_dotenv(); a developer's .env must not
+                # main() loads .env through dotenv; a developer's .env must not
                 # repopulate the variable this test empties.
                 patch("dotenv.load_dotenv"),
             ):

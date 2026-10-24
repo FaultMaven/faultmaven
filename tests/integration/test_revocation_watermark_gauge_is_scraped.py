@@ -6,12 +6,10 @@ the task are only visible by running the lifespan. A subprocess, because the
 exporter settings are read at import time.
 
 **The child's environment is explicit**, as in ``test_fresh_install_boots.py``:
-its own temp root, cwd and database, and no inherited ``os.environ``.
-``faultmaven/main.py``'s ``load_dotenv`` walks up from its own file, not from
-the cwd, so a checkout's ``.env`` still fills every variable the child leaves
-unset. ``load_dotenv`` never overrides a variable that exists, so every
-provider variable is pinned here, the keys empty, so that nothing the child
-starts can reach a model server.
+its own temp root, cwd and database, and no inherited ``os.environ``. The
+cwd holds no ``.env``, the only one the app reads, and every provider variable
+is pinned here anyway, the keys empty, so that nothing the child starts can
+reach a model server.
 
 **The child drives the lifespan itself** (``app.router.lifespan_context``) and
 scrapes through ``httpx.ASGITransport``. That is what lets it record the task's

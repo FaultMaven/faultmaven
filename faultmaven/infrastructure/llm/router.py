@@ -247,8 +247,8 @@ def _opik_tracing_enabled() -> bool:
     continuous outbound requests from a self-hosted deployment (#1121).
 
     Read LAZILY, at call time. Reading it at import time would bootstrap the
-    settings singleton merely by importing this module — get_settings() runs
-    load_dotenv(), applies presets that mutate os.environ, and writes
+    settings singleton merely by importing this module — get_settings() loads
+    .env, applies presets that mutate os.environ, and writes
     data/.jwt_secret via resolve_local_jwt_secret() — so any script or
     test that imports the router would write a secret into its cwd and freeze
     settings ahead of the test fixtures that exist to clear ambient env.

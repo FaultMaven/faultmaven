@@ -15,13 +15,9 @@ or a provider key on a developer's box cannot decide the outcome, and it runs in
 an empty working directory so the settings' ``.env`` is the one the case writes.
 ``tests/conftest.py`` is not loaded in a child, so ``.env`` is read for real.
 
-The child is a script file, not ``python -c``. ``get_settings()``' bare
-``load_dotenv()`` walks up from ``settings.py`` for a script or ``-m`` launch,
-as the server is, but from the WORKING DIRECTORY when the interpreter is
-interactive, and ``-c`` counts as interactive (``__main__`` has no
-``__file__``). Under ``-c`` it would load the case's own ``.env`` into the
-environment before the preset check, and the case about a file only the
-settings' own source reads would pass for the wrong reason.
+The child is a script file, launched as the server is. ``get_settings()`` loads
+the working directory's ``.env`` and no other, so a ``.env`` above the package,
+such as the checkout's own, never reaches the child (#2140).
 """
 
 from __future__ import annotations

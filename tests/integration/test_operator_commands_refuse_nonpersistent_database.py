@@ -186,9 +186,8 @@ def _run(
             "AUTH_MODE": "local",
             # No JWT_SECRET_KEY: local auth mints its own ahead of the gate, and
             # a refused run must not persist it (#1703).
-            # Hermetic: settings' load_dotenv() otherwise walks up from the
-            # faultmaven package when __main__ has a __file__ (runpy), and in
-            # a nested worktree finds the parent checkout's .env.
+            # Hermetic: no .env is read at all, so only this test's
+            # variables decide the case.
             "PYTHON_DOTENV_DISABLED": "1",
             **(extra_env or {}),
         }
