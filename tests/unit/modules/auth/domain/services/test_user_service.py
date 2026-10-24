@@ -10,7 +10,6 @@ Tests for:
 Coverage target: 90%+
 """
 
-import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,7 +17,6 @@ import pytest
 
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
-from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -99,31 +97,6 @@ def user_service(user_repo, mock_auth_service):
         # Redis is always available (FakeRedis for tests)
         service.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
         return service
-
-
-@pytest.fixture
-def registered_user(user_repo):
-    """Create and save a registered user in the repository."""
-    from faultmaven.utils.password import hash_password
-
-    now = datetime.now(timezone.utc)
-    user = RepositoryUser(
-        user_id=str(uuid.uuid4()),
-        username="existinguser",
-        email="existing@example.com",
-        display_name="Existing User",
-        hashed_password=hash_password("ExistingP@ss123"),
-        is_active=True,
-        is_email_verified=False,
-        created_at=now,
-        updated_at=now,
-        roles=["member"],
-    )
-    # Synchronously add to repository
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(user_repo.save(user))
-    return user
 
 
 class TestRegisterUser:

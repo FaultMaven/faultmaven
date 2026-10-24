@@ -5,7 +5,7 @@ question — did the retry ladder give up before the turn-wide ``wait_for``
 fired? did an open circuit breaker answer without waiting? — and a wall
 clock answers that only on an idle machine. Under ``pytest-xdist`` the
 event loop shares its CPU with three other workers, a starved loop runs its
-timers late, and ``tests/integration/core/test_llm_ladder_turn_budget.py``
+timers late, and ``tests/integration/core/virtual_time/test_llm_ladder_turn_budget.py``
 measured ``2.98 < 2.0`` on a required gate while its classification — the
 thing the test is about — was correct. No threshold is right for that: the
 number is the scheduler's, not the code's.
@@ -20,19 +20,25 @@ a deadline and mean it.
 Using it
 --------
 
-Override ``event_loop_policy`` (the pytest-asyncio fixture) in the module,
-and point every production module that READS the monotonic clock on the
-path under test at ``virtual_time_module()``:
+Put the module in a directory of its own whose ``conftest.py`` implements
+pytest-asyncio's ``pytest_asyncio_loop_factories`` hook with
+``virtual_time_loop_factories()``, and point every production module that
+READS the monotonic clock on the path under test at ``virtual_time_module()``:
 
 .. code-block:: python
 
-    @pytest.fixture
-    def event_loop_policy():
-        return VirtualTimePolicy()
+    # conftest.py, beside the module
+    def pytest_asyncio_loop_factories(config, item):
+        return virtual_time_loop_factories()
 
+    # the module
     @pytest.fixture(autouse=True)
     def _virtual_clock(monkeypatch):
         monkeypatch.setattr(turn_budget, "time", virtual_time_module())
+
+A directory, because the hook answers for every async test under its
+conftest: one that answers must return a factory for each of them, so a
+conftest shared with ordinary tests would move them onto this loop too.
 
 Read elapsed time with ``virtual_now()``. It refuses to run on any other
 loop, which is what makes it safe for the guard in
@@ -52,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import time
 import types
+from typing import Callable
 
 
 class VirtualTimeLoop(asyncio.SelectorEventLoop):
@@ -76,11 +83,11 @@ class VirtualTimeLoop(asyncio.SelectorEventLoop):
         super()._run_once()
 
 
-class VirtualTimePolicy(asyncio.DefaultEventLoopPolicy):
-    """Hands pytest-asyncio a ``VirtualTimeLoop`` for every test."""
-
-    def new_event_loop(self) -> asyncio.AbstractEventLoop:
-        return VirtualTimeLoop()
+def virtual_time_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
+    """What a ``pytest_asyncio_loop_factories`` hook returns to run its tests on
+    a ``VirtualTimeLoop``. One factory, so pytest-asyncio adds no id to the
+    test names."""
+    return {"virtual_time": VirtualTimeLoop}
 
 
 def virtual_now() -> float:
@@ -93,8 +100,8 @@ def virtual_now() -> float:
     if not isinstance(loop, VirtualTimeLoop):
         raise RuntimeError(
             "virtual_now() needs a VirtualTimeLoop; this test is running on "
-            f"{type(loop).__name__}. Override the module's event_loop_policy "
-            "fixture with VirtualTimePolicy()."
+            f"{type(loop).__name__}. Its conftest.py must return "
+            "virtual_time_loop_factories() from pytest_asyncio_loop_factories."
         )
     return loop.time()
 

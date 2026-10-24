@@ -217,7 +217,8 @@ class _ClosableClient:
 
         return _run
 
-    async def close(self):
+    async def aclose(self):
+        # redis-py's async close since 5.0.1; ``close()`` is deprecated.
         self.closed = True
 
 

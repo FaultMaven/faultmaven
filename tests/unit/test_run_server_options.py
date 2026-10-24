@@ -76,6 +76,7 @@ def test_every_uvicorn_option_is_passed(app, workers, reload):
         "log_level": "info",
         "access_log": False,
         "timeout_keep_alive": 90,
+        "ws": "none",
         "log_config": None,
     }
     if workers > 1:

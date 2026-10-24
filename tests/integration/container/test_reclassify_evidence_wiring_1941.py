@@ -17,17 +17,6 @@ from faultmaven.modules.agent.domain.services.investigation_service.reclassifica
 
 
 @pytest.fixture
-def fresh_container():
-    """The DI container singleton, reset around the test (see
-    ``test_knowledge_service_db_wiring.py`` for why it is spelled out here)."""
-    from faultmaven.container import container
-
-    container.reset()
-    yield container
-    container.reset()
-
-
-@pytest.fixture
 def reclassify_enabled(monkeypatch):
     """Compose under the flag, whatever the ambient value; the settings
     singleton is rebuilt from the patched environment and again afterwards."""

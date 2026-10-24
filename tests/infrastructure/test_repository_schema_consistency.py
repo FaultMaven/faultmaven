@@ -431,11 +431,17 @@ async def test_db_session():
     engine = create_async_engine(db_url, echo=False)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    async with async_session() as session:
-        # Setup: Create tables if needed
-        # (Assumes migrations already run)
+    try:
+        async with async_session() as session:
+            # Setup: Create tables if needed
+            # (Assumes migrations already run)
 
-        yield session
+            yield session
 
-        # Teardown: Rollback
-        await session.rollback()
+            # Teardown: Rollback
+            await session.rollback()
+    finally:
+        # Close the pool on this test's loop, however the session ended; an
+        # undisposed engine leaves its pooled connections to be collected after
+        # the loop has closed.
+        await engine.dispose()

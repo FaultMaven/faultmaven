@@ -14,6 +14,9 @@ logging.basicConfig(
 # Mock dependencies
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from fakeredis import aioredis as fake_aioredis
+
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import IntentType, QueryIntent
@@ -30,6 +33,12 @@ async def test_intent_routing():
 
     # 1. Setup Mock Service
     mock_engine = AsyncMock()
+    # The turn's redaction context is loaded from these two (#1956). A bare
+    # AsyncMock answers ``hgetall`` with another mock, whose ``.items()`` is a
+    # coroutine nobody awaits: no sanitizer, as when none is configured, and a
+    # real (fake) Redis.
+    mock_engine.deps.sanitizer = None
+    mock_engine.deps.redis_client = fake_aioredis.FakeRedis()
     mock_repo = AsyncMock()
 
     # Mock engine process_turn response - WILL BE UPDATED AFTER mock_case CREATION
@@ -96,18 +105,10 @@ async def test_intent_routing():
     ]
 
     for msg in greetings:
-        intent = _heuristic(msg)
-        if intent == IntentType.GREETING:
-            print(f"✅ Correctly detected GREETING for: '{msg}'")
-        else:
-            print(f"❌ FAILED to detect GREETING for: '{msg}' (Got: {intent})")
+        assert _heuristic(msg) == IntentType.GREETING, msg
 
     for msg in non_greetings:
-        intent = _heuristic(msg)
-        if intent is None:
-            print(f"✅ Correctly ignored non-greeting: '{msg}'")
-        else:
-            print(f"❌ Incorrectly detected {intent} for: '{msg}'")
+        assert _heuristic(msg) is None, msg
 
     # =========================================================================
     # Test 2: Heuristic Handler Execution
@@ -120,12 +121,7 @@ async def test_intent_routing():
 
     result = await service.process_turn(case_id, user_id, payload)
 
-    if "I'm FaultMaven" in result.agent_response:
-        print(f"✅ Service returned static greeting: '{result.agent_response[:50]}...'")
-    else:
-        print(f"❌ Service returned unexpected response: '{result.agent_response}'")
-
-    print(f"   Turn number: {result.turn_number}")
+    assert "I'm FaultMaven" in result.agent_response, result.agent_response
 
     # =========================================================================
     # Test 3: Explicit Intent (Status Transition)
@@ -148,19 +144,11 @@ async def test_intent_routing():
 
     await service.process_turn(case_id, user_id, payload_transition)
 
-    # Check if engine was called with correct intent_type
+    # The engine was called with the transition's intent and data
     call_args = mock_engine.process_turn.call_args
-    if call_args:
-        kwargs = call_args.kwargs
-        if (
-            kwargs.get("intent_type") == "status_transition"
-            and kwargs.get("intent_data", {}).get("to_state") == "closed"
-        ):
-            print("✅ Engine called with correct 'status_transition' intent and data")
-        else:
-            print(f"❌ Engine called with incorrect args: {kwargs}")
-    else:
-        print("❌ Engine was not called (or logic bypassed engine unexpectedly)")
+    assert call_args is not None, "the engine was not called"
+    assert call_args.kwargs.get("intent_type") == "status_transition"
+    assert call_args.kwargs.get("intent_data", {}).get("to_state") == "closed"
 
     # =========================================================================
     # Test 4: The refused edges never reach the engine
@@ -170,7 +158,9 @@ async def test_intent_routing():
     for refused in (CaseState.RESOLVED, CaseState.INVESTIGATING):
         mock_engine.process_turn.reset_mock()
         mock_case.messages = []
-        try:
+        with pytest.raises(
+            ValidationException, match="not a user-selectable case action"
+        ):
             await service.process_turn(
                 case_id,
                 user_id,
@@ -181,13 +171,7 @@ async def test_intent_routing():
                     ),
                 ),
             )
-            print(f"❌ {refused.value} was accepted; it must be refused")
-        except ValidationException as exc:
-            assert "not a user-selectable case action" in str(exc)
-            assert not mock_engine.process_turn.called
-            print(f"✅ {refused.value} refused at the boundary, engine untouched")
-
-    print("\nDONE")
+        assert not mock_engine.process_turn.called
 
 
 if __name__ == "__main__":

@@ -345,7 +345,7 @@ def test_the_compared_set_is_exactly_the_route_describing_headers(booted_app_cli
 
 
 def test_every_per_request_header_is_one_something_emits():
-    """The other direction: a name in the filter that nothing writes.
+    r"""The other direction: a name in the filter that nothing writes.
 
     `x-process-time` sat in this set while the middleware wrote
     `x-processing-time`, so the filter silently compared two wall-clock values

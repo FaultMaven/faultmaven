@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -89,7 +90,7 @@ class TestOutcome:
         assert ProgressMonitor()._count_investigative_turns_since_milestone(case) == 1
 
     def test_ui_adapter_uses_the_same_rule(self):
-        src = open(case_ui_adapter.__file__).read()
+        src = Path(case_ui_adapter.__file__).read_text()
         assert "NON_INVESTIGATIVE_OUTCOMES" in src
         assert '("conversation", "other")' not in src
 

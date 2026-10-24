@@ -7,19 +7,10 @@ integration testing capabilities including memory, planning, reasoning,
 knowledge, and orchestration system testing.
 """
 
-import os
-
-# CRITICAL: Import root conftest mocks FIRST before any other imports
-# This ensures _ctypes and _sqlite3 mocks are loaded before chromadb/protobuf imports
-# The import chain: CaseService -> persistence -> chromadb -> protobuf -> ctypes -> _ctypes
-# Must happen BEFORE any faultmaven imports that might trigger this chain
-import sys
-
-# Add parent directory to path to import root conftest mocks
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-# Now safe to import other modules
 import asyncio
 import io
+import os
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -27,8 +18,6 @@ from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
-# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
-import conftest as root_conftest  # noqa: F401
 import pytest
 import pytest_asyncio
 
@@ -149,17 +138,6 @@ def _reset_outcomes() -> None:
     _session_outcomes = _SessionOutcomes()
 
 
-# The root conftest's per-test restore of the root logger (#1944). Run as
-# ``pytest tests/integration``, the rootdir is this directory (its own
-# ``pytest.ini``), so ``tests/conftest.py`` is only imported above, never
-# registered, and its hooks do not fire here. Under ``pytest tests/`` both
-# copies run for these tests; a nested snapshot and restore is the same restore.
-pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
-
-# Same reason, for the report of a connection the network guard refused.
-pytest_runtest_makereport = root_conftest.pytest_runtest_makereport
-
-
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""
     _reset_outcomes()
@@ -238,19 +216,69 @@ def pytest_sessionfinish(session, exitstatus):
         session.exitstatus = 1
 
 
-@pytest.fixture
-def mock_authenticated_user():
-    """Create a mock authenticated user for tests."""
-    from faultmaven.modules.auth.contracts import UserDTO
+@pytest.fixture(autouse=True)
+async def _served_apps_end_their_service():
+    """End the protection middleware's service after every test, deterministically.
 
-    return UserDTO(
-        user_id="test_user_123",
-        username="test_user",
-        email="test@example.com",
-        display_name="Test User",
-        is_active=True,
-        roles=["user"],
-    )
+    Modules here serve ``faultmaven.main.app`` or a ``rebuild_app()`` app without
+    its lifespan, so the app is never composed and the protection middleware
+    builds a Redis client of its own (on a real Redis; standalone gets the
+    FakeRedis stand-in, which it never owns). Each is shut down the way the
+    lifespan's ``shutdown_protection`` does it, per test.
+
+    A redis-py asyncio pool can only be closed on the event loop it was opened
+    on. Under the function-scoped loop this teardown runs on the test's own, so
+    an app served from it (``AsyncClient(ASGITransport(app))`` in an async test)
+    is closed here. A client opened on a loop that is still running belongs to a
+    live lifespan, the module's shared boot, whose own shutdown closes it, so it
+    is left to that. An app served from a loop that has ended, a bare
+    ``TestClient``'s per-request portal above all, leaves a client nothing can
+    close: its sockets surface later as ``unclosed transport`` in whichever test
+    is running at garbage collection. So that fails here, in the test that
+    served it, naming the app, instead of depending on when the collector runs.
+    """
+    yield
+    from tests.integration._app_rebuild import rebuilt_apps
+
+    apps = [(f"rebuild_app() app #{n}", app) for n, app in enumerate(rebuilt_apps())]
+    published = sys.modules.get("faultmaven.main")
+    if published is not None:
+        apps.append(("faultmaven.main.app", published.app))
+    await _end_the_service_of(apps)
+
+
+async def _end_the_service_of(apps) -> None:
+    """Shut down each named app's protection middleware; fail on a stranded client.
+
+    ``apps`` is ``(name, app)`` pairs; the name is what the failure reports.
+    """
+    from faultmaven.api.protection import live_protection_middleware
+
+    running = asyncio.get_running_loop()
+    stranded = []
+    failures = []
+    for name, app in apps:
+        for middleware in live_protection_middleware(app):
+            opened_on = middleware.owned_client_loop
+            if opened_on is not None and opened_on is not running:
+                if opened_on.is_running():
+                    continue
+                stranded.append(f"{name}: {type(middleware).__name__}")
+            try:
+                await middleware.shutdown()
+            except Exception as e:
+                failures.append(e)
+    if failures:
+        raise ExceptionGroup("protection middleware shutdown failed", failures)
+    if stranded:
+        pytest.fail(
+            "an app was served from an event loop other than this test's, and "
+            "its protection middleware built a Redis client there that nothing "
+            "can close: " + "; ".join(stranded) + ". Serve it from the test's "
+            "own loop (an async test with AsyncClient(transport=ASGITransport("
+            "app=app))), or borrow the composed app (booted_app_client).",
+            pytrace=False,
+        )
 
 
 @pytest.fixture
@@ -350,281 +378,6 @@ def mock_session_service():
 
     service = AsyncMock()
     return service
-
-
-@pytest.fixture
-def mock_data_service():
-    """Create a mock data preprocessing service for tests."""
-    from unittest.mock import AsyncMock
-
-    service = AsyncMock()
-
-    # Mock ingest_data to return preprocessed data
-    async def ingest_data_mock(content, session_id, file_name, file_size, context):
-        data_id = f"data_{uuid4().hex[:12]}"
-
-        # Determine data type from file name. Post-010, evidence categories
-        # are claim-anchored (SYMPTOM/CAUSAL/MITIGATION/SOLUTION); files
-        # themselves are classified by source_type, not evidence category.
-        data_type = "logs"
-        category = "SYMPTOM_EVIDENCE"
-
-        if (
-            ".yaml" in file_name
-            or ".json" in file_name
-            or "config" in file_name.lower()
-        ):
-            data_type = "configuration"
-        elif "metrics" in file_name.lower():
-            data_type = "metrics"
-
-        return {
-            "data_id": data_id,
-            "data_type": data_type,
-            "content": content,
-            "file_size": file_size,
-            "insights": {
-                "brief_summary": f"Test {data_type} ingested from {file_name}"
-            },
-            "classification": {"type": category, "confidence": 0.95},
-        }
-
-    service.ingest_data = ingest_data_mock
-
-    return service
-
-
-@pytest.fixture
-def mock_investigation_service(mock_case_service):
-    """Create a mock investigation service for tests."""
-    from unittest.mock import AsyncMock
-
-    from faultmaven.modules.case.contracts import CaseState
-
-    service = AsyncMock()
-
-    # Mock process_turn to return a TurnResponse
-    async def process_turn_mock(case_id, user_id, payload):
-        import hashlib as _hashlib
-
-        from faultmaven.models.api_models import AttachmentResult, TurnResponse
-        from faultmaven.modules.case.contracts import (
-            Evidence,
-            EvidenceCategory,
-            EvidenceSourceType,
-            UploadedFile,
-        )
-
-        attachments_processed = []
-
-        # Simulate side effect: add UploadedFile + Evidence if payload has attachments
-        if hasattr(payload, "has_attachments") and payload.has_attachments:
-            case = await mock_case_service.get_case(case_id, user_id)
-            if case:
-                for attachment in payload.attachments:
-                    filename = attachment.filename
-                    content_ref = f"s3://bucket/{filename}"
-
-                    # Determine source_type from filename
-                    source_type = EvidenceSourceType.LOGS
-                    data_type = "logs"
-                    if any(
-                        ext in filename.lower()
-                        for ext in [".yaml", ".yml", ".json", "config"]
-                    ):
-                        source_type = EvidenceSourceType.CONFIGURATION
-                        data_type = "configuration"
-                    elif "metrics" in filename.lower():
-                        source_type = EvidenceSourceType.METRICS
-                        data_type = "metrics"
-
-                    # Create UploadedFile for the raw file. content_hash and
-                    # storage_ref live here now (file-intrinsic metadata);
-                    # Evidence references the file via source_file_id FK.
-                    file_id = f"file_{uuid4().hex[:12]}"
-                    uploaded_file = UploadedFile(
-                        file_id=file_id,
-                        filename=filename,
-                        size_bytes=len(attachment.content),
-                        uploaded_at_turn=1,
-                        upload_source="file_upload",
-                        storage_ref=content_ref,
-                        content_hash=_hashlib.sha256(b"Test content").hexdigest(),
-                    )
-                    case.uploaded_files.append(uploaded_file)
-
-                    # Duplicate detection now reads from evidence.extract
-                    # (was preprocessed_content before the rename)
-                    is_duplicate = any(
-                        ev.extract == "Test content" for ev in case.evidence
-                    )
-                    is_irrelevant = "random" in filename.lower()
-
-                    # Post-010: duplicates and irrelevance are no longer
-                    # signalled by an EvidenceCategory.REJECTED value (that
-                    # enum member was dropped). Duplicates are skipped at the
-                    # uploaded-file layer in production; irrelevance is left
-                    # for the LLM to ignore. Here we just annotate the
-                    # summary/primary_purpose for legacy test surface.
-                    category = EvidenceCategory.SYMPTOM_EVIDENCE
-                    summary = "Log analysis: connection timeout error found"
-                    primary_purpose = "symptom_verified"
-
-                    if is_duplicate:
-                        summary = "Duplicate file: already processed this content"
-                        primary_purpose = "duplicate_ignored"
-                    elif is_irrelevant:
-                        summary = (
-                            "Irrelevant file: content not related to investigation"
-                        )
-                        primary_purpose = "irrelevant_ignored"
-
-                    # Create Evidence linked to the upload via source_file_id
-                    ev = Evidence(
-                        evidence_id=f"ev_{uuid4().hex[:12]}",
-                        extract="Test content",
-                        category=category,
-                        source_type=source_type,
-                        source_file_id=file_id,
-                        summary=summary,
-                        collected_at_turn=1,
-                        collected_by="system",
-                        primary_purpose=primary_purpose,
-                    )
-                    case.evidence.append(ev)
-
-                    attachments_processed.append(
-                        AttachmentResult(
-                            file_id=file_id,
-                            filename=filename,
-                            source_type=data_type,
-                            file_size=len(attachment.content),
-                            processing_status="completed",
-                        )
-                    )
-
-        return TurnResponse(
-            agent_response="Test response",
-            turn_number=1,
-            milestones_completed=[],
-            case_status=CaseState.INVESTIGATING,
-            progress_made=True,
-            attachments_processed=attachments_processed,
-        )
-
-    service.process_turn = process_turn_mock
-
-    return service
-
-
-@pytest.fixture
-def mock_case_vector_store():
-    """Create a mock case vector store for tests."""
-    from unittest.mock import AsyncMock
-
-    store = AsyncMock()
-
-    # Mock add_documents
-    async def add_documents_mock(case_id, documents):
-        return True
-
-    store.add_documents = add_documents_mock
-
-    return store
-
-
-@pytest.fixture
-def mock_case_repository():
-    """Create a mock case repository for tests."""
-    from unittest.mock import AsyncMock
-
-    repo = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def mock_services_for_integration_tests(
-    mock_authenticated_user,
-    mock_case_service,
-    mock_session_service,
-    mock_data_service,
-    mock_investigation_service,
-    mock_case_vector_store,
-    mock_case_repository,
-):
-    """Mock all services for integration tests (opt-in).
-
-    This fixture overrides all service dependencies and sets up app.state with
-    mock services, allowing integration tests to run without actual service
-    implementations.
-
-    To use this fixture, tests should explicitly request it as a parameter.
-    Tests that need to test authentication failures should NOT use this fixture.
-    """
-    from starlette.testclient import TestClient
-
-    from faultmaven.api.v1.auth_dependencies import require_authentication
-    from faultmaven.api.v1.dependencies import (
-        get_case_repository,
-        get_case_service,
-        get_case_vector_store,
-        get_data_service,
-        get_investigation_service,
-    )
-    from faultmaven.main import app
-    from faultmaven.modules.case.api.routes.dependencies import (
-        _di_get_case_service_dependency,
-        _di_get_session_service_dependency,
-    )
-
-    # Mock authentication
-    async def get_mock_user():
-        return mock_authenticated_user
-
-    # Mock service dependencies
-    async def get_mock_case_service():
-        return mock_case_service
-
-    async def get_mock_session_service():
-        return mock_session_service
-
-    async def get_mock_data_service():
-        return mock_data_service
-
-    async def get_mock_investigation_service():
-        return mock_investigation_service
-
-    async def get_mock_case_vector_store():
-        return mock_case_vector_store
-
-    async def get_mock_case_repository():
-        return mock_case_repository
-
-    # Override all dependencies BEFORE creating TestClient
-    app.dependency_overrides[require_authentication] = get_mock_user
-    app.dependency_overrides[get_case_service] = get_mock_case_service
-    app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
-    app.dependency_overrides[_di_get_session_service_dependency] = (
-        get_mock_session_service
-    )
-    app.dependency_overrides[get_data_service] = get_mock_data_service
-    app.dependency_overrides[get_investigation_service] = get_mock_investigation_service
-    app.dependency_overrides[get_case_vector_store] = get_mock_case_vector_store
-    app.dependency_overrides[get_case_repository] = get_mock_case_repository
-
-    # Set app.state for services that access request.app.state directly
-    app.state.session_service = mock_session_service
-    app.state.case_service = mock_case_service
-
-    # Create TestClient ONCE with all overrides configured
-    # Using base_url helps with some edge cases
-    test_client = TestClient(app, base_url="http://testserver")
-
-    yield test_client
-
-    # Clean up after test
-    test_client.close()
-    app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -1367,27 +1120,3 @@ def in_memory_database_url(monkeypatch):
     """
     monkeypatch.setenv("DATABASE_URL", IN_MEMORY_DATABASE_URL)
     return IN_MEMORY_DATABASE_URL
-
-
-# ``tests/integration`` has its own ``pytest.ini``, so the repository-root
-# ``tests/conftest.py`` is not loaded here. Re-export the shared fixtures rather
-# than growing a second copy of them (#1045 D8 R8): a double that drifts between
-# modules stops being evidence about the same thing.
-#
-# ‼ Note what this file's own rootdir does to a LOCAL run: ``pytest tests/`` (CI)
-# has the repository root as rootdir and loads ``tests/conftest.py``, while
-# ``pytest tests/integration/...`` does not — so a fixture that is not re-exported
-# here is missing in exactly the invocation a developer reaches for.
-# ``tests/unit/architecture/test_app_boot_is_shared.py`` fails when a directory
-# carrying its own ``pytest.ini`` stops re-exporting the shared app boot, or
-# ``_app_boot_guard`` and ``_app_boot_session``, the autouse fixtures through
-# which the runtime check on a second lifespan learns which test is running
-# (fm#1628).
-from tests.conftest import (  # noqa: E402,F401
-    _app_boot_guard,
-    _app_boot_session,
-    _real_app_boot,
-    booted_app_client,
-    restore_tenant_context,
-    unshared_app_boot,
-)

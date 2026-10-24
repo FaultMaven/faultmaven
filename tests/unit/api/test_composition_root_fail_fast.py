@@ -156,8 +156,18 @@ async def test_a_missing_service_propagates_out_of_the_wiring(monkeypatch):
     ``compose_application``, so the failure has to reach it.
     """
     from faultmaven.bootstrap.composition import _wire_composition_root
+    from faultmaven.infrastructure.llm import usage_ledger
 
     settings = _settings_for(monkeypatch, "standalone", "development")
+    # The wiring installs the process-global LLM usage ledger before the getter
+    # that raises below, and only the lifespan's shutdown uninstalls it. Put
+    # back at teardown: left installed, it outlived this test, and every later
+    # test in the process that metered a provider call scheduled a database
+    # write through it, which the closing loop of that test abandoned with its
+    # connection open ("deleted before being closed").
+    monkeypatch.setattr(
+        usage_ledger, "_installed_ledger", usage_ledger.get_installed_usage_ledger()
+    )
 
     container = MagicMock()
     container.initialize = AsyncMock()
