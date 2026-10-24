@@ -69,8 +69,8 @@ class OAuthRateLimiter:
         # limit key depend on a mutable global.
         #
         # Reading the environment here is safe even though the module-level
-        # singleton is built at *import* time: ``main`` runs ``load_dotenv()``
-        # at its own import, before any router (and therefore this module) is
+        # singleton is built at *import* time: ``main`` loads ``.env`` at its
+        # own import, before any router (and therefore this module) is
         # imported, so `.env` has already reached ``os.environ``. Post-boot the
         # value does not change, which is why ``reset_rate_limiter`` — the test
         # seam — is the only thing that re-reads it.

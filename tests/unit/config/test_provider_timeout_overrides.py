@@ -22,24 +22,12 @@ from faultmaven.config.settings import LLMSettings
 def _mk_settings(
     monkeypatch, *, request_timeout: int, overrides: dict | None
 ) -> LLMSettings:
-    """Build LLMSettings via env so pydantic-settings reads our values.
-
-    The local .env loads with higher precedence than init args for
-    LLMSettings (it has env_file=".env" in model_config), so direct
-    constructor args don't win. The most reliable substrate for these
-    tests is to set env vars and let pydantic-settings parse them.
-    """
+    """Build LLMSettings from the environment, its one source, as at boot."""
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT", str(request_timeout))
     if overrides is not None:
         monkeypatch.setenv("LLM_PROVIDER_TIMEOUT_OVERRIDES", json.dumps(overrides))
     else:
         monkeypatch.delenv("LLM_PROVIDER_TIMEOUT_OVERRIDES", raising=False)
-    # Point the env_file at /dev/null so the operator's .env never wins
-    monkeypatch.setattr(
-        LLMSettings,
-        "model_config",
-        {**LLMSettings.model_config, "env_file": "/dev/null"},
-    )
     return LLMSettings()
 
 

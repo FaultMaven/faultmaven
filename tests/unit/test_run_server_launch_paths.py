@@ -356,7 +356,7 @@ def test_running_main_py_as_main_refuses_and_serves_nothing():
 def test_python_dash_m_main_exits_one_before_any_import_time_work():
     """The real process: status 1, the one-line message, and nothing else.
 
-    The refusal sits above ``load_dotenv()`` and every import, so no log line is
+    The refusal sits above the ``.env`` load and every import, so no log line is
     produced. At the bottom of the file the status is the same, but only after
     every import-time side effect has run.
     """

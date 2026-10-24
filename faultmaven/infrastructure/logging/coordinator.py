@@ -22,7 +22,7 @@ def _log_settings():
 
     At call time on purpose: importing settings at module import would bootstrap
     the settings singleton during import, which ``llm/router.py`` documents as
-    harmful (it runs load_dotenv and applies presets that mutate os.environ).
+    harmful (it loads .env and applies presets that mutate os.environ).
     """
     from faultmaven.config.settings import get_settings
 

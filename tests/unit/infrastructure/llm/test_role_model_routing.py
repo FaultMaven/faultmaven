@@ -32,18 +32,10 @@ from faultmaven.config.settings import LLMProvider, LLMSettings
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
 
-# Every env var these tests touch, cleared up front.
-#
-# `delenv` clears os.environ only; pydantic-settings reads the `.env` file as a
-# separate source it cannot reach. That leak is already closed suite-wide —
-# `tests/conftest.py` patches `dotenv.dotenv_values` and
-# `DotEnvSettingsSource._read_env_files` to no-ops before any settings import —
-# so these assertions were never actually at risk from a developer's `.env`.
-# The constructions below still pass `_env_file=None` (the idiom `settings.py`
-# uses at line 3227) so each one is isolated on its own terms rather than by a
-# global patch living in another file: exact-list assertions like
-# `configured_task_models(...) == []` are the shape that fails unreadably if
-# that patch is ever narrowed.
+# Every env var these tests touch, cleared up front. `LLMSettings` reads the
+# process environment only (it has no `env_file`, #2140), so clearing it
+# isolates each construction, which exact-list assertions like
+# `configured_task_models(...) == []` depend on.
 _ENV_VARS = (
     "CHAT_PROVIDER",
     "DA_PROVIDER",
@@ -72,7 +64,7 @@ class TestConfiguredTaskModels:
     def test_returns_per_task_values_for_provider(self, clean_env):
         clean_env.setenv("OPENAI_DA_MODEL", "gpt-5.6-luna")
         clean_env.setenv("OPENAI_CLASSIFIER_MODEL", "gpt-5.4-mini")
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.configured_task_models(LLMProvider.OPENAI) == [
             "gpt-5.4-mini",  # classifier precedes da in LLM_MODEL_TASKS order
             "gpt-5.6-luna",
@@ -81,20 +73,18 @@ class TestConfiguredTaskModels:
     def test_deduplicates_repeated_values(self, clean_env):
         clean_env.setenv("OPENAI_DA_MODEL", "gpt-5.6-luna")
         clean_env.setenv("OPENAI_SYNTHESIS_MODEL", "gpt-5.6-luna")
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.configured_task_models("openai") == ["gpt-5.6-luna"]
 
     def test_empty_when_nothing_configured(self, clean_env):
-        assert LLMSettings(_env_file=None).configured_task_models("openai") == []
+        assert LLMSettings().configured_task_models("openai") == []
 
     def test_local_has_no_per_task_fields(self, clean_env):
-        assert (
-            LLMSettings(_env_file=None).configured_task_models(LLMProvider.LOCAL) == []
-        )
+        assert LLMSettings().configured_task_models(LLMProvider.LOCAL) == []
 
     def test_accepts_enum_and_string(self, clean_env):
         clean_env.setenv("GEMINI_CLASSIFIER_MODEL", "gemini-3.5-flash-lite")
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.configured_task_models(LLMProvider.GEMINI) == [
             "gemini-3.5-flash-lite"
         ]
@@ -108,7 +98,7 @@ class TestExplicitRoleProvider:
         """da / knowledge / structured_output ship UNSET, so they follow
         CHAT_PROVIDER — ``None`` is what tells the call site not to pass a
         provider_override."""
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.explicit_role_provider("da") is None
         assert settings.explicit_role_provider("knowledge") is None
         assert settings.explicit_role_provider("structured_output") is None
@@ -117,7 +107,7 @@ class TestExplicitRoleProvider:
         """classifier / synthesis / multimodal ship PINNED to gemini: they are
         static assignments that stay put when CHAT_PROVIDER is flipped, which
         is what makes an A/B comparison of the anchor a controlled one."""
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.explicit_role_provider("classifier") == "gemini"
         assert settings.explicit_role_provider("synthesis") == "gemini"
         assert settings.explicit_role_provider("multimodal") == "gemini"
@@ -126,22 +116,22 @@ class TestExplicitRoleProvider:
         """The fallback MECHANISM is unchanged by the shipped pins: a role
         provider set to None follows CHAT_PROVIDER, which is what commenting
         the key out in .env does."""
-        settings = LLMSettings(_env_file=None, classifier_provider=None)
+        settings = LLMSettings(classifier_provider=None)
         assert settings.explicit_role_provider("classifier") is None
 
     def test_name_when_role_provider_set(self, clean_env):
         clean_env.setenv("CLASSIFIER_PROVIDER", "groq")
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.explicit_role_provider("classifier") == "groq"
 
     def test_chat_maps_to_primary_provider_field(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "gemini")
-        settings = LLMSettings(_env_file=None)
+        settings = LLMSettings()
         assert settings.explicit_role_provider("chat") == "gemini"
 
     def test_unknown_role_is_none(self, clean_env):
         # getattr fallback — an unknown role must not raise in a call site.
-        assert LLMSettings(_env_file=None).explicit_role_provider("nonexistent") is None
+        assert LLMSettings().explicit_role_provider("nonexistent") is None
 
 
 @pytest.mark.unit
@@ -161,9 +151,7 @@ class TestRegistryFoldsTaskModelsIntoProviderConfig:
         # `_create_provider_config` reads only `self.settings.llm`; a
         # namespace around a fresh LLMSettings keeps the global settings
         # singleton out of the test.
-        registry = ProviderRegistry(
-            settings=SimpleNamespace(llm=LLMSettings(_env_file=None))
-        )
+        registry = ProviderRegistry(settings=SimpleNamespace(llm=LLMSettings()))
         return registry._create_provider_config("openai", PROVIDER_SCHEMA["openai"])
 
     def test_models_list_carries_base_plus_task_models(self, clean_env):

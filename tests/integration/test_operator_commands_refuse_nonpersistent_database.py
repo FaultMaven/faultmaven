@@ -24,8 +24,8 @@ it used to persist it to ``data/.jwt_secret`` whatever ``DATABASE_URL`` said, so
 a refused run left that file behind (#1703). Every refused run here pins that it
 no longer does. One refused run sets the URL ONLY as lowercase
 ``database_url``, which the settings bind and the gate refuses, so the secret's
-skip must read it the same way. ``PYTHON_DOTENV_DISABLED`` keeps the child from
-loading a ``.env`` above the checkout.
+skip must read it the same way. ``FAULTMAVEN_SKIP_DOTENV`` keeps every ``.env``
+out of the child.
 
 The positive control runs a command with a persistent database: a file URL
 relative to the same working directory, and ``DATABASE_URL`` unset (the shipped
@@ -186,10 +186,9 @@ def _run(
             "AUTH_MODE": "local",
             # No JWT_SECRET_KEY: local auth mints its own ahead of the gate, and
             # a refused run must not persist it (#1703).
-            # Hermetic: settings' load_dotenv() otherwise walks up from the
-            # faultmaven package when __main__ has a __file__ (runpy), and in
-            # a nested worktree finds the parent checkout's .env.
-            "PYTHON_DOTENV_DISABLED": "1",
+            # Hermetic: the run directory holds no .env and the project's
+            # skip flag reads none, so only this test's variables decide.
+            "FAULTMAVEN_SKIP_DOTENV": "1",
             **(extra_env or {}),
         }
         if database_url is not None:

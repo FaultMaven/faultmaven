@@ -38,10 +38,12 @@ if __name__ == "__main__":
         "start the server with: python -m faultmaven.server"
     )
 
-# Load environment variables FIRST - before any other imports
-from dotenv import load_dotenv
+# Load .env FIRST, before any other import: modules below read os.environ at
+# import time. The one loader reads the working directory's .env only, and none
+# under FAULTMAVEN_SKIP_DOTENV (#2140).
+from faultmaven.config.settings import load_settings_dotenv
 
-load_dotenv()
+load_settings_dotenv()
 
 # Now import everything else
 import os

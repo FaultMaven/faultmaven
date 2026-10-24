@@ -140,11 +140,9 @@ class DotenvImportScanner:
     load time, which violates the principle of configuration centralization.
     """
 
-    # Only settings.py and main.py are allowed to import and use dotenv
-    ALLOWED_DOTENV_FILES = (
-        "faultmaven/config/settings.py",
-        "faultmaven/main.py",
-    )
+    # Only settings.py imports dotenv: it holds the one loader,
+    # ``load_settings_dotenv``, which main.py and every other entry point call.
+    ALLOWED_DOTENV_FILES = ("faultmaven/config/settings.py",)
 
     def __init__(self, project_root: Path):
         self.project_root = project_root
@@ -324,9 +322,8 @@ class TestConfigPurity:
         to be loaded before the composition root can configure the application,
         breaking the deployment-agnostic core principle.
 
-        Only these files are allowed to use load_dotenv:
-        - faultmaven/config/settings.py
-        - faultmaven/main.py (composition root)
+        Only faultmaven/config/settings.py may use load_dotenv: it holds the
+        one loader, which main.py (the composition root) calls.
         """
         violations = dotenv_scanner.scan_for_import_time_dotenv()
 

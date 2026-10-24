@@ -129,8 +129,8 @@ def test_the_shipped_default_origins_refuse_a_deployed_boot(environment):
     # no ``env_file`` (so the nested model never reads the file, only
     # ``os.environ``), and ``tests/conftest.py``'s autouse isolation fixture
     # pops ``CORS_ALLOW_ORIGINS`` out of ``os.environ`` before every test —
-    # which is also what neutralises ``main.py``'s import-time
-    # ``load_dotenv()``. Written this way anyway: an assertion about the
+    # which is also what neutralises ``main.py``'s import-time ``.env``
+    # load. Written this way anyway: an assertion about the
     # shipped default should not be a hostage to a conftest three directories
     # up continuing to list this one key.
     shipped_default = SettingsClass(_env_file=None).security.cors_allow_origins

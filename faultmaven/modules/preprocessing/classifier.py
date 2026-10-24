@@ -61,7 +61,7 @@ def _opik_tracing_enabled() -> bool:
     lazily builds a client pointed at its default (Comet Cloud) (#1121).
 
     Read LAZILY, at call time — reading it at import time would bootstrap the
-    settings singleton (load_dotenv, preset env mutation, data/.jwt_secret
+    settings singleton (.env load, preset env mutation, data/.jwt_secret
     creation) merely by importing this module.
     """
     try:

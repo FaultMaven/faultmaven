@@ -888,9 +888,9 @@ class TestJobsPathBootGates:
         try:
             with (
                 patch("faultmaven.container.container", mock_container),
-                # main() calls load_dotenv(); a developer's .env must not
+                # main() loads .env through dotenv; a developer's .env must not
                 # repopulate the variable this test empties.
-                patch("dotenv.load_dotenv"),
+                patch("dotenv.dotenv_values", return_value={}),
             ):
                 exit_code = run_module.main(["case_cleanup"])
         finally:
@@ -1372,7 +1372,7 @@ class TestJobSpecificFlagWiring:
         run_job = AsyncMock(return_value={"status": "completed"})
         with (
             patch.object(run_module, "run_job", run_job),
-            patch("dotenv.load_dotenv"),
+            patch("dotenv.dotenv_values", return_value={}),
         ):
             exit_code = run_module.main(
                 [

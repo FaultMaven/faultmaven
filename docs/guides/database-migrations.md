@@ -120,8 +120,10 @@ alembic heads                    # the head revision on disk
 
 ### Which database Alembic migrates
 
-`alembic/env.py` loads the repository's `.env` (without overriding variables
-already set in the environment) and then resolves the URL:
+`alembic/env.py` loads the `.env` in the working directory, as the app does
+(so run Alembic from the repository root; nothing is loaded under
+`FAULTMAVEN_SKIP_DOTENV`), without overriding variables already set in the
+environment, and then resolves the URL:
 
 1. `DATABASE_URL`, if set. An async driver is swapped for its sync
    counterpart, because Alembic runs synchronously: `postgresql+asyncpg://`

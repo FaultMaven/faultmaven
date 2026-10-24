@@ -43,7 +43,9 @@ Application Start
     ↓
 get_settings() called (first time)
     ↓
-load_dotenv(override=True)  ← Loads .env file
+load_settings_dotenv()  ← Loads ./.env into the environment (never over a set variable, in any case)
+    ↓
+Preset defaults applied (CONFIG_PRESET, or the zero-config `local` preset)
     ↓
 FaultMavenSettings.__init__() ← Pydantic reads env vars
     ↓
@@ -63,15 +65,20 @@ def get_settings() -> FaultMavenSettings:
     """Get global settings instance (singleton pattern)"""
     global _settings_instance
     if _settings_instance is None:
-        # Load .env file BEFORE creating settings
-        from dotenv import load_dotenv
-        load_dotenv(override=True)  # ← HERE: .env loaded
+        # Load ./.env BEFORE creating settings, without overriding
+        load_settings_dotenv()  # ← HERE: .env loaded
 
         # Create settings instance (reads env vars)
         _settings_instance = FaultMavenSettings()  # ← HERE: Env vars read
 
     return _settings_instance
 ```
+
+`.env` is read from the **working directory** only: no parent directory is
+searched, so start the process in the directory that holds it, as every
+launcher in this repository does. `faultmaven/main.py`, `faultmaven/jobs/run.py`
+and `alembic/env.py` call the same loader. Under `FAULTMAVEN_SKIP_DOTENV` no
+`.env` is read at all.
 
 ### 3. Singleton Pattern
 
@@ -116,11 +123,10 @@ class ConversationThresholds(BaseSettings):
 
 Settings are loaded in this priority order (highest to lowest):
 
-1. **Environment variables** (`.env` file)
-2. **Default values** (in `settings.py`)
-3. **System environment** (OS-level env vars, if `override=False`)
-
-Currently using `override=True`, so `.env` always wins.
+1. **System environment** (OS-level env vars set before the process starts)
+2. **`.env` file** (never replaces 1, whatever the letter case of either name)
+3. **Preset defaults** (`CONFIG_PRESET`, or the zero-config `local` preset)
+4. **Default values** (in `settings.py`)
 
 ## ConversationThresholds Variables
 

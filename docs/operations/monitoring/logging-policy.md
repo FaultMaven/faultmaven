@@ -106,7 +106,7 @@ path: it ran `main.py` as `__main__` and then again for uvicorn's import, so eve
 import-time side effect ran twice (duplicate import-time logs,
 `starlette.requests.Request.form` wrapped twice, Prometheus scrape hooks
 registered twice) and the served app was not the `__main__` one. It now refuses:
-`main.py` opens with a `__main__` guard, above `load_dotenv()` and every import,
+`main.py` opens with a `__main__` guard, above the `.env` load and every import,
 that raises `SystemExit` naming `faultmaven.server`, so the command exits 1 with
 one line and no import-time work (a stale `command:` fails loudly instead of
 exiting 0 without serving).

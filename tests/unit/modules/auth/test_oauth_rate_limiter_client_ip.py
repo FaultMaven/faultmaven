@@ -240,7 +240,7 @@ class TestAMistypedTrustEntryNarrowsTrust:
 
 class TestTheTrustListComesFromTheEnvironmentAtConstruction:
     """``_oauth_rate_limiter = OAuthRateLimiter()`` runs at *import* time, and
-    that is late enough: ``main`` calls ``load_dotenv()`` at its own import,
+    that is late enough: ``main`` loads ``.env`` at its own import,
     before any router — and therefore this module — is imported, so `.env` has
     already reached ``os.environ``. Post-boot the value does not change, so
     resolving once at construction is equivalent to resolving on first use and

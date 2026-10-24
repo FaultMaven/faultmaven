@@ -110,11 +110,10 @@ def _boot_in_child(database_env: dict[str, str]) -> dict:
             # The LLM credential gate is live when the predicate is false.
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-            # Hermetic: settings' load_dotenv() walks up from the faultmaven
-            # package when __main__ has a __file__, and in a nested worktree
-            # finds the parent checkout's .env, whose JWT_SECRET_KEY or
-            # DATABASE_URL would decide the case instead of this test.
-            "PYTHON_DOTENV_DISABLED": "1",
+            # Hermetic: the run directory holds no .env and the project's
+            # skip flag reads none, so no JWT_SECRET_KEY or DATABASE_URL but
+            # this test's can decide the case.
+            "FAULTMAVEN_SKIP_DOTENV": "1",
         }
         completed = subprocess.run(
             [sys.executable, str(script)],

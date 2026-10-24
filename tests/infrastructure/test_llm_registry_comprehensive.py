@@ -57,7 +57,7 @@ def clean_llm_environment(monkeypatch):
     original_env = os.environ.copy()
 
     # Clear all LLM-related environment variables FIRST (including from .env)
-    # This must be done BEFORE load_dotenv is called or settings are reset
+    # This must be done BEFORE .env is loaded or settings are reset
     llm_keys = [
         "CHAT_PROVIDER",
         "FIREWORKS_API_KEY",
@@ -92,10 +92,9 @@ def clean_llm_environment(monkeypatch):
     for key in llm_keys:
         os.environ.pop(key, None)
 
-    # Patch load_dotenv to prevent loading .env file
+    # Patch dotenv_values, which the .env loader reads, to prevent loading .env
     # This prevents new .env loads but won't affect already-loaded env vars
-    mock_load_dotenv = Mock(return_value=None)
-    monkeypatch.setattr("dotenv.load_dotenv", mock_load_dotenv)
+    monkeypatch.setattr("dotenv.dotenv_values", Mock(return_value={}))
 
     # CRITICAL: Reset settings AFTER clearing environment
     # This ensures settings are re-loaded from the clean environment

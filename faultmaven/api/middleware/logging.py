@@ -176,8 +176,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # refused it was applied to somebody else entirely.
         #
         # Eager is safe here: middleware instances are constructed when
-        # Starlette builds the stack, which is after ``main`` has run
-        # ``load_dotenv()`` at import, so the environment is already populated
+        # Starlette builds the stack, which is after ``main`` has loaded
+        # ``.env`` at import, so the environment is already populated
         # and immutable from then on.
         self._trusted_proxies = parse_trusted_proxies(get_trusted_proxies())
         logger.info("LoggingMiddleware initialized with session context management")

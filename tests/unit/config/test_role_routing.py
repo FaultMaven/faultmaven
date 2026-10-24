@@ -32,12 +32,9 @@ from faultmaven.config.role_routing import (
 )
 from faultmaven.config.settings import LLM_MODEL_TASKS, LLMProvider, LLMSettings
 
-# Every env var these tests touch, cleared up front. `delenv` clears
-# os.environ only — the `.env` file is a source pydantic-settings reads
-# separately — so each construction also passes `_env_file=None`, the idiom
-# `settings.py` uses. (`tests/conftest.py` neuters the dotenv sources
-# suite-wide as well; doing both means these exact-value assertions do not
-# depend on a patch living in another file.)
+# Every env var these tests touch, cleared up front. `LLMSettings` reads the
+# process environment only (it has no `env_file`, #2140), so clearing it
+# isolates each construction.
 _ENV_VARS = (
     "CHAT_PROVIDER",
     "CLASSIFIER_PROVIDER",
@@ -75,12 +72,12 @@ def _rows(llm, **kwargs):
 @pytest.mark.llm
 class TestEveryRoleIsReported:
     def test_reports_every_role_in_task_order(self, clean_env):
-        rows = resolve_role_routing(LLMSettings(_env_file=None))
+        rows = resolve_role_routing(LLMSettings())
         assert [row.role for row in rows] == list(LLM_MODEL_TASKS)
 
     def test_shipped_defaults_split_pinned_from_inherited(self, clean_env):
         """The shipped shape, which is the one the page was misreporting."""
-        rows = _rows(LLMSettings(_env_file=None), initialized_providers=("gemini",))
+        rows = _rows(LLMSettings(), initialized_providers=("gemini",))
 
         pinned = {r.role for r in rows.values() if r.provider_source == SOURCE_ENV}
         inherited = {r.role for r in rows.values() if r.inherited}
@@ -97,9 +94,7 @@ class TestEveryRoleIsReported:
     def test_flipping_the_anchor_leaves_the_pins_put(self, clean_env):
         """The bug as reported: primary_provider says openai, three roles do not."""
         clean_env.setenv("CHAT_PROVIDER", "openai")
-        rows = _rows(
-            LLMSettings(_env_file=None), initialized_providers=("gemini", "openai")
-        )
+        rows = _rows(LLMSettings(), initialized_providers=("gemini", "openai"))
 
         assert [
             (r.role, r.provider, r.provider_source)
@@ -158,7 +153,7 @@ class TestReportedValuesMatchTheRealGetters:
     def test_provider_and_model_equal_the_getters(self, clean_env, shape):
         for key, value in shape.items():
             clean_env.setenv(key, value)
-        llm = LLMSettings(_env_file=None)
+        llm = LLMSettings()
         rows = _rows(llm)
 
         for role in LLM_MODEL_TASKS:
@@ -175,14 +170,14 @@ class TestReportedValuesMatchTheRealGetters:
         """`GEMINI_CLASSIFIER_MODEL` answered, so changing `GEMINI_MODEL`
         from the dashboard would not move this role — which is why the key
         that actually answered is published."""
-        rows = _rows(LLMSettings(_env_file=None))
+        rows = _rows(LLMSettings())
         assert rows["classifier"].model_key == "GEMINI_CLASSIFIER_MODEL"
         assert rows["chat"].model_key == "GEMINI_MODEL"
 
     def test_local_reports_its_own_model_key(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "local")
         clean_env.setenv("LOCAL_LLM_MODEL", "llama3.2")
-        rows = _rows(LLMSettings(_env_file=None))
+        rows = _rows(LLMSettings())
         assert (rows["chat"].model, rows["chat"].model_key) == (
             "llama3.2",
             "LOCAL_LLM_MODEL",
@@ -192,7 +187,7 @@ class TestReportedValuesMatchTheRealGetters:
         """A provider with no model reports '' and `unset`, rather than
         inheriting some other provider's model."""
         clean_env.setenv("CHAT_PROVIDER", "local")  # LOCAL_LLM_MODEL not set
-        rows = _rows(LLMSettings(_env_file=None))
+        rows = _rows(LLMSettings())
         assert rows["chat"].model == ""
         assert rows["chat"].model_key == ""
         assert rows["chat"].model_source == SOURCE_UNSET
@@ -203,7 +198,7 @@ class TestReportedValuesMatchTheRealGetters:
 class TestProvenance:
     def test_each_role_names_the_key_that_decided_it(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "openai")
-        rows = _rows(LLMSettings(_env_file=None))
+        rows = _rows(LLMSettings())
         assert rows["classifier"].provider_key == "CLASSIFIER_PROVIDER"
         assert rows["structured_output"].provider_key == "CHAT_PROVIDER"
         assert rows["chat"].provider_key == "CHAT_PROVIDER"
@@ -212,7 +207,7 @@ class TestProvenance:
         """`apply_overrides_to_settings` writes the dashboard's
         `primary_provider` onto `settings.llm.provider`, so the effective
         anchor is what resolves — and its provenance is published."""
-        llm = LLMSettings(_env_file=None)
+        llm = LLMSettings()
         object.__setattr__(llm, "provider", LLMProvider.OPENAI)
         rows = _rows(llm, config_sources={"primary_provider": SOURCE_OVERRIDE})
 
@@ -226,7 +221,7 @@ class TestProvenance:
 
     def test_overridden_base_model_is_reported_on_every_role_using_it(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "openai")
-        llm = LLMSettings(_env_file=None)
+        llm = LLMSettings()
         object.__setattr__(llm, "openai_model", "gpt-5.4-mini")
         rows = _rows(llm, config_sources={"openai_model": SOURCE_OVERRIDE})
 
@@ -247,13 +242,13 @@ class TestProvenance:
         assert "classifier_provider" not in _ALLOWED_OVERRIDES
 
         rows = _rows(
-            LLMSettings(_env_file=None),
+            LLMSettings(),
             config_sources={"classifier_provider": SOURCE_OVERRIDE},
         )
         assert rows["classifier"].provider_source == SOURCE_OVERRIDE
 
     def test_absent_from_the_map_is_env_not_a_crash(self, clean_env):
-        rows = _rows(LLMSettings(_env_file=None), config_sources={})
+        rows = _rows(LLMSettings(), config_sources={})
         assert {r.provider_source for r in rows.values()} == {
             SOURCE_ENV,
             SOURCE_INHERITED,
@@ -271,7 +266,7 @@ class TestInertPinsAreReportedInert:
 
     def test_pin_without_a_credential_is_not_initialized(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "openai")
-        rows = _rows(LLMSettings(_env_file=None), initialized_providers=("openai",))
+        rows = _rows(LLMSettings(), initialized_providers=("openai",))
 
         assert rows["chat"].provider_initialized is True
         for role in ("multimodal", "synthesis", "classifier"):
@@ -284,15 +279,13 @@ class TestInertPinsAreReportedInert:
         keying this on the chain would report every shipped pin as broken in
         strict mode."""
         clean_env.setenv("CHAT_PROVIDER", "openai")
-        rows = _rows(
-            LLMSettings(_env_file=None), initialized_providers=("openai", "gemini")
-        )
+        rows = _rows(LLMSettings(), initialized_providers=("openai", "gemini"))
         assert rows["classifier"].provider_initialized is True
 
     def test_unmeasured_reachability_is_not_claimed(self, clean_env):
         """`None` means the caller could not ask. Reporting True there would
         assert something nobody measured."""
-        rows = _rows(LLMSettings(_env_file=None), initialized_providers=None)
+        rows = _rows(LLMSettings(), initialized_providers=None)
         assert not any(r.provider_initialized for r in rows.values())
 
 
@@ -305,6 +298,6 @@ class TestNoRoleIsSilentlyMissed:
         rather than raise on a surface an admin loads."""
         for provider in _ALL_PROVIDERS:
             clean_env.setenv("CHAT_PROVIDER", provider)
-            rows = resolve_role_routing(LLMSettings(_env_file=None))
+            rows = resolve_role_routing(LLMSettings())
             assert len(rows) == len(LLM_MODEL_TASKS), provider
             assert all(isinstance(r.model, str) for r in rows), provider

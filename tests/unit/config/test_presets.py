@@ -578,7 +578,7 @@ class TestDetectionReadsWhatTheSettingsRead:
     ``detect_zero_config_preset`` read exact-case ``os.environ`` alone, while the
     settings read names case-insensitively AND a ``.env`` resolved from the
     working directory (``env_file=".env"``). ``get_settings``' own
-    ``load_dotenv()`` walks up from ``settings.py`` instead, so an installed
+    ``load_dotenv()`` walked up from ``settings.py`` instead, so an installed
     package run next to its ``.env`` had a configuration the settings honoured
     and the preset check never saw: the laptop preset was applied over it, and
     its ``CHAT_PROVIDER=local`` beat the user's own selection (#1984 review).

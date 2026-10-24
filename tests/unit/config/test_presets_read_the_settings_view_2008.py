@@ -7,12 +7,11 @@ same view, or a value written only in the file is invisible to it: the preset is
 not applied, or its default lands in ``os.environ`` and beats the operator's own
 file.
 
-Each case is a fresh interpreter run from a SCRIPT FILE in an empty working
-directory holding the case's ``.env``. A child because ``tests/conftest.py``
-patches the dotenv away in-process; a script file because ``python -c`` counts
-as interactive and makes ``load_dotenv()`` read the working directory's ``.env``
-into the environment, which would make the cases pass for the wrong reason
-(see ``test_get_settings_cold_process.py``).
+Each case is a fresh interpreter run from a script file in an empty working
+directory holding the case's ``.env``: a child because ``tests/conftest.py``
+patches the dotenv away in-process. The presets are asked before
+``get_settings()`` has loaded that file into the environment (``name_before``,
+``errors``), so only the settings' own view can show it to them.
 """
 
 from __future__ import annotations
@@ -95,8 +94,8 @@ def test_a_preset_named_only_in_the_working_directory_dotenv_is_applied(tmp_path
 def test_a_value_only_in_the_dotenv_beats_the_preset_default(tmp_path):
     """The ``local`` preset defaults LOCAL_LLM_MODEL to llama2; the file says otherwise.
 
-    (``LLMSettings`` reads the dotenv file; ``LoggingSettings`` does not, so a
-    LOG_LEVEL in the file would not show the seam.)
+    ``get_settings()`` loads the file into the environment before the preset is
+    applied, and ``LLMSettings`` reads the environment.
     """
     answer = _run(
         tmp_path, {"CONFIG_PRESET": "local"}, "LOCAL_LLM_MODEL=from-the-file\n"
@@ -104,7 +103,7 @@ def test_a_value_only_in_the_dotenv_beats_the_preset_default(tmp_path):
 
     assert answer["local_model"] == "from-the-file"
     # The preset did not write its own default over the operator's file.
-    assert answer["environ_local_model"] is None
+    assert answer["environ_local_model"] == "from-the-file"
 
 
 def test_skip_dotenv_ignores_the_file_for_the_preset_too(tmp_path):

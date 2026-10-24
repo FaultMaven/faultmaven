@@ -238,7 +238,7 @@ def test_importing_call_sites_has_no_side_effects():
     """Importing the decorated modules must not bootstrap the settings
     singleton.
 
-    get_settings() runs load_dotenv(), applies presets that mutate os.environ,
+    get_settings() loads .env, applies presets that mutate os.environ,
     and writes data/.jwt_secret via resolve_local_jwt_secret(). An
     import-time gate read made a plain `import faultmaven...router` write a
     secret file into the process's cwd and freeze settings from the ambient
