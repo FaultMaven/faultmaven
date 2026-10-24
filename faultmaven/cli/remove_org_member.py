@@ -83,10 +83,10 @@ Exit codes
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -525,7 +525,7 @@ def main() -> None:
     require_persistent_database_or_exit()
 
     sys.exit(
-        asyncio.run(
+        run_with_container(
             remove_org_member(
                 enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,

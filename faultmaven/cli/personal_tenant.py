@@ -111,6 +111,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tenant_context import usable_tenant_id
@@ -1049,7 +1050,7 @@ def main() -> None:
 
     if args.operation == "retire":
         sys.exit(
-            asyncio.run(
+            run_with_container(
                 retire(
                     subject=args.subject,
                     enterprise_id=args.enterprise_id,
@@ -1061,13 +1062,13 @@ def main() -> None:
 
     if args.operation == "purge-idp-org":
         sys.exit(
-            asyncio.run(
+            run_with_container(
                 purge_idp_org(provider_org_id=args.provider_org_id, apply=args.apply)
             )
         )
 
     sys.exit(
-        asyncio.run(
+        run_with_container(
             reanchor(
                 subject=args.subject,
                 enterprise_id=args.enterprise_id,

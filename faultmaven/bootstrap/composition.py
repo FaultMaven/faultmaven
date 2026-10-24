@@ -10,18 +10,25 @@ that on every service it wires onto ``app.state``.
 
 ``_wire_composition_root`` does the wiring and raises on any failure;
 ``compose_application`` decides whether that failure is fatal for this
-deployment (see their own docstrings), and ``unpublish_composition`` takes the
-wiring back off ``app.state`` when the lifespan ends. ``_check_llm_configuration`` is the
-startup warning for an unconfigured LLM provider. ``_is_test_environment``
-is the shared predicate all three — and ``bootstrap/middleware.py`` — use to
-skip service-availability checks under pytest/SKIP_SERVICE_CHECKS.
+deployment (see their own docstrings). ``decompose_application`` is the one
+teardown of composition: it takes back everything composition installed, the
+container and the database engine included, and runs both when
+``compose_application`` refuses the boot and when the lifespan ends, including
+a startup refused after composition. ``unpublish_composition`` is its
+``app.state`` step, and ``stop_config_watcher`` its first.
+``_check_llm_configuration`` is the startup warning for an unconfigured LLM
+provider. ``_is_test_environment`` is the predicate ``_check_llm_configuration``
+and ``_wire_composition_root`` (and ``bootstrap/lifespan.py`` and
+``bootstrap/middleware.py``) use to skip service-availability checks under
+pytest/SKIP_SERVICE_CHECKS.
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from fastapi import FastAPI
 
@@ -529,6 +536,20 @@ def _state_values(app: FastAPI) -> dict[str, Any]:
     return {name: app.state[name] for name in app.state}
 
 
+def _published_since(app: FastAPI, before: Mapping[str, Any]) -> dict[str, Any]:
+    """What composition published on ``app.state`` since ``before``.
+
+    Each name it set, mapped to the value that name held before (``_ABSENT``
+    for a name it added). The one identity diff, read both when composition
+    returns and when it is refused part-way.
+    """
+    return {
+        name: before.get(name, _ABSENT)
+        for name, value in _state_values(app).items()
+        if before.get(name, _ABSENT) is not value
+    }
+
+
 async def compose_application(
     app: FastAPI, settings: "FaultMavenSettings"
 ) -> Mapping[str, Any]:
@@ -540,52 +561,169 @@ async def compose_application(
     else a partial application is a development affordance and startup
     continues with a warning.
 
+    A refusal leaves nothing of composition behind. Whoever composes for a run
+    shuts the container down at the run's end, on every path, and for a
+    refused composition that end is here: before the exception propagates,
+    :func:`decompose_application` takes back what composition got as far as
+    installing, the container included, so a later lifespan composes afresh
+    rather than finding it still initialized.
+
     Returns what composition published on ``app.state``: each name it set,
     mapped to the value that name held before, for
-    :func:`unpublish_composition` when the lifespan ends.
+    :func:`decompose_application` when the lifespan ends.
     """
     before = _state_values(app)
     try:
-        await _wire_composition_root(app, settings)
-    except RuntimeError:
-        # The container's established fail-fast channel — the cloud refusal in
-        # ``DIContainer.initialize``, the bootstrap failure, the RLS role gate.
-        # Those callees have already decided the boot cannot continue, in any
-        # deployment mode, so this handler must not reinterpret them.
+        try:
+            await _wire_composition_root(app, settings)
+        except RuntimeError:
+            # The container's established fail-fast channel — the cloud refusal in
+            # ``DIContainer.initialize``, the bootstrap failure, the RLS role gate.
+            # Those callees have already decided the boot cannot continue, in any
+            # deployment mode, so this handler must not reinterpret them.
+            raise
+        except Exception as e:
+            if settings.must_not_degrade:
+                # Unwrapped: `server.environment` holds the Enum member, and a bare
+                # str() would log "Environment.STAGING" at an operator (#827).
+                env = getattr(
+                    settings.server.environment, "value", settings.server.environment
+                )
+                logger.critical(
+                    "FAIL-FAST: composition root failed under "
+                    f"DEPLOYMENT_MODE={'cloud' if settings.is_cloud else 'standalone'}"
+                    f"/ENVIRONMENT={env}. Refusing to serve a partial API."
+                )
+                raise RuntimeError(
+                    f"Composition root failed: {e}. A partially wired application "
+                    "would serve an API missing whole service layers."
+                ) from e
+            logger.error(f"Composition root failed: {e}", exc_info=True)
+            logger.warning(
+                "Continuing with fallback service implementations — this deployment "
+                "permits a partial API (see settings.must_not_degrade)"
+            )
+    except GeneratorExit:
+        # A coroutine being closed may not await: nothing to take back here.
         raise
+    except BaseException:
+        # Refused, or interrupted (a cancellation included): take back what
+        # composition installed before the exception propagates. Every step of
+        # the teardown is contained, so it propagates as the same object.
+        await decompose_application(app, _published_since(app, before))
+        raise
+    return _published_since(app, before)
+
+
+async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
+    """Cancel ``task`` and wait for it to end; return the exception it ended with.
+
+    Waited for through ``asyncio.wait``, which never raises the task's own
+    outcome: neither its cancellation nor its exception is raised here, so a
+    ``CancelledError`` that is raised is a cancellation of the caller, and
+    propagates. ``await task`` under ``except CancelledError`` cannot tell the
+    two apart, and swallows both.
+
+    When the wait completes, the exception is retrieved and returned (``None``
+    when the task was cancelled or returned). When the caller is cancelled
+    first, the task is no longer awaited, and an exception it ends with later
+    may be reported as never retrieved.
+    """
+    task.cancel()
+    await asyncio.wait({task})
+    return None if task.cancelled() else task.exception()
+
+
+async def stop_config_watcher(app: FastAPI) -> None:
+    """Cancel the LLM config watcher composition started, and wait for it to end.
+
+    Takes the watcher off ``app.state`` once it has ended, so a second call is
+    a no-op. A cancellation of the caller propagates (:func:`cancel_and_wait`)
+    and leaves the handle for the next call.
+    """
+    task = getattr(app.state, "llm_config_watch_task", None)
+    if task is None:
+        return
+    error = await cancel_and_wait(task)
+    del app.state.llm_config_watch_task
+    if error is not None:
+        logger.warning(f"LLM config watcher ended with an error: {error}")
+
+
+async def _teardown_step(
+    what: str, step: Callable[[], Any]
+) -> Optional[asyncio.CancelledError]:
+    """Run one step of a teardown, so that it cannot stop the steps after it.
+
+    An ``Exception`` is logged. A ``CancelledError`` is returned for the caller
+    to re-raise once the whole teardown has run: deferred, never swallowed.
+    """
+    try:
+        outcome = step()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except asyncio.CancelledError as cancelled:
+        return cancelled
     except Exception as e:
-        if settings.must_not_degrade:
-            # Unwrapped: `server.environment` holds the Enum member, and a bare
-            # str() would log "Environment.STAGING" at an operator (#827).
-            env = getattr(
-                settings.server.environment, "value", settings.server.environment
-            )
-            logger.critical(
-                "FAIL-FAST: composition root failed under "
-                f"DEPLOYMENT_MODE={'cloud' if settings.is_cloud else 'standalone'}"
-                f"/ENVIRONMENT={env}. Refusing to serve a partial API."
-            )
-            raise RuntimeError(
-                f"Composition root failed: {e}. A partially wired application "
-                "would serve an API missing whole service layers."
-            ) from e
-        logger.error(f"Composition root failed: {e}", exc_info=True)
-        logger.warning(
-            "Continuing with fallback service implementations — this deployment "
-            "permits a partial API (see settings.must_not_degrade)"
-        )
-    return {
-        name: before.get(name, _ABSENT)
-        for name, value in _state_values(app).items()
-        if before.get(name, _ABSENT) is not value
-    }
+        logger.warning(f"{what} failed (non-critical): {e}")
+    return None
+
+
+async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:
+    """Take back everything composition installed. The one teardown of it.
+
+    Stops the config watcher composition started, shuts the container down,
+    uninstalls the LLM usage ledger, takes what composition published back off
+    ``app.state`` (``published``, as :func:`compose_application` returns it),
+    and, last, disposes the database engine. ``app.extra["di_container"]`` is
+    the container singleton itself, which its shutdown resets, and stays.
+
+    Each step runs whatever the one before it did. One that raises is logged,
+    so a refusal being undone propagates as itself. One that is cancelled lets
+    the rest finish, and the cancellation is then re-raised.
+    """
+    from faultmaven.container import container
+    from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
+    from faultmaven.infrastructure.persistence.database import close_database
+
+    steps: tuple[tuple[str, Callable[[], Any]], ...] = (
+        # The LLM config watcher (cloud multi-replica propagation). The lifespan
+        # has stopped it already on the serving path; this is then a no-op.
+        ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
+        # Close what the container opened and owns: the shared Redis client's
+        # pool is bound to this event loop, and nothing else closes it.
+        ("Container shutdown", lambda: container.shutdown()),
+        # The usage ledger composition installed (#640). On the serving path
+        # the lifespan's drain has already uninstalled it, and this is a no-op.
+        # It is what uninstalls the ledger of a refused composition, which
+        # served no call to drain.
+        ("LLM usage ledger uninstall", lambda: install_usage_ledger(None)),
+        # The services the composition root published hold what that shutdown
+        # closed; a request served after this point must not find them.
+        (
+            "Unpublishing the composition",
+            lambda: unpublish_composition(app, published),
+        ),
+        # Dispose the canonical async engine, last. The user store no longer
+        # owns a session (sessionless repository per #703), so there is nothing
+        # to release here beyond the engine.
+        ("Database close", lambda: close_database()),
+    )
+    deferred: Optional[asyncio.CancelledError] = None
+    for what, step in steps:
+        cancelled = await _teardown_step(what, step)
+        if deferred is None:
+            deferred = cancelled
+    if deferred is not None:
+        raise deferred
 
 
 def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take what composition published back off ``app.state``.
 
-    Called once the container has shut down. The services published here hold
-    what that shutdown closed: the container's Redis client, directly or
+    A step of :func:`decompose_application`, after the container's shutdown.
+    The services published here hold what that shutdown closed: the
+    container's Redis client, directly or
     through a session store, a knowledge service or an investigation engine.
     Left in place, a later request served without a lifespan reads them as
     the application's own: the protection middleware borrows the closed client

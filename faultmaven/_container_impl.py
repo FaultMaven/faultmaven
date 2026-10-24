@@ -137,12 +137,8 @@ class DIContainer(BaseDIContainer):
     """
 
     def __new__(cls):
-        # Use parent's singleton implementation
-        instance = super().__new__(cls)
-        # Initialize settings if not already present
-        if not hasattr(instance, "settings"):
-            instance.settings = None
-        return instance
+        # The parent's singleton, built from ``_CONSTRUCTED_STATE``.
+        return super().__new__(cls)
 
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
@@ -1811,11 +1807,13 @@ class DIContainer(BaseDIContainer):
 
         The Redis client is the container's: ``register_infrastructure`` built it
         and every Redis-backed store shares it. A real client holds a connection
-        pool bound to the event loop it was opened on, so whoever initialized the
-        container closes it before that loop ends. The API lifespan and the jobs
-        runner do; the ``fm-*`` commands do not yet (#2237). The FakeRedis
-        stand-in is the event loop's client, shared beyond this container with
-        everything else on that loop, and never its to close.
+        pool bound to the event loop it was opened on, so whoever composes for a
+        run shuts the container down at the run's end, on every path, while that
+        loop still runs: the API lifespan (a refused composition included), the
+        jobs runner, and the ``fm-*`` commands and dev scripts that compose
+        (``cli/_container.py``). The FakeRedis stand-in is the event loop's
+        client, shared beyond this container with everything else on that loop,
+        and never its to close.
 
         Then the container is reset, so it is never left holding a closed client:
         the next ``initialize()`` composes afresh, with a new Redis client. A
@@ -1836,29 +1834,25 @@ class DIContainer(BaseDIContainer):
             # initialize to return early on.
             self.reset()
 
-    # What ``BaseDIContainer.__new__`` gives the singleton. Everything else on
-    # the instance was put there by ``initialize``, a provider, or a getter's
-    # lazy cache.
-    _CONSTRUCTED_ATTRS = frozenset(
-        {"_initialized", "_initializing", "_registry", "_logger", "settings"}
-    )
-
     def reset(self):
         """Return the container to what construction built.
 
-        Every attribute ``initialize``, a provider or a getter's cache put on the
-        instance is removed, whatever its name: tools, adapters and extractors
-        set as plain attributes, and the ``hasattr`` caches of ``get_job_service``
-        and ``_create_minimal_case_service``. One left behind is handed to the
-        next composition as-is, built over the previous one's Redis client,
-        which the shutdown that preceded this reset closed.
+        Keeps exactly the names ``BaseDIContainer._CONSTRUCTED_STATE`` lists,
+        the table construction builds from, and builds each again from its
+        factory, so ``settings`` is ``None`` once more. Every attribute
+        ``initialize``, a provider or a getter's cache put on the instance is
+        removed, whatever its name: tools, adapters and extractors set as plain
+        attributes, and the ``hasattr`` caches of ``get_job_service`` and
+        ``_create_minimal_case_service``. One left behind is handed to the next
+        composition as-is, built over the previous one's Redis client, which
+        the shutdown that preceded this reset closed.
         """
         super().reset()
-        for name in [
-            name for name in vars(self) if name not in self._CONSTRUCTED_ATTRS
-        ]:
+        constructed = {name for name, _factory in self._CONSTRUCTED_STATE}
+        for name in [name for name in vars(self) if name not in constructed]:
             delattr(self, name)
-        self.settings = None
+        for name, factory in self._CONSTRUCTED_STATE:
+            setattr(self, name, factory())
 
 
 # Global container access - always returns the current singleton instance

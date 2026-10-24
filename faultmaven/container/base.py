@@ -6,7 +6,7 @@ registry and utilities for clean dependency injection.
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from faultmaven.container.errors import (
     ContainerError,
@@ -29,14 +29,24 @@ class BaseDIContainer:
 
     _instance: Optional["BaseDIContainer"] = None
 
+    #: What construction gives the singleton, as ``(name, factory)``. The one
+    #: source of it: ``__new__`` builds each name from its factory, and
+    #: ``DIContainer.reset`` keeps exactly these names. Everything else on the
+    #: instance was put there by ``initialize``, a provider, or a getter's
+    #: lazy cache.
+    _CONSTRUCTED_STATE: ClassVar[Tuple[Tuple[str, Callable[[], Any]], ...]] = (
+        ("_initialized", lambda: False),
+        ("_initializing", lambda: False),
+        ("_registry", DependencyRegistry),
+        ("_logger", lambda: logging.getLogger(__name__)),
+        ("settings", lambda: None),  # Will be set during initialization
+    )
+
     def __new__(cls) -> "BaseDIContainer":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-            cls._instance._initializing = False
-            cls._instance._registry = DependencyRegistry()
-            cls._instance._logger = logging.getLogger(__name__)
-            cls._instance.settings = None  # Will be set during initialization
+            for name, factory in cls._CONSTRUCTED_STATE:
+                setattr(cls._instance, name, factory())
         return cls._instance
 
     @property

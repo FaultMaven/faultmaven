@@ -90,6 +90,7 @@ def wiring(monkeypatch):
 
     container = SimpleNamespace(
         initialize=AsyncMock(),
+        shutdown=AsyncMock(),
         get_auth_service=lambda: auth_service,
         get_user_store=lambda: user_store,
         get_service=lambda name: (
