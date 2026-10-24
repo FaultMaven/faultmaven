@@ -43,6 +43,7 @@ UNRESOLVED (conflict markers remain in the file for a human).
 import difflib
 import re
 import sys
+from pathlib import Path
 
 IMPORT_LINE = re.compile(
     r"^\s*(from\s+\S+\s+import\b.*|import\s+\S+.*|[A-Za-z_][A-Za-z0-9_]*(\s+as\s+\w+)?,?|\)|\(|)\s*$"
@@ -110,7 +111,7 @@ def main():
         return 2
     bad = 0
     for path in sys.argv[1:]:
-        L = open(path).read().split("\n")
+        L = Path(path).read_text().split("\n")
         out, i, res, unres = [], 0, 0, 0
         is_md = path.endswith(".md")
         while i < len(L):
@@ -159,7 +160,7 @@ def main():
                 out.extend(pick)
                 res += 1
             i = j + 1
-        open(path, "w").write("\n".join(out))
+        Path(path).write_text("\n".join(out))
         print(f"{path}: resolved {res}, unresolved {unres}")
         bad += unres
     return 1 if bad else 0

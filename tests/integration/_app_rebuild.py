@@ -40,6 +40,16 @@ fixed here is the published module object, which no caller asked to change.
 
 import sys
 
+#: Every app ``rebuild_app`` handed out, so the integration conftest can end
+#: their protection middleware's service after each test (they are served
+#: without a lifespan, and that middleware may build its own Redis client).
+_REBUILT_APPS: list = []
+
+
+def rebuilt_apps() -> tuple:
+    """The apps ``rebuild_app`` has handed out in this process."""
+    return tuple(_REBUILT_APPS)
+
 
 def rebuild_app():
     """Import a fresh ``faultmaven.main`` and return its ``app``.
@@ -52,6 +62,7 @@ def rebuild_app():
     try:
         import faultmaven.main
 
+        _REBUILT_APPS.append(faultmaven.main.app)
         return faultmaven.main.app
     finally:
         # Restore whatever was published before, including "nothing" — a caller

@@ -2489,6 +2489,12 @@ class TestPersonalTenantLimitsAreReported:
 #
 # ONE registry, and the sweep parametrises off it, so a scenario cannot be
 # added and left unexercised.
+#
+# A scenario whose ``reality=True`` arm opens something the test must close
+# (an engine, a scratch directory) returns the coroutine function that closes
+# it, and
+# ``test_capability_present_reports_enabled`` awaits it after the read, on the
+# test's own loop. Every other scenario returns None.
 
 
 def _scenario_llm_tracing(settings, app, monkeypatch, reality):
@@ -2538,6 +2544,7 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
     process whose store is the cache — or on one that composed no store at all,
     where revocation is not merely non-durable but unenforceable (#767).
     """
+    import shutil
     import tempfile
     from pathlib import Path
 
@@ -2555,10 +2562,18 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
         # probe correctly reports the store unreadable — which failed this
         # scenario's own "capability present" arm (#828 delta review). The field
         # now asserts readability, so the fixture has to supply it.
-        store, _engine = _store_over_a_real_schema(
-            Path(tempfile.mkdtemp(prefix="fm-scenario-")), with_table=True
-        )
+        scratch = Path(tempfile.mkdtemp(prefix="fm-scenario-"))
+        store, engine = _store_over_a_real_schema(scratch, with_table=True)
         app.state.token_revocation_store = store
+
+        async def close() -> None:
+            # The read opens a pooled aiosqlite connection. Undisposed, it is
+            # collected unclosed after this test's loop has closed, and its
+            # worker thread then reports to a closed loop.
+            await engine.dispose()
+            shutil.rmtree(scratch, ignore_errors=True)
+
+        return close
     else:
         app.state.token_revocation_store = RedisTokenRevocationStore(
             fakeredis_aio.FakeRedis(decode_responses=True),
@@ -2836,12 +2851,18 @@ class TestEveryFeatureReportsEffectNotIntent:
         self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch, feature
     ):
         """The other arm, without which "report False" satisfies everything."""
-        FEATURE_SCENARIOS[feature](mock_settings, rate_limited_app, monkeypatch, True)
-
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
+        release = FEATURE_SCENARIOS[feature](
+            mock_settings, rate_limited_app, monkeypatch, True
+        )
+        try:
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+        finally:
+            if release is not None:
+                await release()
 
         assert result.features[feature].enabled is True
 

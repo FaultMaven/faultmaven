@@ -178,7 +178,11 @@ def test_a_chunked_body_with_no_content_length_is_refused_by_a_real_server():
     from tests.integration.mock_servers import get_free_port
 
     port = get_free_port()
-    config = uvicorn.Config(probe, host="127.0.0.1", port=port, log_level="error")
+    # ws="none", as the product launcher passes: no WebSocket route here, and
+    # uvicorn's default would load its websockets.legacy-based implementation.
+    config = uvicorn.Config(
+        probe, host="127.0.0.1", port=port, log_level="error", ws="none"
+    )
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
     try:

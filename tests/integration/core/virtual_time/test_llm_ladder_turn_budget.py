@@ -16,7 +16,8 @@ reserves are scaled with everything else — leaving them at their production
 and the whole file pass for the wrong reason.
 
 **Time is virtual (#1579).** Every async test here runs on
-``tests.wallclock.VirtualTimeLoop``: the loop's clock stands still while there
+``tests.wallclock.VirtualTimeLoop`` (this directory's ``conftest.py`` supplies
+it to pytest-asyncio): the loop's clock stands still while there
 is work to do and jumps to the next timer when there is none, and the two
 production modules that read ``time.monotonic()`` on this path —
 ``turn_budget`` and ``llm_error_handler`` — are pointed at that same clock.
@@ -43,7 +44,7 @@ from faultmaven.core.investigation.turn_budget import (
 from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, ExternalCallTimeout
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from tests.utils import sockets_refused
-from tests.wallclock import VirtualTimePolicy, virtual_now, virtual_time_module
+from tests.wallclock import virtual_now, virtual_time_module
 
 
 @pytest.fixture(autouse=True)
@@ -73,12 +74,6 @@ def scaled_reserve(monkeypatch):
     monkeypatch.setattr(
         turn_budget, "TURN_COMMIT_RESERVE_SECONDS", SCALED_COMMIT_RESERVE
     )
-
-
-@pytest.fixture
-def event_loop_policy():
-    """Every async test in this module runs on a ``VirtualTimeLoop``."""
-    return VirtualTimePolicy()
 
 
 @pytest.fixture(autouse=True)

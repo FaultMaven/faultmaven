@@ -31,7 +31,7 @@ from faultmaven.container import DIContainer
 
 
 @pytest.fixture(autouse=True)
-def reset_container():
+async def reset_container():
     """Reset container between tests to ensure isolation"""
     # Reset settings singleton so env var changes in tests take effect
     from faultmaven.config.settings import reset_settings
@@ -41,8 +41,10 @@ def reset_container():
     # Clear singleton instance
     DIContainer._instance = None
     yield
-    # Clean up after test
+    # Clean up after test: shut down what an initialized container opened (its
+    # real Redis client, with checks on), on this test's loop, then reset it.
     if DIContainer._instance:
+        await DIContainer._instance.shutdown()
         DIContainer._instance.reset()
     DIContainer._instance = None
     reset_settings()

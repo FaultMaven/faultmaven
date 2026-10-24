@@ -12,16 +12,10 @@ These tests use a minimal FastAPI app with the conversion router and mock
 the ConversionService at the app.state level, plus override auth dependencies.
 """
 
-import os
-import sys
-
-# Ensure root conftest mocks are loaded before any faultmaven imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from datetime import datetime, timezone
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
-import conftest as root_conftest  # noqa: F401
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient

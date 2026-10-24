@@ -46,6 +46,9 @@ class TestCompositionRootPattern:
         from faultmaven.container import container
         from faultmaven.main import app
 
+        # Never None: the container always composes a working client (real
+        # Redis or FakeRedis), so ``None is None`` must not pass this.
+        assert app.state.redis_client is not None
         assert app.state.redis_client is container.get_redis_client()
         assert app.state.kb_chromadb_client is getattr(
             container, "kb_chromadb_client", None
@@ -372,3 +375,32 @@ class TestArchitecturalCompliance:
         assert (
             "Composition Root" in content or "app.state" in content
         ), "main.py should implement Composition Root pattern"
+
+
+class TestUnpublishComposition:
+    """The lifespan takes back what composition put on ``app.state``."""
+
+    async def test_it_removes_what_composition_added_and_restores_what_it_replaced(
+        self,
+    ):
+        from faultmaven.bootstrap import composition
+
+        app = FastAPI()
+        app.state.declared_at_import = "import-time value"
+        app.state.overwritten = "before composition"
+        closed_client = object()
+
+        async def _wire(app, settings):
+            app.state.redis_client = closed_client
+            app.state.overwritten = "composed"
+
+        with patch.object(composition, "_wire_composition_root", _wire):
+            published = await composition.compose_application(app, Mock())
+
+        assert set(published) == {"redis_client", "overwritten"}
+
+        composition.unpublish_composition(app, published)
+
+        assert not hasattr(app.state, "redis_client")
+        assert app.state.overwritten == "before composition"
+        assert app.state.declared_at_import == "import-time value"

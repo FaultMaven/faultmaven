@@ -6,6 +6,7 @@ within configured time windows using content-based hashing.
 Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -64,6 +65,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self.redis_url = redis_url or settings.redis_url
         self.redis_key_prefix = f"{settings.redis_key_prefix}:dedup"
         self._redis = redis_client
+        # What the constructor was handed, restored on ``shutdown``.
+        self._injected_redis = redis_client
+        # Whether ``_redis`` is a client built for this middleware alone, and so
+        # its to close. Recorded where the client is resolved, which is the one
+        # place that knows where it came from.
+        self._owns_redis = False
+        # The event loop that owned client was resolved on: a redis-py asyncio
+        # pool is bound to it, and only that loop can close it.
+        self._redis_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Endpoint configurations
         self.endpoint_configs = {
@@ -168,11 +178,21 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         resolution (injected → app.state → central factory) and always returns a
         working client (real Redis or FakeRedis).
         """
-        from ...infrastructure.redis_client import resolve_redis_client
+        from ...infrastructure.redis_client import is_fakeredis, resolve_redis_client
 
+        shared = getattr(request.app.state, "redis_client", None)
         self._redis = resolve_redis_client(
             request, injected=self._redis, redis_url=self.redis_url
         )
+        # Neither injected nor the app's shared client: the factory built it for
+        # this middleware, unless it handed back the process-wide FakeRedis.
+        self._owns_redis = (
+            self._redis is not None
+            and self._redis is not self._injected_redis
+            and self._redis is not shared
+            and not is_fakeredis(self._redis)
+        )
+        self._redis_loop = asyncio.get_running_loop() if self._owns_redis else None
 
         if self._redis is not None:
             self._initialized = True
@@ -185,6 +205,44 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         )
         self._disabled = True
         self._initialized = True
+
+    async def shutdown(self) -> None:
+        """End this middleware's service: close the client only if it built it.
+
+        Called by ``shutdown_protection`` when the app stops serving. The shared
+        client belongs to the composition root and an injected one to whoever
+        injected it; a client the factory built for this middleware alone (an app
+        serving without ``app.state.redis_client``) is closed here. The next
+        request resolves afresh. Idempotent.
+
+        A client it built on another event loop is let go of with a warning
+        rather than closed: only that loop can close it, and a shutdown must not
+        raise.
+        """
+        client, owned, client_loop = self._redis, self._owns_redis, self._redis_loop
+        self._redis = self._injected_redis
+        self._owns_redis = False
+        self._redis_loop = None
+        self._initialized = False
+        self._disabled = False
+        if client is None or not owned:
+            return
+        if client_loop is not None and client_loop is not asyncio.get_running_loop():
+            self.logger.warning(
+                "Deduplication's own Redis client was opened on another event "
+                "loop, which is the only one that can close it; letting go of it "
+                "unclosed"
+            )
+            return
+        try:
+            await client.aclose()
+        except Exception as e:
+            self.logger.debug(f"Closing the deduplication Redis client failed: {e}")
+
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a Redis client this middleware built itself, or ``None``."""
+        return self._redis_loop if self._owns_redis else None
 
     def _should_skip(self, request: Request) -> bool:
         """Whether this request is exempt from deduplication.

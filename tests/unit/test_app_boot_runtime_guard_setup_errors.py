@@ -13,11 +13,11 @@ test itself cannot catch the failure:
 
 So each of those controls runs a small suite in a child process with
 ``pytester.runpytest_subprocess``, and asserts the child's outcome and message.
-The child's conftest re-exports the real fixtures from ``tests.conftest``, the
-way ``tests/integration/conftest.py`` does. Importing it runs the real
-``tests/conftest.py``, which installs the real guard, so what refuses there is
-the code under test and not a copy. A refusal at setup comes before a lifespan
-starts, so it pays no boot; a leak pays one, in the child.
+The child's conftest re-exports the real fixtures from ``tests.conftest``: its
+rootdir is the child's own, so the root conftest is not loaded there. Importing
+it runs the real ``tests/conftest.py``, which installs the real guard, so what
+refuses there is the code under test and not a copy. A refusal at setup comes
+before a lifespan starts, so it pays no boot; a leak pays one, in the child.
 
 Two more run a child session for what only a session shows. One runs in this
 process: a session started inside a test must record no test of ours, refuse
@@ -51,6 +51,10 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 #: The guard's in-process controls, run in a child as a ``-k`` subset.
 GUARD_CONTROLS = REPO_ROOT / "tests" / "unit" / "test_app_boot_runtime_guard.py"
+
+#: The repo's asyncio setting, for a child built only from pytester's files:
+#: with no ini at all, pytest-asyncio warns that the loop scope is unset.
+_CHILD_INI = "[pytest]\nasyncio_default_fixture_loop_scope = function\n"
 
 _CHILD_CONFTEST = """
 from tests.conftest import (  # noqa: F401
@@ -180,6 +184,7 @@ def _isolate_child(pytester, monkeypatch):
 
 def _run_child(pytester, monkeypatch, source):
     _isolate_child(pytester, monkeypatch)
+    pytester.makeini(_CHILD_INI)
     pytester.makeconftest(_CHILD_CONFTEST)
     pytester.makepyfile(test_child=source)
     return pytester.runpytest_subprocess("-p", "no:cacheprovider", timeout=600)
@@ -275,6 +280,7 @@ def test_a_session_run_inside_a_test_refuses_its_module_scoped_boot(
     # store past 400 MB (fm#1772). A regression must fail this control on its
     # outcome, not boot in-process.
     monkeypatch.setattr(faultmaven.main.app.router, "lifespan_context", _empty_lifespan)
+    pytester.makeini(_CHILD_INI)
     pytester.makeconftest(_CHILD_CONFTEST)
     pytester.makepyfile(test_child=_MODULE_SCOPED_FIXTURE + _A_TEST_BEFORE + _USES_IT)
     before = (context.test, context.borrows, context.declares_unshared)

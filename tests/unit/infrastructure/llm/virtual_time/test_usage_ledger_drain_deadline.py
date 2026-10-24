@@ -10,8 +10,8 @@ The drain reads no monotonic clock of its own: both of its waits are
 ``asyncio.wait(timeout=…)``, which run on the loop's clock, so nothing in
 production needs pointing at ``virtual_time_module()``.
 
-Its own module because the ``event_loop_policy`` override applies to every
-test in the module that declares it.
+Its own directory because the ``conftest.py`` that puts it on that loop does
+so for every async test in the directory.
 """
 
 from __future__ import annotations
@@ -35,19 +35,13 @@ from faultmaven.infrastructure.llm.usage_ledger import (
     drain_pending_usage_writes,
     install_usage_ledger,
 )
-from tests.wallclock import VirtualTimePolicy, virtual_now
+from tests.wallclock import virtual_now
 
 pytestmark = pytest.mark.unit
 
 #: The drain's own grace after cancelling what its wait abandoned: the second
 #: ``asyncio.wait(still, timeout=1.0)`` in ``drain_pending_usage_writes``.
 _POST_CANCEL_GRACE_S = 1.0
-
-
-@pytest.fixture
-def event_loop_policy():
-    """Every test here runs on a loop whose clock moves only when idle."""
-    return VirtualTimePolicy()
 
 
 @dataclass

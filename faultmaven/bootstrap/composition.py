@@ -10,7 +10,8 @@ that on every service it wires onto ``app.state``.
 
 ``_wire_composition_root`` does the wiring and raises on any failure;
 ``compose_application`` decides whether that failure is fatal for this
-deployment (see their own docstrings). ``_check_llm_configuration`` is the
+deployment (see their own docstrings), and ``unpublish_composition`` takes the
+wiring back off ``app.state`` when the lifespan ends. ``_check_llm_configuration`` is the
 startup warning for an unconfigured LLM provider. ``_is_test_environment``
 is the shared predicate all three — and ``bootstrap/middleware.py`` — use to
 skip service-availability checks under pytest/SKIP_SERVICE_CHECKS.
@@ -20,7 +21,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from fastapi import FastAPI
 
@@ -519,7 +520,17 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     _check_llm_configuration(app.state.llm_provider, settings=settings)
 
 
-async def compose_application(app: FastAPI, settings: "FaultMavenSettings") -> None:
+# The value a name held before composition when it held none.
+_ABSENT = object()
+
+
+def _state_values(app: FastAPI) -> dict[str, Any]:
+    return {name: app.state[name] for name in app.state}
+
+
+async def compose_application(
+    app: FastAPI, settings: "FaultMavenSettings"
+) -> Mapping[str, Any]:
     """Compose the application, refusing to start where a partial API is unsafe.
 
     Deployments that must not degrade (``settings.must_not_degrade`` — cloud,
@@ -527,7 +538,12 @@ async def compose_application(app: FastAPI, settings: "FaultMavenSettings") -> N
     uvicorn exits, the pod CrashLoops and the rollout rolls back. Anywhere
     else a partial application is a development affordance and startup
     continues with a warning.
+
+    Returns what composition published on ``app.state``: each name it set,
+    mapped to the value that name held before, for
+    :func:`unpublish_composition` when the lifespan ends.
     """
+    before = _state_values(app)
     try:
         await _wire_composition_root(app, settings)
     except RuntimeError:
@@ -557,3 +573,28 @@ async def compose_application(app: FastAPI, settings: "FaultMavenSettings") -> N
             "Continuing with fallback service implementations — this deployment "
             "permits a partial API (see settings.must_not_degrade)"
         )
+    return {
+        name: before.get(name, _ABSENT)
+        for name, value in _state_values(app).items()
+        if before.get(name, _ABSENT) is not value
+    }
+
+
+def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
+    """Take what composition published back off ``app.state``.
+
+    Called once the container has shut down. The services published here hold
+    what that shutdown closed: the container's Redis client, directly or
+    through a session store, a knowledge service or an investigation engine.
+    Left in place, a later request served without a lifespan reads them as
+    the application's own: the protection middleware borrows the closed client
+    as shared, a route hands it to a service, and redis-py reopens it on that
+    request's loop with no owner left to close it. Each name gets back the
+    value it held before composition, or is removed.
+    """
+    for name, previous in published.items():
+        if previous is _ABSENT:
+            if name in app.state:
+                del app.state[name]
+        else:
+            app.state[name] = previous

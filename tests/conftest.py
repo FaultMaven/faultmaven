@@ -77,11 +77,7 @@ except ImportError:
 # lift that. Installed here, at conftest import and before any test module is
 # collected, on the ``socket`` module itself: not a fixture, not a
 # ``monkeypatch``, so no test's teardown or ``monkeypatch.undo()`` restores the
-# original. Module level rather than a ``pytest_configure`` hook for the reason
-# ``_default_to_the_test_data_root`` below gives: a run rooted at
-# ``tests/integration`` reaches this file through that conftest's
-# ``import conftest``, and a hook on a copy pytest never registered does not
-# fire. ``install`` is idempotent. The refusal rule, and why a refused connect
+# original. ``install`` is idempotent. The refusal rule, and why a refused connect
 # fails the test even when the code under test swallowed it, is in
 # ``tests/network_guard.py``; ``pytest_runtest_makereport`` below reports it.
 from tests import network_guard  # noqa: E402
@@ -104,6 +100,47 @@ offline_tiktoken.install()
 # same FakeRedis fallback, which is traffic to the network that the fallback
 # hid. Set here, before any settings object is built.
 os.environ.setdefault("REDIS_HOST", "")
+
+# Presidio is a server no test owns. Under the Cloud profile
+# (``SANITIZE_PII=true``) every ``DataSanitizer`` built with service checks on
+# health-checks the analyzer and the anonymizer, and a full composition builds
+# four. The shipped URLs name ``presidio-{analyzer,anonymizer}.faultmaven.local``,
+# so the tests that compose with checks on looked those names up (#2232): where
+# they do not resolve (CI) the attempt ended before any connect and the tests
+# passed because DNS failed; where they resolve, the network guard refused the
+# connect and the same tests failed. So both URLs name a loopback port this
+# process binds and holds without listening: no other socket can take it, the
+# kernel refuses every connect to it at once, and the guard admits the connect
+# because this process bound the port. The health check then runs for real and
+# reaches the answer it reaches on a deployment with no Presidio: unavailable,
+# after its one retry. Replaced in every test process, whatever the environment
+# held: a value the caller set names a server the guard would refuse, and one a
+# parent test process set (the xdist controller, a pytest that runs a pytest)
+# names a port only that process holds. The pid makes the second import of this
+# file in a process (as ``tests.conftest``) keep the first one's port. With the
+# guard off (``FM_TEST_ALLOW_LIVE_NETWORK``, as the guard read it at install)
+# that reason does not hold, so the caller's URLs stand. A test that empties
+# the environment would lose the variables; ``_default_to_the_test_presidio_port``
+# below makes the port the fields' default as well.
+#: Each Presidio URL's variable, and the ``ProtectionSettings`` field it sets.
+PRESIDIO_URL_FIELDS = {
+    "PRESIDIO_ANALYZER_URL": "presidio_analyzer_url",
+    "PRESIDIO_ANONYMIZER_URL": "presidio_anonymizer_url",
+}
+_PRESIDIO_PID_ENV = "FAULTMAVEN_TEST_PRESIDIO_PID"
+
+if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
+    os.getpid()
+):
+    import atexit
+    import socket
+
+    _presidio = socket.socket()
+    _presidio.bind(("127.0.0.1", 0))
+    atexit.register(_presidio.close)
+    for _name in PRESIDIO_URL_FIELDS:
+        os.environ[_name] = f"http://127.0.0.1:{_presidio.getsockname()[1]}"
+    os.environ[_PRESIDIO_PID_ENV] = str(os.getpid())
 
 
 # One data root per test process (#1636, #1772). Every path whose shipped
@@ -614,6 +651,7 @@ except ImportError:
 
 import asyncio
 import os
+import re
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1092,11 +1130,8 @@ def _app_boot_session():
 def _app_boot_guard(request):
     """Tell the ``TestClient`` guard which test is running.
 
-    A fixture rather than a collection hook, so that a directory carrying its
-    own ``pytest.ini`` gets the guard by the same re-export that gives it the
-    shared boot (``tests/integration/conftest.py``).
-
-    It saves the context it replaces and restores it afterwards.
+    An autouse fixture, so it brackets each test: it records the test at setup,
+    and at teardown restores the context it replaced.
 
     Also refuses, at setup, a test that requests both ``booted_app_client``
     and ``unshared_app_boot``. It is autouse, so it is set up before either.
@@ -1411,11 +1446,7 @@ SHIPPED_DATA_DEFAULTS: dict = {}
 def _default_to_the_test_data_root() -> None:
     """Make this process's data root the DEFAULT of every ``./data`` path.
 
-    See the comment on ``TEST_DATA_ROOT_ENV`` above. Module level rather than a
-    ``pytest_configure`` hook: a run whose arguments sit under
-    ``tests/integration`` reaches this file through that conftest's
-    ``import conftest``, and a hook on a copy pytest never registered does not
-    fire. Idempotent, so the second copy re-applying it is harmless.
+    See the comment on ``TEST_DATA_ROOT_ENV`` above. Idempotent.
     """
     root = os.environ.get(TEST_DATA_ROOT_ENV)
     if not root:
@@ -1440,6 +1471,33 @@ def _default_to_the_test_data_root() -> None:
 
 
 _default_to_the_test_data_root()
+
+
+def _default_to_the_test_presidio_port() -> None:
+    """Make this process's Presidio port the DEFAULT of both URL fields.
+
+    The variables alone do not survive a test that empties or pins the
+    environment (``patch.dict(os.environ, ..., clear=True)``): its next settings
+    object falls back to the shipped names, which the guard refuses to resolve.
+    So, as for the data root and through the same ``_set_data_default``, the
+    port is the fields' default too. Not with the guard off: then the caller's
+    URLs, or the shipped ones, stand (see ``PRESIDIO_URL_FIELDS``).
+    """
+    if network_guard.GUARD is None:
+        return
+    from faultmaven.config.settings import reset_settings
+
+    for variable, attribute in PRESIDIO_URL_FIELDS.items():
+        _set_data_default(
+            "faultmaven.config.settings",
+            "ProtectionSettings",
+            attribute,
+            os.environ[variable],
+        )
+    reset_settings()
+
+
+_default_to_the_test_presidio_port()
 
 
 # ---------------------------------------------------------------------------
@@ -1561,8 +1619,7 @@ def pytest_runtest_protocol(item, nextitem):
     back and leave it there. Around the whole protocol, the root holds only
     the session's handlers. A wider-scoped fixture is set up inside its first
     test's protocol, so a root change it made would last that test only; no
-    fixture makes one today. ``tests/integration/conftest.py`` re-exports
-    this hook for runs rooted there.
+    fixture makes one today.
     """
     import logging
 
@@ -1590,18 +1647,18 @@ def pytest_runtest_protocol(item, nextitem):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Fail the phase that made a connection the network guard refused.
+    """Fail the phase that made a connection or a lookup the network guard refused.
 
-    The guard raises ``NetworkAccessBlocked`` at the call site, but code that
-    treats "server unreachable" as a fallback catches it and the test passes,
-    which is how a test reached a live model server twice and stayed green.
-    So each refusal is also recorded, and the report of the phase in which it
-    happened is turned into a failure that names the host and port. A phase
+    The guard raises ``NetworkAccessBlocked`` (``NameResolutionBlocked`` for a
+    lookup) at the call site, but code that treats "server unreachable" as a
+    fallback catches it and the test passes, which is how a test reached a
+    live model server twice and stayed green. So each refusal is also
+    recorded, and the report of the phase in which it happened is turned into
+    a failure that names the host (and the port, for a connection). A phase
     that had already failed keeps its own failure and gains a section listing
     the refusals. A skipped or xfailed phase fails too: a test that swallows a
     refusal and then skips, or that is marked xfail, reached for the server all
-    the same. ``tests/integration/conftest.py`` re-exports this hook for runs
-    rooted there.
+    the same.
     """
     outcome = yield
     refused = network_guard.drain_refusals()
@@ -1615,9 +1672,9 @@ def pytest_runtest_makereport(item, call):
             del report.wasxfail
         report.outcome = "failed"
         report.longrepr = (
-            f"the network guard refused {len(refused)} connection(s) during "
-            f"{call.when} of {item.nodeid}, so the test reached for a server it "
-            "does not own (tests/network_guard.py):\n" + listing
+            f"the network guard refused {len(refused)} connection(s) or name "
+            f"lookup(s) during {call.when} of {item.nodeid}, so the test reached "
+            "for a server it does not own (tests/network_guard.py):\n" + listing
         )
 
 
@@ -1659,8 +1716,12 @@ def shipped_data_defaults(monkeypatch, tmp_path):
 
 
 @pytest.fixture(scope="function")
-def reset_container():
-    """Reset the DI container before each test"""
+async def reset_container():
+    """Reset the DI container before each test, and shut it down after it.
+
+    A test that initializes the container owns what that opened: shutting it
+    down closes a real Redis client on the loop the test ran on.
+    """
     # Import here to avoid circular dependencies
     from faultmaven.container import container
 
@@ -1672,6 +1733,7 @@ def reset_container():
 
     yield container
 
+    await container.shutdown()
     # Reset again after test
     container.reset()
 
@@ -2235,7 +2297,7 @@ def recording_revoker():
 
 
 @pytest.fixture
-def anchor_db(monkeypatch):
+async def anchor_db(monkeypatch):
     """A real ``enterprises`` table behind ``account_anchor``'s reads.
 
     The login's org-less verdict and its one anchor-mover both read typed
@@ -2246,6 +2308,10 @@ def anchor_db(monkeypatch):
     the production ones rather than a stand-in that could disagree with them.
 
     Yields a seeder: ``seed(enterprise_id, retired=..., policy=...)``.
+
+    An ``async`` fixture so its teardown disposes the engine on the loop the
+    test used: an undisposed engine's pooled aiosqlite connection is collected
+    unclosed later, and its worker thread then reports to a closed loop.
     """
     from contextlib import asynccontextmanager
 
@@ -2314,6 +2380,7 @@ def anchor_db(monkeypatch):
                 )
 
     yield seed
+    await engine.dispose()
 
 
 # --------------------------------------------------- wall-clock calibration
@@ -2355,3 +2422,92 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
         measured_calibration()  # report only; the scale stays pinned at 1.0
     terminalreporter.write_sep("-", "benchmark calibration")
     terminalreporter.write_line(describe_calibration())
+
+
+# ------------------------------------------------- the run is warning-free
+
+
+#: Where a warning raised by an installed package most often comes from: a
+#: virtualenv that drifted off the lockfile, which CI never sees.
+_THIRD_PARTY_MARKERS = ("site-packages", "dist-packages")
+
+# Warnings that surface at garbage collection or from a thread: where they are
+# reported says which code was running then, not which code left the object
+# behind, so one reported from an installed package says nothing about the
+# package's version.
+_REPORTED_WHERE_COLLECTED = (
+    "ResourceWarning",
+    "PytestUnraisableExceptionWarning",
+    "PytestUnhandledThreadExceptionWarning",
+)
+
+
+def _warning_category(report) -> str:
+    """The category name ``warnings.formatwarning`` wrote into the report.
+
+    ``path:lineno: Category: message`` on the first line; the report carries
+    the text, not the class, so it survives the trip from an xdist worker.
+    """
+    first_line = report.message.split("\n", 1)[0]
+    match = re.search(r":\d+: (\w+): ", first_line)
+    return match.group(1) if match else ""
+
+
+def _a_dependency_warned(warnings_seen) -> bool:
+    """Whether an installed package raised a warning that its version decides."""
+    return any(
+        any(
+            marker in str(report.fslocation[0] if report.fslocation else "")
+            for marker in _THIRD_PARTY_MARKERS
+        )
+        and _warning_category(report) not in _REPORTED_WHERE_COLLECTED
+        for report in warnings_seen
+    )
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the run when its warnings summary is not empty.
+
+    ``pytest.ini`` raises what it can at the test that caused it. The rest —
+    a ``ResourceWarning`` or a thread's unhandled exception — surfaces at
+    garbage collection, inside whichever test is running then, so failing
+    that test would blame the wrong one. The run fails instead, and every
+    test keeps its own outcome: only the exit status changes.
+
+    The outermost wrapper, so it runs after the terminal reporter has printed
+    the summary and holds every warning, including those xdist relayed from
+    its workers to the controller. The controller decides; a worker's status
+    is not the run's.
+    """
+    result = yield
+    if hasattr(session.config, "workerinput"):
+        return result
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    warnings_seen = reporter.stats.get("warnings", []) if reporter else []
+    if not warnings_seen:
+        return result
+    if reporter is not None and reporter.hasopt("w"):
+        where = "see the warnings summary above."
+    else:
+        where = (
+            "--disable-warnings hid the warnings summary; run again without it "
+            "to list them."
+        )
+    line = (
+        f"FAILED: the run raised {len(warnings_seen)} warning(s); {where} The "
+        "suite is warning-free (docs/development/testing/standards.md): fix "
+        "each where it arises."
+    )
+    if _a_dependency_warned(warnings_seen):
+        line += (
+            " Some come from installed packages: if this virtualenv is off the "
+            "lockfile, ./scripts/sync-venv.sh test (Test Standalone) or "
+            "./scripts/sync-venv.sh cloud (Test Cloud) rebuilds it to what that "
+            "job installs."
+        )
+    if reporter is not None:
+        reporter.write_line(line, red=True, bold=True)
+    if session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    return result

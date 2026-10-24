@@ -72,8 +72,8 @@ from .record import (
 )
 from .virtual_time import (
     VirtualTimeLoop,
-    VirtualTimePolicy,
     virtual_now,
+    virtual_time_loop_factories,
     virtual_time_module,
 )
 
@@ -92,7 +92,6 @@ __all__ = [
     "LatencyBudget",
     "ThroughputBudget",
     "VirtualTimeLoop",
-    "VirtualTimePolicy",
     "absolute_mode",
     "assert_latency_within",
     "assert_linear_growth",
@@ -111,5 +110,6 @@ __all__ = [
     "restore_calibration_state",
     "scale_was_used",
     "virtual_now",
+    "virtual_time_loop_factories",
     "virtual_time_module",
 ]

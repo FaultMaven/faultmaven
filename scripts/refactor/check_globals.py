@@ -50,6 +50,7 @@ import sys
 
 CODE = r"""
 import ast, builtins, importlib, importlib.util, json, pkgutil, symtable, sys
+from pathlib import Path
 repo, base_file, dotted = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, repo)
 new = importlib.import_module(dotted)
@@ -61,7 +62,7 @@ old = importlib.util.module_from_spec(spec)
 sys.modules[old_name] = old
 spec.loader.exec_module(old)
 
-tree = ast.parse(open(base_file).read())
+tree = ast.parse(Path(base_file).read_text())
 defined = set()
 for n in tree.body:
     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -74,7 +75,7 @@ for n in tree.body:
 def global_reads(path):
     # Every name any scope of the file (module, class bodies, functions,
     # lambdas, comprehensions) resolves through MODULE GLOBALS.
-    top = symtable.symtable(open(path).read(), path, "exec")
+    top = symtable.symtable(Path(path).read_text(), path, "exec")
     out = set()
     def walk(t):
         for sym in t.get_symbols():
@@ -98,7 +99,7 @@ for extra in [x for x in sys.argv[4].split(",") if x]:
 home_obj = {}
 defined_by_module = {}
 for m in mods:
-    t = ast.parse(open(m.__file__).read())
+    t = ast.parse(Path(m.__file__).read_text())
     for n in t.body:
         names = []
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):

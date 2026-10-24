@@ -394,14 +394,21 @@ class TestBuildSystem:
 class TestToolConfiguration:
     """Test tool configurations in pyproject.toml."""
 
-    def test_pytest_configuration(self, pyproject_data: dict):
-        """Verify pytest is properly configured."""
-        pytest_config = pyproject_data["tool"]["pytest"]["ini_options"]
-        assert "tests" in pytest_config["testpaths"]
-        # Note: pytest.ini overrides pyproject.toml addopts, so coverage may not be in default config
-        # This test verifies pytest configuration exists, not specific flags
-        assert "addopts" in pytest_config
-        assert isinstance(pytest_config["addopts"], list)
+    def test_pytest_configuration(self, pyproject_path: Path, pyproject_data: dict):
+        """pytest is configured in ``pytest.ini``, and only there.
+
+        With a ``pytest.ini`` beside it, pytest ignores ``[tool.pytest.ini_options]``
+        in ``pyproject.toml`` (its header says so), so a table there is
+        configuration no run applies.
+        """
+        import configparser
+
+        ini = configparser.ConfigParser(interpolation=None)
+        ini.read(pyproject_path.parent / "pytest.ini")
+        pytest_ini = ini["pytest"]
+        assert "tests" in pytest_ini["testpaths"].split()
+        assert "addopts" in pytest_ini
+        assert "pytest" not in pyproject_data["tool"]
 
     def test_coverage_configuration(self, pyproject_data: dict):
         """Verify coverage configuration."""

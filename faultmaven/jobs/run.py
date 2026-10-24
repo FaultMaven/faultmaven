@@ -430,93 +430,103 @@ async def run_job(
         logger.critical("Refusing to run job: tenant-scope requirements not satisfied")
         raise
 
-    # Initialize container (may already be initialized)
     try:
-        await container.initialize()
-        logger.info("DI container initialized")
-    except TenancyConfigurationError:
-        # Deliberate fail-closed refusal (e.g. TENANT_PROVIDER=multi outside
-        # cloud) — never run a job against tenanted data with an invalid
-        # tenancy configuration.
-        logger.critical("Refusing to run job: tenancy configuration is invalid")
-        raise
-    except RuntimeError:
-        # The container's production fail-fast (ENVIRONMENT=production raises
-        # instead of degrading to a half-initialized container). The web
-        # lifespan treats this as terminal; so does the jobs path — otherwise
-        # a CronJob with broken infrastructure would report "skipped" (exit 0)
-        # forever instead of failing loudly.
-        logger.critical("Refusing to run job: container initialization failed")
-        raise
-    except Exception as e:
-        logger.warning(f"Container initialization warning: {e}")
-
-    # DB-role gate. Two mutually exclusive postures under multi:
-    # - Regular jobs (org / tenant_neutral): same hard gate as the web
-    #   lifespan — refuse if the app's PostgreSQL role is exempt from RLS
-    #   (superuser / BYPASSRLS / table owner); a misprovisioned CronJob would
-    #   otherwise see every tenant's rows unguarded.
-    # - The audited maintenance path (cross_tenant + --cross-tenant-maintenance,
-    #   already validated by _enforce_tenant_scope): the INVERSE — the role
-    #   must hold BYPASSRLS (an RLS-scoped partial view is the delete-other-
-    #   tenants hazard) while still being non-superuser and non-owner.
-    # Both are no-ops in single-tenant mode; the app gate is also a no-op on
-    # SQLite, while the maintenance gate fails closed off PostgreSQL.
-    from faultmaven.infrastructure.persistence.rls_role_guard import (
-        assert_app_db_role_enforces_rls,
-        assert_maintenance_db_role_posture,
-    )
-
-    if is_multi_tenant and cross_tenant_maintenance:
+        # Initialize container (may already be initialized)
         try:
-            maintenance_role = await assert_maintenance_db_role_posture()
-        except DeploymentCoherenceError:
-            logger.critical(
-                "Refusing to run job: DB role does not fit the maintenance "
-                "posture (BYPASSRLS + non-superuser + non-owner)"
+            await container.initialize()
+            logger.info("DI container initialized")
+        except TenancyConfigurationError:
+            # Deliberate fail-closed refusal (e.g. TENANT_PROVIDER=multi outside
+            # cloud) — never run a job against tenanted data with an invalid
+            # tenancy configuration.
+            logger.critical("Refusing to run job: tenancy configuration is invalid")
+            raise
+        except RuntimeError:
+            # The container's production fail-fast (ENVIRONMENT=production raises
+            # instead of degrading to a half-initialized container). The web
+            # lifespan treats this as terminal; so does the jobs path — otherwise
+            # a CronJob with broken infrastructure would report "skipped" (exit 0)
+            # forever instead of failing loudly.
+            logger.critical("Refusing to run job: container initialization failed")
+            raise
+        except Exception as e:
+            logger.warning(f"Container initialization warning: {e}")
+
+        # DB-role gate. Two mutually exclusive postures under multi:
+        # - Regular jobs (org / tenant_neutral): same hard gate as the web
+        #   lifespan — refuse if the app's PostgreSQL role is exempt from RLS
+        #   (superuser / BYPASSRLS / table owner); a misprovisioned CronJob would
+        #   otherwise see every tenant's rows unguarded.
+        # - The audited maintenance path (cross_tenant + --cross-tenant-maintenance,
+        #   already validated by _enforce_tenant_scope): the INVERSE — the role
+        #   must hold BYPASSRLS (an RLS-scoped partial view is the delete-other-
+        #   tenants hazard) while still being non-superuser and non-owner.
+        # Both are no-ops in single-tenant mode; the app gate is also a no-op on
+        # SQLite, while the maintenance gate fails closed off PostgreSQL.
+        from faultmaven.infrastructure.persistence.rls_role_guard import (
+            assert_app_db_role_enforces_rls,
+            assert_maintenance_db_role_posture,
+        )
+
+        if is_multi_tenant and cross_tenant_maintenance:
+            try:
+                maintenance_role = await assert_maintenance_db_role_posture()
+            except DeploymentCoherenceError:
+                logger.critical(
+                    "Refusing to run job: DB role does not fit the maintenance "
+                    "posture (BYPASSRLS + non-superuser + non-owner)"
+                )
+                raise
+            # The audit record for the run: who (DB role), what (job + args), and
+            # under which posture. Emitted at WARNING so it survives quiet logging
+            # configs — a cross-tenant sweep should never be invisible. Logged
+            # BEFORE the job runs so a crashing job still leaves the trail.
+            logger.warning(
+                "AUDIT cross-tenant maintenance run: job=%s db_role=%s args=%s "
+                "(RLS bypassed by dedicated maintenance role; "
+                "--cross-tenant-maintenance acknowledged)",
+                job_name,
+                maintenance_role,
+                {k: v for k, v in kwargs.items()},
             )
-            raise
-        # The audit record for the run: who (DB role), what (job + args), and
-        # under which posture. Emitted at WARNING so it survives quiet logging
-        # configs — a cross-tenant sweep should never be invisible. Logged
-        # BEFORE the job runs so a crashing job still leaves the trail.
-        logger.warning(
-            "AUDIT cross-tenant maintenance run: job=%s db_role=%s args=%s "
-            "(RLS bypassed by dedicated maintenance role; "
-            "--cross-tenant-maintenance acknowledged)",
-            job_name,
-            maintenance_role,
-            {k: v for k, v in kwargs.items()},
-        )
-    else:
+        else:
+            try:
+                await assert_app_db_role_enforces_rls(is_multi_tenant=is_multi_tenant)
+            except DeploymentCoherenceError:
+                logger.critical("Refusing to run job: app DB role is exempt from RLS")
+                raise
+
+        # Bind the job's tenant scope (multi + tenant-scoped jobs only). The
+        # engine's per-transaction listener reads this contextvar, so every DB
+        # transaction the job opens is RLS-scoped to the requested enterprise.
+        if bind_enterprise_id is not None:
+            from faultmaven.config.tenant_context import set_current_enterprise_id
+
+            set_current_enterprise_id(bind_enterprise_id)
+            logger.info(
+                "Tenant scope bound: job '%s' runs scoped to enterprise_id=%s",
+                job_name,
+                bind_enterprise_id,
+            )
+
+        # Run the job
+        logger.info(f"Running job: {job_name}")
         try:
-            await assert_app_db_role_enforces_rls(is_multi_tenant=is_multi_tenant)
-        except DeploymentCoherenceError:
-            logger.critical("Refusing to run job: app DB role is exempt from RLS")
-            raise
-
-    # Bind the job's tenant scope (multi + tenant-scoped jobs only). The
-    # engine's per-transaction listener reads this contextvar, so every DB
-    # transaction the job opens is RLS-scoped to the requested enterprise.
-    if bind_enterprise_id is not None:
-        from faultmaven.config.tenant_context import set_current_enterprise_id
-
-        set_current_enterprise_id(bind_enterprise_id)
-        logger.info(
-            "Tenant scope bound: job '%s' runs scoped to enterprise_id=%s",
-            job_name,
-            bind_enterprise_id,
-        )
-
-    # Run the job
-    logger.info(f"Running job: {job_name}")
-    try:
-        result = await run_func(settings=settings, container=container, **kwargs)
-        logger.info(f"Job completed: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Job failed: {e}", exc_info=True)
-        return {"status": "failed", "error": str(e)}
+            result = await run_func(settings=settings, container=container, **kwargs)
+            logger.info(f"Job completed: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Job failed: {e}", exc_info=True)
+            return {"status": "failed", "error": str(e)}
+    finally:
+        # Whatever this run initialized is done, whether the job ran or a gate
+        # refused it: close what the container owns while the loop its Redis
+        # pool is bound to is still running. A failure to close does not change
+        # what the run reported.
+        try:
+            await container.shutdown()
+        except Exception as e:
+            logger.warning(f"Container shutdown failed (non-critical): {e}")
 
 
 def _ttl_hours_arg(value: str) -> int:

@@ -22,6 +22,8 @@ import asyncio
 import os
 import tempfile
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -33,8 +35,14 @@ from faultmaven.config.settings import set_env_var
 pytestmark = pytest.mark.integration
 
 
-async def _setup_fresh_db(db_path: str) -> AsyncSession:
-    """Run all migrations on a fresh SQLite file, return a session."""
+@asynccontextmanager
+async def _fresh_db_session(db_path: str) -> AsyncIterator[AsyncSession]:
+    """Run all migrations on a fresh SQLite file and yield a session over it.
+
+    The session is closed and its engine disposed on exit, on the test's own
+    loop: an undisposed engine's pooled aiosqlite connection is collected
+    unclosed later, and its worker thread then reports to a closed loop.
+    """
     import subprocess
     import sys
 
@@ -51,7 +59,11 @@ async def _setup_fresh_db(db_path: str) -> AsyncSession:
         capture_output=True,
     )
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
-    return AsyncSession(engine, expire_on_commit=False)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            yield session
+    finally:
+        await engine.dispose()
 
 
 async def _seed_minimum(session: AsyncSession) -> tuple[str, str, str]:
@@ -94,8 +106,7 @@ async def test_check_constraint_blocks_logs_without_source_file():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     try:
-        session = await _setup_fresh_db(db_path)
-        try:
+        async with _fresh_db_session(db_path) as session:
             ent_id, oid, cid = await _seed_minimum(session)
 
             from sqlalchemy import text
@@ -118,8 +129,6 @@ async def test_check_constraint_blocks_logs_without_source_file():
                     },
                 )
                 await session.commit()
-        finally:
-            await session.close()
     finally:
         os.unlink(db_path)
 
@@ -135,8 +144,7 @@ async def test_only_an_engine_inference_may_have_no_source_file(source_type, adm
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     try:
-        session = await _setup_fresh_db(db_path)
-        try:
+        async with _fresh_db_session(db_path) as session:
             ent_id, oid, cid = await _seed_minimum(session)
 
             from sqlalchemy import text
@@ -163,8 +171,6 @@ async def test_only_an_engine_inference_may_have_no_source_file(source_type, adm
                 with pytest.raises(IntegrityError):
                     await session.execute(insert, params)
                     await session.commit()
-        finally:
-            await session.close()
     finally:
         os.unlink(db_path)
 

@@ -241,6 +241,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # ``_initialize`` for why that matters more than it looks.
         self._init_lock = asyncio.Lock()
 
+    async def shutdown(self) -> None:
+        """End this middleware's service: release the limiter's client.
+
+        Called by ``shutdown_protection`` when the app stops serving. The
+        limiter closes a client only if it opened it, and lets go of it either
+        way; the latches below go back to their initial state, or ``dispatch``
+        would short-circuit on ``_initialized`` against the released client and
+        never re-run the ladder. The lock is renewed too: one that was ever
+        contended belongs to the event loop it was contended on.
+        """
+        await self.rate_limiter.close()
+        self._initialized = False
+        self._ever_initialized = False
+        self._degraded = False
+        self._last_attempt_at = None
+        self._handled_demotion_generation = self.rate_limiter.demotion_generation
+        self._init_lock = asyncio.Lock()
+
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a Redis client the limiter opened itself, or ``None``."""
+        return self.rate_limiter.owned_client_loop
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Decide the request's limit verdict, then serve it — exactly once.
 
