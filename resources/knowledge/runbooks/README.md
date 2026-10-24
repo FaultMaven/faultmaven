@@ -44,7 +44,8 @@ contributing is two steps:
 1. **You:** open a PR adding/editing a `.md` here.
 2. **A maintainer:** rebuilds the pack with the [KB Toolkit](../../../docs/architecture/knowledge-and-ai/kb-pack-architecture.md)
    (`kb-build-pack`) and commits the refreshed `resources/knowledge/pack/`. CI
-   (`scripts/check_kb_pack.py`) guards that the shipped pack matches these sources.
+   (`scripts/check_kb_pack.py`) guards that the shipped pack matches these sources,
+   and that each chunk's text is the text its shipped vector was embedded from.
 
 > Do **not** hand-edit `resources/knowledge/pack/` — it is generated from the
 > files here and will be overwritten by the next build. Edit runbooks **here**.

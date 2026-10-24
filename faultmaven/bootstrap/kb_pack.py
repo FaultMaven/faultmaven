@@ -15,17 +15,25 @@ or running the embedding model:
       "version": "<informational, e.g. date or git sha>",
       "model": "BAAI/bge-m3",
       "dim": 1024,
+      "vectors_sha256": "<sha256 of the vectors.npz bytes>",
       "runbooks": [
         {
           "item_id": "kb_<hex>", "content_hash": "<sha256 of full md>",
           "title": "...", "scope": "global",
           "relpath": "global/database/redis-oom.md",
           "tags": [...], "source_url": null, "owner_id": null, "team_id": null,
-          "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "..."}, ... ]
+          "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "...",
+                       "text_sha256": "<hex>", "pair_sha256": "<hex>"}, ... ]
         },
         ...
       ]
     }
+
+``text_sha256`` hashes the text a chunk's vector was embedded from;
+``pair_sha256`` = ``sha256(bytes.fromhex(text_sha256) + row)``, ``row`` being
+``vectors[vector_row]`` as little-endian float32 bytes, binds that text to that
+row. The loader reads none of the three hashes; ``scripts/check_kb_pack.py``
+(CI + pre-commit) verifies them.
 
 Why self-contained? Each chunk ships its **text and vector** together, so the app
 writes exactly what the pack says — it never re-chunks or re-embeds. That removes
