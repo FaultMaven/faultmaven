@@ -2749,8 +2749,7 @@ class TestTheRestOfTheTree:
         """A fixture is reached through a PARAMETER, from a conftest above.
 
         That is pytest's own resolution, and the house idiom for shared
-        setup: ``tests/integration/conftest.py`` defines three measuring
-        fixtures. Without modelling it, a test that took ``stopwatch`` and
+        setup. Without modelling it, a test that took ``stopwatch`` and
         compared what it returned was neither timed nor scanned.
         """
         (tmp_path / "conftest.py").write_text(

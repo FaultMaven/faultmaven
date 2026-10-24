@@ -76,7 +76,7 @@ The Router is a generic LLM abstraction — it routes requests to providers, han
 
 The MilestoneEngine owns the case lifecycle. It has `case_id`, manages the tool loop, and controls what content reaches the LLM. It is the natural owner of the redaction boundary.
 
-The Router retains its existing `_sanitize_if_needed()` as a safety net for other LLM calls. For investigation turns and the knowledge-authoring paths (below), the prompt is already redacted at the engine layer, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
+The Router keeps its own `SANITIZE_PII` pass in `route()`, over the same injected sanitizer (#2235), as a safety net for other LLM calls. For investigation turns and the knowledge-authoring paths (below), the prompt is already redacted at the engine layer, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
 
 ## Components
 
@@ -207,7 +207,7 @@ The paths that turn a case or an uploaded document into a runbook send that text
 
 Every model call is covered: conversion's triage, analysis and per-failure-mode generation. Each redacts its whole outbound message list before the truncation retry, so a retry resends the redacted text, and outside any catch-all, so a `RedactionUnavailableError` stops the run with nothing sent — triage's fail-open guard and conversion's per-failure-mode error handling do not absorb it. A multi-mode conversion redacts every failure mode's request before it sends any (`ConversionService._prepare_conversion`), so a refusal on the third of six modes sends no generation and writes no draft, rather than leaving the first two behind. Only text content is redacted: `model_boundary_redacted` refuses a message whose content is not a string, or that carries a key other than `role` and `content` (`TypeError`), under every posture, instead of sending it unredacted.
 
-It matters independently of the router. `LLMRouter._sanitize_if_needed()` runs its own pass under the same flag, so a default deployment with `SANITIZE_PII=true` already sent this text redacted — but that pass is a property of the default router, which `LLM_ROUTER_CLASS` can substitute.
+It matters independently of the router. `LLMRouter.route()` runs a pass of its own under the same flag, with the same injected sanitizer instance (#2235), so a default deployment with `SANITIZE_PII=true` already sent this text redacted — but that pass is a property of the default router, which `LLM_ROUTER_CLASS` can substitute.
 
 No registry is loaded or saved, and nothing is reversed. The investigation path reverses placeholders in the reply it shows the user; a runbook is de-identified knowledge, so the placeholders the model writes are what is persisted — the same text the default router's own pass produced before this layer existed.
 
@@ -297,7 +297,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 
 - **Preprocessing**: builds summaries and structural indexes from raw content (see *Not Implemented* above)
 - **Context builder**: assembles raw content; the engine redacts downstream
-- **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls the engine layer does not redact
+- **Router**: its pass in `route()` stays as a safety net for LLM calls the engine layer does not redact
 - **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results; a tool that calls a model itself redacts what it sends through the turn's context
 - **Storage**: uploads, evidence and preprocessing artifacts are stored raw, never redacted at rest
 

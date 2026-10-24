@@ -604,7 +604,7 @@ def test_the_ingester_wrapper_does_not_turn_a_refusal_into_no_ingester(
     settings = make_chroma_settings(chromadb_url="http://chromadb:8000")
 
     with pytest.raises(ChromaClientConfigError):
-        create_knowledge_ingester(settings)
+        create_knowledge_ingester(settings, sanitizer=object())
 
 
 def _refusing_settings(
@@ -632,8 +632,10 @@ def _real_container_refusing(settings: Any) -> Iterator[MagicMock]:
     container._initialized = False
     container._initializing = False
 
-    async def _infrastructure(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _infrastructure(composing: Any, *_args: Any, **_kwargs: Any) -> None:
+        # register_tools hands the ingester the composition's sanitizer, and
+        # refuses a container without one (#2235).
+        composing._register_service("sanitizer", object())
 
     with (
         patch("faultmaven._container_impl.get_settings", return_value=settings),

@@ -8,8 +8,7 @@ This directory contains integration test infrastructure focused on:
 
 1. **Container-Based Integration** - Cross-layer validation using dependency injection container
 2. **Interface Compliance Testing** - Integration testing with proper interface contracts
-3. **Mock API Infrastructure** - External service simulation for testing without dependencies
-4. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
+3. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
 
 ## Current Test Structure
 
@@ -49,20 +48,15 @@ System readiness and Redis integration validation
 ### Infrastructure Files
 
 #### `mock_servers.py`
-Mock API server infrastructure for external service simulation:
-
-- **LLM Provider Mocking**: OpenAI-compatible and Ollama API endpoints
-- **Web Search Mocking**: Google Custom Search and Tavily API simulation
-- **Server Lifecycle Management**: Startup, health monitoring, and graceful shutdown
-- **Port Management**: Configurable port assignment and conflict resolution
+`get_free_port()`: a free port for a test that serves an app on loopback.
 
 #### `conftest.py`
-Integration test fixtures and configuration:
+Integration test configuration and fixtures:
 
-- **Logging Setup**: Test logging capture and verification utilities
-- **Mock Service Configuration**: Shared mock services and test doubles
-- **Async Test Support**: Async test infrastructure and cleanup
-- **Test Environment**: Integration test environment setup and teardown
+- **All-skipped guard**: a session that selects tests and skips every one fails
+- **Served-app teardown**: each test ends the protection middleware of the apps it served
+- **Service fixtures**: `session_service` (real Redis) and `case_service` (the DI container's)
+- **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration
 
@@ -141,14 +135,6 @@ with no PostgreSQL — now **fails** instead of reporting green with skips.
 Provide the service (a real `DATABASE_URL`, a reachable Redis) or narrow the
 selection so the run stops claiming to cover it. Mixed runs, where some tests
 pass and environment-dependent ones skip, stay green.
-
-### Mock Server Testing
-
-Run mock server infrastructure tests:
-```bash
-# Note: Run individually to avoid port conflicts
-pytest -k "mock_server" -v -s
-```
 
 ### Environment Variables
 
@@ -247,19 +233,6 @@ async def test_interface_compliance_real_scenario():
 async def test_async_operation():
     result = await async_function()
     assert result
-```
-
-**Mock Server Port Conflicts**: Run mock server tests individually
-```bash
-pytest tests/integration/<file>.py::<test_name> -v -s
-```
-
-**Logging Capture Issues**: Use proper logging fixtures
-```python
-def test_logging(logging_setup):
-    log_capture = logging_setup
-    # ... test logging behavior
-    logs = log_capture.get_logs(level=logging.INFO)
 ```
 
 ### Debug Information

@@ -39,7 +39,7 @@ def create_tracer(settings: FaultMavenSettings) -> Any:
     return OpikTracer(settings=settings)
 
 
-def create_llm_provider(settings: FaultMavenSettings | None = None) -> Any:
+def create_llm_provider(settings: FaultMavenSettings, sanitizer: Any) -> Any:
     """Create LLM provider/router.
 
     Defaults to the core LLMRouter. Override via LLM_ROUTER_CLASS env var
@@ -47,13 +47,13 @@ def create_llm_provider(settings: FaultMavenSettings | None = None) -> Any:
     (e.g. tenant-aware routing — a core concern when built, ADR-010 D4).
 
     The replacement class must satisfy ``ILLMProvider`` and accept zero
-    constructor arguments (or have all-optional kwargs).
+    constructor arguments (or have all-optional kwargs). So the sanitizer is
+    assigned after construction, not passed to it: the router redacts with
+    the composition's instance rather than building its own (#2235). The
+    replacement must redact with the ``sanitizer`` assigned to it: a subclass
+    of ``LLMRouter`` does, and a wrapper must forward the assignment to the
+    router it wraps.
     """
-    if settings is None:
-        from faultmaven.config.settings import get_settings
-
-        settings = get_settings()
-
     router_class_path = settings.llm.router_class
     if router_class_path:
         import importlib
@@ -62,11 +62,13 @@ def create_llm_provider(settings: FaultMavenSettings | None = None) -> Any:
         module = importlib.import_module(module_path)
         router_class = getattr(module, class_name)
         logger.info(f"Using custom LLM router: {router_class_path}")
-        return router_class()
+        router = router_class()
+    else:
+        from faultmaven.infrastructure.llm.router import LLMRouter
 
-    from faultmaven.infrastructure.llm.router import LLMRouter
-
-    return LLMRouter()
+        router = LLMRouter()
+    router.sanitizer = sanitizer
+    return router
 
 
 def create_da_provider() -> tuple[Any | None, str | None]:
@@ -616,7 +618,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     container._register_service("tracer", tracer)
 
     # LLM
-    llm_provider = create_llm_provider(settings)
+    llm_provider = create_llm_provider(settings, sanitizer)
     container._register_service("llm_provider", llm_provider)
 
     # Processing
@@ -626,12 +628,6 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     # Data classification
     data_classifier = create_data_classifier()
     container._register_service("data_classifier", data_classifier)
-
-    # Create a separate sanitizer for preprocessing (stateless)
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
-
-    data_sanitizer = DataSanitizer()
-    container._register_service("data_sanitizer", data_sanitizer)
 
     # Extractors
     extractors = create_extractors()

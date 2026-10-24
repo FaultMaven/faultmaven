@@ -48,7 +48,7 @@ tests/
 │   └── test_container_integration_comprehensive.py # NEW: Container integration (38+ tests)
 ├── integration/            # Cross-Layer Integration Testing
 │   ├── conftest.py                 # Integration test fixtures
-│   ├── mock_servers.py             # Mock API servers
+│   ├── mock_servers.py             # get_free_port() for loopback servers
 │   ├── test_kb_ingestion_and_indexing.py # Knowledge base integration
 │   ├── test_readiness_and_redis.py # System readiness testing
 ├── performance/            # Performance Testing (Container overhead)

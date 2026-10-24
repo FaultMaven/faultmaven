@@ -191,7 +191,7 @@ def test_create_knowledge_ingester_propagates_the_refusal(monkeypatch):
     settings.database.chromadb_host = "localhost"
 
     with pytest.raises(ChromaUnavailableError):
-        create_knowledge_ingester(settings)
+        create_knowledge_ingester(settings, sanitizer=object())
 
 
 def test_create_knowledge_ingester_still_softens_ordinary_failures(monkeypatch):
@@ -204,4 +204,4 @@ def test_create_knowledge_ingester_still_softens_ordinary_failures(monkeypatch):
     monkeypatch.setattr(ingestion_mod, "KnowledgeIngester", _Boom)
     settings = _settings(cloud=False)
 
-    assert create_knowledge_ingester(settings) is None
+    assert create_knowledge_ingester(settings, sanitizer=object()) is None

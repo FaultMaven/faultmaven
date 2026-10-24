@@ -85,7 +85,7 @@ async def register_infrastructure(container):
     sanitizer = create_sanitizer(container.settings)
     container._register_service("sanitizer", sanitizer)
 
-    llm = create_llm_provider()
+    llm = create_llm_provider(container.settings, sanitizer)
     container._register_service("llm_provider", llm)
 ```
 

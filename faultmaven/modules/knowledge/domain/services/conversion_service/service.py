@@ -239,7 +239,8 @@ class ConversionService:
         # triage, analysis, conversion — redacts what it sends with it at this
         # layer, under ``should_redact`` (#1901): the router's own pass is a
         # property of the default router, which ``LLM_ROUTER_CLASS`` can
-        # substitute. None → redaction disabled at DI level, as on the engine.
+        # substitute. The container always provides one; a None (outside a
+        # composition) redacts nothing, as on the engine.
         self._sanitizer = sanitizer
         self._db_session_factory = db_session_factory
         self._knowledge_service = knowledge_service

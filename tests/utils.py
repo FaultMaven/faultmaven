@@ -598,6 +598,26 @@ def regex_only_sanitizer(**env: str):
     return sanitizer
 
 
+def sanitizer_constructions(monkeypatch) -> List[Any]:
+    """Every ``DataSanitizer`` constructed from here on, in order (#2235).
+
+    Wraps the real class's ``__init__`` rather than replacing the class: the
+    container's factory imports the name at call time, so a patched class
+    would see its own construction and count 1 whatever else was built.
+    """
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    built: List[Any] = []
+    real_init = DataSanitizer.__init__
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        real_init(self, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(DataSanitizer, "__init__", __init__)
+    return built
+
+
 def make_org_knowledge_item(
     item_id: Optional[str] = None,
     enterprise_id: Optional[str] = None,
