@@ -13,6 +13,8 @@ import socket
 
 import pytest
 
+from tests import network_guard
+from tests.network_guard import NameResolutionBlocked
 from tests.utils import sockets_refused
 
 pytestmark = pytest.mark.unit
@@ -52,6 +54,20 @@ def test_a_clean_block_passes_and_restores_the_socket_module():
     with sockets_refused():
         assert socket.socket.connect is not before[0]
     assert (socket.socket.connect, socket.getaddrinfo) == before
+
+
+def test_the_block_hands_name_lookups_back_to_the_process_guard():
+    """Inside, the block refuses every lookup itself; after it, the process
+    guard refuses a name that is not this machine's (#2232), because what the
+    block restores is the guard's ``getaddrinfo``, not the resolver."""
+    with pytest.raises(AssertionError, match="attempted network connections"):
+        with sockets_refused():
+            with pytest.raises(OSError, match="refused in tests"):
+                _PATHS["getaddrinfo"]()
+    with network_guard.expecting_refusals() as refused:
+        with pytest.raises(NameResolutionBlocked):
+            _PATHS["getaddrinfo"]()
+    assert len(refused) == 1
 
 
 @pytest.mark.skipif(
