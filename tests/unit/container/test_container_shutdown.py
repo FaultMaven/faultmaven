@@ -16,6 +16,7 @@ client at all.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -334,3 +335,80 @@ async def test_the_shutdown_removes_every_background_handle_it_stops(
         if name in app.state
     ]
     assert left == [], f"stopped, but still on app.state: {left}"
+
+
+@pytest.mark.parametrize(
+    "cancelled_at",
+    [
+        "faultmaven.api.protection.shutdown_protection",
+        "faultmaven.bootstrap.lifespan.stop_config_watcher",
+    ],
+    ids=["protection shutdown", "early config-watcher stop"],
+)
+async def test_a_cancellation_during_the_shutdown_still_decomposes_then_propagates(
+    stop_serving, monkeypatch, cancelled_at
+):
+    """A cancellation at any step of the shutdown skipped the composition's
+    teardown, leaving the container initialized and its client open."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    monkeypatch.setattr(cancelled_at, AsyncMock(side_effect=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await stop_serving(FastAPI(), {})
+
+    lifespan_module.decompose_application.assert_awaited_once()
+
+
+async def test_a_cancellation_while_a_metrics_task_ends_is_not_swallowed(stop_serving):
+    """``await task`` under ``except CancelledError`` swallowed a cancellation of
+    the shutdown itself together with the task's own: the shutdown is cancelled
+    while the funnel collector is still ending, and ends cancelled."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    cancel_seen, release = asyncio.Event(), asyncio.Event()
+
+    async def _slow_to_end():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancel_seen.set()
+            await release.wait()  # still ending when the shutdown is cancelled
+            raise
+
+    app = FastAPI()
+    funnel = asyncio.create_task(_slow_to_end())
+    app.state.funnel_metrics_task = funnel
+    shutdown = asyncio.create_task(stop_serving(app, {}))
+    await cancel_seen.wait()
+    shutdown.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+
+    lifespan_module.decompose_application.assert_awaited_once()
+    await asyncio.wait({funnel})
+    assert funnel.cancelled()
+
+
+async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):
+    """Both the shutdown and the composition's teardown stop the watcher. The
+    first takes it off ``app.state``, so the second is a no-op: an error the
+    watcher ended with is reported once, not once per stop."""
+    from faultmaven.bootstrap.composition import stop_config_watcher
+
+    async def _fails():
+        raise ValueError("the watcher blew up")
+
+    app = FastAPI()
+    watcher = asyncio.create_task(_fails())
+    await asyncio.wait({watcher})
+    app.state.llm_config_watch_task = watcher
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.bootstrap.composition"):
+        await stop_config_watcher(app)
+        await stop_config_watcher(app)
+
+    assert "llm_config_watch_task" not in app.state
+    assert caplog.text.count("the watcher blew up") == 1

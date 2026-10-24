@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from faultmaven.bootstrap.composition import (
     _is_test_environment,
+    cancel_and_wait,
     compose_application,
     decompose_application,
     stop_config_watcher,
@@ -524,121 +525,113 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
     Stops only what :func:`_start_serving` got as far as starting, reading each
     handle off ``app.state`` and removing it once stopped, then takes
     composition back through :func:`decompose_application`, whose last step
-    disposes the database engine.
+    disposes the database engine. The decomposition runs whatever happens to
+    the steps before it, a cancellation included.
     """
-    # Shutdown
-    logger.info("Shutting down FaultMaven API server...")
-
-    # Owned clients first, then the shared one, then the engine. The protection
-    # middleware closes only a Redis client it built for itself; the shared
-    # client is the container's, closed further down.
     try:
-        from faultmaven.api.protection import shutdown_protection
+        # Shutdown
+        logger.info("Shutting down FaultMaven API server...")
 
-        await shutdown_protection(app)
-    except Exception as e:
-        logger.warning(f"Protection middleware shutdown failed (non-critical): {e}")
-
-    # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
-    # database is still open, then uninstall it — whatever the drain did: calls
-    # metered after this point are counted as not persisted rather than
-    # scheduled against a closing engine. A write still pending at the timeout
-    # is counted. This is the uninstall on the serving path;
-    # decompose_application's own is then a no-op.
-    from faultmaven.infrastructure.llm.usage_ledger import (
-        drain_pending_usage_writes,
-        install_usage_ledger,
-    )
-
-    try:
-        await drain_pending_usage_writes(timeout_s=5)
-    except Exception as e:
-        logger.warning(f"LLM usage ledger drain failed (non-critical): {e}")
-    finally:
-        install_usage_ledger(None)
-
-    # Stop funnel metrics collector
-    _funnel_task = getattr(app.state, "funnel_metrics_task", None)
-    if _funnel_task is not None:
-        _funnel_task.cancel()
+        # Owned clients first, then the shared one, then the engine. The protection
+        # middleware closes only a Redis client it built for itself; the shared
+        # client is the container's, closed further down.
         try:
-            await _funnel_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        del app.state.funnel_metrics_task
+            from faultmaven.api.protection import shutdown_protection
 
-    # Stop revocation watermark gauge
-    _watermark_task = getattr(app.state, "revocation_watermark_task", None)
-    if _watermark_task is not None:
-        _watermark_task.cancel()
-        try:
-            await _watermark_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        del app.state.revocation_watermark_task
-
-    # Stop event-loop lag monitor
-    _loop_lag_task = getattr(app.state, "loop_lag_task", None)
-    if _loop_lag_task is not None:
-        _loop_lag_task.cancel()
-        try:
-            await _loop_lag_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        del app.state.loop_lag_task
-
-    # Stop LLM config watcher (cloud multi-replica propagation), before the
-    # schedulers, so that no config reload lands mid-shutdown.
-    # decompose_application stops it again, a no-op by then.
-    try:
-        await stop_config_watcher(app)
-    except Exception as e:
-        logger.warning(f"LLM config watcher stop failed (non-critical): {e}")
-
-    # Stop case cleanup scheduler
-    case_cleanup_scheduler = getattr(app.state, "case_cleanup_scheduler", None)
-    if case_cleanup_scheduler:
-        try:
-            from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
-
-            stop_case_cleanup_scheduler(case_cleanup_scheduler)
+            await shutdown_protection(app)
         except Exception as e:
-            logger.warning(f"Error stopping case cleanup scheduler: {e}")
-        del app.state.case_cleanup_scheduler
+            logger.warning(f"Protection middleware shutdown failed (non-critical): {e}")
 
-    # Stop LLM usage retention
-    llm_usage_retention_task = getattr(app.state, "llm_usage_retention_task", None)
-    if llm_usage_retention_task is not None:
-        try:
-            from faultmaven.infrastructure.tasks.llm_usage_retention import (
-                stop_llm_usage_retention_scheduler,
-            )
-
-            await stop_llm_usage_retention_scheduler(llm_usage_retention_task)
-        except Exception as e:
-            logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
-        del app.state.llm_usage_retention_task
-
-    # Cleanup Phase 2 monitoring components
-    try:
-        from faultmaven.infrastructure.observability.apm_integration import (
-            apm_integration,
+        # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
+        # database is still open, then uninstall it — whatever the drain did: calls
+        # metered after this point are counted as not persisted rather than
+        # scheduled against a closing engine. A write still pending at the timeout
+        # is counted. This is the uninstall on the serving path;
+        # decompose_application's own is then a no-op.
+        from faultmaven.infrastructure.llm.usage_ledger import (
+            drain_pending_usage_writes,
+            install_usage_ledger,
         )
 
-        # Stop APM background export
-        apm_integration.stop_background_export()
+        try:
+            await drain_pending_usage_writes(timeout_s=5)
+        except Exception as e:
+            logger.warning(f"LLM usage ledger drain failed (non-critical): {e}")
+        finally:
+            install_usage_ledger(None)
 
-        # Flush any remaining metrics
-        await apm_integration.flush_metrics()
+        # Stop funnel metrics collector
+        _funnel_task = getattr(app.state, "funnel_metrics_task", None)
+        if _funnel_task is not None:
+            await cancel_and_wait(_funnel_task)
+            del app.state.funnel_metrics_task
 
-        logger.info("✅ Phase 2 monitoring components cleaned up")
+        # Stop revocation watermark gauge
+        _watermark_task = getattr(app.state, "revocation_watermark_task", None)
+        if _watermark_task is not None:
+            await cancel_and_wait(_watermark_task)
+            del app.state.revocation_watermark_task
 
-    except Exception as e:
-        logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
+        # Stop event-loop lag monitor
+        _loop_lag_task = getattr(app.state, "loop_lag_task", None)
+        if _loop_lag_task is not None:
+            await cancel_and_wait(_loop_lag_task)
+            del app.state.loop_lag_task
 
-    # Take composition back: the container (whose shared Redis client's pool
-    # is bound to this event loop), the usage ledger, the services published on
-    # app.state, which hold what that closed, and, last, the database engine.
-    await decompose_application(app, published)
+        # Stop LLM config watcher (cloud multi-replica propagation), before the
+        # schedulers, so that no config reload lands mid-shutdown.
+        # decompose_application stops it again, a no-op by then.
+        try:
+            await stop_config_watcher(app)
+        except Exception as e:
+            logger.warning(f"LLM config watcher stop failed (non-critical): {e}")
+
+        # Stop case cleanup scheduler
+        case_cleanup_scheduler = getattr(app.state, "case_cleanup_scheduler", None)
+        if case_cleanup_scheduler:
+            try:
+                from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
+
+                stop_case_cleanup_scheduler(case_cleanup_scheduler)
+            except Exception as e:
+                logger.warning(f"Error stopping case cleanup scheduler: {e}")
+            del app.state.case_cleanup_scheduler
+
+        # Stop LLM usage retention
+        llm_usage_retention_task = getattr(app.state, "llm_usage_retention_task", None)
+        if llm_usage_retention_task is not None:
+            try:
+                from faultmaven.infrastructure.tasks.llm_usage_retention import (
+                    stop_llm_usage_retention_scheduler,
+                )
+
+                await stop_llm_usage_retention_scheduler(llm_usage_retention_task)
+            except Exception as e:
+                logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
+            del app.state.llm_usage_retention_task
+
+        # Cleanup Phase 2 monitoring components
+        try:
+            from faultmaven.infrastructure.observability.apm_integration import (
+                apm_integration,
+            )
+
+            # Stop APM background export
+            apm_integration.stop_background_export()
+
+            # Flush any remaining metrics
+            await apm_integration.flush_metrics()
+
+            logger.info("✅ Phase 2 monitoring components cleaned up")
+
+        except Exception as e:
+            logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
+    finally:
+        # Take composition back: the container (whose shared Redis client's pool
+        # is bound to this event loop), the usage ledger, the services published
+        # on app.state, which hold what that closed, and, last, the database
+        # engine. In a finally, so that a cancellation at any step above still
+        # takes all of it back before it propagates.
+        await decompose_application(app, published)
 
     logger.info("FaultMaven API server shutdown complete")

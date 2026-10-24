@@ -614,21 +614,35 @@ async def compose_application(
     return _published_since(app, before)
 
 
+async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
+    """Cancel ``task`` and wait for it to end; return the exception it ended with.
+
+    Waited for through ``asyncio.wait``, which never raises the task's own
+    outcome: neither its cancellation nor its exception is raised here, so a
+    ``CancelledError`` that is raised is a cancellation of the caller, and
+    propagates. ``await task`` under ``except CancelledError`` cannot tell the
+    two apart, and swallows both. The exception is retrieved, so it is never
+    reported as unretrieved; ``None`` when the task was cancelled or returned.
+    """
+    task.cancel()
+    await asyncio.wait({task})
+    return None if task.cancelled() else task.exception()
+
+
 async def stop_config_watcher(app: FastAPI) -> None:
     """Cancel the LLM config watcher composition started, and wait for it to end.
 
-    Idempotent: a watcher that has already ended is left as it is. Waited for
-    through ``asyncio.wait``, which never raises the watcher's own outcome, so a
-    ``CancelledError`` raised here is a cancellation of the caller, and
-    propagates.
+    Takes the watcher off ``app.state`` once it has ended, so a second call is
+    a no-op. A cancellation of the caller propagates (:func:`cancel_and_wait`)
+    and leaves the handle for the next call.
     """
     task = getattr(app.state, "llm_config_watch_task", None)
     if task is None:
         return
-    task.cancel()
-    await asyncio.wait({task})
-    if not task.cancelled() and task.exception() is not None:
-        logger.warning(f"LLM config watcher ended with an error: {task.exception()}")
+    error = await cancel_and_wait(task)
+    del app.state.llm_config_watch_task
+    if error is not None:
+        logger.warning(f"LLM config watcher ended with an error: {error}")
 
 
 async def _teardown_step(
