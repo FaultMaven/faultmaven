@@ -13,7 +13,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from faultmaven.bootstrap.composition import _is_test_environment, compose_application
+from faultmaven.bootstrap.composition import (
+    _is_test_environment,
+    compose_application,
+    unpublish_composition,
+)
 from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
 logger = logging.getLogger(__name__)
@@ -209,7 +213,7 @@ async def lifespan(app: FastAPI):
     # Container initialization and the composition root. Failures are refused
     # or tolerated there, per deployment mode — not here.
     logger.info("Initializing DI container...")
-    await compose_application(app, settings)
+    published = await compose_application(app, settings)
 
     # Fail fast if the composition root withheld a route from idempotent
     # replay but left it collapsible by deduplication. That combination
@@ -601,6 +605,10 @@ async def lifespan(app: FastAPI):
         await container.shutdown()
     except Exception as e:
         logger.warning(f"Container shutdown failed (non-critical): {e}")
+
+    # The services the composition root published hold what that shutdown
+    # closed; a request served after this point must not find them.
+    unpublish_composition(app, published)
 
     # Dispose the canonical async engine. The user store no longer owns a
     # session (sessionless repository per #703), so there is nothing to

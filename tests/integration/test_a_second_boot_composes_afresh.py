@@ -17,6 +17,21 @@ from tests.conftest import _RealAppBoot
 
 pytestmark = pytest.mark.integration
 
+# What the composition root publishes that holds the container's Redis client,
+# directly or through a store, a knowledge service or an investigation engine.
+_HOLD_THE_REDIS_CLIENT = (
+    "redis_client",
+    "job_service",
+    "session_service",
+    "user_service",
+    "case_service",
+    "data_service",
+    "knowledge_service",
+    "conversion_service",
+    "investigation_service",
+    "enhanced_agent_service",
+)
+
 
 def _boot_and_read_composition():
     from faultmaven.container import container
@@ -25,14 +40,19 @@ def _boot_and_read_composition():
     broker = _RealAppBoot()
     try:
         broker.client()
-        return app.state.redis_client, container.session_store
+        published = {
+            name: getattr(app.state, name, None) for name in _HOLD_THE_REDIS_CLIENT
+        }
+        composed = (app.state.redis_client, container.session_store)
     finally:
         broker.release()
+    left_published = [name for name in _HOLD_THE_REDIS_CLIENT if name in app.state]
+    return composed, published, left_published
 
 
 def test_a_second_boot_publishes_a_redis_client_of_its_own_composition():
-    first_redis, first_store = _boot_and_read_composition()
-    second_redis, second_store = _boot_and_read_composition()
+    (first_redis, first_store), first, _ = _boot_and_read_composition()
+    (second_redis, second_store), second, _ = _boot_and_read_composition()
 
     assert first_redis is not None
     assert second_redis is not None, (
@@ -43,3 +63,20 @@ def test_a_second_boot_publishes_a_redis_client_of_its_own_composition():
     # built over the client the second initialize resolved.
     assert second_store is not first_store
     assert second_store.redis_client is second_redis
+
+
+def test_a_second_boot_builds_its_own_job_service():
+    """``get_job_service`` caches what it builds; the cache goes with the reset."""
+    _, first, _ = _boot_and_read_composition()
+    _, second, _ = _boot_and_read_composition()
+
+    assert second["job_service"] is not first["job_service"]
+    assert second["job_service"].redis_client is second["redis_client"]
+
+
+def test_a_boot_takes_back_what_it_published_when_it_ends():
+    """Nothing left on ``app.state`` names the client the shutdown closed."""
+    _, published, left_published = _boot_and_read_composition()
+
+    assert all(published[name] is not None for name in ("redis_client", "job_service"))
+    assert left_published == []

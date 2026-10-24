@@ -238,13 +238,21 @@ async def _served_apps_end_their_service():
     served it, naming the app, instead of depending on when the collector runs.
     """
     yield
-    from faultmaven.api.protection import live_protection_middleware
     from tests.integration._app_rebuild import rebuilt_apps
 
     apps = [(f"rebuild_app() app #{n}", app) for n, app in enumerate(rebuilt_apps())]
     published = sys.modules.get("faultmaven.main")
     if published is not None:
         apps.append(("faultmaven.main.app", published.app))
+    await _end_the_service_of(apps)
+
+
+async def _end_the_service_of(apps) -> None:
+    """Shut down each named app's protection middleware; fail on a stranded client.
+
+    ``apps`` is ``(name, app)`` pairs; the name is what the failure reports.
+    """
+    from faultmaven.api.protection import live_protection_middleware
 
     running = asyncio.get_running_loop()
     stranded = []

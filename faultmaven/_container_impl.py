@@ -1825,43 +1825,40 @@ class DIContainer(BaseDIContainer):
         """
         client = getattr(self, "redis_client", None)
         self.redis_client = None
-        if client is not None:
-            from faultmaven.infrastructure.redis_client import is_fakeredis
+        try:
+            if client is not None:
+                from faultmaven.infrastructure.redis_client import is_fakeredis
 
-            if not is_fakeredis(client):
-                await client.aclose()
-        self.reset()
+                if not is_fakeredis(client):
+                    await client.aclose()
+        finally:
+            # A close that raises still leaves nothing behind for the next
+            # initialize to return early on.
+            self.reset()
+
+    # What ``BaseDIContainer.__new__`` gives the singleton. Everything else on
+    # the instance was put there by ``initialize``, a provider, or a getter's
+    # lazy cache.
+    _CONSTRUCTED_ATTRS = frozenset(
+        {"_initialized", "_initializing", "_registry", "_logger", "settings"}
+    )
 
     def reset(self):
-        """Reset container state (useful for testing).
+        """Return the container to what construction built.
 
-        Delegates to BaseDIContainer.reset() which clears the registry.
+        Every attribute ``initialize``, a provider or a getter's cache put on the
+        instance is removed, whatever its name: tools, adapters and extractors
+        set as plain attributes, and the ``hasattr`` caches of ``get_job_service``
+        and ``_create_minimal_case_service``. One left behind is handed to the
+        next composition as-is, built over the previous one's Redis client,
+        which the shutdown that preceded this reset closed.
         """
-        # Clear common attributes that might not be in registry
-        common_attrs = [
-            "tools",
-            "llm_provider",
-            "sanitizer",
-            "tracer",
-            "data_classifier",
-            "log_processor",
-            "vector_store",
-            "session_store",
-            "agent_service",
-            "data_service",
-            "knowledge_service",
-            "session_service",
-            "case_service",
-        ]
-        for attr in common_attrs:
-            if hasattr(self, attr):
-                delattr(self, attr)
-
-        # Clear settings
-        self.settings = None
-
-        # Use parent's reset which clears all registered services
         super().reset()
+        for name in [
+            name for name in vars(self) if name not in self._CONSTRUCTED_ATTRS
+        ]:
+            delattr(self, name)
+        self.settings = None
 
 
 # Global container access - always returns the current singleton instance

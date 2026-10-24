@@ -31,8 +31,12 @@ pytestmark = pytest.mark.unit
 def container():
     """A container of this test's own; the process singleton is untouched."""
     instance = object.__new__(DIContainer)
+    # What BaseDIContainer.__new__ gives the singleton.
+    instance._initialized = False
+    instance._initializing = False
     instance._registry = DependencyRegistry()
     instance._logger = logging.getLogger(__name__)
+    instance.settings = None
     yield instance
 
 
@@ -67,6 +71,46 @@ async def test_shutdown_leaves_the_container_re_initializable(container):
 
     assert container._initialized is False
     assert container._initializing is False
+
+
+async def test_a_close_that_raises_still_resets(container):
+    """Otherwise the container stays marked initialized, and the next
+    ``initialize()`` returns early and publishes no client."""
+    client = _RealClient()
+    client.aclose.side_effect = RuntimeError("the pool would not close")
+    container._register_service("redis_client", client)
+    container.redis_client = client
+    container._initialized = True
+
+    with pytest.raises(RuntimeError, match="the pool would not close"):
+        await container.shutdown()
+
+    assert container._initialized is False
+    assert container.get_service("redis_client") is None
+
+
+async def test_reset_drops_every_cache_and_attribute_composition_left(container):
+    """A cache left behind hands the next composition a service built over the
+    previous one's closed client: ``get_job_service`` caches behind
+    ``hasattr``, and tools, adapters and extractors are plain attributes."""
+    client = _RealClient()
+    container._register_service("redis_client", client)
+    container.redis_client = client
+    job_service = container.get_job_service()
+    minimal_case_service = container._create_minimal_case_service()
+    container.kb_qa_tool = object()
+    container.logs_extractor = object()
+    assert job_service is not None and job_service.redis_client is client
+
+    container.reset()
+
+    assert set(vars(container)) <= DIContainer._CONSTRUCTED_ATTRS
+    replacement = _RealClient()
+    container._register_service("redis_client", replacement)
+    container.redis_client = replacement
+    assert container.get_job_service() is not job_service
+    assert container.get_job_service().redis_client is replacement
+    assert container._create_minimal_case_service() is not minimal_case_service
 
 
 async def test_shutdown_is_idempotent(container):
