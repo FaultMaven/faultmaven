@@ -137,12 +137,8 @@ class DIContainer(BaseDIContainer):
     """
 
     def __new__(cls):
-        # Use parent's singleton implementation
-        instance = super().__new__(cls)
-        # Initialize settings if not already present
-        if not hasattr(instance, "settings"):
-            instance.settings = None
-        return instance
+        # The parent's singleton, built from ``_CONSTRUCTED_STATE``.
+        return super().__new__(cls)
 
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
@@ -1813,7 +1809,8 @@ class DIContainer(BaseDIContainer):
         and every Redis-backed store shares it. A real client holds a connection
         pool bound to the event loop it was opened on, so whoever initialized the
         container closes it before that loop ends: the API lifespan, the jobs
-        runner and the ``fm-*`` commands (``cli/_container.py``). The FakeRedis
+        runner, and the ``fm-*`` commands and dev scripts that compose
+        (``cli/_container.py``). The FakeRedis
         stand-in is a process-wide singleton shared beyond this container, never
         its to close.
 
@@ -1840,10 +1837,11 @@ class DIContainer(BaseDIContainer):
         """Return the container to what construction built.
 
         Keeps exactly the names ``BaseDIContainer._CONSTRUCTED_STATE`` lists,
-        the table construction builds from. Every attribute ``initialize``, a
-        provider or a getter's cache put on the instance is removed, whatever
-        its name: tools, adapters and extractors set as plain attributes, and
-        the ``hasattr`` caches of ``get_job_service`` and
+        the table construction builds from, and builds each again from its
+        factory, so ``settings`` is ``None`` once more. Every attribute
+        ``initialize``, a provider or a getter's cache put on the instance is
+        removed, whatever its name: tools, adapters and extractors set as plain
+        attributes, and the ``hasattr`` caches of ``get_job_service`` and
         ``_create_minimal_case_service``. One left behind is handed to the next
         composition as-is, built over the previous one's Redis client, which
         the shutdown that preceded this reset closed.
@@ -1852,7 +1850,8 @@ class DIContainer(BaseDIContainer):
         constructed = {name for name, _factory in self._CONSTRUCTED_STATE}
         for name in [name for name in vars(self) if name not in constructed]:
             delattr(self, name)
-        self.settings = None
+        for name, factory in self._CONSTRUCTED_STATE:
+            setattr(self, name, factory())
 
 
 # Global container access - always returns the current singleton instance

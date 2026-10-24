@@ -10,13 +10,13 @@ Usage:
     python scripts/cleanup_corrupt_cases.py
 """
 
-import asyncio
 import sys
 from pathlib import Path
 
 # Add parent directory to path to import faultmaven modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 
@@ -83,5 +83,5 @@ async def main():
 
 if __name__ == "__main__":
     require_persistent_database_or_exit()
-    exit_code = asyncio.run(main())
+    exit_code = run_with_container(main(), container=container)
     sys.exit(exit_code)

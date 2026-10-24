@@ -270,7 +270,8 @@ def main() -> None:
     require_persistent_database_or_exit()
 
     success = run_with_container(
-        demote_from_platform_admin(args.username, keep_org_admin=args.keep_org_admin)
+        demote_from_platform_admin(args.username, keep_org_admin=args.keep_org_admin),
+        container=container,
     )
     sys.exit(0 if success else 1)
 

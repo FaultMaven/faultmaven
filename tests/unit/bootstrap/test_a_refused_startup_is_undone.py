@@ -19,6 +19,7 @@ real one does first. The real refused boot runs in
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -26,7 +27,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 
-from faultmaven.bootstrap.composition import compose_application
+from faultmaven.bootstrap.composition import (
+    _ABSENT,
+    compose_application,
+    decompose_application,
+)
 from faultmaven.bootstrap.lifespan import lifespan
 from faultmaven.container import DIContainer
 from faultmaven.infrastructure.llm import usage_ledger
@@ -60,7 +65,19 @@ def container(monkeypatch):
 
 
 @pytest.fixture
-def composition(container, monkeypatch):
+def database(monkeypatch):
+    """``close_database``, recorded: the teardown's last step disposes the
+    process-global engine, which these stubbed compositions never opened."""
+    close_database = AsyncMock()
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.close_database",
+        close_database,
+    )
+    return close_database
+
+
+@pytest.fixture
+def composition(container, database, monkeypatch):
     """Replace the composition root with one that does what the real one does
     first. ``refusal``, when set, is raised once that is done; ``close_failure``
     is what the client it opens raises when closed."""
@@ -93,19 +110,20 @@ def _assert_nothing_published_remains(app):
     assert usage_ledger.get_installed_usage_ledger() is None, "the ledger is installed"
 
 
-def _assert_nothing_of_composition_remains(app, container, client):
+def _assert_nothing_of_composition_remains(app, container, client, database):
     assert container.is_initialized is False, "the container is still initialized"
     client.aclose.assert_awaited_once()
     _assert_nothing_published_remains(app)
+    assert database.await_count >= 1, "the database engine was not disposed"
 
 
 async def test_a_startup_refused_after_composition_is_undone_every_time(
-    composition, container, monkeypatch, unshared_app_boot
+    composition, container, database, monkeypatch, unshared_app_boot
 ):
     """The issue's probe: the route-policy gate refuses, twice, on one app.
 
-    The refusal runs the lifespan's whole shutdown, ``close_database()``
-    included, so this takes ``unshared_app_boot``.
+    The refusal runs the lifespan's whole shutdown, so this takes
+    ``unshared_app_boot``.
     """
     monkeypatch.setattr(
         "faultmaven.api.middleware.route_policy.assert_policy_coherent",
@@ -122,12 +140,14 @@ async def test_a_startup_refused_after_composition_is_undone_every_time(
             len(composition.clients) == entry + 1
         ), "the container was not re-initialized"
         _assert_nothing_of_composition_remains(
-            app, container, composition.clients[entry]
+            app, container, composition.clients[entry], database
         )
+        assert database.await_count == entry + 1
 
 
-async def test_a_refusal_inside_composition_is_undone(composition, container):
-    """The bootstrap failure is raised after ``initialize()`` built the client."""
+async def test_a_refusal_inside_composition_is_undone(composition, container, database):
+    """The bootstrap failure is raised after ``initialize()`` built the client.
+    The database engine the bootstrap opened is disposed too."""
     composition.refusal = RuntimeError("Critical bootstrap failure: planted")
     app = FastAPI()
 
@@ -135,11 +155,13 @@ async def test_a_refusal_inside_composition_is_undone(composition, container):
         await compose_application(app, object())  # the fake reads no settings
 
     assert refused.value is composition.refusal
-    _assert_nothing_of_composition_remains(app, container, composition.clients[0])
+    _assert_nothing_of_composition_remains(
+        app, container, composition.clients[0], database
+    )
 
 
 async def test_a_failing_teardown_step_neither_replaces_the_refusal_nor_skips_the_rest(
-    composition, container, caplog
+    composition, container, database, caplog
 ):
     """A shutdown that raises is logged: the refusal propagates as the same
     object, and the steps after it still run."""
@@ -153,14 +175,17 @@ async def test_a_failing_teardown_step_neither_replaces_the_refusal_nor_skips_th
 
     assert refused.value is composition.refusal
     assert "the pool would not close" in caplog.text
-    _assert_nothing_of_composition_remains(app, container, composition.clients[0])
+    _assert_nothing_of_composition_remains(
+        app, container, composition.clients[0], database
+    )
 
 
-async def test_a_refused_composition_leaves_a_container_it_did_not_initialize(
-    composition, container
+async def test_a_refused_composition_shuts_down_a_container_it_found_initialized(
+    composition, container, database
 ):
-    """Whoever initializes the container shuts it down. Composition that found
-    it already initialized takes back what it installed, and not the container."""
+    """One owner rule: whoever composes for a run shuts the container down at the
+    run's end, on every path. A refused composition shuts it down even when it
+    found it already initialized, as the end of a lifespan always has."""
     owner_client = _RealClient()
     container._initialized = True
     container._register_service("redis_client", owner_client)
@@ -172,6 +197,59 @@ async def test_a_refused_composition_leaves_a_container_it_did_not_initialize(
         await compose_application(app, object())
 
     assert refused.value is composition.refusal
-    assert container.is_initialized is True
-    owner_client.aclose.assert_not_awaited()
-    _assert_nothing_published_remains(app)
+    _assert_nothing_of_composition_remains(app, container, owner_client, database)
+
+
+async def test_a_cancelled_teardown_step_lets_the_rest_finish_then_propagates(
+    composition, container, database
+):
+    """The container's shutdown is cancelled: the ledger, ``app.state`` and the
+    engine are still taken back, and the cancellation is raised after them."""
+    composition.refusal = RuntimeError("Critical bootstrap failure: planted")
+    composition.close_failure = asyncio.CancelledError()
+    app = FastAPI()
+
+    with pytest.raises(asyncio.CancelledError):
+        await compose_application(app, object())
+
+    _assert_nothing_of_composition_remains(
+        app, container, composition.clients[0], database
+    )
+
+
+async def test_a_cancellation_while_the_config_watcher_ends_is_not_swallowed(
+    container, database
+):
+    """The teardown is itself cancelled while it waits for the watcher to end.
+    The watcher's own cancellation is not the teardown's, and is not mistaken
+    for it: the rest of the teardown runs, then the teardown ends cancelled."""
+    cancel_seen, release = asyncio.Event(), asyncio.Event()
+
+    async def _watch():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancel_seen.set()
+            await release.wait()  # still ending when the teardown is cancelled
+            raise
+
+    app = FastAPI()
+    watcher = asyncio.create_task(_watch())
+    app.state.llm_config_watch_task = watcher
+    app.state.redis_client = object()
+    teardown = asyncio.create_task(
+        decompose_application(
+            app, {"llm_config_watch_task": _ABSENT, "redis_client": _ABSENT}
+        )
+    )
+    await cancel_seen.wait()
+    teardown.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await teardown
+
+    assert "redis_client" not in app.state, "the teardown stopped at the watcher"
+    database.assert_awaited_once()
+    await asyncio.wait({watcher})
+    assert watcher.cancelled()

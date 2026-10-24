@@ -142,7 +142,9 @@ def main() -> None:
 
     require_persistent_database_or_exit()
 
-    success = run_with_container(promote_to_platform_admin(args.username))
+    success = run_with_container(
+        promote_to_platform_admin(args.username), container=container
+    )
     sys.exit(0 if success else 1)
 
 

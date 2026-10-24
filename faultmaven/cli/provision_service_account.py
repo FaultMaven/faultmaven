@@ -214,7 +214,8 @@ def main():
             args.service_channel,
             args.token_only,
             args.enterprise_id,
-        )
+        ),
+        container=container,
     )
     sys.exit(0 if success else 1)
 

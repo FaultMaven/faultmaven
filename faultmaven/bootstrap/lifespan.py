@@ -18,6 +18,7 @@ from faultmaven.bootstrap.composition import (
     _is_test_environment,
     compose_application,
     decompose_application,
+    stop_config_watcher,
 )
 from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
@@ -521,8 +522,9 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
     """The shutdown: after serving, and after a startup refused post-composition.
 
     Stops only what :func:`_start_serving` got as far as starting, reading each
-    handle off ``app.state``, then takes composition back through
-    :func:`decompose_application` and disposes the database engine.
+    handle off ``app.state`` and removing it once stopped, then takes
+    composition back through :func:`decompose_application`, whose last step
+    disposes the database engine.
     """
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
@@ -541,7 +543,8 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
     # database is still open, then uninstall it — whatever the drain did: calls
     # metered after this point are counted as not persisted rather than
     # scheduled against a closing engine. A write still pending at the timeout
-    # is counted.
+    # is counted. This is the uninstall on the serving path;
+    # decompose_application's own is then a no-op.
     from faultmaven.infrastructure.llm.usage_ledger import (
         drain_pending_usage_writes,
         install_usage_ledger,
@@ -562,6 +565,7 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
             await _funnel_task
         except (asyncio.CancelledError, Exception):
             pass
+        del app.state.funnel_metrics_task
 
     # Stop revocation watermark gauge
     _watermark_task = getattr(app.state, "revocation_watermark_task", None)
@@ -571,6 +575,7 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
             await _watermark_task
         except (asyncio.CancelledError, Exception):
             pass
+        del app.state.revocation_watermark_task
 
     # Stop event-loop lag monitor
     _loop_lag_task = getattr(app.state, "loop_lag_task", None)
@@ -580,6 +585,15 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
             await _loop_lag_task
         except (asyncio.CancelledError, Exception):
             pass
+        del app.state.loop_lag_task
+
+    # Stop LLM config watcher (cloud multi-replica propagation), before the
+    # schedulers, so that no config reload lands mid-shutdown.
+    # decompose_application stops it again, a no-op by then.
+    try:
+        await stop_config_watcher(app)
+    except Exception as e:
+        logger.warning(f"LLM config watcher stop failed (non-critical): {e}")
 
     # Stop case cleanup scheduler
     case_cleanup_scheduler = getattr(app.state, "case_cleanup_scheduler", None)
@@ -622,19 +636,9 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
     except Exception as e:
         logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
 
-    # Take composition back: the config watcher, the container (whose shared
-    # Redis client's pool is bound to this event loop), the usage ledger, and
-    # the services published on app.state, which hold what that closed.
+    # Take composition back: the container (whose shared Redis client's pool
+    # is bound to this event loop), the usage ledger, the services published on
+    # app.state, which hold what that closed, and, last, the database engine.
     await decompose_application(app, published)
-
-    # Dispose the canonical async engine. The user store no longer owns a
-    # session (sessionless repository per #703), so there is nothing to
-    # release here beyond the engine below.
-    try:
-        from faultmaven.infrastructure.persistence.database import close_database
-
-        await close_database()
-    except Exception as e:
-        logger.warning(f"Database close failed (non-critical): {e}")
 
     logger.info("FaultMaven API server shutdown complete")

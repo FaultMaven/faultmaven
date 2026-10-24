@@ -15,7 +15,8 @@ client at all.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -168,10 +169,11 @@ def test_reset_keeps_exactly_what_construction_set(fresh_singleton):
     assert fresh_singleton.is_initialized is False
 
 
-def test_a_name_added_to_construction_is_kept_by_reset(monkeypatch):
+def test_reset_keeps_and_rebuilds_every_name_construction_lists(monkeypatch):
     """Construction and ``reset()`` read one table (#2242 item 3). A name added
     to construction beside a second, hand-kept list of what reset keeps was
-    deleted by every reset, and its next read failed."""
+    deleted by every reset, and its next read failed. Each kept name is built
+    again from its factory, so a reset leaves no value of the run before."""
     probe = object()
     monkeypatch.setattr(
         DIContainer,
@@ -182,6 +184,7 @@ def test_a_name_added_to_construction_is_kept_by_reset(monkeypatch):
     fresh = DIContainer()
     assert fresh._probe is probe
     fresh._register_service("redis_client", _RealClient())
+    fresh._probe = object()  # what the run before left in it
 
     fresh.reset()
 
@@ -196,12 +199,22 @@ def ledger_restored(monkeypatch):
     )
 
 
-async def test_the_shutdown_ends_protection_then_composition_then_the_engine(
+@pytest.fixture
+def stop_serving(monkeypatch, ledger_restored):
+    """``_stop_serving``, with protection and composition stubbed out."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    monkeypatch.setattr("faultmaven.api.protection.shutdown_protection", AsyncMock())
+    monkeypatch.setattr(lifespan_module, "decompose_application", AsyncMock())
+    return lifespan_module._stop_serving
+
+
+async def test_the_shutdown_ends_protection_then_composition(
     monkeypatch, ledger_restored
 ):
-    """Owned clients first, then composition (the container's shared client is
-    closed there), then the engine: each middleware's own client before the
-    container's, and both before the database engine is disposed."""
+    """Owned clients first, then composition: each middleware's own client
+    before the container's shared one. The database engine is composition's
+    to dispose, last (``decompose_application``), not a step after it."""
     from faultmaven.bootstrap import lifespan as lifespan_module
 
     order = []
@@ -226,27 +239,98 @@ async def test_the_shutdown_ends_protection_then_composition_then_the_engine(
 
     await lifespan_module._stop_serving(FastAPI(), {})
 
-    assert order == ["shutdown_protection", "decompose_application", "close_database"]
+    assert order == ["shutdown_protection", "decompose_application"]
 
 
-async def test_composition_is_unpublished_only_after_the_container_shut_down(
+async def test_decompose_closes_the_client_then_unpublishes_then_disposes_the_engine(
     container, monkeypatch, ledger_restored
 ):
     """The container closes its client while the services that hold it are
-    still published, and only then are they taken off ``app.state``."""
+    still published; they are taken off ``app.state``; the database engine is
+    disposed last, a refused composition's included."""
     from faultmaven.bootstrap.composition import _ABSENT, decompose_application
 
     app = FastAPI()
     client = _RealClient()
-    published_while_closing = []
-    client.aclose.side_effect = lambda: published_while_closing.append(
-        "redis_client" in app.state
+    order = []
+    client.aclose.side_effect = lambda: order.append(
+        ("container shutdown", "redis_client" in app.state)
     )
+
+    async def _close_database():
+        order.append(("close_database", "redis_client" in app.state))
+
     container.redis_client = client
     app.state.redis_client = client
     monkeypatch.setattr("faultmaven.container.container", container)
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.close_database",
+        _close_database,
+    )
 
     await decompose_application(app, {"redis_client": _ABSENT})
 
-    assert published_while_closing == [True]
+    assert order == [("container shutdown", True), ("close_database", False)]
     assert "redis_client" not in app.state
+
+
+async def test_the_shutdown_stops_the_config_watcher_before_the_schedulers(
+    stop_serving, monkeypatch
+):
+    """A config reload must not land mid-shutdown, so the watcher is stopped
+    before the schedulers are, not later inside the composition's teardown."""
+    app = FastAPI()
+    watcher = asyncio.create_task(asyncio.sleep(3600))
+    app.state.llm_config_watch_task = watcher
+    app.state.case_cleanup_scheduler = object()
+    watcher_ended_first = []
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.tasks.stop_case_cleanup_scheduler",
+        lambda _scheduler: watcher_ended_first.append(watcher.done()),
+    )
+
+    try:
+        await stop_serving(app, {})
+    finally:
+        watcher.cancel()
+        await asyncio.wait({watcher})
+
+    assert watcher_ended_first == [True]
+
+
+async def test_the_shutdown_removes_every_background_handle_it_stops(
+    stop_serving, monkeypatch
+):
+    """A handle left on ``app.state`` names a task or scheduler that is gone,
+    and the next lifespan on the app would find it there."""
+    app = FastAPI()
+    tasks = {
+        name: asyncio.create_task(asyncio.sleep(3600))
+        for name in (
+            "funnel_metrics_task",
+            "revocation_watermark_task",
+            "loop_lag_task",
+        )
+    }
+    for name, task in tasks.items():
+        setattr(app.state, name, task)
+    app.state.case_cleanup_scheduler = object()
+    app.state.llm_usage_retention_task = object()
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.tasks.stop_case_cleanup_scheduler", Mock()
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.tasks.llm_usage_retention."
+        "stop_llm_usage_retention_scheduler",
+        AsyncMock(),
+    )
+
+    await stop_serving(app, {})
+
+    assert all(task.cancelled() for task in tasks.values())
+    left = [
+        name
+        for name in (*tasks, "case_cleanup_scheduler", "llm_usage_retention_task")
+        if name in app.state
+    ]
+    assert left == [], f"stopped, but still on app.state: {left}"

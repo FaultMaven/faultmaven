@@ -8,7 +8,6 @@ Usage:
     python scripts/auth/list_users.py
 """
 
-import asyncio
 import sys
 import os
 from pathlib import Path
@@ -17,6 +16,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
@@ -84,19 +84,13 @@ async def main():
     print(f"  Regular users: {regular_count}")
     print("=" * 80)
 
-    # Cleanup to ensure prompt returns
-    try:
-        await container.shutdown()
-    except:
-        pass  # Ignore shutdown errors
-
     return True
 
 
 if __name__ == "__main__":
     require_persistent_database_or_exit()
     try:
-        success = asyncio.run(main())
+        success = run_with_container(main(), container=container)
         # Force immediate exit to avoid hanging on background tasks
         os._exit(0 if success else 1)
     except KeyboardInterrupt:
