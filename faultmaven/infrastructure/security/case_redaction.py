@@ -44,9 +44,11 @@ def should_redact(sanitizer) -> bool:
     """Whether what is sent to a model is redacted at the engine layer.
 
     The one decision every model-calling path makes — an investigation turn,
-    the terminal Q&A turn, case and document conversion: a sanitizer is configured (the DI container hands one out; a
-    ``None`` means redaction is disabled at DI level) AND ``SANITIZE_PII`` is
-    on. One copy, so no path can drift from the others (#1901).
+    the terminal Q&A turn, case and document conversion: a sanitizer is
+    present AND ``SANITIZE_PII`` is on. The DI container always hands one out
+    (#2235), so a composed path is decided by the flag alone; a falsy
+    sanitizer, which only a caller outside the composition passes, redacts
+    nothing. One copy, so no path can drift from the others (#1901).
     """
     if not sanitizer:
         return False
@@ -67,10 +69,11 @@ def model_boundary_redaction(sanitizer) -> "CaseRedactionContext":
 
     The investigation path's mechanism, not a second one: the same class, over
     the same injected sanitizer instance, enabled by :func:`should_redact`. It
-    matters independently of the router — ``LLMRouter`` runs its own sanitizer
-    pass under the same flag, but that is a property of the default router (a
-    deployment may substitute its own via ``LLM_ROUTER_CLASS``), and it is the
-    engine's layer, not the router's, that the investigation path relies on.
+    matters independently of the router — ``LLMRouter`` runs a pass of its own
+    under the same flag, with that same instance (#2235), but that is a property
+    of the default router (a deployment may substitute its own via
+    ``LLM_ROUTER_CLASS``), and it is the engine's layer, not the router's, that
+    the investigation path relies on.
 
     No Redis registry is loaded or saved and nothing is ever reversed: the
     investigation path persists its registry so it can put real values back

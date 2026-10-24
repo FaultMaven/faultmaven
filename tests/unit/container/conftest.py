@@ -36,4 +36,9 @@ def make_chroma_settings(
     )
     settings.database.chromadb_api_key = SecretStr(api_key) if api_key else None
     settings.server.skip_service_checks = skip_service_checks
+    # The ingester redacts with a sanitizer built from these settings when none
+    # is injected (#2235); with protection on it would health-check Presidio,
+    # which no ChromaDB client-path test is about.
+    settings.protection.protection_enabled = False
+    settings.protection.sanitize_pii = False
     return settings

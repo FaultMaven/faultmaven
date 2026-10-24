@@ -89,6 +89,9 @@ def _standalone_settings(tmp_path) -> FaultMavenSettings:
     settings.database.vector_storage_type = "chromadb"
     settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
     settings.server.skip_service_checks = False
+    # No Presidio health check from the ingester's own sanitizer (#2235).
+    settings.protection.protection_enabled = False
+    settings.protection.sanitize_pii = False
     return settings
 
 

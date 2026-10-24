@@ -359,7 +359,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,
         )
 
-        self.sanitizer = DataSanitizer()
+        # Injected by the composition root (``create_llm_provider``) after
+        # construction, so an ``LLM_ROUTER_CLASS`` subclass keeps its
+        # zero-argument constructor; see the ``sanitizer`` property (#2235).
+        self._sanitizer: Optional[Any] = None
         self.cache = LLMResponseCache()
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
@@ -380,6 +383,50 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             f"per-provider overrides: {self.settings.llm.provider_timeout_overrides or 'none'}"
         )
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
+
+    @property
+    def sanitizer(self) -> Any:
+        """The sanitizer the outbound pass redacts with: the composition's.
+
+        ``create_llm_provider`` assigns the container's instance, the one the
+        engine, the case title and the conversions redact with, so a
+        composition builds one ``DataSanitizer`` and probes Presidio once
+        (#2235). A router built outside the composition root (a script, a test)
+        has none injected; it builds one on first read, from the settings it
+        was built with, and says so, so a second construction is never silent
+        and the pass never runs with no sanitizer at all.
+
+        Deleted, it reads like a deleted attribute: ``AttributeError``, so the
+        pass fails closed rather than redacting with one it built, and
+        ``patch.object`` restores the original through the setter.
+        """
+        try:
+            sanitizer = self._sanitizer
+        except AttributeError:
+            raise AttributeError("sanitizer") from None
+        if sanitizer is None:
+            self.logger.warning(
+                "LLMRouter is redacting with a sanitizer it built itself, not "
+                "the composition's"
+            )
+            sanitizer = self._sanitizer = DataSanitizer(settings=self.settings)
+        return sanitizer
+
+    @sanitizer.setter
+    def sanitizer(self, value: Any) -> None:
+        # The condition should_redact reads: a falsy sanitizer turns the pass
+        # off, so one assigned here would send unredacted text.
+        if not value:
+            raise TypeError(
+                "LLMRouter.sanitizer cannot be falsy: should_redact reads that "
+                "as no sanitizer; redaction off is SANITIZE_PII=false"
+            )
+        self._sanitizer = value
+
+    @sanitizer.deleter
+    def sanitizer(self) -> None:
+        """Removes the sanitizer, as ``del`` removes a plain attribute."""
+        del self._sanitizer
 
     @property
     def registry(self):

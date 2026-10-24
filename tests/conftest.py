@@ -104,7 +104,7 @@ os.environ.setdefault("REDIS_HOST", "")
 # Presidio is a server no test owns. Under the Cloud profile
 # (``SANITIZE_PII=true``) every ``DataSanitizer`` built with service checks on
 # health-checks the analyzer and the anonymizer, and a full composition builds
-# four. The shipped URLs name ``presidio-{analyzer,anonymizer}.faultmaven.local``,
+# one. The shipped URLs name ``presidio-{analyzer,anonymizer}.faultmaven.local``,
 # so the tests that compose with checks on looked those names up (#2232): where
 # they do not resolve (CI) the attempt ended before any connect and the tests
 # passed because DNS failed; where they resolve, the network guard refused the

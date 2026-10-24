@@ -47,11 +47,11 @@ async def _analyze_document(
     """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
     Everything sent is minted through the model-boundary redaction over
-    ``sanitizer`` (the DI sanitizer; ``None`` means redaction is disabled at
-    DI level), once, before the truncation retry's closure, so the retry
-    resends the redacted text (#1901). Keyword-only with no default so a new
-    caller cannot send without deciding. A ``RedactionUnavailableError``
-    propagates: nothing is sent.
+    ``sanitizer`` (the DI sanitizer, always present when composed; a ``None``
+    redacts nothing, see ``should_redact``), once, before the truncation
+    retry's closure, so the retry resends the redacted text (#1901).
+    Keyword-only with no default so a new caller cannot send without deciding.
+    A ``RedactionUnavailableError`` propagates: nothing is sent.
     """
     knowledge_model = settings.llm.get_knowledge_model()
 
