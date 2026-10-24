@@ -8,8 +8,7 @@ This directory contains integration test infrastructure focused on:
 
 1. **Container-Based Integration** - Cross-layer validation using dependency injection container
 2. **Interface Compliance Testing** - Integration testing with proper interface contracts
-3. **Mock API Infrastructure** - External service simulation for testing without dependencies
-4. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
+3. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
 
 ## Current Test Structure
 
@@ -137,14 +136,6 @@ Provide the service (a real `DATABASE_URL`, a reachable Redis) or narrow the
 selection so the run stops claiming to cover it. Mixed runs, where some tests
 pass and environment-dependent ones skip, stay green.
 
-### Mock Server Testing
-
-Run mock server infrastructure tests:
-```bash
-# Note: Run individually to avoid port conflicts
-pytest -k "mock_server" -v -s
-```
-
 ### Environment Variables
 
 None are required. Optional ones:
@@ -242,19 +233,6 @@ async def test_interface_compliance_real_scenario():
 async def test_async_operation():
     result = await async_function()
     assert result
-```
-
-**Mock Server Port Conflicts**: Run mock server tests individually
-```bash
-pytest tests/integration/<file>.py::<test_name> -v -s
-```
-
-**Logging Capture Issues**: Use proper logging fixtures
-```python
-def test_logging(logging_setup):
-    log_capture = logging_setup
-    # ... test logging behavior
-    logs = log_capture.get_logs(level=logging.INFO)
 ```
 
 ### Debug Information
