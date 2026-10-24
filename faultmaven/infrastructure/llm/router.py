@@ -395,14 +395,22 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         has none injected; it builds one on first read, from the settings it
         was built with, and says so, so a second construction is never silent
         and the pass never runs with no sanitizer at all.
+
+        Deleted, it reads like a deleted attribute: ``AttributeError``, so the
+        pass fails closed rather than redacting with one it built, and
+        ``patch.object`` restores the original through the setter.
         """
-        if self._sanitizer is None:
+        try:
+            sanitizer = self._sanitizer
+        except AttributeError:
+            raise AttributeError("sanitizer") from None
+        if sanitizer is None:
             self.logger.warning(
                 "LLMRouter is redacting with a sanitizer it built itself, not "
                 "the composition's"
             )
-            self._sanitizer = DataSanitizer(settings=self.settings)
-        return self._sanitizer
+            sanitizer = self._sanitizer = DataSanitizer(settings=self.settings)
+        return sanitizer
 
     @sanitizer.setter
     def sanitizer(self, value: Any) -> None:
@@ -417,8 +425,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
     @sanitizer.deleter
     def sanitizer(self) -> None:
-        """Back to un-injected, so ``patch.object`` can undo a stand-in."""
-        self._sanitizer = None
+        """Removes the sanitizer, as ``del`` removes a plain attribute."""
+        del self._sanitizer
 
     @property
     def registry(self):

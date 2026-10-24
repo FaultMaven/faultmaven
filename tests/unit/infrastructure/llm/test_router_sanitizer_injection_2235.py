@@ -97,14 +97,24 @@ def test_the_router_refuses_a_falsy_sanitizer(constructions, value):
     assert router.sanitizer is injected
 
 
-def test_a_patched_sanitizer_is_undone_cleanly(constructions):
-    """``patch.object`` undoes a stand-in with ``del``; that returns the router
-    to un-injected rather than raising."""
+def test_a_patched_sanitizer_is_restored_and_a_deleted_one_fails_closed(
+    constructions, caplog
+):
+    """``patch.object`` undoes a stand-in with ``del``, then restores the
+    original through the setter when the attribute reads as gone. A router
+    whose sanitizer was deleted refuses to be read rather than building one."""
     router = LLMRouter()
-    router.sanitizer = object()
+    injected = object()
+    router.sanitizer = injected
     stand_in = object()
 
-    with patch.object(router, "sanitizer", stand_in):
-        assert router.sanitizer is stand_in
+    with caplog.at_level(logging.WARNING):
+        with patch.object(router, "sanitizer", stand_in):
+            assert router.sanitizer is stand_in
 
-    assert router.sanitizer is not stand_in
+        assert router.sanitizer is injected
+        del router.sanitizer
+        with pytest.raises(AttributeError, match="sanitizer"):
+            router.sanitizer
+    assert constructions == []
+    assert _self_built_warnings(caplog) == []
