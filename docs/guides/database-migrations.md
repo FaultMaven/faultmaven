@@ -39,10 +39,14 @@ and its `downgrade()` removes only what it added — see
 | Standalone (Docker or a local process) | The app, at startup, in a subprocess, against the database the app itself opens. Skipped when `DATABASE_URL` configures no persistent database (empty, or in-memory SQLite). |
 | Kubernetes | A migration Job. The app connects as a non-owner role that cannot run DDL, so `RUN_STARTUP_MIGRATIONS=false` turns the startup run off. |
 
-`RUN_STARTUP_MIGRATIONS` defaults to `true`. The startup run is given 60 seconds;
-past that it logs `Alembic migration timed out after 60 seconds` and raises
-`RuntimeError`, and the app does not start. A failed migration stops the boot the
-same way.
+`RUN_STARTUP_MIGRATIONS` defaults to `true`. With `ALEMBIC_CONFIG` unset (the
+default), startup first reads `alembic_version` and skips the subprocess when the
+database already holds exactly the scripts' heads. That read times out after 10
+seconds (`AT_HEAD_CHECK_TIMEOUT_SECONDS`), or after the driver's own wait if that
+is longer: a SQLite URL with `?timeout=30` holds it for up to 30 seconds while a
+lock persists. Any other answer, including a timeout, runs the subprocess. The subprocess is given 60 seconds; past that it
+logs `Alembic migration timed out after 60 seconds` and raises `RuntimeError`,
+and the app does not start. A failed migration stops the boot the same way.
 
 ### PostgreSQL: no one but the schema's owner creates in `public`
 

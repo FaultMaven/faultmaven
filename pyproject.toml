@@ -136,9 +136,10 @@ dependencies = [
     # their metadata) — lift it deliberately when a 6.x need arises.
     "protobuf>=5.29.6,<6",
     # Transitive (spacy / thinc / torch import it at runtime), floored here
-    # because nothing else in the graph moves it: >=83.0.0 patches
-    # GHSA-h35f-9h28-mq5c. torch 2.11's `setuptools<82` used to cap it.
-    "setuptools>=83.0.0",
+    # because nothing else in the graph moves it: >=84.1.0 patches
+    # GHSA-xmj3-9gf7-h52w and GHSA-h35f-9h28-mq5c. torch 2.11's `setuptools<82`
+    # used to cap it.
+    "setuptools>=84.1.0",
     # Transitive (requests and kubernetes; botocore and sentry-sdk in the
     # cloud lockfile), floored here because none of them requires the
     # patched release: >=2.8.0 fixes target-server TLS settings applied to an

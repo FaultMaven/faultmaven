@@ -29,6 +29,7 @@ Design Notes:
       success (fm#936).
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -339,6 +340,117 @@ def migration_database_url() -> str:
     return raw
 
 
+#: How long the at-head check may wait on the database before the migration
+#: subprocess (itself bounded at 60 s) runs anyway (#2212).
+AT_HEAD_CHECK_TIMEOUT_SECONDS = 10.0
+
+
+def _alembic_config_override() -> str:
+    """``ALEMBIC_CONFIG``, read from the environment because alembic's own CLI reads
+    it there (its ``-c`` default), not through the settings."""
+    return os.environ.get("ALEMBIC_CONFIG", "")
+
+
+def find_alembic_ini() -> tuple[Optional[Path], list[Path]]:
+    """The first ``alembic.ini`` that exists, of ``ALEMBIC_CONFIG`` then the project
+    root's (``None`` if neither does), and the paths searched."""
+    env_path = _alembic_config_override()
+    searched = [Path(env_path)] if env_path else []
+    searched.append(get_project_root() / "alembic.ini")
+    return next((p for p in searched if p.exists()), None), searched
+
+
+def alembic_script_heads() -> frozenset[str]:
+    """The migration scripts' head revisions, as the subprocess reads them by default.
+
+    With ``ALEMBIC_CONFIG`` unset, the subprocess (``cwd=project_root``, no ``-c``)
+    reads the project root's ``alembic.ini`` and resolves its ``script_location``
+    against the project root; this reads the same files from any cwd, and ignores
+    ``ALEMBIC_CONFIG``. ``prepend_sys_path`` is cleared: ``from_config`` would
+    prepend it to this process's ``sys.path``. Raises when the scripts cannot be read.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    root = get_project_root()
+    ini = root / "alembic.ini"
+    if not ini.exists():
+        raise FileNotFoundError(f"alembic.ini not found at {ini}")
+    config = Config(str(ini))
+    location = config.get_main_option("script_location", "")
+    config.set_main_option("script_location", str(root / location))
+    config.set_main_option("prepend_sys_path", "")
+    return frozenset(ScriptDirectory.from_config(config).get_heads())
+
+
+async def _database_revisions(database_url: str) -> frozenset[str]:
+    """The revisions in ``alembic_version``, empty without the table or a row.
+
+    Plain SQL, so a fresh install never imports alembic here. On SQLite the
+    connection creates a missing file, empty, as the subprocess would."""
+    from sqlalchemy import inspect, text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            if not await conn.run_sync(
+                lambda sync_conn: inspect(sync_conn).has_table("alembic_version")
+            ):
+                return frozenset()
+            rows = await conn.execute(text("SELECT version_num FROM alembic_version"))
+            return frozenset(row[0] for row in rows)
+    finally:
+        await engine.dispose()
+
+
+async def _schema_already_at_head() -> bool:
+    """True only when ``alembic_version`` holds exactly the scripts' heads (#2212).
+
+    Then ``alembic upgrade head`` would change nothing and its subprocess is
+    skipped. ``ALEMBIC_CONFIG`` set (alembic may then read other scripts), a
+    non-persistent URL, a fresh database, any other revision set, a database read
+    slower than :data:`AT_HEAD_CHECK_TIMEOUT_SECONDS` and any exception (logged,
+    so a dead check is visible) answer False: the subprocess runs as before. The
+    one difference: a database holding both of two heads boots, where
+    ``upgrade head`` refuses.
+    """
+    from faultmaven.config.settings import get_settings, persistent_database_configured
+
+    if _alembic_config_override():
+        logger.info(
+            "ALEMBIC_CONFIG is set, so the at-head check does not apply; running "
+            "the Alembic migration subprocess."
+        )
+        return False
+    try:
+        if not persistent_database_configured(get_settings().database.database_url):
+            return False
+        current = await asyncio.wait_for(
+            _database_revisions(migration_database_url()),
+            timeout=AT_HEAD_CHECK_TIMEOUT_SECONDS,
+        )
+        if not current:
+            return False
+        heads = alembic_script_heads()
+    except Exception as exc:
+        logger.warning(
+            "Could not tell whether the schema is at head (%s: %s); running "
+            "the Alembic migration subprocess.",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    if current != heads:
+        return False
+    logger.info(
+        "Alembic schema already at head %s; skipping the migration subprocess",
+        sorted(heads),
+    )
+    return True
+
+
 def run_alembic_migrations() -> bool:
     """Run Alembic migrations using subprocess.
 
@@ -349,7 +461,8 @@ def run_alembic_migrations() -> bool:
         True if migrations ran successfully, False otherwise.
 
     Notes:
-        - Uses subprocess to avoid blocking issues with async startup
+        - A subprocess keeps ``alembic/env.py``'s import-time ``fileConfig`` and
+          its engine out of this process; it still blocks the event loop
         - Safe to run multiple times (Alembic tracks applied migrations)
         - Creates the database file if it doesn't exist (SQLite)
         - Searches for alembic.ini in multiple locations for deployment flexibility
@@ -383,32 +496,16 @@ def run_alembic_migrations() -> bool:
         return False
 
     try:
-        # Find alembic.ini - check multiple locations for deployment flexibility
-        alembic_ini = None
-        search_paths = []
-
-        # 1. Environment variable override (for Docker/custom deployments)
-        env_path = os.environ.get("ALEMBIC_CONFIG")
-        if env_path:
-            search_paths.append(Path(env_path))
-
-        # 2. Project root (determined by get_project_root helper)
         project_root = get_project_root()
-        search_paths.append(project_root / "alembic.ini")
-
-        for path in search_paths:
-            if path.exists():
-                alembic_ini = path
-                break
-
+        alembic_ini, search_paths = find_alembic_ini()
         if not alembic_ini:
             logger.warning(
                 f"alembic.ini not found in: {[str(p) for p in search_paths]}"
             )
             return False
 
-        # Run migrations via subprocess to avoid blocking in async context
-        # Using the same Python interpreter ensures we use the right virtualenv
+        # The subprocess keeps env.py's ``fileConfig`` off this process's logging
+        # (it still blocks the event loop); the same interpreter, the same venv.
         logger.info(f"Running Alembic migrations (config: {alembic_ini})...")
         logger.info(f"Working directory: {project_root}")
         logger.info(f"Python executable: {sys.executable}")
@@ -666,8 +763,10 @@ async def initialize_data_layer(container: Any) -> None:
     from faultmaven.config.settings import get_settings
 
     if get_settings().run_startup_migrations:
-        # Note: This uses synchronous Alembic - runs in the event loop's executor
-        run_alembic_migrations()
+        # The subprocess blocks the event loop while it runs (nothing is served
+        # yet); a database already at head skips it (#2212).
+        if not await _schema_already_at_head():
+            run_alembic_migrations()
     else:
         logger.info(
             "Skipping startup Alembic migrations (RUN_STARTUP_MIGRATIONS=false); "
