@@ -5,7 +5,7 @@ The deadline-aware ladder is only as good as its binding. Everything in
 turn, which is exactly right for background jobs and direct-call tests and
 exactly wrong if the one production caller forgets to bind. That makes this the
 seam the whole fix hangs on: without it every budget test in
-``tests/integration/core/test_llm_ladder_turn_budget.py`` still passes and the
+``tests/integration/core/virtual_time/test_llm_ladder_turn_budget.py`` still passes and the
 running system is unchanged (#1278, #1292).
 
 Asserted from INSIDE ``prepare_turn``, because that is where the ladder reads it

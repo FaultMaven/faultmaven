@@ -9,7 +9,7 @@ finish inside one turn, and nothing related them (#1278, #1292):
   — the turn-wide ``asyncio.wait_for`` ceiling that cancels whatever is running.
 
 The behavioural half of the fix lives in
-``tests/integration/core/test_llm_ladder_turn_budget.py``, which drives the real
+``tests/integration/core/virtual_time/test_llm_ladder_turn_budget.py``, which drives the real
 ladder. This file pins the ARITHMETIC, at REAL configured values rather than at
 the scaled-down ones a wall-clock test can afford — because the numbers are
 where the reasoning went wrong before. #1292 stated the ladder cost as

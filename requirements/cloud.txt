@@ -563,7 +563,7 @@ pytest==9.0.3
     #   pytest-metadata
     #   pytest-mock
     #   pytest-xdist
-pytest-asyncio==1.3.0
+pytest-asyncio==1.4.0
     # via faultmaven (pyproject.toml)
 pytest-cov==7.1.0
     # via faultmaven (pyproject.toml)

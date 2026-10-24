@@ -2304,7 +2304,7 @@ def recording_revoker():
 
 
 @pytest.fixture
-def anchor_db(monkeypatch):
+async def anchor_db(monkeypatch):
     """A real ``enterprises`` table behind ``account_anchor``'s reads.
 
     The login's org-less verdict and its one anchor-mover both read typed
@@ -2315,6 +2315,10 @@ def anchor_db(monkeypatch):
     the production ones rather than a stand-in that could disagree with them.
 
     Yields a seeder: ``seed(enterprise_id, retired=..., policy=...)``.
+
+    An ``async`` fixture so its teardown disposes the engine on the loop the
+    test used: an undisposed engine's pooled aiosqlite connection is collected
+    unclosed later, and its worker thread then reports to a closed loop.
     """
     from contextlib import asynccontextmanager
 
@@ -2383,6 +2387,7 @@ def anchor_db(monkeypatch):
                 )
 
     yield seed
+    await engine.dispose()
 
 
 # --------------------------------------------------- wall-clock calibration

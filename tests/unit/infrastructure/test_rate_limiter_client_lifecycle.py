@@ -41,7 +41,7 @@ class _RecordingClient:
 
         return _run
 
-    async def close(self):
+    async def aclose(self):
         self.closes += 1
 
 
@@ -139,7 +139,7 @@ async def test_a_failure_to_close_does_not_break_the_adoption():
     """The pool being replaced is usually the one that just died."""
 
     class _UncloseableClient(_RecordingClient):
-        async def close(self):
+        async def aclose(self):
             raise ConnectionError("already gone")
 
     limiter = RedisRateLimiter()
@@ -161,10 +161,10 @@ class _ObservingClient(_RecordingClient):
         self.observed_redis = "not closed"
         self.observed_script = "not closed"
 
-    async def close(self):
+    async def aclose(self):
         self.observed_redis = self._limiter._redis
         self.observed_script = self._limiter._window_script
-        await super().close()
+        await super().aclose()
 
 
 async def test_the_close_observes_a_fully_installed_limiter():
@@ -207,14 +207,14 @@ async def test_a_check_racing_the_teardown_lands_on_the_replacement():
     landed = []
 
     class _SlowClosingClient(_RecordingClient):
-        async def close(self):
+        async def aclose(self):
             # Yield control while the teardown is in progress.
             await asyncio.sleep(0)
             (result,) = await limiter.check_rate_limits(
                 [RateLimitSpec(key="10.5.0.9", limit_type=LimitType.GLOBAL)]
             )
             landed.append(result)
-            await super().close()
+            await super().aclose()
 
     await limiter._adopt(_SlowClosingClient("outgoing"), owns=True, degraded=False)
     await limiter._adopt(
@@ -245,9 +245,9 @@ async def test_a_stalling_teardown_does_not_stall_the_adoption():
     replacement = _RecordingClient("replacement")
 
     class _HangingClient(_RecordingClient):
-        async def close(self):
+        async def aclose(self):
             await released.wait()
-            await super().close()
+            await super().aclose()
 
     outgoing = _HangingClient("outgoing")
     await limiter._adopt(outgoing, owns=True, degraded=False)
@@ -283,9 +283,9 @@ async def test_a_dispatched_teardown_is_referenced_until_it_completes():
     released = asyncio.Event()
 
     class _HangingClient(_RecordingClient):
-        async def close(self):
+        async def aclose(self):
             await released.wait()
-            await super().close()
+            await super().aclose()
 
     outgoing = _HangingClient("outgoing")
     await limiter._adopt(outgoing, owns=True, degraded=False)
@@ -315,7 +315,7 @@ async def test_a_failing_dispatched_close_is_swallowed():
     """
 
     class _UncloseableClient(_RecordingClient):
-        async def close(self):
+        async def aclose(self):
             raise ConnectionError("already gone")
 
     limiter = RedisRateLimiter()

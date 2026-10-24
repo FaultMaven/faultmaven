@@ -22,9 +22,20 @@ pytestmark = pytest.mark.unit
 #: TEST-NET-1: never routable, so even an unblocked attempt reaches nothing.
 _NOWHERE = ("192.0.2.1", 9)
 
+
+def _connect():
+    with socket.socket() as sock:
+        sock.connect(_NOWHERE)
+
+
+def _connect_ex():
+    with socket.socket() as sock:
+        sock.connect_ex(_NOWHERE)
+
+
 _PATHS = {
-    "connect": lambda: socket.socket().connect(_NOWHERE),
-    "connect_ex": lambda: socket.socket().connect_ex(_NOWHERE),
+    "connect": _connect,
+    "connect_ex": _connect_ex,
     "create_connection": lambda: socket.create_connection(_NOWHERE, timeout=1),
     "getaddrinfo": lambda: socket.getaddrinfo("model.example.invalid", 443),
 }

@@ -27,10 +27,11 @@ from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
-# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
-import conftest as root_conftest  # noqa: F401
 import pytest
 import pytest_asyncio
+
+# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
+from tests import conftest as root_conftest  # noqa: F401
 
 # Conditional Redis import - only available in enterprise edition
 try:

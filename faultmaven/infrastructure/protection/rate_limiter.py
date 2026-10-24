@@ -576,7 +576,7 @@ class RedisRateLimiter:
     async def _close_outgoing(self, outgoing) -> None:
         """Best-effort close of a pool that is usually already dead."""
         try:
-            await outgoing.close()
+            await outgoing.aclose()
         except Exception as e:
             # A pool that is already dead is exactly the case this runs in, so a
             # failure to close it is expected and not worth surfacing — nothing
@@ -592,7 +592,7 @@ class RedisRateLimiter:
         """
         if self._redis is not None and self._owns_client:
             try:
-                await self._redis.close()
+                await self._redis.aclose()
             except Exception:
                 pass
             self._owns_client = False

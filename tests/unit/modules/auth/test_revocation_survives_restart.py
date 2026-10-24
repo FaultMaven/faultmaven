@@ -68,7 +68,7 @@ def _user():
 
 
 @pytest.fixture
-def durable_db(tmp_path, monkeypatch):
+async def durable_db(tmp_path, monkeypatch):
     """Point the store's default session factory at a throwaway SQLite FILE.
 
     A file, not ``:memory:``: the whole question is whether state outlives the
@@ -110,11 +110,13 @@ def durable_db(tmp_path, monkeypatch):
     yield rebind
 
     # Every engine this fixture opened, the pre-restart ones included: their
-    # only remaining reference is this list. ``sync_engine.dispose()`` is the
-    # synchronous form, usable from a sync teardown; an undisposed async
-    # engine leaves its pool and aiosqlite's thread alive for the session.
+    # only remaining reference is this list. Disposed here, on the loop the test
+    # ran on: an undisposed async engine leaves its pool and aiosqlite's thread
+    # alive past that loop. ``sync_engine.dispose()`` from a sync teardown did
+    # not close them: closing an aiosqlite connection has to be awaited, so the
+    # pool logged ``MissingGreenlet`` and dropped each connection still open.
     for engine in engines:
-        engine.sync_engine.dispose()
+        await engine.dispose()
 
 
 def _settings():

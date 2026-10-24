@@ -102,7 +102,7 @@ def user_service(user_repo, mock_auth_service):
 
 
 @pytest.fixture
-def registered_user(user_repo):
+async def registered_user(user_repo):
     """Create and save a registered user in the repository."""
     from faultmaven.utils.password import hash_password
 
@@ -119,10 +119,7 @@ def registered_user(user_repo):
         updated_at=now,
         roles=["member"],
     )
-    # Synchronously add to repository
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(user_repo.save(user))
+    await user_repo.save(user)
     return user
 
 

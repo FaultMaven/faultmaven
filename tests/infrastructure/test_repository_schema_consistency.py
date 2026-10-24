@@ -439,3 +439,7 @@ async def test_db_session():
 
         # Teardown: Rollback
         await session.rollback()
+
+    # Close the pool on this test's loop; an undisposed engine leaves its pooled
+    # connections to be collected after the loop has closed.
+    await engine.dispose()

@@ -95,6 +95,7 @@ EXPECTED_UVICORN_KWARGS = {
     "log_level": "info",
     "access_log": False,
     "timeout_keep_alive": 33,
+    "ws": "none",
     "log_config": None,
 }
 

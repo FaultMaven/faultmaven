@@ -374,14 +374,12 @@ class TestHttpDurationBucketsSpanRealTraffic:
         try:
             import prometheus_client
         except ImportError:
-            warnings.warn(
-                "prometheus_client is absent here, so the bucket-reach rule "
-                "is UNVERIFIED against a real Histogram in this job. It is an "
-                "optional dependency (requirements/cloud.txt only). The reach "
-                "guards themselves still ran — only this fidelity check did not.",
-                stacklevel=2,
+            pytest.skip(
+                "prometheus_client is absent here (an optional dependency, "
+                "requirements/cloud.txt only), so the bucket-reach rule is not "
+                "checked against a real Histogram in this job; Test Cloud checks "
+                "it. The reach guards themselves still ran."
             )
-            pytest.skip("prometheus_client not installed (optional dependency)")
 
         from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
 
@@ -513,13 +511,9 @@ class TestHttpDurationBucketsSpanRealTraffic:
         )
 
         if not report["prometheus_available"]:
-            warnings.warn(
-                "prometheus_client is absent here, so the shipped buckets are "
-                "UNVERIFIED in this job — only the NoOp degradation was "
-                "checked. It is an optional dependency (requirements/cloud.txt "
-                "only); Test Cloud is what asserts the bounds.",
-                stacklevel=2,
-            )
+            # prometheus_client is an optional dependency (requirements/
+            # cloud.txt only): here the shim must degrade to NoOpMetric, and
+            # Test Cloud is what asserts the shipped bounds.
             assert report["metrics_active"] is False
             assert report["type"] == "NoOpMetric", (
                 "without prometheus_client the shim must degrade to NoOpMetric, "

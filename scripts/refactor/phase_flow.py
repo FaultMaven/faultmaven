@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import ast
 import sys
+from pathlib import Path
 
 
 class Names(ast.NodeVisitor):
@@ -480,7 +481,7 @@ def main():
     ap.add_argument("--outline", action="store_true")
     ap.add_argument("--depth", type=int, default=1)
     a = ap.parse_args()
-    tree = ast.parse(open(a.file).read())
+    tree = ast.parse(Path(a.file).read_text())
     cls, meth = a.func.split(".")
     C = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
     f = next(m for m in C.body if getattr(m, "name", None) == meth)

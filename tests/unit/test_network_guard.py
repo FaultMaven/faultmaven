@@ -119,7 +119,8 @@ def test_ollama_stays_refused_after_the_test_calls_monkeypatch_undo(monkeypatch)
     monkeypatch.undo()
     with network_guard.expecting_refusals() as refused:
         with pytest.raises(NetworkAccessBlocked, match=r"127\.0\.0\.1:11434"):
-            socket.socket().connect(("127.0.0.1", 11434))
+            with socket.socket() as sock:
+                sock.connect(("127.0.0.1", 11434))
         with pytest.raises(NetworkAccessBlocked, match=r"localhost:11434"):
             socket.create_connection(("localhost", 11434), timeout=1)
     assert len(refused) == 2
@@ -165,7 +166,8 @@ def test_a_name_or_an_address_off_the_box_is_refused_without_a_lookup():
         with pytest.raises(NetworkAccessBlocked, match="not a loopback address"):
             socket.create_connection(("api.anthropic.com", 443), timeout=1)
         with pytest.raises(NetworkAccessBlocked, match="not a loopback address"):
-            socket.socket().connect(("203.0.113.7", 11434))
+            with socket.socket() as sock:
+                sock.connect(("203.0.113.7", 11434))
     assert len(refused) == 2
 
 

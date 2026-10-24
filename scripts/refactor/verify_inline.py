@@ -39,6 +39,7 @@ import argparse
 import ast
 import copy
 import sys
+from pathlib import Path
 
 FAIL: list[str] = []
 
@@ -362,7 +363,9 @@ def main():
     ap.add_argument("--func", required=True)
     a = ap.parse_args()
     cls, name = a.func.split(".")
-    btree, htree = ast.parse(open(a.base).read()), ast.parse(open(a.head).read())
+    btree, htree = ast.parse(Path(a.base).read_text()), ast.parse(
+        Path(a.head).read_text()
+    )
     bC, bf = method(btree, cls, name)
     hC, hf = method(htree, cls, name)
     if bf is None or hf is None:

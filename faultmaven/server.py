@@ -94,6 +94,11 @@ def run_server(app: str = "faultmaven.main:app") -> None:
         # on it is not retried (502). uvicorn.run() does not read
         # UVICORN_TIMEOUT_KEEP_ALIVE, so the value is passed explicitly.
         timeout_keep_alive=server.timeout_keep_alive,
+        # ws="none": the app serves no WebSocket route, and uvicorn's default
+        # ("auto") would load its websockets implementation, which is built on
+        # the deprecated websockets.legacy API. A WebSocket route would need a
+        # deliberate choice here ("websockets-sansio").
+        ws="none",
         # log_config=None so uvicorn installs no handlers of its own.
         # Its default config gives the `uvicorn` logger a handler and
         # propagate=False, so `uvicorn.error` records -- including the

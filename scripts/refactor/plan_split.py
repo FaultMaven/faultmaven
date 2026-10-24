@@ -45,6 +45,7 @@ import ast
 import json
 import sys
 from collections import defaultdict
+from pathlib import Path
 
 
 def main():
@@ -52,10 +53,10 @@ def main():
         print(__doc__)
         return 2
     path, grouping_path = sys.argv[1], sys.argv[2]
-    audit = json.load(open(sys.argv[3])) if len(sys.argv) > 3 else None
-    src = open(path).read()
+    audit = json.loads(Path(sys.argv[3]).read_text()) if len(sys.argv) > 3 else None
+    src = Path(path).read_text()
     tree = ast.parse(src)
-    groups = json.load(open(grouping_path))
+    groups = json.loads(Path(grouping_path).read_text())
     ranges = []
     for g, rs in groups.items():
         for r in rs:
