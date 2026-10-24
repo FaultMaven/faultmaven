@@ -34,9 +34,9 @@ In a Kubernetes deployment, run it in the API pod:
 """
 
 import argparse
-import asyncio
 import sys
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
@@ -207,14 +207,15 @@ def main():
 
     require_persistent_database_or_exit()
 
-    success = asyncio.run(
+    success = run_with_container(
         provision(
             args.username,
             args.account_kind,
             args.service_channel,
             args.token_only,
             args.enterprise_id,
-        )
+        ),
+        container=container,
     )
     sys.exit(0 if success else 1)
 

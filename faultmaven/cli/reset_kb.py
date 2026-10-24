@@ -114,7 +114,6 @@ rebuild with.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import shutil
 import sys
 from pathlib import Path
@@ -122,6 +121,7 @@ from pathlib import Path
 from sqlalchemy import delete, func, select
 
 from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not ``__doc__.splitlines()[0]``:
@@ -567,7 +567,7 @@ def main() -> None:
     # them exits from main() rather than returning a code for a caller to
     # forward.
     sys.exit(
-        asyncio.run(
+        run_with_container(
             reset_kb(
                 dry_run=args.dry_run,
                 all_drafts=args.all_drafts,

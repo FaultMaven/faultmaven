@@ -253,14 +253,16 @@ def test_the_coherence_gate_is_wired_into_the_lifespan():
     for one branch.
 
     ``lifespan`` moved to ``faultmaven.bootstrap.lifespan`` (fm#1707 wave 2), so
-    this reads that module's source, not ``faultmaven.main``'s.
+    this reads that module's source, not ``faultmaven.main``'s. The startup that
+    follows composition, the gate included, is ``_start_serving`` there (#2242),
+    so each claim reads the one function it is about.
     """
     import inspect
     import re
 
     from faultmaven.bootstrap import lifespan as lifespan_module
 
-    source = inspect.getsource(lifespan_module)
+    start_serving = inspect.getsource(lifespan_module._start_serving)
 
     # `assert "raise RuntimeError" in source` was vacuous: this module has
     # several of them, so downgrading the gate to a logger.warning still
@@ -268,14 +270,16 @@ def test_the_coherence_gate_is_wired_into_the_lifespan():
     assert re.search(
         r"assert_policy_coherent\(app\)\s*\n\s*if _policy_problem:\s*\n\s*"
         r"raise RuntimeError\(_policy_problem\)",
-        source,
+        start_serving,
     ), "the gate must refuse the boot, not merely report"
 
     # And it must run AFTER composition: before it, app.state carries nothing a
     # composed unit declared during composition, so the gate passes vacuously on
-    # exactly the deployment shape it exists for.
-    assert source.index("await compose_application") < source.index(
-        "assert_policy_coherent(app)"
+    # exactly the deployment shape it exists for. The lifespan composes, then
+    # starts serving.
+    lifespan = inspect.getsource(lifespan_module.lifespan)
+    assert lifespan.index("await compose_application(app") < lifespan.index(
+        "await _start_serving(app"
     ), "the gate must inspect a composed app"
 
 

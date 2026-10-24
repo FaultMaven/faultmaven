@@ -133,7 +133,9 @@ def wiring(monkeypatch, tmp_path):
     )
 
     container = SimpleNamespace(
-        initialize=AsyncMock(), get_user_store=lambda: user_store
+        initialize=AsyncMock(),
+        shutdown=AsyncMock(),
+        get_user_store=lambda: user_store,
     )
 
     monkeypatch.setattr("faultmaven.container.container", container)

@@ -18,7 +18,6 @@ Usage:
     python scripts/auth/create_user.py --username carol --role platform_admin
 """
 
-import asyncio
 import sys
 import argparse
 from pathlib import Path
@@ -27,6 +26,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import (
@@ -191,16 +191,17 @@ def main():
 
     # Interactive mode
     if args.interactive or not args.username:
-        success = asyncio.run(interactive_create())
+        success = run_with_container(interactive_create(), container=container)
     else:
         # Command-line mode
-        success = asyncio.run(
+        success = run_with_container(
             create_user(
                 username=args.username,
                 email=args.email,
                 display_name=args.display_name,
                 role=args.role,
-            )
+            ),
+            container=container,
         )
 
     sys.exit(0 if success else 1)
