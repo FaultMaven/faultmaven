@@ -1073,7 +1073,10 @@ class TestStagingAcrossTheHandshake:
         assert "was not registered" not in meta["system_feedback"]
         assert "held until the user confirms" in meta["system_feedback"]
         (bundle,) = case.problem_verification.pending_revision.staged
-        assert bundle.updates["milestones"]["solution_accepted"] is True
+        # The gate's decision is carried by fix identity (#2105), never as the
+        # milestone itself.
+        assert bundle.held_fix == "raise the orders pool to 50 connections"
+        assert "solution_accepted" not in bundle.updates.get("milestones", {})
         assert case.progress.solution_accepted is False
 
         # The same fix re-sent on the next hold turn is not staged twice.

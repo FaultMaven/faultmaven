@@ -42,6 +42,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_FAILED,
+    FIX_SUCCEEDED,
+    fix_windows,
+)
 from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_MIN_REFUTED,
     EXHAUSTION_MIN_TURNS,
@@ -215,8 +220,9 @@ class ProgressMonitor:
                 can fire (default 8)
             exhaustion_stall_threshold: Turns without progress needed for
                 exhaustion (default 5)
-            fix_failure_threshold: Accepted-but-unverified fix attempts
-                before FIX_FAILURE_CYCLE fires (default 2)
+            fix_failure_threshold: Failed fix windows (SOLUTION), or
+                accepted-but-unverified mitigations, before FIX_FAILURE_CYCLE
+                fires (default 2)
         """
         self.transparency_threshold = transparency_threshold
         self.category_anchoring_threshold = category_anchoring_threshold
@@ -643,9 +649,24 @@ class ProgressMonitor:
         """
         Detect repeated fix attempts that don't work.
 
-        Triggers when N+ proposed actions of the given type have been accepted
-        but the corresponding verification milestone has not been set.
+        A SOLUTION attempt is a record with its own fix window (#2105), so for
+        ``solution`` this triggers on N+ FAILED windows (``fix_windows``), unless
+        the latest window SUCCEEDED: a fix that worked after the failed ones is
+        no failure cycle. A latest window not yet observed (UNKNOWN) does not
+        lift it — that fix's outcome is still to be seen. A mitigation keeps the
+        older reading: N+ accepted MITIGATION actions with the record not
+        verified.
         """
+        if action_type == "solution":
+            windows = fix_windows(case)
+            if windows[-1].state == FIX_SUCCEEDED:
+                return False
+            failed = sum(1 for window in windows if window.state == FIX_FAILED)
+            if failed < self.fix_failure_threshold:
+                return False
+            logger.warning(f"Fix failure cycle detected: {failed} fix windows failed")
+            return True
+
         if not case.proposed_actions:
             return False
 
@@ -667,8 +688,6 @@ class ProgressMonitor:
             # mitigation record, not a progress boolean.
             _stab = case.progress.mitigation
             verified = bool(_stab is not None and _stab.verified)
-        elif action_type == "solution":
-            verified = case.progress.solution_verified
         else:
             return False
 

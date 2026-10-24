@@ -119,7 +119,12 @@ class TestRestatementIsNotJudged:
 
         assert (is_valid, errors, offending) == (True, [], set())
 
-    @pytest.mark.parametrize("milestone", sorted(_RECORD))
+    @pytest.mark.parametrize(
+        "milestone",
+        # solution_accepted is judged by the stage gate, which asks for its
+        # justification exactly when it registers a fix (#2105).
+        sorted(set(_RECORD) - {"solution_accepted"}),
+    )
     def test_the_same_milestone_newly_claimed_is_still_judged(self, milestone):
         """The other direction: an unrecorded milestone must not slip through."""
         is_valid, errors, offending = validate_reasoning_first(
@@ -157,14 +162,14 @@ class TestRestatementIsNotJudged:
 
         is_valid, errors, offending = validate_reasoning_first(
             _response(
-                MilestoneUpdates(symptom_verified=True, solution_accepted=True),
+                MilestoneUpdates(symptom_verified=True, mitigation_accepted=True),
                 _NO_JUSTIFICATIONS,
             ),
             _validator_case(progress),
         )
 
         assert is_valid is False
-        assert offending == {"solution_accepted"}
+        assert offending == {"mitigation_accepted"}
 
     def test_restatement_alone_needs_no_evidence_trail(self):
         progress = InvestigationProgress(problem_status=ProblemStatus.VERIFIED)

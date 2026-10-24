@@ -185,7 +185,9 @@ class InvestigationProgress(BaseModel):
     # ProblemVerification carries the statement's lifecycle beside it:
     # statement_history (confirmed / revised / edited / invalidated /
     # invalidation_withdrawn records), pending_revision (text, evidence, basis,
-    # prior_status, offer_key, staged cause work per turn), invalidation
+    # prior_status, offer_key, staged cause work per turn, each turn's bundle
+    # carrying the fix execution it reported as `held_fix`, a fix identity the
+    # replay registers stamped at that turn, #2105), invalidation
     # (rationale, evidence, turn, prior_status, close_declined_at_turn — the
     # turn the user declined closing on the finding, #1889) and
     # declined_revision_keys.
@@ -320,7 +322,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 |---------------------|-----------------|---------|
 | `mitigation_accepted` | `mitigation.accepted` | User acknowledges executing proposed mitigation (workaround) |
 | `mitigation_verified` | `mitigation.verified` (+ `completed_at_turn`) | User confirms the mitigation stabilized the situation |
-| `solution_accepted` | `solution_accepted` | User acknowledges executing proposed solution |
+| `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`; `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
 **How progress milestone validation works:**

@@ -58,6 +58,7 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
+    MilestoneUpdates,
     TerminalResponse,
 )
 from faultmaven.core.investigation.terminal_transitions import (
@@ -101,10 +102,13 @@ from .milestone_inference import (
     _infer_milestones,
     _post_process_llm_response,
     _source_file_resolves,
+    fix_acceptance_justification_error,
     validate_reasoning_first,
 )
 from .response_synthesis import _note_engine_disposition_withdrawn
 from .stage_gates import (
+    CARRIED_FIX_KEY,
+    FIX_JUSTIFICATION_KEY,
     _add_system_feedback,
     _apply_stage_gate_signals,
     _case_has_symptom_evidence,
@@ -113,7 +117,10 @@ from .stage_gates import (
     _settled_working_conclusion,
     _solution_cause_validated,
     _supersede_pending_solution_offers,
+    add_evidence_validation_feedback,
+    fix_identity,
     llm_claimable_milestones,
+    standing_fix_action,
 )
 from .statement_revision import REPLAY_METADATA_KEY
 from .terminal_proposals import (
@@ -193,11 +200,14 @@ _STAGED_MILESTONE_FIELDS = ("root_cause_likelihood", "root_cause_method")
 #: holds its solutions, these are held with them — replayed after them, so they
 #: register against the actions the replay creates — rather than rejected now
 #: as "not registered" against a proposal that is merely waiting.
+#: ``solution_accepted`` is not among them: the stage gate decides it on the
+#: hold turn and carries its decision by fix identity (#2105).
 _STAGED_GATE_SIGNALS = (
-    "solution_accepted",
     "mitigation_accepted",
     "mitigation_verified",
 )
+#: Every compliance signal, refused together on a problem found never present.
+_GATE_SIGNALS = ("solution_accepted", *_STAGED_GATE_SIGNALS)
 
 #: What a refused hypothesis's ``new_index_N`` slot resolves to: no hypothesis,
 #: so a link or update naming it is skipped by its consumer's existence check.
@@ -298,6 +308,12 @@ class ResponseApplier:
         is_valid, validation_errors, offending_milestones = validate_reasoning_first(
             response_obj, case
         )
+        # Whether this response could justify a solution_accepted. The stage
+        # gate decides whether its acceptance registers a fix, and asks for the
+        # justification exactly then (#2105).
+        metadata[FIX_JUSTIFICATION_KEY] = fix_acceptance_justification_error(
+            response_obj, case
+        )
         if not is_valid:
             error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
             logger.warning(
@@ -336,15 +352,8 @@ class ResponseApplier:
             # and is stripped again (fm#1677). The turn record truncates
             # feedback from the tail; the strip is the turn's first writer, and
             # prepending keeps this at the head should that order change.
-            not_recorded = (
-                f"Milestones {sorted(stripped)} were NOT recorded this turn. "
-                if stripped
-                else ""
-            )
-            _add_system_feedback(
-                metadata,
-                f"EVIDENCE VALIDATION: {not_recorded}" + " ".join(validation_errors),
-                prepend=True,
+            add_evidence_validation_feedback(
+                metadata, not_recorded=stripped, errors=validation_errors
             )
 
         # Dispatch based on response type
@@ -824,15 +833,14 @@ class ResponseApplier:
         # The same fix re-sent on a later hold turn is staged once.
         if "solutions_to_add" in subset:
             staged_before = {
-                (item.get("description") or "").strip().casefold()
+                fix_identity(item.get("description"))
                 for bundle in case.problem_verification.pending_revision.staged
                 for item in bundle.updates.get("solutions_to_add", [])
             }
             fresh = [
                 item
                 for item in subset["solutions_to_add"]
-                if (item.get("description") or "").strip().casefold()
-                not in staged_before
+                if fix_identity(item.get("description")) not in staged_before
             ]
             if fresh:
                 subset["solutions_to_add"] = fresh
@@ -1394,6 +1402,9 @@ class ResponseApplier:
         # Redesign R5/§2: the former pre-path solutions ban is removed. There
         # is no path commit gate; solution/workaround proposals are allowed
         # opportunistically during INVESTIGATING.
+        # The action each solutions_to_add entry minted or kept, in order:
+        # what the stage gate resolves this response's ``new_index_N`` against.
+        solution_slots: list[ProposedAction] = []
         if getattr(updates, "solutions_to_add", None) and false_alarm:
             _add_system_feedback(
                 metadata,
@@ -1492,9 +1503,9 @@ class ResponseApplier:
                             "fix as a SolutionToAdd; the conclusion counts once "
                             "the symptom is verified and no rival cause is "
                             "contested. If the user already applied that fix, "
-                            "also set solution_accepted from their report rather "
-                            "than asking again. Or propose a WORKAROUND "
-                            "mitigation."
+                            "also set solution_accepted from their report, with "
+                            "accepted_action_ref naming it. Or propose a "
+                            "WORKAROUND mitigation."
                         )
                     )
 
@@ -1553,7 +1564,18 @@ class ResponseApplier:
                 # stale siblings linger pending forever and keep the derived
                 # solution_proposed latched). Runs BEFORE the append so the
                 # new offer never supersedes itself.
+                #
+                # The same fix restated is not a new offer (#2105): it keeps
+                # the standing action (the pending offer, or the latest fix
+                # while its window has not failed), mints none and supersedes
+                # nothing, so the fix the user ran never reads as superseded
+                # and its copy never as a second fix. The Solution row above
+                # is still minted (#1136).
                 if action_type == InvestigationActionType.SOLUTION:
+                    kept = standing_fix_action(case, s_item.description)
+                    if kept is not None:
+                        solution_slots.append(kept)
+                        continue
                     _supersede_pending_solution_offers(case, reason="reproposal")
 
                 proposed_action = ProposedAction(
@@ -1565,6 +1587,7 @@ class ResponseApplier:
                     downgrade_reason=downgrade_reason,
                 )
                 case.proposed_actions.append(proposed_action)
+                solution_slots.append(proposed_action)
 
                 # solution_proposed is DERIVED at the end-of-turn assessment
                 # recompute from live SOLUTION offers (INV-32) — the former
@@ -1575,9 +1598,11 @@ class ResponseApplier:
         # 5b. Stage-gate compliance signals (Framework §4.1) — AFTER the
         # solutions step so the guards see actions created this turn (the
         # prompt's KB-resolution flow emits SolutionToAdd + solution_accepted
-        # in ONE response; see _apply_stage_gate_signals).
-        if updates.milestones:
-            gate_signals = updates.milestones
+        # in ONE response; see _apply_stage_gate_signals). A replayed bundle
+        # whose hold turn carried a fix acceptance runs the gate with no
+        # milestones of its own (#2105).
+        if updates.milestones or metadata.get(CARRIED_FIX_KEY) is not None:
+            gate_signals = updates.milestones or MilestoneUpdates()
             held = metadata.get("staged_gate_signals")
             if held:
                 # Held with the solutions they accept (step 2d).
@@ -1593,9 +1618,7 @@ class ResponseApplier:
                     "cause). Do not re-propose them.",
                 )
             refused_signals = [
-                name
-                for name in _STAGED_GATE_SIGNALS
-                if getattr(gate_signals, name, None)
+                name for name in _GATE_SIGNALS if getattr(gate_signals, name, None)
             ]
             if (
                 refused_signals
@@ -1603,9 +1626,11 @@ class ResponseApplier:
             ):
                 # Nothing is accepted or verified against a symptom the
                 # evidence showed was never present — and a verified mitigation
-                # would bar the very finding it was recorded under.
+                # would bar the very finding it was recorded under. The ref
+                # goes with the acceptance it names.
                 gate_signals = gate_signals.model_copy(
                     update={name: None for name in refused_signals}
+                    | {"accepted_action_ref": None}
                 )
                 _add_system_feedback(
                     metadata,
@@ -1614,7 +1639,18 @@ class ResponseApplier:
                     "nothing to mitigate or fix. If the user disputes the "
                     "finding, record it (invalidation_withdrawn).",
                 )
-            _apply_stage_gate_signals(case, gate_signals, user_message, metadata)
+            _apply_stage_gate_signals(
+                case,
+                gate_signals,
+                user_message,
+                metadata,
+                proposals=solution_slots,
+                held=(
+                    list(getattr(updates, "solutions_to_add", None) or [])
+                    if staging
+                    else None
+                ),
+            )
 
         # 6. Journal Entries (append-only investigation memory)
         if hasattr(updates, "journal_entries") and updates.journal_entries:
