@@ -57,6 +57,20 @@ class TestCompositionRootPattern:
             container, "evidence_chromadb_client", None
         )
 
+    def test_app_state_publishes_the_sanitizer_the_router_redacts_with(
+        self, booted_app_client
+    ):
+        """One sanitizer per composition (#2235): the one the case title is
+        redacted with is the container's, and the router's outbound pass uses
+        it too rather than one of its own."""
+        from faultmaven.container import container
+        from faultmaven.main import app
+
+        sanitizer = container.get_service("sanitizer")
+        assert sanitizer is not None
+        assert app.state.sanitizer is sanitizer
+        assert app.state.llm_provider.sanitizer is sanitizer
+
     def test_dependency_uses_app_state_not_container(self):
         """Test that dependencies use request.app.state, not container.get_*"""
         import inspect

@@ -21,8 +21,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
-    """Create knowledge ingester for tools that need it."""
+def create_knowledge_ingester(
+    settings: FaultMavenSettings, sanitizer: Any
+) -> Any | None:
+    """Create knowledge ingester for tools that need it, redacting with the
+    composition's sanitizer (#2235)."""
     if settings.server.skip_service_checks:
         logger.debug("KnowledgeIngester skipped (SKIP_SERVICE_CHECKS=True)")
         return None
@@ -32,7 +35,7 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
             KnowledgeIngester,
         )
 
-        return KnowledgeIngester(settings=settings)
+        return KnowledgeIngester(settings=settings, sanitizer=sanitizer)
     except DeploymentCoherenceError:
         # A boot-refusal (e.g. ChromaUnavailableError under cloud, #901) must
         # propagate — swallowing it here would re-open the fail-open path this
@@ -239,7 +242,7 @@ def register_tools(container: BaseDIContainer) -> None:
     logger.info("🔍 Tools: Registering tools...")
 
     # Create knowledge ingester
-    ingester = create_knowledge_ingester(settings)
+    ingester = create_knowledge_ingester(settings, container.get_service("sanitizer"))
     if ingester:
         container._register_service("knowledge_ingester", ingester)
     container.knowledge_ingester = ingester

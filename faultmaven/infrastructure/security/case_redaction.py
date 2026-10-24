@@ -67,10 +67,11 @@ def model_boundary_redaction(sanitizer) -> "CaseRedactionContext":
 
     The investigation path's mechanism, not a second one: the same class, over
     the same injected sanitizer instance, enabled by :func:`should_redact`. It
-    matters independently of the router — ``LLMRouter`` runs its own sanitizer
-    pass under the same flag, but that is a property of the default router (a
-    deployment may substitute its own via ``LLM_ROUTER_CLASS``), and it is the
-    engine's layer, not the router's, that the investigation path relies on.
+    matters independently of the router — ``LLMRouter`` runs a pass of its own
+    under the same flag, with that same instance (#2235), but that is a property
+    of the default router (a deployment may substitute its own via
+    ``LLM_ROUTER_CLASS``), and it is the engine's layer, not the router's, that
+    the investigation path relies on.
 
     No Redis registry is loaded or saved and nothing is ever reversed: the
     investigation path persists its registry so it can put real values back

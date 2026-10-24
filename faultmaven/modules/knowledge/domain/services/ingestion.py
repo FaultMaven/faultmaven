@@ -95,10 +95,14 @@ class KnowledgeIngester:
     """Handles asynchronous ingestion of documents into the knowledge base"""
 
     def __init__(
-        self, chroma_persist_directory: str = "./data/chroma-kb", settings=None
+        self,
+        chroma_persist_directory: str = "./data/chroma-kb",
+        settings=None,
+        sanitizer=None,
     ):
+        """``sanitizer`` is the composition's, passed by its factory (#2235);
+        with none, one is built from the settings this ingester was given."""
         self.logger = logging.getLogger(__name__)
-        self.sanitizer = DataSanitizer()
 
         # Get settings if not provided
         if settings is None:
@@ -124,6 +128,10 @@ class KnowledgeIngester:
                 error_code="KNOWLEDGE_CONFIG_ERROR",
                 context={"settings_available": settings is not None},
             )
+
+        self.sanitizer = (
+            sanitizer if sanitizer is not None else DataSanitizer(settings=settings)
+        )
 
         # Degraded state: when an external ChromaDB is configured but
         # unreachable, we do NOT block startup. self._collection stays None and

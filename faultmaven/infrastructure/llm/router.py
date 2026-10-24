@@ -359,7 +359,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,
         )
 
-        self.sanitizer = DataSanitizer()
+        # Injected by the composition root (``create_llm_provider``) after
+        # construction, so an ``LLM_ROUTER_CLASS`` subclass keeps its
+        # zero-argument constructor; see the ``sanitizer`` property (#2235).
+        self._sanitizer: Optional[Any] = None
         self.cache = LLMResponseCache()
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
@@ -380,6 +383,35 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             f"per-provider overrides: {self.settings.llm.provider_timeout_overrides or 'none'}"
         )
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
+
+    @property
+    def sanitizer(self) -> Any:
+        """The sanitizer the outbound pass redacts with: the composition's.
+
+        ``create_llm_provider`` assigns the container's instance, the one the
+        engine, the case title and the conversions redact with, so a
+        composition builds one ``DataSanitizer`` and probes Presidio once
+        (#2235). A router built outside the composition root (a script, a test)
+        has none injected; it builds one on first read, from the process
+        settings, and says so, so a second construction is never silent and
+        the pass never runs with no sanitizer at all.
+        """
+        if self._sanitizer is None:
+            self.logger.warning(
+                "LLMRouter is redacting with a sanitizer it built itself, not "
+                "the composition's"
+            )
+            self._sanitizer = DataSanitizer()
+        return self._sanitizer
+
+    @sanitizer.setter
+    def sanitizer(self, value: Any) -> None:
+        if value is None:
+            raise TypeError(
+                "LLMRouter.sanitizer cannot be None: redaction off is "
+                "SANITIZE_PII=false, read by should_redact"
+            )
+        self._sanitizer = value
 
     @property
     def registry(self):

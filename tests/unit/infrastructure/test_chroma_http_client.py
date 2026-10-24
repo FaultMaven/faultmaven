@@ -604,7 +604,7 @@ def test_the_ingester_wrapper_does_not_turn_a_refusal_into_no_ingester(
     settings = make_chroma_settings(chromadb_url="http://chromadb:8000")
 
     with pytest.raises(ChromaClientConfigError):
-        create_knowledge_ingester(settings)
+        create_knowledge_ingester(settings, sanitizer=object())
 
 
 def _refusing_settings(
