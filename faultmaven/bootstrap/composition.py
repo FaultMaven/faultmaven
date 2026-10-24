@@ -621,8 +621,12 @@ async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
     outcome: neither its cancellation nor its exception is raised here, so a
     ``CancelledError`` that is raised is a cancellation of the caller, and
     propagates. ``await task`` under ``except CancelledError`` cannot tell the
-    two apart, and swallows both. The exception is retrieved, so it is never
-    reported as unretrieved; ``None`` when the task was cancelled or returned.
+    two apart, and swallows both.
+
+    When the wait completes, the exception is retrieved and returned (``None``
+    when the task was cancelled or returned). When the caller is cancelled
+    first, the task is no longer awaited, and an exception it ends with later
+    may be reported as never retrieved.
     """
     task.cancel()
     await asyncio.wait({task})

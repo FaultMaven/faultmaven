@@ -560,23 +560,25 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
         finally:
             install_usage_ledger(None)
 
-        # Stop funnel metrics collector
+        # Stop funnel metrics collector. Each metrics task's handle comes off
+        # app.state before the wait, so a cancellation during it leaves none
+        # behind for a later stop to be handed.
         _funnel_task = getattr(app.state, "funnel_metrics_task", None)
         if _funnel_task is not None:
-            await cancel_and_wait(_funnel_task)
             del app.state.funnel_metrics_task
+            await cancel_and_wait(_funnel_task)
 
         # Stop revocation watermark gauge
         _watermark_task = getattr(app.state, "revocation_watermark_task", None)
         if _watermark_task is not None:
-            await cancel_and_wait(_watermark_task)
             del app.state.revocation_watermark_task
+            await cancel_and_wait(_watermark_task)
 
         # Stop event-loop lag monitor
         _loop_lag_task = getattr(app.state, "loop_lag_task", None)
         if _loop_lag_task is not None:
-            await cancel_and_wait(_loop_lag_task)
             del app.state.loop_lag_task
+            await cancel_and_wait(_loop_lag_task)
 
         # Stop LLM config watcher (cloud multi-replica propagation), before the
         # schedulers, so that no config reload lands mid-shutdown.

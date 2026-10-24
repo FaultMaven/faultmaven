@@ -360,12 +360,15 @@ async def test_a_cancellation_during_the_shutdown_still_decomposes_then_propagat
     lifespan_module.decompose_application.assert_awaited_once()
 
 
-async def test_a_cancellation_while_a_metrics_task_ends_is_not_swallowed(stop_serving):
-    """``await task`` under ``except CancelledError`` swallowed a cancellation of
-    the shutdown itself together with the task's own: the shutdown is cancelled
-    while the funnel collector is still ending, and ends cancelled."""
-    from faultmaven.bootstrap import lifespan as lifespan_module
+#: The background tasks ``_start_serving`` puts on ``app.state`` and the
+#: shutdown stops with ``cancel_and_wait``.
+_METRICS_TASKS = ("funnel_metrics_task", "revocation_watermark_task", "loop_lag_task")
 
+
+async def _cancel_the_shutdown_while_a_task_ends(stop_serving, handle):
+    """Run the shutdown over a task, published as ``handle``, that is still
+    ending when the shutdown itself is cancelled. Returns the app, the task
+    and the shutdown's own task, once it has ended."""
     cancel_seen, release = asyncio.Event(), asyncio.Event()
 
     async def _slow_to_end():
@@ -377,19 +380,46 @@ async def test_a_cancellation_while_a_metrics_task_ends_is_not_swallowed(stop_se
             raise
 
     app = FastAPI()
-    funnel = asyncio.create_task(_slow_to_end())
-    app.state.funnel_metrics_task = funnel
+    task = asyncio.create_task(_slow_to_end())
+    setattr(app.state, handle, task)
     shutdown = asyncio.create_task(stop_serving(app, {}))
     await cancel_seen.wait()
     shutdown.cancel()
     release.set()
+    await asyncio.wait({shutdown})
+    await asyncio.wait({task})
+    return app, task, shutdown
 
-    with pytest.raises(asyncio.CancelledError):
-        await shutdown
 
+@pytest.mark.parametrize("handle", _METRICS_TASKS)
+async def test_a_cancellation_while_a_metrics_task_ends_is_not_swallowed(
+    stop_serving, handle
+):
+    """``await task`` under ``except CancelledError`` swallowed a cancellation of
+    the shutdown itself together with the task's own: the shutdown is cancelled
+    while the metrics task is still ending, and ends cancelled."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    _app, task, shutdown = await _cancel_the_shutdown_while_a_task_ends(
+        stop_serving, handle
+    )
+
+    assert shutdown.cancelled(), "the shutdown's cancellation was swallowed"
     lifespan_module.decompose_application.assert_awaited_once()
-    await asyncio.wait({funnel})
-    assert funnel.cancelled()
+    assert task.cancelled()
+
+
+@pytest.mark.parametrize("handle", _METRICS_TASKS)
+async def test_a_cancellation_during_a_metrics_task_stop_leaves_no_handle(
+    stop_serving, handle
+):
+    """The handle comes off ``app.state`` before the wait. Left on it, a later
+    stop would be handed a task of this lifespan, whose loop may have closed."""
+    app, _task, _shutdown = await _cancel_the_shutdown_while_a_task_ends(
+        stop_serving, handle
+    )
+
+    assert handle not in app.state, f"{handle} left on app.state"
 
 
 async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):
