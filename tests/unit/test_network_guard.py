@@ -4,20 +4,24 @@ Twice a test reached the Ollama server on the developer box at
 ``localhost:11434`` (a real ``ProviderRegistry`` defaults to the ``local``
 provider, and a socket block built on a test's own ``monkeypatch`` is undone by
 ``monkeypatch.undo()``). The guard is installed at conftest import, on the
-``socket`` module, so these tests pin the three things that make it a guard
+``socket`` module, so these tests pin the four things that make it a guard
 and not a convention:
 
 * it refuses a loopback model-server port, and keeps refusing after a test
   calls ``monkeypatch.undo()``;
 * it lets a test connect to a port that test bound, and to the PostgreSQL the
   job configures;
-* a refused connect FAILS the test even when the code under test caught it.
+* it refuses resolving a name that is not this machine's, before the lookup,
+  on each resolver path it patches (#2232: three tests passed in CI only
+  because Presidio's name did not resolve there);
+* a refused connect or lookup FAILS the test even when the code under test
+  caught it.
 
-The first two are asserted in this process, which is the one the guard is
+The first three are asserted in this process, which is the one the guard is
 installed in. The allowlist is derived from the environment at install, so the
 configured-service case runs in a child interpreter whose environment names a
-listener the child did not bind. The third runs a child pytest session with the
-real conftest hook.
+listener the child did not bind. The fourth runs a child pytest session with
+the real conftest hook.
 """
 
 from __future__ import annotations
@@ -32,12 +36,16 @@ import sys
 import textwrap
 from unittest import mock
 
+import aiohttp
+import aiohttp.resolver
+import pycares
 import pytest
 
 from faultmaven.infrastructure.llm import local_llm_manager
 from tests import network_guard
 from tests.network_guard import (
     MODEL_SERVER_PORTS,
+    NameResolutionBlocked,
     NetworkAccessBlocked,
     NetworkGuard,
     configured_service_ports,
@@ -48,6 +56,10 @@ pytest_plugins = ["pytester"]
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: A name that is not this machine's. ``.invalid`` never resolves (RFC 6761),
+#: so without the lookup rule a test using it passes on DNS failure alone.
+_ELSEWHERE = "model.example.invalid"
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +96,8 @@ def test_the_guard_is_installed_in_this_process():
         "of this pytest process"
     )
     assert socket.socket.connect.__module__ == network_guard.__name__
+    assert socket.getaddrinfo.__module__ == network_guard.__name__
+    assert network_guard.GUARD.hostname == socket.gethostname().lower().rstrip(".")
 
 
 @pytest.mark.parametrize("port", sorted(MODEL_SERVER_PORTS))
@@ -153,6 +167,132 @@ def test_a_name_or_an_address_off_the_box_is_refused_without_a_lookup():
         with pytest.raises(NetworkAccessBlocked, match="not a loopback address"):
             socket.socket().connect(("203.0.113.7", 11434))
     assert len(refused) == 2
+
+
+def test_a_name_that_is_not_this_machines_is_refused_before_the_lookup():
+    """#2232: where such a name does not resolve, nothing reached a connect,
+    so a test that reached for the server passed on DNS failure alone."""
+
+    async def through_asyncio():
+        with pytest.raises(NameResolutionBlocked):
+            await asyncio.get_running_loop().getaddrinfo(_ELSEWHERE, 443)
+
+    with network_guard.expecting_refusals() as refused:
+        with pytest.raises(NameResolutionBlocked) as raised:
+            socket.getaddrinfo(_ELSEWHERE, 443)
+        with pytest.raises(NameResolutionBlocked):
+            socket.gethostbyname(_ELSEWHERE)
+        with pytest.raises(NameResolutionBlocked):
+            socket.gethostbyname_ex(_ELSEWHERE)
+        # Given a name, it resolves the name forward first.
+        with pytest.raises(NameResolutionBlocked):
+            socket.gethostbyaddr(_ELSEWHERE)
+        # ``getfqdn`` swallows the refusal and answers the name back; the record
+        # still fails the test that made it.
+        assert socket.getfqdn(_ELSEWHERE) == _ELSEWHERE
+        asyncio.run(through_asyncio())
+    # What a name that does not resolve raises, so the caller's path is the one
+    # it takes for that; and the record names the name.
+    assert isinstance(raised.value, socket.gaierror)
+    assert raised.value.errno == socket.EAI_NONAME
+    assert raised.value.host == _ELSEWHERE
+    assert _ELSEWHERE in str(raised.value)
+    assert [record.split(" via ")[1].split(",")[0] for record in refused] == [
+        "socket.getaddrinfo",
+        "socket.gethostbyname",
+        "socket.gethostbyname_ex",
+        "socket.gethostbyaddr",
+        "socket.gethostbyaddr",
+        "loop.getaddrinfo",
+    ]
+    assert all(record.startswith(f"{_ELSEWHERE} (name lookup)") for record in refused)
+
+
+def test_a_numeric_host_only_lookup_is_not_a_lookup():
+    """``AI_NUMERICHOST`` accepts an address and nothing else: a name fails at
+    once, in the resolver, without being looked up, so the guard lets it by."""
+
+    async def through_asyncio():
+        loop = asyncio.get_running_loop()
+        with pytest.raises(socket.gaierror) as raised:
+            await loop.getaddrinfo(_ELSEWHERE, 443, flags=socket.AI_NUMERICHOST)
+        assert not isinstance(raised.value, NameResolutionBlocked)
+
+    with network_guard.expecting_refusals() as refused:
+        with pytest.raises(socket.gaierror) as raised:
+            socket.getaddrinfo(_ELSEWHERE, 443, flags=socket.AI_NUMERICHOST)
+        assert not isinstance(raised.value, NameResolutionBlocked)
+        assert raised.value.errno == socket.EAI_NONAME
+        asyncio.run(through_asyncio())
+        assert socket.getaddrinfo(
+            "203.0.113.7",
+            443,
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            0,
+            socket.AI_NUMERICHOST,
+        )[0][4] == ("203.0.113.7", 443)
+    assert refused == []
+
+
+@pytest.mark.parametrize(
+    ("method", "call"),
+    [
+        (
+            "getaddrinfo",
+            lambda channel: channel.getaddrinfo(
+                host=_ELSEWHERE, port=None, callback=lambda *_: None
+            ),
+        ),
+        (
+            "query",
+            lambda channel: channel.query(
+                name=_ELSEWHERE,
+                query_type=pycares.QUERY_TYPE_A,
+                callback=lambda *_: None,
+            ),
+        ),
+        (
+            "search",
+            lambda channel: channel.search(
+                _ELSEWHERE, pycares.QUERY_TYPE_A, callback=lambda *_: None
+            ),
+        ),
+    ],
+)
+def test_c_ares_lookups_keep_their_signature_and_are_refused(method, call):
+    """The name may come by keyword, as pycares' own signature allows."""
+    channel = pycares.Channel()
+    try:
+        with network_guard.expecting_refusals() as refused:
+            with pytest.raises(NameResolutionBlocked):
+                call(channel)
+    finally:
+        channel.close()
+    assert len(refused) == 1
+    assert f" via pycares.Channel.{method}, " in refused[0]
+    guarded = getattr(pycares.Channel, method)
+    assert inspect.signature(guarded) == inspect.signature(guarded.__wrapped__)
+
+
+@pytest.mark.parametrize(
+    ("resolver", "via"),
+    [
+        ("AsyncResolver", "pycares.Channel.getaddrinfo"),
+        ("ThreadedResolver", "loop.getaddrinfo"),
+    ],
+)
+async def test_aiohttp_resolves_through_the_guard_with_either_resolver(resolver, via):
+    """``AsyncResolver`` (c-ares, aiohttp's default once aiodns is importable)
+    resolves below the ``socket`` module; ``ThreadedResolver`` through
+    asyncio. Either way the request fails as a DNS failure and is recorded."""
+    connector = aiohttp.TCPConnector(resolver=getattr(aiohttp.resolver, resolver)())
+    with network_guard.expecting_refusals() as refused:
+        async with aiohttp.ClientSession(connector=connector) as session:
+            with pytest.raises(aiohttp.ClientConnectorDNSError):
+                await session.get(f"http://{_ELSEWHERE}/")
+    assert len(refused) == 1
+    assert refused[0].startswith(f"{_ELSEWHERE} (name lookup) via {via}, from ")
 
 
 def test_a_port_the_test_bound_itself_connects():
@@ -230,6 +370,49 @@ def test_the_policy_in_isolation():
             guard.check(host, port, "test")
     assert len(guard.drain_refusals()) == 7
     assert guard.drain_refusals() == []
+
+
+def test_the_lookup_policy_in_isolation():
+    guard = NetworkGuard(hostname="CI-Box.example.internal.")
+    for host in (
+        None,  # a passive lookup: no name
+        "",
+        "localhost",
+        "LOCALHOST.",
+        "api.localhost",
+        b"localhost",
+        "127.0.0.1",
+        "::1",
+        "fe80::1%eth0",
+        "203.0.113.7",  # an address names no lookup; rule 1 holds its connect
+        "ci-box",  # this machine: its short form and its FQDN, exactly
+        "CI-BOX.example.internal.",
+    ):
+        guard.check_lookup(host, "test")
+    refused = (
+        "presidio-analyzer.faultmaven.local",
+        "api.anthropic.com",
+        "ci-box-2",
+        "ci-box.lan",  # shares the first label, but is not this machine's FQDN
+        "ci-box.example.internal.evil.example",
+        "postgres",
+        b"redis",
+        # Loopback spellings that need no DNS, refused all the same: the rule
+        # is decided without a lookup and alike on every machine (module doc).
+        "127.1",
+        "ip6-localhost",
+    )
+    for host in refused:
+        with pytest.raises(NameResolutionBlocked):
+            guard.check_lookup(host, "test")
+    assert len(guard.drain_refusals()) == len(refused)
+    # A box named ``api`` may look itself up, not a server whose name starts so.
+    api = NetworkGuard(hostname="api")
+    api.check_lookup("api", "test")
+    with pytest.raises(NameResolutionBlocked):
+        api.check_lookup("api.openai.com", "test")
+    with pytest.raises(NameResolutionBlocked):
+        NetworkGuard().check_lookup("ci-box", "test")  # no hostname: no such match
 
 
 async def test_booting_the_app_neither_probes_nor_starts_a_local_model_server():
@@ -314,6 +497,7 @@ import socket
 
 import httpx
 import pytest
+import requests
 
 from tests import network_guard
 
@@ -330,6 +514,15 @@ def test_a_real_provider_style_fallback_still_fails():
     try:
         httpx.get("http://localhost:11434/api/tags", timeout=1)
     except httpx.HTTPError:
+        pass
+
+
+def test_a_swallowed_lookup_still_fails():
+    # #2232: where the name does not resolve, the client fails before any
+    # connect, so without the lookup rule this passed on DNS failure alone.
+    try:
+        requests.get("http://example.invalid/", timeout=1)
+    except requests.RequestException:
         pass
 
 
@@ -384,14 +577,17 @@ def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
     result = pytester.runpytest_subprocess(
         "-p", "no:cacheprovider", "-p", registered_by, timeout=600
     )
-    result.assert_outcomes(passed=2, failed=4)
+    result.assert_outcomes(passed=2, failed=5)
     result.stdout.fnmatch_lines(
         [
-            "*the network guard refused 1 connection(s) during call of*",
+            "*the network guard refused 1 connection(s) or name lookup(s) during call of*",
             "*127.0.0.1:11434 (Ollama's default port) via socket.create_connection*",
         ]
     )
     result.stdout.fnmatch_lines(["*localhost:11434*"])
+    result.stdout.fnmatch_lines(
+        ["*example.invalid (name lookup) via socket.getaddrinfo, from *"]
+    )
 
 
 _CHILD_COLD_TIKTOKEN = """

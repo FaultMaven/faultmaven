@@ -105,6 +105,47 @@ offline_tiktoken.install()
 # hid. Set here, before any settings object is built.
 os.environ.setdefault("REDIS_HOST", "")
 
+# Presidio is a server no test owns. Under the Cloud profile
+# (``SANITIZE_PII=true``) every ``DataSanitizer`` built with service checks on
+# health-checks the analyzer and the anonymizer, and a full composition builds
+# four. The shipped URLs name ``presidio-{analyzer,anonymizer}.faultmaven.local``,
+# so the tests that compose with checks on looked those names up (#2232): where
+# they do not resolve (CI) the attempt ended before any connect and the tests
+# passed because DNS failed; where they resolve, the network guard refused the
+# connect and the same tests failed. So both URLs name a loopback port this
+# process binds and holds without listening: no other socket can take it, the
+# kernel refuses every connect to it at once, and the guard admits the connect
+# because this process bound the port. The health check then runs for real and
+# reaches the answer it reaches on a deployment with no Presidio: unavailable,
+# after its one retry. Replaced in every test process, whatever the environment
+# held: a value the caller set names a server the guard would refuse, and one a
+# parent test process set (the xdist controller, a pytest that runs a pytest)
+# names a port only that process holds. The pid makes the second import of this
+# file in a process (as ``tests.conftest``) keep the first one's port. With the
+# guard off (``FM_TEST_ALLOW_LIVE_NETWORK``, as the guard read it at install)
+# that reason does not hold, so the caller's URLs stand. A test that empties
+# the environment would lose the variables; ``_default_to_the_test_presidio_port``
+# below makes the port the fields' default as well.
+#: Each Presidio URL's variable, and the ``ProtectionSettings`` field it sets.
+PRESIDIO_URL_FIELDS = {
+    "PRESIDIO_ANALYZER_URL": "presidio_analyzer_url",
+    "PRESIDIO_ANONYMIZER_URL": "presidio_anonymizer_url",
+}
+_PRESIDIO_PID_ENV = "FAULTMAVEN_TEST_PRESIDIO_PID"
+
+if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
+    os.getpid()
+):
+    import atexit
+    import socket
+
+    _presidio = socket.socket()
+    _presidio.bind(("127.0.0.1", 0))
+    atexit.register(_presidio.close)
+    for _name in PRESIDIO_URL_FIELDS:
+        os.environ[_name] = f"http://127.0.0.1:{_presidio.getsockname()[1]}"
+    os.environ[_PRESIDIO_PID_ENV] = str(os.getpid())
+
 
 # One data root per test process (#1636, #1772). Every path whose shipped
 # default sits under the cwd-relative ``./data`` -- the SQLite file, both
@@ -1442,6 +1483,33 @@ def _default_to_the_test_data_root() -> None:
 _default_to_the_test_data_root()
 
 
+def _default_to_the_test_presidio_port() -> None:
+    """Make this process's Presidio port the DEFAULT of both URL fields.
+
+    The variables alone do not survive a test that empties or pins the
+    environment (``patch.dict(os.environ, ..., clear=True)``): its next settings
+    object falls back to the shipped names, which the guard refuses to resolve.
+    So, as for the data root and through the same ``_set_data_default``, the
+    port is the fields' default too. Not with the guard off: then the caller's
+    URLs, or the shipped ones, stand (see ``PRESIDIO_URL_FIELDS``).
+    """
+    if network_guard.GUARD is None:
+        return
+    from faultmaven.config.settings import reset_settings
+
+    for variable, attribute in PRESIDIO_URL_FIELDS.items():
+        _set_data_default(
+            "faultmaven.config.settings",
+            "ProtectionSettings",
+            attribute,
+            os.environ[variable],
+        )
+    reset_settings()
+
+
+_default_to_the_test_presidio_port()
+
+
 # ---------------------------------------------------------------------------
 # Logging is set deliberately, once per test process (#1944)
 # ---------------------------------------------------------------------------
@@ -1590,13 +1658,14 @@ def pytest_runtest_protocol(item, nextitem):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Fail the phase that made a connection the network guard refused.
+    """Fail the phase that made a connection or a lookup the network guard refused.
 
-    The guard raises ``NetworkAccessBlocked`` at the call site, but code that
-    treats "server unreachable" as a fallback catches it and the test passes,
-    which is how a test reached a live model server twice and stayed green.
-    So each refusal is also recorded, and the report of the phase in which it
-    happened is turned into a failure that names the host and port. A phase
+    The guard raises ``NetworkAccessBlocked`` (``NameResolutionBlocked`` for a
+    lookup) at the call site, but code that treats "server unreachable" as a
+    fallback catches it and the test passes, which is how a test reached a
+    live model server twice and stayed green. So each refusal is also
+    recorded, and the report of the phase in which it happened is turned into
+    a failure that names the host (and the port, for a connection). A phase
     that had already failed keeps its own failure and gains a section listing
     the refusals. A skipped or xfailed phase fails too: a test that swallows a
     refusal and then skips, or that is marked xfail, reached for the server all
@@ -1615,9 +1684,9 @@ def pytest_runtest_makereport(item, call):
             del report.wasxfail
         report.outcome = "failed"
         report.longrepr = (
-            f"the network guard refused {len(refused)} connection(s) during "
-            f"{call.when} of {item.nodeid}, so the test reached for a server it "
-            "does not own (tests/network_guard.py):\n" + listing
+            f"the network guard refused {len(refused)} connection(s) or name "
+            f"lookup(s) during {call.when} of {item.nodeid}, so the test reached "
+            "for a server it does not own (tests/network_guard.py):\n" + listing
         )
 
 
