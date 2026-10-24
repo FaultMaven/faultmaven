@@ -260,6 +260,11 @@ class RedisRateLimiter:
         # task can be collected mid-close, and the pool it was dropping leaks.
         self._teardown_tasks: set = set()
 
+        # The event loop ``_redis`` was adopted on. A redis-py asyncio pool is
+        # bound to it: only that loop can close it, so ``close`` checks it, and
+        # ``owned_client_loop`` reports it for a caller that must close on it.
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
 
@@ -545,6 +550,7 @@ class RedisRateLimiter:
         self._redis = client
         self._window_script = client.register_script(_WINDOWS_SCRIPT)
         self._owns_client = owns
+        self._client_loop = asyncio.get_running_loop()
         self._degraded = degraded
         self._adoption_epoch += 1
         self._consecutive_check_failures = 0
@@ -596,24 +602,56 @@ class RedisRateLimiter:
         so the next request would quietly open a socket nothing closes. A
         replaced client's close dispatched in the background is awaited too, so
         none is still pending when the event loop ends. Idempotent.
+
+        Only the loop a pool was opened on can close it. A client this limiter
+        owns but opened on another loop is let go of with a warning rather than
+        closed: ``aclose()`` from here would raise, and a shutdown must not.
         """
-        client, owned = self._redis, self._owns_client
+        client, owned, client_loop = self._redis, self._owns_client, self._client_loop
         self._redis = None
         self._window_script = None
         self._owns_client = False
+        self._client_loop = None
         # The next client is judged on its own: nothing it does carries over
         # from the one being let go.
         self._degraded = False
         self._had_real_client = False
         self._client_declared_dead = False
         self._consecutive_check_failures = 0
+        running = asyncio.get_running_loop()
         if client is not None and owned:
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            if client_loop is not None and client_loop is not running:
+                self.logger.warning(
+                    "Rate limiter's own Redis client was opened on another event "
+                    "loop, which is the only one that can close it; letting go of "
+                    "it unclosed"
+                )
+            else:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
         if self._teardown_tasks:
+            foreign = {t for t in self._teardown_tasks if t.get_loop() is not running}
+            if foreign:
+                self.logger.warning(
+                    "%d background close(s) of replaced Redis clients belong to "
+                    "another event loop; letting go of them",
+                    len(foreign),
+                )
+                self._teardown_tasks -= foreign
             await asyncio.gather(*self._teardown_tasks, return_exceptions=True)
+
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a client this limiter opened itself, or ``None``.
+
+        ``None`` when it holds the shared client, the stand-in, or nothing: only
+        a client it owns is its to close, and only on this loop.
+        """
+        if self._redis is None or not self._owns_client:
+            return None
+        return self._client_loop
 
     def configure_limits(self, limits: Dict[str, RateLimitConfig]) -> None:
         """Configure rate limits."""

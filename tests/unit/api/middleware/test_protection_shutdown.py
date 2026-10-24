@@ -16,6 +16,7 @@ middleware closes only the client it built, and is left resolving afresh.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -113,8 +114,13 @@ async def test_close_waits_for_a_dispatched_teardown():
     await limiter._adopt(_RecordingClient("replacement"), owns=True, degraded=False)
     assert limiter._teardown_tasks, "nothing was dispatched; the test proves nothing"
 
-    asyncio.get_running_loop().call_soon(released.set)
-    await asyncio.wait_for(limiter.close(), timeout=1.0)
+    closing = asyncio.ensure_future(limiter.close())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not closing.done(), "close() returned while a teardown was still pending"
+
+    released.set()
+    await asyncio.wait_for(closing, timeout=1.0)
 
     assert outgoing.closes == 1
     assert limiter._teardown_tasks == set()
@@ -155,6 +161,33 @@ async def test_the_next_initialize_builds_afresh(monkeypatch):
     assert limiter._redis is built[1]
     assert limiter._owns_client is True
     assert limiter._window_script is not None
+
+
+async def test_the_next_initialize_judges_its_client_on_its_own(monkeypatch):
+    """Nothing about the client let go of carries over to the next one.
+
+    After a real client, the FakeRedis stand-in is a demotion, and the limiter
+    keeps retrying to be promoted back. After ``close()``, it is a first client
+    again: on standalone with no Redis configured the stand-in is the intended
+    backend, not a degrade.
+    """
+    import faultmaven.infrastructure.redis_client as rc
+
+    stand_in = rc.get_fakeredis_client()
+    offered = iter([_RecordingClient("real"), stand_in])
+
+    async def _factory(redis_url=None):
+        return next(offered)
+
+    monkeypatch.setattr(rc, "get_async_redis_client", _factory)
+    limiter = RedisRateLimiter()
+    await limiter.initialize(client=None)
+
+    await limiter.close()
+    await limiter.initialize(client=None)
+
+    assert limiter._redis is stand_in
+    assert limiter.is_degraded is False
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +266,91 @@ async def test_an_injected_client_is_kept_and_not_closed(middleware_cls, client_
     assert getattr(middleware, client_attr) is injected
 
 
+@pytest.mark.parametrize(
+    "middleware_cls", [DeduplicationMiddleware, IdempotencyMiddleware]
+)
+async def test_the_fakeredis_stand_in_is_never_closed(monkeypatch, middleware_cls):
+    """The factory's stand-in is the process-wide singleton every subsystem holds."""
+    from unittest.mock import AsyncMock
+
+    from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+    stand_in = get_fakeredis_client()
+    closed = AsyncMock()
+    monkeypatch.setattr(stand_in, "aclose", closed)
+    monkeypatch.setattr(
+        _RESOLVE, lambda request, injected=None, **kw: injected or stand_in
+    )
+    middleware = _new(middleware_cls)
+
+    await _resolve(middleware, _request())
+    await middleware.shutdown()
+
+    closed.assert_not_awaited()
+    assert middleware.owned_client_loop is None
+
+
+def _on_another_loop(coroutine_function) -> None:
+    """Run it to completion on a loop of its own, which is closed after."""
+    failure = []
+
+    def _run():
+        try:
+            asyncio.run(coroutine_function())
+        except BaseException as e:  # surfaced to the test below
+            failure.append(e)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+
+
+async def test_the_limiter_lets_go_of_its_own_client_from_another_loop(caplog):
+    """Only the loop a pool was opened on can close it, and close() must not raise."""
+    limiter = RedisRateLimiter()
+    own = _RecordingClient("opened on another loop")
+    _on_another_loop(lambda: limiter._adopt(own, owns=True, degraded=False))
+    assert limiter.owned_client_loop is not None
+
+    with caplog.at_level("WARNING"):
+        await limiter.close()
+
+    assert own.closes == 0
+    assert limiter._redis is None
+    assert limiter.owned_client_loop is None
+    assert "opened on another event loop" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "middleware_cls, client_attr",
+    [(DeduplicationMiddleware, "_redis"), (IdempotencyMiddleware, "redis_client")],
+)
+async def test_a_middleware_lets_go_of_its_own_client_from_another_loop(
+    monkeypatch, caplog, middleware_cls, client_attr
+):
+    built = _RecordingClient("built on another loop")
+    monkeypatch.setattr(
+        _RESOLVE, lambda request, injected=None, **kw: injected or built
+    )
+    middleware = _new(middleware_cls)
+
+    async def _resolve_there():
+        await _resolve(middleware, _request())
+
+    _on_another_loop(_resolve_there)
+    assert middleware.owned_client_loop is not None
+
+    with caplog.at_level("WARNING"):
+        await middleware.shutdown()
+
+    assert built.closes == 0
+    assert getattr(middleware, client_attr) is None
+    assert middleware.owned_client_loop is None
+    assert "opened on another event" in caplog.text
+
+
 def _new(middleware_cls, redis_client=None):
     if middleware_cls is DeduplicationMiddleware:
         return DeduplicationMiddleware(
@@ -273,6 +391,62 @@ async def test_shutdown_protection_reaches_every_built_middleware(monkeypatch):
         type(m).__name__ for m in live_protection_middleware(app)
     )
     assert {"RateLimitMiddleware", "IdempotencyMiddleware"} <= set(calls)
+
+
+async def test_shutdown_protection_closes_deduplications_own_client(monkeypatch):
+    """Deduplication is found in a chain Starlette built and served through.
+
+    It builds its own client on the first request when the app has none, the
+    way the integration modules serve ``faultmaven.main.app``.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    built = _RecordingClient("built for deduplication")
+    monkeypatch.setattr(
+        _RESOLVE, lambda request, injected=None, **kw: injected or built
+    )
+    app = FastAPI()
+    app.add_middleware(
+        DeduplicationMiddleware, settings=get_development_protection_settings()
+    )
+    app.get("/ping")(lambda: {"ok": True})
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        assert (await client.get("/ping")).status_code == 200
+    (deduplication,) = live_protection_middleware(app)
+    assert deduplication.owned_client_loop is asyncio.get_running_loop()
+
+    await shutdown_protection(app)
+
+    assert built.closes == 1
+
+
+async def test_shutdown_protection_ends_every_middleware_when_one_fails(
+    monkeypatch,
+):
+    app = FastAPI()
+    setup_protection_middleware(app, environment=Environment.PRODUCTION)
+    app.add_middleware(IdempotencyMiddleware)
+    app.middleware_stack = app.build_middleware_stack()
+    ended = []
+
+    async def _fails(self):
+        raise RuntimeError("rate limiter shutdown broke")
+
+    async def _ends(self):
+        ended.append(type(self).__name__)
+
+    monkeypatch.setattr(RateLimitMiddleware, "shutdown", _fails)
+    monkeypatch.setattr(DeduplicationMiddleware, "shutdown", _ends)
+    monkeypatch.setattr(IdempotencyMiddleware, "shutdown", _ends)
+
+    with pytest.raises(ExceptionGroup) as raised:
+        await shutdown_protection(app)
+
+    assert sorted(ended) == ["DeduplicationMiddleware", "IdempotencyMiddleware"]
+    assert [str(e) for e in raised.value.exceptions] == ["rate limiter shutdown broke"]
 
 
 async def test_shutdown_protection_before_the_app_ever_served_does_nothing():

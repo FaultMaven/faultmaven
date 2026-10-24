@@ -259,6 +259,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._handled_demotion_generation = self.rate_limiter.demotion_generation
         self._init_lock = asyncio.Lock()
 
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a Redis client the limiter opened itself, or ``None``."""
+        return self.rate_limiter.owned_client_loop
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Decide the request's limit verdict, then serve it — exactly once.
 

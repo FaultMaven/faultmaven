@@ -18,6 +18,8 @@ import textwrap
 
 import pytest
 
+pytest_plugins = ["pytester"]
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -44,6 +46,19 @@ def test_passes_and_a_dependency_warns():
         UserWarning,
         "/venv/lib/python3.11/site-packages/somelib/api.py",
         12,
+    )
+"""
+
+_COLLECTED_INSIDE_AN_INSTALLED_PACKAGE = """
+import warnings
+
+
+def test_passes_and_something_is_collected_inside_a_dependency():
+    warnings.warn_explicit(
+        "unclosed <socket.socket fd=7>",
+        ResourceWarning,
+        "/venv/lib/python3.11/site-packages/somelib/pool.py",
+        40,
     )
 """
 
@@ -82,7 +97,38 @@ def test_a_warning_from_an_installed_package_points_at_the_lockfile(
     result = _run(pytester, monkeypatch, _WARNS_FROM_AN_INSTALLED_PACKAGE)
 
     assert result.ret == pytest.ExitCode.TESTS_FAILED
-    result.stdout.fnmatch_lines(["*./scripts/sync-venv.sh*"])
+    result.stdout.fnmatch_lines(
+        ["*./scripts/sync-venv.sh test (Test Standalone)*sync-venv.sh cloud*"]
+    )
+
+
+def test_a_warning_collected_inside_an_installed_package_does_not_blame_it(
+    pytester, monkeypatch
+):
+    """A ResourceWarning names the code running at collection, not the leaker."""
+    # The child's rootdir has no pytest.ini; this is the line of it that shows
+    # ResourceWarning, which Python hides by default.
+    result = _run(
+        pytester,
+        monkeypatch,
+        _COLLECTED_INSIDE_AN_INSTALLED_PACKAGE,
+        "-W",
+        "default::ResourceWarning",
+    )
+
+    result.assert_outcomes(passed=1, warnings=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.no_fnmatch_line("*sync-venv*")
+
+
+def test_a_hidden_summary_says_how_to_see_it(pytester, monkeypatch):
+    result = _run(pytester, monkeypatch, _WARNS, "--disable-warnings")
+
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        ["*--disable-warnings hid the warnings summary; run again without it*"]
+    )
+    result.stdout.no_fnmatch_line("*see the warnings summary above*")
 
 
 @pytest.mark.parametrize("workers", [[], ["-n", "2"]], ids=["serial", "xdist"])

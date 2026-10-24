@@ -1807,30 +1807,30 @@ class DIContainer(BaseDIContainer):
         }
 
     async def shutdown(self) -> None:
-        """Close what ``initialize`` opened that this container owns.
+        """Close what ``initialize`` opened that this container owns, and reset.
 
         The Redis client is the container's: ``register_infrastructure`` built it
         and every Redis-backed store shares it. A real client holds a connection
-        pool bound to the event loop it was opened on, so the container's owner
-        closes it before that loop ends: the API lifespan, the jobs runner, and
-        anything else that initializes the container. The FakeRedis stand-in is a
-        process-wide singleton shared beyond this container, never its to close.
+        pool bound to the event loop it was opened on, so whoever initialized the
+        container closes it before that loop ends. The API lifespan and the jobs
+        runner do; the ``fm-*`` commands do not yet (#2237). The FakeRedis
+        stand-in is a process-wide singleton shared beyond this container, never
+        its to close.
 
-        Terminal: the registry entry is disabled with the attribute, so neither
-        ``get_redis_client()`` nor ``get_service("redis_client")`` hands out the
-        closed client; ``reset()`` and ``initialize()`` to reuse the container.
-        Idempotent.
+        Then the container is reset, so it is never left holding a closed client:
+        the next ``initialize()`` composes afresh, with a new Redis client. A
+        second lifespan in the same process (the test suite runs several) would
+        otherwise find it still marked initialized, return early, and publish no
+        Redis client at all. Idempotent.
         """
         client = getattr(self, "redis_client", None)
-        if client is None:
-            return
-        from faultmaven.infrastructure.redis_client import is_fakeredis
+        self.redis_client = None
+        if client is not None:
+            from faultmaven.infrastructure.redis_client import is_fakeredis
 
-        self._register_disabled(
-            "redis_client", "the container was shut down; reset() to reuse it"
-        )
-        if not is_fakeredis(client):
-            await client.aclose()
+            if not is_fakeredis(client):
+                await client.aclose()
+        self.reset()
 
     def reset(self):
         """Reset container state (useful for testing).

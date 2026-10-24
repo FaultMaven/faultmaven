@@ -1,17 +1,31 @@
+"""``/readiness`` and ``/health``: which carries the verdict in its status code.
+
+Most of these serve the app without its lifespan, through ``ASGITransport`` on
+the test's own event loop rather than a bare ``TestClient``: the app is then
+never composed, so its protection middleware builds its own Redis client, and
+only the loop it was built on can close it. A ``TestClient`` gives every
+request a portal loop of its own.
+"""
+
 import contextlib
 import os
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app
 
 pytestmark = pytest.mark.integration
 
 
-def test_readiness_endpoint_present():
-    client = TestClient(app)
-    r = client.get("/readiness")
+def _client() -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+
+
+async def test_readiness_endpoint_present():
+    async with _client() as client:
+        r = await client.get("/readiness")
     # We don't assert exact status here because env varies, but endpoint should exist
     assert r.status_code == 200
     assert "status" in r.json()
@@ -21,9 +35,9 @@ def test_readiness_endpoint_present():
     not os.getenv("REDIS_HOST") and not os.getenv("REDIS_URL"),
     reason="Requires REDIS_* env in CI to assert healthy readiness",
 )
-def test_readiness_reports_ready_with_redis_and_chroma():
-    client = TestClient(app)
-    r = client.get("/readiness")
+async def test_readiness_reports_ready_with_redis_and_chroma():
+    async with _client() as client:
+        r = await client.get("/readiness")
     assert r.status_code == 200
     body = r.json()
     # In CI with dependencies up, expect ready; if not, this test can be adjusted per environment
@@ -66,28 +80,32 @@ def _patch_monitor(monkeypatch, monitor) -> None:
     )
 
 
-def test_readiness_is_503_when_a_readiness_fatal_component_is_unhealthy(monkeypatch):
+async def test_readiness_is_503_when_a_readiness_fatal_component_is_unhealthy(
+    monkeypatch,
+):
     """The handler's half: an unready verdict becomes a 503 naming it.
 
     The component is deliberately not `database` — that one is fatal but
     shared, so it is excluded from the set this endpoint reads (#1524).
     """
     _patch_monitor(monkeypatch, _Monitor(ready=False, blocking=["local_scratch_disk"]))
-    r = TestClient(app).get("/readiness")
+    async with _client() as client:
+        r = await client.get("/readiness")
     assert r.status_code == 503
     assert r.json()["status"] == "unready"
     assert r.json()["blocking"] == ["local_scratch_disk"]
 
 
-def test_readiness_fails_open_when_the_probe_itself_breaks(monkeypatch):
+async def test_readiness_fails_open_when_the_probe_itself_breaks(monkeypatch):
     """A bug in the check must not be able to empty the Service."""
     _patch_monitor(monkeypatch, _Monitor(raises=True))
-    r = TestClient(app).get("/readiness")
+    async with _client() as client:
+        r = await client.get("/readiness")
     assert r.status_code == 200
     assert r.json()["status"] == "ready"
 
 
-def test_health_stays_200_when_the_system_is_unhealthy(monkeypatch):
+async def test_health_stays_200_when_the_system_is_unhealthy(monkeypatch):
     """The liveness surface reports in the body, never in the status code.
 
     Restarting a pod cannot reconnect a database, and doing it during an
@@ -105,7 +123,8 @@ def test_health_stays_200_when_the_system_is_unhealthy(monkeypatch):
 
     monkeypatch.setattr(component_monitor, "check_all_components", _all_unhealthy)
 
-    r = TestClient(app).get("/health")
+    async with _client() as client:
+        r = await client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "unhealthy"
@@ -151,30 +170,31 @@ def _monitor_with_everything_broken(monkeypatch, extra: str | None = None):
     return monitor
 
 
-def test_readiness_agrees_with_health_while_the_fatal_set_is_empty(monkeypatch):
+async def test_readiness_agrees_with_health_while_the_fatal_set_is_empty(monkeypatch):
     """Every dependency down, including the database: both answer 200."""
     _monitor_with_everything_broken(monkeypatch)
-    client = TestClient(app)
+    async with _client() as client:
+        health = await client.get("/health")
+        readiness = await client.get("/readiness")
 
-    health = client.get("/health")
     assert health.status_code == 200
     # The worst case really is represented — otherwise the agreement is vacuous.
     assert health.json()["status"] == "unhealthy"
     assert health.json()["summary"]["fatal_unhealthy"] == ["database"]
 
-    readiness = client.get("/readiness")
     assert readiness.status_code == 200
     # `checked: []` says "probed nothing, by design" on the wire, rather
     # than leaving it to be inferred from an empty `components`.
     assert readiness.json() == {"status": "ready", "checked": [], "components": {}}
 
 
-def test_a_per_replica_failable_component_makes_readiness_503(monkeypatch):
+async def test_a_per_replica_failable_component_makes_readiness_503(monkeypatch):
     """Declare one component that can fail on one pod, and the gate bites."""
     _monitor_with_everything_broken(monkeypatch, extra="local_scratch_disk")
-    client = TestClient(app)
+    async with _client() as client:
+        readiness = await client.get("/readiness")
+        health = await client.get("/health")
 
-    readiness = client.get("/readiness")
     assert readiness.status_code == 503
     body = readiness.json()
     assert body["status"] == "unready"
@@ -183,7 +203,7 @@ def test_a_per_replica_failable_component_makes_readiness_503(monkeypatch):
     assert list(body["components"]) == ["local_scratch_disk"]
 
     # And liveness is unmoved by it — a 503 here must never restart the pod.
-    assert client.get("/health").status_code == 200
+    assert health.status_code == 200
 
 
 def test_health_reports_no_component_figure_it_did_not_measure():
@@ -243,8 +263,9 @@ def test_health_reports_no_component_figure_it_did_not_measure():
 # --------------------------------------------------------------------------
 
 
-def test_health_reports_both_declarations_per_component():
-    body = TestClient(app).get("/health").json()
+async def test_health_reports_both_declarations_per_component():
+    async with _client() as client:
+        body = (await client.get("/health")).json()
 
     components = body["components"]
     assert components, "positive control: /health must report components"
@@ -256,8 +277,9 @@ def test_health_reports_both_declarations_per_component():
     assert components["database"]["fails_per_replica"] is False
 
 
-def test_the_component_detail_route_reports_the_pair_exactly_once():
-    body = TestClient(app).get("/health/components/database").json()
+async def test_the_component_detail_route_reports_the_pair_exactly_once():
+    async with _client() as client:
+        body = (await client.get("/health/components/database")).json()
 
     # The pair lives with the other per-component metrics...
     assert body["metrics"]["fatal"] is True

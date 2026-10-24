@@ -932,7 +932,17 @@ def test_only_the_shared_broker_enters_a_lifespan_by_hand():
 
 
 #: Anything pytest will adopt as a rootdir, which is what cuts conftest lookup.
-_ROOTDIR_MARKERS = ("pytest.ini", "setup.cfg", "tox.ini", "pyproject.toml")
+# Every file name pytest 9 reads its configuration from
+# (``_pytest.config.findpaths.locate_config``).
+_ROOTDIR_MARKERS = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
 
 
 def test_no_directory_under_tests_carries_its_own_pytest_config():

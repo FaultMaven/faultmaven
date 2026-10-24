@@ -400,11 +400,14 @@ class TestGetCase:
             or "access denied" in data["detail"].lower()
         )
 
-    async def test_get_case_missing_authentication(self, booted_app_client):
+    async def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""
-        # The shared, started app with no auth override: a bare TestClient(app)
-        # served each request from a new portal loop and never ran the lifespan.
-        response = booted_app_client.get("/api/v1/cases/case_123")
+        # The app with no auth override, served from this test's own loop like
+        # the rest of the module, so the teardown can close what it opened.
+        async with AsyncClient(
+            transport=ASGITransport(app=main_app), base_url="http://test"
+        ) as anonymous:
+            response = await anonymous.get("/api/v1/cases/case_123")
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 

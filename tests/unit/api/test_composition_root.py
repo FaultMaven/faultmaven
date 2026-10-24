@@ -46,6 +46,9 @@ class TestCompositionRootPattern:
         from faultmaven.container import container
         from faultmaven.main import app
 
+        # Never None: the container always composes a working client (real
+        # Redis or FakeRedis), so ``None is None`` must not pass this.
+        assert app.state.redis_client is not None
         assert app.state.redis_client is container.get_redis_client()
         assert app.state.kb_chromadb_client is getattr(
             container, "kb_chromadb_client", None

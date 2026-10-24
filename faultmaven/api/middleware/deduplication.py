@@ -6,6 +6,7 @@ within configured time windows using content-based hashing.
 Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -70,6 +71,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # its to close. Recorded where the client is resolved, which is the one
         # place that knows where it came from.
         self._owns_redis = False
+        # The event loop that owned client was resolved on: a redis-py asyncio
+        # pool is bound to it, and only that loop can close it.
+        self._redis_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Endpoint configurations
         self.endpoint_configs = {
@@ -188,6 +192,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             and self._redis is not shared
             and not is_fakeredis(self._redis)
         )
+        self._redis_loop = asyncio.get_running_loop() if self._owns_redis else None
 
         if self._redis is not None:
             self._initialized = True
@@ -209,17 +214,35 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         injected it; a client the factory built for this middleware alone (an app
         serving without ``app.state.redis_client``) is closed here. The next
         request resolves afresh. Idempotent.
+
+        A client it built on another event loop is let go of with a warning
+        rather than closed: only that loop can close it, and a shutdown must not
+        raise.
         """
-        client, owned = self._redis, self._owns_redis
+        client, owned, client_loop = self._redis, self._owns_redis, self._redis_loop
         self._redis = self._injected_redis
         self._owns_redis = False
+        self._redis_loop = None
         self._initialized = False
         self._disabled = False
-        if client is not None and owned:
-            try:
-                await client.aclose()
-            except Exception as e:
-                self.logger.debug(f"Closing the deduplication Redis client failed: {e}")
+        if client is None or not owned:
+            return
+        if client_loop is not None and client_loop is not asyncio.get_running_loop():
+            self.logger.warning(
+                "Deduplication's own Redis client was opened on another event "
+                "loop, which is the only one that can close it; letting go of it "
+                "unclosed"
+            )
+            return
+        try:
+            await client.aclose()
+        except Exception as e:
+            self.logger.debug(f"Closing the deduplication Redis client failed: {e}")
+
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a Redis client this middleware built itself, or ``None``."""
+        return self._redis_loop if self._owns_redis else None
 
     def _should_skip(self, request: Request) -> bool:
         """Whether this request is exempt from deduplication.

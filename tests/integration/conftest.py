@@ -8,7 +8,6 @@ knowledge, and orchestration system testing.
 """
 
 import asyncio
-import inspect
 import io
 import os
 import sys
@@ -218,31 +217,60 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
-async def _served_apps_end_their_service(request):
-    """End the protection middleware's service after every async test.
+async def _served_apps_end_their_service():
+    """End the protection middleware's service after every test, deterministically.
 
-    Modules here serve ``faultmaven.main.app`` or a ``rebuild_app()`` app
-    through ``ASGITransport`` without its lifespan, so the app is never composed
-    and the protection middleware builds a Redis client of its own; on a real
-    Redis every test opened one more socket that nothing closed. This is the
-    same ``shutdown_protection`` the lifespan calls, run per test: a redis-py
-    asyncio pool is bound to the loop it was opened on, and under the
-    function-scoped loop this teardown runs on the test's own one. Sync tests
-    are skipped: what they serve runs on a ``TestClient`` portal's loop, which
-    is the shared boot's, ended by its own lifespan.
+    Modules here serve ``faultmaven.main.app`` or a ``rebuild_app()`` app without
+    its lifespan, so the app is never composed and the protection middleware
+    builds a Redis client of its own (on a real Redis; standalone gets the
+    FakeRedis stand-in, which it never owns). Each is shut down the way the
+    lifespan's ``shutdown_protection`` does it, per test.
+
+    A redis-py asyncio pool can only be closed on the event loop it was opened
+    on. Under the function-scoped loop this teardown runs on the test's own, so
+    an app served from it (``AsyncClient(ASGITransport(app))`` in an async test)
+    is closed here. A client opened on a loop that is still running belongs to a
+    live lifespan, the module's shared boot, whose own shutdown closes it, so it
+    is left to that. An app served from a loop that has ended, a bare
+    ``TestClient``'s per-request portal above all, leaves a client nothing can
+    close: its sockets surface later as ``unclosed transport`` in whichever test
+    is running at garbage collection. So that fails here, in the test that
+    served it, naming the app, instead of depending on when the collector runs.
     """
     yield
-    if not inspect.iscoroutinefunction(getattr(request, "function", None)):
-        return
-    from faultmaven.api.protection import shutdown_protection
+    from faultmaven.api.protection import live_protection_middleware
     from tests.integration._app_rebuild import rebuilt_apps
 
-    apps = list(rebuilt_apps())
+    apps = [(f"rebuild_app() app #{n}", app) for n, app in enumerate(rebuilt_apps())]
     published = sys.modules.get("faultmaven.main")
     if published is not None:
-        apps.append(published.app)
-    for app in apps:
-        await shutdown_protection(app)
+        apps.append(("faultmaven.main.app", published.app))
+
+    running = asyncio.get_running_loop()
+    stranded = []
+    failures = []
+    for name, app in apps:
+        for middleware in live_protection_middleware(app):
+            opened_on = middleware.owned_client_loop
+            if opened_on is not None and opened_on is not running:
+                if opened_on.is_running():
+                    continue
+                stranded.append(f"{name}: {type(middleware).__name__}")
+            try:
+                await middleware.shutdown()
+            except Exception as e:
+                failures.append(e)
+    if failures:
+        raise ExceptionGroup("protection middleware shutdown failed", failures)
+    if stranded:
+        pytest.fail(
+            "an app was served from an event loop other than this test's, and "
+            "its protection middleware built a Redis client there that nothing "
+            "can close: " + "; ".join(stranded) + ". Serve it from the test's "
+            "own loop (an async test with AsyncClient(transport=ASGITransport("
+            "app=app))), or borrow the composed app (booted_app_client).",
+            pytrace=False,
+        )
 
 
 @pytest.fixture
@@ -342,15 +370,6 @@ def mock_session_service():
 
     service = AsyncMock()
     return service
-
-
-@pytest.fixture
-def mock_case_repository():
-    """Create a mock case repository for tests."""
-    from unittest.mock import AsyncMock
-
-    repo = AsyncMock()
-    return repo
 
 
 @pytest_asyncio.fixture(scope="function")

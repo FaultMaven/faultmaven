@@ -651,6 +651,7 @@ except ImportError:
 
 import asyncio
 import os
+import re
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1129,11 +1130,8 @@ def _app_boot_session():
 def _app_boot_guard(request):
     """Tell the ``TestClient`` guard which test is running.
 
-    A fixture rather than a collection hook, so that a directory carrying its
-    own ``pytest.ini`` gets the guard by the same re-export that gives it the
-    shared boot (``tests/integration/conftest.py``).
-
-    It saves the context it replaces and restores it afterwards.
+    An autouse fixture, so it brackets each test: it records the test at setup,
+    and at teardown restores the context it replaced.
 
     Also refuses, at setup, a test that requests both ``booted_app_client``
     and ``unshared_app_boot``. It is autouse, so it is set up before either.
@@ -2433,6 +2431,39 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 #: virtualenv that drifted off the lockfile, which CI never sees.
 _THIRD_PARTY_MARKERS = ("site-packages", "dist-packages")
 
+# Warnings that surface at garbage collection or from a thread: where they are
+# reported says which code was running then, not which code left the object
+# behind, so one reported from an installed package says nothing about the
+# package's version.
+_REPORTED_WHERE_COLLECTED = (
+    "ResourceWarning",
+    "PytestUnraisableExceptionWarning",
+    "PytestUnhandledThreadExceptionWarning",
+)
+
+
+def _warning_category(report) -> str:
+    """The category name ``warnings.formatwarning`` wrote into the report.
+
+    ``path:lineno: Category: message`` on the first line; the report carries
+    the text, not the class, so it survives the trip from an xdist worker.
+    """
+    first_line = report.message.split("\n", 1)[0]
+    match = re.search(r":\d+: (\w+): ", first_line)
+    return match.group(1) if match else ""
+
+
+def _a_dependency_warned(warnings_seen) -> bool:
+    """Whether an installed package raised a warning that its version decides."""
+    return any(
+        any(
+            marker in str(report.fslocation[0] if report.fslocation else "")
+            for marker in _THIRD_PARTY_MARKERS
+        )
+        and _warning_category(report) not in _REPORTED_WHERE_COLLECTED
+        for report in warnings_seen
+    )
+
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_sessionfinish(session, exitstatus):
@@ -2456,20 +2487,24 @@ def pytest_sessionfinish(session, exitstatus):
     warnings_seen = reporter.stats.get("warnings", []) if reporter else []
     if not warnings_seen:
         return result
-    third_party = any(
-        marker in str(report.fslocation[0] if report.fslocation else "")
-        for report in warnings_seen
-        for marker in _THIRD_PARTY_MARKERS
-    )
+    if reporter is not None and reporter.hasopt("w"):
+        where = "see the warnings summary above."
+    else:
+        where = (
+            "--disable-warnings hid the warnings summary; run again without it "
+            "to list them."
+        )
     line = (
-        f"FAILED: the run raised {len(warnings_seen)} warning(s); see the "
-        "warnings summary above. The suite is warning-free "
-        "(docs/development/testing/standards.md): fix each where it arises."
+        f"FAILED: the run raised {len(warnings_seen)} warning(s); {where} The "
+        "suite is warning-free (docs/development/testing/standards.md): fix "
+        "each where it arises."
     )
-    if third_party:
+    if _a_dependency_warned(warnings_seen):
         line += (
             " Some come from installed packages: if this virtualenv is off the "
-            "lockfile, ./scripts/sync-venv.sh rebuilds it to what CI installs."
+            "lockfile, ./scripts/sync-venv.sh test (Test Standalone) or "
+            "./scripts/sync-venv.sh cloud (Test Cloud) rebuilds it to what that "
+            "job installs."
         )
     if reporter is not None:
         reporter.write_line(line, red=True, bold=True)

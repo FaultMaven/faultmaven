@@ -375,6 +375,17 @@ async def shutdown_protection(app: FastAPI) -> None:
     to resolve afresh. Idempotency resolves its client the same way, so it is
     shut down here too. A test that serves an app without its lifespan calls
     this at its own teardown, on the event loop its sockets were opened on.
+
+    One middleware failing to shut down does not stop the rest: each failure is
+    logged, every middleware is shut down, and the failures are raised together
+    at the end.
     """
+    failures = []
     for middleware in live_protection_middleware(app):
-        await middleware.shutdown()
+        try:
+            await middleware.shutdown()
+        except Exception as e:
+            logger.error(f"{type(middleware).__name__} shutdown failed: {e}")
+            failures.append(e)
+    if failures:
+        raise ExceptionGroup("protection middleware shutdown failed", failures)
