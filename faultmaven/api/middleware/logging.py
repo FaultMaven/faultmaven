@@ -44,6 +44,7 @@ import time
 from typing import Callable, Optional, Tuple
 
 from fastapi import Request, Response
+from fastapi.routing import APIRoute
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.api.middleware.client_ip import (
@@ -61,15 +62,19 @@ logger = get_logger(__name__)
 
 
 def _endpoint_label(request: Request) -> str:
-    """Bounded-cardinality endpoint label: the matched route template.
+    """Bounded-cardinality endpoint label: the matched API route's template.
 
     Uses the route's path pattern (e.g. /api/v1/cases/{case_id}), never the
     raw URL path — raw paths embed IDs and would explode label cardinality
     (see FORBIDDEN_LABELS in metrics_exporters/prometheus.py). Requests that
-    match no route (404s, scanners) collapse into one bucket.
+    match no API route collapse into one bucket: 404s, scanners, and FastAPI's
+    own documentation routes (/openapi.json, /docs, /redoc), which are plain
+    Starlette routes. Decided by the route's type, not by whether
+    ``scope["route"]`` is set: Starlette 1.7 began setting it for every match,
+    which would otherwise count documentation traffic as the service surface.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or "unmatched"
+    return route.path if isinstance(route, APIRoute) else "unmatched"
 
 
 # Endpoint labels that are NOT the service surface. Byte-for-byte the set

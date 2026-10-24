@@ -32,25 +32,21 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
         Returns:
             Response: The response from the handler or a 404 if no match
         """
-        # Check if the path ends with a trailing slash (but not just "/")
-        if request.url.path.endswith("/") and len(request.url.path) > 1:
-            # Remove the trailing slash
-            new_path = request.url.path.rstrip("/")
-
-            # Create a new request with the modified path
-            # We need to modify the request's path_info and URL
+        # Check if the path ends with a trailing slash (but not just "/").
+        # The ASGI scope's own values are edited, each in its own form:
+        # ``path`` is decoded and ``raw_path`` is the percent-encoded bytes.
+        # ``request.url.path`` is neither (Starlette re-encodes it), so a path
+        # rebuilt from it reached the route double-encoded (``a%5Cb``, not
+        # ``a\b``).
+        path = request.scope["path"]
+        if path.endswith("/") and len(path) > 1:
+            new_path = path.rstrip("/")
             request.scope["path"] = new_path
-            request.scope["path_info"] = new_path
+            raw_path = request.scope.get("raw_path")
+            if raw_path:
+                request.scope["raw_path"] = raw_path.rstrip(b"/")
 
-            # Update the raw path as well for consistency
-            if "raw_path" in request.scope:
-                # Convert to bytes if it's a string
-                if isinstance(request.scope["raw_path"], str):
-                    request.scope["raw_path"] = new_path.encode("utf-8")
-                else:
-                    request.scope["raw_path"] = new_path.encode("utf-8")
-
-            logger.debug(f"Trailing slash middleware: {request.url.path} -> {new_path}")
+            logger.debug(f"Trailing slash middleware: {path} -> {new_path}")
 
         # Proceed with the modified request
         try:

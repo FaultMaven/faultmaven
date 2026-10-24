@@ -92,7 +92,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: ``tests/conftest.py``: twelve in code and one in a child-process string
 #: literal.
 #: #1812 added one scratch site (the turns route mounted for its K13).
-EXPECTED_TOTAL_SITES = 56
+#: The Starlette 1.9 upgrade added one scratch site (the trailing-slash middleware).
+EXPECTED_TOTAL_SITES = 57
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -271,6 +272,10 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         "test_a_tripped_limit_does_not_refuse_the_preflight": ("scratch", 1),
         "test_the_fail_closed_503_carries_the_cors_header": ("scratch", 1),
         "test_the_outermost_position_is_read_the_way_starlette_stacks": ("scratch", 1),
+    },
+    "tests/unit/api/middleware/test_trailing_slash.py": {
+        # A scratch app carrying two routes behind the middleware under test.
+        "client": ("scratch", 1),
     },
     "tests/unit/api/test_case_auto_titling.py": {
         "TestTurnEndpointNamesTheCase.client": ("scratch", 1),

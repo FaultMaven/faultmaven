@@ -1129,13 +1129,14 @@ class LoggingTestUtils:
 
 These tests run in the suite CI already runs. There is no logging-specific workflow.
 
-- **`.github/workflows/ci-cd.yml`:** the `Test Standalone` and `Test Cloud` jobs run
-  `pytest tests/ -n logical --dist loadfile -m "not cloud and not benchmark and not performance"`
-  with coverage, under the `env:` block each job sets. `Test PostgreSQL Integration`
-  runs `-m postgres`.
-- **`.github/workflows/benchmarks.yml`:** runs the benchmark and wall-clock suites
-  (`pytest tests/benchmarks/ -m benchmark`, and `tests/performance/`) per PR, outside
-  the required jobs.
+- **`.github/workflows/ci-cd.yml`:** `pytest tests/ -n logical --dist loadfile` with
+  coverage, under the `env:` block each job sets. `Test Standalone` selects
+  `-m "not cloud and not benchmark and not performance"`, `Test Cloud`
+  `-m "not benchmark and not performance"`, and `Test PostgreSQL Integration`
+  `-m postgres`.
+- **`.github/workflows/benchmarks.yml`:** per PR, outside the required jobs, runs
+  `pytest tests/benchmarks/ -m benchmark` and the wall-clock tests
+  (`pytest tests/ -m performance`).
 - **Configuration:** `pytest.ini` at the repository root holds the markers, the
   asyncio mode and the warning filters, and the coverage gate is
   `coverage report --fail-under` in `ci-cd.yml`.
@@ -1144,29 +1145,22 @@ These tests run in the suite CI already runs. There is no logging-specific workf
 
 ### 1. Test Organization
 
-```python
-# Organize tests by component and concern
+```text
 tests/
-├── infrastructure/
-│   ├── logging/
-│   │   ├── test_coordinator.py          # LoggingCoordinator tests
-│   │   ├── test_request_context.py      # RequestContext tests
-│   │   ├── test_unified_logger.py       # UnifiedLogger tests
-│   │   ├── test_performance_tracker.py  # Performance tracking tests
-│   │   └── test_error_context.py        # Error handling tests
-│   └── test_base_client.py              # BaseExternalClient tests
-├── services/
-│   └── test_base.py             # BaseService tests
-├── integration/
-│   ├── logging/
-│   │   ├── test_cross_layer_context.py  # Context propagation tests
-│   │   ├── test_service_integration.py  # Service layer integration
-│   │   └── test_middleware_integration.py # Middleware integration
+├── infrastructure/logging/
+│   ├── test_config.py               # logging configuration
+│   ├── test_coordinator.py          # LoggingCoordinator, RequestContext, PerformanceTracker
+│   ├── test_deduplication.py        # once-per-request logging
+│   └── test_unified_logger.py       # UnifiedLogger, operation context managers
+├── unit/infrastructure/logging/
+│   ├── test_health_reports_live_settings.py
+│   └── test_url_query_redaction.py
+├── unit/api/middleware/
+│   ├── test_logging_middleware_attribution.py
+│   ├── test_logging_middleware_metrics.py
+│   └── test_endpoint_label.py       # which requests count as the service surface
 └── performance/
-    └── logging/
-        ├── test_concurrency.py         # Concurrent request tests
-        ├── test_memory_usage.py        # Memory usage tests
-        └── test_deduplication_perf.py  # Deduplication performance
+    └── test_logging_overhead.py     # wall-clock; runs in benchmarks.yml
 ```
 
 ### 2. Test Naming Conventions
