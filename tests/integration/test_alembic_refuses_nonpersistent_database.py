@@ -88,7 +88,7 @@ def _upgrade_head(
     env["PYTHONPATH"] = (
         f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
     )
-    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env["FAULTMAVEN_SKIP_DOTENV"] = "1"
     return subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(root / "alembic.ini")]
         + ["upgrade", target, *extra],

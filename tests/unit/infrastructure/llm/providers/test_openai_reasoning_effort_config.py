@@ -108,35 +108,33 @@ async def _sent_body(make_session, provider, **generate_kwargs):
 class TestSettingNormalization:
     @pytest.fixture(autouse=True)
     def clean_env(self, monkeypatch):
-        # Clears the process env only. The `.env` file is a separate
-        # pydantic-settings source delenv cannot reach — already neutralized
-        # suite-wide by tests/conftest.py; `_env_file=None` below just makes
-        # each construction independently isolated.
+        # `LLMSettings` reads the process environment only (it has no
+        # `env_file`, #2140), so clearing the variable isolates each one.
         monkeypatch.delenv("OPENAI_REASONING_EFFORT", raising=False)
         return monkeypatch
 
     def test_default_is_unset(self):
-        assert LLMSettings(_env_file=None).openai_reasoning_effort is None
+        assert LLMSettings().openai_reasoning_effort is None
 
     @pytest.mark.parametrize("raw", ["NONE", " none ", "None"])
     def test_values_normalize(self, clean_env, raw):
         clean_env.setenv("OPENAI_REASONING_EFFORT", raw)
-        assert LLMSettings(_env_file=None).openai_reasoning_effort == "none"
+        assert LLMSettings().openai_reasoning_effort == "none"
 
     @pytest.mark.parametrize("valid", OPENAI_REASONING_EFFORTS)
     def test_all_documented_values_accepted(self, clean_env, valid):
         clean_env.setenv("OPENAI_REASONING_EFFORT", valid)
-        assert LLMSettings(_env_file=None).openai_reasoning_effort == valid
+        assert LLMSettings().openai_reasoning_effort == valid
 
     def test_unrecognized_fails_closed_to_unset_with_warning(self, clean_env, caplog):
         clean_env.setenv("OPENAI_REASONING_EFFORT", "turbo")
         with caplog.at_level(logging.WARNING):
-            assert LLMSettings(_env_file=None).openai_reasoning_effort is None
+            assert LLMSettings().openai_reasoning_effort is None
         assert any("OPENAI_REASONING_EFFORT" in r.message for r in caplog.records)
 
     def test_empty_string_is_unset(self, clean_env):
         clean_env.setenv("OPENAI_REASONING_EFFORT", "")
-        assert LLMSettings(_env_file=None).openai_reasoning_effort is None
+        assert LLMSettings().openai_reasoning_effort is None
 
 
 @pytest.mark.unit
@@ -158,9 +156,7 @@ class TestRegistryHandoff:
             monkeypatch.delenv(var, raising=False)
         for key, value in env.items():
             monkeypatch.setenv(key, value)
-        registry = ProviderRegistry(
-            settings=SimpleNamespace(llm=LLMSettings(_env_file=None))
-        )
+        registry = ProviderRegistry(settings=SimpleNamespace(llm=LLMSettings()))
         return registry._create_provider_config(
             provider_name, PROVIDER_SCHEMA[provider_name]
         )

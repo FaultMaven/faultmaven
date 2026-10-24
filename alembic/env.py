@@ -48,9 +48,9 @@ load_settings_dotenv()
 # Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging
+# Logging from alembic.ini, without disabling the loggers the imports above made.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import require_persistent_database_url_or_exit

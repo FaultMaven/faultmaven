@@ -43,7 +43,7 @@ Application Start
     ↓
 get_settings() called (first time)
     ↓
-load_settings_dotenv()  ← Loads ./.env into the environment (never over a set variable)
+load_settings_dotenv()  ← Loads ./.env into the environment (never over a set variable, in any case)
     ↓
 Preset defaults applied (CONFIG_PRESET, or the zero-config `local` preset)
     ↓
@@ -124,7 +124,7 @@ class ConversationThresholds(BaseSettings):
 Settings are loaded in this priority order (highest to lowest):
 
 1. **System environment** (OS-level env vars set before the process starts)
-2. **`.env` file** (loaded without `override`, so it never replaces 1)
+2. **`.env` file** (never replaces 1, whatever the letter case of either name)
 3. **Preset defaults** (`CONFIG_PRESET`, or the zero-config `local` preset)
 4. **Default values** (in `settings.py`)
 

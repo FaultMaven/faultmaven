@@ -6,7 +6,8 @@ and ``alembic/env.py`` load a dotenv into ``os.environ``. A bare
 in any directory above the package reached the process (a developer's
 checkout, or any directory over an installed package), even under
 ``FAULTMAVEN_SKIP_DOTENV``. They share one loader now, ``load_settings_dotenv``,
-which reads only the file the settings name, relative to the working directory.
+which reads only the file the settings name, relative to the working directory,
+and never over a variable the environment sets in any letter case.
 
 Each case is a fresh interpreter, because ``tests/conftest.py`` patches dotenv
 away in-process, and it runs a script file: under ``python -c`` the interpreter
@@ -29,7 +30,9 @@ pytestmark = pytest.mark.unit
 
 PACKAGE = Path(faultmaven.__file__).resolve().parent
 ROOT = PACKAGE.parent
-MARKER = "FM_2140_MARKER"
+ABOVE_PACKAGE = "FM_2140_ABOVE_PACKAGE"
+ABOVE_CWD = "FM_2140_ABOVE_CWD"
+IN_MEMORY = "DATABASE_URL=sqlite+aiosqlite:///:memory:\n"
 
 #: Each entry point that loads a dotenv, as the child calls it.
 ENTRY_POINTS = {
@@ -50,12 +53,15 @@ assert faultmaven.__file__.startswith(sys.argv[1]), (faultmaven.__file__, sys.ar
 _REPORT = """
 environ = {name: os.environ.get(name) for name in sys.argv[2:]}
 from faultmaven.config.settings import get_settings
-key = get_settings().llm.cohere_api_key
+llm = get_settings().llm
+keys = {"cohere": llm.cohere_api_key, "gemini": llm.gemini_api_key}
 print("RESULT " + json.dumps({
     "environ": environ,
-    "cohere_api_key": key.get_secret_value() if key else None,
+    "llm": {name: key.get_secret_value() if key else None for name, key in keys.items()},
 }))
 """
+
+_ENV = {"PATH": "/usr/bin:/bin"}
 
 
 def _run(
@@ -76,12 +82,7 @@ def _run(
     result = subprocess.run(
         [sys.executable, str(script), str(package_root), *names],
         cwd=work,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "HOME": str(tmp_path),
-            "PYTHONPATH": str(package_root),
-            **environ,
-        },
+        env={**_ENV, "HOME": str(tmp_path), "PYTHONPATH": str(package_root), **environ},
         capture_output=True,
         text=True,
         timeout=300,
@@ -93,16 +94,25 @@ def _run(
 
 
 @pytest.mark.parametrize("entry", list(ENTRY_POINTS))
-def test_a_dotenv_above_the_package_never_reaches_the_environment(tmp_path, entry):
-    """An installed package beneath a directory holding ``.env``, run from elsewhere."""
+def test_a_dotenv_outside_the_working_directory_never_reaches_the_environment(
+    tmp_path, entry
+):
+    """Neither search finds one: up from the package, nor up from the cwd.
+
+    The package is installed beneath a directory holding ``.env``, and the cwd
+    is an empty directory beneath another one.
+    """
+    (tmp_path / ".env").write_text(f"{ABOVE_CWD}=from-above-the-cwd\n")
     ancestor = tmp_path / "ancestor"
     (ancestor / "site").mkdir(parents=True)
-    (ancestor / ".env").write_text(f"{MARKER}=from-an-ancestor\n")
+    (ancestor / ".env").write_text(f"{ABOVE_PACKAGE}=from-above-the-package\n")
     (ancestor / "site" / "faultmaven").symlink_to(PACKAGE, target_is_directory=True)
 
-    answer = _run(tmp_path, ancestor / "site", entry, {}, None, [MARKER])
+    answer = _run(
+        tmp_path, ancestor / "site", entry, {}, None, [ABOVE_PACKAGE, ABOVE_CWD]
+    )
 
-    assert answer["environ"] == {MARKER: None}
+    assert answer["environ"] == {ABOVE_PACKAGE: None, ABOVE_CWD: None}
 
 
 @pytest.mark.parametrize("entry", list(ENTRY_POINTS))
@@ -120,7 +130,22 @@ def test_the_working_directory_dotenv_is_read_and_the_environment_wins(tmp_path,
         "FM_2140_BOTH": "from-the-environment",
         "COHERE_API_KEY": "from-the-file",
     }
-    assert answer["cohere_api_key"] == "from-the-file"
+    assert answer["llm"]["cohere"] == "from-the-file"
+
+
+def test_the_environment_wins_in_any_letter_case(tmp_path):
+    """The settings bind ``gemini_api_key`` as ``GEMINI_API_KEY``, so the loader must."""
+    answer = _run(
+        tmp_path,
+        ROOT,
+        "get_settings",
+        {"gemini_api_key": "from-os"},
+        "GEMINI_API_KEY=from-file\n",
+        ["GEMINI_API_KEY"],
+    )
+
+    assert answer["environ"] == {"GEMINI_API_KEY": None}
+    assert answer["llm"]["gemini"] == "from-os"
 
 
 def test_skip_dotenv_keeps_a_credential_out_of_the_environment_and_the_settings(
@@ -135,4 +160,62 @@ def test_skip_dotenv_keeps_a_credential_out_of_the_environment_and_the_settings(
         ["COHERE_API_KEY"],
     )
 
-    assert answer == {"environ": {"COHERE_API_KEY": None}, "cohere_api_key": None}
+    assert answer["environ"] == {"COHERE_API_KEY": None}
+    assert answer["llm"]["cohere"] is None
+
+
+def _alembic_current(
+    tmp_path: Path, environ: dict[str, str], dotenv: str | None, above: str | None
+) -> subprocess.CompletedProcess:
+    """``python -m alembic current`` in a directory holding this tree's alembic.
+
+    ``script_location = alembic`` is cwd-relative, so the cwd holds symlinks to
+    ``alembic/`` and ``alembic.ini``. ``data/`` exists, so the default database
+    opens there when no ``DATABASE_URL`` is read.
+    """
+    work = tmp_path / "above" / "cwd"
+    (work / "data").mkdir(parents=True)
+    (work / "alembic").symlink_to(ROOT / "alembic", target_is_directory=True)
+    (work / "alembic.ini").symlink_to(ROOT / "alembic.ini")
+    if dotenv is not None:
+        (work / ".env").write_text(dotenv)
+    if above is not None:
+        (work.parent / ".env").write_text(above)
+    env = {**_ENV, "HOME": str(tmp_path), "PYTHONPATH": str(ROOT), **environ}
+    probe = subprocess.run(
+        [sys.executable, "-c", "import faultmaven; print(faultmaven.__file__)"],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert probe.stdout.startswith(str(ROOT)), (probe.stdout, probe.stderr[-2000:])
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", "current"],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+def test_alembic_reads_the_working_directory_dotenv(tmp_path):
+    """The in-memory URL is only in the file, so its refusal shows the file was read."""
+    result = _alembic_current(tmp_path, {}, IN_MEMORY, None)
+
+    assert result.returncode == 1, result.stderr[-3000:]
+    assert "Refusing to run" in result.stderr, result.stderr[-3000:]
+
+
+@pytest.mark.parametrize(
+    ("environ", "dotenv", "above"),
+    [({"FAULTMAVEN_SKIP_DOTENV": "1"}, IN_MEMORY, None), ({}, None, IN_MEMORY)],
+    ids=["skip-dotenv", "dotenv-above-the-cwd"],
+)
+def test_alembic_reads_no_other_dotenv(tmp_path, environ, dotenv, above):
+    result = _alembic_current(tmp_path, environ, dotenv, above)
+
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert "Refusing to run" not in result.stderr
