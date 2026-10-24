@@ -83,6 +83,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
     Solution,
     SolutionFeasible,
+    SolutionType,
     TurnOutcome,
 )
 
@@ -1403,8 +1404,10 @@ class ResponseApplier:
         # is no path commit gate; solution/workaround proposals are allowed
         # opportunistically during INVESTIGATING.
         # The action each solutions_to_add entry minted or kept, in order:
-        # what the stage gate resolves this response's ``new_index_N`` against.
+        # what the stage gate resolves this response's ``new_index_N`` against;
+        # and those minted from fix entries, which alone can bear a fix (#2105).
         solution_slots: list[ProposedAction] = []
+        fix_slots: list[ProposedAction] = []
         if getattr(updates, "solutions_to_add", None) and false_alarm:
             _add_system_feedback(
                 metadata,
@@ -1587,6 +1590,8 @@ class ResponseApplier:
                 )
                 case.proposed_actions.append(proposed_action)
                 solution_slots.append(proposed_action)
+                if s_item.solution_type != SolutionType.WORKAROUND:
+                    fix_slots.append(proposed_action)
 
                 # solution_proposed is DERIVED at the end-of-turn assessment
                 # recompute from live SOLUTION offers (INV-32) — the former
@@ -1644,6 +1649,7 @@ class ResponseApplier:
                 user_message,
                 metadata,
                 proposals=solution_slots,
+                fixes=fix_slots,
                 held=(
                     list(getattr(updates, "solutions_to_add", None) or [])
                     if staging

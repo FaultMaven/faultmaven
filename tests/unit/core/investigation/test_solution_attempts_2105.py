@@ -1442,6 +1442,62 @@ async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
     assert len(case.action_attempts) == 1
 
 
+@pytest.mark.parametrize("symptom", [True, False], ids=["mitigation", "3d"])
+@pytest.mark.parametrize("shape", ["named-by-id", "new-index", "kb-bundle"])
+async def test_a_same_text_workaround_never_bears_the_fix(shape, symptom):
+    """Ruled (#2105, 2026-10-24): a fix identity is borne only by fix actions.
+    A WORKAROUND with the fix's text (a MITIGATION, or a DIAGNOSTIC by 3D)
+    beside the acceptance does not refuse the fix the user ran."""
+    eng, case = _identified()
+    rows = [_ev(_PRESENT, "checkout returns 503 under load, pool exhausted")]
+    fix, workaround = (
+        _fix(_RESTART, t) for t in (SolutionType.RESTART, SolutionType.WORKAROUND)
+    )
+    turn, sent, ref = 5, [fix, workaround], None
+    if shape != "kb-bundle":
+        await _turn(eng, case, 5, solutions_to_add=[fix])
+        turn, sent = 6, [workaround] if shape == "named-by-id" else [fix, workaround]
+        ref = _solutions(case)[0].action_id if shape == "named-by-id" else "new_index_0"
+
+    await _turn(
+        eng,
+        case,
+        turn,
+        *rows[:symptom],
+        solutions_to_add=sent,
+        milestones=_accepted(ref),
+    )
+
+    assert _states(case) == [(_RESTART, "accepted", turn)]
+    assert len(case.action_attempts) == 1
+
+
+@pytest.mark.parametrize("ref", ["action-id", "none"])
+async def test_a_pending_fix_re_sent_on_a_license_down_turn_registers(ref):
+    """Ruled: an M5-downgraded fix entry outranks only a non-pending SOLUTION.
+    The license fell after the last recompute, so pending X still stands; the
+    re-send is minted a DIAGNOSTIC, and the X the user ran registers."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    case.root_cause_conclusion = None
+    case.progress.cause_state = CauseState.UNKNOWN
+    for hyp in case.hypotheses.values():
+        hyp.likelihood = 0.1
+
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted(x.action_id if ref == "action-id" else None),
+    )
+
+    assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
+    assert (x.state, x.accepted_in_turn) == ("accepted", 6)
+    assert len(case.action_attempts) == 1
+
+
 async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again():
     """Delta N1: after a first fix, Y is carried at 14; at 15 a bare acceptance
     re-sends Y. No line names Y's ``new_index``, and naming it anyway at 16

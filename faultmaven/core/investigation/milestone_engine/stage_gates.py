@@ -433,19 +433,17 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
 
 
 def _newest_fix_bearer(case: Case, identity: str, minted: Sequence = ()) -> Any:
-    """The newest SOLUTION, or action this apply ``minted``, bearing the fix."""
-    return next(
-        (
-            action
-            for action in reversed(case.proposed_actions)
-            if (
-                action.action_type == InvestigationActionType.SOLUTION
-                or action in minted
-            )
-            and fix_identity(action.description) == identity
-        ),
-        None,
-    )
+    """The newest fix action bearing ``identity``: a SOLUTION, or a fix entry
+    this apply ``minted`` (M5-downgraded), which outranks a non-pending one."""
+    downgraded = None
+    for action in reversed(case.proposed_actions):
+        if fix_identity(action.description) != identity:
+            continue
+        if action.action_type == InvestigationActionType.SOLUTION:
+            return downgraded if downgraded and action.state != "pending" else action
+        if downgraded is None and action in minted:
+            downgraded = action
+    return downgraded
 
 
 def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
@@ -740,8 +738,7 @@ def add_evidence_validation_feedback(
             for part in (metadata.get("system_feedback") or "").split("\n")
             if part != previous["line"]
         )
-    # One message per kind: "Milestones [a] <text>" and "Milestones [b] <text>"
-    # merge into "Milestones [a, b] <text>".
+    # One message per kind: "Milestones [a] <text>" + [b] -> "Milestones [a, b] <text>".
     merged: dict[str, list[str]] = {}
     for error in said:
         named = _NAMED_ERROR.fullmatch(error)
@@ -1070,7 +1067,8 @@ def _bearer_registers(
     predicate), and on a live turn only as a ``reproposal``: one withdrawn
     ``license_lost`` stays refused (ruled 2026-10-21). A decision ``carried``
     through a revision hold registers on the license whatever superseded it,
-    since the hold withdraws every pending fix. A minted DIAGNOSTIC: M5 fell."""
+    since the hold withdraws every pending fix. An M5-downgraded fix entry
+    this apply minted: the license fell."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
         _add_system_feedback(metadata, _license_notice(bearer.action_id))
         return False
@@ -1163,9 +1161,7 @@ def _carry_fix(
     bundle.held_fix = identity
     bundle.held_fix_message = (user_message or "")[:10000]
     logger.info(
-        "Case %s: carried a fix acceptance through the revision hold at turn %s",
-        case.case_id,
-        case.current_turn,
+        "Case %s: carried a fix acceptance at turn %s", case.case_id, case.current_turn
     )
     _add_system_feedback(
         metadata,
@@ -1183,6 +1179,7 @@ def decide_fix_acceptance(
     *,
     proposals: Sequence[Any] = (),
     held: Optional[Sequence[Any]] = None,
+    fixes: Sequence[Any] = (),
     user_message: str = "",
 ) -> Any:
     """THE decision: whether this response's ``solution_accepted`` registers a
@@ -1191,6 +1188,7 @@ def decide_fix_acceptance(
     Called once per apply, after the solutions step. ``proposals``: the actions
     this response's ``solutions_to_add`` entries minted or kept, in order.
     ``held``: on a hold turn, those entries, staged rather than minted.
+    ``fixes``: the actions this apply minted from fix entries (not WORKAROUNDs).
 
     Step 1 resolves a fix identity; on a live turn step 2 applies the state rule
     to its newest bearer, and a registration is justified like the first
@@ -1220,7 +1218,7 @@ def decide_fix_acceptance(
         if _registration_justified(case, metadata):
             _carry_fix(case, identity, user_message, metadata)
         return None
-    bearer = _newest_fix_bearer(case, identity, proposals)
+    bearer = _newest_fix_bearer(case, identity, fixes)
     if bearer is None:
         _refuse_fix_ref(case, metadata, ref, what)
         return None
@@ -1232,12 +1230,12 @@ def decide_fix_acceptance(
 
 
 def _register_carried_fix(
-    case: Case, carried: Any, metadata: dict[str, Any], proposals: Sequence[Any]
+    case: Case, carried: Any, metadata: dict[str, Any], fixes: Sequence[Any]
 ) -> Any:
-    """At the replay: the state rule on the newest bearer of the carried fix
-    (``carried``, the staged bundle) among SOLUTIONs and what the replay minted
-    (``proposals``); the license line when none bears it."""
-    bearer = _newest_fix_bearer(case, carried.held_fix, proposals)
+    """At the replay: the state rule on the newest fix action bearing the
+    carried fix (``carried``, the staged bundle), among SOLUTIONs and the
+    replay's ``fixes``; the license line when none bears it."""
+    bearer = _newest_fix_bearer(case, carried.held_fix, fixes)
     if bearer is None:
         _add_system_feedback(
             metadata,
@@ -1447,6 +1445,7 @@ def _apply_stage_gate_signals(
     *,
     proposals: Sequence[Any] = (),
     held: Optional[Sequence[Any]] = None,
+    fixes: Sequence[Any] = (),
 ) -> None:
     """Apply stage-gate compliance signals (Framework §4.1).
 
@@ -1488,7 +1487,7 @@ def _apply_stage_gate_signals(
     # --- solution_accepted: one decision (#2105) -----------------------
     carried = metadata.get(CARRIED_FIX_KEY)
     if carried is not None:
-        solution_action = _register_carried_fix(case, carried, metadata, proposals)
+        solution_action = _register_carried_fix(case, carried, metadata, fixes)
     else:
         solution_action = decide_fix_acceptance(
             case,
@@ -1496,6 +1495,7 @@ def _apply_stage_gate_signals(
             metadata,
             proposals=proposals,
             held=held,
+            fixes=fixes,
             user_message=user_message,
         )
 
