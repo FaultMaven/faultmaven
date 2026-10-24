@@ -28,8 +28,12 @@ The rule it enforces:
    ``REDIS_HOST``. The model-server ports (``MODEL_SERVER_PORTS``) are never
    allowed, whatever the environment says.
 3. Resolving a name that is not this machine's is refused, before the lookup.
-   ``localhost`` (and names under ``.localhost``) and this machine's own
-   hostname, short or qualified, are this machine's. An address is not a name:
+   This machine's names are ``localhost`` (and names under ``.localhost``) and,
+   matched exactly, the hostname ``gethostname()`` returns and its first
+   label; the hostname is the FQDN where the system sets it qualified. A
+   qualified form ``gethostname()`` does not return is refused, because
+   learning it (``getfqdn()``) is itself a lookup. An address is not a name,
+   and a ``getaddrinfo`` with ``AI_NUMERICHOST`` accepts only addresses:
    nothing is looked up, and the connect that follows is held to rules 1 and 2.
 4. A refusal raises ``NetworkAccessBlocked`` (a ``ConnectionRefusedError``, so
    code written for an unreachable server takes the path it always took) or,
@@ -51,10 +55,21 @@ start. Refused before the lookup, the name fails the test wherever it runs.
 Measured before this rule, over a full run under each CI profile (26,073
 tests and the 316 Python processes they start): two names that are not this
 machine's were resolved, 24 times, all of them Presidio's, and nothing looked
-up this machine's own name. Such a lookup (``getaddrinfo(gethostname())``)
-stays allowed all the same: it is about this machine, not a step toward a
-server. Reverse lookups (``gethostbyaddr``, which ``getfqdn`` makes, and
-``getnameinfo``) lead to no connection and are left alone.
+up this machine's own name. Such a lookup (``getaddrinfo(gethostname())``,
+``getfqdn()``) stays allowed all the same: it is about this machine, not a step
+toward a server. A reverse lookup (``gethostbyaddr`` of an address,
+``getnameinfo``) leads to no connection and is left alone; ``gethostbyaddr``
+given a NAME resolves it forward first, which is how ``getfqdn(name)`` looks a
+name up, so a name there is held to rule 3.
+
+Two spellings of this machine are refused although they need no DNS: the
+legacy numeric shorthands ``inet_aton`` accepts (``127.1``) and the loopback
+aliases in ``/etc/hosts`` (``ip6-localhost``). The guard decides without a
+lookup and the same way on every machine; recognising them would mean
+re-implementing ``inet_aton``'s forms or reading this machine's
+``/etc/hosts``, and a rule that differs from machine to machine is what #2232
+was. No client here spells loopback either way; a test that does writes
+``127.0.0.1`` or ``localhost``.
 
 A test that needs to prove its code survives a refused connection binds a port
 and closes it (the port is then its own, and the kernel refuses for real), or
@@ -65,15 +80,18 @@ Patched paths. Connects: ``socket.socket.connect`` / ``connect_ex`` (every
 stdlib and third-party client ends here, ``ssl`` and asyncio's selector loops
 included), ``socket.create_connection``, and asyncio's ``create_connection`` /
 ``sock_connect``, which are checked before name resolution. Lookups:
-``socket.getaddrinfo`` / ``gethostbyname`` / ``gethostbyname_ex`` (urllib3,
-anyio and aiohttp's threaded resolver end here), asyncio's ``getaddrinfo``,
-checked in the caller before it hands the lookup to a worker thread so the
-record names the caller, and c-ares' ``pycares.Channel`` lookups: aiohttp's
-default resolver when aiodns is installed, as the lockfile has it, and c-ares
-resolves below the ``socket`` module. Not covered: a child process (it has its
-own interpreter), uvloop's native connect, UDP ``sendto`` with no ``connect``,
-and dnspython's resolver (its own UDP; email-validator's deliverability check is
-its one user here, and pydantic's ``EmailStr`` turns that check off).
+``socket.getaddrinfo`` / ``gethostbyname`` / ``gethostbyname_ex`` /
+``gethostbyaddr`` (urllib3, anyio and aiohttp's threaded resolver end here),
+asyncio's ``getaddrinfo``, checked in the caller before it hands the lookup to
+a worker thread so the record names the caller, and c-ares' ``pycares.Channel``
+lookups: aiohttp's default resolver when aiodns is installed, as the lockfile
+has it, and c-ares resolves below the ``socket`` module. Not covered: a child
+process (it has its own interpreter); uvloop's native connect and its
+``getaddrinfo``; UDP ``sendto`` with no ``connect``; a name handed to ``bind``
+or to ``sendto``, which the C socket resolves itself, below these patches;
+gRPC's C-core resolver; and dnspython's resolver (its own UDP;
+email-validator's deliverability check is its one user here, and pydantic's
+``EmailStr`` turns that check off).
 
 ``FM_TEST_ALLOW_LIVE_NETWORK=1`` in the environment of the pytest process
 disables the guard. It is read once, at install, so a test cannot set it. It
@@ -86,6 +104,8 @@ import asyncio.base_events
 import asyncio.selector_events
 import contextlib
 import errno
+import functools
+import inspect
 import ipaddress
 import os
 import socket
@@ -242,9 +262,12 @@ class NetworkGuard:
         self, service_ports: Optional[Mapping[int, str]] = None, hostname: str = ""
     ) -> None:
         self.service_ports: dict[int, str] = dict(service_ports or {})
-        #: This machine's name (``install`` passes ``socket.gethostname()``):
-        #: a lookup of it, short or qualified, is about this machine.
+        #: This machine's name (``install`` passes ``socket.gethostname()``).
+        #: A lookup of exactly it, or of its first label, is about this machine.
         self.hostname = _name(hostname) or ""
+        self._own_names = frozenset(
+            filter(None, (self.hostname, self.hostname.split(".", 1)[0]))
+        )
         self.bound_ports: set[int] = set()
         self._refusals: list[str] = []
         self._expected: list[list[str]] = []
@@ -309,10 +332,7 @@ class NetworkGuard:
         raise NameResolutionBlocked(message, host)
 
     def _is_this_machine(self, name: str) -> bool:
-        if not self.hostname:
-            return False
-        short = self.hostname.split(".", 1)[0]
-        return name in (self.hostname, short) or name.startswith(short + ".")
+        return name in self._own_names
 
     def _record(self, record: str) -> None:
         with self._lock:
@@ -392,6 +412,7 @@ def install(environ: Optional[Mapping[str, str]] = None) -> Optional[NetworkGuar
     real_getaddrinfo = socket.getaddrinfo
     real_gethostbyname = socket.gethostbyname
     real_gethostbyname_ex = socket.gethostbyname_ex
+    real_gethostbyaddr = socket.gethostbyaddr
     real_loop_getaddrinfo = asyncio.base_events.BaseEventLoop.getaddrinfo
 
     def connect(self, address):
@@ -433,7 +454,8 @@ def install(environ: Optional[Mapping[str, str]] = None) -> Optional[NetworkGuar
         return await real_sock_connect(self, sock, address)
 
     def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        guard.check_lookup(host, "socket.getaddrinfo")
+        if not flags & socket.AI_NUMERICHOST:  # with it, nothing is looked up
+            guard.check_lookup(host, "socket.getaddrinfo")
         return real_getaddrinfo(host, port, family, type, proto, flags)
 
     def gethostbyname(hostname):
@@ -444,9 +466,15 @@ def install(environ: Optional[Mapping[str, str]] = None) -> Optional[NetworkGuar
         guard.check_lookup(hostname, "socket.gethostbyname_ex")
         return real_gethostbyname_ex(hostname)
 
-    async def loop_getaddrinfo(self, host, port, **kwargs):
-        guard.check_lookup(host, "loop.getaddrinfo")
-        return await real_loop_getaddrinfo(self, host, port, **kwargs)
+    def gethostbyaddr(ip_address):
+        # An address passes (a reverse lookup); a name is resolved forward first.
+        guard.check_lookup(ip_address, "socket.gethostbyaddr")
+        return real_gethostbyaddr(ip_address)
+
+    async def loop_getaddrinfo(self, host, port, *, flags=0, **kwargs):
+        if not flags & socket.AI_NUMERICHOST:
+            guard.check_lookup(host, "loop.getaddrinfo")
+        return await real_loop_getaddrinfo(self, host, port, flags=flags, **kwargs)
 
     socket.socket.connect = connect
     socket.socket.connect_ex = connect_ex
@@ -457,6 +485,7 @@ def install(environ: Optional[Mapping[str, str]] = None) -> Optional[NetworkGuar
     socket.getaddrinfo = getaddrinfo
     socket.gethostbyname = gethostbyname
     socket.gethostbyname_ex = gethostbyname_ex
+    socket.gethostbyaddr = gethostbyaddr
     asyncio.base_events.BaseEventLoop.getaddrinfo = loop_getaddrinfo
     _guard_c_ares(guard)
     return guard
@@ -469,7 +498,8 @@ def _guard_c_ares(guard: NetworkGuard) -> None:
     never see it; it is what aiohttp resolves with by default once aiodns is
     importable. The refusal is raised synchronously from the ``Channel`` call:
     aiodns lets it through (it reroutes only ``AresError``) and aiohttp reports
-    it as the DNS failure (``ClientConnectorDNSError``) it is.
+    it as the DNS failure (``ClientConnectorDNSError``) it is. Each wrapper
+    keeps its method's signature, so the name may be passed by keyword.
     """
     try:
         import pycares
@@ -477,9 +507,13 @@ def _guard_c_ares(guard: NetworkGuard) -> None:
         return
 
     def lookup(real, via):
-        def guarded(self, name, *args, **kwargs):
-            guard.check_lookup(name, via)
-            return real(self, name, *args, **kwargs)
+        # ``host`` for getaddrinfo, ``name`` for query/search: after ``self``.
+        name_parameter = list(inspect.signature(real).parameters)[1]
+
+        @functools.wraps(real)
+        def guarded(self, *args, **kwargs):
+            guard.check_lookup(args[0] if args else kwargs.get(name_parameter), via)
+            return real(self, *args, **kwargs)
 
         return guarded
 

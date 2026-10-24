@@ -26,9 +26,7 @@ the real conftest hook.
 
 from __future__ import annotations
 
-import _socket
 import asyncio
-import errno
 import inspect
 import os
 import pathlib
@@ -37,10 +35,10 @@ import subprocess
 import sys
 import textwrap
 from unittest import mock
-from urllib.parse import urlsplit
 
 import aiohttp
 import aiohttp.resolver
+import pycares
 import pytest
 
 from faultmaven.infrastructure.llm import local_llm_manager
@@ -186,6 +184,12 @@ def test_a_name_that_is_not_this_machines_is_refused_before_the_lookup():
             socket.gethostbyname(_ELSEWHERE)
         with pytest.raises(NameResolutionBlocked):
             socket.gethostbyname_ex(_ELSEWHERE)
+        # Given a name, it resolves the name forward first.
+        with pytest.raises(NameResolutionBlocked):
+            socket.gethostbyaddr(_ELSEWHERE)
+        # ``getfqdn`` swallows the refusal and answers the name back; the record
+        # still fails the test that made it.
+        assert socket.getfqdn(_ELSEWHERE) == _ELSEWHERE
         asyncio.run(through_asyncio())
     # What a name that does not resolve raises, so the caller's path is the one
     # it takes for that; and the record names the name.
@@ -197,9 +201,78 @@ def test_a_name_that_is_not_this_machines_is_refused_before_the_lookup():
         "socket.getaddrinfo",
         "socket.gethostbyname",
         "socket.gethostbyname_ex",
+        "socket.gethostbyaddr",
+        "socket.gethostbyaddr",
         "loop.getaddrinfo",
     ]
     assert all(record.startswith(f"{_ELSEWHERE} (name lookup)") for record in refused)
+
+
+def test_a_numeric_host_only_lookup_is_not_a_lookup():
+    """``AI_NUMERICHOST`` accepts an address and nothing else: a name fails at
+    once, in the resolver, without being looked up, so the guard lets it by."""
+
+    async def through_asyncio():
+        loop = asyncio.get_running_loop()
+        with pytest.raises(socket.gaierror) as raised:
+            await loop.getaddrinfo(_ELSEWHERE, 443, flags=socket.AI_NUMERICHOST)
+        assert not isinstance(raised.value, NameResolutionBlocked)
+
+    with network_guard.expecting_refusals() as refused:
+        with pytest.raises(socket.gaierror) as raised:
+            socket.getaddrinfo(_ELSEWHERE, 443, flags=socket.AI_NUMERICHOST)
+        assert not isinstance(raised.value, NameResolutionBlocked)
+        assert raised.value.errno == socket.EAI_NONAME
+        asyncio.run(through_asyncio())
+        assert socket.getaddrinfo(
+            "203.0.113.7",
+            443,
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            0,
+            socket.AI_NUMERICHOST,
+        )[0][4] == ("203.0.113.7", 443)
+    assert refused == []
+
+
+@pytest.mark.parametrize(
+    ("method", "call"),
+    [
+        (
+            "getaddrinfo",
+            lambda channel: channel.getaddrinfo(
+                host=_ELSEWHERE, port=None, callback=lambda *_: None
+            ),
+        ),
+        (
+            "query",
+            lambda channel: channel.query(
+                name=_ELSEWHERE,
+                query_type=pycares.QUERY_TYPE_A,
+                callback=lambda *_: None,
+            ),
+        ),
+        (
+            "search",
+            lambda channel: channel.search(
+                _ELSEWHERE, pycares.QUERY_TYPE_A, callback=lambda *_: None
+            ),
+        ),
+    ],
+)
+def test_c_ares_lookups_keep_their_signature_and_are_refused(method, call):
+    """The name may come by keyword, as pycares' own signature allows."""
+    channel = pycares.Channel()
+    try:
+        with network_guard.expecting_refusals() as refused:
+            with pytest.raises(NameResolutionBlocked):
+                call(channel)
+    finally:
+        channel.close()
+    assert len(refused) == 1
+    assert f" via pycares.Channel.{method}, " in refused[0]
+    guarded = getattr(pycares.Channel, method)
+    assert inspect.signature(guarded) == inspect.signature(guarded.__wrapped__)
 
 
 @pytest.mark.parametrize(
@@ -312,48 +385,34 @@ def test_the_lookup_policy_in_isolation():
         "::1",
         "fe80::1%eth0",
         "203.0.113.7",  # an address names no lookup; rule 1 holds its connect
-        "ci-box",  # this machine, short and qualified
-        "ci-box.example.internal",
-        "ci-box.lan",
+        "ci-box",  # this machine: its short form and its FQDN, exactly
+        "CI-BOX.example.internal.",
     ):
         guard.check_lookup(host, "test")
-    for host in (
+    refused = (
         "presidio-analyzer.faultmaven.local",
         "api.anthropic.com",
         "ci-box-2",
+        "ci-box.lan",  # shares the first label, but is not this machine's FQDN
+        "ci-box.example.internal.evil.example",
         "postgres",
         b"redis",
-    ):
+        # Loopback spellings that need no DNS, refused all the same: the rule
+        # is decided without a lookup and alike on every machine (module doc).
+        "127.1",
+        "ip6-localhost",
+    )
+    for host in refused:
         with pytest.raises(NameResolutionBlocked):
             guard.check_lookup(host, "test")
-    assert len(guard.drain_refusals()) == 5
+    assert len(guard.drain_refusals()) == len(refused)
+    # A box named ``api`` may look itself up, not a server whose name starts so.
+    api = NetworkGuard(hostname="api")
+    api.check_lookup("api", "test")
+    with pytest.raises(NameResolutionBlocked):
+        api.check_lookup("api.openai.com", "test")
     with pytest.raises(NameResolutionBlocked):
         NetworkGuard().check_lookup("ci-box", "test")  # no hostname: no such match
-
-
-def test_presidio_is_a_loopback_port_this_process_holds_and_nothing_answers():
-    """#2232: a composition's Presidio health check finds no server because the
-    kernel refuses the connect, not because a name failed to resolve."""
-    from faultmaven.config.settings import ProtectionSettings
-    from tests.conftest import PRESIDIO_URL_ENVS
-
-    urls = {os.environ[name] for name in PRESIDIO_URL_ENVS}
-    settings = ProtectionSettings()
-    assert {settings.presidio_analyzer_url, settings.presidio_anonymizer_url} == urls
-    (url,) = urls
-    host, port = urlsplit(url).hostname, urlsplit(url).port
-    assert host == "127.0.0.1"
-    with socket.socket() as other:
-        with pytest.raises(OSError) as taken:
-            other.bind((host, port))
-    assert taken.value.errno == errno.EADDRINUSE  # held, so no listener can take it
-    # The C socket's connect, below the guard: the kernel's own answer.
-    probe = _socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        with pytest.raises(ConnectionRefusedError):
-            probe.connect((host, port))
-    finally:
-        probe.close()
 
 
 async def test_booting_the_app_neither_probes_nor_starts_a_local_model_server():

@@ -121,18 +121,28 @@ os.environ.setdefault("REDIS_HOST", "")
 # held: a value the caller set names a server the guard would refuse, and one a
 # parent test process set (the xdist controller, a pytest that runs a pytest)
 # names a port only that process holds. The pid makes the second import of this
-# file in a process (as ``tests.conftest``) keep the first one's port.
-PRESIDIO_URL_ENVS = ("PRESIDIO_ANALYZER_URL", "PRESIDIO_ANONYMIZER_URL")
+# file in a process (as ``tests.conftest``) keep the first one's port. With the
+# guard off (``FM_TEST_ALLOW_LIVE_NETWORK``, as the guard read it at install)
+# that reason does not hold, so the caller's URLs stand. A test that empties
+# the environment would lose the variables; ``_default_to_the_test_presidio_port``
+# below makes the port the fields' default as well.
+#: Each Presidio URL's variable, and the ``ProtectionSettings`` field it sets.
+PRESIDIO_URL_FIELDS = {
+    "PRESIDIO_ANALYZER_URL": "presidio_analyzer_url",
+    "PRESIDIO_ANONYMIZER_URL": "presidio_anonymizer_url",
+}
 _PRESIDIO_PID_ENV = "FAULTMAVEN_TEST_PRESIDIO_PID"
 
-if os.environ.get(_PRESIDIO_PID_ENV) != str(os.getpid()):
+if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
+    os.getpid()
+):
     import atexit
     import socket
 
     _presidio = socket.socket()
     _presidio.bind(("127.0.0.1", 0))
     atexit.register(_presidio.close)
-    for _name in PRESIDIO_URL_ENVS:
+    for _name in PRESIDIO_URL_FIELDS:
         os.environ[_name] = f"http://127.0.0.1:{_presidio.getsockname()[1]}"
     os.environ[_PRESIDIO_PID_ENV] = str(os.getpid())
 
@@ -1471,6 +1481,33 @@ def _default_to_the_test_data_root() -> None:
 
 
 _default_to_the_test_data_root()
+
+
+def _default_to_the_test_presidio_port() -> None:
+    """Make this process's Presidio port the DEFAULT of both URL fields.
+
+    The variables alone do not survive a test that empties or pins the
+    environment (``patch.dict(os.environ, ..., clear=True)``): its next settings
+    object falls back to the shipped names, which the guard refuses to resolve.
+    So, as for the data root and through the same ``_set_data_default``, the
+    port is the fields' default too. Not with the guard off: then the caller's
+    URLs, or the shipped ones, stand (see ``PRESIDIO_URL_FIELDS``).
+    """
+    if network_guard.GUARD is None:
+        return
+    from faultmaven.config.settings import reset_settings
+
+    for variable, attribute in PRESIDIO_URL_FIELDS.items():
+        _set_data_default(
+            "faultmaven.config.settings",
+            "ProtectionSettings",
+            attribute,
+            os.environ[variable],
+        )
+    reset_settings()
+
+
+_default_to_the_test_presidio_port()
 
 
 # ---------------------------------------------------------------------------
