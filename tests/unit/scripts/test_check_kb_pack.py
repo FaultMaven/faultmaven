@@ -200,7 +200,42 @@ def test_chunk_without_the_hashes_fails_naming_the_rebuild(check, tmp_path, fiel
     )  # noqa: E731
     code, out = check(_edit(_build(tmp_path, _vectors()), edit))
     assert code == 1
-    assert f"global/net/beta.md chunk 1: no {field} — rebuild with kb-toolkit" in out
+    expected = (
+        "rebuild with a kb-toolkit build that records text_sha256 and pair_sha256"
+    )
+    assert f"global/net/beta.md chunk 1: no {field} — {expected}" in out
+
+
+def test_total_chunks_not_the_vector_rows_fails(check, tmp_path):
+    pack = _edit(_build(tmp_path, _vectors()), lambda m: m.update(total_chunks=4))
+    code, out = check(pack)
+    assert code == 1
+    assert "total_chunks != the 5 rows of vectors.npz" in out
+
+
+@pytest.mark.parametrize(
+    "drop, expected",
+    [
+        (lambda m: m.pop("runbooks"), "pack contains 0 runbooks"),
+        (lambda m: m["runbooks"][0].pop("chunks"), "global/db/alpha.md: 0 chunks"),
+    ],
+    ids=["runbooks", "chunks"],
+)
+def test_absent_runbooks_or_chunks_are_reported_not_raised(
+    check, tmp_path, drop, expected
+):
+    """The loader reads both as empty when absent; the gate must report, not crash."""
+    code, out = check(_edit(_build(tmp_path, _vectors()), drop))
+    assert code == 1
+    assert expected in out
+
+
+@pytest.mark.parametrize("text", [None, 42, "\ud800"], ids=["null", "int", "surrogate"])
+def test_malformed_chunk_text_is_reported_not_raised(check, tmp_path, text):
+    edit = lambda m: m["runbooks"][1]["chunks"][1].update(text=text)  # noqa: E731
+    code, out = check(_edit(_build(tmp_path, _vectors()), edit))
+    assert code == 1
+    assert "global/net/beta.md chunk 1: text is not a UTF-8 string" in out
 
 
 def test_vendored_pack_passes(check):

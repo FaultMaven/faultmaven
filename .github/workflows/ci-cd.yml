@@ -308,8 +308,9 @@ jobs:
 
       - name: KB pack is structurally valid
         # The KB pack is built by faultmaven-kb-toolkit and vendored here; this
-        # verifies the committed pack loads, matches its runbook sources, and
-        # pairs each chunk's text with the vector embedded from it
+        # verifies the committed pack loads, holds every source runbook under
+        # resources/knowledge/runbooks/ (by content hash), and pairs each chunk's
+        # text with the vector embedded from it
         # (text_sha256 / pair_sha256 / vectors_sha256, #1286).
         run: python scripts/check_kb_pack.py
 

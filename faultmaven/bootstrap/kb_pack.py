@@ -15,6 +15,7 @@ or running the embedding model:
       "version": "<informational, e.g. date or git sha>",
       "model": "BAAI/bge-m3",
       "dim": 1024,
+      "total_chunks": <the number of chunks = the rows of vectors.npz>,
       "vectors_sha256": "<sha256 of the vectors.npz bytes>",
       "runbooks": [
         {

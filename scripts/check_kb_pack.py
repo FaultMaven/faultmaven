@@ -52,11 +52,20 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _utf8(text: object) -> Optional[bytes]:
+    """``text`` as UTF-8 bytes, or None when it is not a str that encodes."""
+    try:
+        return text.encode("utf-8") if isinstance(text, str) else None
+    except UnicodeEncodeError:  # a lone surrogate, which JSON can carry
+        return None
+
+
 def pairing_problems(pack_dir: Path) -> list[str]:
     """Each chunk's text against the vector it ships beside, read from the raw files.
 
     Runs only on a pack ``KbPack.load`` accepted: every ``vector_row`` is an
-    in-range, distinct int.
+    in-range, distinct int. ``runbooks`` and ``chunks`` are read as the loader
+    reads them, absent meaning empty.
     """
     meta = json.loads((pack_dir / PACK_JSON).read_text(encoding="utf-8"))
     raw = (pack_dir / VECTORS_NPZ).read_bytes()
@@ -68,17 +77,20 @@ def pairing_problems(pack_dir: Path) -> list[str]:
     if meta.get("total_chunks") != len(vectors):
         problems.append(f"total_chunks != the {len(vectors)} rows of {VECTORS_NPZ}")
     rows = []
-    for rb in meta["runbooks"]:
-        for c in rb["chunks"]:
+    for rb in meta.get("runbooks", []):
+        for c in rb.get("chunks", []):
             where, row = f"{rb['relpath']} chunk {c['chunk_index']}", c["vector_row"]
             rows.append(row)
+            text = _utf8(c["text"])
             missing = [k for k in ("text_sha256", "pair_sha256") if not c.get(k)]
-            if missing:
+            if text is None:
+                problems.append(f"{where}: text is not a UTF-8 string")
+            elif missing:
                 problems.append(
-                    f"{where}: no {'/'.join(missing)} — rebuild with kb-toolkit "
-                    "at or after a1557dd"
+                    f"{where}: no {'/'.join(missing)} — rebuild with a kb-toolkit "
+                    "build that records text_sha256 and pair_sha256"
                 )
-            elif c["text_sha256"] != _sha256(c["text"].encode("utf-8")):
+            elif c["text_sha256"] != _sha256(text):
                 problems.append(f"{where}: text_sha256 != sha256(text)")
             elif c["pair_sha256"] != _sha256(
                 bytes.fromhex(c["text_sha256"])

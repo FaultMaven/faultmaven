@@ -155,9 +155,11 @@ silent-corruption failure modes are guarded rather than left to chance:
   on the first collision logs a loud `ERROR` and **refuses the pack whole**
   (returns `None`, same fail-safe as the bounds/`dim`/model guards). This catches
   a **shared** row; it does not catch a *swapped pair* (two chunks exchanging two
-  still-distinct rows keeps every row unique and is unverifiable at load). The
-  swapped pair, a stale vector, a dropped chunk and a substituted `vectors.npz` are
-  caught before they ship, by the hashes and row order the CI gate checks (below).
+  still-distinct rows keeps every row unique and is unverifiable at load). In the
+  vendored pack (`resources/knowledge/pack/`), the swapped pair, a stale vector, a
+  dropped chunk and a substituted `vectors.npz` are caught before they ship, by the
+  hashes and row order the CI gate checks (below). The gate checks only that pack:
+  a pack read from `KB_PACK_DIR` is not checked at load.
 
 ### Per-Cause `causes` record (toolkit-emitted, ignored by the app)
 
