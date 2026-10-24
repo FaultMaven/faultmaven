@@ -246,7 +246,7 @@ propagate store errors so revoke endpoints never report success while the
 token remains usable.
 
 The per-request check used to fail **open**, on an availability argument that
-held while standalone's store was the in-process FakeRedis singleton and could
+held while standalone's store was the in-process FakeRedis and could
 not fail. #828/#1469 moved that deployment onto a SQLite table and made the
 path reachable. Refusing converts a storage blip into an outage for every
 authenticated request at once; that is accepted, because the failure is loud,

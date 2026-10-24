@@ -451,15 +451,15 @@ class RedisRateLimiter:
                 f"Rate limiter Redis unavailable ({e}); falling back to in-process "
                 "FakeRedis — rate limits are per-replica until Redis is reachable"
             )
-            # Process-wide singleton, shared with every other subsystem.
+            # This loop's stand-in, shared with every other subsystem on it.
             await self._adopt(get_fakeredis_client(), owns=False, degraded=True)
             return
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
             raise
 
-        # The FakeRedis stand-in is a process-wide singleton shared with every
-        # other subsystem, so it is never this limiter's to close.
+        # The FakeRedis stand-in is shared with every other subsystem on this
+        # event loop, so it is never this limiter's to close.
         stand_in = is_fakeredis(resolved)
         # A stand-in is only a *degrade* if this limiter has held a real client
         # before. On standalone with no Redis configured the factory returns
@@ -499,10 +499,10 @@ class RedisRateLimiter:
         the invariant behind that word is narrow: owned means a real connection
         pool this limiter had the factory build for it. Never the composition
         root's shared client (sessions, revocation, deduplication and
-        idempotency all hold it) and never the process-wide FakeRedis stand-in.
+        idempotency all hold it) and never the loop's shared FakeRedis stand-in.
         ``_owns_client`` already encodes both exclusions; the ``is_fakeredis``
         test is belt and braces, because closing the stand-in would break every
-        other subsystem in the process and the cost of the extra check is one
+        other subsystem on the loop and the cost of the extra check is one
         function call per adoption.
 
         Without the close, a flapping Redis leaked one pool (``max_connections``

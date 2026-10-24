@@ -185,7 +185,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             request, injected=self._redis, redis_url=self.redis_url
         )
         # Neither injected nor the app's shared client: the factory built it for
-        # this middleware, unless it handed back the process-wide FakeRedis.
+        # this middleware, unless it handed back the loop's shared FakeRedis.
         self._owns_redis = (
             self._redis is not None
             and self._redis is not self._injected_redis

@@ -41,13 +41,10 @@ _GET_ASYNC_CLIENT = "faultmaven.infrastructure.redis_client.get_async_redis_clie
 
 @pytest.fixture(autouse=True)
 def _isolated_fakeredis():
-    """Give each test its own stand-in singleton.
+    """Give each test an empty in-process Redis.
 
-    ``get_fakeredis_client`` caches one process-wide instance, and an async
-    FakeRedis binds to the event loop that created it. Reused across tests it
-    raises "bound to a different event loop" — which these tests' own code paths
-    would then read as a *check failure*, silently manufacturing the very
-    condition under test.
+    ``get_fakeredis_client`` keeps one server for the process, so without a
+    reset one test's keys and counters would still be there in the next.
     """
     from faultmaven.infrastructure.redis_client import reset_fakeredis_client
 
@@ -370,7 +367,7 @@ def _unique_client():
     """A fresh client IP per test.
 
     The rate-limit key is derived from the client IP, and the degraded rung
-    shares one process-wide FakeRedis, so reused IPs would let one test's
+    shares one in-process FakeRedis server, so reused IPs would let one test's
     counters decide another's verdict.
     """
     return (f"10.0.0.{next(_IP_COUNTER)}", 1234)
@@ -1113,7 +1110,7 @@ async def test_a_genuine_failure_run_on_the_current_client_still_demotes(monkeyp
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_the_factory_returned_stand_in_is_never_owned(monkeypatch):
-    """M4: the stand-in is a process-wide singleton — this limiter cannot own it.
+    """M4: the stand-in is shared by every subsystem — this limiter cannot own it.
 
     ``get_fakeredis_client`` returns one instance shared with sessions, token
     revocation, deduplication and idempotency. Marking it owned means a future
@@ -1134,7 +1131,7 @@ async def test_the_factory_returned_stand_in_is_never_owned(monkeypatch):
 
     assert limiter._redis is stand_in, "the factory rung did not yield the stand-in"
     assert limiter._owns_client is False, (
-        "the limiter claims ownership of the process-wide stand-in; close() "
+        "the limiter claims ownership of the shared stand-in; close() "
         "would take sessions, token revocation, dedup and idempotency with it"
     )
 
