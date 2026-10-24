@@ -8,7 +8,9 @@ the same async Redis interface — no dual code paths needed.
 Configuration is read from the unified settings system (faultmaven.config.settings).
 """
 
+import asyncio
 import logging
+import threading
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -25,8 +27,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Singleton FakeRedis instance shared across all subsystems
-_fakeredis_instance = None
+# The in-process FakeRedis: one server holds the data for the whole process, and
+# each running event loop gets its own client on it (see get_fakeredis_client).
+_fakeredis_server = None
+_fakeredis_clients: dict = {}
+_fakeredis_lock = threading.Lock()
 
 
 class RedisUnavailableError(DeploymentCoherenceError):
@@ -95,24 +100,59 @@ def is_fakeredis(client) -> bool:
 
 
 def get_fakeredis_client():
-    """Return a singleton FakeRedis async client for local deployment.
+    """Return the running event loop's client on the process's in-process Redis.
 
-    All subsystems share one instance so data (sessions, tokens, rate limits)
-    is visible across the application, exactly like a real Redis server.
+    One ``FakeServer`` holds the data for the whole process, so sessions, tokens
+    and rate limits are visible across the application, exactly like a real
+    Redis server. Within one event loop every subsystem gets the same client.
+
+    The client is per loop because its connections are not shareable across
+    loops. Each pooled connection owns an ``asyncio.Queue``, bound to the first
+    loop that awaits a read on it; under hiredis, every pool checkout does such a
+    read. One client shared by the process therefore handed every later loop
+    connections that raise "bound to a different event loop" (#2241). A
+    process runs several loops whenever more than one ``TestClient`` or
+    ``asyncio.run`` drives it.
+
+    A closed loop's client is dropped on the next call, so neither is kept
+    alive. A call with no running loop gets a client of its own on the same
+    server, since there is no loop to cache it under.
     """
+    import fakeredis
     import fakeredis.aioredis as fakeredis_aio
 
-    global _fakeredis_instance
-    if _fakeredis_instance is None:
-        _fakeredis_instance = fakeredis_aio.FakeRedis(decode_responses=True)
-        logger.info("✅ Redis client: FakeRedis (in-process, local deployment)")
-    return _fakeredis_instance
+    global _fakeredis_server
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    with _fakeredis_lock:
+        if _fakeredis_server is None:
+            _fakeredis_server = fakeredis.FakeServer()
+            logger.info("✅ Redis client: FakeRedis (in-process, local deployment)")
+        for closed in [held for held in _fakeredis_clients if held.is_closed()]:
+            del _fakeredis_clients[closed]
+
+        client = _fakeredis_clients.get(loop) if loop is not None else None
+        if client is None:
+            client = fakeredis_aio.FakeRedis(
+                server=_fakeredis_server, decode_responses=True
+            )
+            if loop is not None:
+                _fakeredis_clients[loop] = client
+        return client
 
 
 def reset_fakeredis_client():
-    """Reset the FakeRedis singleton. For testing only."""
-    global _fakeredis_instance
-    _fakeredis_instance = None
+    """Discard the in-process Redis and its clients. For testing only.
+
+    The next :func:`get_fakeredis_client` starts an empty server.
+    """
+    global _fakeredis_server
+    with _fakeredis_lock:
+        _fakeredis_server = None
+        _fakeredis_clients.clear()
 
 
 class RedisClientFactory:
