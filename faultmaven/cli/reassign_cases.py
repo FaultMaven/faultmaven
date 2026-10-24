@@ -99,12 +99,12 @@ finished.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 from collections import Counter
 from pathlib import Path
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -782,7 +782,7 @@ def main() -> None:
     require_persistent_database_or_exit()
 
     sys.exit(
-        asyncio.run(
+        run_with_container(
             reassign_cases(
                 enterprise_id=args.enterprise_id,
                 from_identifier=args.from_user,

@@ -10,11 +10,15 @@ that on every service it wires onto ``app.state``.
 
 ``_wire_composition_root`` does the wiring and raises on any failure;
 ``compose_application`` decides whether that failure is fatal for this
-deployment (see their own docstrings), and ``unpublish_composition`` takes the
-wiring back off ``app.state`` when the lifespan ends. ``_check_llm_configuration`` is the
-startup warning for an unconfigured LLM provider. ``_is_test_environment``
-is the shared predicate all three — and ``bootstrap/middleware.py`` — use to
-skip service-availability checks under pytest/SKIP_SERVICE_CHECKS.
+deployment (see their own docstrings). ``decompose_application`` is the one
+teardown of composition: it takes back everything composition installed, and
+runs both when ``compose_application`` refuses the boot and when the lifespan
+ends, including a startup refused after composition. ``unpublish_composition``
+is its ``app.state`` step. ``_check_llm_configuration`` is the startup warning
+for an unconfigured LLM provider. ``_is_test_environment`` is the predicate
+``_check_llm_configuration`` and ``_wire_composition_root`` (and
+``bootstrap/lifespan.py`` and ``bootstrap/middleware.py``) use to skip
+service-availability checks under pytest/SKIP_SERVICE_CHECKS.
 """
 
 import asyncio
@@ -528,6 +532,20 @@ def _state_values(app: FastAPI) -> dict[str, Any]:
     return {name: app.state[name] for name in app.state}
 
 
+def _published_since(app: FastAPI, before: Mapping[str, Any]) -> dict[str, Any]:
+    """What composition published on ``app.state`` since ``before``.
+
+    Each name it set, mapped to the value that name held before (``_ABSENT``
+    for a name it added). The one identity diff, read both when composition
+    returns and when it is refused part-way.
+    """
+    return {
+        name: before.get(name, _ABSENT)
+        for name, value in _state_values(app).items()
+        if before.get(name, _ABSENT) is not value
+    }
+
+
 async def compose_application(
     app: FastAPI, settings: "FaultMavenSettings"
 ) -> Mapping[str, Any]:
@@ -539,52 +557,132 @@ async def compose_application(
     else a partial application is a development affordance and startup
     continues with a warning.
 
+    A refusal leaves nothing of composition behind: before the exception
+    propagates, :func:`decompose_application` takes back what composition got
+    as far as installing, so a later lifespan composes afresh rather than
+    finding the container still initialized.
+
     Returns what composition published on ``app.state``: each name it set,
     mapped to the value that name held before, for
-    :func:`unpublish_composition` when the lifespan ends.
+    :func:`decompose_application` when the lifespan ends.
     """
+    from faultmaven.container import container
+
     before = _state_values(app)
+    # Whoever initializes the container shuts it down. A container already
+    # initialized when composition began is its initializer's to close.
+    initializes_container = not container.is_initialized
     try:
-        await _wire_composition_root(app, settings)
-    except RuntimeError:
-        # The container's established fail-fast channel — the cloud refusal in
-        # ``DIContainer.initialize``, the bootstrap failure, the RLS role gate.
-        # Those callees have already decided the boot cannot continue, in any
-        # deployment mode, so this handler must not reinterpret them.
+        try:
+            await _wire_composition_root(app, settings)
+        except RuntimeError:
+            # The container's established fail-fast channel — the cloud refusal in
+            # ``DIContainer.initialize``, the bootstrap failure, the RLS role gate.
+            # Those callees have already decided the boot cannot continue, in any
+            # deployment mode, so this handler must not reinterpret them.
+            raise
+        except Exception as e:
+            if settings.must_not_degrade:
+                # Unwrapped: `server.environment` holds the Enum member, and a bare
+                # str() would log "Environment.STAGING" at an operator (#827).
+                env = getattr(
+                    settings.server.environment, "value", settings.server.environment
+                )
+                logger.critical(
+                    "FAIL-FAST: composition root failed under "
+                    f"DEPLOYMENT_MODE={'cloud' if settings.is_cloud else 'standalone'}"
+                    f"/ENVIRONMENT={env}. Refusing to serve a partial API."
+                )
+                raise RuntimeError(
+                    f"Composition root failed: {e}. A partially wired application "
+                    "would serve an API missing whole service layers."
+                ) from e
+            logger.error(f"Composition root failed: {e}", exc_info=True)
+            logger.warning(
+                "Continuing with fallback service implementations — this deployment "
+                "permits a partial API (see settings.must_not_degrade)"
+            )
+    except GeneratorExit:
+        # A coroutine being closed may not await: nothing to take back here.
         raise
-    except Exception as e:
-        if settings.must_not_degrade:
-            # Unwrapped: `server.environment` holds the Enum member, and a bare
-            # str() would log "Environment.STAGING" at an operator (#827).
-            env = getattr(
-                settings.server.environment, "value", settings.server.environment
-            )
-            logger.critical(
-                "FAIL-FAST: composition root failed under "
-                f"DEPLOYMENT_MODE={'cloud' if settings.is_cloud else 'standalone'}"
-                f"/ENVIRONMENT={env}. Refusing to serve a partial API."
-            )
-            raise RuntimeError(
-                f"Composition root failed: {e}. A partially wired application "
-                "would serve an API missing whole service layers."
-            ) from e
-        logger.error(f"Composition root failed: {e}", exc_info=True)
-        logger.warning(
-            "Continuing with fallback service implementations — this deployment "
-            "permits a partial API (see settings.must_not_degrade)"
+    except BaseException:
+        # Refused, or interrupted (a cancellation included): take back what
+        # composition installed before the exception propagates. Every step of
+        # the teardown is contained, so it propagates as the same object.
+        await decompose_application(
+            app,
+            _published_since(app, before),
+            shut_down_container=initializes_container,
         )
-    return {
-        name: before.get(name, _ABSENT)
-        for name, value in _state_values(app).items()
-        if before.get(name, _ABSENT) is not value
-    }
+        raise
+    return _published_since(app, before)
+
+
+async def decompose_application(
+    app: FastAPI,
+    published: Mapping[str, Any],
+    *,
+    shut_down_container: bool = True,
+) -> None:
+    """Take back everything composition installed. The one teardown of it.
+
+    Stops the config watcher composition started, shuts the container down,
+    uninstalls the LLM usage ledger, and takes what composition published back
+    off ``app.state`` (``published``, as :func:`compose_application` returns
+    it). ``app.extra["di_container"]`` is the container singleton itself, which
+    its shutdown resets, and stays.
+
+    ``shut_down_container`` is false only for a refused composition that found
+    the container already initialized: that container is its initializer's
+    to close.
+
+    Each step is logged and contained, so a refusal being undone propagates as
+    itself, and a failed step does not skip the next.
+    """
+    # Stop LLM config watcher (cloud multi-replica propagation)
+    _config_watch_task = getattr(app.state, "llm_config_watch_task", None)
+    if _config_watch_task is not None:
+        _config_watch_task.cancel()
+        try:
+            await _config_watch_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Close what the container opened and owns: the shared Redis client's
+    # pool is bound to this event loop, and nothing else closes it.
+    if shut_down_container:
+        try:
+            from faultmaven.container import container
+
+            await container.shutdown()
+        except Exception as e:
+            logger.warning(f"Container shutdown failed (non-critical): {e}")
+
+    # The usage ledger composition installed (#640). A call metered after this
+    # point is counted as not persisted. The lifespan drains in-flight writes
+    # before it calls this; a refused composition served no call to drain.
+    try:
+        from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
+
+        install_usage_ledger(None)
+    except Exception as e:
+        logger.warning(f"LLM usage ledger uninstall failed (non-critical): {e}")
+
+    # The services the composition root published hold what that shutdown
+    # closed; a request served after this point must not find them.
+    try:
+        unpublish_composition(app, published)
+    except Exception as e:
+        logger.warning(f"Unpublishing the composition failed (non-critical): {e}")
 
 
 def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take what composition published back off ``app.state``.
 
-    Called once the container has shut down. The services published here hold
-    what that shutdown closed: the container's Redis client, directly or
+    The last step of :func:`decompose_application`, after the container's
+    shutdown. The services published here hold what that shutdown closed (or,
+    on a refused composition that found the container already initialized,
+    what its initializer will close): the container's Redis client, directly or
     through a session store, a knowledge service or an investigation engine.
     Left in place, a later request served without a lifespan reads them as
     the application's own: the protection middleware borrows the closed client

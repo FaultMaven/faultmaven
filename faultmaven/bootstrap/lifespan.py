@@ -10,15 +10,19 @@ manager (``bootstrap/middleware.py``). ``faultmaven.main`` imports
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, Mapping
 
 from fastapi import FastAPI
 
 from faultmaven.bootstrap.composition import (
     _is_test_environment,
     compose_application,
-    unpublish_composition,
+    decompose_application,
 )
 from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+
+if TYPE_CHECKING:
+    from faultmaven.config.settings import FaultMavenSettings
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +215,30 @@ async def lifespan(app: FastAPI):
         raise
 
     # Container initialization and the composition root. Failures are refused
-    # or tolerated there, per deployment mode — not here.
+    # or tolerated there, per deployment mode — not here. A refused composition
+    # takes itself back before it raises.
     logger.info("Initializing DI container...")
     published = await compose_application(app, settings)
 
+    # From here composition is installed, so every exit runs the one shutdown:
+    # a startup refused after composition (a gate in _start_serving, or a
+    # cancellation at any of its awaits) is undone exactly as a normal shutdown
+    # is, and a later lifespan composes afresh rather than finding the
+    # container still initialized.
+    try:
+        await _start_serving(app, settings)
+        yield
+    finally:
+        await _stop_serving(app, published)
+
+
+async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
+    """The startup that follows composition: gates, preloads, background work.
+
+    Anything it starts that the shutdown stops is published on ``app.state``,
+    so a startup refused part-way still leaves :func:`_stop_serving` a handle
+    on what it got as far as starting.
+    """
     # Fail fast if the composition root withheld a route from idempotent
     # replay but left it collapsible by deduplication. That combination
     # cannot be built by ``declare_route_policy`` (it applies the
@@ -363,8 +387,6 @@ async def lifespan(app: FastAPI):
     # In-process scheduler (opt-in via RUN_SCHEDULER=true)
     # Default: disabled for operational neutrality - use CLI jobs or external schedulers instead
     # See: python -m faultmaven.jobs.run --list
-    case_cleanup_scheduler = None
-    llm_usage_retention_task = None
     if settings.server.run_scheduler:
         # LLM usage ledger retention (#640, Q6). Beside case cleanup and
         # refused under multi for the same reason: the horizon is
@@ -382,6 +404,8 @@ async def lifespan(app: FastAPI):
                 interval_hours=24,
                 is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI),
             )
+            if llm_usage_retention_task is not None:
+                app.state.llm_usage_retention_task = llm_usage_retention_task
         except Exception as e:
             logger.warning(
                 f"LLM usage retention scheduler not started (non-critical): {e}"
@@ -416,7 +440,7 @@ async def lifespan(app: FastAPI):
                     logger.info(
                         "✅ Case cleanup scheduler started (RUN_SCHEDULER=true, single-process mode)"
                     )
-                    app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
+                    app.state.case_cleanup_scheduler = case_cleanup_scheduler
             else:
                 logger.debug(
                     "Case cleanup scheduler skipped (missing case_vector_store or case_repository)"
@@ -492,8 +516,14 @@ async def lifespan(app: FastAPI):
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
     )
 
-    yield
 
+async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
+    """The shutdown: after serving, and after a startup refused post-composition.
+
+    Stops only what :func:`_start_serving` got as far as starting, reading each
+    handle off ``app.state``, then takes composition back through
+    :func:`decompose_application` and disposes the database engine.
+    """
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
 
@@ -551,16 +581,8 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
 
-    # Stop LLM config watcher (cloud multi-replica propagation)
-    _config_watch_task = getattr(app.state, "llm_config_watch_task", None)
-    if _config_watch_task is not None:
-        _config_watch_task.cancel()
-        try:
-            await _config_watch_task
-        except (asyncio.CancelledError, Exception):
-            pass
-
     # Stop case cleanup scheduler
+    case_cleanup_scheduler = getattr(app.state, "case_cleanup_scheduler", None)
     if case_cleanup_scheduler:
         try:
             from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
@@ -568,8 +590,10 @@ async def lifespan(app: FastAPI):
             stop_case_cleanup_scheduler(case_cleanup_scheduler)
         except Exception as e:
             logger.warning(f"Error stopping case cleanup scheduler: {e}")
+        del app.state.case_cleanup_scheduler
 
     # Stop LLM usage retention
+    llm_usage_retention_task = getattr(app.state, "llm_usage_retention_task", None)
     if llm_usage_retention_task is not None:
         try:
             from faultmaven.infrastructure.tasks.llm_usage_retention import (
@@ -579,6 +603,7 @@ async def lifespan(app: FastAPI):
             await stop_llm_usage_retention_scheduler(llm_usage_retention_task)
         except Exception as e:
             logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
+        del app.state.llm_usage_retention_task
 
     # Cleanup Phase 2 monitoring components
     try:
@@ -597,18 +622,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
 
-    # Close what the container opened and owns: the shared Redis client's
-    # pool is bound to this event loop, and nothing else closes it.
-    try:
-        from faultmaven.container import container
-
-        await container.shutdown()
-    except Exception as e:
-        logger.warning(f"Container shutdown failed (non-critical): {e}")
-
-    # The services the composition root published hold what that shutdown
-    # closed; a request served after this point must not find them.
-    unpublish_composition(app, published)
+    # Take composition back: the config watcher, the container (whose shared
+    # Redis client's pool is bound to this event loop), the usage ledger, and
+    # the services published on app.state, which hold what that closed.
+    await decompose_application(app, published)
 
     # Dispose the canonical async engine. The user store no longer owns a
     # session (sessionless repository per #703), so there is nothing to
