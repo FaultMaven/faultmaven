@@ -63,8 +63,9 @@ def mock_container():
     )
     container.case_repository = mock_case_repository
 
-    # Mock initialize
+    # The lifecycle run_job drives: initialize before the job, shutdown after it.
     container.initialize = AsyncMock()
+    container.shutdown = AsyncMock()
 
     return container
 
@@ -491,6 +492,9 @@ class TestJobsRunner:
             result = await run_job("case_cleanup", verbose=False)
 
         assert result["status"] == "completed"
+        # The run initialized the container, so it shuts it down too: the Redis
+        # pool the container opened is bound to this run's loop.
+        mock_container.shutdown.assert_awaited_once()
 
 
 # =============================================================================

@@ -9,7 +9,6 @@ Verifies that the shim works correctly:
 """
 
 import os
-import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest

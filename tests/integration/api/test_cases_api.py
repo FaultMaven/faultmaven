@@ -400,17 +400,11 @@ class TestGetCase:
             or "access denied" in data["detail"].lower()
         )
 
-    async def test_get_case_missing_authentication(self):
+    async def test_get_case_missing_authentication(self, booted_app_client):
         """Test get case without JWT authentication returns 401."""
-        # Create app without auth override to test unauthenticated request
-        from fastapi.testclient import TestClient
-
-        from faultmaven.main import app as main_app
-
-        app = main_app
-        unauthenticated_client = TestClient(app)
-
-        response = unauthenticated_client.get("/api/v1/cases/case_123")
+        # The shared, started app with no auth override: a bare TestClient(app)
+        # served each request from a new portal loop and never ran the lifespan.
+        response = booted_app_client.get("/api/v1/cases/case_123")
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 

@@ -15,22 +15,6 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 
 
-@pytest.fixture
-def fresh_container():
-    """The DI container singleton, reset around the test.
-
-    The integration lane does not inherit the root conftest's fixtures (its
-    own conftest imports the root module only for its import-time mocks), so
-    the reset is spelled out here. Resetting afterwards matters: this test
-    fully initializes the singleton every other test in the session shares.
-    """
-    from faultmaven.container import container
-
-    container.reset()
-    yield container
-    container.reset()
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_container_built_knowledge_service_can_reach_the_database(

@@ -93,6 +93,10 @@ Outcome-based helpers live in `tests/integration/real_llm/helpers.py` — extend
 
 **Where they live.** `tests/integration/real_llm/`. Each test file pins one invariant (or one closely-related cluster). File names follow `test_invXX_<behavior>.py` to match the matrix convention.
 
+### **3. A Run Is Warning-Free**
+
+A run whose warnings summary is not empty fails, even when every test passes. `pytest.ini` raises what it can at the test that caused it: any warning from `faultmaven` code, and a coroutine nobody awaited. A `ResourceWarning` or a thread's unhandled exception surfaces at garbage collection, inside whichever test happens to be running, so `pytest_sessionfinish` in `tests/conftest.py` fails the run instead and leaves every test's outcome alone. Fix a warning where it arises; never filter it. A warning from an installed package that CI does not show usually means the virtualenv is off the lockfile: rebuild it with `./scripts/sync-venv.sh`.
+
 ---
 
 ## **Testing Architecture Standards**

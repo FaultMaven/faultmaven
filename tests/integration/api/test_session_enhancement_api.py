@@ -15,7 +15,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi import status
-from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
 from faultmaven.models.common import SessionContext
@@ -75,13 +74,28 @@ def app(mock_session_service, mock_user):
     app.dependency_overrides[get_session_service] = get_mock_session_service
     app.dependency_overrides[require_authentication] = get_mock_user
 
-    return app
+    yield app
+
+    # ``main_app`` is the process's one application: an override left on it is
+    # every later test's session service. Left in place, the next POST
+    # /api/v1/sessions on it (test_main_app.py) got this module's AsyncMock,
+    # whose session's ``created_at.utctimetuple()`` returned a coroutine nobody
+    # awaited.
+    app.dependency_overrides.pop(get_session_service, None)
+    app.dependency_overrides.pop(require_authentication, None)
 
 
 @pytest.fixture
-def client(app):
-    """Create test client."""
-    return TestClient(app)
+def client(app, booted_app_client):
+    """The module's shared, started client over ``app``.
+
+    Not a bare ``TestClient(app)``: that opens a portal thread and an event loop
+    per request and never runs the lifespan, so the protection middleware built
+    its own Redis client on each of those loops, and nothing could close what a
+    loop that had already ended opened. The shared boot serves ``app`` from one
+    loop with the composed ``app.state.redis_client``.
+    """
+    return booted_app_client
 
 
 # =============================================================================

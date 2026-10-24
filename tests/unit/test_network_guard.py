@@ -557,18 +557,8 @@ def test_a_swallowed_refusal_then_a_skip_still_fails():
 """
 
 
-@pytest.mark.parametrize(
-    "registered_by",
-    [
-        "tests.conftest",
-        # ``tests/integration`` has its own pytest.ini, so a run rooted there
-        # never registers ``tests/conftest.py``'s hooks; its conftest re-exports
-        # this one and has to keep doing so.
-        "tests.integration.conftest",
-    ],
-)
 def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
-    pytester, monkeypatch, registered_by
+    pytester, monkeypatch
 ):
     monkeypatch.setenv(
         "PYTHONPATH",
@@ -577,7 +567,7 @@ def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
     monkeypatch.delenv(network_guard.ALLOW_LIVE_NETWORK_ENV, raising=False)
     pytester.makepyfile(textwrap.dedent(_CHILD_TESTS))
     result = pytester.runpytest_subprocess(
-        "-p", "no:cacheprovider", "-p", registered_by, timeout=600
+        "-p", "no:cacheprovider", "-p", "tests.conftest", timeout=600
     )
     result.assert_outcomes(passed=2, failed=5)
     result.stdout.fnmatch_lines(

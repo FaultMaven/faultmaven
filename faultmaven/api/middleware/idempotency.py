@@ -152,6 +152,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         # path rather than a rebuild of the set on every POST.
         self._replay_exclusions = None
         self._resolved = redis_client is not None
+        # What the constructor was handed, restored on ``shutdown``.
+        self._injected_redis = redis_client
+        # Whether ``redis_client`` is one the factory built for this middleware
+        # alone, and so its to close. Recorded where it is resolved.
+        self._owns_redis = False
 
     def _ensure_redis(self, request: Request) -> None:
         """Resolve the Redis client lazily on first use.
@@ -164,10 +169,37 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         """
         if self._resolved:
             return
-        from ...infrastructure.redis_client import resolve_redis_client
+        from ...infrastructure.redis_client import is_fakeredis, resolve_redis_client
 
+        shared = getattr(request.app.state, "redis_client", None)
         self.redis_client = resolve_redis_client(request, injected=self.redis_client)
+        # Neither injected nor the app's shared client: the factory built it for
+        # this middleware, unless it handed back the process-wide FakeRedis.
+        self._owns_redis = (
+            self.redis_client is not None
+            and self.redis_client is not self._injected_redis
+            and self.redis_client is not shared
+            and not is_fakeredis(self.redis_client)
+        )
         self._resolved = True
+
+    async def shutdown(self) -> None:
+        """End this middleware's service: close the client only if it built it.
+
+        Called by ``shutdown_protection`` when the app stops serving. The shared
+        client belongs to the composition root and an injected one to whoever
+        injected it; a client the factory built for this middleware alone is
+        closed here. The next request resolves afresh. Idempotent.
+        """
+        client, owned = self.redis_client, self._owns_redis
+        self.redis_client = self._injected_redis
+        self._resolved = self._injected_redis is not None
+        self._owns_redis = False
+        if client is not None and owned:
+            try:
+                await client.aclose()
+            except Exception as e:
+                logger.debug(f"Closing the idempotency Redis client failed: {e}")
 
     async def dispatch(self, request: Request, call_next):
         """Process request with idempotency checking."""

@@ -13,11 +13,11 @@ test itself cannot catch the failure:
 
 So each of those controls runs a small suite in a child process with
 ``pytester.runpytest_subprocess``, and asserts the child's outcome and message.
-The child's conftest re-exports the real fixtures from ``tests.conftest``, the
-way ``tests/integration/conftest.py`` does. Importing it runs the real
-``tests/conftest.py``, which installs the real guard, so what refuses there is
-the code under test and not a copy. A refusal at setup comes before a lifespan
-starts, so it pays no boot; a leak pays one, in the child.
+The child's conftest re-exports the real fixtures from ``tests.conftest``: its
+rootdir is the child's own, so the root conftest is not loaded there. Importing
+it runs the real ``tests/conftest.py``, which installs the real guard, so what
+refuses there is the code under test and not a copy. A refusal at setup comes
+before a lifespan starts, so it pays no boot; a leak pays one, in the child.
 
 Two more run a child session for what only a session shows. One runs in this
 process: a session started inside a test must record no test of ours, refuse

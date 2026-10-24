@@ -517,6 +517,14 @@ async def run_job(
     except Exception as e:
         logger.error(f"Job failed: {e}", exc_info=True)
         return {"status": "failed", "error": str(e)}
+    finally:
+        # The container this run initialized is done: close what it owns while
+        # the loop its Redis pool is bound to is still running. A failure to
+        # close does not change what the job reported.
+        try:
+            await container.shutdown()
+        except Exception as e:
+            logger.warning(f"Container shutdown failed (non-critical): {e}")
 
 
 def _ttl_hours_arg(value: str) -> int:

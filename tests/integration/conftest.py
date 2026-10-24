@@ -7,19 +7,11 @@ integration testing capabilities including memory, planning, reasoning,
 knowledge, and orchestration system testing.
 """
 
-import os
-
-# CRITICAL: Import root conftest mocks FIRST before any other imports
-# This ensures _ctypes and _sqlite3 mocks are loaded before chromadb/protobuf imports
-# The import chain: CaseService -> persistence -> chromadb -> protobuf -> ctypes -> _ctypes
-# Must happen BEFORE any faultmaven imports that might trigger this chain
-import sys
-
-# Add parent directory to path to import root conftest mocks
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-# Now safe to import other modules
 import asyncio
+import inspect
 import io
+import os
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -29,9 +21,6 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-
-# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
-from tests import conftest as root_conftest  # noqa: F401
 
 # Conditional Redis import - only available in enterprise edition
 try:
@@ -150,17 +139,6 @@ def _reset_outcomes() -> None:
     _session_outcomes = _SessionOutcomes()
 
 
-# The root conftest's per-test restore of the root logger (#1944). Run as
-# ``pytest tests/integration``, the rootdir is this directory (its own
-# ``pytest.ini``), so ``tests/conftest.py`` is only imported above, never
-# registered, and its hooks do not fire here. Under ``pytest tests/`` both
-# copies run for these tests; a nested snapshot and restore is the same restore.
-pytest_runtest_protocol = root_conftest.pytest_runtest_protocol
-
-# Same reason, for the report of a connection the network guard refused.
-pytest_runtest_makereport = root_conftest.pytest_runtest_makereport
-
-
 def pytest_sessionstart(session):
     """Reset the tally when this conftest is the initial one."""
     _reset_outcomes()
@@ -237,6 +215,34 @@ def pytest_sessionfinish(session, exitstatus):
     # more severe status; the banner is printed either way.
     if session.exitstatus == 0:
         session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+async def _served_apps_end_their_service(request):
+    """End the protection middleware's service after every async test.
+
+    Modules here serve ``faultmaven.main.app`` or a ``rebuild_app()`` app
+    through ``ASGITransport`` without its lifespan, so the app is never composed
+    and the protection middleware builds a Redis client of its own; on a real
+    Redis every test opened one more socket that nothing closed. This is the
+    same ``shutdown_protection`` the lifespan calls, run per test: a redis-py
+    asyncio pool is bound to the loop it was opened on, and under the
+    function-scoped loop this teardown runs on the test's own one. Sync tests
+    are skipped: what they serve runs on a ``TestClient`` portal's loop, which
+    is the shared boot's, ended by its own lifespan.
+    """
+    yield
+    if not inspect.iscoroutinefunction(getattr(request, "function", None)):
+        return
+    from faultmaven.api.protection import shutdown_protection
+    from tests.integration._app_rebuild import rebuilt_apps
+
+    apps = list(rebuilt_apps())
+    published = sys.modules.get("faultmaven.main")
+    if published is not None:
+        apps.append(published.app)
+    for app in apps:
+        await shutdown_protection(app)
 
 
 @pytest.fixture
@@ -1368,27 +1374,3 @@ def in_memory_database_url(monkeypatch):
     """
     monkeypatch.setenv("DATABASE_URL", IN_MEMORY_DATABASE_URL)
     return IN_MEMORY_DATABASE_URL
-
-
-# ``tests/integration`` has its own ``pytest.ini``, so the repository-root
-# ``tests/conftest.py`` is not loaded here. Re-export the shared fixtures rather
-# than growing a second copy of them (#1045 D8 R8): a double that drifts between
-# modules stops being evidence about the same thing.
-#
-# ‼ Note what this file's own rootdir does to a LOCAL run: ``pytest tests/`` (CI)
-# has the repository root as rootdir and loads ``tests/conftest.py``, while
-# ``pytest tests/integration/...`` does not — so a fixture that is not re-exported
-# here is missing in exactly the invocation a developer reaches for.
-# ``tests/unit/architecture/test_app_boot_is_shared.py`` fails when a directory
-# carrying its own ``pytest.ini`` stops re-exporting the shared app boot, or
-# ``_app_boot_guard`` and ``_app_boot_session``, the autouse fixtures through
-# which the runtime check on a second lifespan learns which test is running
-# (fm#1628).
-from tests.conftest import (  # noqa: E402,F401
-    _app_boot_guard,
-    _app_boot_session,
-    _real_app_boot,
-    booted_app_client,
-    restore_tenant_context,
-    unshared_app_boot,
-)

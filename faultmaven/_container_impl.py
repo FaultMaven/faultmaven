@@ -1806,6 +1806,32 @@ class DIContainer(BaseDIContainer):
             "registry": base_health,
         }
 
+    async def shutdown(self) -> None:
+        """Close what ``initialize`` opened that this container owns.
+
+        The Redis client is the container's: ``register_infrastructure`` built it
+        and every Redis-backed store shares it. A real client holds a connection
+        pool bound to the event loop it was opened on, so the container's owner
+        closes it before that loop ends: the API lifespan, the jobs runner, and
+        anything else that initializes the container. The FakeRedis stand-in is a
+        process-wide singleton shared beyond this container, never its to close.
+
+        Terminal: the registry entry is disabled with the attribute, so neither
+        ``get_redis_client()`` nor ``get_service("redis_client")`` hands out the
+        closed client; ``reset()`` and ``initialize()`` to reuse the container.
+        Idempotent.
+        """
+        client = getattr(self, "redis_client", None)
+        if client is None:
+            return
+        from faultmaven.infrastructure.redis_client import is_fakeredis
+
+        self._register_disabled(
+            "redis_client", "the container was shut down; reset() to reuse it"
+        )
+        if not is_fakeredis(client):
+            await client.aclose()
+
     def reset(self):
         """Reset container state (useful for testing).
 

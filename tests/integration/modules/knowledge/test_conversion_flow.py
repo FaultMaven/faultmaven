@@ -45,7 +45,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
 )
-from tests import conftest as root_conftest  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures

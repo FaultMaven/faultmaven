@@ -584,18 +584,36 @@ class RedisRateLimiter:
             self.logger.debug(f"Closing the replaced Redis client failed: {e}")
 
     async def close(self) -> None:
-        """Close the Redis connection — only one this limiter opened itself.
+        """Let go of the Redis client, closing it only if this limiter opened it.
 
         The shared client belongs to the composition root and backs sessions,
         token revocation, deduplication and idempotency too. Closing it on
         middleware teardown would take all of them down with it.
+
+        The limiter drops its reference either way and is left re-initializable:
+        the next ``initialize`` builds afresh. Keeping ``_redis`` would not keep
+        it closed, because redis-py reconnects a closed pool on its next command,
+        so the next request would quietly open a socket nothing closes. A
+        replaced client's close dispatched in the background is awaited too, so
+        none is still pending when the event loop ends. Idempotent.
         """
-        if self._redis is not None and self._owns_client:
+        client, owned = self._redis, self._owns_client
+        self._redis = None
+        self._window_script = None
+        self._owns_client = False
+        # The next client is judged on its own: nothing it does carries over
+        # from the one being let go.
+        self._degraded = False
+        self._had_real_client = False
+        self._client_declared_dead = False
+        self._consecutive_check_failures = 0
+        if client is not None and owned:
             try:
-                await self._redis.aclose()
+                await client.aclose()
             except Exception:
                 pass
-            self._owns_client = False
+        if self._teardown_tasks:
+            await asyncio.gather(*self._teardown_tasks, return_exceptions=True)
 
     def configure_limits(self, limits: Dict[str, RateLimitConfig]) -> None:
         """Configure rate limits."""

@@ -67,6 +67,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
+from faultmaven.api.protection import live_protection_middleware
 from faultmaven.models.protection import RateLimitConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
@@ -84,20 +85,15 @@ _ADDRESS = (f"198.51.100.{n}" for n in itertools.count(1))
 def _live_rate_limit_middleware(app) -> RateLimitMiddleware:
     """Return the ``RateLimitMiddleware`` *instance* serving ``app``.
 
-    ``app.user_middleware`` holds ``Middleware(cls, ...)`` records, not objects —
-    Starlette instantiates them in ``build_middleware_stack()``. Reading the
-    records would prove only that a class was registered, not that the object
-    serving traffic is the one being inspected, so this walks the built chain.
-    That chain does not exist until the app has been started, so every caller
-    here looks it up from inside a running ``TestClient``.
+    Through the walker ``shutdown_protection`` uses: reading
+    ``app.user_middleware`` would prove only that a class was registered, not
+    that the object serving traffic is the one being inspected. The built chain
+    does not exist until the app has been started, so every caller here looks it
+    up from inside a running ``TestClient``.
     """
-    node = app.middleware_stack
-    for _ in range(64):
-        if node is None:
-            break
+    for node in live_protection_middleware(app):
         if isinstance(node, RateLimitMiddleware):
             return node
-        node = getattr(node, "app", None)
     raise AssertionError(
         "no RateLimitMiddleware in the built middleware stack of the real app"
     )

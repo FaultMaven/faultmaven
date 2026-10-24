@@ -931,63 +931,29 @@ def test_only_the_shared_broker_enters_a_lifespan_by_hand():
     )
 
 
-#: The fixtures a directory with its own pytest.ini has to re-export, or they
-#: are simply absent there. ``_app_boot_guard`` is autouse, so a directory that
-#: drops it records no running test, and the runtime check then refuses every
-#: real-app entry there as made outside a test's scope (fm#1628).
-#: ``_app_boot_session`` is autouse too, and starts each session with no test
-#: recorded.
-SHARED_BOOT_FIXTURES = frozenset(
-    {
-        "_app_boot_guard",
-        "_app_boot_session",
-        "_real_app_boot",
-        "booted_app_client",
-        "unshared_app_boot",
-    }
-)
-
 #: Anything pytest will adopt as a rootdir, which is what cuts conftest lookup.
 _ROOTDIR_MARKERS = ("pytest.ini", "setup.cfg", "tox.ini", "pyproject.toml")
 
 
-def test_every_nested_rootdir_re_exports_the_shared_boot():
-    """`pytest tests/integration/...` is a different rootdir from `pytest tests/`.
+def test_no_directory_under_tests_carries_its_own_pytest_config():
+    """One pytest configuration: the repository root's ``pytest.ini``.
 
-    A directory under ``tests/`` that carries its own ``pytest.ini`` becomes the
-    rootdir when pytest is invoked with a path inside it, and ``confcutdir``
-    follows — so ``tests/conftest.py`` is never loaded and every fixture defined
-    there is missing. CI runs ``pytest tests/`` from the repository root and
-    would not notice; a developer running one file would get
-    ``fixture 'booted_app_client' not found``.
-
-    ``tests/integration/conftest.py`` already re-exports ``restore_tenant_context``
-    for this reason. This is the general statement of that rule.
+    A directory under ``tests/`` holding its own ``pytest.ini`` (or any rootdir
+    marker) becomes the rootdir whenever pytest is given a path inside it, and
+    ``confcutdir`` follows: ``tests/conftest.py`` is then never loaded, so its
+    hooks do not fire, its fixtures (the shared app boot among them) are absent,
+    and the root's warning filters do not apply. ``tests/integration`` carried
+    one, which ran a planted never-awaited coroutine green and forced its
+    conftest to re-export the root's hooks and fixtures by hand.
     """
-    missing = []
-    for marker_dir in sorted(
-        {
-            marker.parent
-            for name in _ROOTDIR_MARKERS
-            for marker in TESTS_ROOT.rglob(name)
-        }
-    ):
-        conftest = marker_dir / "conftest.py"
-        rel = marker_dir.relative_to(TESTS_ROOT.parent).as_posix()
-        if not conftest.exists():
-            missing.append(f"  {rel}/ has no conftest.py to re-export into")
-            continue
-        re_exported: set[str] = set()
-        for node in ast.walk(_parse(conftest.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.ImportFrom) and node.module == "tests.conftest":
-                re_exported |= {a.asname or a.name for a in node.names}
-        absent = sorted(SHARED_BOOT_FIXTURES - re_exported)
-        if absent:
-            missing.append(f"  {rel}/conftest.py does not re-export {absent}")
-
-    assert not missing, (
-        "a directory under tests/ carries its own pytest config, so it becomes "
-        "pytest's rootdir when invoked directly and tests/conftest.py is not "
-        "loaded there. Re-export the shared app-boot fixtures into its "
-        "conftest:\n" + "\n".join(missing)
+    nested = sorted(
+        marker.relative_to(TESTS_ROOT.parent).as_posix()
+        for name in _ROOTDIR_MARKERS
+        for marker in TESTS_ROOT.rglob(name)
+        if "__pycache__" not in marker.parts
+    )
+    assert not nested, (
+        "pytest is configured once, in the repository root's pytest.ini; a "
+        "nested config makes runs inside it skip tests/conftest.py: "
+        + ", ".join(nested)
     )

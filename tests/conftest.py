@@ -77,11 +77,7 @@ except ImportError:
 # lift that. Installed here, at conftest import and before any test module is
 # collected, on the ``socket`` module itself: not a fixture, not a
 # ``monkeypatch``, so no test's teardown or ``monkeypatch.undo()`` restores the
-# original. Module level rather than a ``pytest_configure`` hook for the reason
-# ``_default_to_the_test_data_root`` below gives: a run rooted at
-# ``tests/integration`` reaches this file through that conftest's
-# ``import conftest``, and a hook on a copy pytest never registered does not
-# fire. ``install`` is idempotent. The refusal rule, and why a refused connect
+# original. ``install`` is idempotent. The refusal rule, and why a refused connect
 # fails the test even when the code under test swallowed it, is in
 # ``tests/network_guard.py``; ``pytest_runtest_makereport`` below reports it.
 from tests import network_guard  # noqa: E402
@@ -1452,11 +1448,7 @@ SHIPPED_DATA_DEFAULTS: dict = {}
 def _default_to_the_test_data_root() -> None:
     """Make this process's data root the DEFAULT of every ``./data`` path.
 
-    See the comment on ``TEST_DATA_ROOT_ENV`` above. Module level rather than a
-    ``pytest_configure`` hook: a run whose arguments sit under
-    ``tests/integration`` reaches this file through that conftest's
-    ``import conftest``, and a hook on a copy pytest never registered does not
-    fire. Idempotent, so the second copy re-applying it is harmless.
+    See the comment on ``TEST_DATA_ROOT_ENV`` above. Idempotent.
     """
     root = os.environ.get(TEST_DATA_ROOT_ENV)
     if not root:
@@ -1629,8 +1621,7 @@ def pytest_runtest_protocol(item, nextitem):
     back and leave it there. Around the whole protocol, the root holds only
     the session's handlers. A wider-scoped fixture is set up inside its first
     test's protocol, so a root change it made would last that test only; no
-    fixture makes one today. ``tests/integration/conftest.py`` re-exports
-    this hook for runs rooted there.
+    fixture makes one today.
     """
     import logging
 
@@ -1669,8 +1660,7 @@ def pytest_runtest_makereport(item, call):
     that had already failed keeps its own failure and gains a section listing
     the refusals. A skipped or xfailed phase fails too: a test that swallows a
     refusal and then skips, or that is marked xfail, reached for the server all
-    the same. ``tests/integration/conftest.py`` re-exports this hook for runs
-    rooted there.
+    the same.
     """
     outcome = yield
     refused = network_guard.drain_refusals()
@@ -1728,8 +1718,12 @@ def shipped_data_defaults(monkeypatch, tmp_path):
 
 
 @pytest.fixture(scope="function")
-def reset_container():
-    """Reset the DI container before each test"""
+async def reset_container():
+    """Reset the DI container before each test, and shut it down after it.
+
+    A test that initializes the container owns what that opened: shutting it
+    down closes a real Redis client on the loop the test ran on.
+    """
     # Import here to avoid circular dependencies
     from faultmaven.container import container
 
@@ -1741,6 +1735,7 @@ def reset_container():
 
     yield container
 
+    await container.shutdown()
     # Reset again after test
     container.reset()
 
@@ -2429,3 +2424,55 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
         measured_calibration()  # report only; the scale stays pinned at 1.0
     terminalreporter.write_sep("-", "benchmark calibration")
     terminalreporter.write_line(describe_calibration())
+
+
+# ------------------------------------------------- the run is warning-free
+
+
+#: Where a warning raised by an installed package most often comes from: a
+#: virtualenv that drifted off the lockfile, which CI never sees.
+_THIRD_PARTY_MARKERS = ("site-packages", "dist-packages")
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the run when its warnings summary is not empty.
+
+    ``pytest.ini`` raises what it can at the test that caused it. The rest —
+    a ``ResourceWarning`` or a thread's unhandled exception — surfaces at
+    garbage collection, inside whichever test is running then, so failing
+    that test would blame the wrong one. The run fails instead, and every
+    test keeps its own outcome: only the exit status changes.
+
+    The outermost wrapper, so it runs after the terminal reporter has printed
+    the summary and holds every warning, including those xdist relayed from
+    its workers to the controller. The controller decides; a worker's status
+    is not the run's.
+    """
+    result = yield
+    if hasattr(session.config, "workerinput"):
+        return result
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    warnings_seen = reporter.stats.get("warnings", []) if reporter else []
+    if not warnings_seen:
+        return result
+    third_party = any(
+        marker in str(report.fslocation[0] if report.fslocation else "")
+        for report in warnings_seen
+        for marker in _THIRD_PARTY_MARKERS
+    )
+    line = (
+        f"FAILED: the run raised {len(warnings_seen)} warning(s); see the "
+        "warnings summary above. The suite is warning-free "
+        "(docs/development/testing/standards.md): fix each where it arises."
+    )
+    if third_party:
+        line += (
+            " Some come from installed packages: if this virtualenv is off the "
+            "lockfile, ./scripts/sync-venv.sh rebuilds it to what CI installs."
+        )
+    if reporter is not None:
+        reporter.write_line(line, red=True, bold=True)
+    if session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    return result
