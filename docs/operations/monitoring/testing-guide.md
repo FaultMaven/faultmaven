@@ -1127,195 +1127,40 @@ class LoggingTestUtils:
 
 ## Continuous Integration
 
-### 1. GitHub Actions Workflow
+These tests run in the suite CI already runs. There is no logging-specific workflow.
 
-```yaml
-# .github/workflows/logging-tests.yml
-name: Logging System Tests
-
-on:
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'faultmaven/infrastructure/logging/**'
-      - 'faultmaven/services/base.py'
-      - 'faultmaven/infrastructure/base_client.py'
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  logging-unit-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [3.11, 3.12]
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-test.txt
-
-    - name: Run logging unit tests
-      run: |
-        pytest tests/infrastructure/logging/ \
-          --cov=faultmaven.infrastructure.logging \
-          --cov-report=xml \
-          --cov-report=html \
-          --cov-fail-under=85 \
-          -v
-
-    - name: Run base class tests
-      run: |
-        pytest tests/services/test_base.py \
-               tests/infrastructure/test_base_client.py \
-          --cov=faultmaven.services.base \
-          --cov=faultmaven.infrastructure.base_client \
-          --cov-report=xml \
-          --cov-append \
-          -v
-
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: logging
-        name: logging-coverage
-        fail_ci_if_error: true
-
-  logging-integration-tests:
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-test.txt
-
-    - name: Run integration tests
-      env:
-        REDIS_URL: redis://localhost:6379
-        LOG_LEVEL: DEBUG
-        LOG_ENABLE_PERFORMANCE_TRACKING: true
-      run: |
-        pytest tests/integration/logging/ \
-          --cov=faultmaven \
-          --cov-report=xml \
-          -v -s
-
-  logging-performance-tests:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-test.txt
-
-    - name: Run performance tests
-      run: |
-        pytest tests/performance/logging/ \
-          --benchmark-only \
-          --benchmark-json=benchmark.json \
-          -v
-
-    - name: Store benchmark result
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        tool: 'pytest'
-        output-file-path: benchmark.json
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-```
-
-### 2. Test Configuration for CI
-
-```python
-# pytest.ini
-[tool:pytest]
-minversion = 7.0
-addopts =
-    -ra
-    --strict-markers
-    --strict-config
-    --cov-branch
-    --cov-report=term-missing:skip-covered
-    --cov-fail-under=85
-python_files = tests/*.py test_*.py *_test.py
-python_classes = Test*
-python_functions = test_*
-testpaths = tests
-markers =
-    unit: Unit tests
-    integration: Integration tests
-    performance: Performance tests
-    logging: Logging system tests
-    slow: Slow running tests
-filterwarnings =
-    ignore::DeprecationWarning
-    ignore::PendingDeprecationWarning
-```
+- **`.github/workflows/ci-cd.yml`:** `pytest tests/ -n logical --dist loadfile` with
+  coverage, under the `env:` block each job sets. `Test Standalone` selects
+  `-m "not cloud and not benchmark and not performance"`, `Test Cloud`
+  `-m "not benchmark and not performance"`, and `Test PostgreSQL Integration`
+  `-m postgres`.
+- **`.github/workflows/benchmarks.yml`:** per PR, outside the required jobs, runs
+  `pytest tests/benchmarks/ -m benchmark` and the wall-clock tests
+  (`pytest tests/ -m performance`).
+- **Configuration:** `pytest.ini` at the repository root holds the markers, the
+  asyncio mode and the warning filters, and the coverage gate is
+  `coverage report --fail-under` in `ci-cd.yml`.
 
 ## Testing Best Practices
 
 ### 1. Test Organization
 
-```python
-# Organize tests by component and concern
+```text
 tests/
-├── infrastructure/
-│   ├── logging/
-│   │   ├── test_coordinator.py          # LoggingCoordinator tests
-│   │   ├── test_request_context.py      # RequestContext tests
-│   │   ├── test_unified_logger.py       # UnifiedLogger tests
-│   │   ├── test_performance_tracker.py  # Performance tracking tests
-│   │   └── test_error_context.py        # Error handling tests
-│   └── test_base_client.py              # BaseExternalClient tests
-├── services/
-│   └── test_base.py             # BaseService tests
-├── integration/
-│   ├── logging/
-│   │   ├── test_cross_layer_context.py  # Context propagation tests
-│   │   ├── test_service_integration.py  # Service layer integration
-│   │   └── test_middleware_integration.py # Middleware integration
+├── infrastructure/logging/
+│   ├── test_config.py               # logging configuration
+│   ├── test_coordinator.py          # LoggingCoordinator, RequestContext, PerformanceTracker
+│   ├── test_deduplication.py        # once-per-request logging
+│   └── test_unified_logger.py       # UnifiedLogger, operation context managers
+├── unit/infrastructure/logging/
+│   ├── test_health_reports_live_settings.py
+│   └── test_url_query_redaction.py
+├── unit/api/middleware/
+│   ├── test_logging_middleware_attribution.py
+│   ├── test_logging_middleware_metrics.py
+│   └── test_endpoint_label.py       # which requests count as the service surface
 └── performance/
-    └── logging/
-        ├── test_concurrency.py         # Concurrent request tests
-        ├── test_memory_usage.py        # Memory usage tests
-        └── test_deduplication_perf.py  # Deduplication performance
+    └── test_logging_overhead.py     # wall-clock; runs in benchmarks.yml
 ```
 
 ### 2. Test Naming Conventions
