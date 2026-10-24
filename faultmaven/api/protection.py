@@ -28,6 +28,7 @@ from ..config.protection import (
 from ..config.settings import Environment
 from ..models.protection import ProtectionSettings
 from .middleware import DeduplicationMiddleware, RateLimitMiddleware
+from .middleware.idempotency import IdempotencyMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -335,3 +336,56 @@ def setup_protection_middleware(
             raise
 
     return setup_info
+
+
+#: The middleware that may hold a Redis client of their own: one the factory
+#: built because the app was serving without ``app.state.redis_client``.
+_CLIENT_HOLDING_MIDDLEWARE = (
+    RateLimitMiddleware,
+    DeduplicationMiddleware,
+    IdempotencyMiddleware,
+)
+
+
+def live_protection_middleware(app: FastAPI) -> list:
+    """The middleware *instances* serving ``app`` that hold a Redis client.
+
+    ``app.user_middleware`` holds ``Middleware(cls, ...)`` records, not objects;
+    Starlette instantiates them in ``build_middleware_stack()`` on the app's
+    first call, so this walks the built chain. Before that call there is no
+    chain and nothing has been opened.
+    """
+    found = []
+    node = app.middleware_stack
+    for _ in range(64):
+        if node is None:
+            break
+        if isinstance(node, _CLIENT_HOLDING_MIDDLEWARE):
+            found.append(node)
+        node = getattr(node, "app", None)
+    return found
+
+
+async def shutdown_protection(app: FastAPI) -> None:
+    """End the protection middleware's service: the mirror of setup.
+
+    The lifespan calls it first in its shutdown half, before the container's
+    shared client and the database engine: each middleware closes only a client
+    it built for itself (the shared one is the container's) and is left ready
+    to resolve afresh. Idempotency resolves its client the same way, so it is
+    shut down here too. A test that serves an app without its lifespan calls
+    this at its own teardown, on the event loop its sockets were opened on.
+
+    One middleware failing to shut down does not stop the rest: each failure is
+    logged, every middleware is shut down, and the failures are raised together
+    at the end.
+    """
+    failures = []
+    for middleware in live_protection_middleware(app):
+        try:
+            await middleware.shutdown()
+        except Exception as e:
+            logger.error(f"{type(middleware).__name__} shutdown failed: {e}")
+            failures.append(e)
+    if failures:
+        raise ExceptionGroup("protection middleware shutdown failed", failures)

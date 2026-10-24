@@ -65,7 +65,7 @@ class _FailingClient:
 
         return _run
 
-    async def close(self):
+    async def aclose(self):
         pass
 
 

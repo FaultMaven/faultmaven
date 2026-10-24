@@ -63,8 +63,9 @@ def mock_container():
     )
     container.case_repository = mock_case_repository
 
-    # Mock initialize
+    # The lifecycle run_job drives: initialize before the job, shutdown after it.
     container.initialize = AsyncMock()
+    container.shutdown = AsyncMock()
 
     return container
 
@@ -491,6 +492,9 @@ class TestJobsRunner:
             result = await run_job("case_cleanup", verbose=False)
 
         assert result["status"] == "completed"
+        # The run initialized the container, so it shuts it down too: the Redis
+        # pool the container opened is bound to this run's loop.
+        mock_container.shutdown.assert_awaited_once()
 
 
 # =============================================================================
@@ -922,6 +926,9 @@ class TestJobsPathBootGates:
                 await run_job("fake_job")
 
         job_run.assert_not_called()
+        # The refusal comes after the container opened its clients, and the
+        # run still closes them on the loop they are bound to.
+        mock_container.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_container_init_runtime_error_is_terminal(
@@ -941,6 +948,8 @@ class TestJobsPathBootGates:
                 await run_job("fake_job")
 
         job_run.assert_not_called()
+        # Whatever the failed initialization opened is closed with the rest.
+        mock_container.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_rls_guard_noop_single_tenant(self, mock_container, mock_settings):
@@ -1104,6 +1113,7 @@ class TestCrossTenantMaintenancePath:
                 await run_job("fake_job", cross_tenant_maintenance=True)
 
         job_run.assert_not_called()
+        mock_container.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_flag_refused_for_org_scoped_job(self, mock_container, mock_settings):

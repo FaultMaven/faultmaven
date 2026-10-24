@@ -1806,36 +1806,59 @@ class DIContainer(BaseDIContainer):
             "registry": base_health,
         }
 
-    def reset(self):
-        """Reset container state (useful for testing).
+    async def shutdown(self) -> None:
+        """Close what ``initialize`` opened that this container owns, and reset.
 
-        Delegates to BaseDIContainer.reset() which clears the registry.
+        The Redis client is the container's: ``register_infrastructure`` built it
+        and every Redis-backed store shares it. A real client holds a connection
+        pool bound to the event loop it was opened on, so whoever initialized the
+        container closes it before that loop ends. The API lifespan and the jobs
+        runner do; the ``fm-*`` commands do not yet (#2237). The FakeRedis
+        stand-in is a process-wide singleton shared beyond this container, never
+        its to close.
+
+        Then the container is reset, so it is never left holding a closed client:
+        the next ``initialize()`` composes afresh, with a new Redis client. A
+        second lifespan in the same process (the test suite runs several) would
+        otherwise find it still marked initialized, return early, and publish no
+        Redis client at all. Idempotent.
         """
-        # Clear common attributes that might not be in registry
-        common_attrs = [
-            "tools",
-            "llm_provider",
-            "sanitizer",
-            "tracer",
-            "data_classifier",
-            "log_processor",
-            "vector_store",
-            "session_store",
-            "agent_service",
-            "data_service",
-            "knowledge_service",
-            "session_service",
-            "case_service",
-        ]
-        for attr in common_attrs:
-            if hasattr(self, attr):
-                delattr(self, attr)
+        client = getattr(self, "redis_client", None)
+        self.redis_client = None
+        try:
+            if client is not None:
+                from faultmaven.infrastructure.redis_client import is_fakeredis
 
-        # Clear settings
-        self.settings = None
+                if not is_fakeredis(client):
+                    await client.aclose()
+        finally:
+            # A close that raises still leaves nothing behind for the next
+            # initialize to return early on.
+            self.reset()
 
-        # Use parent's reset which clears all registered services
+    # What ``BaseDIContainer.__new__`` gives the singleton. Everything else on
+    # the instance was put there by ``initialize``, a provider, or a getter's
+    # lazy cache.
+    _CONSTRUCTED_ATTRS = frozenset(
+        {"_initialized", "_initializing", "_registry", "_logger", "settings"}
+    )
+
+    def reset(self):
+        """Return the container to what construction built.
+
+        Every attribute ``initialize``, a provider or a getter's cache put on the
+        instance is removed, whatever its name: tools, adapters and extractors
+        set as plain attributes, and the ``hasattr`` caches of ``get_job_service``
+        and ``_create_minimal_case_service``. One left behind is handed to the
+        next composition as-is, built over the previous one's Redis client,
+        which the shutdown that preceded this reset closed.
+        """
         super().reset()
+        for name in [
+            name for name in vars(self) if name not in self._CONSTRUCTED_ATTRS
+        ]:
+            delattr(self, name)
+        self.settings = None
 
 
 # Global container access - always returns the current singleton instance

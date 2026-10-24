@@ -11,12 +11,17 @@ is not the same as a check.
 
 These pin both halves, and pin that the refusal is the same envelope an absent
 case gets — a distinguishable one would confirm the case id exists.
+
+Served through ``ASGITransport`` on the test's own event loop, not a bare
+``TestClient``: the rebuilt app is never composed, so its protection middleware
+builds its own Redis client, and only the loop it was built on can close it.
+A ``TestClient`` gives every request a portal loop of its own.
 """
 
 from datetime import datetime, timezone
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -93,7 +98,11 @@ def case_service(app):
     return service
 
 
-def _as(app, user_id: str) -> TestClient:
+def _client(app) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+
+
+def _as(app, user_id: str) -> AsyncClient:
     app.dependency_overrides[require_authentication] = lambda: DevUser(
         user_id=user_id,
         username=user_id,
@@ -101,7 +110,7 @@ def _as(app, user_id: str) -> TestClient:
         display_name=user_id,
         created_at=datetime.now(timezone.utc),
     )
-    return TestClient(app)
+    return _client(app)
 
 
 @pytest.mark.integration
@@ -113,9 +122,10 @@ def test_the_route_is_registered_outside_production(app):
 
 @pytest.mark.integration
 @pytest.mark.security
-def test_an_anonymous_caller_is_refused(app, case_service):
+async def test_an_anonymous_caller_is_refused(app, case_service):
     """No token, no graph — and no lookup either."""
-    response = TestClient(app).get(f"/debug/cases/{CASE_ID}/causal-graph")
+    async with _client(app) as client:
+        response = await client.get(f"/debug/cases/{CASE_ID}/causal-graph")
 
     assert response.status_code in (401, 403), response.text[:300]
     assert case_service.calls == []
@@ -123,9 +133,10 @@ def test_an_anonymous_caller_is_refused(app, case_service):
 
 @pytest.mark.integration
 @pytest.mark.security
-def test_the_owner_still_gets_their_graph(app, case_service):
+async def test_the_owner_still_gets_their_graph(app, case_service):
     """The positive control: without it, refusing everything would pass."""
-    response = _as(app, OWNER).get(f"/debug/cases/{CASE_ID}/causal-graph")
+    async with _as(app, OWNER) as client:
+        response = await client.get(f"/debug/cases/{CASE_ID}/causal-graph")
 
     assert response.status_code == 200, response.text[:300]
     assert response.json().get("error") is None
@@ -135,12 +146,11 @@ def test_the_owner_still_gets_their_graph(app, case_service):
 
 @pytest.mark.integration
 @pytest.mark.security
-def test_a_stranger_gets_the_answer_an_absent_case_gets(app, case_service):
+async def test_a_stranger_gets_the_answer_an_absent_case_gets(app, case_service):
     """Authenticated is not authorised, and the refusal is not an oracle."""
-    client = _as(app, STRANGER)
-
-    denied = client.get(f"/debug/cases/{CASE_ID}/causal-graph")
-    absent = client.get("/debug/cases/case_000000000000/causal-graph")
+    async with _as(app, STRANGER) as client:
+        denied = await client.get(f"/debug/cases/{CASE_ID}/causal-graph")
+        absent = await client.get("/debug/cases/case_000000000000/causal-graph")
 
     assert denied.json()["error"] == "case not found"
     assert "causal_nodes" not in denied.json()

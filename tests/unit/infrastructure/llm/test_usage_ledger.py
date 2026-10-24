@@ -551,7 +551,7 @@ class TestTheFlush:
 class TestTheDrain:
     """The drain's deadline — it gives up at its timeout and counts what it
     abandoned — is pinned in virtual time, in
-    ``test_usage_ledger_drain_deadline.py``."""
+    ``virtual_time/test_usage_ledger_drain_deadline.py``."""
 
     async def test_awaits_pending_writes(self, ledger):
         class _Slow(InMemoryUsageLedger):

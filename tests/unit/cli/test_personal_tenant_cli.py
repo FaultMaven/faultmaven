@@ -239,12 +239,20 @@ async def db(tmp_path, monkeypatch):
         finally:
             await session.close()
 
+    # The modules that bind ``get_db_session`` by name first, its source last.
+    # ``monkeypatch.setattr`` imports a dotted target to resolve it, and a module
+    # first imported while ``database.get_db_session`` is already the stand-in
+    # binds the stand-in: setattr then records it as the original, and the undo
+    # puts it back. Source first left ``sessionless_enterprise_repository`` on
+    # this test's database for the rest of the process, so a later test's app
+    # boot opened a pooled connection on it that nothing closed ("deleted before
+    # being closed", "Event loop is closed", in whichever test collected it).
     for target in (
-        "faultmaven.infrastructure.persistence.database.get_db_session",
         "faultmaven.infrastructure.persistence.sessionless_enterprise_repository"
         ".get_db_session",
         "faultmaven.infrastructure.persistence.account_anchor.get_db_session",
         "faultmaven.cli.personal_tenant.get_db_session",
+        "faultmaven.infrastructure.persistence.database.get_db_session",
     ):
         monkeypatch.setattr(target, _session)
     try:

@@ -936,27 +936,6 @@ async def health_check():
             "services": {"session_manager": "unknown", "api": "running"},
         }
 
-    # Add session manager health and metrics
-    try:
-        if "session_manager" in app.extra:
-            session_manager = app.extra["session_manager"]
-            session_metrics = session_manager.get_session_metrics()
-
-            # Determine session manager health status
-            session_status = "healthy"
-            if session_metrics["active_sessions"] > 1000:
-                session_status = "degraded"
-            elif session_metrics["memory_usage_mb"] > session_manager.max_memory_mb:
-                session_status = "degraded"
-
-            health_status["services"]["session_manager"] = {
-                "status": session_status,
-                "metrics": session_metrics,
-            }
-    except Exception as e:
-        logger.warning(f"Failed to get session manager health: {e}")
-        health_status["services"]["session_manager"] = "unknown"
-
     # Add DI container health if available
     try:
         if "di_container" in app.extra:

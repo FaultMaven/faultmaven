@@ -2700,6 +2700,9 @@ class TestDaProviderRouting:
         """When da_provider is set, it should be used instead of llm_provider."""
         default_provider = AsyncMock()
         da_prov = AsyncMock()
+        # A concrete provider's name is a str. Left an AsyncMock attribute, the
+        # DA metering's ``.lower()`` on it returns a coroutine nobody awaits.
+        da_prov.provider_name = "test"
 
         # DA provider returns schema tool call immediately
         schema_response = _make_schema_response(
@@ -2826,6 +2829,7 @@ class TestDirectDaCallCarriesNoRouterKnobs:
         self, da_model
     ):
         da_prov = self._answering_provider()
+        da_prov.provider_name = "test"  # a concrete provider's name is a str
         router = self._answering_provider()
 
         await self._call_tool_loop(
@@ -2871,6 +2875,7 @@ class TestDirectDaCallCarriesNoRouterKnobs:
             {"agent_response": "Found it", "next_action": "done"}
         )
         da_prov = AsyncMock()
+        da_prov.provider_name = "test"  # a concrete provider's name is a str
         da_prov._generate = AsyncMock(side_effect=[cut, answered])
 
         await self._call_tool_loop(

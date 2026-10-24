@@ -357,7 +357,7 @@ def _build_hash_first_seen(case) -> Dict[str, int]:
 
 
 def _file_observed_attr(uf) -> str:
-    """Observation time for an un-promoted ``UploadedFile``.
+    r"""Observation time for an un-promoted ``UploadedFile``.
 
     States exactly what an Evidence row citing this file would inherit, and
     nothing more: a POINT span only, the same guard

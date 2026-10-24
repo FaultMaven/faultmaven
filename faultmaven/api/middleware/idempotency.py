@@ -14,6 +14,7 @@ Architecture Integration:
 - Follows FastAPI middleware patterns
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -152,6 +153,14 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         # path rather than a rebuild of the set on every POST.
         self._replay_exclusions = None
         self._resolved = redis_client is not None
+        # What the constructor was handed, restored on ``shutdown``.
+        self._injected_redis = redis_client
+        # Whether ``redis_client`` is one the factory built for this middleware
+        # alone, and so its to close. Recorded where it is resolved.
+        self._owns_redis = False
+        # The event loop that owned client was resolved on: a redis-py asyncio
+        # pool is bound to it, and only that loop can close it.
+        self._redis_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _ensure_redis(self, request: Request) -> None:
         """Resolve the Redis client lazily on first use.
@@ -164,10 +173,66 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         """
         if self._resolved:
             return
-        from ...infrastructure.redis_client import resolve_redis_client
+        from ...infrastructure.redis_client import is_fakeredis, resolve_redis_client
 
+        shared = getattr(request.app.state, "redis_client", None)
         self.redis_client = resolve_redis_client(request, injected=self.redis_client)
+        # Neither injected nor the app's shared client: the factory built it for
+        # this middleware, unless it handed back the process-wide FakeRedis.
+        self._owns_redis = (
+            self.redis_client is not None
+            and self.redis_client is not self._injected_redis
+            and self.redis_client is not shared
+            and not is_fakeredis(self.redis_client)
+        )
+        try:
+            # Resolved from ``dispatch``, so a loop is running; a direct call
+            # outside one has no loop to bind and records none.
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        self._redis_loop = running if self._owns_redis else None
         self._resolved = True
+
+    async def shutdown(self) -> None:
+        """End this middleware's service: close the client only if it built it.
+
+        Called by ``shutdown_protection`` when the app stops serving. The shared
+        client belongs to the composition root and an injected one to whoever
+        injected it; a client the factory built for this middleware alone is
+        closed here. The next request resolves afresh. Idempotent.
+
+        A client it built on another event loop is let go of with a warning
+        rather than closed: only that loop can close it, and a shutdown must not
+        raise.
+        """
+        client, owned, client_loop = (
+            self.redis_client,
+            self._owns_redis,
+            self._redis_loop,
+        )
+        self.redis_client = self._injected_redis
+        self._resolved = self._injected_redis is not None
+        self._owns_redis = False
+        self._redis_loop = None
+        if client is None or not owned:
+            return
+        if client_loop is not None and client_loop is not asyncio.get_running_loop():
+            logger.warning(
+                "Idempotency's own Redis client was opened on another event "
+                "loop, which is the only one that can close it; letting go of it "
+                "unclosed"
+            )
+            return
+        try:
+            await client.aclose()
+        except Exception as e:
+            logger.debug(f"Closing the idempotency Redis client failed: {e}")
+
+    @property
+    def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The loop of a Redis client this middleware built itself, or ``None``."""
+        return self._redis_loop if self._owns_redis else None
 
     async def dispatch(self, request: Request, call_next):
         """Process request with idempotency checking."""

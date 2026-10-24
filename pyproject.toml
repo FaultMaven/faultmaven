@@ -160,6 +160,9 @@ dependencies = [
 
     # In-process Redis (standalone deployment: API-compatible Redis without external server)
     "fakeredis[lua]>=2.21.0",
+    # Imported directly (redis_client, the rate limiter, auth), and FakeRedis's
+    # client subclasses its own. >=5.0.1: the async client's aclose().
+    "redis>=5.0.1",
 ]
 
 # ============================================================================
@@ -184,7 +187,7 @@ cloud = [
     "presidio-anonymizer>=2.2.0",
 
     # Cloud infrastructure
-    "redis[hiredis]>=5.0.0",      # Distributed session management (microservice in production)
+    "redis[hiredis]>=5.0.1",      # Distributed session management (microservice in production)
     "psycopg2-binary>=2.9.0",     # PostgreSQL driver
     "asyncpg>=0.29.0",            # Async PostgreSQL driver
     "boto3>=1.34.0",              # AWS S3 storage
@@ -205,7 +208,7 @@ cloud = [
 test = [
     # Core testing framework
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.21.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
     "pytest-xdist>=3.5.0",
@@ -334,47 +337,6 @@ Changelog = "https://github.com/FaultMaven/faultmaven/blob/main/CHANGELOG.md"
 # TOOL CONFIGURATION
 # ============================================================================
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-addopts = [
-    "-ra",
-    "--strict-markers",
-    "--strict-config",
-    "-v",
-    "--tb=short",
-    "-m", "not real_llm",
-]
-markers = [
-    "unit: Unit tests (fast, isolated)",
-    "integration: Integration tests (cross-layer)",
-    "slow: Slow running tests (the required Test Standalone/Test Cloud jobs run them; scripts/tests.py --ci skips them)",
-    "cloud: Tests requiring Redis, PostgreSQL, etc.",
-    "postgres: Tests that require a real PostgreSQL (skipped unless DATABASE_URL is postgresql)",
-    "security: Security-related tests",
-    "benchmark: Performance benchmarks (baseline tracking)",
-    "performance: Wall-clock tests: tests/performance and the defensive growth checks (excluded from the required jobs; run in benchmarks.yml)",
-    "asyncio: Async tests",
-    "api: API endpoint tests",
-    "llm: LLM-related tests",
-    "agent: Agent-related tests",
-    "session: Session management tests",
-    "knowledge_base: Knowledge base tests",
-    "architecture: Architecture validation tests",
-    "real_llm: Real-LLM integration tests (hits live provider API; opt-in via `pytest -m real_llm` and provider API key env var; excluded from default test runs)",
-]
-filterwarnings = [
-    "ignore::DeprecationWarning:websockets.*",
-    "ignore::DeprecationWarning:uvicorn.*",
-    "ignore::UserWarning:pytest_asyncio.*",
-    "ignore::PendingDeprecationWarning",
-]
-
 [tool.coverage.run]
 source = ["faultmaven"]
 # Opt in with FM_COVERAGE_CONCURRENCY=greenlet for line-level comparisons: without it, lines run across
@@ -424,6 +386,13 @@ target-version = "py311"
 #         shadowed by later definitions of the same names, and a duplicate
 #         `TitleResponse` whose required `view_state` the live route never
 #         passes — the published one is the second.
+#   W605  invalid escape sequences: ``"\d"`` is a DeprecationWarning today and a
+#         SyntaxWarning on 3.12, slated to become a SyntaxError. Added with the
+#         sweep of the two it found, both regex text in non-raw docstrings, one
+#         of which also held two backspaces where ``\b`` was meant (#2175).
+#   SIM115  ``open()`` outside a context manager: the file stays open until the
+#         garbage collector closes it, a ResourceWarning the default filters
+#         hide. Added with the sweep of the one test it found.
 #   I     import sorting (ruff replaced isort here in #179)
 #
 # E9,F63,F7,F82 is not a chosen set: it is GitHub's starter-workflow flake8 line
@@ -438,6 +407,8 @@ select = [
     "F7",    # pyflakes: misplaced statements
     "F82",   # pyflakes: undefined names
     "F811",  # pyflakes: redefinition of an unused name (dead definition)
+    "W605",  # pycodestyle: invalid escape sequence
+    "SIM115",  # flake8-simplify: open() without a context manager
     "I",     # isort: import sorting
 ]
 # Inert while the set above stays narrow (none of these is selected). Kept so

@@ -40,7 +40,15 @@ pytestmark = [
 SENTINEL = "ORIGINAL CONTENT — MUST NOT BE READ\n"
 
 
-async def _real_db():
+@pytest.fixture
+async def real_db():
+    """A session factory over a real schema holding the enterprise and its
+    billing organization.
+
+    The engine is disposed at teardown, on the loop the test used: an
+    undisposed engine's pooled aiosqlite connection is collected unclosed
+    later, and its worker thread then reports to a closed loop.
+    """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from faultmaven.infrastructure.persistence.models import (
@@ -65,7 +73,8 @@ async def _real_db():
             )
         )
         await session.commit()
-    return factory
+    yield factory
+    await engine.dispose()
 
 
 def _real_service(factory) -> ConversionService:
@@ -179,7 +188,7 @@ class TestTheScanWalkRefusesASymlinkOutOfTheTree:
     halves of the module must agree on what a runbook file is."""
 
     async def test_a_planted_symlink_is_not_minted_as_a_draft(
-        self, tmp_path, monkeypatch, caplog
+        self, tmp_path, monkeypatch, caplog, real_db
     ):
         monkeypatch.chdir(tmp_path)
         kb = tmp_path / "data" / "knowledge" / "global"
@@ -198,8 +207,7 @@ class TestTheScanWalkRefusesASymlinkOutOfTheTree:
             encoding="utf-8",
         )
 
-        factory = await _real_db()
-        service = _real_service(factory)
+        service = _real_service(real_db)
         with caplog.at_level("WARNING"):
             # ``is_platform_admin`` because the fixture writes into ``global/``
             # and a non-admin caller may not mint global-scope drafts — without

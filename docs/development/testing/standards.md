@@ -42,7 +42,7 @@ This document establishes the new testing architecture and standards for FaultMa
 
 #### **Real-LLM Integration Tests** (`tests/integration/real_llm/`)
 
-These tests hit a live LLM provider API (Anthropic by default). They are **opt-in**, marked with `@pytest.mark.real_llm`, and excluded from the default `pytest` run via `-m "not real_llm"` in `pyproject.toml` and `pytest.ini`. To run them:
+These tests hit a live LLM provider API (Anthropic by default). They are **opt-in**, marked with `@pytest.mark.real_llm`, and excluded from the default `pytest` run via `-m "not real_llm"` in `pytest.ini`. To run them:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -92,6 +92,10 @@ Outcome-based helpers live in `tests/integration/real_llm/helpers.py` — extend
 **Cost.** Default model is Anthropic Haiku 4.5 (cheapest current model, ~$0.001 per test). Override via `REAL_LLM_TEST_MODEL` env var for smarter checks on Sonnet/Opus. Each test should make 1–2 LLM calls; tests requiring more LLM rounds are probably exercising too much in one scenario.
 
 **Where they live.** `tests/integration/real_llm/`. Each test file pins one invariant (or one closely-related cluster). File names follow `test_invXX_<behavior>.py` to match the matrix convention.
+
+### **3. A Run Is Warning-Free**
+
+A run whose warnings summary is not empty fails, even when every test passes. `pytest.ini` raises what it can at the test that caused it: any warning from `faultmaven` code, and a coroutine nobody awaited. A `ResourceWarning` or a thread's unhandled exception surfaces at garbage collection, inside whichever test happens to be running, so `pytest_sessionfinish` in `tests/conftest.py` fails the run instead and leaves every test's outcome alone. Fix a warning where it arises; never filter it. A warning from an installed package that CI does not show usually means the virtualenv is off the lockfile: rebuild it with `./scripts/sync-venv.sh`.
 
 ---
 

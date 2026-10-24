@@ -495,7 +495,6 @@ def test_token_param_classifier_is_pure_and_case_insensitive():
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
 class TestOpenAIDefaultReasoningFamily:
     """The gpt-5.6 family reasons by DEFAULT on /v1/chat/completions: it 400s
     on any non-default ``temperature`` (only the default is accepted —

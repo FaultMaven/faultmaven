@@ -119,7 +119,8 @@ def test_ollama_stays_refused_after_the_test_calls_monkeypatch_undo(monkeypatch)
     monkeypatch.undo()
     with network_guard.expecting_refusals() as refused:
         with pytest.raises(NetworkAccessBlocked, match=r"127\.0\.0\.1:11434"):
-            socket.socket().connect(("127.0.0.1", 11434))
+            with socket.socket() as sock:
+                sock.connect(("127.0.0.1", 11434))
         with pytest.raises(NetworkAccessBlocked, match=r"localhost:11434"):
             socket.create_connection(("localhost", 11434), timeout=1)
     assert len(refused) == 2
@@ -165,7 +166,8 @@ def test_a_name_or_an_address_off_the_box_is_refused_without_a_lookup():
         with pytest.raises(NetworkAccessBlocked, match="not a loopback address"):
             socket.create_connection(("api.anthropic.com", 443), timeout=1)
         with pytest.raises(NetworkAccessBlocked, match="not a loopback address"):
-            socket.socket().connect(("203.0.113.7", 11434))
+            with socket.socket() as sock:
+                sock.connect(("203.0.113.7", 11434))
     assert len(refused) == 2
 
 
@@ -555,18 +557,8 @@ def test_a_swallowed_refusal_then_a_skip_still_fails():
 """
 
 
-@pytest.mark.parametrize(
-    "registered_by",
-    [
-        "tests.conftest",
-        # ``tests/integration`` has its own pytest.ini, so a run rooted there
-        # never registers ``tests/conftest.py``'s hooks; its conftest re-exports
-        # this one and has to keep doing so.
-        "tests.integration.conftest",
-    ],
-)
 def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
-    pytester, monkeypatch, registered_by
+    pytester, monkeypatch
 ):
     monkeypatch.setenv(
         "PYTHONPATH",
@@ -575,7 +567,7 @@ def test_a_refused_connect_fails_the_test_even_when_the_code_swallowed_it(
     monkeypatch.delenv(network_guard.ALLOW_LIVE_NETWORK_ENV, raising=False)
     pytester.makepyfile(textwrap.dedent(_CHILD_TESTS))
     result = pytester.runpytest_subprocess(
-        "-p", "no:cacheprovider", "-p", registered_by, timeout=600
+        "-p", "no:cacheprovider", "-p", "tests.conftest", timeout=600
     )
     result.assert_outcomes(passed=2, failed=5)
     result.stdout.fnmatch_lines(

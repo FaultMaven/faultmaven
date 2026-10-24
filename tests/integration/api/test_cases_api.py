@@ -402,15 +402,12 @@ class TestGetCase:
 
     async def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""
-        # Create app without auth override to test unauthenticated request
-        from fastapi.testclient import TestClient
-
-        from faultmaven.main import app as main_app
-
-        app = main_app
-        unauthenticated_client = TestClient(app)
-
-        response = unauthenticated_client.get("/api/v1/cases/case_123")
+        # The app with no auth override, served from this test's own loop like
+        # the rest of the module, so the teardown can close what it opened.
+        async with AsyncClient(
+            transport=ASGITransport(app=main_app), base_url="http://test"
+        ) as anonymous:
+            response = await anonymous.get("/api/v1/cases/case_123")
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 

@@ -13,7 +13,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from faultmaven.bootstrap.composition import _is_test_environment, compose_application
+from faultmaven.bootstrap.composition import (
+    _is_test_environment,
+    compose_application,
+    unpublish_composition,
+)
 from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
 logger = logging.getLogger(__name__)
@@ -209,7 +213,7 @@ async def lifespan(app: FastAPI):
     # Container initialization and the composition root. Failures are refused
     # or tolerated there, per deployment mode — not here.
     logger.info("Initializing DI container...")
-    await compose_application(app, settings)
+    published = await compose_application(app, settings)
 
     # Fail fast if the composition root withheld a route from idempotent
     # replay but left it collapsible by deduplication. That combination
@@ -493,6 +497,16 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
 
+    # Owned clients first, then the shared one, then the engine. The protection
+    # middleware closes only a Redis client it built for itself; the shared
+    # client is the container's, closed further down.
+    try:
+        from faultmaven.api.protection import shutdown_protection
+
+        await shutdown_protection(app)
+    except Exception as e:
+        logger.warning(f"Protection middleware shutdown failed (non-critical): {e}")
+
     # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
     # database is still open, then uninstall it — whatever the drain did: calls
     # metered after this point are counted as not persisted rather than
@@ -566,19 +580,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
 
-    # Cleanup resources
-    if "session_manager" in app.extra:
-        # Cleanup any active sessions
-        session_manager = app.extra["session_manager"]
-        try:
-            cleaned_count = await session_manager.cleanup_inactive_sessions()
-            logger.info(f"Cleaned up {cleaned_count} expired sessions during shutdown")
-
-            # Close session manager (stops scheduler and connections)
-            await session_manager.close()
-        except Exception as e:
-            logger.error(f"Error during session cleanup: {e}")
-
     # Cleanup Phase 2 monitoring components
     try:
         from faultmaven.infrastructure.observability.apm_integration import (
@@ -595,6 +596,19 @@ async def lifespan(app: FastAPI):
 
     except Exception as e:
         logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
+
+    # Close what the container opened and owns: the shared Redis client's
+    # pool is bound to this event loop, and nothing else closes it.
+    try:
+        from faultmaven.container import container
+
+        await container.shutdown()
+    except Exception as e:
+        logger.warning(f"Container shutdown failed (non-critical): {e}")
+
+    # The services the composition root published hold what that shutdown
+    # closed; a request served after this point must not find them.
+    unpublish_composition(app, published)
 
     # Dispose the canonical async engine. The user store no longer owns a
     # session (sessionless repository per #703), so there is nothing to

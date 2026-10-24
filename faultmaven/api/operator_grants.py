@@ -107,7 +107,7 @@ def refuse_retired_filter(retired: dict, replacement: str) -> None:
     if not sent:
         return
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=(
             f"{', '.join(sent)} is no longer a filter on this endpoint; the "
             f"tenant a row belongs to is the enterprise (ADR-017). Use "
