@@ -20,12 +20,17 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.core.investigation.cause_assurance import fix_windows
+from faultmaven.core.investigation.milestone_engine import stage_gates
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    WHY_OPEN_DOWNGRADE_REASON,
+)
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
     staged_work_summary,
 )
 from faultmaven.core.investigation.problem_status import (
     decline_revision,
+    invalidate_problem,
     propose_revision,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
@@ -70,6 +75,7 @@ from faultmaven.modules.case.contracts import (
     PendingRevision,
     ProblemStatus,
     ProblemVerification,
+    ProposedAction,
     RootCauseConclusion,
     SolutionType,
     StagedCauseWork,
@@ -302,9 +308,15 @@ async def test_a_bare_reemission_registers_nothing_and_a_named_one_does():
     assert len(case.action_attempts) == 2
 
 
-async def test_a_reassertion_naming_the_registered_fix_is_absorbed():
-    """Control: a re-assertion never registers a second fix."""
-    eng, case = await _relapsed()
+@pytest.mark.parametrize("window", ["held", "failed"])
+async def test_a_reassertion_naming_the_registered_fix_is_absorbed(window):
+    """A re-assertion never registers a second fix. Silent while identity keeps
+    the fix; once its window failed, one line says how to register a
+    re-application (review finding 5)."""
+    if window == "held":
+        eng, case, _root, _hyp = await _fixed_and_relieved()
+    else:
+        eng, case = await _relapsed()
     first = _solutions(case)[0]
 
     meta = await _turn(eng, case, 14, milestones=_accepted(first.action_id))
@@ -312,7 +324,13 @@ async def test_a_reassertion_naming_the_registered_fix_is_absorbed():
     assert first.accepted_in_turn == 6
     assert len(case.action_attempts) == 1
     assert "solution_accepted" not in meta["milestones_completed"]
-    assert "solution_accepted" not in meta.get("system_feedback", "")
+    feedback = meta.get("system_feedback", "")
+    if window == "held":
+        assert "solution_accepted" not in feedback
+    else:
+        assert f"SOLUTION {first.action_id} is registered, and its fix window " in (
+            feedback
+        )
 
 
 async def test_a_first_fix_without_a_ref_registers_as_before():
@@ -440,7 +458,7 @@ async def test_an_unjustified_second_registration_is_refused_like_the_first(
 
 async def test_an_unjustified_reassertion_is_absorbed_with_no_line():
     """Control: no registration, so no justification is asked."""
-    eng, case = await _relapsed()
+    eng, case, _root, _hyp = await _fixed_and_relieved()
     first = _solutions(case)[0]
 
     meta = await _process(
@@ -517,6 +535,12 @@ async def test_the_strip_and_the_gate_share_one_evidence_validation_prefix():
     assert (
         "EVIDENCE VALIDATION: Milestones ['mitigation_accepted', "
         "'solution_accepted'] were NOT recorded this turn."
+    ) in feedback
+    # One message names both (review finding 9), not one per writer.
+    assert feedback.count("completed without justification") == 1
+    assert (
+        "Milestones ['mitigation_accepted', 'solution_accepted'] completed "
+        "without justification."
     ) in feedback
 
 
@@ -980,19 +1004,28 @@ async def test_a_fix_withdrawn_by_the_hold_and_named_on_a_later_hold_turn_regist
     assert _accepted_turns(case) == [7]
 
 
-async def test_a_fix_withdrawn_before_the_hold_keeps_the_ruled_refusal():
+@pytest.mark.parametrize("licensed", [False, True])
+async def test_a_fix_withdrawn_before_the_hold_keeps_the_ruled_refusal(
+    licensed, monkeypatch
+):
     """The license fell before the revision was proposed: the hold changes
-    nothing about it, so the ruled refusal stands on the hold turn."""
+    nothing about it, so the ruled refusal stands on the hold turn, worded as
+    the live rule words it (review finding 7)."""
     eng, case = _identified()
     await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
     (x,) = _solutions(case)
     await _refute_the_cause(eng, case, 6)
     case.current_turn = 7
     _revise(case)
+    if licensed:
+        monkeypatch.setattr(
+            stage_gates, "_solution_cause_validated", lambda *a, **k: True
+        )
 
     meta = await _turn(eng, case, 8, milestones=_accepted(x.action_id))
 
-    assert f"{x.action_id} {_LICENSE}" in meta["system_feedback"]
+    said = "was withdrawn while its root cause" if licensed else _LICENSE
+    assert f"{x.action_id} {said}" in meta["system_feedback"]
     assert all(
         b.held_fix is None for b in case.problem_verification.pending_revision.staged
     )
@@ -1154,6 +1187,245 @@ async def test_a_bundle_staged_with_the_milestone_replays_as_a_live_acceptance()
 
 
 # ---------------------------------------------------------------------------
+# Review of #2239: findings 1-8 and 10.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("symptom", [True, False], ids=["mitigation", "downgraded"])
+@pytest.mark.parametrize("by", ["action-id", "new-index"])
+async def test_an_acceptance_naming_a_workaround_never_registers_its_solution(
+    symptom, by
+):
+    """Finding 1 (INV-32, type-matched): a WORKAROUND with the text of an older
+    SOLUTION, named by its ACTION_ID or ``new_index_0``, is refused, typed;
+    the SOLUTION is not accepted."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_RESTART, SolutionType.RESTART)])
+    (x,) = _solutions(case)
+    rows = [_ev(_PRESENT, "checkout returns 503 under load, pool exhausted")]
+    workaround = {"solutions_to_add": [_fix(_RESTART, SolutionType.WORKAROUND)]}
+    if by == "new-index":
+        meta = await _turn(
+            eng,
+            case,
+            6,
+            *rows[:symptom],
+            milestones=_accepted("new_index_0"),
+            **workaround,
+        )
+    else:
+        await _turn(eng, case, 6, *rows[:symptom], **workaround)
+        named = case.proposed_actions[-1]
+        meta = await _turn(eng, case, 7, milestones=_accepted(named.action_id))
+
+    kind = "a MITIGATION (set mitigation_accepted" if symptom else "a DIAGNOSTIC"
+    assert (x.state, case.action_attempts) == ("pending", [])
+    assert f"{case.proposed_actions[-1].action_id}, {kind}" in meta["system_feedback"]
+
+
+async def test_a_downgraded_re_send_of_a_failed_fix_is_refused_typed():
+    """Finding 5's variant: the license is down, so the re-sent failed fix mints
+    a DIAGNOSTIC; only an older accepted SOLUTION bears its text."""
+    eng, case = await _relapsed()
+    case.root_cause_conclusion = None
+    case.progress.cause_state = CauseState.UNKNOWN
+    for hyp in case.hypotheses.values():
+        hyp.likelihood = 0.1
+
+    meta = await _turn(
+        eng,
+        case,
+        14,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert len(case.action_attempts) == 1
+    assert "a DIAGNOSTIC (downgraded; see its ENGINE_NOTE)" in meta["system_feedback"]
+
+
+async def test_naming_a_downgraded_diagnostic_registers_the_newer_solution():
+    """Control for finding 1 (the amendment's stated consequence): the fix
+    downgraded at 5 is re-proposed as a SOLUTION once the cause stands, and
+    the acceptance names the DIAGNOSTIC's ACTION_ID."""
+    eng, case = _engine(), _case()
+    await _apply(eng, case, _TSU(solutions_to_add=[_fix(_SECOND)]))
+    (diagnostic,) = case.proposed_actions
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Connection pool exhaustion under load",
+        mechanism="Pool capped at 5; traffic saturated it",
+        likelihood=0.85,
+        confidence_level=ConfidenceLevel.CONFIDENT,
+    )
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_SECOND)])
+
+    await _turn(eng, case, 7, milestones=_accepted(diagnostic.action_id))
+
+    assert _states(case) == [(_SECOND, "accepted", 7)]
+
+
+async def test_a_reworded_revision_keeps_the_hold_start():
+    """Finding 2: the fix the hold withdrew at 6 stays carried after the
+    revision is re-worded at 7."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    _revise(case)
+    await _turn(eng, case, 6)
+    case.current_turn = 7
+    propose_revision(
+        case,
+        text="checkout returns 503 under peak load only",
+        evidence_ids=[case.evidence[-1].evidence_id],
+        basis="reworded",
+        offer_key="rev_2105_b",
+    )
+    assert case.problem_verification.pending_revision.held_since_turn == 5
+
+    await _turn(eng, case, 8, milestones=_accepted(x.action_id))
+    await _confirm(eng, case, 9)
+
+    assert len(case.action_attempts) == 1
+    assert _accepted_turns(case) == [8]
+
+
+async def test_the_skip_is_read_when_the_gate_decides():
+    """Finding 3: the same apply withdraws the false-alarm close that was
+    pending before it, so an unjustified new fix is asked its justification."""
+    eng, case = await _relapsed()
+    case.current_turn = 13
+    invalidate_problem(
+        case, evidence_ids=[case.evidence[-1].evidence_id], basis="never present"
+    )
+    case.pending_transition = {
+        "to_state": "closed",
+        "closure_reason": "closed_false_alarm",
+        "proposed_at_turn": 13,
+    }
+
+    meta = await _process(
+        eng,
+        case,
+        14,
+        justified=False,
+        verification_updates=ProblemVerificationUpdate(
+            invalidation_withdrawn=True,
+            withdrawal_basis="the user says checkout really fails",
+        ),
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert case.pending_transition is None
+    assert len(case.action_attempts) == 1
+    assert "Milestones ['solution_accepted'] were NOT recorded" in (
+        meta["system_feedback"]
+    )
+
+
+@pytest.mark.parametrize("justified", [False, True])
+async def test_a_hold_turn_naming_a_failed_fix_settles_it_now(justified):
+    """Findings 4 and 5 on a hold: the failed first fix, named and not re-sent,
+    is settled on the hold turn as on a live turn: no false promise, no false
+    "NOT recorded", one line on how to register a re-application."""
+    eng, case = await _relapsed()
+    first = _solutions(case)[0]
+    case.current_turn = 14
+    _revise(case)
+
+    meta = await _process(
+        eng, case, 14, justified=justified, milestones=_accepted(first.action_id)
+    )
+    await _confirm(eng, case, 15)
+
+    feedback = meta["system_feedback"]
+    assert "held until the user confirms" not in feedback
+    assert "NOT recorded" not in feedback
+    assert f"SOLUTION {first.action_id} is registered, and its fix window " in feedback
+    assert len(case.action_attempts) == 1
+
+
+async def test_a_bare_acceptance_after_a_carried_one_says_the_report_stands():
+    """Finding 6: not the no-pending notice, which invites a second
+    registration of the same execution."""
+    eng, case = _identified()
+    _revise(case)
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    meta = await _turn(eng, case, 7, milestones=_accepted())
+    await _confirm(eng, case, 8)
+
+    assert "no SOLUTION proposal is currently pending" not in meta["system_feedback"]
+    assert "the fix execution reported at turn 6 stands" in meta["system_feedback"]
+    assert _accepted_turns(case) == [6]
+
+
+async def test_a_replayed_mitigation_attempt_keeps_the_replays_message():
+    """Finding 8 (mitigation must not change): only the SOLUTION attempt takes
+    the carried hold-turn message."""
+    eng, case = _identified()
+    _revise(case)
+    case.current_turn = 6
+    response = InvestigationResponse_Treatment(
+        agent_response="Noted.",
+        evidence_trail=EvidenceTrail(
+            evidence_analyzed=[],
+            milestone_justifications=MilestoneJustifications(
+                solution_accepted="the user reports running it",
+                mitigation_accepted="the user reports running the workaround",
+            ),
+        ),
+        state_updates=_TSU(
+            solutions_to_add=[_fix(_FIRST), _fix(_RESTART, SolutionType.WORKAROUND)],
+            evidence_to_add=[_ev(_PRESENT, "checkout returns 503, pool exhausted")],
+            milestones=MilestoneUpdates(
+                solution_accepted=True,
+                accepted_action_ref="new_index_0",
+                mitigation_accepted=True,
+            ),
+        ),
+    )
+    await eng.responses.process_response_structured(case, "I ran it", response)
+
+    await _confirm(eng, case, 7)
+
+    by_type = {
+        a.action_type: t.user_message
+        for t in case.action_attempts
+        for a in case.proposed_actions
+        if a.action_id == t.action_id
+    }
+    assert by_type == {
+        InvestigationActionType.SOLUTION: "I ran it",
+        InvestigationActionType.MITIGATION: "",
+    }
+
+
+async def test_every_downgrade_reason_fits_its_field_with_margin():
+    """Finding 10: both M5 downgrade reasons stay well inside
+    ``ProposedAction.downgrade_reason``'s maximum, or a downgrade raises."""
+    (limit,) = [
+        m.max_length
+        for m in ProposedAction.model_fields["downgrade_reason"].metadata
+        if hasattr(m, "max_length")
+    ]
+    downgraded = _case()
+    await _apply(_engine(), downgraded, _TSU(solutions_to_add=[_fix(_SECOND)]))
+
+    for reason in (
+        downgraded.proposed_actions[0].downgrade_reason,
+        WHY_OPEN_DOWNGRADE_REASON,
+    ):
+        assert len(reason) <= limit - 20
+
+
+# ---------------------------------------------------------------------------
 # Both repositories keep the second attempt and a carried registration.
 # ---------------------------------------------------------------------------
 
@@ -1271,6 +1543,9 @@ async def test_the_failure_cycle_counts_failed_windows_until_a_fix_works():
     )
     assert [w.state for w in fix_windows(case)][1:] == ["failed", "failed", "unknown"]
     assert monitor._detect_fix_failure_cycle(case, "solution") is True
+    # The message counts the failed windows, as the detector does (finding 11).
+    repair = monitor._repair_fix_failure_cycle(case, "solution")
+    assert repair.message.startswith("Fix failure cycle: 2 attempts")
 
     # ... and one that worked ends it.
     await _cause_and_problem_gone(eng, case, 18)

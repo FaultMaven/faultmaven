@@ -396,6 +396,8 @@ class PendingRevision(BaseModel):
     evidence_ids: List[str] = Field(default_factory=list)
     basis: str = ""
     proposed_at_turn: int = 0
+    #: The turn the hold began: the first proposal's, kept across re-wordings.
+    held_since_turn: int = 0
     prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
     offer_key: str = ""
     staged: List[StagedCauseWork] = Field(default_factory=list)

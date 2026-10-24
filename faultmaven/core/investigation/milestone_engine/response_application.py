@@ -1502,10 +1502,9 @@ class ResponseApplier:
                             "root_cause_conclusion backed by evidence and the "
                             "fix as a SolutionToAdd; the conclusion counts once "
                             "the symptom is verified and no rival cause is "
-                            "contested. If the user already applied that fix, "
-                            "also set solution_accepted from their report, with "
-                            "accepted_action_ref naming it. Or propose a "
-                            "WORKAROUND mitigation."
+                            "contested. If the user already applied that fix, also "
+                            "set solution_accepted, accepted_action_ref naming it. "
+                            "Or propose a WORKAROUND mitigation."
                         )
                     )
 

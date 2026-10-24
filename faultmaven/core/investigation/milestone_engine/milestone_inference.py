@@ -10,12 +10,11 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     EvidenceCategory,
     InvestigationProgress,
 )
 
-from .stage_gates import CATEGORY_MILESTONE_MAP
+from .stage_gates import CATEGORY_MILESTONE_MAP, justification_skipped
 
 logger = logging.getLogger(__name__)
 
@@ -255,11 +254,8 @@ def _infer_milestones(
 # =============================================================================
 
 
-#: Milestones the stage gate judges rather than this pre-apply check (#2105).
-#: Whether a ``solution_accepted`` needs a justification depends on what the
-#: gate decides it registers: a re-assertion of the registered fix needs none,
-#: a second fix needs one like the first. So it is never stripped here, and
-#: ``fix_acceptance_justification_error`` gives the gate the verdict instead.
+#: Judged by the stage gate, which asks for a justification only when its
+#: decision registers a fix (#2105); never stripped here.
 GATE_JUDGED_MILESTONES: frozenset[str] = frozenset({"solution_accepted"})
 
 
@@ -282,47 +278,12 @@ def _milestone_already_recorded(
     return bool(recorded.get(milestone, False))
 
 
-def _reasoning_validation_skipped(
-    response_obj: BaseInteractionResponse, case: Case
-) -> bool:
-    """The conditions under which no milestone completion is judged: an INQUIRY
-    or TERMINAL response, a terminal case, or a terminal transition in progress
-    (a pending transition, or the solution already verified)."""
-    if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
-        logger.debug("Skipping reasoning validation (INQUIRY or TERMINAL response)")
-        return True
-    if case.is_terminal:
-        logger.debug("Skipping reasoning validation (case already in terminal state)")
-        return True
-    # ===== TERMINAL TRANSITION EXCEPTION =====
-    # The user has already confirmed the transition, so we allow graceful
-    # closure without forcing the LLM to justify additional milestones.
-    if case.state == CaseState.INVESTIGATING:
-        has_pending = getattr(case, "pending_transition", None)
-        already_solution_verified = case.progress.solution_verified
-        if has_pending or already_solution_verified:
-            logger.debug(
-                f"Skipping reasoning validation (terminal transition in progress: "
-                f"pending={bool(has_pending)}, "
-                f"solution_verified={already_solution_verified})"
-            )
-            return True
-    return False
-
-
 def _justification_errors(
     response_obj: BaseInteractionResponse, case: Case, completed: list[str]
 ) -> tuple[list[str], set[str], bool]:
-    """The justification checks for the milestones in ``completed``: an
-    ``evidence_trail`` is present, each milestone carries a justification, and
-    the case holds actionable evidence.
-
-    Returns ``(errors, offending, has_trail)``. Global failures (no
-    evidence_trail, no actionable evidence) implicate every milestone in
-    ``completed``; a missing justification implicates only its milestone. The
-    one copy of these checks, shared by ``validate_reasoning_first`` and the
-    stage gate's verdict (``fix_acceptance_justification_error``).
-    """
+    """The justification checks, shared by ``validate_reasoning_first`` and the
+    gate's verdict: an ``evidence_trail``, a justification per milestone, and
+    actionable evidence. Returns ``(errors, offending, has_trail)``."""
     evidence_trail = getattr(response_obj, "evidence_trail", None)
     # If milestones are being completed, evidence_trail is REQUIRED.
     # Global failure: none of the completed milestones are justified.
@@ -434,7 +395,10 @@ def validate_reasoning_first(
         f"is_TerminalResponse={isinstance(response_obj, TerminalResponse)}"
     )
 
-    if _reasoning_validation_skipped(response_obj, case):
+    # TERMINAL TRANSITION EXCEPTION: graceful closure needs no justification.
+    if isinstance(
+        response_obj, (InquiryResponse, TerminalResponse)
+    ) or justification_skipped(case):
         return True, [], set()
 
     milestones = getattr(response_obj.state_updates, "milestones", None)
@@ -497,18 +461,12 @@ def validate_reasoning_first(
 def fix_acceptance_justification_error(
     response_obj: BaseInteractionResponse, case: Case
 ) -> str | None:
-    """Why this response could not justify a ``solution_accepted``, or None.
-
-    The verdict, computed before the apply from the response alone: the same
-    skip conditions and checks ``validate_reasoning_first`` applies to any
-    milestone completion (``_justification_errors``). Whether the verdict is
-    REQUIRED is the stage gate's call: it asks exactly when its decision would
-    register a fix, now or carried through a revision hold (#2105). A response
-    that does not set ``solution_accepted`` has nothing to justify.
-    """
-    if _reasoning_validation_skipped(response_obj, case):
-        return None
-    milestones = getattr(response_obj.state_updates, "milestones", None)
+    """Why this response could not justify a ``solution_accepted``, or None:
+    the verdict alone, from the response before the apply. The gate decides
+    whether it is required, skip conditions included, when it decides (#2105)."""
+    milestones = getattr(
+        getattr(response_obj, "state_updates", None), "milestones", None
+    )
     if not getattr(milestones, "solution_accepted", None):
         return None
     errors, _offending, _has_trail = _justification_errors(

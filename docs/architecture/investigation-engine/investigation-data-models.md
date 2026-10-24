@@ -185,7 +185,7 @@ class InvestigationProgress(BaseModel):
     # ProblemVerification carries the statement's lifecycle beside it:
     # statement_history (confirmed / revised / edited / invalidated /
     # invalidation_withdrawn records), pending_revision (text, evidence, basis,
-    # prior_status, offer_key, staged cause work per turn, each turn's bundle
+    # prior_status, held_since_turn, offer_key, staged cause work per turn, each turn's bundle
     # carrying the fix execution it reported as `held_fix`, a fix identity the
     # replay registers stamped at that turn, #2105), invalidation
     # (rationale, evidence, turn, prior_status, close_declined_at_turn — the

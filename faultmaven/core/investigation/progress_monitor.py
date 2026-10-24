@@ -493,7 +493,7 @@ class ProgressMonitor:
     def _check_mitigation_repairs(self, case: Case) -> Optional[RepairAction]:
         """Check repair patterns relevant to MITIGATION stage."""
         if self._detect_fix_failure_cycle(case, action_type="mitigation"):
-            return self._repair_fix_failure_cycle(case)
+            return self._repair_fix_failure_cycle(case, "mitigation")
 
         if self._detect_action_loop(case):
             return self._repair_action_loop(case)
@@ -503,7 +503,7 @@ class ProgressMonitor:
     def _check_treatment_repairs(self, case: Case) -> Optional[RepairAction]:
         """Check repair patterns relevant to TREATMENT stage."""
         if self._detect_fix_failure_cycle(case, action_type="solution"):
-            return self._repair_fix_failure_cycle(case)
+            return self._repair_fix_failure_cycle(case, "solution")
 
         if self._detect_category_anchoring(case):
             return self._repair_anchoring(case)
@@ -797,17 +797,18 @@ class ProgressMonitor:
             ),
         )
 
-    def _repair_fix_failure_cycle(self, case: Case) -> RepairAction:
+    def _repair_fix_failure_cycle(self, case: Case, action_type: str) -> RepairAction:
         """
-        Handle repeated fix attempts that don't work.
+        Handle repeated fix attempts that don't work. A solution's count is its
+        FAILED fix windows, as the detector reads them (#2105).
         """
         stage = case.current_stage
         stage_name = stage.value if stage else "current"
 
         failed_count = (
-            sum(1 for a in case.proposed_actions if a.state == "accepted")
-            if case.proposed_actions
-            else 0
+            sum(1 for window in fix_windows(case) if window.state == FIX_FAILED)
+            if action_type == "solution"
+            else sum(1 for a in case.proposed_actions if a.state == "accepted")
         )
 
         return RepairAction(

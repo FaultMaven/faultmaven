@@ -704,6 +704,19 @@ def _add_system_feedback(
 
 #: The turn's EVIDENCE VALIDATION line as it stands: what it names and says.
 _EVIDENCE_VALIDATION_KEY = "evidence_validation_feedback"
+_NAMED_ERROR = re.compile(r"Milestones \[([^\]]*)\] (completed without .*)", re.S)
+
+
+def justification_skipped(case: Case) -> bool:
+    """No milestone justification is asked on a terminal case or while a
+    terminal transition is in progress (a pending transition, or the solution
+    verified). The gate reads it at decision time (#2105)."""
+    return case.is_terminal or (
+        case.state == CaseState.INVESTIGATING
+        and bool(
+            getattr(case, "pending_transition", None) or case.progress.solution_verified
+        )
+    )
 
 
 def add_evidence_validation_feedback(
@@ -715,18 +728,30 @@ def add_evidence_validation_feedback(
     registration (#2105), merge into it."""
     previous = metadata.get(_EVIDENCE_VALIDATION_KEY)
     names = set(not_recorded)
-    said: list[str] = []
+    said: list[str] = list(errors)
     if previous is not None:
         names |= set(previous["not_recorded"])
-        said = list(previous["errors"])
+        said = previous["errors"] + said
         metadata["system_feedback"] = "\n".join(
             part
             for part in (metadata.get("system_feedback") or "").split("\n")
             if part != previous["line"]
         )
-    said += [error for error in errors if error not in said]
+    # One message per kind: "Milestones [a] <text>" and "Milestones [b] <text>"
+    # merge into "Milestones [a, b] <text>".
+    merged: dict[str, list[str]] = {}
+    for error in said:
+        named = _NAMED_ERROR.fullmatch(error)
+        text = named.group(2) if named else error
+        merged.setdefault(text, [])
+        for name in re.findall(r"'(\w+)'", named.group(1)) if named else ():
+            if name not in merged[text]:
+                merged[text].append(name)
     head = f"Milestones {sorted(names)} were NOT recorded this turn. " if names else ""
-    line = f"EVIDENCE VALIDATION: {head}" + " ".join(said)
+    line = f"EVIDENCE VALIDATION: {head}" + " ".join(
+        f"Milestones {named} {text}" if named else text
+        for text, named in merged.items()
+    )
     metadata[_EVIDENCE_VALIDATION_KEY] = {
         "not_recorded": sorted(names),
         "errors": said,
@@ -817,6 +842,31 @@ def _withdrawn_notice(action_id: str) -> str:
     )
 
 
+def _refuse_withdrawn(metadata: dict[str, Any], action_id: str, licensed: bool) -> None:
+    notice = _withdrawn_notice if licensed else _license_notice
+    _add_system_feedback(metadata, notice(action_id))
+
+
+def _license_holds(case: Case, metadata: dict[str, Any]) -> bool:
+    """The M5 license now, on the mint path's predicate."""
+    return _solution_cause_validated(
+        case, working_conclusion=_settled_working_conclusion(case, metadata)
+    )
+
+
+def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
+    """A registered fix named again but not re-sent, that identity no longer
+    keeps (its window failed, or a later fix followed): it may be re-applied."""
+    if standing_fix_action(case, bearer.description) is not bearer:
+        _add_system_feedback(
+            metadata,
+            f"SYSTEM: 'solution_accepted' was not registered again: SOLUTION "
+            f"{bearer.action_id} is registered, and its fix window failed or a "
+            "later fix followed it. If the user re-applied it, re-propose it as a "
+            "SolutionToAdd and set accepted_action_ref new_index_N naming it.",
+        )
+
+
 def _refuse_fix_ref(case: Case, metadata: dict[str, Any], ref: Any, what: str) -> None:
     logger.warning(
         f"Rejected stage-gate milestone 'solution_accepted' for case "
@@ -838,6 +888,25 @@ def _what_is_named(action: Any) -> str:
     if action.downgrade_reason:
         return what + " (downgraded; see its ENGINE_NOTE)"
     return what
+
+
+def _fix_named_by(
+    case: Case, ref: str, action: Any, metadata: dict[str, Any], proposed: set
+) -> Optional[tuple[str, str]]:
+    """The fix a ref naming ``action`` resolves to, type-matched (INV-32): a
+    SOLUTION's own; a DIAGNOSTIC's only when a NEWER SOLUTION bears it, or a
+    hold turn proposes it; a MITIGATION's never."""
+    identity, what = fix_identity(action.description), _what_is_named(action)
+    if action.action_type != InvestigationActionType.SOLUTION:
+        bearer = _newest_fix_bearer(case, identity)
+        actions = case.proposed_actions
+        if action.action_type == InvestigationActionType.MITIGATION or (
+            identity not in proposed
+            and (bearer is None or actions.index(bearer) < actions.index(action))
+        ):
+            _refuse_fix_ref(case, metadata, ref, what)
+            return None
+    return identity, what
 
 
 def _newest_pending_solution(case: Case) -> Any:
@@ -928,6 +997,20 @@ def _resolve_fix_identity(
         if case.progress.solution_accepted:
             _note_unnamed_acceptance(case, entries, metadata, holding=holding)
             return None
+        carried = holding and [
+            b.turn
+            for b in case.problem_verification.pending_revision.staged
+            if b.held_fix
+        ]
+        if carried:
+            _add_system_feedback(
+                metadata,
+                "SYSTEM: 'solution_accepted' was not registered again: the fix "
+                f"execution reported at turn {carried[-1]} stands, held until the "
+                "user confirms the revised problem statement. Only if the user "
+                "carried out another fix, name it with accepted_action_ref.",
+            )
+            return None
         fixes = [entry for entry in entries if entry.is_fix]
         if fixes:
             return fixes[-1].identity, "the fix this response proposes"
@@ -950,7 +1033,7 @@ def _resolve_fix_identity(
             return None
         entry = entries[index]
         if entry.action is not None:
-            return entry.identity, _what_is_named(entry.action)
+            return _fix_named_by(case, ref, entry.action, metadata, set())
         if not entry.is_fix:
             _refuse_fix_ref(
                 case, metadata, ref, "a WORKAROUND (set mitigation_accepted for it)"
@@ -961,7 +1044,8 @@ def _resolve_fix_identity(
     if named is None:
         _refuse_fix_ref(case, metadata, ref, "no action on this case")
         return None
-    return fix_identity(named.description), _what_is_named(named)
+    proposed = {e.identity for e in entries if e.is_fix} if holding else set()
+    return _fix_named_by(case, ref, named, metadata, proposed)
 
 
 def _bearer_registers(
@@ -970,7 +1054,8 @@ def _bearer_registers(
     """Step 2, THE state rule (live gate and replay): whether the newest
     SOLUTION bearing the named fix registers.
 
-    Pending registers; accepted is a re-assertion, absorbed silently.
+    Pending registers; accepted is a re-assertion, absorbed (with a line when
+    identity no longer keeps it, ``_note_failed_fix``).
     Superseded registers only while the M5 license holds now (the mint path's
     predicate), and on a live turn only as a ``reproposal``: one withdrawn
     ``license_lost`` stays refused (ruled 2026-10-21). A decision ``carried``
@@ -979,21 +1064,14 @@ def _bearer_registers(
     if bearer.state == "pending":
         return True
     if bearer.state == "accepted":
+        if not carried:
+            _note_failed_fix(case, bearer, metadata)
         return False
     if bearer.state == "superseded":
-        licensed = _solution_cause_validated(
-            case, working_conclusion=_settled_working_conclusion(case, metadata)
-        )
+        licensed = _license_holds(case, metadata)
         if licensed and (carried or bearer.superseded_reason == "reproposal"):
             return True
-        _add_system_feedback(
-            metadata,
-            (
-                _withdrawn_notice(bearer.action_id)
-                if licensed
-                else _license_notice(bearer.action_id)
-            ),
-        )
+        _refuse_withdrawn(metadata, bearer.action_id, licensed)
         return False
     _refuse_fix_ref(
         case,
@@ -1008,7 +1086,7 @@ def _registration_justified(case: Case, metadata: dict[str, Any]) -> bool:
     """A registration, now or carried, is justified like the first fix: the
     verdict ``process_response_structured`` computed before the apply."""
     error = metadata.get(FIX_JUSTIFICATION_KEY)
-    if not error:
+    if not error or justification_skipped(case):
         return True
     logger.warning(
         f"Rejected stage-gate milestone 'solution_accepted' for case "
@@ -1039,14 +1117,17 @@ def _hold_settles(
     if bearer is None:
         _refuse_fix_ref(case, metadata, ref, what)
         return True
+    if bearer.state == "accepted":  # not re-sent: settled as on a live turn
+        _note_failed_fix(case, bearer, metadata)
+        return True
     pending_revision = case.problem_verification.pending_revision
     if (
         bearer.state == "superseded"
         and bearer.superseded_reason == "license_lost"
-        # Withdrawn before this revision was proposed, not by the hold itself.
-        and (bearer.superseded_in_turn or 0) < pending_revision.proposed_at_turn
+        # Withdrawn before the hold began, not by the hold itself.
+        and (bearer.superseded_in_turn or 0) < pending_revision.held_since_turn
     ):
-        _add_system_feedback(metadata, _license_notice(bearer.action_id))
+        _refuse_withdrawn(metadata, bearer.action_id, _license_holds(case, metadata))
         return True
     return False
 
@@ -1158,7 +1239,7 @@ def _apply_stage_gate_side_effects(
     metadata: dict[str, Any],
     *,
     solution_action: Any = None,
-    executed_turn: Optional[int] = None,
+    carried: Any = None,
 ) -> None:
     """Apply side effects when stage-gate milestones are completed.
 
@@ -1174,8 +1255,9 @@ def _apply_stage_gate_side_effects(
        frame the withdrawal machinery exists to dissolve.
        ``mitigation_verified`` alone accepts nothing (its action was accepted
        at the accept step).
-    2. For a SOLUTION (#2105): a superseded action is restored first, the stamp
-       is ``executed_turn`` (a carried decision's hold turn) or this turn, and
+    2. For a SOLUTION (#2105): a superseded action is restored first; the stamp
+       and the attempt's message are a ``carried`` decision's hold turn's, else
+       this turn's; and
        ``progress.solution_accepted`` plus one ``milestones_completed`` entry
        record each registration.
     3. Create an ActionAttempt audit record per accepted action.
@@ -1218,11 +1300,8 @@ def _apply_stage_gate_side_effects(
         # offering turn — recorded before the fix was ever run — reads as a
         # post-fix outcome. A decision carried through a revision hold was
         # executed at its hold turn, not at the replay.
-        target.accepted_in_turn = (
-            executed_turn
-            if is_solution and executed_turn is not None
-            else case.current_turn
-        )
+        by_carry = is_solution and carried is not None
+        target.accepted_in_turn = carried.turn if by_carry else case.current_turn
         # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
         # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
         # earlier pre-fix ask cannot resurface in <pending_action> once the
@@ -1242,7 +1321,9 @@ def _apply_stage_gate_side_effects(
         # Create audit trail
         attempt = ActionAttempt(
             action_id=target.action_id,
-            user_message=user_message[:10000],
+            user_message=(carried.held_fix_message if by_carry else user_message)[
+                :10000
+            ],
             submitted_at=datetime.now(UTC),
             compliance_detected=True,
             compliance_confidence=1.0,  # LLM-detected = full confidence
@@ -1389,12 +1470,8 @@ def _apply_stage_gate_signals(
 
     # --- solution_accepted: one decision (#2105) -----------------------
     carried = metadata.get(CARRIED_FIX_KEY)
-    executed_turn: Optional[int] = None
     if carried is not None:
         solution_action = _register_carried_fix(case, carried, metadata)
-        executed_turn = carried.turn
-        # The replay has no message of its own: the hold turn's is the report.
-        user_message = carried.held_fix_message or user_message
     else:
         solution_action = decide_fix_acceptance(
             case,
@@ -1515,7 +1592,7 @@ def _apply_stage_gate_signals(
             user_message,
             metadata,
             solution_action=solution_action,
-            executed_turn=executed_turn,
+            carried=carried,
         )
 
 
