@@ -88,10 +88,16 @@ if [ ${#REQS[@]} -eq 0 ]; then
   echo "::error::no lockfiles matched requirements/*.txt — pip-audit would audit the runner venv instead"
   exit 1
 fi
-# One bounded retry: a transient OSV/PyPI error is otherwise
-# indistinguishable from a finding. Real findings fail twice.
-pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
+# The OSV service, not pip-audit's default PyPI feed. OSV carries both the
+# PyPA advisories (PYSEC-*) and GitHub's (GHSA-*); the PyPI feed carries only
+# the first. GHSA-cx6f-vjhg-g3cc (virtualenv) reached Dependabot while the
+# PyPI feed still reported nothing, and PYSEC-2026-4322 (brotli, #2216) reached
+# the PyPI feed before it had a GHSA id: OSV reported both. The ignores still
+# match by alias, so each accepted advisory stays suppressed under all its ids.
+# One bounded retry: a transient OSV error is otherwise indistinguishable from
+# a finding. Real findings fail twice.
+pip-audit --vulnerability-service osv --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
   echo "pip-audit failed — retrying once in case of transient service error"
   sleep 30
-  pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}"
+  pip-audit --vulnerability-service osv --no-deps "${REQS[@]}" "${IGNORES[@]}"
 }

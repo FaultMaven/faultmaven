@@ -716,7 +716,7 @@ uvicorn==0.44.0
     #   chromadb
 uvloop==0.22.1
     # via uvicorn
-virtualenv==21.14.12
+virtualenv==21.14.13
     # via
     #   faultmaven (pyproject.toml)
     #   pre-commit
