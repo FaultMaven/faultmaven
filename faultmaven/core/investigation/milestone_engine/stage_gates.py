@@ -796,8 +796,8 @@ CARRIED_FIX_KEY = "carried_fix_acceptance"
 
 class _FixEntry(NamedTuple):
     """An entry of this response's ``solutions_to_add``. ``action``: the action
-    it minted or kept (live turn), None (hold turn). ``is_fix``: a SOLUTION
-    action (live), not a WORKAROUND (hold)."""
+    it minted or kept (live turn), None (hold turn). ``is_fix``: not a
+    WORKAROUND, on both turns (live: a SOLUTION, or a fix entry M5 downgraded)."""
 
     identity: str
     action: Any
@@ -921,7 +921,9 @@ def _newest_pending_solution(case: Case) -> Any:
     )
 
 
-def _fix_entries(proposals: Sequence[Any], held: Optional[Sequence[Any]]) -> list:
+def _fix_entries(
+    proposals: Sequence[Any], held: Optional[Sequence[Any]], fixes: Sequence[Any] = ()
+) -> list:
     if held is not None:
         return [
             _FixEntry(
@@ -935,7 +937,8 @@ def _fix_entries(proposals: Sequence[Any], held: Optional[Sequence[Any]]) -> lis
         _FixEntry(
             fix_identity(action.description),
             action,
-            action.action_type == InvestigationActionType.SOLUTION,
+            action.action_type == InvestigationActionType.SOLUTION
+            or any(action is f for f in fixes),
         )
         for action in proposals
     ]
@@ -957,7 +960,10 @@ def _note_unnamed_acceptance(
     carried = _carried_fixes(case) if holding else set()
     for index in reversed(range(len(entries))):
         entry = entries[index]
-        if not entry.is_fix or entry.identity in carried:
+        downgraded = entry.action is not None and entry.action.action_type != (
+            InvestigationActionType.SOLUTION
+        )
+        if not entry.is_fix or entry.identity in carried or downgraded:
             continue
         kept = standing_fix_action(case, entry.identity) if holding else entry.action
         if kept is not None and kept.state == "accepted":
@@ -1040,7 +1046,13 @@ def _resolve_fix_identity(
             return None
         entry = entries[index]
         if entry.action is not None:
-            return _fix_named_by(case, ref, entry.action, metadata, set())
+            return _fix_named_by(
+                case,
+                ref,
+                entry.action,
+                metadata,
+                {entry.identity} if entry.is_fix else set(),
+            )
         if not entry.is_fix:
             _refuse_fix_ref(
                 case, metadata, ref, "a WORKAROUND (set mitigation_accepted for it)"
@@ -1058,8 +1070,8 @@ def _resolve_fix_identity(
 def _bearer_registers(
     case: Case, bearer: Any, metadata: dict[str, Any], *, carried: bool
 ) -> bool:
-    """Step 2, THE state rule (live gate and replay): whether the newest
-    SOLUTION bearing the named fix registers.
+    """Step 2, THE state rule (live gate and replay): whether the newest fix
+    action bearing the named fix (``_newest_fix_bearer``) registers.
 
     Pending registers; accepted is a re-assertion, absorbed (with a line when
     identity no longer keeps it, ``_note_failed_fix``).
@@ -1205,7 +1217,7 @@ def decide_fix_acceptance(
                 "carrying out that fix.",
             )
         return None
-    entries = _fix_entries(proposals, held)
+    entries = _fix_entries(proposals, held, fixes)
     resolved = _resolve_fix_identity(
         case, ref, entries, metadata, holding=held is not None
     )

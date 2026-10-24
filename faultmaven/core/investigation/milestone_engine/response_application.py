@@ -123,7 +123,7 @@ from .stage_gates import (
     llm_claimable_milestones,
     standing_fix_action,
 )
-from .statement_revision import REPLAY_METADATA_KEY
+from .statement_revision import REPLAY_FIX_SLOTS_KEY, REPLAY_METADATA_KEY
 from .terminal_proposals import (
     _maybe_propose_deferred_close,
     _maybe_propose_false_alarm_close,
@@ -1405,9 +1405,10 @@ class ResponseApplier:
         # opportunistically during INVESTIGATING.
         # The action each solutions_to_add entry minted or kept, in order:
         # what the stage gate resolves this response's ``new_index_N`` against;
-        # and those minted from fix entries, which alone can bear a fix (#2105).
+        # and those minted from fix entries, which alone can bear a fix (#2105),
+        # across every bundle of a replay.
         solution_slots: list[ProposedAction] = []
-        fix_slots: list[ProposedAction] = []
+        fix_slots: list[ProposedAction] = metadata.get(REPLAY_FIX_SLOTS_KEY, [])
         if getattr(updates, "solutions_to_add", None) and false_alarm:
             _add_system_feedback(
                 metadata,

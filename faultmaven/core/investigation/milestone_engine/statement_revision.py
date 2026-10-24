@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 #: offer the replayed state warrants is made there, with its card, unexecuted.
 REPLAY_METADATA_KEY = "replaying_staged_cause_work"
 
+#: One list for every bundle of a replay: the actions the replay has minted
+#: from fix entries so far, which the stage gate weighs as fix bearers (#2105).
+REPLAY_FIX_SLOTS_KEY = "replay_fix_slots"
+
 #: What an offer made inside the replay writes beside ``pending_transition``:
 #: the same-turn guard (#722: a proposal is never confirmed by the message that
 #: produced it), the card, and the prose that explains it. Carried into the
@@ -163,6 +167,7 @@ async def confirm_revision(
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
 
     replayed: dict[str, list] = {key: [] for key in REPLAYED_KEYS}
+    fix_slots: list = []
     for bundle in pending.staged:
         try:
             updates = (
@@ -198,6 +203,7 @@ async def confirm_revision(
             "progress_made": False,
             "status_transitioned": False,
             REPLAY_METADATA_KEY: True,
+            REPLAY_FIX_SLOTS_KEY: fix_slots,
         }
         if bundle.held_fix:
             bundle_metadata[CARRIED_FIX_KEY] = bundle

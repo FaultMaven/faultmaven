@@ -1092,10 +1092,7 @@ async def test_a_held_registration_whose_fix_the_replay_downgrades_registers_not
         solutions_to_add=[_fix(_FIRST)],
         milestones=_accepted("new_index_0"),
     )
-    case.root_cause_conclusion = None
-    case.progress.cause_state = CauseState.UNKNOWN
-    for hyp in case.hypotheses.values():
-        hyp.likelihood = 0.1
+    _license_down(case)
 
     meta = await _confirm(eng, case, 7)
 
@@ -1224,14 +1221,20 @@ async def test_an_acceptance_naming_a_workaround_never_registers_its_solution(
     assert f"{case.proposed_actions[-1].action_id}, {kind}" in meta["system_feedback"]
 
 
-async def test_a_downgraded_re_send_of_a_failed_fix_is_refused_typed():
-    """Finding 5's variant: the license is down, so the re-sent failed fix mints
-    a DIAGNOSTIC; only an older accepted SOLUTION bears its text."""
-    eng, case = await _relapsed()
+def _license_down(case):
+    """The license fell after the last recompute (the decay-lag edge)."""
     case.root_cause_conclusion = None
     case.progress.cause_state = CauseState.UNKNOWN
     for hyp in case.hypotheses.values():
         hyp.likelihood = 0.1
+
+
+async def test_a_downgraded_re_send_of_a_failed_fix_gets_the_license_line():
+    """Finding 5's variant: the license is down, so the re-sent failed fix mints
+    a DIAGNOSTIC, a fix entry of this response that outranks the older accepted
+    SOLUTION (E1/E2): the license line."""
+    eng, case = await _relapsed()
+    _license_down(case)
 
     meta = await _turn(
         eng,
@@ -1242,7 +1245,7 @@ async def test_a_downgraded_re_send_of_a_failed_fix_is_refused_typed():
     )
 
     assert len(case.action_attempts) == 1
-    assert "a DIAGNOSTIC (downgraded; see its ENGINE_NOTE)" in meta["system_feedback"]
+    assert _LICENSE in meta["system_feedback"]
 
 
 async def test_naming_a_downgraded_diagnostic_registers_the_newer_solution():
@@ -1480,10 +1483,7 @@ async def test_a_pending_fix_re_sent_on_a_license_down_turn_registers(ref):
     eng, case = _identified()
     await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
     (x,) = _solutions(case)
-    case.root_cause_conclusion = None
-    case.progress.cause_state = CauseState.UNKNOWN
-    for hyp in case.hypotheses.values():
-        hyp.likelihood = 0.1
+    _license_down(case)
 
     await _turn(
         eng,
@@ -1495,6 +1495,116 @@ async def test_a_pending_fix_re_sent_on_a_license_down_turn_registers(ref):
 
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
     assert (x.state, x.accepted_in_turn) == ("accepted", 6)
+    assert len(case.action_attempts) == 1
+
+
+@pytest.mark.parametrize("symptom", [True, False], ids=["mitigation", "3d"])
+async def test_a_same_text_workaround_beside_a_superseded_fix_bears_nothing(symptom):
+    """M1, live: X superseded by Y, then named by id beside a same-text
+    WORKAROUND. Only fix entries bear a fix, so X registers."""
+    eng, case = _identified()
+    rows = [_ev(_PRESENT, "checkout returns 503 under load, pool exhausted")]
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_SECOND)])
+
+    await _turn(
+        eng,
+        case,
+        7,
+        *rows[:symptom],
+        solutions_to_add=[_fix(_FIRST, SolutionType.WORKAROUND)],
+        milestones=_accepted(x.action_id),
+    )
+
+    assert (x.state, x.accepted_in_turn) == ("accepted", 7)
+
+
+async def test_a_same_text_workaround_beside_a_carried_fix_bears_nothing_at_replay():
+    """M1, replay (P10): pending X; on the hold turn a same-text WORKAROUND and
+    X named by id; the replay registers X, stamped at the hold turn."""
+    eng, case = _identified()
+    rows = [_ev(_PRESENT, "checkout returns 503 under load, pool exhausted")]
+    await _turn(
+        eng, case, 5, *rows, solutions_to_add=[_fix(_RESTART, SolutionType.RESTART)]
+    )
+    (x,) = _solutions(case)
+    case.current_turn = 6
+    _revise(case)
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_RESTART, SolutionType.WORKAROUND)],
+        milestones=_accepted(x.action_id),
+    )
+
+    await _confirm(eng, case, 7)
+
+    assert (x.state, x.accepted_in_turn) == ("accepted", 6)
+
+
+async def test_a_pending_fix_wins_over_its_downgraded_re_send_named_by_new_index():
+    """E1: X pending, the license down; the re-send of X is M5-downgraded and
+    named by ``new_index_0``: a fix entry of this response, resolved by
+    identity, and the pending X the user ran registers."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    _license_down(case)
+
+    await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+
+    assert (x.state, x.accepted_in_turn) == ("accepted", 6)
+    assert len(case.action_attempts) == 1
+
+
+async def test_a_bare_acceptance_of_a_downgraded_fix_gets_the_license_line():
+    """E2: with no ref and no fix yet, this response's fix is its RESTART, which
+    M5 downgraded: the license line, never the older pending FIRST."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (first,) = _solutions(case)
+    _license_down(case)
+
+    meta = await _turn(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix(_RESTART, SolutionType.RESTART)],
+        milestones=_accepted(),
+    )
+
+    assert (first.state, case.action_attempts) == ("pending", [])
+    assert _LICENSE in meta["system_feedback"]
+
+
+async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line():
+    """E3 (P11): bundle 14 stages the re-send of the failed X, bundle 15 carries
+    the acceptance; the license is down at confirmation, so the replay mints X
+    a DIAGNOSTIC in bundle 14, which bundle 15's carry sees."""
+    eng, case = await _relapsed()
+    case.current_turn = 14
+    _revise(case)
+    await _turn(eng, case, 14, solutions_to_add=[_fix(_FIRST)])
+    await _turn(
+        eng,
+        case,
+        15,
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+    _license_down(case)
+
+    meta = await _confirm(eng, case, 16)
+
+    assert _LICENSE in meta["system_feedback"]
     assert len(case.action_attempts) == 1
 
 
