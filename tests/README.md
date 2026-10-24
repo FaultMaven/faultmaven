@@ -26,7 +26,7 @@ tests/
 ├── integration/             # Integration tests (~25 files)
 │   ├── api/                 # API integration tests
 │   ├── conftest.py          # Integration-specific fixtures
-│   ├── mock_servers.py      # Mock API servers for external services
+│   ├── mock_servers.py      # get_free_port(), for tests that serve on loopback
 │   └── test_*.py            # Cross-layer workflow tests
 ├── infrastructure/          # Infrastructure-specific tests
 │   ├── knowledge/           # Knowledge base infrastructure

@@ -242,7 +242,11 @@ def register_tools(container: BaseDIContainer) -> None:
     logger.info("🔍 Tools: Registering tools...")
 
     # Create knowledge ingester
-    ingester = create_knowledge_ingester(settings, container.get_service("sanitizer"))
+    # The composition's sanitizer, registered by register_infrastructure; a
+    # miss raises rather than leaving the ingester to build its own (#2235).
+    ingester = create_knowledge_ingester(
+        settings, container.get_service("sanitizer", required=True)
+    )
     if ingester:
         container._register_service("knowledge_ingester", ingester)
     container.knowledge_ingester = ingester

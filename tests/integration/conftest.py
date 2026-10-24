@@ -9,7 +9,6 @@ import asyncio
 import os
 import sys
 from collections import Counter
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -262,86 +261,6 @@ async def _end_the_service_of(apps) -> None:
             "app=app))), or borrow the composed app (booted_app_client).",
             pytrace=False,
         )
-
-
-@pytest.fixture
-def mock_case_service():
-    """Create a mock case service for tests."""
-    from unittest.mock import AsyncMock
-
-    from faultmaven.modules.case.contracts import (
-        Case,
-        CaseState,
-        InquiryData,
-    )
-
-    service = AsyncMock()
-
-    # Team-share enrichment on the case-detail read path (ADR-013 §D4). Default
-    # to no team shares so CaseDetail.shared_team_ids serializes as [] rather than
-    # an un-awaited MagicMock.
-    service.get_case_team_ids = AsyncMock(return_value=[])
-
-    # Store created cases to maintain state across create_case and get_case calls
-    created_cases = {}
-
-    # Mock create_case to return a simple case
-    async def create_case_mock(title=None, description=None, owner_id=None, **kwargs):
-        case_id = f"case_{uuid4().hex[:12]}"
-        case = Case(
-            case_id=case_id,
-            title=title or "Test Case",
-            description=description or "Test Description",
-            user_id=owner_id or "test_user_123",
-            enterprise_id="test_org_123",
-            state=CaseState.INQUIRY,
-            current_turn=0,
-            message_count=0,
-        )
-        # Store case for later retrieval
-        created_cases[case_id] = case
-        return case
-
-    service.create_case = create_case_mock
-
-    # Mock get_case to return the case (with evidence if it exists)
-    async def get_case_mock(case_id, user_id):
-        # Return the stored case if it exists, otherwise create a new one.
-        # Note: INVESTIGATING cases require Gate 1 (the problem statement
-        # confirmed) to construct. The unified opportunistic flow no longer
-        # has a path-selection gate.
-        if case_id in created_cases:
-            return created_cases[case_id]
-        else:
-            case = Case(
-                case_id=case_id,
-                title="Test Case",
-                description="Test Description",
-                user_id=user_id,
-                enterprise_id="test_org_123",
-                state=CaseState.INVESTIGATING,
-                current_turn=1,
-                message_count=1,
-                inquiry=InquiryData(
-                    problem_statement_confirmed=True,
-                    proposed_problem_statement="Test Description",
-                ),
-            )
-            created_cases[case_id] = case
-            return case
-
-    service.get_case = get_case_mock
-
-    return service
-
-
-@pytest.fixture
-def mock_session_service():
-    """Create a mock session service for tests."""
-    from unittest.mock import AsyncMock
-
-    service = AsyncMock()
-    return service
 
 
 # Architectural Compliance Test Fixtures

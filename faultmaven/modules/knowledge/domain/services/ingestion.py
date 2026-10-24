@@ -129,9 +129,13 @@ class KnowledgeIngester:
                 context={"settings_available": settings is not None},
             )
 
-        self.sanitizer = (
-            sanitizer if sanitizer is not None else DataSanitizer(settings=settings)
-        )
+        if sanitizer is None:
+            self.logger.warning(
+                "KnowledgeIngester is redacting with a sanitizer it built itself, "
+                "not the composition's"
+            )
+            sanitizer = DataSanitizer(settings=settings)
+        self.sanitizer = sanitizer
 
         # Degraded state: when an external ChromaDB is configured but
         # unreachable, we do NOT block startup. self._collection stays None and

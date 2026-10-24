@@ -44,9 +44,11 @@ def should_redact(sanitizer) -> bool:
     """Whether what is sent to a model is redacted at the engine layer.
 
     The one decision every model-calling path makes — an investigation turn,
-    the terminal Q&A turn, case and document conversion: a sanitizer is configured (the DI container hands one out; a
-    ``None`` means redaction is disabled at DI level) AND ``SANITIZE_PII`` is
-    on. One copy, so no path can drift from the others (#1901).
+    the terminal Q&A turn, case and document conversion: a sanitizer is
+    present AND ``SANITIZE_PII`` is on. The DI container always hands one out
+    (#2235), so a composed path is decided by the flag alone; a falsy
+    sanitizer, which only a caller outside the composition passes, redacts
+    nothing. One copy, so no path can drift from the others (#1901).
     """
     if not sanitizer:
         return False

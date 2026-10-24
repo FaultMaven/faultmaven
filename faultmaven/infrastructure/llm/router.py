@@ -392,26 +392,33 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         engine, the case title and the conversions redact with, so a
         composition builds one ``DataSanitizer`` and probes Presidio once
         (#2235). A router built outside the composition root (a script, a test)
-        has none injected; it builds one on first read, from the process
-        settings, and says so, so a second construction is never silent and
-        the pass never runs with no sanitizer at all.
+        has none injected; it builds one on first read, from the settings it
+        was built with, and says so, so a second construction is never silent
+        and the pass never runs with no sanitizer at all.
         """
         if self._sanitizer is None:
             self.logger.warning(
                 "LLMRouter is redacting with a sanitizer it built itself, not "
                 "the composition's"
             )
-            self._sanitizer = DataSanitizer()
+            self._sanitizer = DataSanitizer(settings=self.settings)
         return self._sanitizer
 
     @sanitizer.setter
     def sanitizer(self, value: Any) -> None:
-        if value is None:
+        # The condition should_redact reads: a falsy sanitizer turns the pass
+        # off, so one assigned here would send unredacted text.
+        if not value:
             raise TypeError(
-                "LLMRouter.sanitizer cannot be None: redaction off is "
-                "SANITIZE_PII=false, read by should_redact"
+                "LLMRouter.sanitizer cannot be falsy: should_redact reads that "
+                "as no sanitizer; redaction off is SANITIZE_PII=false"
             )
         self._sanitizer = value
+
+    @sanitizer.deleter
+    def sanitizer(self) -> None:
+        """Back to un-injected, so ``patch.object`` can undo a stand-in."""
+        self._sanitizer = None
 
     @property
     def registry(self):

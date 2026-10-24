@@ -76,7 +76,7 @@ The Router is a generic LLM abstraction — it routes requests to providers, han
 
 The MilestoneEngine owns the case lifecycle. It has `case_id`, manages the tool loop, and controls what content reaches the LLM. It is the natural owner of the redaction boundary.
 
-The Router retains its existing `_sanitize_if_needed()` as a safety net for other LLM calls. For investigation turns and the knowledge-authoring paths (below), the prompt is already redacted at the engine layer, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
+The Router keeps its own `SANITIZE_PII` pass in `route()`, over the same injected sanitizer (#2235), as a safety net for other LLM calls. For investigation turns and the knowledge-authoring paths (below), the prompt is already redacted at the engine layer, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
 
 ## Components
 
@@ -297,7 +297,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 
 - **Preprocessing**: builds summaries and structural indexes from raw content (see *Not Implemented* above)
 - **Context builder**: assembles raw content; the engine redacts downstream
-- **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls the engine layer does not redact
+- **Router**: its pass in `route()` stays as a safety net for LLM calls the engine layer does not redact
 - **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results; a tool that calls a model itself redacts what it sends through the turn's context
 - **Storage**: uploads, evidence and preprocessing artifacts are stored raw, never redacted at rest
 

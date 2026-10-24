@@ -9,6 +9,7 @@ on first read, and logs that it did.
 """
 
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -24,8 +25,8 @@ SELF_BUILT = "redacting with a sanitizer it built itself"
 
 @pytest.fixture
 def constructions(monkeypatch):
-    """Constructions counted, with service checks pinned on so the fallback's
-    own sanitizer never health-checks Presidio."""
+    """Constructions counted, with ``SKIP_SERVICE_CHECKS`` pinned true so the
+    fallback's own sanitizer never health-checks Presidio."""
     monkeypatch.setenv("SKIP_SERVICE_CHECKS", "true")
     reset_settings()
     yield sanitizer_constructions(monkeypatch)
@@ -59,9 +60,11 @@ def test_a_router_given_none_builds_one_on_first_read_and_says_so(
     constructions, caplog
 ):
     """Built outside the composition root, the router still redacts, with one
-    sanitizer it builds once, and the second construction is not silent."""
+    sanitizer it builds once, from the settings the router was built with,
+    and the second construction is not silent."""
     router = LLMRouter()
     assert constructions == [], "the router built its sanitizer before any read"
+    reset_settings()  # the process settings move on before the first read
 
     with caplog.at_level(logging.WARNING):
         first = router.sanitizer
@@ -70,15 +73,38 @@ def test_a_router_given_none_builds_one_on_first_read_and_says_so(
     assert isinstance(first, DataSanitizer)
     assert second is first
     assert constructions == [first]
+    assert first._settings is router.settings
     assert len(_self_built_warnings(caplog)) == 1
 
 
-def test_the_router_refuses_a_none_sanitizer(constructions):
-    """``should_redact(None)`` is false: a None here would send unredacted."""
+class _Falsy:
+    """A sanitizer double that is falsy, as a sized or numeric one can be."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.mark.parametrize("value", [None, _Falsy()], ids=["none", "falsy"])
+def test_the_router_refuses_a_falsy_sanitizer(constructions, value):
+    """``should_redact`` reads a falsy sanitizer as none: one here would turn
+    the pass off and send unredacted."""
     router = LLMRouter()
     injected = object()
     router.sanitizer = injected
 
-    with pytest.raises(TypeError, match="cannot be None"):
-        router.sanitizer = None
+    with pytest.raises(TypeError, match="cannot be falsy"):
+        router.sanitizer = value
     assert router.sanitizer is injected
+
+
+def test_a_patched_sanitizer_is_undone_cleanly(constructions):
+    """``patch.object`` undoes a stand-in with ``del``; that returns the router
+    to un-injected rather than raising."""
+    router = LLMRouter()
+    router.sanitizer = object()
+    stand_in = object()
+
+    with patch.object(router, "sanitizer", stand_in):
+        assert router.sanitizer is stand_in
+
+    assert router.sanitizer is not stand_in

@@ -49,20 +49,15 @@ System readiness and Redis integration validation
 ### Infrastructure Files
 
 #### `mock_servers.py`
-Mock API server infrastructure for external service simulation:
-
-- **LLM Provider Mocking**: OpenAI-compatible and Ollama API endpoints
-- **Web Search Mocking**: Google Custom Search and Tavily API simulation
-- **Server Lifecycle Management**: Startup, health monitoring, and graceful shutdown
-- **Port Management**: Configurable port assignment and conflict resolution
+`get_free_port()`: a free port for a test that serves an app on loopback.
 
 #### `conftest.py`
-Integration test fixtures and configuration:
+Integration test configuration and fixtures:
 
-- **Logging Setup**: Test logging capture and verification utilities
-- **Mock Service Configuration**: Shared mock services and test doubles
-- **Async Test Support**: Async test infrastructure and cleanup
-- **Test Environment**: Integration test environment setup and teardown
+- **All-skipped guard**: a session that selects tests and skips every one fails
+- **Served-app teardown**: each test ends the protection middleware of the apps it served
+- **Service fixtures**: `session_service` (real Redis) and `case_service` (the DI container's)
+- **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration
 

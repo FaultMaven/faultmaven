@@ -49,7 +49,10 @@ def create_llm_provider(settings: FaultMavenSettings, sanitizer: Any) -> Any:
     The replacement class must satisfy ``ILLMProvider`` and accept zero
     constructor arguments (or have all-optional kwargs). So the sanitizer is
     assigned after construction, not passed to it: the router redacts with
-    the composition's instance rather than building its own (#2235).
+    the composition's instance rather than building its own (#2235). The
+    replacement must redact with the ``sanitizer`` assigned to it: a subclass
+    of ``LLMRouter`` does, and a wrapper must forward the assignment to the
+    router it wraps.
     """
     router_class_path = settings.llm.router_class
     if router_class_path:
