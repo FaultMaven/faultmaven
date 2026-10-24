@@ -46,6 +46,15 @@ class TestUnifiedLogger:
         request_context.set(None)
         clear_logger_cache()
 
+    @staticmethod
+    def _pin_timing(request, violation):
+        """Pin the request's threshold verdict, so the runner's speed cannot pick
+        the completion level: past the layer's threshold it is WARNING (#2224)."""
+        tracker = Mock()
+        tracker.record_timing.return_value = (violation, 0.5)
+        request.performance_tracker = tracker
+        return tracker
+
     def test_unified_logger_creation(self):
         """Test UnifiedLogger initialization."""
         assert self.unified_logger.logger_name == "test.module"
@@ -131,7 +140,7 @@ class TestUnifiedLogger:
     async def test_operation_context_manager_success(self):
         """Test async operation context manager for successful operation."""
         coordinator = LoggingCoordinator()
-        coordinator.start_request()
+        self._pin_timing(coordinator.start_request(), violation=False)
 
         async with self.unified_logger.operation(
             "test_operation", user_id="123"
@@ -230,7 +239,7 @@ class TestUnifiedLogger:
     def test_operation_sync_context_manager(self):
         """Test synchronous operation context manager."""
         coordinator = LoggingCoordinator()
-        coordinator.start_request()
+        self._pin_timing(coordinator.start_request(), violation=False)
 
         with self.unified_logger.operation_sync("sync_operation", task_id="456") as ctx:
             assert ctx["operation"] == "sync_operation"
@@ -241,7 +250,30 @@ class TestUnifiedLogger:
             time.sleep(0.001)
 
         # Should have logged start and end
-        assert self.mock_logger.info.call_count >= 2
+        messages = [c[0][0] for c in self.mock_logger.info.call_args_list]
+        assert messages == [
+            "Operation started: sync_operation",
+            "Operation completed: sync_operation",
+        ]
+
+        coordinator.end_request()
+
+    def test_operation_sync_performance_violation_logs_warning(self):
+        """A sync operation past its layer's threshold completes at WARNING."""
+        coordinator = LoggingCoordinator()
+        tracker = self._pin_timing(coordinator.start_request(), violation=True)
+
+        with self.unified_logger.operation_sync("slow_sync_operation"):
+            pass
+
+        assert tracker.record_timing.call_args[0][:2] == (
+            "service",
+            "slow_sync_operation",
+        )
+        warning_messages = [c[0][0] for c in self.mock_logger.warning.call_args_list]
+        assert warning_messages == ["Operation completed: slow_sync_operation"]
+        info_messages = [c[0][0] for c in self.mock_logger.info.call_args_list]
+        assert info_messages == ["Operation started: slow_sync_operation"]
 
         coordinator.end_request()
 
