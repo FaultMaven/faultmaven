@@ -3634,20 +3634,26 @@ def load_settings_dotenv() -> None:
     above the package is never read; nothing under ``FAULTMAVEN_SKIP_DOTENV``;
     never over a variable already set in ANY letter case, so the OS environment
     wins as the settings bind names (``gemini_api_key`` is ``GEMINI_API_KEY``).
-    It goes into ``os.environ`` because modules read that at import, before any
-    settings exist (the trusted-proxy list, the Opik SDK's ``OPIK_TRACK_DISABLE``).
+    ``${VAR}`` resolves with the OS environment ahead of the file. It goes into
+    ``os.environ`` because modules read that at import, before any settings
+    exist (the trusted-proxy list, the Opik SDK's ``OPIK_TRACK_DISABLE``).
     ``dotenv`` is imported at call time, so a caller that replaces
     ``dotenv.dotenv_values`` (``tests/conftest.py``) turns this off too.
     """
     if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
         return
     import dotenv
+    from dotenv.main import resolve_variables
 
     environment = dict(os.environ)
-    values = dotenv.dotenv_values(
+    raw = dotenv.dotenv_values(
         Path(FaultMavenSettings.model_config["env_file"]),
         encoding=FaultMavenSettings.model_config["env_file_encoding"],
+        interpolate=False,
     )
+    # Resolved as ``load_dotenv(override=False)`` resolves it, OS first:
+    # ``dotenv_values`` alone would resolve ``${VAR}`` with the file first.
+    values = resolve_variables(raw.items(), override=False)
     for name, value in values.items():
         if value is not None and not env_var_spellings(environment, name):
             os.environ[name] = value

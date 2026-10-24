@@ -148,6 +148,26 @@ def test_the_environment_wins_in_any_letter_case(tmp_path):
     assert answer["llm"]["gemini"] == "from-os"
 
 
+def test_a_reference_in_the_dotenv_resolves_to_the_environment_first(tmp_path):
+    """``${DB_HOST}`` means the value in force: the OS one, not the file's own."""
+    answer = _run(
+        tmp_path,
+        ROOT,
+        "get_settings",
+        {"DB_HOST": "from-os"},
+        "DB_HOST=from-file\n"
+        "TEST_URL=postgresql://u@${DB_HOST}/db\n"
+        "TEST_QUOTED='q-${DB_HOST}'\n",
+        ["DB_HOST", "TEST_URL", "TEST_QUOTED"],
+    )
+
+    assert answer["environ"] == {
+        "DB_HOST": "from-os",
+        "TEST_URL": "postgresql://u@from-os/db",
+        "TEST_QUOTED": "q-from-os",
+    }
+
+
 def test_skip_dotenv_keeps_a_credential_out_of_the_environment_and_the_settings(
     tmp_path,
 ):
