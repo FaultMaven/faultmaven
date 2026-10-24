@@ -61,6 +61,7 @@ A pack is a directory (transported as `kb-pack-<version>.tar.gz`):
   "model": "BAAI/bge-m3",
   "dim": 1024,
   "total_chunks": 1319,
+  "vectors_sha256": "<sha256 of the vectors.npz bytes>",
   "runbooks": [
     {
       "item_id": "kb_<12 hex>",
@@ -68,7 +69,8 @@ A pack is a directory (transported as `kb-pack-<version>.tar.gz`):
       "title": "...", "scope": "global",
       "relpath": "global/networking/k8s-coredns-failures.md",
       "tags": [...], "source_url": null, "owner_id": null, "team_id": null,
-      "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "..."}, ... ],
+      "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "...",
+                   "text_sha256": "<hex>", "pair_sha256": "<hex>"}, ... ],
       "causes": [ {"cause_letter": "A", "cause_name": "...", "cause_statement": "...",
                    "chain_nodes": [...], "chain_edges": [...], "rung_indicators": {...},
                    "interventions": [...], "is_fallback_cause": false}, ... ]
@@ -153,7 +155,11 @@ silent-corruption failure modes are guarded rather than left to chance:
   on the first collision logs a loud `ERROR` and **refuses the pack whole**
   (returns `None`, same fail-safe as the bounds/`dim`/model guards). This catches
   a **shared** row; it does not catch a *swapped pair* (two chunks exchanging two
-  still-distinct rows keeps every row unique and is unverifiable at load).
+  still-distinct rows keeps every row unique and is unverifiable at load). In the
+  vendored pack (`resources/knowledge/pack/`), the swapped pair, a stale vector, a
+  dropped chunk and a substituted `vectors.npz` are caught before they ship, by the
+  hashes and row order the CI gate checks (below). The gate checks only that pack:
+  a pack read from `KB_PACK_DIR` is not checked at load.
 
 ### Per-Cause `causes` record (toolkit-emitted, ignored by the app)
 
@@ -234,6 +240,12 @@ copy and no drift.) The app *consumes* a vendored baseline snapshot of the pack.
   the committed pack is structurally valid **and in sync with the sources** under
   `resources/knowledge/runbooks/` — so a PR that edits a runbook without rebuilding
   the pack fails CI. (`kb-build-pack --check` does the same on the toolkit side.)
+  It also checks that each chunk's text is the text its vector was embedded from
+  (#1286): per chunk, `text_sha256` (of the text) and `pair_sha256` (of that hash
+  plus the `vectors[vector_row]` bytes, little-endian float32); in the manifest,
+  `vectors_sha256` (of the `vectors.npz` bytes); and rows running `0..n-1` in
+  manifest order. A failure names the chunk or the field; the remedy is a rebuild,
+  never an edited `pack.json` or a recomputed hash.
 - Thread cap: the build bounds embedding threads (`--threads`, default 8) so a
   single bandwidth-bound build can't oversubscribe a shared host.
 
@@ -343,7 +355,7 @@ new image.
 | Pack format + loader | `faultmaven/bootstrap/kb_pack.py` |
 | Bootstrap ingestion from pack | `faultmaven/bootstrap/kb_init.py` |
 | `KB_PACK_DIR` setting | `faultmaven/config/settings.py` (`DatabaseSettings.kb_pack_dir`) |
-| App-side check (integrity + source↔pack freshness) | `faultmaven/scripts/check_kb_pack.py` |
+| App-side check (integrity + source↔pack freshness + text↔vector pairing) | `scripts/check_kb_pack.py` |
 | Bundled baseline pack (generated artifact) | `faultmaven/resources/knowledge/pack/` |
 | Local delivery | `faultmaven/docker-compose.yml` |
 | Pack builder + CLI | `faultmaven-kb-toolkit` → `kb_toolkit/core/pack_builder.py`, `cli/kb_build_pack.py` |
