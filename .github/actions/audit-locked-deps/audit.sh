@@ -88,10 +88,20 @@ if [ ${#REQS[@]} -eq 0 ]; then
   echo "::error::no lockfiles matched requirements/*.txt — pip-audit would audit the runner venv instead"
   exit 1
 fi
-# One bounded retry: a transient OSV/PyPI error is otherwise
-# indistinguishable from a finding. Real findings fail twice.
-pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
+# The OSV service, not pip-audit's default PyPI feed. PyPI's feed is a lagging,
+# incomplete copy of OSV's records, for GHSA-* and PYSEC-* ids alike:
+# GHSA-cx6f-vjhg-g3cc (virtualenv) was still missing from it about 8 hours
+# after publication (4.5 hours after Dependabot's alert), and mako 1.3.12
+# lacked both GHSA-5639 and PYSEC-2026-4243 (#2124). OSV had both, and it
+# still reports PYSEC-2026-4322 (brotli, #2216), published before that
+# advisory had a GHSA id. Where OSV holds a GHSA and a PYSEC record that alias
+# each other (the chromadb advisories, mako), pip-audit 2.10.1 keeps both, so
+# its "ignored" and "Found" counts can double-count; the ignores still
+# suppress each accepted advisory under every id.
+# One bounded retry: a transient OSV error is otherwise indistinguishable from
+# a finding. Real findings fail twice.
+pip-audit --vulnerability-service osv --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
   echo "pip-audit failed — retrying once in case of transient service error"
   sleep 30
-  pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}"
+  pip-audit --vulnerability-service osv --no-deps "${REQS[@]}" "${IGNORES[@]}"
 }

@@ -273,7 +273,9 @@ dev = [
     # permission recovery after a failed delete chmods a symlink's target
     # (GHSA-43mp-35q3-x3fq), and the builtin creator writes through
     # symlinked directories under the destination (GHSA-cw65-gx24-rc82).
-    "virtualenv>=21.14.9",
+    # >=21.14.13: the Bash activator leaves the --prompt value unescaped in PS1
+    # when promptvars is off, so prompt expansion executes it (GHSA-cx6f-vjhg-g3cc).
+    "virtualenv>=21.14.13",
 
     # Architecture enforcement
     "import-linter>=2.0.0",
