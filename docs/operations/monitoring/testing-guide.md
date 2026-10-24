@@ -1127,167 +1127,18 @@ class LoggingTestUtils:
 
 ## Continuous Integration
 
-### 1. GitHub Actions Workflow
+These tests run in the suite CI already runs. There is no logging-specific workflow.
 
-```yaml
-# .github/workflows/logging-tests.yml
-name: Logging System Tests
-
-on:
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'faultmaven/infrastructure/logging/**'
-      - 'faultmaven/services/base.py'
-      - 'faultmaven/infrastructure/base_client.py'
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  logging-unit-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [3.11, 3.12]
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-test.txt
-
-    - name: Run logging unit tests
-      run: |
-        pytest tests/infrastructure/logging/ \
-          --cov=faultmaven.infrastructure.logging \
-          --cov-report=xml \
-          --cov-report=html \
-          --cov-fail-under=85 \
-          -v
-
-    - name: Run base class tests
-      run: |
-        pytest tests/services/test_base.py \
-               tests/infrastructure/test_base_client.py \
-          --cov=faultmaven.services.base \
-          --cov=faultmaven.infrastructure.base_client \
-          --cov-report=xml \
-          --cov-append \
-          -v
-
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: logging
-        name: logging-coverage
-        fail_ci_if_error: true
-
-  logging-integration-tests:
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-test.txt
-
-    - name: Run integration tests
-      env:
-        REDIS_URL: redis://localhost:6379
-        LOG_LEVEL: DEBUG
-        LOG_ENABLE_PERFORMANCE_TRACKING: true
-      run: |
-        pytest tests/integration/logging/ \
-          --cov=faultmaven \
-          --cov-report=xml \
-          -v -s
-
-  logging-performance-tests:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-test.txt
-
-    - name: Run performance tests
-      run: |
-        pytest tests/performance/logging/ \
-          --benchmark-only \
-          --benchmark-json=benchmark.json \
-          -v
-
-    - name: Store benchmark result
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        tool: 'pytest'
-        output-file-path: benchmark.json
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-```
-
-### 2. Test Configuration for CI
-
-```python
-# pytest.ini
-[tool:pytest]
-minversion = 7.0
-addopts =
-    -ra
-    --strict-markers
-    --strict-config
-    --cov-branch
-    --cov-report=term-missing:skip-covered
-    --cov-fail-under=85
-python_files = tests/*.py test_*.py *_test.py
-python_classes = Test*
-python_functions = test_*
-testpaths = tests
-markers =
-    unit: Unit tests
-    integration: Integration tests
-    performance: Performance tests
-    logging: Logging system tests
-    slow: Slow running tests
-filterwarnings =
-    ignore::DeprecationWarning
-    ignore::PendingDeprecationWarning
-```
+- **`.github/workflows/ci-cd.yml`:** the `Test Standalone` and `Test Cloud` jobs run
+  `pytest tests/ -n logical --dist loadfile -m "not cloud and not benchmark and not performance"`
+  with coverage, under the `env:` block each job sets. `Test PostgreSQL Integration`
+  runs `-m postgres`.
+- **`.github/workflows/benchmarks.yml`:** runs the benchmark and wall-clock suites
+  (`pytest tests/benchmarks/ -m benchmark`, and `tests/performance/`) per PR, outside
+  the required jobs.
+- **Configuration:** `pytest.ini` at the repository root holds the markers, the
+  asyncio mode and the warning filters, and the coverage gate is
+  `coverage report --fail-under` in `ci-cd.yml`.
 
 ## Testing Best Practices
 

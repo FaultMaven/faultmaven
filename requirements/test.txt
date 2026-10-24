@@ -27,6 +27,7 @@ anyio==4.15.1
     #   faultmaven (pyproject.toml)
     #   anthropic
     #   httpx
+    #   httpx2
     #   openai
     #   sse-starlette
     #   starlette
@@ -167,12 +168,15 @@ grpcio==1.80.0
 h11==0.16.0
     # via
     #   httpcore
+    #   httpcore2
     #   uvicorn
     #   wsproto
 hf-xet==1.4.3
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
+httpcore2==2.16.0
+    # via httpx2
 httptools==0.7.1
     # via uvicorn
 httpx==0.28.1
@@ -183,6 +187,8 @@ httpx==0.28.1
     #   huggingface-hub
     #   openai
     #   tavily-python
+httpx2==2.16.0
+    # via faultmaven (pyproject.toml)
 huggingface-hub==1.11.0
     # via
     #   sentence-transformers
@@ -193,6 +199,7 @@ idna==3.18
     #   anyio
     #   email-validator
     #   httpx
+    #   httpx2
     #   requests
     #   yarl
 importlib-resources==7.1.0
@@ -389,8 +396,6 @@ psutil==7.2.2
     # via
     #   faultmaven (pyproject.toml)
     #   locust
-py-cpuinfo==9.0.0
-    # via pytest-benchmark
 pybase64==1.4.3
     # via chromadb
 pycares==5.0.1
@@ -438,7 +443,6 @@ pytest==9.0.3
     #   faultmaven (pyproject.toml)
     #   locust
     #   pytest-asyncio
-    #   pytest-benchmark
     #   pytest-cov
     #   pytest-html
     #   pytest-json-report
@@ -446,8 +450,6 @@ pytest==9.0.3
     #   pytest-mock
     #   pytest-xdist
 pytest-asyncio==1.3.0
-    # via faultmaven (pyproject.toml)
-pytest-benchmark==5.2.3
     # via faultmaven (pyproject.toml)
 pytest-cov==7.1.0
     # via faultmaven (pyproject.toml)
@@ -578,7 +580,7 @@ sqlalchemy==2.0.49
     #   alembic
 sse-starlette==3.3.4
     # via faultmaven (pyproject.toml)
-starlette==1.3.1
+starlette==1.9.0
     # via
     #   faultmaven (pyproject.toml)
     #   fastapi
@@ -627,6 +629,10 @@ transformers==5.16.1
     #   sentence-transformers
 triton==3.7.1
     # via torch
+truststore==0.10.5
+    # via
+    #   httpcore2
+    #   httpx2
 typer==0.24.1
     # via
     #   chromadb
@@ -644,6 +650,7 @@ typing-extensions==4.16.0
     #   chromadb
     #   fastapi
     #   grpcio
+    #   httpx2
     #   huggingface-hub
     #   locust
     #   openai

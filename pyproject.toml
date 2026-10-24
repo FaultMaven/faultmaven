@@ -214,6 +214,9 @@ test = [
 
     # HTTP testing
     "httpx>=0.24.0",
+    # starlette.testclient's transport: without it the TestClient falls back to
+    # httpx with a StarletteDeprecationWarning.
+    "httpx2>=2.0.0",
 
     # Mocking and test utilities
     "responses>=0.23.0",
@@ -223,7 +226,6 @@ test = [
     "coverage>=7.2.0",
 
     # Performance testing
-    "pytest-benchmark>=4.0.0",
     "locust>=2.20.0",
     "psutil>=5.9.0",
 

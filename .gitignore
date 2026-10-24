@@ -197,9 +197,6 @@ chroma_db/
 *.db
 data/
 
-# Benchmark results (pytest-benchmark)
-.benchmarks/
-
 # Import linter cache. `.grimp_cache/` is the one grimp actually writes today;
 # `.import_linter_cache/` is the older name, kept so an old tree stays clean.
 # Never commit either: a stale graph reports modules that are no longer
