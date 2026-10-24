@@ -615,6 +615,16 @@ class MilestoneUpdates(NullTolerantModel):
     mitigation_accepted: Optional[bool] = None
     mitigation_verified: Optional[bool] = None
     solution_accepted: Optional[bool] = None
+    # Which fix the user carried out: each execution registers once, for the
+    # fix it names (#2105). IdRef: the stage gate resolves ``new_index_N``.
+    accepted_action_ref: Optional[IdRef] = Field(
+        None,
+        description=(
+            "The ACTION_ID of the SOLUTION the user carried out, or new_index_N "
+            "for the Nth entry of this response's solutions_to_add. Read only "
+            "with solution_accepted."
+        ),
+    )
 
     # UPDATE-shaped (fm#1502): ``None`` keeps ``progress.root_cause_likelihood``
     # as it stands, so an out-of-range value costs this field and nothing else.

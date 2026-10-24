@@ -371,11 +371,19 @@ class StagedCauseWork(BaseModel):
     what its ``new_index_N`` evidence refs resolve against — so the work
     replays a turn later exactly as it would have applied then. One bundle per
     turn, because ``new_index_N`` refs are per turn.
+
+    ``held_fix`` is the fix the user reported carrying out on that turn, when
+    the stage gate carried its acceptance through the hold (#2105): the fix's
+    identity (its description, whitespace-collapsed and case-folded), never an
+    action ref. The replay registers the newest SOLUTION bearing it, stamped at
+    ``turn``, with ``held_fix_message`` as its attempt's user message.
     """
 
     turn: int
     updates: Dict[str, Any] = Field(default_factory=dict)
     evidence_added: List[str] = Field(default_factory=list)
+    held_fix: Optional[str] = None
+    held_fix_message: str = ""
 
 
 class PendingRevision(BaseModel):
@@ -388,6 +396,8 @@ class PendingRevision(BaseModel):
     evidence_ids: List[str] = Field(default_factory=list)
     basis: str = ""
     proposed_at_turn: int = 0
+    #: The turn the hold began: the first proposal's, kept across re-wordings.
+    held_since_turn: int = 0
     prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
     offer_key: str = ""
     staged: List[StagedCauseWork] = Field(default_factory=list)

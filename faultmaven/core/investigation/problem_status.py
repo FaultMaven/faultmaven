@@ -245,7 +245,7 @@ def propose_revision(
 ) -> PendingRevision:
     """Hold a revised statement for the user's re-confirmation. A proposal made
     while one is pending replaces its wording, and keeps the cause work already
-    staged and the status the case had before the first one."""
+    staged, the turn the hold began and the status the case had before it."""
     pv = case.problem_verification
     previous = pv.pending_revision
     pv.pending_revision = PendingRevision(
@@ -253,6 +253,9 @@ def propose_revision(
         evidence_ids=list(evidence_ids),
         basis=basis.strip(),
         proposed_at_turn=case.current_turn,
+        held_since_turn=(
+            previous.held_since_turn if previous is not None else case.current_turn
+        ),
         prior_status=(
             previous.prior_status
             if previous is not None

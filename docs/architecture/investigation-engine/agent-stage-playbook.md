@@ -53,7 +53,7 @@ There are two distinct transition mechanisms:
 | INQUIRY | TERMINAL (CLOSED) | User-Agent Handshake | User declines investigation |
 | DIAGNOSIS | MITIGATION | Inference-based | `mitigation_accepted` — user accepts the proposed temporary fix |
 | DIAGNOSIS | TREATMENT | Inference-based | `solution_accepted` — user acknowledges executing the proposed solution |
-| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — user confirms mitigation worked; gate milestones are set-once (no reset), and `current_stage` falls through to DIAGNOSIS via its `NOT mitigation_verified` clause |
+| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — user confirms mitigation worked; gate milestones never reset, and `current_stage` falls through to DIAGNOSIS via its `NOT mitigation_verified` clause |
 | TREATMENT | TERMINAL (RESOLVED) | User-Agent Handshake | `solution_verified` — user confirms the solution resolved the issue |
 | Any INVESTIGATING stage | TERMINAL (CLOSED) | User-Agent Handshake | User escalates or abandons |
 
