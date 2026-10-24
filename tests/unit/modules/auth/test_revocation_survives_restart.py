@@ -1,7 +1,7 @@
 """An API restart must not resurrect revoked tokens (#828).
 
 The defect, end to end: in standalone the revocation store was built over the
-in-process FakeRedis singleton, which has no persistence. Logout, OAuth
+in-process FakeRedis, which has no persistence. Logout, OAuth
 ``/revoke``, admin revoke-tokens, password change and role downgrade all wrote
 there — so restarting the API brought every revoked-but-unexpired token back
 for the remainder of its natural life. Account *deactivation* survived (it is a
@@ -11,7 +11,7 @@ stay active.
 These tests drive the PRODUCTION composition — ``create_token_revocation_store``,
 ``AuthService`` and a real generator — rather than a store in isolation, because
 the bug was in the wiring, not in either store. The restart is modelled the way
-a new process experiences one: the FakeRedis singleton is discarded and the
+a new process experiences one: the in-process FakeRedis is discarded and the
 store is rebuilt from the factory.
 """
 

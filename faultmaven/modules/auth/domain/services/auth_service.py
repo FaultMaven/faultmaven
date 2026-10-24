@@ -795,7 +795,7 @@ class AuthService:
         answered "not revoked".
 
         This used to catch every exception and return ``False``, which was
-        written when standalone's store was the in-process FakeRedis singleton
+        written when standalone's store was the in-process FakeRedis
         and could not fail. #828/#1469 moved standalone's request-path check
         onto a SQLite table, so the path became reachable there for the first
         time — a write lock held past ``busy_timeout`` (a revocation write

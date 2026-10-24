@@ -115,7 +115,7 @@ async def test_a_client_the_limiter_does_not_own_is_never_closed():
 
 
 async def test_the_stand_in_is_never_closed(monkeypatch):
-    """The FakeRedis singleton is process-wide; closing it breaks everything.
+    """The FakeRedis stand-in is shared; closing it breaks everything.
 
     Belt and braces over ``_owns_client``, which should already exclude it —
     asserted here because the consequence of the flag ever being wrong is that

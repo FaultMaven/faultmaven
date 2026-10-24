@@ -6,7 +6,7 @@
 - ``RedisTokenRevocationStore`` — cloud, whose cache is a real Redis that
   outlives the API pod (``fakeredis_or_fail`` refuses the boot otherwise).
 - ``SqlTokenRevocationStore`` — standalone, whose cache is the in-process
-  FakeRedis singleton and does not, so an API restart used to resurrect every
+  FakeRedis and does not, so an API restart used to resurrect every
   revoked-but-unexpired token.
 
 Two implementations of one security rule is exactly the shape that drifts, and

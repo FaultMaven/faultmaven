@@ -533,19 +533,33 @@ def test_a_later_loop_gets_its_own_client_and_reads_the_same_data():
     assert value == "written-in-loop-1"
 
 
-def test_a_closed_loop_is_not_kept_alive_by_its_client():
-    async def _touch():
-        rc.get_fakeredis_client()
-        return asyncio.get_running_loop()
+async def _use_and_return_loop():
+    await rc.get_fakeredis_client().set("fm:2241:touched", "1")
+    return asyncio.get_running_loop()
 
-    loop = asyncio.run(_touch())
+
+def test_a_closed_loop_is_not_kept_alive_by_its_client():
+    """Under hiredis a used connection's queue holds its loop; the server holds the socket."""
+    loop = asyncio.run(_use_and_return_loop())
     gone = weakref.ref(loop)
     del loop
 
-    asyncio.run(_touch())
+    asyncio.run(_use_and_return_loop())
     gc.collect()
 
     assert gone() is None
+
+
+def test_the_server_lets_go_of_a_closed_loops_sockets():
+    """fakeredis keeps every socket it opened until the socket is closed."""
+    for _ in range(5):
+        asyncio.run(_use_and_return_loop())
+
+    async def _sockets_held():
+        rc.get_fakeredis_client()
+        return len(rc._fakeredis_server.sockets)
+
+    assert asyncio.run(_sockets_held()) <= 1
 
 
 def test_reset_starts_an_empty_server():

@@ -92,6 +92,7 @@ def test_every_boot_in_a_process_serves_from_a_working_redis():
     bound to the first boot's loop. Its session writes raised, so ``dev-login``
     answered 500, and every other Redis call failed with nothing reporting it.
     """
+    from faultmaven.infrastructure.redis_client import is_fakeredis
     from faultmaven.main import app
 
     answers = []
@@ -99,6 +100,8 @@ def test_every_boot_in_a_process_serves_from_a_working_redis():
         broker = _RealAppBoot()
         try:
             client = broker.client()
+            # What this test is about: on a real Redis it would pass either way.
+            assert is_fakeredis(app.state.redis_client)
             login = client.post("/api/v1/auth/dev-login", json={"username": "admin"})
             pinged = client.portal.call(app.state.redis_client.ping)
             answers.append((login.status_code, pinged))

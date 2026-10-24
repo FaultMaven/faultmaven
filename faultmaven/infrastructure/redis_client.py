@@ -9,6 +9,7 @@ Configuration is read from the unified settings system (faultmaven.config.settin
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 from typing import Optional
@@ -44,7 +45,10 @@ class RedisUnavailableError(DeploymentCoherenceError):
 
 
 def fakeredis_or_fail(reason: str):
-    """Return the shared FakeRedis, or refuse to run when cloud requires real Redis.
+    """Return the in-process FakeRedis, or refuse to run when cloud requires real Redis.
+
+    The client returned is the running event loop's (see
+    :func:`get_fakeredis_client`).
 
     FakeRedis lives in ONE process. Under ``DEPLOYMENT_MODE=cloud`` the Redis
     store holds deployment-wide state — sessions, token revocation, rate limits,
@@ -114,9 +118,14 @@ def get_fakeredis_client():
     process runs several loops whenever more than one ``TestClient`` or
     ``asyncio.run`` drives it.
 
-    A closed loop's client is dropped on the next call, so neither is kept
-    alive. A call with no running loop gets a client of its own on the same
-    server, since there is no loop to cache it under.
+    A closed loop's client is dropped on the next call, and its connections'
+    sockets are closed, so the server lets go of them and of the loop they are
+    bound to. A loop that is never closed keeps its client until a reset.
+
+    A call with no running loop gets a client of its own on the same server,
+    uncached, since there is no loop to cache it under: it is shared with no
+    other caller, and binds to whichever loop first reads on it. No production
+    caller makes one.
     """
     import fakeredis
     import fakeredis.aioredis as fakeredis_aio
@@ -130,9 +139,12 @@ def get_fakeredis_client():
     with _fakeredis_lock:
         if _fakeredis_server is None:
             _fakeredis_server = fakeredis.FakeServer()
+            # The server creates a database on first access, unlocked; every
+            # client here uses database 0, so it exists before any of them.
+            _fakeredis_server.dbs[0]
             logger.info("✅ Redis client: FakeRedis (in-process, local deployment)")
         for closed in [held for held in _fakeredis_clients if held.is_closed()]:
-            del _fakeredis_clients[closed]
+            _release_sockets(_fakeredis_clients.pop(closed))
 
         client = _fakeredis_clients.get(loop) if loop is not None else None
         if client is None:
@@ -142,6 +154,26 @@ def get_fakeredis_client():
             if loop is not None:
                 _fakeredis_clients[loop] = client
         return client
+
+
+def _release_sockets(client) -> None:
+    """Close the fake sockets of a client whose event loop has closed.
+
+    fakeredis registers each connection's socket on its server, and only the
+    socket's ``close()`` takes it off; the async ``disconnect()`` does not.
+    Each socket's response queue is bound to the loop that read on it, so a
+    socket left registered keeps that loop alive. A closed loop can no longer
+    run the client's ``aclose()``, so its sockets are closed directly.
+    """
+    pool = client.connection_pool
+    for connection in [*pool._available_connections, *pool._in_use_connections]:
+        sock = getattr(connection, "_sock", None)
+        if sock is not None:
+            connection._sock = None
+            # A socket fakeredis already closed is off the server; cleaning up
+            # after a loop must never fail the caller asking for a client.
+            with contextlib.suppress(AttributeError, ValueError):
+                sock.close()
 
 
 def reset_fakeredis_client():
