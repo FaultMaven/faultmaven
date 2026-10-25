@@ -37,7 +37,9 @@ shared server (#2241), and ``tests/unit/infrastructure/test_redis_client.py``
 pins that. This module still installs a FakeRedis of its own, because it wants a
 store that no other test has written to. Under ``Test Cloud`` the app is still
 handed the stand-in rather than the job's real Redis, because
-``SKIP_SERVICE_CHECKS`` skips Redis in the composition root (#2243).
+``SKIP_SERVICE_CHECKS`` skips Redis in the composition root. The limiter's window
+script meets that server in ``tests/integration/test_real_redis_stores.py``
+instead, beside the session, revocation and idempotency stores (#2243).
 
 **Why the assertions are shaped the way they are.** A test that only asserted
 "the 4th request was a 429" would also pass against a limiter that refuses

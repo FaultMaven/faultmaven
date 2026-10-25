@@ -3565,10 +3565,10 @@ class FaultMavenSettings(BaseSettings):
         return self.server.environment == Environment.PRODUCTION
 
     def get_active_preset(self) -> Optional[str]:
-        """Get the name of the currently active configuration preset."""
-        import os
+        """The active configuration preset's name; ``None`` for none or ``none``."""
+        from .presets import get_current_preset_name
 
-        return os.getenv("CONFIG_PRESET")
+        return get_current_preset_name()
 
     def get_configuration_summary(self) -> Dict[str, Any]:
         """Get a summary of the current configuration for debugging/display."""
@@ -3677,7 +3677,8 @@ def get_settings() -> FaultMavenSettings:
     Configuration Loading Order:
     1. Load the working directory's .env into the environment
        (``load_settings_dotenv``; none under FAULTMAVEN_SKIP_DOTENV)
-    2. Apply preset defaults (if CONFIG_PRESET is set or zero-config detected)
+    2. Apply preset defaults (if CONFIG_PRESET names one, or zero-config is
+       detected; neither under CONFIG_PRESET=none)
     3. Environment variables override preset defaults
     4. Validate final configuration
 
