@@ -11,33 +11,37 @@ could not tell them apart:
   nobody: not ``Bearer``, malformed, invalid, expired, or revoked but not yet
   expired. This series never reaches zero, by design.
 
-``origin`` is read from the ``Origin`` header: ``extension`` for a
-``chrome-extension`` or ``moz-extension`` scheme, ``web`` for any other
-non-blank origin, and ``none`` when it is missing or blank. A browser sends
-``Origin`` on every ``POST``, so a panel's mint carries one; an uptime probe or
-a crawler does not.
+``origin`` is read from the ``Origin`` header. For a browser extension it is
+the extension's scheme, lower-cased (``chrome-extension``, ``moz-extension``,
+``safari-web-extension``), so each family the copilot ships shows on its own.
+It is ``none`` when the header is missing, blank or ``null`` (an opaque origin:
+a sandboxed frame, ``file://``, some redirects), and ``web`` for any other
+origin. A browser sends ``Origin`` on every ``POST``, so a panel's mint carries
+one; an uptime probe or a crawler does not.
 
-The route counts when it takes the anonymous branch, before the store write.
-It counts callers, not rows. No auth decision reads this counter.
+The route counts after the session is stored, so it counts anonymous sessions
+minted: a mint that fails counts nothing. No auth decision reads this counter.
 
-All six series are created at import, so each exports ``0`` before its first
+All ten series are created at import, so each exports ``0`` before its first
 event: a series created by its first increment appears already at 1, and
-``increase()`` misses that event (#1787). Per request, per replica: aggregate
-with ``sum()``.
+``increase()`` misses that event (#1787). Per process: aggregate with
+``sum()``.
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
 
 BEARER_KINDS = ("absent", "unresolved")
-ORIGIN_KINDS = ("extension", "web", "none")
+EXTENSION_SCHEMES = ("chrome-extension", "moz-extension", "safari-web-extension")
+ORIGIN_KINDS = (*EXTENSION_SCHEMES, "web", "none")
 
-#: ``POST /api/v1/sessions`` requests that minted an anonymous identity.
+#: Anonymous sessions minted by ``POST /api/v1/sessions``.
 session_anonymous_mints_total = Counter(
     "faultmaven_auth_session_anonymous_mints_total",
-    "Session mints (POST /api/v1/sessions) that resolved no user and minted an "
-    "anonymous identity. bearer: absent (no or blank Authorization header) or "
-    "unresolved (a header that resolved to nobody). origin: extension, web or "
-    "none, from the Origin header.",
+    "Anonymous sessions minted by POST /api/v1/sessions: the request resolved "
+    "no user and the session was stored. bearer: absent (no or blank "
+    "Authorization header) or unresolved (a header that resolved to nobody). "
+    "origin: the extension's scheme (chrome-extension, moz-extension, "
+    "safari-web-extension), web, or none (no, blank or null Origin).",
     ["bearer", "origin"],
 )
 

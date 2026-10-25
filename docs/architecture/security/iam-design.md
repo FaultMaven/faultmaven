@@ -531,37 +531,59 @@ counted, on `faultmaven_auth_session_anonymous_mints_total{bearer, origin}`:
 - `bearer="absent"`: no `Authorization` header, or a blank one.
   `bearer="unresolved"`: a non-blank header that resolved to nobody (not
   `Bearer`, malformed, invalid, expired, or revoked but not yet expired).
-- `origin`, from the `Origin` header: `extension` for a `chrome-extension` or
-  `moz-extension` scheme, `web` for any other non-blank origin, `none` when it
-  is missing or blank. Browsers send `Origin` on every `POST`, so a panel's
-  mint carries one and an uptime probe or crawler does not.
+- `origin`, from the `Origin` header: for a browser extension, its scheme,
+  lower-cased (`chrome-extension`, `moz-extension`, `safari-web-extension`);
+  `none` when the header is missing, blank or `null` (an opaque origin: a
+  sandboxed frame, `file://`, some redirects); `web` for any other origin.
+  Browsers send `Origin` on every `POST`, so a panel's mint carries one and an
+  uptime probe or crawler does not.
 
-The route counts when it takes the anonymous branch, before the store write,
-and no auth decision reads the counter. All six series exist at zero from
-import (#1787). It records only with `ENABLE_METRICS=true` and is served only
-with `METRICS_EXPORTER=prometheus_http`. It counts requests on each replica, so
-aggregate with `sum()`. The count that decides the flip:
+The route counts after the session is stored, so the counter counts anonymous
+sessions minted, and a mint that fails counts nothing. Each count writes one
+warning line at the same point:
+`Minted anonymous session (user_id=…, bearer=…, origin=…, client_id=…)`. No
+auth decision reads the counter. All ten series exist at zero from import
+(#1787). The counter records only with `ENABLE_METRICS=true` and is served only
+with `METRICS_EXPORTER=prometheus_http`. The count that decides the flip:
 
 ```promql
 sum(increase(faultmaven_auth_session_anonymous_mints_total{bearer="absent", origin!="none"}[7d]))
 ```
 
+- **`sum()` and this query hold at `WORKERS=1`**, which Cloud runs: one
+  registry per pod. With several workers, each keeps its own registry and
+  `/metrics` answers from one of them, so neither the sum nor the increase is
+  the pod's count.
+- **The query is paired with the log.** `increase()` sees only what a scrape
+  saw. It misses a mint between a pod's readiness and its first scrape, and one
+  after its last scrape before the pod is replaced. While real traffic is near
+  zero, those are exactly the mints that decide the flip. So the decision also
+  counts, in the log store over the same window, the warning lines above with
+  `bearer=absent` and an `origin` other than `none`. One line is written per
+  counted mint, so the log sees the mints no scrape did.
+
 A zero is trusted only after two positive controls:
 
 - after the counter deploys and before any client update, `bearer="absent"`
-  has been seen above zero for both `origin="extension"` and `origin="web"`.
-  That proves the label sees real panel traffic: an extension whose mints
-  arrived without `Origin` would hide under `none`, and the count could read
-  zero falsely;
-- one header-less `POST /api/v1/sessions` carrying an `Origin` moves the series.
+  has been seen above zero for each extension family the copilot ships:
+  `origin="chrome-extension"` and `origin="moz-extension"`. A family whose
+  mints arrived without `Origin` would hide under `none`, and the count could
+  read zero falsely. `web` is not required here: the old Dashboard panel mints
+  without a bearer only when a token refresh fails, so its traffic may never
+  show;
+- before the window opens, one deliberate header-less `POST /api/v1/sessions`
+  carrying a web `Origin` moves `origin="web"`. That proves the `web`
+  classification end to end. It is run before the window, never inside it,
+  because it increments the series the decision reads.
 
 `bearer="unresolved"` never reaches zero, by design: a revoked bearer that has
 not yet expired still mints anonymously, once per occurrence. Seven days of
-zero leaves no live anonymous session: a session's stored expiry
-(`expires_at`, 24 hours today) is fixed when it is minted, a heartbeat does not
-move it, and an anonymous id is never resumed. The 480-minute cap on a
-requested `timeout_minutes` is only reported back to the client; it does not
-expire the stored session.
+zero leaves no live anonymous session from a header-less browser client: a
+session's stored expiry (`expires_at`, 24 hours today) is fixed when it is
+minted, a heartbeat does not move it, and an anonymous id is never resumed.
+`unresolved` mints, and mints with no `Origin`, keep making anonymous sessions,
+by design. The 480-minute cap on a requested `timeout_minutes` is only reported
+back to the client; it does not expire the stored session.
 
 ## Local Mode Authentication
 

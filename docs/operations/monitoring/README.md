@@ -55,6 +55,11 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
   every replica reports the same value: aggregate with `max()`, not `sum()`. A
   count that fails reads `NaN`, never the last number. See
   [IAM design](../../architecture/security/iam-design.md)
+- `faultmaven_auth_session_anonymous_mints_total{bearer,origin}` — anonymous
+  sessions minted by `POST /api/v1/sessions`, by whether an `Authorization`
+  header was sent and by the `Origin` (an extension's scheme, `web` or `none`):
+  the count that decides when the mint can require authentication (#1460). See
+  [IAM design](../../architecture/security/iam-design.md)
 - `faultmaven_event_loop_lag_seconds` — a histogram of how late the API's event
   loop woke from a 0.25 s tick. It records while the app is serving, from the
   end of startup until shutdown begins, in a process that mounts the Prometheus

@@ -1,4 +1,4 @@
-"""Every anonymous session mint is counted under exactly one (bearer, origin).
+"""Every anonymous session minted is counted under exactly one (bearer, origin).
 
 #1460 step 2. ``POST /api/v1/sessions`` mints an anonymous identity when no
 bearer resolves to a user, and the server cannot require one until the mints
@@ -16,6 +16,11 @@ ships with the ``cloud`` extra, so these run in the Test Cloud job.
 
 import pytest
 
+from faultmaven.api.v1.dependencies import get_session_service
+from faultmaven.modules.auth.domain.services.auth_service import (
+    AuthService,
+    RevocationStateUnknownError,
+)
 from faultmaven.modules.auth.infrastructure.metrics import session_metrics
 
 prometheus_client = pytest.importorskip("prometheus_client")
@@ -42,6 +47,15 @@ def registry(monkeypatch):
     return registry
 
 
+@pytest.fixture
+def admin(booted_app_client):
+    """A real access token from ``dev-login``, and the user it names."""
+    login = booted_app_client.post("/api/v1/auth/dev-login", json={"username": "admin"})
+    assert login.status_code == 200, login.text
+    body = login.json()
+    return body["access_token"], body["user"]["user_id"]
+
+
 def _read(registry):
     return {
         (bearer, origin): registry.get_sample_value(
@@ -64,18 +78,30 @@ def _mint(client, registry, headers):
     "headers, series",
     [
         ({}, ("absent", "none")),
-        ({"Origin": "chrome-extension://abc"}, ("absent", "extension")),
+        ({"Origin": "chrome-extension://abc"}, ("absent", "chrome-extension")),
+        ({"Origin": "CHROME-EXTENSION://abc"}, ("absent", "chrome-extension")),
         (
-            {"Authorization": "", "Origin": "moz-extension://def"},
-            ("absent", "extension"),
+            {"Authorization": "", "Origin": "moz-extension://x"},
+            ("absent", "moz-extension"),
         ),
+        ({"Origin": "safari-web-extension://x"}, ("absent", "safari-web-extension")),
+        ({"Origin": "null"}, ("absent", "none")),
         (
             {"Authorization": "Bearer not-a-jwt", "Origin": "https://app.example"},
             ("unresolved", "web"),
         ),
         ({"Authorization": "Basic dXNlcjpwYXNz", "Origin": ""}, ("unresolved", "none")),
     ],
-    ids=["bare", "extension", "blank-header", "bad-bearer-web", "basic"],
+    ids=[
+        "bare",
+        "chrome",
+        "chrome-mixed-case",
+        "blank-header-moz",
+        "safari",
+        "opaque-origin",
+        "bad-bearer-web",
+        "basic",
+    ],
 )
 def test_an_anonymous_mint_moves_exactly_one_series(
     booted_app_client, registry, headers, series
@@ -88,20 +114,55 @@ def test_an_anonymous_mint_moves_exactly_one_series(
     assert moved == {series: 1.0}
 
 
-def test_an_authenticated_mint_moves_nothing(booted_app_client, registry):
-    login = booted_app_client.post("/api/v1/auth/dev-login", json={"username": "admin"})
-    assert login.status_code == 200, login.text
-    body = login.json()
+def test_an_authenticated_mint_moves_nothing(booted_app_client, registry, admin):
+    token, user_id = admin
 
     response, moved = _mint(
         booted_app_client,
         registry,
-        {
-            "Authorization": f"Bearer {body['access_token']}",
-            "Origin": "chrome-extension://abc",
-        },
+        {"Authorization": f"Bearer {token}", "Origin": "chrome-extension://abc"},
     )
 
     assert response.status_code == 201, response.text
-    assert response.json()["user_id"] == body["user"]["user_id"]
+    assert response.json()["user_id"] == user_id
+    assert moved == {}
+
+
+def test_an_unreadable_revocation_store_mints_and_counts_nothing(
+    booted_app_client, registry, admin, monkeypatch
+):
+    """A 503 is not an anonymous mint: the store's failure must not fail open."""
+    token, _ = admin
+
+    async def _store_down(self, claims):
+        raise RevocationStateUnknownError("OperationalError")
+
+    monkeypatch.setattr(AuthService, "_is_revoked", _store_down)
+
+    response, moved = _mint(
+        booted_app_client, registry, {"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.headers["x-error-code"] == "REVOCATION_STATE_UNKNOWN"
+    assert moved == {}
+
+
+def test_a_failed_mint_counts_nothing(booted_app_client, registry, monkeypatch):
+    """Counted after the store write, so a mint that fails is not a mint."""
+
+    class _StoreDown:
+        async def create_session(self, user_id, client_id=None, metadata=None):
+            raise ConnectionError("session store unavailable")
+
+    async def _service():
+        return _StoreDown()
+
+    monkeypatch.setitem(
+        booted_app_client.app.dependency_overrides, get_session_service, _service
+    )
+
+    response, moved = _mint(booted_app_client, registry, {})
+
+    assert response.status_code == 500, response.text
     assert moved == {}
