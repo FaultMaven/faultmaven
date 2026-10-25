@@ -485,14 +485,12 @@ async def test_login_that_straddles_a_revocation_mints_a_dead_pair():
     generator = _hs256(store)
 
     request = _fake_request(_StraddlingUserStore(user, store), store)
-    response = SimpleNamespace(headers={})
 
     gen_patch, settings_patch = _patches(generator)
     with gen_patch, settings_patch:
         result = await auth_routes.local_login(
             DevLoginRequest(username=user.username),
             request,
-            response,
             session_service=_FakeSessionService(),
         )
 

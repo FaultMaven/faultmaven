@@ -53,7 +53,7 @@ _HEADER = (
     "import traceback\n"
     "from typing import Optional\n"
     "from fastapi import HTTPException, status\n"
-    "def _llm_http(status_code, error_code, detail, retry_after, correlation_id):\n"
+    "def _llm_http(status_code, error_code, detail, retry_after):\n"
     '    return HTTPException(status_code=status_code, detail=detail, headers={"x": error_code})\n'
     "def _f(msg):\n"
     '    return HTTPException(500, detail={"message": msg})\n'
@@ -63,7 +63,7 @@ _HEADER = (
 
 #: The header the review's D and NN rows were probed under: ``_llm_http``
 #: again, and ``Any`` for the annotation rows.
-_DEFEAT_HEADER = 'import traceback\nfrom typing import Any, Optional\nfrom fastapi import HTTPException, status\ndef _llm_http(status_code, error_code, detail, retry_after, correlation_id):\n    return HTTPException(status_code=status_code, detail=detail, headers={"x": error_code})\n'
+_DEFEAT_HEADER = 'import traceback\nfrom typing import Any, Optional\nfrom fastapi import HTTPException, status\ndef _llm_http(status_code, error_code, detail, retry_after):\n    return HTTPException(status_code=status_code, detail=detail, headers={"x": error_code})\n'
 
 #: A row is a planter: ``plant(tmp_path) -> (path, leak_line)``. The leak line
 #: is what a must-flag row expects reported, and nothing else; a must-not-flag
@@ -119,12 +119,14 @@ _ARM5 = "    # 5. Genuinely unclassifiable"
 _D1_ARM = (
     "    for c in walk_cause_chain(exc):\n"
     "        if isinstance(c, LLMException):\n"
-    "            return _llm_http(502, 'LLM_PROVIDER_ERROR', str(c), None, correlation_id)\n"
+    "            return _llm_http(502, 'LLM_PROVIDER_ERROR', str(c), None)\n"
 )
 
 #: D3b: the exception's text in ``_llm_http``'s ``error_code``, which the
 #: factory puts in the ``x-error-code`` response header rather than the body.
-_D3B_ARM = "    return _llm_http(500, f'SERVICE_ERROR:{exc}', SERVICE_ERROR_DETAIL, '10', correlation_id)\n"
+_D3B_ARM = (
+    "    return _llm_http(500, f'SERVICE_ERROR:{exc}', SERVICE_ERROR_DETAIL, '10')\n"
+)
 
 
 def _helper_mutant(anchor: str, replacement: str, leak: str) -> tuple[str, int]:
@@ -235,13 +237,13 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def r():\n    try: x()\n    except Exception as e:\n        raise _llm_http(400, 'X', str(e), None, None)\n"
+            "def r():\n    try: x()\n    except Exception as e:\n        raise _llm_http(400, 'X', str(e), None)\n"
         ),
         id="P7",  # factory call from a broad handler, 4xx
     ),
     pytest.param(
         _planted(
-            "def r():\n    try: x()\n    except LLMException as e:\n        raise _llm_http(500, 'X', str(e), None, None)\n"
+            "def r():\n    try: x()\n    except LLMException as e:\n        raise _llm_http(500, 'X', str(e), None)\n"
         ),
         id="P8",  # factory call from a typed handler, 5xx
     ),
@@ -277,7 +279,7 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def r():\n    try: x()\n    except KeyError as e:\n        raise _llm_http(status_code=500, error_code='X', detail=str(e), retry_after=None, correlation_id=None)\n"
+            "def r():\n    try: x()\n    except KeyError as e:\n        raise _llm_http(status_code=500, error_code='X', detail=str(e), retry_after=None)\n"
         ),
         id="P14",  # factory called by keyword
     ),
@@ -307,7 +309,7 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    text = str(exc)\n    return _llm_http(400, 'X', text, None, None)\n"
+            "def h(exc: BaseException):\n    text = str(exc)\n    return _llm_http(400, 'X', text, None)\n"
         ),
         id="P19",  # exception parameter, alias, through a factory
     ),
@@ -335,7 +337,7 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    return _llm_http(503, code_of(exc), 'static', None, None)\n"
+            "def h(exc: BaseException):\n    return _llm_http(503, code_of(exc), 'static', None)\n"
         ),
         # N6 in the plan's probe, pinned there as must-NOT-flag because the
         # exception reaches a header argument rather than `detail`. That was
@@ -370,7 +372,7 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    return _llm_http(503, code_of(exc), 'static', None, None)\n",
+            "def h(exc: BaseException):\n    return _llm_http(503, code_of(exc), 'static', None)\n",
             header=_DEFEAT_HEADER,
         ),
         id="D3c",  # N6 exc into header arg
@@ -455,7 +457,7 @@ _MUST_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    for c in walk_cause_chain(exc):\n        if isinstance(c, LLMException):\n            return _llm_http(502, 'X', str(c), None, None)\n    return _llm_http(500, 'S', 'static', None, None)\n",
+            "def h(exc: BaseException):\n    for c in walk_cause_chain(exc):\n        if isinstance(c, LLMException):\n            return _llm_http(502, 'X', str(c), None)\n    return _llm_http(500, 'S', 'static', None)\n",
             header=_DEFEAT_HEADER,
             leak_line=4,
         ),
@@ -562,7 +564,7 @@ _MUST_NOT_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    return _llm_http(500, 'X', 'static', None, None)\n"
+            "def h(exc: BaseException):\n    return _llm_http(500, 'X', 'static', None)\n"
         ),
         id="N5",  # factory with a static detail
     ),
@@ -608,7 +610,7 @@ _MUST_NOT_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def r():\n    try: x()\n    except ValidationException as e:\n        raise _llm_http(422, 'V', str(e), None, None)\n"
+            "def r():\n    try: x()\n    except ValidationException as e:\n        raise _llm_http(422, 'V', str(e), None)\n"
         ),
         id="N14",  # typed handler, 4xx through a factory
     ),
@@ -646,7 +648,7 @@ _MUST_NOT_FLAG = [
     ),
     pytest.param(
         _planted(
-            "def h(exc: BaseException):\n    for c in walk_cause_chain(exc):\n        if isinstance(c, LLMException):\n            return _llm_http(502, 'X', 'static', None, None)\n    return _llm_http(500, 'S', 'static', None, None)\n",
+            "def h(exc: BaseException):\n    for c in walk_cause_chain(exc):\n        if isinstance(c, LLMException):\n            return _llm_http(502, 'X', 'static', None)\n    return _llm_http(500, 'S', 'static', None)\n",
             header=_DEFEAT_HEADER,
         ),
         id="NN5",  # for over chain, static detail

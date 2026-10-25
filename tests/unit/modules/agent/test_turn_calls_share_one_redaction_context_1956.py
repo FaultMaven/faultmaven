@@ -407,7 +407,6 @@ class TestTheTitle:
                 llm_provider=router,
                 max_words=8,
                 hint=None,
-                correlation_id="c",
                 sanitizer=sanitizer,
                 redis_client=redis_client,
             )
@@ -830,7 +829,6 @@ class TestConcurrentTurnsKeepTheRegistry:
                 llm_provider=router,
                 max_words=8,
                 hint=None,
-                correlation_id="c",
                 sanitizer=sanitizer,
                 redis_client=redis,
             )

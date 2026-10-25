@@ -70,9 +70,10 @@ def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
 
     A caller's ``extra`` field wins over whatever the event already holds for
     that key: a request-context stamp, and equally a keyword or bound field of
-    the same call. So a telemetry line's ``event`` name and a route's own
-    ``correlation_id`` arrive as the caller wrote them, as they did on the stdlib
-    path before (#2268). The value it replaces is not kept.
+    the same call. So a telemetry line's ``event`` name arrives as the caller
+    wrote it, as it did on the stdlib path before (#2268). The value it
+    replaces is not kept. A route never passes ``correlation_id``: the stamp is
+    the request's own id, the one its response carries (#2278).
 
     The exceptions are the logger's own facts, a ``user_id`` the event already
     holds, and the keys the formatter acts on (a traceback directive) or writes:

@@ -172,7 +172,6 @@ async def _login(store) -> object:
         return await auth_routes.local_login(
             DevLoginRequest(username=USERNAME),
             _fake_request(store),
-            SimpleNamespace(headers={}),
             session_service=_FakeSessionService(),
         )
 
@@ -183,7 +182,6 @@ async def _register(store) -> object:
         return await auth_routes.local_register(
             DevLoginRequest(username=USERNAME),
             _fake_request(store),
-            SimpleNamespace(headers={}),
             session_service=_FakeSessionService(),
         )
 

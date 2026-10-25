@@ -83,7 +83,7 @@ def client() -> TestClient:
         try:
             raise _wrapped()
         except ServiceException as e:
-            raise llm_service_error_http_exception(e, "corr-1")
+            raise llm_service_error_http_exception(e)
 
     @app.post("/inline-beside-a-provider-status")
     async def inline_beside():
@@ -114,8 +114,10 @@ def test_a_refusal_answers_500_service_error(client, path):
     assert "redaction" not in resp.text and "prompt raw" not in resp.text
 
 
-def test_the_inline_mapping_keeps_its_correlation_id(client):
-    assert client.post("/inline").headers["x-correlation-id"] == "corr-1"
+def test_the_inline_mapping_sets_no_correlation_id_of_its_own(client):
+    """The request's id is ``LoggingMiddleware``'s to set, and this app has
+    none, so the response carries no id at all (#2278)."""
+    assert "x-correlation-id" not in client.post("/inline").headers
 
 
 def test_both_mappings_put_the_refusal_first():

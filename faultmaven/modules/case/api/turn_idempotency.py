@@ -209,7 +209,6 @@ async def open_keyed_turn(
     fingerprint: str,
     case_service: ICaseService,
     response_bound_seconds: float,
-    correlation_id: str,
 ) -> KeyedTurn:
     """Claim the key, then look its receipt up (the module docstring's order).
 
@@ -223,7 +222,7 @@ async def open_keyed_turn(
             request_fingerprint=fingerprint,
         )
     )
-    await _claim(keyed, redis, case, response_bound_seconds, correlation_id)
+    await _claim(keyed, redis, case, response_bound_seconds)
     try:
         receipt = await case_service.get_turn_receipt(
             enterprise_id=case.enterprise_id,
@@ -240,7 +239,7 @@ async def open_keyed_turn(
     # The turn this key names already committed: nothing of this request will
     # run, so the claim goes now rather than at the route's end.
     await keyed.release()
-    keyed.replay = _answer_from_receipt(receipt, fingerprint, case, correlation_id)
+    keyed.replay = _answer_from_receipt(receipt, fingerprint, case)
     return keyed
 
 
@@ -249,7 +248,6 @@ async def replay_committed_turn(
     keyed: KeyedTurn,
     case: Case,
     case_service: ICaseService,
-    correlation_id: str,
 ) -> TurnResponse:
     """Answer a keyed turn whose commit the receipt's unique key refused.
 
@@ -268,10 +266,8 @@ async def replay_committed_turn(
         idempotency_key=receipt_key.idempotency_key,
     )
     if receipt is None:
-        raise _in_progress(correlation_id, REFUSED_REPLAY_RETRY_AFTER_SECONDS)
-    return _answer_from_receipt(
-        receipt, receipt_key.request_fingerprint, case, correlation_id
-    )
+        raise _in_progress(REFUSED_REPLAY_RETRY_AFTER_SECONDS)
+    return _answer_from_receipt(receipt, receipt_key.request_fingerprint, case)
 
 
 #: ``Retry-After`` when a refused commit's receipt cannot be read back: there is
@@ -279,7 +275,7 @@ async def replay_committed_turn(
 REFUSED_REPLAY_RETRY_AFTER_SECONDS = 2
 
 
-def _in_progress(correlation_id: str, retry_after: int) -> HTTPException:
+def _in_progress(retry_after: int) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail=(
@@ -287,7 +283,6 @@ def _in_progress(correlation_id: str, retry_after: int) -> HTTPException:
             "Idempotency-Key after Retry-After seconds to receive its result."
         ),
         headers={
-            "x-correlation-id": correlation_id,
             "x-error-code": TURN_IN_PROGRESS,
             "Retry-After": str(retry_after),
         },
@@ -295,7 +290,7 @@ def _in_progress(correlation_id: str, retry_after: int) -> HTTPException:
 
 
 def _answer_from_receipt(
-    receipt: TurnReceipt, fingerprint: str, case: Case, correlation_id: str
+    receipt: TurnReceipt, fingerprint: str, case: Case
 ) -> TurnResponse:
     """The committed turn's response, or the 409 its receipt calls for."""
     if receipt.request_fingerprint != fingerprint:
@@ -307,7 +302,6 @@ def _answer_from_receipt(
                 "turn unchanged."
             ),
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": IDEMPOTENCY_KEY_REUSE,
             },
         )
@@ -325,7 +319,6 @@ def _answer_from_receipt(
             status_code=status.HTTP_409_CONFLICT,
             detail="This turn committed; reload the case.",
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE,
             },
         )
@@ -336,7 +329,6 @@ async def _claim(
     redis: Any,
     case: Case,
     response_bound_seconds: float,
-    correlation_id: str,
 ) -> None:
     """Take the in-flight claim, OWNER-TOKENED, or refuse with 409.
 
@@ -378,4 +370,4 @@ async def _claim(
             retry_after = max(1, math.ceil(remaining_ms / 1000))
     except Exception:  # noqa: BLE001 - 1 s is an honest lower bound
         pass
-    raise _in_progress(correlation_id, retry_after)
+    raise _in_progress(retry_after)

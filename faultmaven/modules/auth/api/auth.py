@@ -24,7 +24,6 @@ Security Notes:
 
 import asyncio
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +58,7 @@ from faultmaven.config.tenant_context import (
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException, UserLookupFailed
 from faultmaven.infrastructure.concurrency.bounded import wait_within
+from faultmaven.infrastructure.logging.coordinator import current_correlation_id
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.modules.auth.contracts import IUserQuery
@@ -376,7 +376,6 @@ async def get_auth_config() -> AuthConfigResponse:
 async def local_login(
     request_body: DevLoginRequest,
     request: Request,
-    response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
     """Internal login implementation for local mode.
@@ -399,8 +398,6 @@ async def local_login(
     - Input validation and sanitization
     - Proper OAuth2-compatible error responses
     """
-    correlation_id = str(uuid.uuid4())
-
     # #831: before the first read of any state the tokens derive from
     # (the user row).
     state_read_at = capture_state_read_at()
@@ -417,10 +414,7 @@ async def local_login(
             # User doesn't exist - require explicit account creation
             logger.warning(
                 f"Login attempt for non-existent user: {request_body.username}",
-                extra={
-                    "username": request_body.username,
-                    "correlation_id": correlation_id,
-                },
+                extra={"username": request_body.username},
             )
             raise HTTPException(
                 status_code=401,
@@ -441,7 +435,6 @@ async def local_login(
             extra={
                 "user_id": user.user_id,
                 "username": request_body.username,
-                "correlation_id": correlation_id,
             },
         )
 
@@ -516,7 +509,9 @@ async def local_login(
             metadata={
                 "login_method": "dev_login",
                 "username": user.username,
-                "correlation_id": correlation_id,
+                # The login request's id: it joins this session to the
+                # request's log lines (#2278).
+                "correlation_id": current_correlation_id(),
             },
         )
         # Extract session_id from SessionContext tuple or object
@@ -548,12 +543,7 @@ async def local_login(
             user=user_profile,
         )
 
-        # Set correlation ID in response headers
-        response.headers["X-Correlation-Id"] = correlation_id
-
-        logger.info(
-            f"Login successful for user {user.user_id} (correlation: {correlation_id})"
-        )
+        logger.info(f"Login successful for user {user.user_id}")
         return token_response
 
     except HTTPException:
@@ -568,7 +558,6 @@ async def local_login(
     except Exception as e:
         logger.error(
             f"Dev login failed: {type(e).__name__}: {str(e)}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         raise HTTPException(
@@ -598,7 +587,6 @@ async def local_login(
 async def local_register(
     request_body: DevLoginRequest,
     request: Request,
-    response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
     """Local mode registration endpoint.
@@ -619,8 +607,6 @@ async def local_register(
     - Input validation and sanitization
     - Auto-generates email and display name if not provided
     """
-    correlation_id = str(uuid.uuid4())
-
     # #831: before the first store read — see local_login.
     state_read_at = capture_state_read_at()
 
@@ -678,7 +664,7 @@ async def local_register(
             metadata={
                 "login_method": "dev_register",
                 "username": user.username,
-                "correlation_id": correlation_id,
+                "correlation_id": current_correlation_id(),
             },
         )
         # Extract session_id from SessionContext tuple or object
@@ -710,12 +696,7 @@ async def local_register(
             user=user_profile,
         )
 
-        # Set correlation ID in response headers
-        response.headers["X-Correlation-Id"] = correlation_id
-
-        logger.info(
-            f"Registration successful for user {user.user_id} (correlation: {correlation_id})"
-        )
+        logger.info(f"Registration successful for user {user.user_id}")
         return token_response
 
     except HTTPException:
@@ -728,7 +709,6 @@ async def local_register(
     except Exception as e:
         logger.error(
             f"Dev registration failed: {type(e).__name__}: {str(e)}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         raise HTTPException(
@@ -769,8 +749,6 @@ async def refresh_tokens(
     3. Mint a new access + refresh token pair
     4. Revoke the old refresh token (rotation)
     """
-    correlation_id = str(uuid.uuid4())
-
     # #831: before the refresh-token validation, not just the user load —
     # the presented token's still-unrevoked status is itself state this
     # handler reads.
@@ -879,14 +857,11 @@ async def refresh_tokens(
         #    cannot be reused after a successful refresh.
         await jwt_generator.revoke_refresh_token(request_body.refresh_token)
 
-        response.headers["X-Correlation-Id"] = correlation_id
         # Token response: no-store per RFC 6749 §5.1 (same convention as the
         # SSO exchange endpoint — the body carries fresh credentials).
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
-        logger.info(
-            f"Token refreshed for user {user.user_id} (correlation: {correlation_id})"
-        )
+        logger.info(f"Token refreshed for user {user.user_id}")
         return TokenRefreshResponse(
             access_token=new_access_token,
             token_type="bearer",
@@ -908,7 +883,6 @@ async def refresh_tokens(
     except Exception as e:
         logger.error(
             f"Token refresh failed: {type(e).__name__}: {str(e)}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         raise HTTPException(
@@ -1205,8 +1179,6 @@ async def logout(
     2. Revoke the current token
     3. Return confirmation
     """
-    correlation_id = str(uuid.uuid4())
-
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
         if auth_service is None:
@@ -1249,10 +1221,7 @@ async def logout(
             # Our generators always mint a jti, so this indicates a foreign
             # token. Nothing to revoke *by identifier* — but the account-wide
             # watermark above covers it anyway, provided it took.
-            logger.warning(
-                f"Logout without jti claim: {current_user.user_id} "
-                f"(correlation: {correlation_id})"
-            )
+            logger.warning(f"Logout without jti claim: {current_user.user_id}")
             await _end_idp_session_best_effort(request, x_session_id)
             return LogoutResponse(
                 message=(
@@ -1281,9 +1250,7 @@ async def logout(
         # clients, non-SSO logins) it is simply skipped.
         await _end_idp_session_best_effort(request, x_session_id)
 
-        logger.info(
-            f"User logout: {current_user.user_id} (correlation: {correlation_id})"
-        )
+        logger.info(f"User logout: {current_user.user_id}")
         return LogoutResponse(
             message="Logged out successfully",
             revoked_tokens=1,
@@ -1293,9 +1260,7 @@ async def logout(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Logout failed: {e} (correlation: {correlation_id})", exc_info=True
-        )
+        logger.error(f"Logout failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Logout failed")
 
 
@@ -1488,8 +1453,6 @@ async def get_current_user_profile(
 
     Returns detailed information about the currently authenticated user.
     """
-    correlation_id = str(uuid.uuid4())
-
     try:
         # The two stored-row reads are independent; run them concurrently
         # rather than serially on the token-validation hot path. Neither
@@ -1514,18 +1477,13 @@ async def get_current_user_profile(
             organization=organization,
         )
 
-        logger.debug(
-            f"User profile requested: {current_user.user_id} (correlation: {correlation_id})"
-        )
+        logger.debug(f"User profile requested: {current_user.user_id}")
         return user_info
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Get user profile failed: {e} (correlation: {correlation_id})",
-            exc_info=True,
-        )
+        logger.error(f"Get user profile failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve user profile")
 
 

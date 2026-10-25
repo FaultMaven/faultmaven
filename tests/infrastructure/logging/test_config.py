@@ -312,8 +312,9 @@ class TestFaultMavenLogger:
 
     @pytest.mark.parametrize("path", ["native", "stdlib"])
     def test_a_callers_own_field_wins_over_a_context_stamp(self, path):
-        """A route's own ``correlation_id`` (the one its 500 body names) is the
-        line's, as a record's own field is wherever the context only fills in."""
+        """A caller's own ``correlation_id`` is the line's, as a record's own
+        field is wherever the context only fills in. No route passes one: its
+        lines carry the request's (#2278)."""
         import json
 
         coordinator = LoggingCoordinator()
@@ -324,14 +325,14 @@ class TestFaultMavenLogger:
                     path,
                     "faultmaven.tests.attribution_2268",
                     "failed",
-                    {"correlation_id": "route-minted"},
+                    {"correlation_id": "the-callers-own"},
                 )
             )
         finally:
             coordinator.end_request()
 
         record = json.loads(line)
-        assert record["correlation_id"] == "route-minted"
+        assert record["correlation_id"] == "the-callers-own"
         assert "extra" not in record
 
     def test_a_stdlib_lines_event_name_is_the_callers(self):
