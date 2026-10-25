@@ -46,9 +46,16 @@ dependencies = [
     "tiktoken>=0.5.0",
 
     # Database (SQLite in base, PostgreSQL drivers in cloud)
-    "sqlalchemy>=2.0.0",
+    # >=2.0.55: the pool closes a new connection whose `connect` events raise
+    # (sqlalchemy#13548 in 2.0.53, its cancellation regression sqlalchemy#13678 in
+    # 2.0.55). Before it, a turn cancelled during SQLite's per-checkout setup
+    # orphaned the connection and its worker thread (fm#2258). <2.1: 2.1.0-2.1.4
+    # lack sqlalchemy#13678, and moving to 2.1 is its own upgrade.
+    "sqlalchemy>=2.0.55,<2.1",
     "alembic>=1.13.0",
-    "aiosqlite>=0.19.0",
+    # >=0.22.1: Connection.stop(), which SQLAlchemy 2.0.55's terminate path calls
+    # to force-close a connection whose graceful close was cancelled.
+    "aiosqlite>=0.22.1",
 
     # Core utilities and validation
     # >=2.10: the floor every patched litellm release declares. The old
