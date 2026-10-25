@@ -287,13 +287,17 @@ paid attempt is #2319. Measured on a virtual clock against a hung provider,
 before → after: a ladder-only turn 96 → 62 s at T = 30 s and a 120 s turn,
 104 → 62 s at 240 s, and 120 s both at T = 120 s, A = 240 s; a turn with tools
 92 → 92 s at 120 s, 96 → 92 s at 240 s, and 235.5 s both at T = 120 s. The cost
-moves to the breaker on a ladder-only turn: a hard-down provider no longer opens
-it inside the first turn's ladder (two failures of three), so that turn ends
-`RETRY_EXHAUSTED` (where the full ladder fit, it ended `PROVIDER_CIRCUIT_OPEN`;
-both 503 + `Retry-After: 30`), the next turn pays one `T` and opens it, and the
-one after is refused at once — 62 + 32 + 0 s over three turns where it was 96 +
-0 + 0 (#1513). A turn with tools still reaches three failures and opens it in
-its first turn (92 + 0 + 0 s). The two settings
+moves to the breaker. At the shipped timeouts (T = 30 s, A = 120 s), a hung
+provider (every attempt a timeout) reaches two breaker failures of three on a
+ladder-only turn, so that turn ends `RETRY_EXHAUSTED` (where the full ladder
+fit, it ended `PROVIDER_CIRCUIT_OPEN`; both 503 + `Retry-After: 30`), the next
+turn pays one `T` and opens it, and the one after is refused at once — 62 + 32 +
+0 s over three turns where it was 96 + 0 + 0 (#1513). A turn with tools reaches
+three failures (the tool loop's attempt, then the ladder's two) and opens it in
+its first turn (92 + 0 + 0 s). Where the turn affords fewer attempts (T = 120 s,
+A = 240 s), each turn pays fewer and the breaker opens a turn or two later. A
+provider that fails fast (a refused connection) is status-shaped, and opens it
+inside its first ladder. The two settings
 live in different classes with their own per-provider maps and nothing related
 them, so the turn used to be cancelled mid-ladder: the classification never ran
 and the caller got an opaque 504 instead of the honest 503 + `Retry-After`

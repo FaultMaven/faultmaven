@@ -369,15 +369,18 @@ and the router's breaker, before → after:
 | With tools | 92 → 92 s | 96 → 92 s | 235.5 → 235.5 s (`TURN_BUDGET_EXHAUSTED`) |
 
 **Breaker consequence.** The router's breaker opens on the third consecutive
-failure. On a ladder-only turn a hard-down provider no longer reaches it inside
-the first turn's ladder (two failures), so that turn ends `RETRY_EXHAUSTED`,
-where it ended `PROVIDER_CIRCUIT_OPEN` whenever the full ladder fit; both answer
-503 with `Retry-After: 30`, with different messages. The next turn pays one
-`T`, opens the breaker, and its retry is refused at once; the turn after is
-refused without an attempt. Over three turns: 62 + 32 + 0 s where it was 96 + 0
-+ 0 s. A turn with tools still reaches three failures in its first turn (the
-tool attempt and the ladder's two) and opens it there: 92 + 0 + 0 s. The breaker
-threshold is #1513's question.
+failure. At the shipped timeouts (T = 30 s, A = 120 s), a hung provider (every
+attempt a timeout) reaches two breaker failures of three on a ladder-only turn,
+so that turn ends `RETRY_EXHAUSTED`, where it ended `PROVIDER_CIRCUIT_OPEN`
+whenever the full ladder fit; both answer 503 with `Retry-After: 30`, with
+different messages. The next turn pays one `T`, opens the breaker, and its
+retry is refused at once; the turn after is refused without an attempt. Over
+three turns: 62 + 32 + 0 s where it was 96 + 0 + 0 s. A turn with tools reaches
+three failures in its first turn (the tool loop's attempt, then the ladder's
+two) and opens it there: 92 + 0 + 0 s. Where the turn affords fewer attempts
+(T = 120 s, A = 240 s), each turn pays fewer and the breaker opens a turn or two
+later. A provider that fails fast (a refused connection) is status-shaped, and
+opens it inside its first ladder. The breaker threshold is #1513's question.
 
 `GET /admin/config/status`'s `llm_retry_ladder_fits_turn_budget` models both
 ladders from the same `RetryConfig` the running ladder reads
