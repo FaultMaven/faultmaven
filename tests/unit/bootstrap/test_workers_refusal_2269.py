@@ -101,10 +101,13 @@ def container(monkeypatch):
     return instance
 
 
-def _built(*, redis=None, kb=None, evidence=None):
+def _built(*, redis=None, kb=None, evidence=None, initialized=True):
     """What ``container.initialize()`` leaves for the refusal to read."""
     return SimpleNamespace(
-        redis_client=redis, kb_chromadb_client=kb, evidence_chromadb_client=evidence
+        redis_client=redis,
+        kb_chromadb_client=kb,
+        evidence_chromadb_client=evidence,
+        is_initialized=initialized,
     )
 
 
@@ -274,6 +277,20 @@ def test_no_redis_client_at_all_is_refused(settings_from, clients):
 
     with pytest.raises(PerProcessStoresError, match="no Redis client was built"):
         _refuse_built_per_process_stores(built, settings_from())
+
+
+def test_a_container_that_did_not_initialize_is_refused_as_a_partial_composition(
+    settings_from, clients
+):
+    """Outside pytest a failed ``initialize()`` is tolerated, and may have
+    failed before building the Redis client a named REDIS_URL describes:
+    naming REDIS_URL as the remedy would send the operator to a setting
+    already made."""
+    built = _built(kb=clients.server_chroma(), initialized=False)
+
+    with pytest.raises(PerProcessStoresError, match="composition failed") as refused:
+        _refuse_built_per_process_stores(built, settings_from())
+    assert "REDIS_URL" not in str(refused.value)
 
 
 @pytest.mark.parametrize(
