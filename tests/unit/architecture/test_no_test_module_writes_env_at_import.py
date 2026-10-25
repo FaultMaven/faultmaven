@@ -7,8 +7,8 @@ set. Six OAuth integration modules did it (``OAUTH_ENABLED``,
 ``rebuild_app_under`` and run under the ``oauth_environment`` fixture.
 
 A write inside a function, a fixture or a test is not module level and is not
-flagged; nor is source held in a string for a child process, nor a
-``__main__`` guard. The root ``tests/conftest.py`` is exempt: setting the
+flagged (its decorators and default arguments are); nor is source held in a
+string for a child process, nor the body of a ``__main__`` guard. The root ``tests/conftest.py`` is exempt: setting the
 session's environment for every test is what it is for. Any other conftest is
 scanned, because its import-time write would leak the same way.
 """
@@ -97,42 +97,62 @@ def _writes_environ(statement: ast.stmt) -> bool:
 
 
 def _is_main_guard(statement: ast.stmt) -> bool:
-    """``if __name__ == "__main__":``, which pytest's import never runs."""
+    """``if __name__ == "__main__":``, whose body pytest's import never runs."""
     test = getattr(statement, "test", None)
     return (
         isinstance(statement, ast.If)
         and isinstance(test, ast.Compare)
         and isinstance(test.left, ast.Name)
         and test.left.id == "__name__"
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "__main__"
     )
 
 
 def _module_level_statements(body):
-    """Statements that run at import: the module's own, those of its class
-    bodies, and those nested in its top-level ``if``/``try``/``with``/``for``
-    blocks; never a function's, and never a ``__main__`` guard's."""
+    """What runs at import, as statements and expressions: the module's own
+    statements; the headers and every block of its compound statements
+    (``try``/``except*``, ``match`` and loops included), except the body of a
+    ``__main__`` guard; class bodies, bases and keywords; and the decorators
+    and default arguments of functions, never their bodies."""
     for statement in body:
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if _is_main_guard(statement):
+            yield from statement.decorator_list
+            yield from statement.args.defaults
+            yield from (d for d in statement.args.kw_defaults if d is not None)
             continue
         if isinstance(statement, ast.ClassDef):
+            yield from statement.decorator_list
+            yield from statement.bases
+            yield from (keyword.value for keyword in statement.keywords)
             yield from _module_level_statements(statement.body)
             continue
-        if isinstance(statement, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
-            for field in ("body", "orelse", "finalbody", "handlers"):
-                for item in getattr(statement, field, None) or []:
-                    inner = item.body if isinstance(item, ast.ExceptHandler) else [item]
-                    yield from _module_level_statements(inner)
-            # The header itself (an ``if`` test, a ``with`` item) runs too.
-            yield from (
-                node
-                for node in [getattr(statement, "test", None)]
-                + [item.context_expr for item in getattr(statement, "items", [])]
-                if node is not None
-            )
+        if not any(
+            isinstance(getattr(statement, field, None), list)
+            for field in ("body", "cases")
+        ):
+            yield statement  # a simple statement
             continue
-        yield statement
+        for field in ("test", "iter", "subject"):
+            header = getattr(statement, field, None)
+            if header is not None:
+                yield header
+        yield from (item.context_expr for item in getattr(statement, "items", []))
+        blocks = ["orelse", "finalbody", "handlers", "cases"]
+        if not _is_main_guard(statement):
+            blocks.insert(0, "body")
+        for field in blocks:
+            for item in getattr(statement, field, None) or []:
+                if isinstance(item, ast.ExceptHandler):
+                    yield from _module_level_statements(item.body)
+                elif isinstance(item, ast.match_case):
+                    if item.guard is not None:
+                        yield item.guard
+                    yield from _module_level_statements(item.body)
+                else:
+                    yield from _module_level_statements([item])
 
 
 def _offenders(source: str):
@@ -170,6 +190,14 @@ def _offenders(source: str):
         "import os\nfrom unittest import mock\nmock.patch.dict(os.environ, X='1').start()\n",
         "from dotenv import load_dotenv\nload_dotenv()\n",
         'import pytest\npytest.MonkeyPatch().setenv("X", "1")\n',
+        'import os\ntry:\n    os.environ["X"] = "1"\nexcept* ValueError:\n    pass\n',
+        'import os\nmatch 1:\n    case 1:\n        os.environ["X"] = "1"\n',
+        'import os\nif __name__ != "__main__":\n    os.environ["X"] = "1"\n',
+        'import os\nif __name__ == "__main__":\n    pass\nelse:\n    os.environ["X"] = "1"\n',
+        'import os\nfor _ in [os.environ.pop("X", None)]:\n    pass\n',
+        'import os\n@print(os.environ.setdefault("X", "1"))\ndef f():\n    pass\n',
+        'import os\ndef f(x=os.environ.pop("X", None)):\n    pass\n',
+        'import os\nclass C(os.environ.setdefault("X", "1") and object):\n    pass\n',
     ],
 )
 def test_the_scan_sees_a_module_level_write(source):
