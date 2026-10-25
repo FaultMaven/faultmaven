@@ -174,8 +174,8 @@ class TestLLMProviderRealBehavior:
                 "COHERE_API_KEY": "",
                 "OPENROUTER_API_KEY": "",
                 "LOCAL_LLM_URL": "",
-                # Prevent preset contamination from earlier tests
-                "CONFIG_PRESET": "",
+                # No preset applied or detected, whatever an earlier test left
+                "CONFIG_PRESET": "none",
                 "LOCAL_LLM_MODEL": "",
             },
         ):
@@ -558,8 +558,8 @@ class TestRealProviderIntegration:
                 "COHERE_API_KEY": "",
                 "OPENROUTER_API_KEY": "",
                 "LOCAL_LLM_URL": "",
-                # Prevent preset contamination from earlier tests
-                "CONFIG_PRESET": "",
+                # No preset applied or detected, whatever an earlier test left
+                "CONFIG_PRESET": "none",
                 "LOCAL_LLM_MODEL": "",
             },
         ):
@@ -667,8 +667,8 @@ class TestRealProviderIntegration:
                 "COHERE_API_KEY": "",
                 "OPENROUTER_API_KEY": "",
                 "LOCAL_LLM_URL": "",
-                # Prevent preset contamination from earlier tests
-                "CONFIG_PRESET": "",
+                # No preset applied or detected, whatever an earlier test left
+                "CONFIG_PRESET": "none",
                 "LOCAL_LLM_MODEL": "",
             },
         ):

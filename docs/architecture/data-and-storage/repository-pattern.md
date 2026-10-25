@@ -25,7 +25,7 @@
 - ✅ **(v2.6, 2026-05-16)** **Cosmetic metadata fields (title, description) no longer participate in OCC.** A new scoped repo method `update_metadata_fields(case_id, *, title, description)` writes title/description without bumping `cases.version`. Routed through this method are: title generation (`POST /cases/{id}/title`) and the title/description branch of `PUT /cases/{id}`. Investigation-state fields (`status`, `closure_reason`) continue to use the versioned `save` path via `update_case_with_retry`. Companion fix: `StaleCaseException` raised inside `MilestoneEngine.process_turn` now passes through `InvestigationService` unwrapped, so the existing 409 handler at `routes.py` actually fires (previously it was double-wrapped as `MilestoneEngineError → ServiceException` and fell through to 500). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
 - ✅ **(v2.5, 2026-04-25)** Case repository hierarchy **consolidated**. The duplicate hierarchy at `faultmaven/infrastructure/persistence/{case_repository,database_case_repository}.py` was deleted; the canonical types live at `faultmaven/modules/case/infrastructure/case_repository.py`, `sqlite_case_repository/repository.py`, `postgresql_hybrid_case_repository/repository.py` and `sessionless_case_repository.py` (the two hybrid repositories were later split into packages, fm#1707 wave 2). The redundant generic `DatabaseCaseRepository` (incomplete in the new hierarchy, ORM-merge-based in the old) was also removed — production paths use `SessionlessCaseRepository` (auto-session) or `get_repository_for_session(session)` (existing session). The `Evidence.da_invocation_count` Pydantic field was removed at the same time — it had no DB column and never round-tripped.
 
-> **Reality check (2026-04-18)**: the examples below occasionally use values like `CASE_STORAGE_TYPE=postgres` or `CASE_STORAGE_TYPE=sqlite` as shorthand for deployment modes. **Those values are not recognized by the code.** The actual selector at [repository_factory.py:62-63](../../../faultmaven/infrastructure/persistence/repository_factory.py#L62-L63) accepts only `inmemory` or `database`. When `CASE_STORAGE_TYPE=database`, the SQL dialect (SQLite vs PostgreSQL) is determined by `DATABASE_URL` — see `sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`. `SessionlessCaseRepository` detects the dialect at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` accordingly. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
+> **Reality check (2026-10-25, #2269)**: **no setting selects the case or user store.** `DATABASE_URL` alone decides, through `persistent_database_configured` in the container's `create_case_repository`, `create_user_store` and `create_user_service`: a persistent URL gets `SessionlessCaseRepository` (and the database user store), and its dialect (`sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`) routes each operation to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` at runtime. An empty or in-memory URL gets `InMemoryCaseRepository`, a test seam: the API, the jobs runner and the `fm-*` CLIs refuse to start on one. The `CASE_STORAGE_TYPE` / `USER_STORAGE_TYPE` variables earlier revisions of this page showed were read by no storage path, and are gone. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
 
 ---
 
@@ -114,16 +114,13 @@ Technology:    │     n/a      │ ChromaDB     │ ChromaDB     │
 └──────────────┴──────────────┴──────────────┴──────────────┘
 
 Configuration Example:
-  # Long-term data storage — actual selector values: "inmemory" | "database"
-  CASE_STORAGE_TYPE=database       # "inmemory" for dev/tests
-  USER_STORAGE_TYPE=database       # "inmemory" for dev/tests
-
-  # SQL dialect (SQLite vs PostgreSQL) is routed from DATABASE_URL:
+  # Long-term data storage — DATABASE_URL alone; no selector.
+  # Its SQL dialect (SQLite vs PostgreSQL) routes the repository:
   # DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db        # local
   # DATABASE_URL=postgresql+asyncpg://user:pass@host/faultmaven  # cloud
 
-  # Cached data storage (Redis or FakeRedis — auto-selected)
-  # REDIS_HOST=redis.local        # set to use real Redis
+  # Cached data storage (Redis, or FakeRedis when no named server answers)
+  # REDIS_URL=redis://redis.local:6379/0   # or REDIS_HOST=redis.local
 
   # Vector data storage (ChromaDB only — PersistentClient or HttpClient)
   VECTOR_STORAGE_TYPE=chromadb     # set CHROMADB_URL to use external server
@@ -232,7 +229,7 @@ But session data (cached) should use Redis technology regardless of backend.
 
 ### 3.1 Long-Term Persistent Data (Cases, Users, Evidence)
 
-> **Live wiring**: The `SessionlessCaseRepository` with runtime dialect routing described below (and in §5.2, §6.3, and Appendix A) is the **live wiring**. `container.py` and `repository_factory.py` resolve the `database` storage type to `SessionlessCaseRepository`, which detects the dialect from `DATABASE_URL` at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository`. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase — see the changelog entry above.
+> **Live wiring**: The `SessionlessCaseRepository` with runtime dialect routing described below (and in §5.2, §6.3, and Appendix A) is the **live wiring**. The container's `create_case_repository` resolves a persistent `DATABASE_URL` to `SessionlessCaseRepository`, which detects the dialect from `DATABASE_URL` at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository`. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase — see the changelog entry above.
 
 **Requirements**:
 - Permanent storage
@@ -250,12 +247,12 @@ But session data (cached) should use Redis technology regardless of backend.
 | Local Files | `SQLiteCaseRepository` | ✅ Implemented | Single-node, local deployment |
 | Microservices | `PostgreSQLHybridCaseRepository` | ✅ Implemented | Production K8s |
 
-**Configuration** (`inmemory` and `database` are the only supported values):
+**Configuration** (`DATABASE_URL` alone; no setting selects the backend):
 ```bash
-CASE_STORAGE_TYPE=inmemory   # Development / unit tests (process-local dict)
-CASE_STORAGE_TYPE=database   # Local or Cloud — dialect routed from DATABASE_URL
-#   DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db        → SQLiteCaseRepository
-#   DATABASE_URL=postgresql+asyncpg://user:pass@host/faultmaven  → PostgreSQLHybridCaseRepository
+DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db        # → SQLiteCaseRepository (the default)
+DATABASE_URL=postgresql+asyncpg://user:pass@host/faultmaven  # → PostgreSQLHybridCaseRepository
+# An empty or in-memory URL → InMemoryCaseRepository: a test seam; the API,
+# the jobs runner and the fm-* CLIs refuse to start on one
 ```
 
 **Data Includes**:
@@ -782,10 +779,10 @@ class VectorStore(ABC):
 **Configuration**:
 
 ```bash
-# .env.development
-CASE_STORAGE_TYPE=inmemory
-USER_STORAGE_TYPE=inmemory
-# Sessions: FakeRedis auto-selected when REDIS_HOST is unset (no config needed)
+# No setting selects the in-memory case/user repositories: tests instantiate
+# InMemoryCaseRepository directly, or compose with an in-memory DATABASE_URL,
+# which the API, the jobs runner and the fm-* CLIs refuse.
+# Sessions: FakeRedis when no Redis server answers (no config needed)
 VECTOR_STORAGE_TYPE=chromadb   # Local PersistentClient at data/chroma-kb/
 ```
 
@@ -858,7 +855,7 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 
 ### 5.3 Microservices Backend (Kubernetes)
 
-> **Live wiring**: The `SessionlessCaseRepository` wiring shown in §6.3 is the live wiring. The container resolves the `database` storage type to `SessionlessCaseRepository`, which routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` by the `DATABASE_URL` dialect. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase.
+> **Live wiring**: The `SessionlessCaseRepository` wiring shown in §6.3 is the live wiring. The container resolves a persistent `DATABASE_URL` to `SessionlessCaseRepository`, which routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` by the `DATABASE_URL` dialect. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase.
 
 **Use Case**: Production deployment, high availability
 
@@ -870,14 +867,13 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 **Configuration**:
 ```bash
 # .env.production
-CASE_STORAGE_TYPE=database
 # One database holds every table (users, cases, knowledge, ...)
 DATABASE_URL=postgresql+asyncpg://faultmaven_app:${DB_PASSWORD}@postgres.faultmaven.local:30432/faultmaven
 
 REDIS_HOST=redis.faultmaven.local
 REDIS_PORT=6379
 # Note: sessions are always Redis-backed. There is no SESSION_STORAGE_TYPE selector.
-# REDIS_HOST / REDIS_URL configures the Redis backend; FakeRedis is used in-process when REDIS_HOST is unset.
+# REDIS_HOST / REDIS_URL configures the Redis backend; standalone uses the in-process FakeRedis when no named server answers.
 
 VECTOR_STORAGE_TYPE=chromadb
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
@@ -905,10 +901,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 # LONG-TERM DATA (Cases, Users, Evidence)
 # ===========================================
 # Technology: PostgreSQL (cloud) / SQLite (local) — routed from DATABASE_URL
-# Selector values: "inmemory" | "database"
-
-CASE_STORAGE_TYPE=database           # or: inmemory
-USER_STORAGE_TYPE=database           # or: inmemory
+# No selector: DATABASE_URL decides.
 
 # DATABASE_URL names the ONE database that holds every table, and its
 # dialect selects the repository implementation at runtime:
@@ -953,8 +946,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 
 ```bash
 # .env.development
-CASE_STORAGE_TYPE=inmemory
-USER_STORAGE_TYPE=inmemory
+# Cases and users: the default DATABASE_URL, a SQLite file
 # Sessions: FakeRedis auto-selected (no config needed)
 VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 ```
@@ -962,8 +954,6 @@ VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 **Production / Cloud** (K8s microservices):
 ```bash
 # .env.production
-CASE_STORAGE_TYPE=database
-USER_STORAGE_TYPE=database
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres.faultmaven.local/faultmaven
 REDIS_HOST=redis.faultmaven.local   # triggers real Redis; omit for FakeRedis
 VECTOR_STORAGE_TYPE=chromadb
@@ -974,10 +964,8 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 **Local / Single-Node** (persistent local — SQLite + FakeRedis):
 ```bash
 # .env.local
-CASE_STORAGE_TYPE=database
-USER_STORAGE_TYPE=database
 DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-# Sessions: FakeRedis auto-selected when REDIS_HOST is unset (no external Redis required)
+# Sessions: FakeRedis when no Redis server answers (no external Redis required)
 VECTOR_STORAGE_TYPE=chromadb                # Local ChromaDB PersistentClient at data/chroma-kb/
 # CHROMADB_URL unset → PersistentClient mode
 ```
@@ -996,21 +984,14 @@ class Container:
         # ==========================================
         # LONG-TERM DATA: Case Repository
         # ==========================================
-        case_storage_type = settings.database.case_storage_type.lower()
+        # No selector: DATABASE_URL decides (create_case_repository).
+        if persistent_database_configured(settings.database.database_url):
+            # Opens a session per operation; the dialect (SQLite / PostgreSQL)
+            # is routed from DATABASE_URL at request time. No explicit dialect
+            # branch here.
+            self.case_repository = SessionlessCaseRepository()
 
-        if case_storage_type == "database":
-            # Database backend — dialect (SQLite / PostgreSQL) is routed from DATABASE_URL
-            # by SessionlessCaseRepository at request time. No explicit dialect branch here.
-            engine = create_async_engine(
-                settings.database.database_url,
-                pool_size=10,
-                max_overflow=20,
-            )
-            session_factory = sessionmaker(engine, class_=AsyncSession)
-            self.case_repository = SessionlessCaseRepository(session_factory)
-
-        else:  # "inmemory"
-            # In-memory backend (development / unit tests)
+        else:  # empty or in-memory URL: a test seam, refused by the API
             self.case_repository = InMemoryCaseRepository()
 
         # ==========================================
@@ -1019,10 +1000,9 @@ class Container:
         # Single code path: get_async_redis_client() returns real Redis
         # or FakeRedis based on availability. No branching needed.
         from faultmaven.infrastructure.redis_client import get_async_redis_client
-        redis_client = await get_async_redis_client(
-            host=settings.database.redis_host,
-            port=settings.database.redis_port,
-        )
+        # Connection settings come from REDIS_URL / REDIS_HOST, resolved
+        # inside the factory.
+        redis_client = await get_async_redis_client()
         self.session_store = RedisSessionStore(redis_client)
 
         # ==========================================
@@ -1380,12 +1360,10 @@ await vector_store.add_documents(
 ```bash
 # Change configuration only (no code changes)
 
-# FROM (Development — FakeRedis auto-selected for sessions):
-CASE_STORAGE_TYPE=inmemory
+# FROM (Development — default SQLite DATABASE_URL, FakeRedis for sessions):
 VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 
-# TO (Production — real Redis for sessions, external ChromaDB):
-CASE_STORAGE_TYPE=database
+# TO (Production — PostgreSQL, real Redis for sessions, external ChromaDB):
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres.faultmaven.local/faultmaven
 REDIS_HOST=redis.faultmaven.local
 VECTOR_STORAGE_TYPE=chromadb
@@ -1408,9 +1386,8 @@ The repository layer already supports SQLite and PostgreSQL via runtime dialect 
        return MySQLCaseRepository(session)
    ```
 
-3. Configuration uses the same selector; the dialect is selected by `DATABASE_URL`:
+3. Configuration is `DATABASE_URL` alone; its dialect selects the repository:
    ```bash
-   CASE_STORAGE_TYPE=database
    DATABASE_URL=mysql+aiomysql://user:pass@host/faultmaven
    ```
 

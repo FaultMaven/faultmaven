@@ -82,8 +82,19 @@ def is_host_only_chroma_configured(settings: Any) -> bool:
     off it. Empty means "not configured", which means the embedded client.
     """
     db = settings.database
-    host = (db.chromadb_host or "").strip()
-    return not (db.chromadb_url or "").strip() and host not in ("", "localhost")
+    return not (db.chromadb_url or "").strip() and names_remote_chroma_host(
+        db.chromadb_host
+    )
+
+
+def names_remote_chroma_host(host: Any) -> bool:
+    """Whether a ``CHROMADB_HOST`` value names a remote server.
+
+    Not when blank (see :func:`is_host_only_chroma_configured`), and not
+    ``localhost``, its default, which names the embedded store. The one rule
+    for that value, shared with the zero-config preset check.
+    """
+    return (host or "").strip() not in ("", "localhost")
 
 
 def _plain(obj: Any, name: str) -> str:
@@ -159,15 +170,22 @@ def _check_cloud(settings: Any) -> List[str]:
             "likely the SQLite default). SQLite is single-writer and standalone-only."
         )
 
-    # 3. Sessions must be real Redis.
-    session_type = str(getattr(db, "session_storage_type", "inmemory") or "inmemory")
+    # 3. A Redis server must be named. The session store is always
+    # RedisSessionStore over the container's Redis client, real or FakeRedis;
+    # no setting selects it. The guard that matters is the client factory's:
+    # under cloud it refuses the FakeRedis fallback whenever the server it was
+    # given is unusable (``fakeredis_or_fail``, at composition). REDIS_HOST
+    # defaults to the in-cluster service name, so this check fires only when
+    # REDIS_HOST is set blank and REDIS_URL is unset, the one case the
+    # configuration alone decides; it refuses that before composition, with
+    # a configuration message, instead of at the client factory.
     has_redis = bool(getattr(db, "redis_url", None)) or bool(
         getattr(db, "redis_host", None)
     )
-    if session_type != "redis" or not has_redis:
+    if not has_redis:
         problems.append(
-            "Cloud requires real Redis sessions: set SESSION_STORAGE_TYPE=redis with "
-            "REDIS_URL or REDIS_HOST. FakeRedis is ephemeral and standalone-only."
+            "Cloud requires a real Redis server: set REDIS_URL or REDIS_HOST. "
+            "FakeRedis is ephemeral and standalone-only."
         )
 
     # 4. The hosted identity provider must be configured (ADR-015 D7). Cloud

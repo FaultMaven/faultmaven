@@ -175,8 +175,9 @@ TRACING_ENABLED=false
 CONFIG_PRESET=enterprise
 
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/faultmaven
-SESSION_STORAGE_TYPE=redis
+REDIS_URL=redis://redis:6379/0
 VECTOR_STORAGE_TYPE=chromadb
+CHROMADB_URL=http://chromadb:8000
 STORAGE_BACKEND=s3
 TENANT_PROVIDER=multi
 OPIK_ENABLED=true

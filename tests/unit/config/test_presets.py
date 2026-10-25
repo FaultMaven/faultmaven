@@ -45,11 +45,10 @@ class TestPresetDefinitions:
         local_preset = PRESETS[PresetName.LOCAL]
         defaults = local_preset.defaults
 
-        # Sessions use FakeRedis (no config needed); vectors use local
-        # ChromaDB PersistentClient (no external server needed).
-        assert "SESSION_STORAGE_TYPE" not in defaults
+        # Vectors use the local ChromaDB PersistentClient (no external server
+        # needed). Sessions use FakeRedis when no Redis server is reachable, and
+        # cases the DATABASE_URL SQLite file: no setting selects either.
         assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
-        assert defaults.get("CASE_STORAGE_TYPE") == "inmemory"
 
         # Should use local LLM
         assert defaults.get("CHAT_PROVIDER") == "local"
@@ -79,8 +78,8 @@ class TestPresetDefinitions:
         standard_preset = PRESETS[PresetName.STANDARD]
         defaults = standard_preset.defaults
 
-        # Sessions: Redis auto-selected via REDIS_HOST in preset
-        assert "SESSION_STORAGE_TYPE" not in defaults
+        # Sessions: Redis via REDIS_HOST in the preset
+        assert defaults.get("REDIS_HOST") == "localhost"
         # Should use ChromaDB for vectors
         assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
 
@@ -91,15 +90,55 @@ class TestPresetDefinitions:
         enterprise_preset = PRESETS[PresetName.ENTERPRISE]
         defaults = enterprise_preset.defaults
 
-        # Should use database storage
-        assert defaults.get("CASE_STORAGE_TYPE") == "database"
-        assert defaults.get("USER_STORAGE_TYPE") == "database"
-
         # Should be multi-tenant
         assert defaults.get("DEPLOYMENT_MODE") == "multi-tenant"
 
         # Should have PII redaction enabled
         assert defaults.get("PROTECTION_ENABLED") == "true"
+
+    def test_every_preset_key_is_a_variable_the_settings_read(self):
+        """A preset writes into ``os.environ``; a key no setting reads is dead.
+
+        The enterprise preset set ``AUTO_SANITIZE_BASED_ON_PROVIDER``, removed
+        with v4.0.0's single ``SANITIZE_PII``, and the presets set the storage
+        selectors of #2269. The names are collected from the settings classes
+        themselves: a field's ``validation_alias``, else its name under its
+        section's ``env_prefix``.
+        """
+        from pydantic import BaseModel
+
+        from faultmaven.config.presets import PRESETS
+        from faultmaven.config.settings import FaultMavenSettings
+
+        read = set()
+
+        def collect(section):
+            prefix = section.model_config.get("env_prefix", "") or ""
+            for name, field in section.model_fields.items():
+                kind = field.annotation
+                if isinstance(kind, type) and issubclass(kind, BaseModel):
+                    collect(kind)
+                elif isinstance(field.validation_alias, str):
+                    read.add(field.validation_alias.upper())
+                else:
+                    read.add(f"{prefix}{name}".upper())
+
+        collect(FaultMavenSettings)
+        # The positive control: the walk reaches the nested sections.
+        assert {
+            "REDIS_URL",
+            "SESSION_TIMEOUT_MINUTES",
+            "WORKERS",
+            "SANITIZE_PII",
+        } <= read
+
+        dead = {
+            preset.name: sorted(
+                key for key in preset.defaults if key.upper() not in read
+            )
+            for preset in PRESETS.values()
+        }
+        assert dead == {preset.name: [] for preset in PRESETS.values()}
 
     def test_no_preset_sets_a_rate_limit_key(self):
         """No preset may hand out a rate-limiting env key.
@@ -189,8 +228,6 @@ class TestPresetApplication:
 
             # Check that preset values were applied
             assert os.environ.get("VECTOR_STORAGE_TYPE") == "chromadb"
-            # SESSION_STORAGE_TYPE no longer in presets (FakeRedis auto-selected)
-            assert os.environ.get("SESSION_STORAGE_TYPE") is None
 
     def test_apply_preset_defaults_does_not_override_existing(self):
         """Test that apply_preset_defaults does not override existing env vars."""
@@ -259,6 +296,73 @@ class TestZeroConfigDetection:
         with patch.dict(os.environ, {"REDIS_HOST": "localhost"}, clear=True):
             result = detect_zero_config_preset()
             assert result is None
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("REDIS_URL", "redis://redis.internal:6379/0"),
+            ("REDIS_HOST", "redis.internal"),
+            ("CHROMADB_URL", "http://chroma.internal:8000"),
+            ("CHROMADB_HOST", "chroma.internal"),
+        ],
+    )
+    def test_any_variable_naming_a_redis_or_chromadb_server_declines_it(
+        self, name, value
+    ):
+        """A box pointed at a server is not zero-config, whichever variable names it.
+
+        ``REDIS_URL`` is the Redis client factory's other way to name the
+        server, and it wins over ``REDIS_HOST``. Detection asked ``REDIS_HOST``
+        alone, so a Redis named by URL got the laptop preset: ``DEBUG`` on,
+        protection and PII redaction off (#2270). ``CHROMADB_HOST`` other than
+        ``localhost`` sends the KB ingester to a server
+        (``is_host_only_chroma_configured``).
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {name: value}, clear=True):
+            assert detect_zero_config_preset() is None
+
+    def test_redis_url_alone_keeps_the_local_preset_off(self):
+        """The acceptance of #2270, end to end: nothing of the preset is applied."""
+        from faultmaven.config.presets import ensure_preset_applied
+
+        environ = {"REDIS_URL": "redis://redis.internal:6379/0"}
+        with patch.dict(os.environ, environ, clear=True):
+            ensure_preset_applied()
+            applied = dict(os.environ)
+
+        assert applied == environ
+
+    @pytest.mark.parametrize(
+        "environ",
+        [
+            {"REDIS_URL": ""},
+            {"REDIS_URL": "   "},
+            {"REDIS_HOST": ""},
+            {"CHROMADB_URL": " "},
+            {"CHROMADB_HOST": "localhost"},
+            {"CHROMADB_HOST": ""},
+        ],
+        ids=[
+            "blank_redis_url",
+            "whitespace_redis_url",
+            "blank_redis_host",
+            "whitespace_chromadb_url",
+            "embedded_chromadb_host",
+            "blank_chromadb_host",
+        ],
+    )
+    def test_a_blank_value_or_the_embedded_chromadb_host_names_no_server(self, environ):
+        """Set but empty names nothing, and ``CHROMADB_HOST=localhost`` is its
+        default, the embedded store: the box is still zero-config."""
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, environ, clear=True):
+            result = detect_zero_config_preset()
+
+        assert result is not None
+        assert result.value == "local"
 
     def test_detect_zero_config_returns_none_in_production(self):
         """Test that detect_zero_config_preset returns None in production."""
@@ -514,6 +618,7 @@ DOTENV_SCENARIOS = {
     "local_url_in_dotenv": ({}, "LOCAL_LLM_URL=http://ollama:11434/v1\n"),
     # The other reads go through the same view, in any letter case.
     "redis_in_dotenv": ({}, "REDIS_HOST=redis\n"),
+    "redis_url_in_dotenv": ({}, "REDIS_URL=redis://redis:6379/0\n"),
     "chromadb_lowercase_in_dotenv": ({}, "chromadb_url=http://chroma:8000\n"),
     "production_in_dotenv": ({}, "ENVIRONMENT=production\n"),
     "staging_lowercase_in_dotenv": ({}, "environment=staging\n"),
@@ -602,6 +707,7 @@ class TestDetectionReadsWhatTheSettingsRead:
         [
             ("REDIS_HOST", "x"),
             ("redis_host", "x"),
+            ("Redis_Url", "x"),
             ("ChromaDB_Url", "x"),
             ("environment", "production"),
             ("Environment", "staging"),
@@ -635,6 +741,7 @@ class TestDetectionReadsWhatTheSettingsRead:
         [
             "local_url_in_dotenv",
             "redis_in_dotenv",
+            "redis_url_in_dotenv",
             "chromadb_lowercase_in_dotenv",
             "production_in_dotenv",
             "staging_lowercase_in_dotenv",
@@ -764,10 +871,10 @@ class TestConfigPresetNone:
     """
 
     @staticmethod
-    def _case_storage_default():
-        from faultmaven.config.settings import DatabaseSettings
+    def _session_timeout_default():
+        from faultmaven.config.settings import SessionSettings
 
-        return DatabaseSettings.model_fields["case_storage_type"].default
+        return SessionSettings.model_fields["timeout_minutes"].default
 
     @pytest.mark.parametrize("spelling", ["none", "NONE", " None "])
     def test_none_applies_no_preset_and_the_settings_see_none(self, spelling, caplog):
@@ -789,7 +896,7 @@ class TestConfigPresetNone:
         assert untouched == {"CONFIG_PRESET": spelling}, "a preset wrote defaults"
         assert current is None and active is None
         assert info["active"] is False and "error" not in info
-        assert settings.database.case_storage_type == self._case_storage_default()
+        assert settings.session.timeout_minutes == self._session_timeout_default()
         assert "Unknown preset" not in caplog.text
 
     def test_unset_still_applies_the_local_preset(self):
@@ -809,8 +916,9 @@ class TestConfigPresetNone:
             **{k: str(v) for k, v in local.items()},
         }
         assert active == "local"
-        assert settings.database.case_storage_type == local["CASE_STORAGE_TYPE"]
-        assert local["CASE_STORAGE_TYPE"] != self._case_storage_default()
+        timeout = int(local["SESSION_TIMEOUT_MINUTES"])
+        assert settings.session.timeout_minutes == timeout
+        assert timeout != self._session_timeout_default()
 
     def test_an_unknown_preset_is_still_reported(self, caplog):
         """The capture's own control: it does see the warning ``none`` must not log."""

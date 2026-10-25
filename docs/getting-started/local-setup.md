@@ -108,7 +108,6 @@ docker run -d --name redis -p 6379:6379 redis:7-alpine
 docker run -d --name chromadb -p 8001:8000 chromadb/chroma:latest
 
 # Update .env to use external services
-SESSION_STORAGE_TYPE=redis
 VECTOR_STORAGE_TYPE=chromadb
 REDIS_URL=redis://localhost:6379
 CHROMADB_URL=http://localhost:8001

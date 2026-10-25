@@ -12,7 +12,6 @@ Test Coverage:
 5. owner_id requirement in Case creation (security validation)
 """
 
-import os
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -39,15 +38,13 @@ def unique_id(prefix: str) -> str:
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.cloud
-@pytest.mark.skipif(
-    os.getenv("SESSION_STORAGE_TYPE", "redis") != "redis",
-    reason="Architectural compliance tests require Redis session storage",
-)
 class TestArchitecturalCompliance:
     """Integration tests for spec compliance verification
 
-    NOTE: These tests require Redis (the cloud profile) and will be skipped
-    when SESSION_STORAGE_TYPE != redis or in Standalone
+    NOTE: These tests require Redis (the cloud profile). As written, the
+    ``session_service`` fixture skips every one of them, Redis or not: it
+    builds ``RedisSessionStore()`` without the client that constructor
+    requires, and reports the ``TypeError`` as "Redis not reachable".
     """
 
     # ============================================================================

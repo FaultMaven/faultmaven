@@ -421,7 +421,6 @@ class TestSettingsIntegration:
         with patch.dict(
             os.environ,
             {
-                "CONFIG_PRESET": "",  # Disable preset auto-detection
                 "LOG_LEVEL": "DEBUG",
                 "LOG_FORMAT": "console",
             },

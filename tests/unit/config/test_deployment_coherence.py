@@ -40,7 +40,8 @@ def _cloud_ok() -> SimpleNamespace:
         ),
         database=SimpleNamespace(
             database_url="postgresql+asyncpg://u:p@host:5432/db",
-            session_storage_type="redis",
+            # No session-storage selector: the session store is always Redis,
+            # and only REDIS_URL/REDIS_HOST name the server (#2269).
             redis_url=None,
             redis_host="faultmaven-redis-master",
             # Check 7 (#901): cloud requires the external ChromaDB server.
@@ -94,11 +95,29 @@ def test_cloud_with_sqlite_fails():
 @pytest.mark.unit
 def test_cloud_without_redis_fails():
     s = _cloud_ok()
-    s.database.session_storage_type = "inmemory"
     s.database.redis_host = None
     with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)
     assert "Redis" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("redis_url", "redis_host"),
+    [("redis://redis.internal:6379/0", None), (None, "redis.internal")],
+    ids=["redis_url", "redis_host"],
+)
+def test_cloud_names_its_redis_by_url_or_host_alone(redis_url, redis_host):
+    """Either variable the Redis client factory reads satisfies the gate.
+
+    The gate also demanded SESSION_STORAGE_TYPE=redis, a selector no store
+    read: the session store is RedisSessionStore whatever it said, so the word
+    changed nothing but the gate's verdict (#2269).
+    """
+    s = _cloud_ok()
+    s.database.redis_url = redis_url
+    s.database.redis_host = redis_host
+    validate_deployment_coherence(s)  # must not raise
 
 
 @pytest.mark.unit
@@ -125,7 +144,6 @@ def test_cloud_reports_all_problems_at_once():
     s = _cloud_ok()
     s.auth.auth_mode = AuthMode.LOCAL
     s.database.database_url = "sqlite:///x"
-    s.database.session_storage_type = "inmemory"
     s.database.redis_host = None
     with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)

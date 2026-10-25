@@ -122,6 +122,17 @@ async def lifespan(app: FastAPI):
 
         require_persistent_database(settings)
 
+        # Fail fast if several server processes would each hold a store the
+        # deployment shares, when the configuration alone decides it (#2269):
+        # before anything is written, migrated, seeded or opened. What only
+        # the built clients can tell is refused inside composition, before
+        # the data layer (faultmaven/config/worker_stores.py).
+        from faultmaven.config.worker_stores import (
+            refuse_configured_per_process_stores,
+        )
+
+        refuse_configured_per_process_stores(settings)
+
         # Fail fast if redaction has no pseudonym key it may use. Resolving is
         # what creates the standalone key file, so doing it here also means the
         # first redaction of the process is never the thing that writes it.
@@ -180,34 +191,6 @@ async def lifespan(app: FastAPI):
             # Classifier/synthesis roles are exempt by design.
             warn_best_effort_enforcement(settings, get_registry())
 
-        # Validate workers configuration for in-memory storage
-        workers = settings.server.workers
-        storage_type = (settings.database.session_storage_type or "inmemory").lower()
-
-        if workers > 1 and storage_type == "inmemory":
-            logger.error(
-                f"❌ Invalid configuration: WORKERS={workers} with in-memory storage"
-            )
-            logger.error(
-                "   In-memory storage only works with WORKERS=1 (each worker has separate memory)."
-            )
-            logger.error("   Solutions:")
-            logger.error(
-                "   1. Set WORKERS=1 in your .env file (recommended for local deployment)"
-            )
-            logger.error(
-                "   2. Use database storage: Set CASE_STORAGE_TYPE=database in your .env file"
-            )
-            raise ValueError(
-                f"WORKERS={workers} is incompatible with in-memory storage. "
-                "Set WORKERS=1 or use CASE_STORAGE_TYPE=database."
-            )
-        elif workers > 1:
-            logger.info(
-                f"✅ Multi-worker configuration (WORKERS={workers}) with {storage_type} storage"
-            )
-        else:
-            logger.debug(f"Using single worker (WORKERS={workers})")
         logger.info("Configuration validated successfully")
 
         # Make configuration available to app

@@ -198,8 +198,6 @@ def mock_settings():
     settings.auth.sso_jit_personal_tenant_enabled = False
     settings.auth.sso_jit_personal_tenant_max_per_hour = 20
     settings.agent.tenant_daily_turn_cap = 30
-    settings.database.case_storage_type = "sqlite"
-    settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
 

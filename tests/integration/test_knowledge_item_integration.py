@@ -19,9 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.repository_factory import (
-    reset_inmemory_knowledge_item_repository,
-)
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
     KnowledgeItemType,
@@ -117,7 +114,6 @@ async def repository(test_session) -> DatabaseKnowledgeItemRepository:
 @pytest.fixture(scope="function")
 def inmemory_repository() -> InMemoryKnowledgeItemRepository:
     """Create fresh InMemoryKnowledgeItemRepository."""
-    reset_inmemory_knowledge_item_repository()
     return InMemoryKnowledgeItemRepository()
 
 
