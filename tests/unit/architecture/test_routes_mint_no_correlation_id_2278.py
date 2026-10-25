@@ -8,8 +8,13 @@ middleware then overwrote, and named it in a 500 body as the ``Error ID``. So
 the id a user reported matched neither the header nor the request's lines. A
 route that needs the id reads ``current_correlation_id()``.
 
-This scan reads every module under ``faultmaven/modules/*/api/`` and
-``faultmaven/api/v1/``. It flags a value built from a ``uuid`` call that
+Middleware inside ``LoggingMiddleware`` is held to the same rule: it answers
+within the request's context, so a body it writes names the request's id.
+``IdempotencyMiddleware`` minted one for each of its 400 and 409 bodies.
+
+This scan reads every module under ``faultmaven/modules/*/api/``,
+``faultmaven/api/v1/`` and ``faultmaven/api/middleware/``, less
+:data:`_OUTSIDE_THE_REQUEST`. It flags a value built from a ``uuid`` call that
 reaches a correlation id. That means a name, attribute, keyword or dict key
 that says ``correlation``, or a header subscript that does. The value counts
 whether it is built in place or reaches the sink through a local name.
@@ -29,14 +34,28 @@ pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 _PACKAGE = Path(faultmaven.__file__).parent
 
 
+#: Middleware that runs OUTSIDE ``LoggingMiddleware``, so there is no request
+#: id for it to read. ``ContractProbeMiddleware`` is registered after
+#: ``LoggingMiddleware`` in ``setup_middleware``, which makes it an outer layer.
+#: Its own short id names only its probe lines and reaches no response.
+#: ``test_the_exempt_middleware_is_registered_outside_logging`` keeps that
+#: reason true.
+_OUTSIDE_THE_REQUEST = frozenset({"api/middleware/contract_probe.py"})
+
+
 def _scanned_modules() -> list[Path]:
-    """The route and route-dependency modules: ``modules/*/api/`` and
-    ``api/v1/``."""
+    """The route and route-dependency modules (``modules/*/api/``,
+    ``api/v1/``) and the middleware that runs inside the request's context."""
     paths = [
         *(_PACKAGE / "modules").glob("*/api/**/*.py"),
         *(_PACKAGE / "api" / "v1").glob("**/*.py"),
+        *(_PACKAGE / "api" / "middleware").glob("**/*.py"),
     ]
-    return sorted(paths)
+    return sorted(
+        p
+        for p in paths
+        if p.relative_to(_PACKAGE).as_posix() not in _OUTSIDE_THE_REQUEST
+    )
 
 
 def _uuid_callables(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -178,7 +197,43 @@ def test_the_scan_reads_the_route_modules():
         "modules/case/api/routes/data.py",
         "modules/auth/api/auth.py",
         "api/v1/auth_dependencies.py",
+        "api/middleware/idempotency.py",
+        "api/middleware/deduplication.py",
     } <= relative
+    assert not relative & _OUTSIDE_THE_REQUEST
+
+
+def _registration_line(tree: ast.Module, middleware: str) -> int:
+    """The line of ``setup_middleware``'s one ``add_middleware`` of
+    ``middleware``."""
+    (setup,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "setup_middleware"
+    ]
+    lines = [
+        node.lineno
+        for node in ast.walk(setup)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_middleware"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == middleware
+    ]
+    assert len(lines) == 1, (middleware, lines)
+    return lines[0]
+
+
+def test_the_exempt_middleware_is_registered_outside_logging():
+    """Starlette wraps in reverse registration order, so a middleware added
+    after ``LoggingMiddleware`` runs outside the request's context. The
+    exemption holds only while that stays so."""
+    tree = ast.parse(
+        (_PACKAGE / "bootstrap" / "middleware.py").read_text(encoding="utf-8")
+    )
+    logging_line = _registration_line(tree, "LoggingMiddleware")
+    assert _registration_line(tree, "ContractProbeMiddleware") > logging_line
 
 
 @pytest.mark.parametrize(
@@ -229,7 +284,7 @@ def test_no_route_mints_a_correlation_id_of_its_own():
         for line in _sinks(path.read_text(encoding="utf-8")):
             offenders.append(f"{path.relative_to(_PACKAGE).as_posix()}:{line}")
     assert not offenders, (
-        "A route minted a correlation id of its own. Read the request's with "
+        "A route or an inner middleware minted a correlation id of its own. Read the request's with "
         "current_correlation_id() (faultmaven/infrastructure/logging/"
         "coordinator.py); LoggingMiddleware already sets X-Correlation-ID on "
         "the response and stamps the id on every log line (#2278): "

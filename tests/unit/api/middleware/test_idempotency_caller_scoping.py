@@ -472,6 +472,29 @@ async def test_same_key_different_body_is_refused_with_409():
     assert app.state.route_calls["cases"] == 1, "the conflicting request must not run"
 
 
+async def test_a_refusal_names_the_requests_correlation_id():
+    """The 409 is written inside ``LoggingMiddleware``'s context, as in the
+    deployed stack, where ``setup_middleware`` registers ``LoggingMiddleware``
+    after this middleware so that it wraps it. Its body names the request's
+    id, the one ``X-Correlation-ID`` carries, not a fresh one (#2278)."""
+    from faultmaven.api.middleware.logging import LoggingMiddleware
+
+    app, _ = _build_app()
+    app.add_middleware(LoggingMiddleware)
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        await client.post("/api/v1/cases", headers=headers, json={"title": "first"})
+        conflict = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": "second"}
+        )
+
+    assert conflict.status_code == 409
+    request_id = conflict.headers.get("X-Correlation-ID")
+    assert request_id
+    assert conflict.json()["correlation_id"] == request_id
+
+
 async def test_conflicting_request_does_not_overwrite_the_stored_response():
     """A refused request must leave the original entry intact and replayable."""
     app, _ = _build_app()

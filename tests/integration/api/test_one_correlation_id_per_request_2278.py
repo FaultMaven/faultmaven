@@ -16,20 +16,28 @@ and the 500 alike. Each record is rendered as it is emitted, in the request's
 own context, through the FaultMaven root handler's pre-chain. That chain is
 where ``add_request_context`` stamps the request's id on a line that names
 none. So what is read here is what the log carries.
+
+The middleware inside ``LoggingMiddleware`` answers within the request's
+context too, so a refusal body it writes names the request's id: not a fresh
+``uuid4()`` (``IdempotencyMiddleware``), and not the ``x-correlation-id`` the
+caller sent (``DeduplicationMiddleware``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 import structlog
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
+from faultmaven.config.settings import reset_settings
 from faultmaven.infrastructure.logging.config import FaultMavenLogger, get_logger
 from faultmaven.main import app as main_app
 from faultmaven.modules.auth.contracts import UserDTO
@@ -184,3 +192,66 @@ def test_a_routes_4xx_carries_the_requests_id_on_header_and_lines(client, case_s
 
     assert response.status_code == 403, response.text
     _the_one_id(lines, response, "Refused delete of case")
+
+
+def test_a_duplicate_refusal_names_the_requests_id_not_the_callers(
+    booted_app_client,
+):
+    """``DeduplicationMiddleware`` echoed the caller's ``x-correlation-id``
+    header in its 409 body, so a client chose the id the refusal named."""
+    headers = {
+        "X-Session-ID": f"sess-2278-{uuid.uuid4().hex}",
+        "x-correlation-id": "chosen-by-the-caller",
+    }
+    body = {"query": f"dedup-2278-{uuid.uuid4().hex}"}
+
+    booted_app_client.post("/api/v1/cases/search", json=body, headers=headers)
+    duplicate = booted_app_client.post(
+        "/api/v1/cases/search", json=body, headers=headers
+    )
+
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.headers["x-error-code"] == "DUPLICATE_REQUEST"
+    request_id = duplicate.headers.get("X-Correlation-ID")
+    assert request_id and request_id != "chosen-by-the-caller"
+    assert duplicate.json()["correlation_id"] == request_id
+
+
+async def test_an_idempotency_refusal_names_the_requests_id(monkeypatch):
+    """``IdempotencyMiddleware`` minted a fresh id for its 400 body.
+
+    It is mounted only when ``SKIP_SERVICE_CHECKS`` is off, and both CI jobs set
+    it, so the app is rebuilt with it off, as
+    ``test_request_body_size_limit`` does. The rebuilt app is served from this
+    test's loop without its lifespan; the integration conftest ends its
+    protection middleware's service afterwards.
+    """
+    from tests.integration._app_rebuild import rebuild_app
+
+    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "false")
+    reset_settings()
+    try:
+        app = rebuild_app()
+        names = [getattr(m.cls, "__name__", "") for m in app.user_middleware]
+        # Further out is a lower index: the refusal is written inside the
+        # request's context only while LoggingMiddleware wraps the middleware.
+        assert names.index("LoggingMiddleware") < names.index(
+            "IdempotencyMiddleware"
+        ), names
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            refused = await client.post(
+                "/api/v1/cases",
+                json={"title": "t"},
+                headers={"Idempotency-Key": "not a key"},
+            )
+    finally:
+        monkeypatch.undo()
+        reset_settings()
+
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["error_type"] == "InvalidIdempotencyKey"
+    request_id = refused.headers.get("X-Correlation-ID")
+    assert request_id
+    assert refused.json()["correlation_id"] == request_id
