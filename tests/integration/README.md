@@ -24,11 +24,14 @@ Comprehensive spec compliance testing with 15 tests validating [case-and-session
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** a Redis named through the environment (`REDIS_URL`, or `REDIS_HOST` with `REDIS_PORT`); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked, and Test Cloud runs them in its real-Redis step. The 14 that take `session_service` skip where no Redis is named, and fail where one is named and does not answer. Cases go to a SQLite database of each test's own.
+**Setup:** none. The 14 that take `session_service` run on the Redis the environment names (`REDIS_URL`, or `REDIS_HOST` with `REDIS_PORT`; the suite never reads `.env`, `tests/conftest.py` blocks it), and on the standalone stack's in-process FakeRedis where none is named. A named Redis that does not answer fails them. Both required jobs run the module in their suite steps on FakeRedis, and Test Cloud runs it again in its real-Redis step against the server. Cases go to a SQLite database of each test's own.
 
 **Run tests:**
 ```bash
-# All compliance tests
+# All compliance tests, on FakeRedis
+pytest tests/integration/test_architectural_compliance.py -v
+
+# The same, against a Redis server
 REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/test_architectural_compliance.py -v
 
 # Specific test
@@ -53,8 +56,8 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Real Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names; it skips where none is named and fails where the named one does not answer
-- **Service fixtures**: `session_service` (an `AuthSessionService` on `real_redis`) and `case_service` (the real `CaseService` on a SQLite database of the test's own, whose case owners `case_owners` seeds)
+- **Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names, which skips where none is named; `session_redis`, the named Redis or else the standalone stack's FakeRedis, which never skips. Both fail where the named Redis does not answer
+- **Service fixtures**: `session_service` (an `AuthSessionService` on `session_redis`) and `case_service` (the real `CaseService` on a SQLite database of the test's own, whose case owners `case_owners` seeds)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration

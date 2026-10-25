@@ -19,7 +19,11 @@ from sqlalchemy.pool import NullPool
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.redis_client import get_async_redis_client, is_fakeredis
+from faultmaven.infrastructure.redis_client import (
+    get_async_redis_client,
+    get_fakeredis_client,
+    is_fakeredis,
+)
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService as SessionService,
 )
@@ -251,15 +255,20 @@ async def _end_the_service_of(apps) -> None:
 
 
 # ---------------------------------------------------------------------------
-# A real Redis
+# The Redis a test runs on
 #
 # The suite steps of Test Standalone and Test Cloud name no Redis, so every
-# Redis consumer in them resolves the in-process FakeRedis. A test that exists
-# to drive a real server asks for ``real_redis``: it runs only where
-# ``REDIS_URL`` or ``REDIS_HOST`` names one (Test Cloud's real-Redis step), and
-# skips elsewhere. Where one is named and does not answer, it FAILS:
+# Redis consumer in them resolves the in-process FakeRedis; Test Cloud's
+# real-Redis step names its server in REDIS_HOST. Two fixtures read that:
+#
+# - ``real_redis``, for a test that exists to drive a real server: it skips
+#   where none is named.
+# - ``session_redis``, for a test of behaviour both stacks share: the named
+#   server, or the standalone stack's stand-in where none is named.
+#
+# Where a server is named and does not answer, both FAIL:
 # ``get_async_redis_client()`` falls back to FakeRedis silently, and a broken
-# service container must not turn such a test green on the stand-in (#2243).
+# service container must not turn a test green on the stand-in (#2243).
 # ---------------------------------------------------------------------------
 
 
@@ -277,30 +286,53 @@ def _named_redis() -> str | None:
     return None
 
 
-@pytest.fixture
-async def real_redis():
-    """A client of this test's own on the named Redis, or a skip, or a failure.
+async def _answering_client(named: str):
+    """A client of this test's own on the named server, or a failure.
 
     Built by ``get_async_redis_client()``, the application's own resolution
-    and ping, on this test's event loop, and closed after the test.
+    and ping, on this test's event loop. The caller closes it.
     """
-    named = _named_redis()
-    if named is None:
-        pytest.skip(
-            "neither REDIS_HOST nor REDIS_URL names a Redis to drive "
-            "(Test Cloud's real-Redis step sets REDIS_HOST)"
-        )
     client = await get_async_redis_client()
     if is_fakeredis(client):
         # Not closed: it is the loop's shared stand-in, not this test's own.
         pytest.fail(
             f"{named} is set, but get_async_redis_client() resolved the "
             "in-process FakeRedis: the server did not answer (the captured log "
-            "names the reason). A test that asks for real_redis exists to drive "
+            "names the reason). A test given the named Redis exists to run on "
             "that server, so it fails rather than skips; check that the Redis "
             "service is up.",
             pytrace=False,
         )
+    return client
+
+
+@pytest.fixture
+async def real_redis():
+    """A client of this test's own on the named Redis, or a skip, or a failure."""
+    named = _named_redis()
+    if named is None:
+        pytest.skip(
+            "neither REDIS_HOST nor REDIS_URL names a Redis to drive "
+            "(Test Cloud's real-Redis step sets REDIS_HOST)"
+        )
+    client = await _answering_client(named)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def session_redis():
+    """The named Redis, else the standalone stack's in-process stand-in.
+
+    Never a skip. Where nothing names a server, the client is the one the
+    standalone composition builds its stores on, ``get_fakeredis_client()``:
+    this loop's shared client, so it is not closed here.
+    """
+    named = _named_redis()
+    if named is None:
+        yield get_fakeredis_client()
+        return
+    client = await _answering_client(named)
     yield client
     await client.aclose()
 
@@ -309,16 +341,14 @@ async def real_redis():
 
 
 @pytest.fixture
-def session_service(real_redis) -> SessionService:
-    """An ``AuthSessionService`` over a ``RedisSessionStore`` on the named Redis.
+def session_service(session_redis) -> SessionService:
+    """An ``AuthSessionService`` over a ``RedisSessionStore`` on ``session_redis``.
 
-    The store's client is ``real_redis``'s, so this skips where no Redis is
-    named and fails where one is named and does not answer. Nothing is
-    cleaned: each test's ids are unique, and every key the store writes
-    carries a TTL.
+    Nothing is cleaned: each test's ids are unique, and every key the store
+    writes carries a TTL.
     """
     return SessionService(
-        session_store=RedisSessionStore(real_redis),
+        session_store=RedisSessionStore(session_redis),
         max_sessions_per_user=10,
         inactive_threshold_hours=24,
     )

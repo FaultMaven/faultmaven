@@ -11,10 +11,11 @@ Test Coverage:
 4. Validation that session updates reject case data (forbidden fields enforcement)
 5. owner_id requirement in Case creation (security validation)
 
-The sessions live in a real Redis (``session_service``, on ``real_redis``):
-these tests run where ``REDIS_URL`` or ``REDIS_HOST`` names one, which in CI is
-Test Cloud's real-Redis step, and skip elsewhere. The cases live in a SQLite
-database of each test's own (``case_service``).
+The sessions live in the Redis ``session_redis`` resolves: the server
+``REDIS_URL`` or ``REDIS_HOST`` names (Test Cloud's real-Redis step), else the
+standalone stack's in-process FakeRedis (the suite steps of both required
+jobs). The cases live in a SQLite database of each test's own
+(``case_service``).
 """
 
 import time
@@ -42,7 +43,6 @@ def unique_id(prefix: str) -> str:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.cloud
 class TestArchitecturalCompliance:
     """Integration tests for spec compliance verification"""
 
