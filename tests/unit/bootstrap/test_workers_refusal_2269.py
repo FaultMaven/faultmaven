@@ -26,8 +26,8 @@ from faultmaven.bootstrap.composition import (
     _wire_composition_root,
     compose_application,
 )
+from faultmaven.bootstrap.configuration_gates import validate_configuration
 from faultmaven.config.persistent_database import NonPersistentDatabaseError
-from faultmaven.config.serving_gates import refuse_unservable_configuration
 from faultmaven.config.worker_stores import (
     PerProcessStoresError,
     configured_per_process_stores,
@@ -176,7 +176,7 @@ def test_a_database_url_no_engine_opens_is_refused_by_its_own_gate(settings_from
 
     refuse_configured_per_process_stores(settings)  # not this gate's to refuse
     with pytest.raises(NonPersistentDatabaseError):
-        refuse_unservable_configuration(settings)
+        validate_configuration(settings)
 
 
 @pytest.mark.parametrize("environ", [{"WORKERS": "1"}, {"RELOAD": "true"}])

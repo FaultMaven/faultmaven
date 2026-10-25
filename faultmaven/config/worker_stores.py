@@ -13,9 +13,9 @@ So several processes are refused when either store is process-local, at the
 earliest point that can know it:
 
 1. **Before composition** (:func:`refuse_configured_per_process_stores`, from
-   the lifespan, and before uvicorn forks, from ``run_server``; both through
-   ``faultmaven/config/serving_gates.py``), when the configuration alone
-   decides it: ``SKIP_SERVICE_CHECKS`` (no Redis server is even tried), no
+   the lifespan, and from ``run_server`` before uvicorn forks several workers;
+   both through ``faultmaven/bootstrap/configuration_gates.py``), when the
+   configuration alone decides it: ``SKIP_SERVICE_CHECKS`` (no Redis server is even tried), no
    Redis server named, or no ChromaDB server selected. Nothing is migrated,
    seeded or opened first.
 2. **Right after the container builds its clients**, before the data layer
@@ -209,7 +209,7 @@ def refuse_sqlite_across_workers(settings: Any) -> None:
     if processes <= 1:
         return
     # ``None`` for a value no engine can open, which require_persistent_database
-    # (run before this, faultmaven/config/serving_gates.py) refuses.
+    # (run before this, faultmaven/bootstrap/configuration_gates.py) refuses.
     url = _parse_database_url(settings.database.database_url)
     if url is not None and url.get_backend_name() == "sqlite":
         raise PerProcessStoresError(

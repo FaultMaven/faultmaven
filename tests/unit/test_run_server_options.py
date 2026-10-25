@@ -50,7 +50,7 @@ def _launch(app=None, **server_fields):
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run", autospec=True) as run,
         # The gates read more than ``server``; they have tests of their own.
-        patch("faultmaven.config.serving_gates.refuse_unservable_configuration"),
+        patch("faultmaven.bootstrap.configuration_gates.validate_configuration"),
     ):
         # No launcher migration here; that has tests of its own.
         get.return_value = SimpleNamespace(server=server, run_startup_migrations=False)
@@ -119,28 +119,57 @@ def test_web_concurrency_cannot_change_the_worker_count(monkeypatch):
     [
         # Several processes over the in-process FakeRedis.
         ({"SKIP_SERVICE_CHECKS": "true"}, PerProcessStoresError, "FakeRedis"),
-        # No persistent database: refused as that, ahead of the SQLite refusal.
+        # No persistent database: refused as that, ahead of the stores
+        # refusal it would also meet.
         (
-            {"DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+            {
+                "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+                "SKIP_SERVICE_CHECKS": "true",
+            },
             NonPersistentDatabaseError,
             "DATABASE_URL",
         ),
-        # Incoherent with DEPLOYMENT_MODE: refused ahead of everything else.
+        # Incoherent with DEPLOYMENT_MODE: refused ahead of the database and
+        # stores refusals it would also meet.
         (
-            {"DEPLOYMENT_MODE": "cloud", "AUTH_MODE": "local"},
+            {
+                "DEPLOYMENT_MODE": "cloud",
+                "AUTH_MODE": "local",
+                "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+                "SKIP_SERVICE_CHECKS": "true",
+            },
             DeploymentCoherenceError,
             "DEPLOYMENT_MODE",
+        ),
+        # A configured provider with no credential, the gate the lifespan runs
+        # outside test environments.
+        (
+            {
+                "CHAT_PROVIDER": "openai",
+                "OPENAI_API_KEY": "",
+                "REDACTION_PSEUDONYM_KEY": "x" * 64,  # no key file is written
+                "FM_TEST_OUTSIDE_TEST_ENVIRONMENT": "1",
+            },
+            ValueError,
+            "No usable LLM credential",
         ),
     ],
 )
 def test_a_refusal_the_configuration_decides_exits_before_uvicorn_starts(
     monkeypatch, environ, refusal, names
 ):
-    """The launcher runs each worker's configuration gates, in their order,
-    before it migrates or uvicorn forks: refused only in the workers, uvicorn
-    restarts them forever (#2281)."""
+    """Before several workers, the launcher runs every gate the configuration
+    alone decides, in the lifespan's order, and exits as uvicorn does on a
+    failed startup: refused only in the workers, uvicorn restarts them forever
+    (#2281)."""
+    from faultmaven.bootstrap import configuration_gates
     from faultmaven.config.settings import get_settings, reset_settings
 
+    if environ.pop("FM_TEST_OUTSIDE_TEST_ENVIRONMENT", None):
+        monkeypatch.setattr(
+            "faultmaven.bootstrap.composition._is_test_environment",
+            lambda settings=None: False,
+        )
     for name, value in {
         "CONFIG_PRESET": "none",
         "DEPLOYMENT_MODE": "standalone",
@@ -156,14 +185,29 @@ def test_a_refusal_the_configuration_decides_exits_before_uvicorn_starts(
         **environ,
     }.items():
         monkeypatch.setenv(name, value)
+    validate = configuration_gates.validate_configuration
+    refused = []
+
+    def recording(settings, **kwargs):
+        try:
+            validate(settings, **kwargs)
+        except Exception as error:
+            refused.append(error)
+            raise
+
     reset_settings()
     try:
         with (
+            patch.object(configuration_gates, "validate_configuration", recording),
             patch("uvicorn.run", autospec=True) as run,
             patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
         ):
-            with pytest.raises(refusal, match=names):
+            with pytest.raises(SystemExit) as exited:
                 run_server()
+        assert exited.value.code == 3  # uvicorn's STARTUP_FAILURE
+        (error,) = refused
+        assert isinstance(error, refusal)
+        assert names in str(error)
         migrate.assert_not_called()
         run.assert_not_called()
         assert get_settings().server.workers == 2
@@ -232,21 +276,25 @@ def test_malformed_app_is_rejected_before_uvicorn_starts(app):
 
 
 @pytest.mark.parametrize(
-    ("workers", "reload", "run_startup_migrations", "migrates"),
+    ("workers", "reload", "run_startup_migrations", "expected"),
     [
-        (2, False, True, True),
-        (1, False, True, False),
-        (2, True, True, False),  # RELOAD serves one process, which migrates itself
-        (2, False, False, False),  # a migration Job owns the schema
+        (2, False, True, ["logging", "gates", "migrate", "run"]),
+        # A migration Job owns the schema.
+        (2, False, False, ["logging", "gates", "run"]),
+        # One process: the lifespan refuses and migrates, and its refusal
+        # stops uvicorn.
+        (1, False, True, ["run"]),
+        (2, True, True, ["run"]),  # RELOAD serves one process
     ],
 )
-def test_several_workers_are_migrated_once_before_uvicorn_forks(
-    workers, reload, run_startup_migrations, migrates
+def test_several_workers_are_validated_and_migrated_once_before_uvicorn_forks(
+    workers, reload, run_startup_migrations, expected
 ):
-    """Each worker's lifespan runs the startup migrations; launched together on
-    a first boot they raced (#2281). The launcher migrates first, once, after
-    the configuration gates and with the app's logging installed (until uvicorn
-    imports the app, nothing else installs it in this process)."""
+    """Each worker's lifespan runs the gates and the startup migration. Refused
+    there, uvicorn restarted the workers forever; migrating together on a first
+    boot, they raced (#2281). Before several workers the launcher does both
+    first, once, with the app's logging installed (until uvicorn imports the
+    app, nothing else installs it in this process)."""
     from unittest.mock import MagicMock
 
     order = MagicMock()
@@ -255,7 +303,7 @@ def test_several_workers_are_migrated_once_before_uvicorn_forks(
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run", autospec=True) as run,
         patch(
-            "faultmaven.config.serving_gates.refuse_unservable_configuration"
+            "faultmaven.bootstrap.configuration_gates.validate_configuration"
         ) as gates,
         patch("faultmaven.infrastructure.logging.config.get_logger") as logging,
         patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
@@ -264,19 +312,19 @@ def test_several_workers_are_migrated_once_before_uvicorn_forks(
             server=server, run_startup_migrations=run_startup_migrations
         )
         for name, mock in [
-            ("gates", gates),
             ("logging", logging),
+            ("gates", gates),
             ("migrate", migrate),
             ("run", run),
         ]:
             order.attach_mock(mock, name)
         run_server()
 
-    names = [name for name, _args, _kwargs in order.mock_calls]
-    if migrates:
-        assert names == ["gates", "logging", "migrate", "run"]
-    else:
-        assert names == ["gates", "run"]
+    names = [name for name, _args, _kwargs in order.mock_calls if "." not in name]
+    assert names == expected
+    if gates.called:
+        # The advisory warnings are the workers' to print, once each.
+        assert gates.call_args.kwargs == {"advisories": False}
 
 
 @pytest.mark.parametrize("at_head", [True, False])

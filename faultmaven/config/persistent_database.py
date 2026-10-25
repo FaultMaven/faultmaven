@@ -20,7 +20,8 @@ Called from these entrypoints, before any of them writes anything:
   ``resolve_pseudonym_key`` (which creates the data directory and writes the
   standalone key file), and outside the test-environment skip, because no test
   boots the app without a database; ``run_server`` runs the same gates in the
-  same order before uvicorn forks (``faultmaven/config/serving_gates.py``);
+  same order before uvicorn forks several workers
+  (``faultmaven/bootstrap/configuration_gates.py``);
 - the CronJob runner (``faultmaven/jobs/run.py``), which mirrors the coherence
   gate — without it a job fails in the container's bootstrap exactly the way
   the API used to;
