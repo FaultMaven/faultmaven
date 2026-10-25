@@ -35,7 +35,6 @@ Usage:
 
 import argparse
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -169,25 +168,17 @@ def status_tests():
         return 1
 
 
-#: Deselected by pytest.ini's ``addopts`` (``-m "not real_llm"``). pytest keeps
-#: only the last ``-m``, so any ``-m`` the runner passes replaces that one: every
-#: expression it builds deselects these too, unless the expression names one
-#: (#2288).
-OPT_IN_MARKERS = ("real_llm",)
-
-
 def marker_expression(selections: List[str]) -> Optional[str]:
-    """The one ``-m`` expression for ``selections``, ANDed, or ``None`` for none.
+    """One ``-m`` expression: every selection, each parenthesised, ANDed.
 
-    With no selection the runner passes no ``-m`` and pytest.ini's applies.
+    pytest keeps only the last ``-m`` it is given, so a preset's selection and
+    ``--marker`` passed as two would leave only the second (#2288). ``None``
+    for no selection. The opt-in lanes (``real_llm``) are deselected by
+    tests/conftest.py whatever ``-m`` says, unless it names them.
     """
     if not selections:
         return None
-    terms = [f"({selection})" for selection in selections]
-    for marker in OPT_IN_MARKERS:
-        if not any(re.search(rf"\b{marker}\b", s) for s in selections):
-            terms.append(f"not {marker}")
-    return " and ".join(terms)
+    return " and ".join(f"({selection})" for selection in selections)
 
 
 def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
@@ -501,7 +492,11 @@ def _add_test_arguments(parser):
     filter_group.add_argument(
         "-k", "--keyword", help="Filter tests by keyword expression"
     )
-    filter_group.add_argument("-m", "--marker", help="Run tests with specific marker")
+    filter_group.add_argument(
+        "-m",
+        "--marker",
+        help="Run tests matching a marker expression (ANDed with a mode's own)",
+    )
 
     # Execution options
     exec_group = parser.add_argument_group("Execution Options")

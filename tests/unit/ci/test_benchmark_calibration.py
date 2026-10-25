@@ -4423,7 +4423,8 @@ def _selects(argv: List[str], marks: set) -> bool:
 
     Evaluated by pytest's own expression engine, never matched as text:
     ``"not performance"`` contains ``"performance"``. The last ``-m`` wins, as
-    on pytest's command line; with none, only the ini's ``not real_llm`` applies.
+    on pytest's command line; with none, every item is kept. (The ``real_llm``
+    lane is deselected by a collection hook, not by ``-m``.)
     """
     flags = [i for i, arg in enumerate(argv) if arg == "-m"]
     if not flags:

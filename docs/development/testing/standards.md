@@ -36,7 +36,7 @@ This document establishes the new testing architecture and standards for FaultMa
 
 #### **Real-LLM Integration Tests** (`tests/integration/real_llm/`)
 
-These tests hit a live LLM provider API (Anthropic by default). They are **opt-in**, marked with `@pytest.mark.real_llm`, and excluded from the default `pytest` run via `-m "not real_llm"` in `pytest.ini`. To run them:
+These tests hit a live LLM provider API (Anthropic by default). They are **opt-in**, marked with `@pytest.mark.real_llm`: a collection hook in `tests/conftest.py` deselects them from every run whose `-m` does not name `real_llm`, so `pytest -m "not cloud"` leaves them out too (#2288). To run them:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
