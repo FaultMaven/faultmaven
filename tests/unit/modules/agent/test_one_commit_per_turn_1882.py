@@ -664,6 +664,9 @@ class TestACancelledCommitStillCommits:
             await asyncio.Event().wait()
 
         async with sessions() as session:
+            # The test cancels the turn, not a connect: a cancel inside the
+            # pool's connect events leaks the new connection (#2258).
+            await session.connection()
             repository = _Repository(session, sessions)
             service = _service(
                 repository, _engine(repository, generate=AsyncMock(side_effect=_hangs))
