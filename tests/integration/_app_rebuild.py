@@ -30,15 +30,18 @@ back.
 So the rebuilt module is handed back as an object and the previous one is
 restored. The caller keeps the app it asked for; nobody else is affected.
 
-The environment variables are deliberately *not* restored here: the modules that
-call this set them before importing anything and rely on the settings singleton
-built from them for the rest of their run. That leak is real but bounded — a
-later importer of ``faultmaven.main`` rebuilds under it — and it is not this
-helper's to fix, because its callers depend on the mutated values. What *is*
-fixed here is the published module object, which no caller asked to change.
+``rebuild_app`` leaves the environment to its caller. ``rebuild_app_under`` sets
+an environment for the build and puts it back after: the OAuth integration
+modules used to set theirs at import, where pytest's collection made it every
+later test's (#2291). A module whose app is built that way and whose tests need
+the same environment while they run asks for the ``oauth_environment`` fixture
+(``tests/integration/modules/auth/conftest.py``), which sets it for that
+module's tests only.
 """
 
 import sys
+
+import pytest
 
 #: Every app ``rebuild_app`` handed out, so the integration conftest can end
 #: their protection middleware's service after each test (they are served
@@ -87,3 +90,24 @@ def rebuild_app():
                 # above failed before binding it, and an AttributeError raised
                 # from this ``finally`` would mask the real one.
                 package.__dict__.pop("main", None)
+
+
+def rebuild_app_under(environment):
+    """``rebuild_app`` with ``environment`` set for the build, then put back.
+
+    The settings singleton is cleared on both sides, so the build reads
+    ``environment`` and nothing after it reads a settings object built from it.
+    Clear the singleton, never drop ``faultmaven.config.settings`` from
+    ``sys.modules``: a second module object would keep its own singleton, and
+    every module that already imported from the first would read a stale one.
+    """
+    from faultmaven.config.settings import reset_settings
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            for name, value in environment.items():
+                patch.setenv(name, value)
+            reset_settings()
+            return rebuild_app()
+    finally:
+        reset_settings()

@@ -19,33 +19,27 @@ the production default), because that is the branch that was unguarded — the
 auto-approve branch reached ``create_authorization_code`` and was always covered.
 """
 
-import os
 from datetime import datetime
-
-# Set environment variables FIRST - before ANY imports
-os.environ["SKIP_SERVICE_CHECKS"] = "true"
-os.environ["OAUTH_ENABLED"] = "true"
-
-# Force the app below to be built with OAuth enabled. Clear the settings
-# *singleton*; never drop faultmaven.config.settings from sys.modules (that
-# leaves a second module object, each with its own cached instance).
-from faultmaven.config.settings import reset_settings
-from tests.integration._app_rebuild import rebuild_app
-
-reset_settings()
 
 import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-app = rebuild_app()
-
-from faultmaven.config.settings import AuthSettings
+from faultmaven.config.settings import AuthSettings, reset_settings
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
     InMemoryOAuthCodeRepository,
 )
+from tests.integration._app_rebuild import rebuild_app_under
+
+#: The app below is built under this, and this module's tests run under it
+#: (the ``oauth_environment`` fixture); no other module sees it (#2291).
+OAUTH_ENVIRONMENT = {"SKIP_SERVICE_CHECKS": "true", "OAUTH_ENABLED": "true"}
+
+app = rebuild_app_under(OAUTH_ENVIRONMENT)
+
+pytestmark = pytest.mark.usefixtures("oauth_environment")
 
 ALLOWED_CLIENT = "faultmaven-copilot"
 # Matches the pattern this file's ``auth_settings`` fixture supplies, NOT the

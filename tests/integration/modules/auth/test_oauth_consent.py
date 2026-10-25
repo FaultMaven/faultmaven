@@ -7,34 +7,24 @@ Tests the two-step authorization flow with user consent:
 Tests both production mode (consent required) and dev mode (auto-approve).
 """
 
-import os
-import sys
 from unittest.mock import AsyncMock
-
-# Set environment variables FIRST - before ANY imports
-os.environ["SKIP_SERVICE_CHECKS"] = "true"
-os.environ["OAUTH_ENABLED"] = "true"
-
-# Force the app below to be built with OAuth enabled.
-#
-# Clear the settings *singleton*; never drop faultmaven.config.settings from
-# sys.modules. Doing that leaves a second module object in the process, each
-# with its own `_settings_instance`: every module that already did
-# `from faultmaven.config.settings import ...` keeps the old one, so its
-# reset_settings() clears a singleton nothing reads while the freshly imported
-# module keeps handing production code a stale cached settings object.
-from faultmaven.config.settings import reset_settings
-from tests.integration._app_rebuild import rebuild_app
-
-reset_settings()
 
 import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-app = rebuild_app()
+from faultmaven.config.settings import reset_settings
 from faultmaven.modules.auth.contracts import OAuthTokenDTO
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from tests.integration._app_rebuild import rebuild_app_under
+
+#: The app below is built under this, and this module's tests run under it
+#: (the ``oauth_environment`` fixture); no other module sees it (#2291).
+OAUTH_ENVIRONMENT = {"SKIP_SERVICE_CHECKS": "true", "OAUTH_ENABLED": "true"}
+
+app = rebuild_app_under(OAUTH_ENVIRONMENT)
+
+pytestmark = pytest.mark.usefixtures("oauth_environment")
 
 
 @pytest.fixture(autouse=True)

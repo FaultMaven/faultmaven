@@ -19,10 +19,8 @@ environment it exposes 143 operations against the artifact's 146 — and the two
 sets are neither subset nor superset. The OAuth, SSO and ``/metrics``
 operations would never be checked (``/metrics`` is one of the routes this very
 invariant fixes), while five ``/debug/*`` routes that are never published would
-be. The in-process app is also collection-order dependent, because
-``tests/integration/modules/auth/test_oauth_*.py`` set ``OAUTH_ENABLED`` at
-import time and rebuild the app under it — the published singleton is restored
-again (fm#990), but the mutated environment those rebuilds leave behind is not.
+be. The in-process app is also built from whatever environment the session
+has, where the artifact is generated under a pinned one.
 
 Reading the artifact is not a weaker check: the ``api-contract-drift`` CI job
 holds it byte-equal to the app built under the generator's pinned environment.

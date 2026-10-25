@@ -24,28 +24,23 @@ The service layer is mocked: the subject here is the HTTP wire, and the grant
 logic is covered by the unit tests for `OAuthService`.
 """
 
-import os
 from unittest.mock import AsyncMock
-
-# Set environment variables FIRST - before ANY imports (see
-# test_oauth_public_endpoints for why the settings singleton is cleared rather
-# than the module dropped from sys.modules).
-os.environ["SKIP_SERVICE_CHECKS"] = "true"
-os.environ["OAUTH_ENABLED"] = "true"
-
-from faultmaven.config.settings import reset_settings
-from tests.integration._app_rebuild import rebuild_app
-
-reset_settings()
 
 import pytest
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 
-app = rebuild_app()
-
 from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.contracts import OAuthTokenDTO
+from tests.integration._app_rebuild import rebuild_app_under
+
+#: The app below is built under this, and this module's tests run under it
+#: (the ``oauth_environment`` fixture); no other module sees it (#2291).
+OAUTH_ENVIRONMENT = {"SKIP_SERVICE_CHECKS": "true", "OAUTH_ENABLED": "true"}
+
+app = rebuild_app_under(OAUTH_ENVIRONMENT)
+
+pytestmark = pytest.mark.usefixtures("oauth_environment")
 
 TOKEN_URL = "/api/v1/auth/oauth/token"
 REVOKE_URL = "/api/v1/auth/oauth/revoke"
