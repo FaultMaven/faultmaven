@@ -13,6 +13,7 @@ they are the reason the design changed rather than growing a type list.
 """
 
 import io
+import json
 import logging
 
 import pytest
@@ -138,6 +139,32 @@ class TestRedactUrls:
             lambda count: "a" * count + "? ://x",
             small=256,
             label="redact_urls on a long near-miss run",
+        )
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            'bad url "https://h.example/p?a=X"',  # the URL ends a quoted span
+            'x "https://h/p?a=1\\" y',  # a backslash ends the query, then a quote
+            "q https://h/p?a=b\\c&key=K end",  # a backslash inside the query
+        ],
+    )
+    def test_a_json_line_stays_json_and_loses_its_whole_query(self, event):
+        """‼ #2309. The renderer redacts the serialised line, where a quote
+        ending a string is escaped. The query class swallowed that escape's
+        backslash and left a bare quote: an invalid JSON line. Excluding every
+        backslash instead would stop at an escaped backslash and leak the rest
+        of the query."""
+        line = json.dumps({"event": event})
+
+        redacted = json.loads(redact_urls(line))["event"]
+
+        assert "<redacted>" in redacted
+        assert "a=" not in redacted and "key=" not in redacted
+
+    def test_plain_text_with_a_backslash_in_the_query_loses_all_of_it(self):
+        assert redact_urls(f"GET https://h/p?a=b\\c&key={API_KEY_SHAPE} end") == (
+            "GET https://h/p?<redacted> end"
         )
 
     def test_the_bytes_form_matches_the_str_form(self):
@@ -279,6 +306,15 @@ class TestNothingWrittenLeaks:
         except RuntimeError:
             get_logger("p").exception("failed")
         assert CANARY not in written.getvalue()
+
+    def test_a_line_quoting_a_url_is_still_json(self, written):
+        """#2309: through the real JSON renderer, a message that quotes a URL
+        (an exception text, a repr) stays one parseable line."""
+        get_logger("p").error(f'request failed for "{URL}"')
+        (line,) = [
+            line for line in written.getvalue().splitlines() if "request failed" in line
+        ]
+        assert CANARY not in json.loads(line)["event"]
 
     def test_a_dsn(self, written):
         get_logger("p").error("db down", url=f"postgresql://h/db?opt={CANARY}")

@@ -61,7 +61,14 @@ from typing import Callable
 #
 # ESC is excluded so the console renderer's colour reset after a URL is not
 # swallowed with the query string.
-_URL_QUERY = re.compile(r"(://[^\s\"'<>?\x1b]*)\?[^\s\"'<>\x1b]*")
+#
+# The query runs over a JSON-serialised line, where a quote ending the string
+# is escaped (\"). A backslash is part of the query only as an escaped pair
+# (\\) or before anything but a quote: a lone backslash before a quote is that
+# quote's escape, and swallowing it left a bare quote and an invalid JSON line
+# (#2309). Excluding every backslash instead would stop the redaction at an
+# escaped backslash and leave the rest of the query visible.
+_URL_QUERY = re.compile(r"(://[^\s\"'<>?\x1b]*)\?(?:[^\s\"'<>\x1b\\]|\\\\|\\(?!\"))*")
 _URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
 _REPLACEMENT = r"\1?<redacted>"
 _REPLACEMENT_BYTES = rb"\1?<redacted>"
