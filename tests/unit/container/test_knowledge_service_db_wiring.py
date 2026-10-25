@@ -138,7 +138,7 @@ def test_container_does_not_substitute_a_stub_knowledge_service():
     from faultmaven._container_impl import DIContainer
 
     container = object.__new__(DIContainer)
-    container._initialized = True  # a composed container: no not-initialized warning
+    container._initialized = True  # object.__new__ sets no state; the getter reads this
     assert "knowledge_service" not in container.__dict__
 
     assert container.get_knowledge_service() is None

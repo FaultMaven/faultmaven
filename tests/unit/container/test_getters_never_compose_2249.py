@@ -11,7 +11,6 @@ answers from what is composed.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -78,8 +77,11 @@ def test_a_getter_answers_from_what_is_composed(container, getter):
 
 @pytest.mark.parametrize("getter", _BASE_LAZY_GETTERS)
 def test_no_getter_the_base_class_composes_from_does_so_here(container, getter):
-    # get_llm_provider refuses when no provider is composed; it must not compose.
-    with contextlib.suppress(RuntimeError):
+    if getter == "get_llm_provider":
+        # It refuses when no provider is composed; it must not compose one.
+        with pytest.raises(RuntimeError, match="LLM provider not initialized"):
+            container.get_llm_provider()
+    else:
         getattr(container, getter)()
 
     container.initialize.assert_not_called()
