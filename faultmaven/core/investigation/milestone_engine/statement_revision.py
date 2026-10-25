@@ -31,7 +31,7 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import CaseState, ProblemStatus
 
-from .stage_gates import _add_system_feedback
+from .stage_gates import CARRIED_FIX_KEY, _add_system_feedback
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
     offer_intent_fields,
@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 #: turn that follows the replay runs the proposers with its own metadata, so an
 #: offer the replayed state warrants is made there, with its card, unexecuted.
 REPLAY_METADATA_KEY = "replaying_staged_cause_work"
+
+#: One list for every bundle of a replay: the actions the replay has minted
+#: from fix entries so far, which the stage gate weighs as fix bearers (#2105).
+REPLAY_FIX_SLOTS_KEY = "replay_fix_slots"
 
 #: What an offer made inside the replay writes beside ``pending_transition``:
 #: the same-turn guard (#722: a proposal is never confirmed by the message that
@@ -154,12 +158,16 @@ async def confirm_revision(
     ``responses`` is the engine's ``ResponseApplier``; the replay runs through
     its ``_apply_investigation_updates`` — the same path a live turn takes —
     one staged turn at a time, each with a fresh metadata seeded with the
-    evidence ids that turn's refs resolve against.
+    evidence ids that turn's refs resolve against. A bundle that carried a fix
+    acceptance (``held_fix``) is handed to the stage gate, which registers it
+    stamped at that turn and decides nothing again (#2105); a bundle that no
+    longer validates is dropped with it.
     """
     pending = commit_revision(case)
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
 
     replayed: dict[str, list] = {key: [] for key in REPLAYED_KEYS}
+    fix_slots: list = []
     for bundle in pending.staged:
         try:
             updates = (
@@ -195,7 +203,10 @@ async def confirm_revision(
             "progress_made": False,
             "status_transitioned": False,
             REPLAY_METADATA_KEY: True,
+            REPLAY_FIX_SLOTS_KEY: fix_slots,
         }
+        if bundle.held_fix:
+            bundle_metadata[CARRIED_FIX_KEY] = bundle
         offer_before = case.pending_transition
         await responses._apply_investigation_updates(case, updates, bundle_metadata)
         if case.pending_transition and case.pending_transition is not offer_before:
@@ -253,7 +264,9 @@ _STAGED_WORK_NOUNS = (
 def staged_work_summary(pending: PendingRevision | None) -> str | None:
     """What a decline discards: the cause work staged on the revision, by kind
     — so the model knows to re-send what still holds once the problem is
-    verified, rather than assume it was recorded."""
+    verified, rather than assume it was recorded. A fix execution the user
+    reported, carried for the replay (``held_fix``), is named too: it is
+    discarded with its bundle and must be registered again (#2105)."""
     if pending is None:
         return None
     counts: dict[str, int] = {}
@@ -264,6 +277,9 @@ def staged_work_summary(pending: PendingRevision | None) -> str | None:
                 counts[noun] = counts.get(noun, 0) + (
                     len(value) if isinstance(value, list) else 1
                 )
+    executions = sum(1 for bundle in pending.staged if bundle.held_fix)
+    if executions:
+        counts["reported fix execution(s)"] = executions
     if not counts:
         return None
     return ", ".join(f"{n} {noun}" for noun, n in counts.items())

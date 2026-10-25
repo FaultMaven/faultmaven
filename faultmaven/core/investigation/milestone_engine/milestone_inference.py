@@ -10,12 +10,11 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     EvidenceCategory,
     InvestigationProgress,
 )
 
-from .stage_gates import CATEGORY_MILESTONE_MAP
+from .stage_gates import CATEGORY_MILESTONE_MAP, justification_skipped
 
 logger = logging.getLogger(__name__)
 
@@ -255,23 +254,95 @@ def _infer_milestones(
 # =============================================================================
 
 
+#: Judged by the stage gate, which asks for a justification only when its
+#: decision registers a fix (#2105); never stripped here.
+GATE_JUDGED_MILESTONES: frozenset[str] = frozenset({"solution_accepted"})
+
+
 def _milestone_already_recorded(
     progress: InvestigationProgress, milestone: str
 ) -> bool:
     """Whether the case already records ``milestone`` as reached.
 
-    Covers the boolean fields of ``MilestoneUpdates``. A name it does not know
-    reads as not recorded, so a milestone added to the schema later is still
-    validated rather than waved through.
+    Covers the boolean fields of ``MilestoneUpdates`` this check judges, so not
+    ``GATE_JUDGED_MILESTONES``. A name it does not know reads as not recorded,
+    so a milestone added to the schema later is still validated rather than
+    waved through.
     """
     mitigation = progress.mitigation
     recorded = {
         "symptom_verified": progress.symptom_verified,
-        "solution_accepted": progress.solution_accepted,
         "mitigation_accepted": mitigation is not None and mitigation.accepted,
         "mitigation_verified": mitigation is not None and mitigation.verified,
     }
     return bool(recorded.get(milestone, False))
+
+
+def _justification_errors(
+    response_obj: BaseInteractionResponse, case: Case, completed: list[str]
+) -> tuple[list[str], set[str], bool]:
+    """The justification checks, shared by ``validate_reasoning_first`` and the
+    gate's verdict: an ``evidence_trail``, a justification per milestone, and
+    actionable evidence. Returns ``(errors, offending, has_trail)``."""
+    evidence_trail = getattr(response_obj, "evidence_trail", None)
+    # If milestones are being completed, evidence_trail is REQUIRED.
+    # Global failure: none of the completed milestones are justified.
+    if not evidence_trail:
+        return (
+            [
+                f"Milestones {completed} completed without evidence_trail. "
+                "You MUST provide evidence_trail with justifications when "
+                "completing milestones."
+            ],
+            set(completed),
+            False,
+        )
+
+    errors: list[str] = []
+    offending: set[str] = set()
+    # Check 1: All completed milestones must have justifications.
+    # Per-milestone failure: only the unjustified milestone is offending.
+    #
+    # ``as_dict()`` and not the model itself: under strict mode every milestone
+    # key arrives populated, ``null`` where the model had nothing to say, so a
+    # membership test against the raw model would report every milestone as
+    # justified and this gate would never fire again (fm#1057).
+    #
+    # One message for all of them, not one each: the errors are delivered to
+    # the next turn through ``system_feedback``, which the turn record caps at
+    # 1000 characters, so their size must not grow with the milestone count.
+    justifications = evidence_trail.milestone_justifications.as_dict()
+    unjustified = [m for m in completed if m not in justifications]
+    if unjustified:
+        offending.update(unjustified)
+        errors.append(
+            f"Milestones {unjustified} completed without justification. To "
+            "claim one, set it True again and set "
+            "evidence_trail.milestone_justifications.<milestone> to the "
+            "evidence that shows it, citing evidence IDs; null or blank is "
+            "no justification."
+        )
+
+    # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
+    # Contextual evidence (raw uploads) cannot justify milestones — only
+    # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
+    evidence_being_added = (
+        getattr(response_obj.state_updates, "evidence_to_add", []) or []
+    )
+    # Every evidence row is claim-anchored — any existing or to-add row counts.
+    has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
+
+    # ``justifications`` (the dict), not the model: a Pydantic model is ALWAYS
+    # truthy, so testing the field directly would make this branch fire on every
+    # turn that reaches it, including one that justified nothing (fm#1057).
+    if justifications and not has_actionable_evidence:
+        # Global failure: with no actionable evidence, no milestone is justifiable.
+        offending.update(completed)
+        errors.append(
+            "Cannot complete milestones when no actionable evidence has been collected. "
+            "You must first analyze and classify evidence before completing milestones."
+        )
+    return errors, offending, True
 
 
 def validate_reasoning_first(
@@ -288,6 +359,10 @@ def validate_reasoning_first(
     case closure without forcing justifications. This handles the scenario where:
     - User confirms a pending transition via the User-Agent Handshake
     - Case is transitioning to RESOLVED or CLOSED
+
+    ``solution_accepted`` is not judged here (``GATE_JUDGED_MILESTONES``): the
+    stage gate decides whether it registers a fix, and asks for its
+    justification exactly then (#2105). It is never offending.
 
     Reference: Prompt Engineering Guide Section 13 (lines 3236-3281)
 
@@ -312,9 +387,6 @@ def validate_reasoning_first(
         2. Case is already in terminal state (RESOLVED or CLOSED)
         3. Case has a pending_transition (user confirmation in progress)
     """
-    errors: list[str] = []
-    offending: set[str] = set()
-
     # Debug logging for Turn 2 issue
     logger.debug(
         f"validate_reasoning_first: response_type={type(response_obj).__name__}, "
@@ -323,20 +395,13 @@ def validate_reasoning_first(
         f"is_TerminalResponse={isinstance(response_obj, TerminalResponse)}"
     )
 
-    # Only validate investigation responses (not INQUIRY or TERMINAL)
-    if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
-        logger.debug("Skipping reasoning validation (INQUIRY or TERMINAL response)")
+    # TERMINAL TRANSITION EXCEPTION: graceful closure needs no justification.
+    if isinstance(
+        response_obj, (InquiryResponse, TerminalResponse)
+    ) or justification_skipped(case):
         return True, [], set()
 
-    # Skip validation if case is already in terminal state
-    if case.is_terminal:
-        logger.debug("Skipping reasoning validation (case already in terminal state)")
-        return True, [], set()
-
-    # Check if response has evidence_trail field
-    evidence_trail = getattr(response_obj, "evidence_trail", None)
     milestones = getattr(response_obj.state_updates, "milestones", None)
-
     if not milestones:
         # No milestones being completed, no validation needed
         return True, [], set()
@@ -354,6 +419,7 @@ def validate_reasoning_first(
         if (
             isinstance(value, bool)
             and value is True
+            and milestone_name not in GATE_JUDGED_MILESTONES
             and not _milestone_already_recorded(case.progress, milestone_name)
         ):
             completed_milestones.append(milestone_name)
@@ -362,73 +428,11 @@ def validate_reasoning_first(
         # No milestones actually completed, no validation needed
         return True, [], set()
 
-    # ===== TERMINAL TRANSITION EXCEPTION =====
-    # Skip validation if case has a pending transition (User-Agent Handshake in progress).
-    # The user has already confirmed the transition, so we allow graceful closure
-    # without forcing the LLM to justify additional milestones.
-    if case.state == CaseState.INVESTIGATING:
-        has_pending = hasattr(case, "pending_transition") and case.pending_transition
-        already_solution_verified = case.progress.solution_verified
-
-        if has_pending or already_solution_verified:
-            logger.debug(
-                f"Skipping reasoning validation (terminal transition in progress: "
-                f"pending={has_pending}, solution_verified={already_solution_verified})"
-            )
-            return True, [], set()
-
-    # If milestones are being completed, evidence_trail is REQUIRED.
-    # Global failure: none of the completed milestones are justified.
-    if not evidence_trail:
-        errors.append(
-            f"Milestones {completed_milestones} completed without evidence_trail. "
-            "You MUST provide evidence_trail with justifications when completing milestones."
-        )
-        return False, errors, set(completed_milestones)
-
-    # Check 1: All completed milestones must have justifications.
-    # Per-milestone failure: only the unjustified milestone is offending.
-    #
-    # ``as_dict()`` and not the model itself: under strict mode every milestone
-    # key arrives populated, ``null`` where the model had nothing to say, so a
-    # membership test against the raw model would report every milestone as
-    # justified and this gate would never fire again (fm#1057).
-    #
-    # One message for all of them, not one each: the errors are delivered to
-    # the next turn through ``system_feedback``, which the turn record caps at
-    # 1000 characters, so their size must not grow with the milestone count.
-    justifications = evidence_trail.milestone_justifications.as_dict()
-    unjustified = [m for m in completed_milestones if m not in justifications]
-    if unjustified:
-        offending.update(unjustified)
-        errors.append(
-            f"Milestones {unjustified} completed without justification. To "
-            "claim one, set it True again and set "
-            "evidence_trail.milestone_justifications.<milestone> to the "
-            "evidence that shows it, citing evidence IDs; null or blank is "
-            "no justification."
-        )
-
-    # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
-    # Contextual evidence (raw uploads) cannot justify milestones — only
-    # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
-
-    evidence_being_added = (
-        getattr(response_obj.state_updates, "evidence_to_add", []) or []
+    errors, offending, has_trail = _justification_errors(
+        response_obj, case, completed_milestones
     )
-    # Every evidence row is claim-anchored — any existing or to-add row counts.
-    has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
-
-    # ``justifications`` (the dict), not the model: a Pydantic model is ALWAYS
-    # truthy, so testing the field directly would make this branch fire on every
-    # turn that reaches it, including one that justified nothing (fm#1057).
-    if justifications and not has_actionable_evidence:
-        # Global failure: with no actionable evidence, no milestone is justifiable.
-        offending.update(completed_milestones)
-        errors.append(
-            "Cannot complete milestones when no actionable evidence has been collected. "
-            "You must first analyze and classify evidence before completing milestones."
-        )
+    if not has_trail:
+        return False, errors, offending
 
     # Check 2: REMOVED - Category-based validation no longer requires evidence_analyzed
     # evidence_analyzed is now OPTIONAL and only used for historical turn references
@@ -436,7 +440,7 @@ def validate_reasoning_first(
 
     # Check 3: Validate turn references if provided (optional)
     # If evidence_analyzed contains turn references (e.g., "turn_2"), validate format
-    for ref in evidence_trail.evidence_analyzed:
+    for ref in response_obj.evidence_trail.evidence_analyzed:
         if isinstance(ref, str) and ref.startswith("turn_"):
             try:
                 turn_num = int(ref.split("_")[1])
@@ -452,6 +456,23 @@ def validate_reasoning_first(
     # Turn-reference errors are advisory and implicate no milestone — they do
     # not add to `offending`, so they never strip a validated milestone.
     return len(errors) == 0, errors, offending
+
+
+def fix_acceptance_justification_error(
+    response_obj: BaseInteractionResponse, case: Case
+) -> str | None:
+    """Why this response could not justify a ``solution_accepted``, or None:
+    the verdict alone, from the response before the apply. The gate decides
+    whether it is required, skip conditions included, when it decides (#2105)."""
+    milestones = getattr(
+        getattr(response_obj, "state_updates", None), "milestones", None
+    )
+    if not getattr(milestones, "solution_accepted", None):
+        return None
+    errors, _offending, _has_trail = _justification_errors(
+        response_obj, case, ["solution_accepted"]
+    )
+    return " ".join(errors) or None
 
 
 def _post_process_llm_response(
