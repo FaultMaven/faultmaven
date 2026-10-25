@@ -271,7 +271,7 @@ def register_tools(container: BaseDIContainer) -> None:
     # The one KB vector store, built and registered by register_infrastructure
     # (register_knowledge_vector_store). Building a second here gave kb_qa and
     # KnowledgeService a store of their own, with its own term-stats index and
-    # blocking executor, and left the registered one unused.
+    # circuit breaker, and left the registered one unused.
     knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
 
     qa_tools = create_document_qa_tools(

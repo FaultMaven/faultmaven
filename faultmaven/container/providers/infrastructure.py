@@ -412,7 +412,7 @@ def register_knowledge_vector_store(
     Set on ``container.knowledge_vector_store`` (None when none is built), where
     ``register_tools`` (``kb_qa``) and ``register_services``
     (``KnowledgeService``) read it: every consumer gets this instance, because
-    each store holds its own term-stats index and blocking executor.
+    each store holds its own term-stats index and circuit breaker.
     """
     store = create_knowledge_vector_store(container.settings, kb_chromadb_client)
     if store:

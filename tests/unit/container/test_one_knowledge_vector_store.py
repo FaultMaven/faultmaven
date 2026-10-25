@@ -4,8 +4,9 @@
 overwrite ``container.knowledge_vector_store`` with it, so ``kb_qa`` and
 ``KnowledgeService`` shared that second store while the one
 ``register_infrastructure`` registered as ``knowledge_vector_store`` went
-unused. Each store holds its own term-stats index and blocking executor, so a
-write through one left the other's index stale.
+unused. Each store holds its own term-stats index and circuit breaker (the
+blocking executor is module-wide), so two would hold two of each; the orphan
+had no reader, so nothing read its index.
 
 The three providers run here as composition runs them, in order, against a
 private container. Stubs stand in only at the boundaries: the infrastructure
