@@ -73,7 +73,10 @@ from typing import Callable
 # number of (escape-ish backslash, run) -- rather than as a starred
 # alternation: Python's engine keeps a backtrack frame per pass of a starred
 # alternation, so that form held ~180 MB for a 1 MiB query. This one holds none
-# and runs at the speed of the plain class.
+# and runs at the speed of the plain class. It needs CPython 3.11.5's fix for a
+# possessive repeat whose last pass fails inside a lookahead (python/cpython
+# #106052): on 3.11.0-3.11.4 the escape backslash may be swallowed again, which
+# breaks the JSON line but leaks nothing. The image and CI run current 3.11.
 _QUERY_CHAR = r"[^\s\"'<>\x1b\\]"
 _URL_QUERY = re.compile(
     r"(://[^\s\"'<>?\x1b]*)\?" rf"{_QUERY_CHAR}*+(?:(?:\\\\|\\(?!\")){_QUERY_CHAR}*+)*+"

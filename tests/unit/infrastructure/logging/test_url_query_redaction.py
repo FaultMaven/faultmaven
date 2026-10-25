@@ -167,22 +167,37 @@ class TestRedactUrls:
         assert "<redacted>" in redacted
         assert "a=" not in redacted and "key=" not in redacted
 
-    def test_a_long_query_holds_no_memory_in_proportion_to_its_length(self):
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "a" * (1 << 20),  # ordinary characters only: the first run
+            "a\\" * (1 << 19),  # a lone backslash every other character
+            "a\\\\" * (1 << 18),  # escaped pairs: the outer group repeats
+        ],
+        ids=["plain", "lone-backslashes", "escaped-pairs"],
+    )
+    def test_a_long_query_holds_no_memory_in_proportion_to_its_length(self, query):
         """A starred alternation made Python's engine keep a backtrack frame per
         character: ~180 MB for a 1 MiB query, on a path every emitted record
-        takes. Measured with tracemalloc, not a clock."""
-        query = "://h?" + "a" * (1 << 20)
-
-        tracemalloc.start()
+        takes. The backslash shapes are what reach the outer group, where a
+        non-possessive star held ~90 MB. Measured with tracemalloc, not a clock;
+        the peak is reset first, so a tracing caller does not inflate it."""
+        line = "://h?" + query
+        tracing_already = tracemalloc.is_tracing()
+        if not tracing_already:
+            tracemalloc.start()
+        tracemalloc.reset_peak()
         try:
-            redact_urls(query)
+            before, _ = tracemalloc.get_traced_memory()
+            redact_urls(line)
             _current, peak = tracemalloc.get_traced_memory()
         finally:
-            tracemalloc.stop()
+            if not tracing_already:
+                tracemalloc.stop()
 
-        # The input and its result are ~1 MiB each; the match must add nothing
-        # in proportion to the query.
-        assert peak < 8 * (1 << 20), f"{peak / (1 << 20):.1f} MiB"
+        # The result is under ~1 MiB; the match must add nothing in proportion
+        # to the query.
+        assert peak - before < 8 * (1 << 20), f"{(peak - before) / (1 << 20):.1f} MiB"
 
     def test_plain_text_with_a_backslash_in_the_query_loses_all_of_it(self):
         assert redact_urls(f"GET https://h/p?a=b\\c&key={API_KEY_SHAPE} end") == (
