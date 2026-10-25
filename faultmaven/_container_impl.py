@@ -6,7 +6,7 @@ This container manages the lifecycle and dependencies of all components followin
 the interface-based dependency injection pattern.
 
 Core Responsibilities:
-- Singleton container with lazy initialization
+- Singleton container, composed once by an awaited initialize()
 - Dependency graph resolution for all services via DependencyRegistry
 - Configuration management from environment variables
 - Proper error handling with specific exceptions
@@ -297,55 +297,6 @@ class DIContainer(BaseDIContainer):
 
                 self._initialized = False
 
-    def _ensure_initialized_for_getter(self) -> None:
-        """Best-effort lazy initialization for sync getter methods.
-
-        Tests and sync call sites expect getters to trigger initialization.
-
-        Behavior:
-        - If initialize() is mocked (not a coroutine function), call it directly.
-        - If no event loop is running, run async initialize() to completion via asyncio.run.
-        - If an event loop is running, schedule initialize() as a background task.
-        """
-        if self._initialized or getattr(self, "_initializing", False):
-            return
-
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            "Service requested but container not initialized - triggering lazy initialization"
-        )
-
-        import asyncio
-        import inspect
-
-        init = getattr(self, "initialize", None)
-        if init is None:
-            return
-
-        # If patched/mocked in tests, just call it so assertions see the call.
-        if not inspect.iscoroutinefunction(init):
-            try:
-                init()
-            except Exception:
-                # Getter should not raise due to failed lazy init
-                return
-            return
-
-        # Normal path: initialize is an async function
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop (common in sync tests)
-            try:
-                asyncio.run(init())
-            except Exception:
-                return
-        else:
-            try:
-                loop.create_task(init())
-            except Exception:
-                return
-
     def _create_minimal_container(self):
         """Create minimal container for testing environments without dependencies"""
         # Create mock objects for testing
@@ -379,6 +330,14 @@ class DIContainer(BaseDIContainer):
             self.settings = get_settings()
         return self.settings
 
+    # A getter never composes the container (#2249). Four used to, lazily:
+    # asyncio.run(initialize()) with no loop running bound the composition, its
+    # Redis pool included, to a loop that closed as the getter returned, and
+    # create_task(initialize()) with one running answered from a half-composed
+    # container while nothing awaited the task. Every process initializes
+    # before its first getter (the lifespan, the jobs runner, the fm-*
+    # commands), so a getter answers from what is composed.
+
     def get_agent_service(self):
         """Get the agent service with all dependencies injected"""
         if not self._initialized:
@@ -388,7 +347,6 @@ class DIContainer(BaseDIContainer):
                 logger.warning(
                     "Agent service requested but container not initialized - this should not happen after startup"
                 )
-                self._ensure_initialized_for_getter()
         return getattr(self, "agent_service", None)
 
     def get_data_service(self):
@@ -400,7 +358,6 @@ class DIContainer(BaseDIContainer):
                 logger.warning(
                     "Data service requested but container not initialized - this should not happen after startup"
                 )
-                self._ensure_initialized_for_getter()
         return getattr(self, "data_service", None)
 
     def get_knowledge_service(self):
@@ -412,7 +369,6 @@ class DIContainer(BaseDIContainer):
                 logger.warning(
                     "Knowledge service requested but container not initialized - this should not happen after startup"
                 )
-                self._ensure_initialized_for_getter()
         # Returns None when composition did not produce one. It used to
         # substitute an in-memory stub, which made a partially composed
         # container indistinguishable from a working one: `is None` guards in
@@ -423,8 +379,13 @@ class DIContainer(BaseDIContainer):
 
     def get_oauth_service(self):
         """Get the OAuth service (if enabled)."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            # Only warn if not currently initializing
+            if not getattr(self, "_initializing", False):
+                logger.warning(
+                    "OAuth service requested but container not initialized - this should not happen after startup"
+                )
         return getattr(self, "oauth_service", None)
 
     def get_metrics_collector(self):

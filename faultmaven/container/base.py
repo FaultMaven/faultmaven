@@ -229,8 +229,10 @@ class BaseDIContainer:
         """Ensure container is initialized before returning services.
 
         This method is called by getter methods to trigger initialization
-        if it hasn't happened yet. Base implementation just calls initialize().
-        Subclasses can override with async-aware logic.
+        if it hasn't happened yet. It calls ``self.initialize()`` without
+        awaiting it, which only this base class's synchronous initialize()
+        supports. ``DIContainer``'s is a coroutine, so it overrides every getter
+        that calls this, and none of its getters composes (#2249).
         """
         if not self._initialized and not getattr(self, "_initializing", False):
             self.initialize()

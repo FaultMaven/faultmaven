@@ -249,12 +249,15 @@ class TestInterfaceResolutionAndInjection:
         """Test service getter methods."""
         container = DIContainer()
 
-        # Mock services
-        container.agent_service = mock_services["llm_provider"]  # Use as placeholder
-        container.data_service = mock_services["sanitizer"]  # Use as placeholder
-        container.knowledge_service = mock_services["tracer"]  # Use as placeholder
-        container.session_service = mock_services["vector_store"]  # Use as placeholder
-        container.case_service = mock_services["case_store"]  # Use as placeholder
+        # Mock services, published the way composition publishes them. Set as
+        # bare attributes they passed only because the getters composed the
+        # whole container over them (#2249); the registry-backed getters
+        # (session, case) never saw them.
+        container._register_service("agent_service", mock_services["llm_provider"])
+        container._register_service("data_service", mock_services["sanitizer"])
+        container._register_service("knowledge_service", mock_services["tracer"])
+        container._register_service("session_service", mock_services["vector_store"])
+        container._register_service("case_service", mock_services["case_store"])
 
         # Test getter methods
         assert container.get_agent_service() is container.agent_service
@@ -263,8 +266,8 @@ class TestInterfaceResolutionAndInjection:
         assert container.get_session_service() is container.session_service
         assert container.get_case_service() is container.case_service
 
-    def test_service_getter_with_initialization(self, clean_env):
-        """Test service getters trigger initialization if needed."""
+    def test_service_getter_never_initializes(self, clean_env):
+        """A getter answers from what is composed and never initializes (#2249)."""
         container = DIContainer()
 
         with (
@@ -276,7 +279,7 @@ class TestInterfaceResolutionAndInjection:
 
             result = container.get_agent_service()
 
-            mock_init.assert_called_once()
+            mock_init.assert_not_called()
             assert result is mock_service
 
     def test_infrastructure_provider_getters(self, clean_env, mock_services):
@@ -510,21 +513,6 @@ class TestDependencyGraphResolution:
 
         # If we get here without infinite recursion, the test passes
         assert container._initialized
-
-    def test_lazy_dependency_resolution(self, clean_env):
-        """Test lazy dependency resolution."""
-        container = DIContainer()
-
-        # Services should not be created until first access
-        assert (
-            not hasattr(container, "_agent_service")
-            or getattr(container, "_agent_service", None) is None
-        )
-
-        # Accessing service should trigger creation
-        with patch.object(container, "initialize") as mock_init:
-            container.get_agent_service()
-            mock_init.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -131,34 +131,31 @@ class TestInterfaceResolutionAndInjection:
 
 **Container Lifecycle Pattern**:
 ```python
-def test_service_lifecycle_management():
+async def test_service_lifecycle_management():
     """Test complete service lifecycle through container."""
     from faultmaven.container import container
 
-    # Reset for clean state
+    # Reset for clean state, so the composition below is this loop's
     container.reset()
-    assert container._agent_service is None
 
-    # Test lazy initialization
-    agent_service_1 = container.get_agent_service()
-    assert agent_service_1 is not None
-    assert container._agent_service is agent_service_1
+    # A getter never composes the container (#2249): initialize it first, and
+    # shut it down on the loop it was initialized on.
+    await container.initialize()
+    try:
+        agent_service_1 = container.get_agent_service()
+        assert agent_service_1 is not None
 
-    # Test singleton behavior
-    agent_service_2 = container.get_agent_service()
-    assert agent_service_2 is agent_service_1  # Same instance
+        # Test singleton behavior
+        assert container.get_agent_service() is agent_service_1  # Same instance
 
-    # Test dependency injection
-    llm_provider = container.get_llm_provider()
-    sanitizer = container.get_sanitizer()
+        # Test dependency injection
+        assert container.get_llm_provider() is not None
+        assert container.get_sanitizer() is not None
+    finally:
+        # shutdown() closes what initialize() opened and resets the container
+        await container.shutdown()
 
-    assert llm_provider is not None
-    assert sanitizer is not None
-
-    # Test container reset cleanup
-    container.reset()
-    assert container._agent_service is None
-    assert container._llm_provider is None
+    assert container.get_agent_service() is None
 ```
 
 ## Testing Patterns by Architectural Layer
@@ -319,12 +316,13 @@ def test_container_performance_overhead():
     from faultmaven.container import container
     import time
 
-    # Measure container reset performance
+    # Measure container reset performance (a getter never composes the
+    # container, #2249, so this is reset and lookup, not composition)
     start_time = time.time()
     for _ in range(100):
         container.reset()
         agent_service = container.get_agent_service()
-        assert agent_service is not None
+        assert agent_service is None
 
     elapsed_time = time.time() - start_time
 

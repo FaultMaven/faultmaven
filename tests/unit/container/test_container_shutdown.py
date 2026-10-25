@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from faultmaven.container import DIContainer
 from faultmaven.infrastructure.llm import usage_ledger
 from faultmaven.infrastructure.redis_client import get_fakeredis_client
+from tests.unit.container.conftest import make_private_container
 
 pytestmark = pytest.mark.unit
 
@@ -38,11 +39,7 @@ def _constructed_names() -> set[str]:
 @pytest.fixture
 def container():
     """A container of this test's own; the process singleton is untouched."""
-    instance = object.__new__(DIContainer)
-    # What BaseDIContainer.__new__ gives the singleton, from the table it builds from.
-    for name, factory in DIContainer._CONSTRUCTED_STATE:
-        setattr(instance, name, factory())
-    yield instance
+    yield make_private_container()
 
 
 class _RealClient:
