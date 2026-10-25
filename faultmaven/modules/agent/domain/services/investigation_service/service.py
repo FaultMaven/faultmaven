@@ -666,7 +666,10 @@ class InvestigationService:
         and emits the #1142 error row. This method then only maps what the
         commit raised, and a cancellation of this method reaches its caller
         untouched while the settlement runs to its end. So a 2xx means the
-        whole turn is committed, and an error means none of it is.
+        whole turn is committed, and an error means none of it is, except when
+        the database stops answering during the commit itself: the commit is
+        bounded by ``DATABASE_COMMAND_TIMEOUT_SECONDS`` (#2280), and the
+        ``ServiceException`` it then raises leaves the outcome unknown.
 
         Raises:
             TurnDeadlineExceeded: Too little budget left to start the commit.
@@ -674,7 +677,9 @@ class InvestigationService:
                 (409); nothing of the turn is committed.
             TurnReceiptExistsError: Another turn under the same key already
                 committed; nothing of this one is (the route replays that one).
-            ServiceException: The commit failed (500); nothing is committed.
+            ServiceException: The commit failed (500); nothing is committed,
+                unless the database timed out during the commit (#2280), which
+                leaves the outcome unknown.
         """
         try:
             check_commit_budget()

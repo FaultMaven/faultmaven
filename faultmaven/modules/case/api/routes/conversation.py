@@ -849,7 +849,14 @@ async def submit_turn(
             # every LLM step leaves unspent) and answers the same 504 when it
             # does not, with nothing committed; once started, the commit runs
             # to its end. So a 2xx means the whole turn committed and a non-2xx
-            # means none of it did.
+            # means none of it did, with one exception the owner accepted
+            # (#2280, 2026-10-25): a database that stops answering during the
+            # commit itself. The commit is bounded by the database's command
+            # timeout like any statement, so the route answers 500 and the
+            # commit may have landed. A keyed retry is answered from the turn
+            # receipt; an unkeyed retry may save the turn twice. A live but
+            # slow server is not this case: its statement_timeout cancels the
+            # statement first, and nothing commits.
             with bind_turn_deadline(agent_timeout):
                 prepared = await asyncio.wait_for(
                     investigation_service.prepare_turn(

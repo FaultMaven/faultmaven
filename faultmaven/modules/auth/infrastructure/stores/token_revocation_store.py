@@ -73,7 +73,9 @@ in-process FakeRedis were never on disk to carry over.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from sqlalchemy import delete, func, or_, select
 
@@ -291,7 +293,7 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     any request, so it cannot hold one.
     """
 
-    def __init__(self, session_factory=None):
+    def __init__(self, session_factory=None, read_timeout_seconds: float = 0.0):
         """
         Args:
             session_factory: Async context manager yielding an ``AsyncSession``.
@@ -299,8 +301,14 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                 so a caller can bind a different database — which is also how
                 a restart is simulated in tests, by building a second store
                 over a second engine on the same file.
+            read_timeout_seconds: The deadline on ``revocation_state``, the
+                read every authenticated request makes
+                (``REVOCATION_READ_TIMEOUT_SECONDS``); ``0`` sets none.
         """
         self._session_factory = session_factory or get_db_session
+        self.read_timeout_seconds: Optional[float] = (
+            read_timeout_seconds if read_timeout_seconds > 0 else None
+        )
 
     @staticmethod
     def _deadline(ttl: int) -> datetime:
@@ -418,7 +426,19 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
         default has (a revoked jti never consults the watermark) is not worth a
         second round trip here, so both rows are fetched and the jti answer is
         still reported alone when it is True.
+
+        **Bounded by** ``read_timeout_seconds`` (#2280): queue wait, ping,
+        connect and query together. Past it the read raises ``TimeoutError``,
+        which ``AuthService._is_revoked`` classifies as a store read failure, so
+        the request fails closed with 503 (#1478) instead of waiting on a
+        database that stopped answering. The PostgreSQL engine aborts the
+        connection the cancellation lands on (``pg_connection``), so the
+        deadline frees it rather than leaving it to the server.
         """
+        async with asyncio.timeout(self.read_timeout_seconds):
+            return await self._revocation_state(jti, user_id, issued_at)
+
+    async def _revocation_state(self, jti, user_id, issued_at):
         if not jti and not user_id:
             return False, False
 

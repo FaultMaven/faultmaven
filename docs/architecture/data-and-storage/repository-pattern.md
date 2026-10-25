@@ -537,7 +537,13 @@ rows a turn produces besides the case (its report rows) ride the turn's
 `save(case, reports=...)` above, after the turn's response is
 built. Work that must follow the commit (the runbook conversion) waits on a gate
 in the plan, released by the commit and cancelled when it fails. So a 2xx means
-the whole turn committed and a non-2xx means none of it did.
+the whole turn committed and a non-2xx means none of it did, with one exception
+the owner accepted (#2280): a PostgreSQL that stops answering during the commit
+itself. The commit is bounded by `DATABASE_COMMAND_TIMEOUT_SECONDS` like any
+statement, so the turn answers 500 and the commit may have landed; a keyed
+retry is answered from the turn receipt, and an unkeyed retry may save the turn
+twice. A live but slow server cancels the statement itself first
+(`statement_timeout`, set below the command timeout), so nothing commits there.
 
 A scoped `add_uploaded_file` used to commit the row at intake (#1013), because
 `mark_linked` ran before any row existed and a failed turn otherwise left a

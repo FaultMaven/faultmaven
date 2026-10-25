@@ -651,11 +651,43 @@ class PruneResult:
     turn_rows_deleted: int
 
 
+#: Rows one retention DELETE removes at most (#2280). Each batch is its own
+#: transaction, so a large backlog is worked off in statements that each fit
+#: the database's command timeout, and a run that is stopped keeps what it did.
+PRUNE_BATCH_ROWS = 5000
+
+
+async def _delete_in_batches(model, expired, batch_rows: int) -> int:
+    """Delete ``model`` rows matching ``expired``, ``batch_rows`` at a time; return the count.
+
+    A DELETE takes no LIMIT on PostgreSQL, so each batch names its rows by
+    primary key through a limited subquery (a row-value ``IN``, which SQLite
+    accepts too). It stops after the first batch that comes back short.
+    """
+    from sqlalchemy import delete, select, tuple_
+
+    from faultmaven.infrastructure.persistence.database import get_db_session
+
+    key = tuple_(*model.__table__.primary_key.columns)
+    batch = (
+        select(*model.__table__.primary_key.columns).where(expired).limit(batch_rows)
+    )
+    deleted = 0
+    while True:
+        async with get_db_session() as session:
+            result = await session.execute(delete(model).where(key.in_(batch)))
+        removed = max(result.rowcount or 0, 0)
+        deleted += removed
+        if removed < batch_rows:
+            return deleted
+
+
 async def prune_expired_usage(
     *,
     daily_retention_days: int,
     turn_retention_days: int,
     now: Optional[datetime] = None,
+    batch_rows: int = PRUNE_BATCH_ROWS,
 ) -> PruneResult:
     """Delete usage rows past their horizon, and nothing else.
 
@@ -665,10 +697,12 @@ async def prune_expired_usage(
     maintenance role (BYPASSRLS) sees every enterprise's rows, so the job that
     calls this declares ``cross_tenant`` and the in-process scheduler refuses to
     run it there.
-    """
-    from sqlalchemy import delete
 
-    from faultmaven.infrastructure.persistence.database import get_db_session
+    Deleted ``batch_rows`` at a time, each batch committed on its own (#2280):
+    one unbounded DELETE over a large backlog would outlast
+    ``DATABASE_COMMAND_TIMEOUT_SECONDS`` and be aborted on every run, deleting
+    nothing.
+    """
     from faultmaven.infrastructure.persistence.models import (
         LlmTurnSpendModel,
         LlmUsageDailyModel,
@@ -677,18 +711,14 @@ async def prune_expired_usage(
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     daily_horizon = now.date() - timedelta(days=daily_retention_days)
     turn_horizon = now - timedelta(days=turn_retention_days)
-    async with get_db_session() as session:
-        daily = await session.execute(
-            delete(LlmUsageDailyModel).where(
-                LlmUsageDailyModel.usage_date < daily_horizon
-            )
-        )
-        turns = await session.execute(
-            delete(LlmTurnSpendModel).where(
-                LlmTurnSpendModel.occurred_at < turn_horizon
-            )
-        )
-    return PruneResult(
-        daily_rows_deleted=int(daily.rowcount or 0),
-        turn_rows_deleted=int(turns.rowcount or 0),
+    daily = await _delete_in_batches(
+        LlmUsageDailyModel,
+        LlmUsageDailyModel.usage_date < daily_horizon,
+        batch_rows,
     )
+    turns = await _delete_in_batches(
+        LlmTurnSpendModel,
+        LlmTurnSpendModel.occurred_at < turn_horizon,
+        batch_rows,
+    )
+    return PruneResult(daily_rows_deleted=daily, turn_rows_deleted=turns)
