@@ -56,7 +56,7 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names, which skips where none is named; `session_redis`, the named Redis or else the standalone stack's FakeRedis, which never skips. Both fail where the named Redis does not answer
+- **Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names, which skips where none is named; `session_redis`, the named Redis or else the standalone stack's FakeRedis, which never skips. Both fail where the named Redis does not answer, and where `FM_TEST_REQUIRE_REDIS` is set and nothing names one (Test Cloud's real-Redis step sets it)
 - **Service fixtures**: `session_service` (an `AuthSessionService` on `session_redis`) and `case_service` (the real `CaseService` on a SQLite database of the test's own, whose case owners `case_owners` seeds)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 

@@ -4,9 +4,9 @@ The suite steps of Test Standalone and Test Cloud set ``SKIP_SERVICE_CHECKS`` an
 name no Redis, so every Redis consumer in them resolves the in-process FakeRedis.
 Test Cloud's Redis service is the cloud pairing: a real server read through the
 ``hiredis`` parser ``requirements/cloud.txt`` pins (fm#1031). Two steps of that
-job name it: ``scripts/check_redis_pairing.py``, and the step that runs this
-module alone. This module drives the stores' commands and their server-side
-scripts against it.
+job name it: ``scripts/check_redis_pairing.py``, and the real-Redis step, which
+runs this module alone in a pytest call of its own. This module drives the
+stores' commands and their server-side scripts against it.
 
 **Gate.** Marked ``cloud``, so Test Standalone deselects it. Every test takes
 ``real_redis`` (``tests/integration/conftest.py``), so it runs only where

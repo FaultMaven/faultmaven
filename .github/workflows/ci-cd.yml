@@ -617,21 +617,28 @@ jobs:
           REDIS_DB: "0"
 
       - name: Run the real-Redis tests
-        # The test modules that reach the job's Redis, and nothing else.
-        # test_real_redis_stores.py exists to drive the server (its
-        # `real_redis` fixture skips where no Redis is named), so the suite
-        # step below ignores it. test_architectural_compliance.py runs here on
-        # the server and again in both jobs' suite steps on FakeRedis: its
+        # The test modules that reach the job's Redis, and nothing else, each
+        # in a pytest call of its own. test_real_redis_stores.py exists to
+        # drive the server (its `real_redis` fixture skips where no Redis is
+        # named), so the suite step below ignores it; run alone, the all-skipped
+        # guard sees only its tests. test_architectural_compliance.py runs here
+        # on the server and again in both jobs' suite steps on FakeRedis: its
         # `session_redis` fixture takes the Redis a step names, and the
-        # standalone stand-in where none is named. Before the suite: they take
-        # seconds and rest only on what the pairing check just proved, so a
-        # failure shows now rather than after the suite. The paths select them;
-        # the -m and --ignore are the ones every pytest command in this job
-        # must carry (#2090, pinned by
-        # tests/unit/ci/test_benchmark_calibration.py).
+        # standalone stand-in where none is named. Run with either module, a
+        # step that lost its REDIS_* env would pass on the stand-in, so the
+        # step also sets FM_TEST_REQUIRE_REDIS, under which both fixtures fail
+        # where nothing names a Redis. Before the suite: they take seconds and
+        # rest only on what the pairing check just proved, so a failure shows
+        # now rather than after the suite. The paths select them; the -m and
+        # --ignore are the ones every pytest command in this job must carry
+        # (#2090, pinned by tests/unit/ci/test_benchmark_calibration.py).
         run: |
           pytest tests/integration/test_real_redis_stores.py \
-            tests/integration/test_architectural_compliance.py \
+            -m "not benchmark and not performance" \
+            --ignore=tests/performance \
+            -p no:cacheprovider \
+            -v
+          pytest tests/integration/test_architectural_compliance.py \
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
             -p no:cacheprovider \
@@ -654,6 +661,9 @@ jobs:
           REDIS_HOST: "localhost"
           REDIS_PORT: "6379"
           REDIS_DB: "0"
+          # This step must reach the server: a test given a Redis fails where
+          # nothing names one (tests/integration/conftest.py).
+          FM_TEST_REQUIRE_REDIS: "1"
 
       - name: Run Tests (Cloud)
         run: |

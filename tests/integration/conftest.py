@@ -269,7 +269,17 @@ async def _end_the_service_of(apps) -> None:
 # Where a server is named and does not answer, both FAIL:
 # ``get_async_redis_client()`` falls back to FakeRedis silently, and a broken
 # service container must not turn a test green on the stand-in (#2243).
+#
+# Where none is named, a run that must reach a server says so with
+# ``FM_TEST_REQUIRE_REDIS`` (below), and both fail instead.
 # ---------------------------------------------------------------------------
+
+#: Test-only. Set to any non-empty value, it says this run must reach a named
+#: Redis: where neither ``REDIS_URL`` nor ``REDIS_HOST`` names one, every test
+#: that takes ``real_redis`` or ``session_redis`` FAILS, instead of skipping or
+#: running on the stand-in. Test Cloud's real-Redis step sets it, so a step
+#: that lost its ``REDIS_*`` env cannot pass on FakeRedis.
+REQUIRE_REDIS_ENV = "FM_TEST_REQUIRE_REDIS"
 
 
 def _named_redis() -> str | None:
@@ -284,6 +294,17 @@ def _named_redis() -> str | None:
         port = os.environ.get("REDIS_PORT", "6379")
         return f"REDIS_HOST={os.environ['REDIS_HOST']!r} REDIS_PORT={port!r}"
     return None
+
+
+def _fail_if_a_redis_is_required() -> None:
+    """Called where nothing names a Redis: fail if this run requires one."""
+    if os.environ.get(REQUIRE_REDIS_ENV):
+        pytest.fail(
+            f"{REQUIRE_REDIS_ENV} is set, so this run must reach a named Redis, "
+            "but neither REDIS_URL nor REDIS_HOST names one. Set REDIS_URL, or "
+            "REDIS_HOST (with REDIS_PORT), to the server this run drives.",
+            pytrace=False,
+        )
 
 
 async def _answering_client(named: str):
@@ -311,6 +332,7 @@ async def real_redis():
     """A client of this test's own on the named Redis, or a skip, or a failure."""
     named = _named_redis()
     if named is None:
+        _fail_if_a_redis_is_required()
         pytest.skip(
             "neither REDIS_HOST nor REDIS_URL names a Redis to drive "
             "(Test Cloud's real-Redis step sets REDIS_HOST)"
@@ -324,12 +346,14 @@ async def real_redis():
 async def session_redis():
     """The named Redis, else the standalone stack's in-process stand-in.
 
-    Never a skip. Where nothing names a server, the client is the one the
-    standalone composition builds its stores on, ``get_fakeredis_client()``:
-    this loop's shared client, so it is not closed here.
+    Never a skip. Where nothing names a server (and ``FM_TEST_REQUIRE_REDIS``
+    is unset), the client is the one the standalone composition builds its
+    stores on, ``get_fakeredis_client()``: this loop's shared client, so it is
+    not closed here.
     """
     named = _named_redis()
     if named is None:
+        _fail_if_a_redis_is_required()
         yield get_fakeredis_client()
         return
     client = await _answering_client(named)

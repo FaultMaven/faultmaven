@@ -57,7 +57,8 @@ To get started with local development for the `faultmaven` monolith:
         ```bash
         docker run --rm -d -p 6379:6379 redis:7.2-alpine
         REDIS_HOST=localhost python scripts/check_redis_pairing.py   # what CI asserts before the suite
-        REDIS_HOST=localhost pytest tests/integration/test_real_redis_stores.py tests/integration/test_architectural_compliance.py
+        REDIS_HOST=localhost pytest tests/integration/test_real_redis_stores.py
+        REDIS_HOST=localhost pytest tests/integration/test_architectural_compliance.py
         ```
 
 3.  **Install Dependencies**
