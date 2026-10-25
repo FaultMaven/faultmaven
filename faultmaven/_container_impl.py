@@ -689,9 +689,12 @@ class DIContainer(BaseDIContainer):
                             existing.session_resumed = True
                             return existing, True
 
-                # The per-user limit, by AuthSessionService's rule: delete the
-                # least recently active live sessions until there is room for
-                # one more, so a user already over it converges (#2297).
+                # The per-user limit, by AuthSessionService's eviction rule:
+                # delete the least recently active sessions until there is room
+                # for one more, so a user already over it converges (#2297).
+                # What counts differs: this stand-in has no inactivity clock, so
+                # it counts every unexpired session, where AuthSessionService
+                # counts only those active within its inactivity threshold.
                 now = datetime.now(timezone.utc)
                 live = sorted(
                     (
