@@ -51,16 +51,16 @@ tests/
 
 ```bash
 # Run all tests
-./faultmaven.sh test
+python scripts/tests.py
 
 # Run unit tests only
-./faultmaven.sh test --unit
+python scripts/tests.py --unit
 
 # Run with coverage
-./faultmaven.sh test --coverage
+python scripts/tests.py --coverage
 
 # Run in parallel
-./faultmaven.sh test --parallel
+python scripts/tests.py --parallel
 ```
 
 ## CI/CD Pipeline Modes
@@ -69,16 +69,16 @@ The test runner supports predefined CI/CD pipeline configurations:
 
 ```bash
 # Fast CI (unit tests, parallel) - for PR checks
-./faultmaven.sh test --ci
+python scripts/tests.py --ci
 
 # Full CI (unit + integration + infrastructure) - for merge checks
-./faultmaven.sh test --ci-full
+python scripts/tests.py --ci-full
 
 # Nightly (all tests including benchmarks)
-./faultmaven.sh test --ci-nightly
+python scripts/tests.py --ci-nightly
 
-# Enterprise (tests requiring Redis, PostgreSQL)
-./faultmaven.sh test --ci-enterprise
+# Cloud (tests requiring Redis, PostgreSQL)
+python scripts/tests.py --ci-cloud
 ```
 
 ## Test Categories
@@ -96,19 +96,19 @@ The test runner supports predefined CI/CD pipeline configurations:
 
 ```bash
 # By keyword
-./faultmaven.sh test -k "test_case"
+python scripts/tests.py -k "test_case"
 
 # By marker
-./faultmaven.sh test -m "security"
+python scripts/tests.py -m "security"
 
 # By directory
-./faultmaven.sh test --dir tests/unit/services
+python scripts/tests.py --dir tests/unit/services
 
-# Single file
-./faultmaven.sh test tests/unit/services/test_auth_service.py
+# Single file (the runner takes directories; pytest takes a file)
+pytest tests/unit/services/test_base_service.py
 
 # Stop on first failure
-./faultmaven.sh test --fail-fast
+python scripts/tests.py --fail-fast
 ```
 
 ## Pytest Markers
@@ -129,13 +129,13 @@ Load tests use Locust for stress testing:
 
 ```bash
 # Interactive mode (web UI)
-./faultmaven.sh test load
+python scripts/tests.py load
 
 # Headless mode
-./faultmaven.sh test load --headless --users 50 --run-time 60s
+python scripts/tests.py load --headless --users 50 --run-time 60s
 
 # With CSV output
-./faultmaven.sh test load --headless --csv results
+python scripts/tests.py load --headless --csv results
 ```
 
 ## Background Execution
@@ -144,26 +144,26 @@ For CI pipelines or long-running test suites (not typical local development):
 
 ```bash
 # Run in background (useful for CI or full test suites)
-./faultmaven.sh test --ci-full --daemon
+python scripts/tests.py --ci-full --daemon
 
 # Check status
-./faultmaven.sh test status
+python scripts/tests.py status
 
 # View logs
 tail -f .faultmaven/tests.log
 
 # Stop background tests
-./faultmaven.sh test stop
+python scripts/tests.py stop
 ```
 
 ## Coverage Reports
 
 ```bash
 # Generate coverage report
-./faultmaven.sh test --coverage
+python scripts/tests.py --coverage
 
 # With minimum threshold
-./faultmaven.sh test --coverage --coverage-fail-under 75
+python scripts/tests.py --coverage --coverage-fail-under 75
 
 # View HTML report
 open htmlcov/index.html
@@ -173,7 +173,7 @@ open htmlcov/index.html
 
 ```bash
 # Generate JUnit XML for CI systems
-./faultmaven.sh test --ci --junit-xml test-results.xml
+python scripts/tests.py --ci --junit-xml test-results.xml
 ```
 
 ## Environment Variables
@@ -263,5 +263,5 @@ docker-compose ps
 pip install pytest-xdist
 
 # Run without parallelism
-./faultmaven.sh test --no-parallel
+python scripts/tests.py --no-parallel
 ```
