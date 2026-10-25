@@ -52,14 +52,27 @@ async def _run_then_tear_down(
     try:
         return await main
     finally:
+        # Each step imports what it needs, so a failed import is that step's
+        # failure alone (#2267).
         steps: list[tuple[str, Callable[[], Any]]] = []
         if composed:
             if container is None:
-                from faultmaven.container import container
-            # Resolved outside the steps: a container without a shutdown is a
-            # defect that surfaces, not a failed step that is logged.
-            steps.append(("Container shutdown", container.shutdown))
-        from faultmaven.infrastructure.persistence.database import close_database
-
-        steps.append(("Database close", close_database))
+                steps.append(("Container shutdown", _shut_down_the_container))
+            else:
+                # Resolved outside the steps: a container without a shutdown is
+                # a defect that surfaces, not a failed step that is logged.
+                steps.append(("Container shutdown", container.shutdown))
+        steps.append(("Database close", _close_the_database))
         await run_teardown(steps)
+
+
+async def _shut_down_the_container() -> None:
+    from faultmaven.container import container
+
+    await container.shutdown()
+
+
+async def _close_the_database() -> None:
+    from faultmaven.infrastructure.persistence.database import close_database
+
+    await close_database()

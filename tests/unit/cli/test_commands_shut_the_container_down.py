@@ -309,3 +309,47 @@ def test_every_command_disposes_the_engine_before_its_loop_ends(
         container.singleton_shutdown.assert_not_awaited()
     else:
         container.shutdown.assert_awaited_once()
+
+
+async def _no_work():
+    return 0
+
+
+@pytest.mark.parametrize("passed", [True, False], ids=["passed", "singleton"])
+def test_the_container_is_shut_down_when_the_database_module_will_not_import(
+    passed, container, monkeypatch, caplog
+):
+    """The database module was imported outside the steps, so a failed import
+    skipped the container's shutdown as well (#2267). It is the engine step's
+    failure alone now."""
+    monkeypatch.setitem(
+        sys.modules, "faultmaven.infrastructure.persistence.database", None
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
+        result = run_with_container(_no_work(), container=container if passed else None)
+
+    assert result == 0
+    assert "Database close failed (non-critical)" in caplog.text
+    shutdown = container.shutdown if passed else container.singleton_shutdown
+    shutdown.assert_awaited_once()
+
+
+def test_the_engine_is_disposed_when_the_container_module_will_not_import(
+    container, monkeypatch, caplog
+):
+    """The singleton's import is a step of its own: when it fails, the engine
+    is still disposed (#2267)."""
+    close_database = AsyncMock()
+    monkeypatch.setattr(database, "close_database", close_database)
+    monkeypatch.setitem(sys.modules, "faultmaven.container", None)
+
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
+        assert run_with_container(_no_work()) == 0
+
+    assert "Container shutdown failed (non-critical)" in caplog.text
+    close_database.assert_awaited_once()

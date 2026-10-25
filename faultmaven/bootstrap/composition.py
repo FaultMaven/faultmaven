@@ -644,11 +644,24 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     Each step runs whatever the one before it did (:func:`run_teardown`). One
     that raises is logged, so a refusal being undone propagates as itself. One
     that is interrupted (a cancellation included) lets the rest finish, and the
-    interruption is then re-raised.
+    interruption is then re-raised. Each step imports what it needs, so a
+    failed import is that step's failure alone (#2267).
     """
-    from faultmaven.container import container
-    from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
-    from faultmaven.infrastructure.persistence.database import close_database
+
+    async def _shut_down_the_container() -> None:
+        from faultmaven.container import container
+
+        await container.shutdown()
+
+    def _uninstall_the_usage_ledger() -> None:
+        from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
+
+        install_usage_ledger(None)
+
+    async def _close_the_database() -> None:
+        from faultmaven.infrastructure.persistence.database import close_database
+
+        await close_database()
 
     steps: tuple[tuple[str, Callable[[], Any]], ...] = (
         # The LLM config watcher (cloud multi-replica propagation). The lifespan
@@ -656,12 +669,12 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
         # Close what the container opened and owns: the shared Redis client's
         # pool is bound to this event loop, and nothing else closes it.
-        ("Container shutdown", lambda: container.shutdown()),
+        ("Container shutdown", _shut_down_the_container),
         # The usage ledger composition installed (#640). On the serving path
         # the lifespan's drain has already uninstalled it, and this is a no-op.
         # It is what uninstalls the ledger of a refused composition, which
         # served no call to drain.
-        ("LLM usage ledger uninstall", lambda: install_usage_ledger(None)),
+        ("LLM usage ledger uninstall", _uninstall_the_usage_ledger),
         # The services the composition root published hold what that shutdown
         # closed; a request served after this point must not find them.
         (
@@ -671,7 +684,7 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # Dispose the canonical async engine, last. The user store no longer
         # owns a session (sessionless repository per #703), so there is nothing
         # to release here beyond the engine.
-        ("Database close", lambda: close_database()),
+        ("Database close", _close_the_database),
     )
     await run_teardown(steps)
 
