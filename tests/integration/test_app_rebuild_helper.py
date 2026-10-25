@@ -13,6 +13,7 @@ on the rebuild actually having happened — a helper that quietly returned the
 existing app would satisfy the restore assertions while doing nothing.
 """
 
+import os
 import sys
 
 import pytest
@@ -48,3 +49,28 @@ def test_rebuild_returns_a_new_app_without_publishing_it():
 
     assert faultmaven.main is published_module
     assert faultmaven.main.app is published_app
+
+
+def test_rebuild_under_an_environment_builds_with_it_and_puts_it_back(monkeypatch):
+    """The OAuth modules set ``OAUTH_ENABLED`` at import and never put it back,
+    so every test collected with them ran with it (#2291). ``rebuild_app_under``
+    builds with the environment it is given, on settings read from it, and
+    leaves the process's own environment and settings after."""
+    from faultmaven.config.settings import get_settings
+    from tests.integration import _app_rebuild
+
+    monkeypatch.delenv("OAUTH_ENABLED", raising=False)
+    assert get_settings().auth.oauth_enabled is False  # cached, without it
+    seen = {}
+
+    def build():
+        seen["environment"] = os.environ.get("OAUTH_ENABLED")
+        seen["settings"] = get_settings().auth.oauth_enabled
+        return "the app"
+
+    monkeypatch.setattr(_app_rebuild, "rebuild_app", build)
+
+    assert _app_rebuild.rebuild_app_under({"OAUTH_ENABLED": "true"}) == "the app"
+    assert seen == {"environment": "true", "settings": True}
+    assert "OAUTH_ENABLED" not in os.environ
+    assert get_settings().auth.oauth_enabled is False

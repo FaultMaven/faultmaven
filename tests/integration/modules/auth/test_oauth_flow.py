@@ -12,7 +12,6 @@ that all components work together correctly.
 
 import base64
 import hashlib
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -21,27 +20,19 @@ import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-# Import app after setting OAuth-specific environment variables
-# IMPORTANT: These must be set before any faultmaven imports
-os.environ["SKIP_SERVICE_CHECKS"] = "true"
-os.environ["OAUTH_ENABLED"] = "true"
-os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
+from tests.integration._app_rebuild import rebuild_app_under
 
-import sys
+#: The app below is built under this, and this module's tests run under it
+#: (the ``oauth_environment`` fixture); no other module sees it (#2291).
+OAUTH_ENVIRONMENT = {
+    "SKIP_SERVICE_CHECKS": "true",
+    "OAUTH_ENABLED": "true",
+    "OAUTH_REQUIRE_CONSENT": "false",  # Auto-approve for E2E flow tests
+}
 
-from faultmaven.config.settings import reset_settings
-from tests.integration._app_rebuild import rebuild_app
+app = rebuild_app_under(OAUTH_ENVIRONMENT)
 
-# Force the app below to be built with OAuth enabled.
-#
-# Clear the settings *singleton*; never drop faultmaven.config.settings from
-# sys.modules. Doing that leaves a second module object in the process, each
-# with its own `_settings_instance`, so a `reset_settings` captured by an
-# earlier import clears a singleton nothing reads while the freshly imported
-# module keeps handing production code a stale cached settings object.
-reset_settings()
-
-app = rebuild_app()
+pytestmark = pytest.mark.usefixtures("oauth_environment")
 
 
 @pytest.fixture
