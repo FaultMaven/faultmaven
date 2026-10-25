@@ -6,11 +6,10 @@ step: if it fails, no step runs, the engine disposal and the container's
 shutdown included. Twice such imports were moved into their steps by hand
 (#2257, #2267), and the second pass still missed one (``run_teardown`` itself,
 imported in the jobs runner's ``finally``). This scan finds every block that
-calls ``run_teardown``, and every function that builds its steps: one called in
-its arguments (directly, as a keyword, inside a wrapper such as ``tuple()``, or
-through a name bound in that block), and any function those call while
-building. It refuses an import in them outside a step: a nested function or
-lambda, which runs when the step does. A class body runs where it is defined,
+calls ``run_teardown``, and every function that block calls (whichever way it
+builds or passes the steps), and any function those call while building. It
+refuses an import in them outside a step: a nested function or lambda, which
+runs when the step does. A class body runs where it is defined,
 so an import in one is outside every step.
 """
 
@@ -81,38 +80,16 @@ def _blocks(tree: ast.AST):
                 yield block
 
 
-def _called(nodes, functions, bound) -> list[ast.AST]:
-    """The module functions ``nodes`` call, directly or through a name bound to
-    an expression that calls one, short of deferred bodies."""
-    found, names_seen = [], set()
-    pending = list(nodes)
-    while pending:
-        for node in _shallow(pending.pop()):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in functions
-            ):
-                found.append(functions[node.func.id])
-            elif isinstance(node, ast.Name) and node.id in bound:
-                if node.id not in names_seen:
-                    names_seen.add(node.id)
-                    pending.append(bound[node.id])
-    return found
-
-
-def _bindings(block: list[ast.stmt]) -> dict[str, ast.expr]:
-    bound = {}
-    for stmt in block:
-        targets = (
-            stmt.targets
-            if isinstance(stmt, ast.Assign)
-            else [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
-        )
-        for target in targets:
-            if isinstance(target, ast.Name) and stmt.value is not None:
-                bound[target.id] = stmt.value
-    return bound
+def _called(nodes, functions) -> list[ast.AST]:
+    """The module functions ``nodes`` call, short of deferred bodies."""
+    return [
+        functions[node.func.id]
+        for stmt in nodes
+        for node in _shallow(stmt)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in functions
+    ]
 
 
 def imports_outside_steps(source: str) -> tuple[int, list[str]]:
@@ -130,12 +107,7 @@ def imports_outside_steps(source: str) -> tuple[int, list[str]]:
             continue
         teardowns += len(calls)
         scanned = list(block)
-        arguments = [
-            value
-            for call in calls
-            for value in (*call.args, *(keyword.value for keyword in call.keywords))
-        ]
-        builders = _called(arguments, functions, _bindings(block))
+        builders = _called(block, functions)
         followed = set()
         while builders:
             builder = builders.pop()
@@ -143,7 +115,7 @@ def imports_outside_steps(source: str) -> tuple[int, list[str]]:
                 continue
             followed.add(id(builder))
             scanned.extend(builder.body)
-            builders.extend(_called(builder.body, functions, _bindings(builder.body)))
+            builders.extend(_called(builder.body, functions))
         for stmt in scanned:
             for node in _shallow(stmt):
                 if isinstance(node, ast.Import):
@@ -198,8 +170,21 @@ async def run():
         "await run_teardown(steps=_stops())",
         "await run_teardown(tuple(_stops()))",
         "steps = _stops()\n    await run_teardown(steps)",
+        "steps = _stops()\n    steps = (*steps,)\n    await run_teardown(steps)",
+        "steps = []\n    steps.append(_stops()[0])\n    await run_teardown(steps)",
+        "steps = ()\n    steps += _stops()\n    await run_teardown(steps)",
+        "steps, other = _stops(), None\n    await run_teardown(steps)",
     ],
-    ids=["positional", "keyword", "wrapped", "bound"],
+    ids=[
+        "positional",
+        "keyword",
+        "wrapped",
+        "bound",
+        "rebound",
+        "appended",
+        "augmented",
+        "unpacked",
+    ],
 )
 def test_the_scan_follows_a_builder_however_it_is_passed(call):
     source = f"""
