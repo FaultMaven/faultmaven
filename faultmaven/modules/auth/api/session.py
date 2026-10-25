@@ -29,9 +29,9 @@ Core Design Principles:
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import (
@@ -52,6 +52,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.infrastructure.metrics import session_metrics
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
@@ -191,6 +192,38 @@ class AuthSessionCreateRequest(BaseModel):
     )
 
 
+class MintCaller(NamedTuple):
+    """The labels an anonymous mint is counted under (``session_metrics``)."""
+
+    bearer: str
+    origin: str
+
+
+_EXTENSION_SCHEMES = ("chrome-extension", "moz-extension")
+
+
+async def mint_caller(http_request: Request) -> MintCaller:
+    """Classify the mint's caller from its raw headers (#1460).
+
+    Takes ``Request`` rather than declaring ``Header(...)`` parameters, so the
+    published operation does not change (see ``extract_bearer_token``). Reads
+    the raw ``Authorization`` header, not ``extract_bearer_token``'s result,
+    which is ``None`` for a malformed header and would count it as absent.
+    The scheme is split by hand: ``urlsplit`` raises on some malformed values.
+    """
+    authorization = http_request.headers.get("authorization", "").strip()
+    origin = http_request.headers.get("origin", "").strip()
+    if not origin:
+        origin_kind = "none"
+    elif origin.partition(":")[0].lower() in _EXTENSION_SCHEMES:
+        origin_kind = "extension"
+    else:
+        origin_kind = "web"
+    return MintCaller(
+        bearer="unresolved" if authorization else "absent", origin=origin_kind
+    )
+
+
 @router.post(
     "",
     status_code=201,
@@ -285,6 +318,7 @@ async def create_session(
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
     current_user: Optional["DevUser"] = Depends(get_current_user_optional),
+    caller: MintCaller = Depends(mint_caller),
 ):
     """
     Create or resume a troubleshooting session.
@@ -361,11 +395,17 @@ async def create_session(
             import uuid
 
             user_id = f"user_{str(uuid.uuid4())[:8]}"
+            # Counted here, before the store write: it counts callers, not rows.
+            session_metrics.session_anonymous_mints_total.labels(
+                bearer=caller.bearer, origin=caller.origin
+            ).inc()
             logger.warning(
-                f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
-                f"If user just logged in, frontend should pass JWT token in Authorization header. "
-                f"This will cause cases to be invisible after re-login. "
-                f"Client ID: {request.client_id if request else 'none'}"
+                "Creating anonymous session (user_id=%s, bearer=%s, origin=%s, "
+                "client_id=%s): no Authorization header resolved to a user",
+                user_id,
+                caller.bearer,
+                caller.origin,
+                request.client_id if request else "none",
             )
 
         # Create session with metadata and client_id

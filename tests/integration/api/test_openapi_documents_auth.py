@@ -128,6 +128,9 @@ OPTIONAL_AUTH_DEPENDENCIES = frozenset(
     {
         "faultmaven.api.v1.auth_dependencies.extract_bearer_token",
         "faultmaven.api.v1.auth_dependencies.get_current_user_optional",
+        # Not authentication: it labels the session mint's caller from its raw
+        # headers for a counter (#1460), and never raises.
+        "faultmaven.modules.auth.api.session.mint_caller",
     }
 )
 

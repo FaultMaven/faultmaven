@@ -522,6 +522,47 @@ deleting the user's `password_reset:*` keys inside `revoke_user_tokens` — a
 second cleanup path a future reset flow could forget, which is the
 fragmentation #767 removed.)*
 
+**Anonymous session mints are counted (#1460).** `POST /api/v1/sessions`
+resolves its caller through the optional-auth dependency, and when no bearer
+resolves to a user it mints an anonymous identity. The route cannot require
+authentication until no client mints without a credential, so those mints are
+counted, on `faultmaven_auth_session_anonymous_mints_total{bearer, origin}`:
+
+- `bearer="absent"`: no `Authorization` header, or a blank one.
+  `bearer="unresolved"`: a non-blank header that resolved to nobody (not
+  `Bearer`, malformed, invalid, expired, or revoked but not yet expired).
+- `origin`, from the `Origin` header: `extension` for a `chrome-extension` or
+  `moz-extension` scheme, `web` for any other non-blank origin, `none` when it
+  is missing or blank. Browsers send `Origin` on every `POST`, so a panel's
+  mint carries one and an uptime probe or crawler does not.
+
+The route counts when it takes the anonymous branch, before the store write,
+and no auth decision reads the counter. All six series exist at zero from
+import (#1787). It records only with `ENABLE_METRICS=true` and is served only
+with `METRICS_EXPORTER=prometheus_http`. It counts requests on each replica, so
+aggregate with `sum()`. The count that decides the flip:
+
+```promql
+sum(increase(faultmaven_auth_session_anonymous_mints_total{bearer="absent", origin!="none"}[7d]))
+```
+
+A zero is trusted only after two positive controls:
+
+- after the counter deploys and before any client update, `bearer="absent"`
+  has been seen above zero for both `origin="extension"` and `origin="web"`.
+  That proves the label sees real panel traffic: an extension whose mints
+  arrived without `Origin` would hide under `none`, and the count could read
+  zero falsely;
+- one header-less `POST /api/v1/sessions` carrying an `Origin` moves the series.
+
+`bearer="unresolved"` never reaches zero, by design: a revoked bearer that has
+not yet expired still mints anonymously, once per occurrence. Seven days of
+zero leaves no live anonymous session: a session's stored expiry
+(`expires_at`, 24 hours today) is fixed when it is minted, a heartbeat does not
+move it, and an anonymous id is never resumed. The 480-minute cap on a
+requested `timeout_minutes` is only reported back to the client; it does not
+expire the stored session.
+
 ## Local Mode Authentication
 
 ### Endpoint Design
