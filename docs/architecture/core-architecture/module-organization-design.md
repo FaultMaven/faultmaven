@@ -103,7 +103,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 - **Result**: PASS
 
 **Criterion 2: Business Logic Implementation** ✅
-- Implements business rules: "Users must have valid email", "Sessions expire after 24 hours", "Team members inherit organization permissions"
+- Implements business rules: "Users must have valid email", "Sessions expire 30 minutes after their last write", "Team members inherit organization permissions"
 - Contains domain constraints and workflows
 - **Result**: PASS
 

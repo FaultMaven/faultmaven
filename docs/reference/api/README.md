@@ -3722,7 +3722,7 @@ Returns:
 - `201` — Session created or resumed successfully
 - `404` — Session expired or not found (when resuming with client_id)
 - `410` — Session gone (alternative to 404 for expired sessions)
-- `422` — Validation error (invalid timeout_minutes)
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 

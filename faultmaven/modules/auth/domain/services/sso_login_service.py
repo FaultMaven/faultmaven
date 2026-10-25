@@ -1429,17 +1429,24 @@ class SSOLoginService:
             idp_logout_url=self._idp_logout_url(provider_session_id),
         )
 
-    async def end_idp_session(self, session_id: str) -> bool:
-        """End the IdP session behind a FaultMaven session. True if it ended.
+    async def end_idp_session(self, session_id: str, *, user_id: str) -> bool:
+        """End the IdP session behind ``user_id``'s FaultMaven session. True if
+        it ended.
 
         The only path that does not need the browser: logout can end the IdP
         session even if the user closes the tab before the redirect runs.
+
+        Only the session's own user may end it. ``session_id`` is whatever the
+        caller sent as ``X-Session-Id``, and a session id is not a credential:
+        without the owner check, any signed-in user holding another user's
+        session id ended that user's IdP session (#2301 review). A session that
+        is missing or belongs to someone else ends nothing.
 
         Never raises, and never reports a problem the caller can act on — it is
         invoked from a logout that has already revoked the local token, and the
         sign-out is not less successful because the IdP could not be reached.
         """
-        if not session_id:
+        if not session_id or not user_id:
             return False
         try:
             # validate=False: an expired session must still surrender its IdP
@@ -1449,7 +1456,13 @@ class SSOLoginService:
         except Exception as exc:
             logger.warning("sso_session_read_failed", error=type(exc).__name__)
             return False
+        # Neither line names the session id: the caller supplied it, and the
+        # logging policy strips session identifiers.
         if session is None:
+            logger.warning("sso_idp_teardown_no_session", user_id=user_id)
+            return False
+        if getattr(session, "user_id", None) != user_id:
+            logger.warning("sso_idp_teardown_not_session_owner", user_id=user_id)
             return False
 
         provider_session_id = (getattr(session, "metadata", None) or {}).get(

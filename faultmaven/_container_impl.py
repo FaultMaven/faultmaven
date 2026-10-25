@@ -652,6 +652,10 @@ class DIContainer(BaseDIContainer):
                 self.sessions = {}
 
         class MinimalSessionService:
+            #: What every write here gives a session, as the real service's
+            #: store reports its TTL.
+            session_ttl_seconds = int(_session_timeout.total_seconds())
+
             def __init__(self):
                 self.sessions = {}  # Store sessions in memory for testing
                 self.session_manager = MockSessionManager()  # Add mock session manager
@@ -676,12 +680,16 @@ class DIContainer(BaseDIContainer):
 
                 # Session resumption for a known (user_id, client_id) pair,
                 # mirroring the real service: extend the existing session and
-                # report it as resumed rather than minting a second one.
+                # report it as resumed rather than minting a second one. Only
+                # a live one: the real service's lookup is a validating read,
+                # so an expired session is deleted and a new one minted, never
+                # revived. ``get_session`` here does the same.
                 if client_id:
-                    for existing in self.sessions.values():
+                    for existing in list(self.sessions.values()):
                         if (
                             existing.user_id == user_id
                             and getattr(existing, "client_id", None) == client_id
+                            and await self.get_session(existing.session_id)
                         ):
                             now = datetime.now(timezone.utc)
                             existing.expires_at = now + _session_timeout

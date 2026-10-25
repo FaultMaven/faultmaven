@@ -108,7 +108,9 @@ def _build_app(*, current_user):
                 user_id, client_id=client_id, metadata=metadata
             )
 
-        return SimpleNamespace(create_session=create_session_impl)
+        return SimpleNamespace(
+            create_session=create_session_impl, session_ttl_seconds=1800
+        )
 
     async def _current_user():
         return current_user

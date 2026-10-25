@@ -2203,10 +2203,17 @@ asked to accept, and it belongs to a person.
 # default), and `expires_at` is the session's own expiry, now plus that timeout
 # (it was `created_at` plus the requested minutes, a time nothing enforced, and
 # in the past on a resume of an old session). The request's `timeout_minutes`
-# is accepted and ignored, as it always was in effect; its removal is a
-# REMOVE, client first. The minted session's `metadata` no longer gains a
+# is accepted and ignored, as it always was in effect, and loses its 60-480
+# bounds (a value outside them answered 422) and its 180 default; its removal
+# is a REMOVE, client first. The minted session's `metadata` no longer gains a
 # server-written `timeout_minutes`. A session heartbeated for more than 24
 # hours no longer expires at the 24-hour mark.
+#
+# And on `POST /api/v1/auth/logout`: the IdP (SSO) session is ended only when
+# the `X-Session-Id` sent names a session of the signed-in caller. Any
+# signed-in user could end another user's IdP session by sending that user's
+# session id; with the 24-hour cap gone, a heartbeat kept such an id alive
+# indefinitely, so the check lands with the change that widened it.
 #
 # MINOR because every client survives it: the copilot sends `timeout_minutes`
 # and reads neither response field (its heartbeat interval is its own, 10

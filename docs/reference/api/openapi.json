@@ -610,21 +610,13 @@
           "timeout_minutes": {
             "anyOf": [
               {
-                "maximum": 480.0,
-                "minimum": 60.0,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "default": 180,
             "description": "Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last write (the server's setting); the response's timeout_minutes and expires_at report it.",
-            "examples": [
-              180,
-              240,
-              360
-            ],
             "title": "Timeout Minutes"
           }
         },
@@ -13531,17 +13523,12 @@
           "422": {
             "content": {
               "application/json": {
-                "examples": {
-                  "invalid_timeout": {
-                    "summary": "Invalid timeout value",
-                    "value": {
-                      "detail": "timeout_minutes must be between 60 and 480 minutes"
-                    }
-                  }
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             },
-            "description": "Validation error (invalid timeout_minutes)"
+            "description": "Validation Error"
           }
         },
         "summary": "Create Session",

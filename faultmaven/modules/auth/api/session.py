@@ -39,7 +39,6 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
@@ -126,16 +125,15 @@ class AuthSessionCreateRequest(BaseModel):
     See: docs/architecture/case-and-session/case-and-session-concepts.md.
     """
 
+    # Accepted and ignored, with no bounds to fail on: the Copilot sends 180.
+    # Removing it is a REMOVE, client first (#2301).
     timeout_minutes: Optional[int] = Field(
-        default=180,
-        ge=60,
-        le=480,
+        default=None,
         description=(
             "Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last "
             "write (the server's setting); the response's timeout_minutes and "
             "expires_at report it."
         ),
-        examples=[180, 240, 360],
     )
     session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
     metadata: Optional[dict] = None
@@ -219,21 +217,6 @@ class AuthSessionCreateRequest(BaseModel):
                 }
             },
         },
-        422: {
-            "description": "Validation error (invalid timeout_minutes)",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "invalid_timeout": {
-                            "summary": "Invalid timeout value",
-                            "value": {
-                                "detail": "timeout_minutes must be between 60 and 480 minutes"
-                            },
-                        }
-                    }
-                }
-            },
-        },
     },
 )
 @trace("api_create_session")
@@ -279,8 +262,11 @@ async def create_session(
     """
     try:
         # The lifetime is the server's: the session store gives every write
-        # this TTL, whatever the request asked for (#2301).
-        timeout_minutes = get_settings().session.timeout_minutes
+        # this TTL, whatever the request asked for (#2301). Read off the
+        # service's store, the source GET /admin/config/status reports too,
+        # not the settings again.
+        ttl_seconds = session_service.session_ttl_seconds
+        timeout_minutes = ttl_seconds // 60 if ttl_seconds is not None else None
 
         metadata = {}
         if request:

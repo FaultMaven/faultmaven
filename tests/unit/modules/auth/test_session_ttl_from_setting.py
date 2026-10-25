@@ -16,9 +16,9 @@ The same TTL-from-setting case runs against a real Redis in
 ``tests/integration/test_real_redis_stores.py``.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
@@ -223,6 +223,37 @@ async def test_the_degraded_stand_in_lives_on_the_same_clock():
     assert session.expires_at >= datetime.now(timezone.utc) + timeout * 0.99
 
 
+async def test_an_expired_client_session_is_replaced_not_revived(monkeypatch, redis):
+    """Both services mint a new session for a (user, client) whose session
+    lapsed; the stand-in used to revive the expired one and re-arm it."""
+    store, real = _composed(redis, _settings(monkeypatch))
+    lapsed, _ = await real.create_session("user-a", client_id="laptop")
+    await redis.pexpire(f"{store.prefix}{lapsed.session_id}", 1)
+    await asyncio.sleep(0.05)
+
+    fresh, resumed = await real.create_session("user-a", client_id="laptop")
+    assert (resumed, fresh.session_id != lapsed.session_id) == (False, True)
+
+    stand_in = minimal_session_service(
+        SimpleNamespace(
+            session=SimpleNamespace(
+                timeout_minutes=TIMEOUT_MINUTES, max_sessions_per_user=10
+            )
+        )
+    )
+    old, _ = await stand_in.create_session("user-a", client_id="laptop")
+    old.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    new, resumed = await stand_in.create_session("user-a", client_id="laptop")
+
+    assert resumed is False
+    assert new.session_id != old.session_id
+    assert await stand_in.get_session(old.session_id, validate=False) is None
+    # The positive control: a live one is still resumed.
+    again, resumed = await stand_in.create_session("user-a", client_id="laptop")
+    assert (again.session_id, resumed) == (new.session_id, True)
+
+
 async def test_the_mint_reports_the_server_timeout_and_the_session_expiry(
     monkeypatch, redis
 ):
@@ -244,15 +275,15 @@ async def test_the_mint_reports_the_server_timeout_and_the_session_expiry(
         created_at=datetime.now(timezone.utc),
     )
 
-    with patch(
-        "faultmaven.modules.auth.api.session.get_settings", return_value=settings
-    ):
-        body = await create_session(
-            request=AuthSessionCreateRequest(timeout_minutes=240),
-            session_service=service,
-            response=Response(),
-            current_user=user,
-        )
+    # Read off the built store (7), not the process settings (30 or the
+    # preset's 60), which a reload could move away from it.
+    # 30 is below the 60 the field used to require: accepted, and ignored.
+    body = await create_session(
+        request=AuthSessionCreateRequest(timeout_minutes=30),
+        session_service=service,
+        response=Response(),
+        current_user=user,
+    )
 
     assert body["timeout_minutes"] == TIMEOUT_MINUTES
     stored = await service.get_session(body["session_id"])

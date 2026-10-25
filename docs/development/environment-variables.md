@@ -491,7 +491,7 @@ as `session_ttl_seconds`.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. The `local` preset sets 60; it applies only to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server). `standard` and `enterprise` set 30 |
+| `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. A preset fills it in when it is unset: `local` sets 60, `standard` and `enterprise` set 30. A preset applies when `CONFIG_PRESET` names it, and `local` also applies by itself to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server) |
 | `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
 
 ## Related Documentation

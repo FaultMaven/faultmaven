@@ -1308,7 +1308,7 @@ class RevokingProvider(FakeProvider):
 def _service_with_session(store, provider, metadata):
     sessions = FakeSessionService()
     sessions.sessions["sess-1"] = SimpleNamespace(
-        session_id="sess-1", metadata=metadata
+        session_id="sess-1", user_id="u-1", metadata=metadata
     )
     service = build_service(store, provider=provider, session_service=sessions)
     return service, sessions
@@ -1338,7 +1338,7 @@ async def test_end_idp_session_revokes_the_stored_handle(store):
         store, provider, {"provider_session_id": "session_01HSID"}
     )
 
-    assert await service.end_idp_session("sess-1") is True
+    assert await service.end_idp_session("sess-1", user_id="u-1") is True
     assert provider.revoked == ["session_01HSID"]
 
 
@@ -1354,7 +1354,7 @@ async def test_end_idp_session_reads_the_session_without_validating(store):
         store, provider, {"provider_session_id": "session_01HSID"}
     )
 
-    await service.end_idp_session("sess-1")
+    await service.end_idp_session("sess-1", user_id="u-1")
 
     assert sessions.reads == [{"session_id": "sess-1", "validate": False}]
 
@@ -1371,8 +1371,20 @@ async def test_end_idp_session_without_a_usable_handle(store, metadata, why):
     provider = RevokingProvider()
     service, _ = _service_with_session(store, provider, metadata)
 
-    assert await service.end_idp_session("sess-1") is False, why
+    assert await service.end_idp_session("sess-1", user_id="u-1") is False, why
     # Never call the IdP with a handle we do not have.
+    assert provider.revoked == []
+
+
+async def test_end_idp_session_refuses_another_users_session(store):
+    """The session id is the caller's ``X-Session-Id``: naming another user's
+    session must not end that user's IdP session (#2301 review)."""
+    provider = RevokingProvider()
+    service, _ = _service_with_session(
+        store, provider, {"provider_session_id": "session_01HSID"}
+    )
+
+    assert await service.end_idp_session("sess-1", user_id="u-2") is False
     assert provider.revoked == []
 
 
@@ -1380,7 +1392,7 @@ async def test_end_idp_session_unknown_session(store):
     provider = RevokingProvider()
     service, _ = _service_with_session(store, provider, {})
 
-    assert await service.end_idp_session("no-such-session") is False
+    assert await service.end_idp_session("no-such-session", user_id="u-1") is False
     assert provider.revoked == []
 
 
@@ -1392,4 +1404,4 @@ async def test_end_idp_session_never_raises(store):
         store, provider, {"provider_session_id": "session_01HSID"}
     )
 
-    assert await service.end_idp_session("sess-1") is False
+    assert await service.end_idp_session("sess-1", user_id="u-1") is False

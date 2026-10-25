@@ -172,7 +172,7 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ## Data Retention & Lifecycle
 
-For auth/session TTL detail (JWT lifetimes, session record TTL, inactivity timeout) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
+For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
 
 | Data Category | Retention Period | Cleanup Strategy |
 |---------------|------------------|------------------|

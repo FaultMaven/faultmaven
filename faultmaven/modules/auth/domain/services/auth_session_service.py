@@ -115,6 +115,11 @@ class AuthSessionService:
         # Compatibility alias
         self.session_manager = self.session_store
 
+    @property
+    def session_ttl_seconds(self) -> Optional[int]:
+        """The TTL the store gives every session write; None without a store."""
+        return getattr(self.session_store, "session_ttl_seconds", None)
+
     # =========================================================================
     # Core Session Lifecycle Management
     # =========================================================================
