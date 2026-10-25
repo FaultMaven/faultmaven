@@ -660,6 +660,9 @@ asked to accept, and it belongs to a person.
 # own blast radius and belongs in its own change, and the method stays so that
 # change has something to call. This is the same defect class as the rest of
 # this entry, one level up: declared in configuration, accepted, never applied.
+# (Later, #2297 removed `cleanup_expired_sessions` and `cleanup_inactive_sessions`:
+# the store's listing they walked was a stub, so neither could ever read a
+# session, and Redis TTL expires sessions.)
 #
 # THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
 # than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE

@@ -305,6 +305,7 @@ def test_the_prefix_set_covers_every_namespace_the_app_writes():
     for prefix in (
         "session:",
         "client_index:",  # the session store's own index
+        "sessions:user:",  # the session store's per-user index
         "idempotency:",
         "sso:state:",
         "sso:login:",

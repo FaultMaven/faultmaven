@@ -3113,8 +3113,8 @@ async def _b_reaches_no_auth_session_of_a(world, a_session_id, session_id):
     # EMPTY, which is true of a route that returns nothing to anybody. The
     # control is what makes the absence a measurement. (It is also non-vacuous
     # only because the wired service implements ``list_sessions`` at all;
-    # against ``RedisSessionStore``'s stub every page is empty, which is the
-    # mistake the exemption this battery replaces actually made.)
+    # against ``RedisSessionStore``'s former stub every page was empty, which
+    # is the mistake the exemption this battery replaces actually made.)
     listing = await as_a(world, "GET", "/api/v1/sessions")
     assert listing.status_code == 200, listing.text
     assert a_session_id in listing.text, (
@@ -5939,8 +5939,8 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     #
     # The exemption that used to sit here claimed the listing was unprobeable
     # because "with no store the listing answers the same empty page to every
-    # caller, so no control exists". That is a property of `RedisSessionStore`,
-    # whose `list_sessions()` is a stub, and not of the route:
+    # caller, so no control exists". That was a property of `RedisSessionStore`,
+    # whose `list_sessions()` was a stub until #2297, and not of the route:
     # `MinimalSessionService` ships a working one and `create_session_service`
     # installs it in production whenever the real service cannot be
     # constructed. Both routes ARE probed —

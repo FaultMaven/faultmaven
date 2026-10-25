@@ -625,6 +625,10 @@ class DIContainer(BaseDIContainer):
         _session_ttl = timedelta(
             hours=getattr(getattr(_settings, "session", None), "ttl_hours", 24)
         )
+        # The per-user session limit, sourced as AuthSessionService sources it.
+        _max_sessions = getattr(
+            getattr(_settings, "session", None), "max_sessions_per_user", 10
+        )
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
@@ -685,6 +689,27 @@ class DIContainer(BaseDIContainer):
                             existing.session_resumed = True
                             return existing, True
 
+                # The per-user limit, by AuthSessionService's eviction rule:
+                # delete the least recently active sessions until there is room
+                # for one more, so a user already over it converges (#2297).
+                # What counts differs: this stand-in has no inactivity clock, so
+                # it counts every unexpired session, where AuthSessionService
+                # counts only those active within its inactivity threshold.
+                now = datetime.now(timezone.utc)
+                live = sorted(
+                    (
+                        s
+                        for s in self.sessions.values()
+                        if s.user_id == user_id
+                        and not (s.expires_at and now > s.expires_at)
+                    ),
+                    key=lambda s: s.last_activity,
+                )
+                excess = len(live) - _max_sessions + 1
+                if excess > 0:
+                    for oldest in live[:excess]:
+                        await self.delete_session(oldest.session_id)
+
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
                 session.client_id = client_id
@@ -719,16 +744,15 @@ class DIContainer(BaseDIContainer):
                 """Whether the session exists and has not expired."""
                 return await self.get_session(session_id) is not None
 
-            async def list_sessions(self, user_id=None):
-                """Mirrors ``AuthSessionService.list_sessions``, fail-closed half
-                included: ``is not None``, not truthiness, so a blank caller id
-                yields nothing rather than every session (#1447 review). This is
-                the implementation the enumeration was measured against, so the
-                two must not differ here of all places."""
-                sessions = list(self.sessions.values())
-                if user_id is not None:
-                    return [s for s in sessions if s.user_id == user_id]
-                return sessions
+            async def list_sessions(self, user_id):
+                """Mirrors ``AuthSessionService.list_sessions``: one user's
+                sessions, nothing for a blank id, and no listing of every
+                user's (#2297). This is the implementation the #1447
+                enumeration was measured against, so the two must not differ
+                here of all places."""
+                if not user_id or not user_id.strip():
+                    return []
+                return [s for s in self.sessions.values() if s.user_id == user_id]
 
             async def delete_session(self, session_id):
                 if session_id in self.sessions:

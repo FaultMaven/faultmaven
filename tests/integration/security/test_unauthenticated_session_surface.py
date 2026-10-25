@@ -9,9 +9,9 @@ than by CI.
 
 This module is that missing arm for the surface it was found on, and it is
 driven against the session service that made the finding LIVE rather than
-theoretical. ``RedisSessionStore.list_sessions()`` is a stub returning ``[]``,
-which is what made the enumeration look like a future hazard — but that store is
-one of **two** implementations. ``MinimalSessionService``
+theoretical. ``RedisSessionStore.list_sessions()`` was then a stub returning
+``[]`` (#2297 indexed it), which is what made the enumeration look like a future
+hazard — but that store is one of **two** implementations. ``MinimalSessionService``
 (``_container_impl._create_minimal_session_service``) ships a working
 ``list_sessions`` with the ``user_id`` filter, and ``create_session_service``
 installs it whenever the real service cannot be constructed — *"Reachable in
@@ -24,7 +24,7 @@ with no ``Authorization`` header, before the fix:
     DELETE /api/v1/sessions/<victim's session>-> 204, and the session was gone
 
 So the service under test here is chosen, not convenient: a probe run against
-the stub would pass on an empty list and prove nothing.
+the stub would have passed on an empty list and proved nothing.
 
 Two batteries, because the routes have two properties and one does not imply the
 other. **Anonymous** — a caller with no credential is refused. **Foreign** — an
@@ -145,16 +145,15 @@ def test_the_probe_is_aimed_at_the_service_that_makes_the_listing_work(anonymous
 
     The exemption this replaces argued that ``GET /api/v1/sessions`` was
     unprobeable because *"with no store the listing answers the same empty page
-    to every caller, so no control exists"*. That is a property of
-    ``RedisSessionStore``, not of the route. If this assertion ever fails, the
-    battery below has gone back to measuring an empty list and every 401 it
-    asserts would hold for a route that returns nothing to anyone.
+    to every caller, so no control exists"*. That was a property of
+    ``RedisSessionStore``'s stub, not of the route. If this assertion ever
+    fails, the battery below has gone back to measuring an empty list and every
+    401 it asserts would hold for a route that returns nothing to anyone.
     """
     assert type(anonymous.service).__name__ == "MinimalSessionService"
-    listed = asyncio.run(anonymous.service.list_sessions())
-    assert {session.user_id for session in listed} == {VICTIM, OTHER}
-    filtered = asyncio.run(anonymous.service.list_sessions(user_id=VICTIM))
-    assert [session.session_id for session in filtered] == [anonymous.victim.session_id]
+    for user_id, session in ((VICTIM, anonymous.victim), (OTHER, anonymous.other)):
+        listed = asyncio.run(anonymous.service.list_sessions(user_id=user_id))
+        assert [s.session_id for s in listed] == [session.session_id]
 
 
 def test_an_anonymous_caller_cannot_list_sessions(anonymous):
@@ -266,9 +265,9 @@ def test_an_authenticated_caller_cannot_delete_a_foreign_session(as_victim):
 # A falsy caller id is not a scope — three layers, three observables (#1447 review)
 # =============================================================================
 #
-# The shape both implementations share is ``if user_id: [filter] else: return
-# everything``, so a caller whose id is falsy does not get a narrower answer,
-# it gets the WHOLE TABLE — session ids and the identity each is bound to,
+# The shape both implementations shared was ``if user_id: [filter] else: return
+# everything``, so a caller whose id is falsy did not get a narrower answer,
+# it got the WHOLE TABLE — session ids and the identity each is bound to,
 # which is the §1 payload behind a 200 rather than an anonymous call.
 #
 # Three layers fix it, and each is asserted where it lives, because a choke
@@ -277,30 +276,34 @@ def test_an_authenticated_caller_cannot_delete_a_foreign_session(as_victim):
 #
 #   1. the identity layer refuses a token whose ``sub`` names no subject;
 #   2. the route refuses a principal whose id is blank anyway;
-#   3. the services treat a SUPPLIED filter literally, so a blank one matches
-#      nothing rather than skipping the filter.
+#   3. the services list one named user's sessions and nothing for a blank
+#      name; there is no unfiltered listing left to fall back to (#2297).
+
+
+def _assert_lists_only_a_named_user(service) -> None:
+    """One user's sessions; nothing for a blank name; no listing of everyone's."""
+    assert [s.user_id for s in asyncio.run(service.list_sessions(user_id=VICTIM))] == [
+        VICTIM
+    ], (
+        "the positive control failed: the service lists no session of a user who "
+        "holds one, so 'a blank name lists none' would hold for a broken service too"
+    )
+    for blank in ("", "   "):
+        assert asyncio.run(service.list_sessions(user_id=blank)) == []
+    # The unfiltered form is gone (#2297), not defaulted: omitting the user
+    # is a call error rather than a listing of every user's sessions.
+    with pytest.raises(TypeError):
+        asyncio.run(service.list_sessions())
 
 
 def test_layer_three_a_supplied_blank_filter_matches_nothing(anonymous):
     """The service, called directly. Both implementations, one shape.
 
-    ``None`` still means "no filter, all sessions" — that is the maintenance
-    API and several callers depend on it. What changes is that a filter which
-    was SUPPLIED is honoured, so ``""`` selects the sessions owned by ``""``,
-    of which there are none.
+    A listing names its user. A blank name names nobody and lists nothing, and
+    there is no "no filter, all sessions" form: nothing in production read it
+    (#2297).
     """
-    service = anonymous.service
-
-    everything = asyncio.run(service.list_sessions())
-    assert {session.user_id for session in everything} == {VICTIM, OTHER}, (
-        "the positive control failed: the service under test holds no sessions, "
-        "so 'a blank filter returns none' would hold for a broken service too"
-    )
-
-    assert asyncio.run(service.list_sessions(user_id="")) == []
-    assert [s.user_id for s in asyncio.run(service.list_sessions(user_id=VICTIM))] == [
-        VICTIM
-    ]
+    _assert_lists_only_a_named_user(anonymous.service)
 
 
 def test_layer_three_holds_for_the_real_service_too(anonymous):
@@ -314,13 +317,11 @@ def test_layer_three_holds_for_the_real_service_too(anonymous):
     )
 
     class _Store:
-        async def list_sessions(self):
-            return list(anonymous.service.sessions.values())
+        async def list_sessions(self, user_id):
+            sessions = anonymous.service.sessions.values()
+            return [s for s in sessions if s.user_id == user_id]
 
-    service = AuthSessionService(session_store=_Store())
-
-    assert {s.user_id for s in asyncio.run(service.list_sessions())} == {VICTIM, OTHER}
-    assert asyncio.run(service.list_sessions(user_id="")) == []
+    _assert_lists_only_a_named_user(AuthSessionService(session_store=_Store()))
 
 
 def test_layer_two_the_route_refuses_a_principal_with_no_subject(as_blank_principal):

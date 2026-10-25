@@ -223,6 +223,7 @@ INFORMATIONAL = frozenset({"knowledge_items"})
 _FIXED_REDIS_PREFIXES = (
     "session:",  # RedisSessionStore
     "client_index:",  # RedisSessionStore's own per-client index
+    "sessions:user:",  # RedisSessionStore's per-user session index
     "idempotency:",  # IdempotencyMiddleware
     "sso:state:",  # SSOEphemeralStore (login CSRF)
     "sso:login:",  # SSOEphemeralStore (completion code)

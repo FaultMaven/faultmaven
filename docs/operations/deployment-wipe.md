@@ -322,10 +322,11 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
 ## Notes
 
 - **Redis is scoped by default.** `--wipe` deletes keys under FaultMaven's known
-  prefixes — `session:`, `client_index:`, `idempotency:`, `sso:state:`,
-  `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`, `redaction:`, the
-  configured token-revocation prefix, and **every** protection preset's
-  `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev` *and* `faultmaven_prod`) —
+  prefixes — `session:`, `client_index:`, `sessions:user:`, `idempotency:`,
+  `sso:state:`, `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`,
+  `redaction:`, the configured token-revocation prefix, and **every**
+  protection preset's `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev` *and*
+  `faultmaven_prod`) —
   and *reports* the count of keys under any other prefix rather than silently
   skipping them. `--verify` judges Redis against **the same set the wipe
   deletes**, so the two cannot disagree and a Redis shared with another
