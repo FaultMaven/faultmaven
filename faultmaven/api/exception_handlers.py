@@ -1049,11 +1049,14 @@ async def internal_server_error_handler(
     request_id = getattr(request.state, "request_id", None)
 
     if correlation_id is None:
+        # With the traceback: on a deployed stack this is the one record of an
+        # exception LoggingMiddleware never saw (one raised before its ``try``).
         logger.error(
             "Internal server error on %s %s: %s",
             request.method,
             request.url.path,
             exc,
+            exc_info=exc,
             extra={"request_id": request_id} if request_id else {},
         )
 

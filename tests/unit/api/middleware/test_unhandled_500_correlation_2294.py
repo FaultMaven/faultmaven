@@ -112,10 +112,13 @@ def test_an_exception_logging_middleware_never_saw_is_logged_once_by_the_handler
     assert response.json() == {"detail": "Internal server error"}
 
     naming_the_fault = [
-        record.getMessage()
+        record
         for record in caplog.records
         if record.name.startswith("faultmaven") and FAULT in record.getMessage()
     ]
-    assert len(naming_the_fault) == 1, naming_the_fault
-    assert "GET /fault" in naming_the_fault[0]
-    assert SECRET not in naming_the_fault[0]
+    assert len(naming_the_fault) == 1, [r.getMessage() for r in naming_the_fault]
+    (record,) = naming_the_fault
+    assert "GET /fault" in record.getMessage()
+    assert SECRET not in record.getMessage()
+    # The one record of this exception carries its traceback.
+    assert record.exc_info and record.exc_info[0] is RuntimeError
