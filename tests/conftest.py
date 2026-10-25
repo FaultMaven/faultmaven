@@ -639,6 +639,11 @@ except ImportError:
 #     falling back on RuntimeError to `_send_sync_notification`, which itself
 #     calls `asyncio.run(...)` (alerting.py:469) -- and that raises inside a
 #     running loop.
+#   * `apm_integration` buffers a metric for every request through the
+#     performance middleware, and the lifespan's shutdown flushes the buffer,
+#     to the Prometheus pushgateway (localhost:9091) when PROMETHEUS_ENABLED.
+#     Left in place, one test's metrics were flushed by whichever app boot
+#     ended next on that worker, and the network guard failed THAT test (#2296).
 # The accumulating state is therefore reset between tests by the autouse
 # `_reset_observability_singletons` fixture below; without it every TestClient
 # request leaves residue and any future assertion on /metrics/* would be
@@ -674,6 +679,10 @@ OBSERVABILITY_RESET_FIELDS = {
     "faultmaven.infrastructure.observability.alerting": (
         "alert_manager",
         ("active_alerts", "alert_history", "suppressed_rules"),
+    ),
+    "faultmaven.infrastructure.observability.apm_integration": (
+        "apm_integration",
+        ("metrics_buffer",),
     ),
 }
 
