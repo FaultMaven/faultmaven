@@ -15,16 +15,16 @@ This directory contains integration test infrastructure focused on:
 The integration directory contains:
 
 #### `test_architectural_compliance.py` ✅ NEW (2025-10-24)
-Comprehensive spec compliance testing with 17 tests validating [case-and-session-concepts.md v2.0](../../docs/architecture/case-and-session/case-and-session-concepts.md):
+Comprehensive spec compliance testing with 15 tests validating [case-and-session-concepts.md](../../docs/architecture/case-and-session/case-and-session-concepts.md):
 
 - **Session Resumption Tests** (3 tests) - client_id-based session resumption validation
 - **Multi-Device Support Tests** (2 tests) - Concurrent sessions on multiple devices
-- **Case Access Tests** (3 tests) - Case persistence and cross-session access
+- **Case Persistence Test** (1 test) - Cases outlive the sessions of their owner
 - **Forbidden Field Validation Tests** (4 tests) - Session updates reject case data
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** a reachable Redis, given through the environment (`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked. Until #2081 is fixed, the 16 that take `session_service` skip whether or not Redis is reachable: the fixture never builds its store.
+**Setup:** a Redis named through the environment (`REDIS_URL`, or `REDIS_HOST` with `REDIS_PORT`); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked, and Test Cloud runs them in its real-Redis step. The 14 that take `session_service` skip where no Redis is named, and fail where one is named and does not answer. Cases go to a SQLite database of each test's own.
 
 **Run tests:**
 ```bash
@@ -53,7 +53,8 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Service fixtures**: `session_service` (real Redis; it currently always skips, #2081) and `case_service` (the DI container's)
+- **Real Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names; it skips where none is named and fails where the named one does not answer
+- **Service fixtures**: `session_service` (an `AuthSessionService` on `real_redis`) and `case_service` (the real `CaseService` on a SQLite database of the test's own, whose case owners `case_owners` seeds)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration

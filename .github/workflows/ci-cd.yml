@@ -481,12 +481,14 @@ jobs:
   #
   # The Redis service is the cloud pairing (fm#1031): a real Redis 7.2 read
   # through the hiredis parser cloud.txt pins. Two steps name it in their env,
-  # and only they reach it: the pairing check, and the step that runs
-  # tests/integration/test_real_redis_stores.py alone. The suite step names no
-  # Redis, so every Redis consumer in it resolves the in-process FakeRedis (one
-  # client per event loop, #2247), and tests/network_guard.py refuses a
-  # connection to any Redis the step does not name: a suite test that reached
-  # for the server fails instead of using it (#2243).
+  # and only they reach it: the pairing check, and the real-Redis step that
+  # runs the modules whose tests take the `real_redis` fixture
+  # (tests/integration/conftest.py): test_real_redis_stores.py and
+  # test_architectural_compliance.py. The suite step names no Redis, so every
+  # Redis consumer in it resolves the in-process FakeRedis (one client per
+  # event loop, #2247), and tests/network_guard.py refuses a connection to any
+  # Redis the step does not name: a suite test that reached for the server
+  # fails instead of using it (#2243).
   #
   # The suite step sets CONFIG_PRESET=none. It names no provider, Redis or
   # ChromaDB, so the zero-config `local` preset would otherwise apply
@@ -615,15 +617,18 @@ jobs:
           REDIS_PORT: "6379"
           REDIS_DB: "0"
 
-      - name: Run the real-Redis store tests
-        # The one test module that reaches the job's Redis, run alone. Before
-        # the suite: it takes seconds and rests only on what the pairing check
-        # just proved, so a failure shows now rather than after the suite. The
-        # path selects it; the -m and --ignore are the ones every pytest command
-        # in this job must carry (#2090, pinned by
-        # tests/unit/ci/test_benchmark_calibration.py).
+      - name: Run the real-Redis tests
+        # The test modules that reach the job's Redis, through the `real_redis`
+        # fixture, and nothing else. A module whose tests take it is named here
+        # and ignored by the suite step below: there it would skip, since that
+        # step names no Redis. Before the suite: they take seconds and rest
+        # only on what the pairing check just proved, so a failure shows now
+        # rather than after the suite. The paths select them; the -m and
+        # --ignore are the ones every pytest command in this job must carry
+        # (#2090, pinned by tests/unit/ci/test_benchmark_calibration.py).
         run: |
           pytest tests/integration/test_real_redis_stores.py \
+            tests/integration/test_architectural_compliance.py \
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
             -p no:cacheprovider \
@@ -652,9 +657,9 @@ jobs:
           # Same flags as Test Standalone, including the floor rather than a
           # top-N. See the note there for why. This job's selection is the
           # larger of the two, so its report is the one that also covers the
-          # `cloud`-marked tests, all but tests/integration/
-          # test_real_redis_stores.py, which runs in its own step without
-          # --cov. The same `-n logical --dist loadfile` too.
+          # `cloud`-marked tests, all but the real-Redis step's modules,
+          # which run there without --cov. The same `-n logical --dist
+          # loadfile` too.
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \
@@ -662,6 +667,7 @@ jobs:
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
             --ignore=tests/integration/test_real_redis_stores.py \
+            --ignore=tests/integration/test_architectural_compliance.py \
             --durations=0 \
             --durations-min=1.0 \
             -v
@@ -702,7 +708,7 @@ jobs:
           # sessions, rate limits and request deduplication run on the stand-in;
           # revocation is the SQL store (DEPLOYMENT_MODE is not cloud), and
           # IdempotencyMiddleware is not mounted under SKIP_SERVICE_CHECKS. The
-          # real-Redis step above, ignored here, drives the server (#2243).
+          # real-Redis step's modules, ignored here, drive the server (#2243).
           #
           # Inert: tests/conftest.py pops it at import (ENV_VARS_TO_CLEAR), so
           # the suite runs on the settings default, vectors in a local Chroma.

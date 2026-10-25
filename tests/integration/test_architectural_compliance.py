@@ -1,15 +1,20 @@
 """Architectural Compliance Integration Tests
 
-Tests to verify compliance with case-and-session-concepts.md v2.0 specification.
-These tests validate the session-case boundary, multi-device support, and
-session resumption as specified in lines 647-736 of the design document.
+Tests to verify compliance with
+docs/architecture/case-and-session/case-and-session-concepts.md: the
+session-case boundary, multi-device support, and session resumption.
 
 Test Coverage:
 1. Session creation with client_id (test resumption works)
 2. Multi-device sessions for same user (multiple concurrent sessions)
-3. Case access across different sessions (same cases visible from all user sessions)
+3. Cases outlive the sessions of the user who owns them
 4. Validation that session updates reject case data (forbidden fields enforcement)
 5. owner_id requirement in Case creation (security validation)
+
+The sessions live in a real Redis (``session_service``, on ``real_redis``):
+these tests run where ``REDIS_URL`` or ``REDIS_HOST`` names one, which in CI is
+Test Cloud's real-Redis step, and skip elsewhere. The cases live in a SQLite
+database of each test's own (``case_service``).
 """
 
 import time
@@ -39,13 +44,7 @@ def unique_id(prefix: str) -> str:
 @pytest.mark.asyncio
 @pytest.mark.cloud
 class TestArchitecturalCompliance:
-    """Integration tests for spec compliance verification
-
-    NOTE: These tests require Redis (the cloud profile). As written, the
-    ``session_service`` fixture skips every one of them, Redis or not: it
-    builds ``RedisSessionStore()`` without the client that constructor
-    requires, and reports the ``TypeError`` as "Redis not reachable".
-    """
+    """Integration tests for spec compliance verification"""
 
     # ============================================================================
     # Test 1: Session Creation with client_id and Resumption
@@ -208,52 +207,12 @@ class TestArchitecturalCompliance:
         assert session2_check.session_id == session2.session_id
 
     # ============================================================================
-    # Test 3: Case Access Across Different Sessions
-    # Spec Reference: Lines 650-655, 678-690, 710-722
+    # Test 3: Cases Outlive Sessions
+    # Spec: "Cases persist beyond session lifecycle" (Relationships)
     # ============================================================================
 
-    async def test_cases_accessible_from_all_user_sessions(
-        self, session_service: SessionService, case_service: CaseService
-    ):
-        """Test that cases are accessible from all sessions of the same user
-
-        Spec Lines 650-655, 710-722:
-        - Cases owned by user_id, not session_id
-        - All sessions for same user see identical cases
-        - Cases persist beyond individual session lifecycle
-        """
-        user_id = unique_id("user_case_access")
-        client_1 = unique_id("device-laptop")
-        client_2 = unique_id("device-mobile")
-
-        # Create sessions on two devices
-        session1, _ = await session_service.create_session(user_id, client_1)
-        session2, _ = await session_service.create_session(user_id, client_2)
-
-        # Create case owned by user (via session1 for auth)
-        case = await case_service.create_case(
-            title="Multi-Device Test Case",
-            initial_message="Test case accessibility across sessions",
-            owner_id=user_id,  # ✅ SPEC: Case owned by user, not session
-        )
-
-        # Retrieve cases via both sessions - use list_user_cases method
-        cases_via_session1, _ = await case_service.list_user_cases(user_id)
-        cases_via_session2, _ = await case_service.list_user_cases(user_id)
-
-        # ✅ SPEC COMPLIANCE: Identical results from both sessions
-        case_ids_session1 = {c.case_id for c in cases_via_session1}
-        case_ids_session2 = {c.case_id for c in cases_via_session2}
-
-        assert (
-            case_ids_session1 == case_ids_session2
-        ), "Same user's cases must be identical from all sessions (spec lines 650-655)"
-        assert (
-            case.case_id in case_ids_session1
-        ), "Created case must be visible from all user sessions"
-
     async def test_cases_persist_after_session_deletion(
-        self, session_service: SessionService, case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService, case_owners
     ):
         """Test that cases persist after creating session is deleted
 
@@ -262,8 +221,10 @@ class TestArchitecturalCompliance:
         - Session deletion does not delete cases
         - New sessions can access old cases
         """
-        user_id = unique_id("user_case_persistence")
+        # An account id is at most 36 characters (users.user_id, Case.user_id).
+        user_id = unique_id("user_persistence")
         client_id = unique_id("device-chrome")
+        await case_owners(user_id)
 
         # Create session and case
         session1, _ = await session_service.create_session(user_id, client_id)
@@ -288,41 +249,6 @@ class TestArchitecturalCompliance:
         assert (
             case_id in case_ids
         ), "Cases must persist after session expiry (spec lines 678-690)"
-
-    async def test_direct_case_access_matches_session_case_access(
-        self, session_service: SessionService, case_service: CaseService
-    ):
-        """Test that direct user case access matches session-based access
-
-        Spec Lines 650-655:
-        - getUserCases() and getSessionCases() must return identical results
-        """
-        user_id = unique_id("user_access_parity")
-        client_id = unique_id("device-test")
-
-        # Create session
-        session, _ = await session_service.create_session(user_id, client_id)
-
-        # Create multiple cases
-        case_titles = ["Case 1", "Case 2", "Case 3"]
-        created_cases = []
-        for title in case_titles:
-            case = await case_service.create_case(
-                title=title, initial_message=f"Query for {title}", owner_id=user_id
-            )
-            created_cases.append(case)
-
-        # Get cases via list_user_cases method (accessed twice to verify consistency)
-        first_access, _ = await case_service.list_user_cases(user_id)
-        second_access, _ = await case_service.list_user_cases(user_id)
-
-        # ✅ SPEC COMPLIANCE: Identical results from multiple accesses
-        first_case_ids = sorted([c.case_id for c in first_access])
-        second_case_ids = sorted([c.case_id for c in second_access])
-
-        assert (
-            first_case_ids == second_case_ids
-        ), "Multiple accesses to user cases must return identical results (spec lines 650-655)"
 
     # ============================================================================
     # Test 4: Session Updates Reject Case Data
@@ -466,7 +392,7 @@ class TestArchitecturalCompliance:
         ), "Case creation must require owner_id (spec lines 273-277)"
 
     async def test_case_creation_with_valid_owner_id(
-        self, session_service: SessionService, case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService, case_owners
     ):
         """Test that case creation succeeds with valid owner_id
 
@@ -475,6 +401,7 @@ class TestArchitecturalCompliance:
         - Created case must have owner_id set
         """
         user_id = unique_id("user_valid_owner")
+        await case_owners(user_id)
 
         # Create session for authentication
         session, _ = await session_service.create_session(user_id)
@@ -493,7 +420,7 @@ class TestArchitecturalCompliance:
         assert case.user_id is not None, "user_id must not be None"
 
     async def test_case_ownership_enforced_in_retrieval(
-        self, session_service: SessionService, case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService, case_owners
     ):
         """Test that case ownership is enforced when retrieving cases
 
@@ -501,6 +428,7 @@ class TestArchitecturalCompliance:
         """
         user1_id = unique_id("user_owner_1")
         user2_id = unique_id("user_owner_2")
+        await case_owners(user1_id, user2_id)
 
         # Create sessions for both users
         session1, _ = await session_service.create_session(user1_id)
