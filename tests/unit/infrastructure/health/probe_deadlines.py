@@ -2,10 +2,12 @@
 
 The shipped constants are `_PROBE_TIMEOUT_SECONDS = 3.0` **below**
 `_ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0`: every probe carries its own deadline
-under the sweep budget, so the sweep budget is a BACKSTOP that no shipped
-probe reaches. A test that wants the backstop has exactly one honest way in —
-a probe that does not observe cancellation, which is the case
-`check_all_components`' own docstring names it a backstop for.
+under the sweep budget, so the sweep budget is a BACKSTOP for a probe that does
+not observe cancellation. One shipped probe is such a probe: the database on a
+PostgreSQL that stopped answering, whose cancelled query waits on asyncpg's
+CancelRequest (#2266). A test that wants the backstop has exactly one honest
+way in — a probe that does not observe cancellation, which is the case
+`check_components`' own docstring names it a backstop for.
 
 The dishonest way in, which these helpers exist to replace, is to set the
 sweep budget *below* the per-probe deadline (0.05 against 3.0). That reaches

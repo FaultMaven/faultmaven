@@ -281,20 +281,21 @@ def test_the_page_rule_fires_for_a_shared_fatal_dependency(published):
 #
 # What this arm covers, stated as measured rather than as assumed: a probe
 # that OUTLIVES the sweep budget, and a task that raises past
-# `check_component_health`'s `except`. A hung `database` is NOT it — that is
-# caught by the per-probe deadline, whose error arm already wrote back before
-# this change (measured identical with and without it). Every shipped probe
-# carries `_PROBE_TIMEOUT_SECONDS` under `_ALL_COMPONENTS_TIMEOUT_SECONDS`, so
-# the arm is a BACKSTOP, and these tests drive it the only way the shipped
-# ordering allows: a probe that does not observe cancellation.
+# `check_component_health`'s `except`. A hung `database` that observes
+# cancellation is NOT it — the per-probe deadline catches that, and its error
+# arm already wrote back before this change (measured identical with and
+# without it). Every shipped probe carries `_PROBE_TIMEOUT_SECONDS` under
+# `_ALL_COMPONENTS_TIMEOUT_SECONDS`, so the arm is a BACKSTOP for a probe that
+# does not observe cancellation, the database on a silent PostgreSQL among
+# them (#2266), and these tests drive it that way.
 # --------------------------------------------------------------------------
 
 
 def test_the_shipped_constants_keep_this_arm_a_backstop():
-    """If these ever invert, the sweep arm becomes a live path — say so here.
+    """If these ever invert, the sweep arm becomes the path for every hang.
 
-    The claim "no shipped probe reaches the sweep-budget arm" rests entirely
-    on this ordering, so it is pinned rather than assumed. (The neighbouring
+    That only a probe ignoring cancellation reaches the sweep-budget arm rests
+    entirely on this ordering, so it is pinned rather than assumed. (The neighbouring
     probe-behaviour suite pins the same relation; this is the copy that
     carries the reason the abandoned-probe arm depends on it.)
     """

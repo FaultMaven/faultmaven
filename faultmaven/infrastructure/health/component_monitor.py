@@ -1189,12 +1189,12 @@ class ComponentHealthMonitor:
         Returns:
             Dictionary mapping component names to their health status
         """
+        if not names:
+            return {}  # asyncio.wait refuses an empty set
         # Stamped before the first probe starts, and carried to
         # ``_record_abandoned_probe`` so a slow sweep cannot overwrite a
         # observation a later sweep already made. Sweeps overlap: /health has
         # four callers and the Kubernetes probes co-fire.
-        if not names:
-            return {}  # asyncio.wait refuses an empty set
         sweep_started_at = datetime.now(timezone.utc)
         tasks = {
             asyncio.ensure_future(self.check_component_health(name)): name
@@ -1227,7 +1227,13 @@ class ComponentHealthMonitor:
 
         for task in done:
             component_name = tasks[task]
-            error = task.exception()
+            # A task that cancelled itself is done and abandoned too;
+            # ``exception()`` would raise its CancelledError out of the sweep.
+            error = (
+                asyncio.CancelledError("the probe was cancelled")
+                if task.cancelled()
+                else task.exception()
+            )
             if error is not None:
                 self.logger.error(f"Health check failed for {component_name}: {error}")
                 health_results[component_name] = self._record_abandoned_probe(

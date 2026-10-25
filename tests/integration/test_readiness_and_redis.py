@@ -263,6 +263,47 @@ async def test_health_reports_both_declarations_per_component():
     assert components["database"]["fails_per_replica"] is False
 
 
+async def test_the_component_detail_route_answers_within_the_sweep_budget(
+    monkeypatch,
+):
+    """A probe that never finishes its cancellation (the database on a
+    PostgreSQL that stopped answering) held this route open: it called
+    ``check_component_health`` outside the sweep's backstop (#2266)."""
+    import asyncio
+    import copy
+
+    from faultmaven.infrastructure.health.component_monitor import component_monitor
+    from tests.unit.infrastructure.health.probe_deadlines import (
+        probe_that_ignores_cancellation,
+        shipped_ratio,
+    )
+
+    # The verdict is written back to the process-wide monitor; give it copies.
+    monkeypatch.setitem(
+        component_monitor.component_health,
+        "database",
+        copy.deepcopy(component_monitor.component_health["database"]),
+    )
+    monkeypatch.setitem(
+        component_monitor.health_history,
+        "database",
+        list(component_monitor.health_history.get("database", [])),
+    )
+    shipped_ratio(monkeypatch)
+    probe_that_ignores_cancellation(component_monitor, monkeypatch, "database")
+
+    async with _client() as client:
+        getting = asyncio.ensure_future(client.get("/health/components/database"))
+        done, _ = await asyncio.wait({getting}, timeout=5)
+        if not done:
+            getting.cancel()
+        assert done, "the component route outlasted the sweep budget"
+        body = getting.result().json()
+
+    assert body["health"]["status"] == "unhealthy"
+    assert "sweep budget" in body["health"]["last_error"]
+
+
 async def test_the_component_detail_route_reports_the_pair_exactly_once():
     async with _client() as client:
         body = (await client.get("/health/components/database")).json()

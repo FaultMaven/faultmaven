@@ -981,6 +981,24 @@ async def test_the_readiness_check_is_under_the_sweep_budget(monkeypatch):
     assert detail["blocking"] == ["per_pod_and_fatal"]
 
 
+async def test_a_probe_that_cancels_itself_blocks_readiness(monkeypatch):
+    """A probe task that ends cancelled is abandoned like any other: the
+    readiness check reports it blocking rather than raising its
+    CancelledError past the route's guard."""
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("per_pod_and_fatal", fatal=True, fails_per_replica=True)
+
+    async def _cancels_itself(component_name):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(monitor, "check_component_health", _cancels_itself)
+
+    ready, detail = await asyncio.wait_for(monitor.check_serving_readiness(), 5)
+
+    assert ready is False
+    assert detail["blocking"] == ["per_pod_and_fatal"]
+
+
 async def test_a_cancellable_hang_is_abandoned_by_the_PROBE_arm_inside_a_sweep(
     monkeypatch,
 ):
