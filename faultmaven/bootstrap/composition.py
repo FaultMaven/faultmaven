@@ -28,7 +28,7 @@ import inspect
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional
 
 from fastapi import FastAPI
 
@@ -669,6 +669,25 @@ async def _teardown_step(
     return None
 
 
+async def run_teardown(steps: Iterable[tuple[str, Callable[[], Any]]]) -> None:
+    """Run every ``(what, step)`` of a teardown, whatever the ones before it did.
+
+    The one runner of a run's teardown steps: composition's own
+    (:func:`decompose_application`), the lifespan's shutdown, and the ends of
+    the jobs runner and the ``fm-*`` commands. Each step runs through
+    :func:`_teardown_step`: an ``Exception`` is logged, and a
+    ``CancelledError`` is deferred. The first one deferred is re-raised once the
+    last step has run.
+    """
+    deferred: Optional[asyncio.CancelledError] = None
+    for what, step in steps:
+        cancelled = await _teardown_step(what, step)
+        if deferred is None:
+            deferred = cancelled
+    if deferred is not None:
+        raise deferred
+
+
 async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take back everything composition installed. The one teardown of it.
 
@@ -709,13 +728,7 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # to release here beyond the engine.
         ("Database close", lambda: close_database()),
     )
-    deferred: Optional[asyncio.CancelledError] = None
-    for what, step in steps:
-        cancelled = await _teardown_step(what, step)
-        if deferred is None:
-            deferred = cancelled
-    if deferred is not None:
-        raise deferred
+    await run_teardown(steps)
 
 
 def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:

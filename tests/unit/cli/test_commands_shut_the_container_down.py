@@ -30,8 +30,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import text
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.container import DIContainer
+from faultmaven.infrastructure.persistence import database
 
 pytestmark = pytest.mark.unit
 
@@ -168,7 +171,10 @@ def test_the_command_shuts_the_container_down_on_the_loop_it_initialized_on(
         with pytest.raises(expected):
             module.main()
     else:
-        with caplog.at_level(logging.WARNING, logger="faultmaven.cli._container"):
+        # A failed step is logged by the teardown's step runner.
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.bootstrap.composition"
+        ):
             with pytest.raises(SystemExit) as exited:
                 module.main()
         # The command's own status; a failed shutdown does not change it.
@@ -182,3 +188,42 @@ def test_the_command_shuts_the_container_down_on_the_loop_it_initialized_on(
     assert container.loops["shutdown"] is container.loops["initialize"]
     if binds_at_import:
         container.singleton_shutdown.assert_not_awaited()
+
+
+@pytest.fixture
+def engine_url(tmp_path, monkeypatch):
+    """A database of the test's own; the process-global engine is put back after."""
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_session_factory", None)
+    return f"sqlite+aiosqlite:///{tmp_path / 'faultmaven.db'}"
+
+
+@pytest.mark.parametrize("outcome", ["returns", "raises", "shutdown raises"])
+def test_the_run_disposes_the_database_engine_the_command_opened(
+    outcome, container, engine_url
+):
+    """#2254: the run shut the container down and left the engine its stores
+    opened, so ``asyncio.run`` closed the loop over the engine's connections.
+    The engine is disposed after the shutdown, on the same loop, whatever the
+    command or the shutdown did."""
+    opened = []
+
+    async def _command():
+        async with database.get_engine(engine_url).connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        opened.append(database._engine is not None)
+        if outcome == "raises":
+            raise _CommandFailed()
+        return 0
+
+    if outcome == "shutdown raises":
+        container.shutdown.side_effect = RuntimeError("the pool would not close")
+    if outcome == "raises":
+        with pytest.raises(_CommandFailed):
+            run_with_container(_command(), container=container)
+    else:
+        assert run_with_container(_command(), container=container) == 0
+
+    assert opened == [True], "the command did not open the engine"
+    container.shutdown.assert_awaited_once()
+    assert database._engine is None, "the run left the database engine open"

@@ -422,6 +422,87 @@ async def test_a_cancellation_during_a_metrics_task_stop_leaves_no_handle(
     assert handle not in app.state, f"{handle} left on app.state"
 
 
+@pytest.mark.parametrize(
+    "cancelled_during",
+    ["protection shutdown", "funnel_metrics_task", "revocation_watermark_task"],
+)
+async def test_a_cancellation_during_one_stop_still_runs_every_later_stop(
+    stop_serving, monkeypatch, cancelled_during
+):
+    """#2257: a cancellation during one stop skipped every stop after it. The
+    later tasks were left running with their handles on ``app.state``, where a
+    later shutdown on the app was handed tasks of a closed loop. Each stop is a
+    step of one teardown now: all run, then the cancellation propagates."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    in_progress, release = asyncio.Event(), asyncio.Event()
+
+    async def _slow_to_end():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            in_progress.set()
+            await release.wait()  # still ending when the shutdown is cancelled
+            raise
+
+    async def _protection_hangs(_app):
+        in_progress.set()
+        await asyncio.Event().wait()
+
+    if cancelled_during == "protection shutdown":
+        monkeypatch.setattr(
+            "faultmaven.api.protection.shutdown_protection", _protection_hangs
+        )
+    stop_case_cleanup, stop_retention = Mock(), AsyncMock()
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.tasks.stop_case_cleanup_scheduler",
+        stop_case_cleanup,
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.tasks.llm_usage_retention."
+        "stop_llm_usage_retention_scheduler",
+        stop_retention,
+    )
+    app = FastAPI()
+    tasks = {
+        handle: asyncio.create_task(
+            _slow_to_end() if handle == cancelled_during else asyncio.sleep(3600)
+        )
+        for handle in (*_METRICS_TASKS, "llm_config_watch_task")
+    }
+    for handle, task in tasks.items():
+        setattr(app.state, handle, task)
+    app.state.case_cleanup_scheduler = object()
+    app.state.llm_usage_retention_task = object()
+
+    shutdown = asyncio.create_task(stop_serving(app, {}))
+    try:
+        await in_progress.wait()
+        shutdown.cancel()
+        release.set()
+        await asyncio.wait({shutdown})
+        # The task whose stop was cancelled is still ending; every other one
+        # is stopped by now.
+        running = [
+            handle
+            for handle, task in tasks.items()
+            if handle != cancelled_during and not task.cancelled()
+        ]
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        await asyncio.wait(set(tasks.values()))
+
+    assert running == [], f"left running after the shutdown: {running}"
+    stopped = (*tasks, "case_cleanup_scheduler", "llm_usage_retention_task")
+    left = [handle for handle in stopped if handle in app.state]
+    assert left == [], f"still on app.state: {left}"
+    stop_case_cleanup.assert_called_once()
+    stop_retention.assert_awaited_once()
+    lifespan_module.decompose_application.assert_awaited_once()
+    assert shutdown.cancelled(), "the cancellation did not propagate"
+
+
 async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):
     """Both the shutdown and the composition's teardown stop the watcher. The
     first takes it off ``app.state``, so the second is a no-op: an error the

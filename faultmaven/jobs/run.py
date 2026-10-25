@@ -520,13 +520,20 @@ async def run_job(
             return {"status": "failed", "error": str(e)}
     finally:
         # Whatever this run initialized is done, whether the job ran or a gate
-        # refused it: close what the container owns while the loop its Redis
-        # pool is bound to is still running. A failure to close does not change
-        # what the run reported.
-        try:
-            await container.shutdown()
-        except Exception as e:
-            logger.warning(f"Container shutdown failed (non-critical): {e}")
+        # refused it: close what the container owns, then dispose the database
+        # engine its stores opened (#2254), while the loop the Redis pool and
+        # the engine's connections are bound to is still running. Each step
+        # runs whatever the one before it did, and a failure to close does not
+        # change what the run reported.
+        from faultmaven.bootstrap.composition import run_teardown
+        from faultmaven.infrastructure.persistence.database import close_database
+
+        await run_teardown(
+            (
+                ("Container shutdown", lambda: container.shutdown()),
+                ("Database close", close_database),
+            )
+        )
 
 
 def _ttl_hours_arg(value: str) -> int:
