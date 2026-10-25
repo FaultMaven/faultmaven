@@ -110,7 +110,10 @@ class LoggingCoordinator:
 
     def start_request(self, **initial_context) -> RequestContext:
         """Initialize request with context variables and tracking."""
-        context = RequestContext(**initial_context)  # mints the correlation id
+        # The known fields build the context (which mints the correlation id);
+        # any other keyword lands in context.attributes.
+        context = RequestContext(**known_fields)
+        context.attributes.update(other_fields)
         context.error_context = ErrorContext()
         context.performance_tracker = PerformanceTracker()
 
