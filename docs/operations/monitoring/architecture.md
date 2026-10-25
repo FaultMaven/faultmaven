@@ -105,32 +105,32 @@ class LoggingCoordinator:
     - Manage context variable state
     """
 
-    def __init__(self):
-        self.context: Optional[RequestContext] = None
+    # No request is held on the instance: one coordinator serves every request
+    # in flight, so the request in hand lives in the per-task ContextVar (#2293).
 
     def start_request(self, **initial_context) -> RequestContext:
         """Initialize request with context variables and tracking."""
-        self.context = RequestContext(
-            correlation_id=str(uuid.uuid4()),
-            **initial_context
-        )
-        self.context.error_context = ErrorContext()
-        self.context.performance_tracker = PerformanceTracker()
+        # The known fields build the context (which mints the correlation id);
+        # any other keyword lands in context.attributes.
+        context = RequestContext(**known_fields)
+        context.attributes.update(other_fields)
+        context.error_context = ErrorContext()
+        context.performance_tracker = PerformanceTracker()
 
-        # Set in thread-local context variable
-        request_context.set(self.context)
-        return self.context
+        # Set in the per-task context variable
+        request_context.set(context)
+        return context
 
     def end_request(self) -> Dict[str, Any]:
         """Clean up context and return request summary."""
-        if not self.context:
+        context = request_context.get()
+        if not context:
             return {}
 
-        summary = self._generate_summary()
+        summary = ...  # built from `context`
 
         # Clean up context
         request_context.set(None)
-        self.context = None
 
         return summary
 ```

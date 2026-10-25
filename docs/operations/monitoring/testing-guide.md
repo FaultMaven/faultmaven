@@ -52,8 +52,11 @@ graph TD
 
 ```python
 import pytest
-from unittest.mock import Mock, patch
-from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator, RequestContext
+from faultmaven.infrastructure.logging.coordinator import (
+    LoggingCoordinator,
+    RequestContext,
+    request_context,
+)
 
 class TestLoggingCoordinator:
     """Unit tests for LoggingCoordinator."""
@@ -67,13 +70,13 @@ class TestLoggingCoordinator:
         """Test that start_request creates and initializes context."""
         # Execute
         context = coordinator.start_request(
-            session_id="test_session",
+            claimed_session_id="test_session",
             user_id="test_user"
         )
 
         # Verify
         assert context is not None
-        assert context.session_id == "test_session"
+        assert context.claimed_session_id == "test_session"
         assert context.user_id == "test_user"
         assert context.correlation_id is not None
         assert len(context.correlation_id) > 0
@@ -83,7 +86,7 @@ class TestLoggingCoordinator:
     def test_end_request_generates_summary(self, coordinator):
         """Test that end_request generates proper summary."""
         # Setup
-        context = coordinator.start_request(session_id="test")
+        context = coordinator.start_request(claimed_session_id="test")
         context.mark_logged("test_operation")
 
         # Execute
@@ -100,29 +103,27 @@ class TestLoggingCoordinator:
     def test_context_cleanup_after_end_request(self, coordinator):
         """Test that context is properly cleaned up."""
         # Setup
-        coordinator.start_request(session_id="test")
+        coordinator.start_request(claimed_session_id="test")
 
         # Execute
         coordinator.end_request()
 
-        # Verify
-        assert coordinator.context is None
+        # Verify: the request lives in the per-task ContextVar, never on the
+        # coordinator (#2293), and ending the request clears it
+        assert request_context.get() is None
 
-    @patch('faultmaven.infrastructure.logging.coordinator.request_context')
-    def test_context_variable_management(self, mock_context_var, coordinator):
+    def test_context_variable_management(self, coordinator):
         """Test context variable is properly managed."""
-        # Setup
-        mock_context_var.set = Mock()
-        mock_context_var.get = Mock(return_value=None)
-
         # Execute
         context = coordinator.start_request()
-        coordinator.end_request()
 
-        # Verify context variable interactions
-        assert mock_context_var.set.call_count == 2  # Set context, then clear
-        mock_context_var.set.assert_any_call(context)
-        mock_context_var.set.assert_any_call(None)
+        # Verify: start_request sets the context variable...
+        assert request_context.get() is context
+
+        # ...and end_request reads it back, summarizes it and clears it
+        summary = coordinator.end_request()
+        assert summary["correlation_id"] == context.correlation_id
+        assert request_context.get() is None
 ```
 
 ### 2. Testing RequestContext Deduplication
@@ -393,7 +394,7 @@ class TestServiceIntegration:
     async def service_with_context(self):
         """Provide service with initialized request context."""
         coordinator = LoggingCoordinator()
-        context = coordinator.start_request(session_id="integration_test")
+        context = coordinator.start_request(claimed_session_id="integration_test")
 
         service = self.TestService()
 
@@ -514,7 +515,7 @@ class TestInfrastructureIntegration:
     async def client_with_context(self):
         """Provide client with request context."""
         coordinator = LoggingCoordinator()
-        context = coordinator.start_request(session_id="infra_test")
+        context = coordinator.start_request(claimed_session_id="infra_test")
 
         client = self.TestExternalClient()
 
@@ -588,7 +589,7 @@ class TestContextPropagation:
         """Setup multiple layers with context."""
         coordinator = LoggingCoordinator()
         context = coordinator.start_request(
-            session_id="cross_layer_test",
+            claimed_session_id="cross_layer_test",
             user_id="test_user"
         )
 
@@ -644,7 +645,7 @@ class TestContextPropagation:
 
         # All operations should share same correlation ID
         assert context.correlation_id is not None
-        assert context.session_id == "cross_layer_test"
+        assert context.claimed_session_id == "cross_layer_test"
         assert context.user_id == "test_user"
 ```
 
@@ -667,7 +668,7 @@ class TestLoggingPerformance:
         async def simulate_request():
             """Simulate a single request with logging."""
             coordinator = LoggingCoordinator()
-            context = coordinator.start_request(session_id="perf_test")
+            context = coordinator.start_request(claimed_session_id="perf_test")
 
             # Simulate API layer
             api_logger = get_unified_logger("perf.api", "api")
@@ -714,24 +715,27 @@ class TestLoggingPerformance:
         process = psutil.Process()
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
 
-        # Create many contexts to test memory management
+        # Create many contexts to test memory management. The coordinator holds
+        # no request of its own: a request is ended in the task that started
+        # it, before the next starts, and the list keeps the contexts alive
+        # for the measurement.
+        coordinator = LoggingCoordinator()
         contexts = []
         for i in range(1000):
-            coordinator = LoggingCoordinator()
-            context = coordinator.start_request(session_id=f"memory_test_{i}")
+            context = coordinator.start_request(claimed_session_id=f"memory_test_{i}")
 
             # Add many operations to test deduplication limits
             for j in range(100):
                 context.mark_logged(f"operation_{j}")
 
-            contexts.append((coordinator, context))
+            coordinator.end_request()
+            contexts.append(context)
 
         # Measure memory after context creation
         mid_memory = process.memory_info().rss / 1024 / 1024  # MB
 
         # Clean up contexts
-        for coordinator, context in contexts:
-            coordinator.end_request()
+        contexts.clear()
 
         # Force garbage collection
         gc.collect()
@@ -752,7 +756,7 @@ class TestLoggingPerformance:
     async def test_deduplication_performance(self):
         """Test performance of deduplication under load."""
         coordinator = LoggingCoordinator()
-        context = coordinator.start_request(session_id="dedup_perf_test")
+        context = coordinator.start_request(claimed_session_id="dedup_perf_test")
 
         # Test with many duplicate operations
         num_operations = 10000
@@ -915,7 +919,7 @@ class TestWithMocks:
 
         # Mock the request context
         coordinator = LoggingCoordinator()  # Real coordinator
-        context = coordinator.start_request(session_id="mock_test")
+        context = coordinator.start_request(claimed_session_id="mock_test")
 
         try:
             # Execute with mock
@@ -971,7 +975,7 @@ async def request_context_fixture():
     """Provide request context for testing."""
     coordinator = LoggingCoordinator()
     context = coordinator.start_request(
-        session_id="fixture_test",
+        claimed_session_id="fixture_test",
         user_id="test_user"
     )
 
@@ -997,7 +1001,7 @@ def isolated_logging_environment():
 async def performance_test_context():
     """Provide context optimized for performance testing."""
     coordinator = LoggingCoordinator()
-    context = coordinator.start_request(session_id="perf_test")
+    context = coordinator.start_request(claimed_session_id="perf_test")
 
     # Pre-populate with some operations to simulate realistic conditions
     for i in range(10):
@@ -1116,7 +1120,7 @@ class LoggingTestUtils:
         request_context.set(None)
 
         coordinator = LoggingCoordinator()
-        context = coordinator.start_request(session_id="isolated_test")
+        context = coordinator.start_request(claimed_session_id="isolated_test")
 
         try:
             yield context, coordinator

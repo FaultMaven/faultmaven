@@ -751,11 +751,12 @@ class LoggingCoordinator:
     This class manages request-scoped logging context and provides methods
     for coordinated logging across all application layers. It ensures that
     each request has a single point of coordination for all logging activities.
-    """
 
-    def __init__(self):
-        """Initialize the logging coordinator."""
-        self.context: Optional[RequestContext] = None
+    It holds no request of its own. One instance serves every request the app
+    serves at once (``LoggingMiddleware`` builds one), so the request in hand
+    lives in the ``request_context`` ContextVar, which is per task: kept on the
+    instance, overlapping requests summarized each other or not at all (#2293).
+    """
 
     def start_request(self, **initial_context) -> RequestContext:
         """
@@ -796,16 +797,16 @@ class LoggingCoordinator:
         }
 
         # Create context with known fields
-        self.context = RequestContext(**context_args)
+        context = RequestContext(**context_args)
 
         # Add additional attributes to the attributes dict
         if additional_attrs:
-            self.context.attributes.update(additional_attrs)
+            context.attributes.update(additional_attrs)
 
-        self.context.error_context = ErrorContext()
-        self.context.performance_tracker = PerformanceTracker()
-        request_context.set(self.context)
-        return self.context
+        context.error_context = ErrorContext()
+        context.performance_tracker = PerformanceTracker()
+        request_context.set(context)
+        return context
 
     def end_request(self) -> Dict[str, Any]:
         """
@@ -817,27 +818,24 @@ class LoggingCoordinator:
         Returns:
             Dict containing request summary metrics
         """
-        if not self.context:
+        context = request_context.get()
+        if not context:
             return {}
 
-        duration = (
-            datetime.now(timezone.utc) - self.context.start_time
-        ).total_seconds()
+        duration = (datetime.now(timezone.utc) - context.start_time).total_seconds()
 
         # Calculate performance violations
         performance_violations = 0
-        if self.context.performance_tracker and hasattr(
-            self.context.performance_tracker, "layer_timings"
+        if context.performance_tracker and hasattr(
+            context.performance_tracker, "layer_timings"
         ):
             try:
                 for (
                     timing_key,
                     timing_value,
-                ) in self.context.performance_tracker.layer_timings.items():
+                ) in context.performance_tracker.layer_timings.items():
                     layer = timing_key.split(".")[0]
-                    threshold = self.context.performance_tracker.thresholds.get(
-                        layer, 1.0
-                    )
+                    threshold = context.performance_tracker.thresholds.get(layer, 1.0)
                     if timing_value > threshold:
                         performance_violations += 1
             except (AttributeError, TypeError):
@@ -845,21 +843,18 @@ class LoggingCoordinator:
                 performance_violations = 0
 
         summary = {
-            "correlation_id": self.context.correlation_id,
+            "correlation_id": context.correlation_id,
             "duration_seconds": duration,
-            "operations_logged": len(self.context.logged_operations),
+            "operations_logged": len(context.logged_operations),
             "errors_encountered": (
-                len(self.context.error_context.layer_errors)
-                if self.context.error_context
-                else 0
+                len(context.error_context.layer_errors) if context.error_context else 0
             ),
             "performance_violations": performance_violations,
-            **self.context.attributes,
+            **context.attributes,
         }
 
         # Clear context
         request_context.set(None)
-        self.context = None
 
         return summary
 
