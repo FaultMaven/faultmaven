@@ -134,11 +134,6 @@ class TestServiceIntegration:
 #### **Lightweight Test Infrastructure**
 ```python
 @pytest.fixture
-def log_capture():
-    """Real log capture without mocking logging framework."""
-    return LogCapture()  # Custom test utility
-
-@pytest.fixture
 def test_service():
     """Service with real dependencies except external systems."""
     return ServiceClass(
@@ -175,33 +170,32 @@ def service_with_test_doubles():
 ## **Logging Integration Testing Standards**
 
 ### **Real Log Verification**
-```python
-def test_operation_logging(logging_setup, service):
-    """Test actual log output, not mock calls."""
-    log_capture = logging_setup
 
-    # Execute operation
-    result = service.process_data(test_data)
+Use pytest's built-in `caplog` fixture: it captures the records the real
+logging framework emits, so nothing about logging is mocked.
+
+```python
+def test_operation_logging(caplog, service):
+    """Test actual log output, not mock calls."""
+    with caplog.at_level(logging.INFO, logger="faultmaven"):
+        result = service.process_data(test_data)
 
     # Verify real log content
-    log_capture.assert_logged(
-        message_contains="operation_completed",
-        level=logging.INFO,
-        min_count=1
-    )
+    completed = [r for r in caplog.records if "operation_completed" in r.getMessage()]
+    assert completed, "the operation logged no completion"
 
     # Verify log structure
-    business_logs = log_capture.get_logs(message_contains="business_event")
-    assert all("correlation_id" in log.getMessage() for log in business_logs)
+    business = [r for r in caplog.records if "business_event" in r.getMessage()]
+    assert all("correlation_id" in r.getMessage() for r in business)
 ```
 
 ### **Cross-Layer Coordination Testing**
 ```python
 async def test_request_lifecycle_coordination(
-    logging_setup, coordinator, service, external_client
+    caplog, coordinator, service, external_client
 ):
     """Test coordination across layers with real log output."""
-    log_capture = logging_setup
+    caplog.set_level(logging.DEBUG, logger="faultmaven")
 
     with coordinator.start_request() as ctx:
         correlation_id = ctx.correlation_id
@@ -210,9 +204,9 @@ async def test_request_lifecycle_coordination(
         result = await service.process_with_external_call(data)
 
         # Verify coordination
-        correlation_logs = log_capture.get_logs(
-            message_contains=correlation_id
-        )
+        correlation_logs = [
+            r for r in caplog.records if correlation_id in r.getMessage()
+        ]
         assert len(correlation_logs) >= 4  # All layers logged
 ```
 
@@ -324,7 +318,7 @@ assert mock_logger.info.call_count == 3
 # Good: Behavior-focused assertions
 assert result.status == "completed"
 assert result.findings[0].confidence > 0.8
-assert log_capture.has_business_event("operation_completed")
+assert any("operation_completed" in r.getMessage() for r in caplog.records)
 ```
 
 ### **Test Naming Standards**

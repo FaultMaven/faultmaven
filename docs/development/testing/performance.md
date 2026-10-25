@@ -9,7 +9,7 @@ for the FaultMaven platform.
 
 ```bash
 # Install dependencies (if not already installed)
-pip install -r requirements-test.txt
+pip install -r requirements/test.txt
 
 # Run all benchmarks
 pytest tests/benchmarks/ -m benchmark -v

@@ -24,12 +24,12 @@ Comprehensive spec compliance testing with 17 tests validating [case-and-session
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** Tests use Redis configuration from `.env` file. Configure `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` in your `.env`.
+**Setup:** none. The suite never reads `.env` (`tests/conftest.py` blocks it); a test that needs Redis is given it through `REDIS_HOST` / `REDIS_PORT` in the environment.
 
 **Run tests:**
 ```bash
 # All compliance tests
-./run_tests.py --integration
+python scripts/tests.py --integration
 
 # Specific test
 .venv/bin/pytest tests/integration/test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id -v
@@ -42,8 +42,6 @@ Knowledge base integration testing with vector store operations
 
 #### `test_readiness_and_redis.py`
 System readiness and Redis integration validation
-
-### Core Infrastructure Files
 
 ### Infrastructure Files
 
@@ -81,7 +79,7 @@ Integration test configuration and fixtures:
 
 Install test dependencies:
 ```bash
-pip install -r ../../requirements-test.txt
+pip install -r requirements/test.txt   # from the repository root
 ```
 
 **No environment variables are required.** These tests run in-process — they
