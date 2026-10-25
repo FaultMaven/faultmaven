@@ -199,14 +199,16 @@ def _refuse_built_per_process_stores(
 
     # Outside pytest a failed initialize() is logged and tolerated, leaving the
     # container uninitialized with whatever it built before the failure. A
-    # missing Redis client then says nothing about the Redis configuration, so
-    # refuse as the partial composition it is, naming the right remedy.
+    # missing Redis client then says nothing about the Redis configuration, and
+    # what each process would serve is unknown, so name only the failure.
     if not getattr(container, "is_initialized", True):
-        from faultmaven.config.worker_stores import refuse_partial_composition
+        from faultmaven.config.worker_stores import PerProcessStoresError
 
-        refuse_partial_composition(
-            settings,
-            RuntimeError("the DI container did not initialize; its log names why"),
+        raise PerProcessStoresError(
+            f"WORKERS={processes} runs {processes} server processes, and "
+            "composition failed: the DI container did not initialize, so what "
+            "each process would serve is unknown. Fix the failure the "
+            "container's log names."
         )
 
     from faultmaven.infrastructure.chroma_client import chroma_client_kind
