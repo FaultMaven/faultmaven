@@ -1353,7 +1353,6 @@ class SessionSettings(BaseSettings):
     timeout_minutes: int = Field(
         default=30, validation_alias="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
     )
-    max_memory_mb: int = Field(default=100, validation_alias="SESSION_MAX_MEMORY_MB")
     # At least one: the limit evicts the oldest session to make room, and at 0
     # every create would fail (#2297 made the limit live).
     max_sessions_per_user: int = Field(
@@ -3529,63 +3528,6 @@ class FaultMavenSettings(BaseSettings):
             "allow_headers": ["*"],
             "expose_headers": self.security.cors_expose_headers,
         }
-
-    def validate_frontend_compatibility(self) -> Dict[str, Any]:
-        """
-        Validate configuration for frontend compatibility.
-
-        Returns:
-            Dict with compatibility status and any issues found
-        """
-        issues = []
-        warnings = []
-
-        # Session timeout validation
-        if self.session.timeout_minutes < 5:
-            issues.append("Session timeout too short - frontend expects >= 5 minutes")
-
-        # CORS validation
-        browser_origins = [
-            "chrome-extension://*",
-            "moz-extension://*",
-            "http://localhost:3333",
-        ]
-        missing_origins = []
-        for origin in browser_origins:
-            if not any(
-                origin in allowed for allowed in self.security.cors_allow_origins
-            ):
-                missing_origins.append(origin)
-
-        if missing_origins:
-            issues.append(f"Missing CORS origins: {missing_origins}")
-
-        # Required exposed headers for frontend
-        required_headers = ["X-RateLimit-Remaining", "X-Total-Count", "Location"]
-        missing_headers = []
-        for header in required_headers:
-            if header not in self.security.cors_expose_headers:
-                missing_headers.append(header)
-
-        if missing_headers:
-            issues.append(f"Missing exposed headers: {missing_headers}")
-
-        # Rate limiting is deliberately NOT checked here. This report answers
-        # "can a browser client work against this configuration?", and rate
-        # limiting is not part of the configuration — both protection presets
-        # pin it on, and whether the middleware is installed is a property of
-        # the built app, which a settings object cannot see. The check that used
-        # to live here read a field no enforcement path consulted, so it warned
-        # under CONFIG_PRESET=local — which used to set RATE_LIMIT_ENABLED=false
-        # while rate limiting anyway — and stayed silent when protection setup
-        # was skipped outright. GET /admin/config/status answers this question
-        # from the middleware stack instead.
-
-        # Upload size warnings
-        if self.upload.max_upload_size_mb > 50:
-            warnings.append("Upload size > 50MB may cause timeout or processing issues")
-
-        return {"compatible": len(issues) == 0, "issues": issues, "warnings": warnings}
 
     def is_development(self) -> bool:
         """Check if running in development mode"""

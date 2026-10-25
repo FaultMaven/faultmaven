@@ -437,33 +437,6 @@ class TestConfigurationArchitectureCompliance:
         finally:
             reset_settings()
 
-    def test_frontend_compatibility_validation(self):
-        """Test frontend compatibility validation"""
-        reset_settings()
-        settings = get_settings()
-
-        # Test with default settings
-        compatibility = settings.validate_frontend_compatibility()
-        assert isinstance(compatibility, dict)
-        assert "compatible" in compatibility
-        assert "issues" in compatibility
-        assert "warnings" in compatibility
-
-        # Test with problematic configuration (short timeout)
-        with patch.dict(
-            os.environ,
-            {"SESSION_TIMEOUT_MINUTES": "2"},
-            clear=False,
-        ):
-            reset_settings()
-            settings = get_settings()
-            compatibility = settings.validate_frontend_compatibility()
-
-            # With 2 minute timeout, system may still be compatible depending on implementation
-            assert isinstance(compatibility["compatible"], bool)
-            if not compatibility["compatible"]:
-                assert len(compatibility["issues"]) > 0
-
     def test_cors_configuration_method(self):
         """Test CORS configuration generation for frontend compatibility"""
         # Ensure CORS config includes required browser extension origins

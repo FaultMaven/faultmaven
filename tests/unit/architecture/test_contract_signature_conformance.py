@@ -699,12 +699,11 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
         "its notification members."
     ),
     "ICaseIntegrationService": (
-        "No subclass and no full implementation. CaseService shares 2 of its "
-        "5 method names (list_cases_by_session, count_cases_by_session) but "
-        "implements none of export_case, sync_to_knowledge_base or "
-        "create_external_ticket, so registering it as the implementation "
-        "would assert a relationship that does not exist and manufacture "
-        "three permanent PENDING entries."
+        "No subclass and no full implementation — no class provides any of "
+        "export_case, sync_to_knowledge_base or create_external_ticket. "
+        "CaseService once shared its two session listings, "
+        "list_cases_by_session and count_cases_by_session; #2301 removed "
+        "them from both, as they had no caller and could find no session."
     ),
 }
 

@@ -677,30 +677,6 @@ def test_environment_configuration_handling(booted_app_client):
         ), f"Deprecated environment variable {var} should not affect health check"
 
 
-def test_health_check_with_session_metrics(booted_app_client):
-    """Test health check includes session metrics from configuration manager."""
-    response = booted_app_client.get("/health")
-    assert response.status_code == 200
-
-    data = response.json()
-
-    # Check for session metrics in health response
-    if "session_metrics" in data:
-        session_metrics = data["session_metrics"]
-
-        # Verify expected session metric fields
-        expected_metrics = [
-            "active_sessions",
-            "cleanup_runs",
-            "session_timeout_minutes",
-            "cleanup_interval_minutes",
-        ]
-
-        for metric in expected_metrics:
-            if metric in session_metrics:
-                assert isinstance(session_metrics[metric], (int, float, bool))
-
-
 def test_application_uses_configuration_defaults(unshared_app_boot):
     """The application serves on the configuration defaults.
 

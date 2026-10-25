@@ -117,24 +117,6 @@ async def test_a_heartbeat_re_arms_the_ttl_and_moves_expires_at(monkeypatch, red
     assert stored.expires_at > session.expires_at
 
 
-async def test_the_stores_own_extend_re_arms_to_the_setting(monkeypatch, redis):
-    """``RedisSessionStore.extend_session`` re-writes, so the expiry moves too."""
-    store, service = _composed(redis, _settings(monkeypatch))
-    session, _ = await service.create_session("user-a")
-    key = f"{store.prefix}{session.session_id}"
-    await redis.pexpire(key, 3000)
-
-    assert await store.extend_session(session.session_id) is True
-
-    assert _about_the_timeout(await redis.pttl(key))
-    assert (await store.get_session(session.session_id)).expires_at > (
-        session.expires_at
-    )
-    # The positive control's twin: nothing to extend is not a write.
-    assert await store.extend_session("no-such-session") is False
-    assert await redis.exists(f"{store.prefix}no-such-session") == 0
-
-
 async def test_a_resume_re_arms_the_session_and_its_client_index(monkeypatch, redis):
     store, service = _composed(redis, _settings(monkeypatch))
     session, _ = await service.create_session("user-a", client_id="laptop")

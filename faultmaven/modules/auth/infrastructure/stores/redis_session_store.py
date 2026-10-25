@@ -19,7 +19,6 @@ is the moment Redis drops it.
 
 import json
 import logging
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -295,32 +294,6 @@ class RedisSessionStore(ISessionStore):
             metadata=session_data.get("metadata", {}),
         )
 
-    async def create_session(self, user_id: Optional[str] = None) -> SessionContext:
-        """Create a new session."""
-        session_id = str(uuid.uuid4())
-        created_at = datetime.now(timezone.utc)
-
-        session_data = {
-            "session_id": session_id,
-            "user_id": user_id,
-            "created_at": to_json_compatible(created_at),
-            "last_activity": to_json_compatible(created_at),
-            "data_uploads": [],
-            "case_history": [],
-            "metadata": {},
-        }
-
-        expires_at = await self._write_session(session_id, session_data)
-
-        return SessionContext(
-            session_id=session_id,
-            user_id=user_id,
-            created_at=created_at,
-            last_activity=created_at,
-            expires_at=expires_at,
-            metadata={},
-        )
-
     async def get_session(
         self, session_id: str, validate: bool = True
     ) -> Optional[SessionContext]:
@@ -348,18 +321,6 @@ class RedisSessionStore(ISessionStore):
         }
         session.expires_at = await self._write_session(session.session_id, session_data)
 
-    async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
-        """Update session with new data."""
-        session_data = await self.get(session_id)
-        if not session_data:
-            return False
-
-        session_data.update(updates)
-        session_data["last_activity"] = to_json_compatible(datetime.now(timezone.utc))
-
-        await self._write_session(session_id, session_data)
-        return True
-
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session and its entry in its user's index."""
         session_data = await self.get(session_id)
@@ -374,22 +335,6 @@ class RedisSessionStore(ISessionStore):
         pipe.srem(self._user_index_key(user_id), session_id)
         deleted, _ = await pipe.execute()
         return deleted > 0
-
-    async def extend_session(self, session_id: str) -> bool:
-        """Give a session ``session_ttl_seconds`` from now, its user index too.
-
-        A re-write rather than an ``EXPIRE``: the record's ``expires_at`` moves
-        with the TTL, as on every other session write.
-        """
-        session_data = await self.get(session_id)
-        if not isinstance(session_data, dict):
-            return False
-        await self._write_session(session_id, session_data)
-        return True
-
-    async def update_last_activity(self, session_id: str) -> bool:
-        """Update last activity timestamp."""
-        return await self.update_session(session_id, {})
 
     async def list_sessions(self, user_id: str) -> List[SessionContext]:
         """``user_id``'s live sessions, oldest first.

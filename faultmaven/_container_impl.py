@@ -994,30 +994,6 @@ class DIContainer(BaseDIContainer):
                 # committed a receipt here (#1888): every keyed turn is new.
                 return None
 
-            def _active_session_cases(self, session_id):
-                """Non-terminal, non-empty cases for a session.
-
-                CaseService.list_cases_by_session/count_cases_by_session take no
-                filters, so neither does this stand-in; the default exclusions
-                below are the only behaviour a caller can reach.
-                """
-                return [
-                    case
-                    for case in self.cases.values()
-                    if case.current_session_id == session_id
-                    and case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    and case.current_turn > 0
-                ]
-
-            async def list_cases_by_session(self, session_id, limit=50, offset=0):
-                """List active cases for a session (mirrors CaseService)."""
-                session_cases = self._active_session_cases(session_id)
-                return session_cases[offset : offset + limit]
-
-            async def count_cases_by_session(self, session_id):
-                """Count active cases for a session (mirrors CaseService)."""
-                return len(self._active_session_cases(session_id))
-
             async def close_case(self, case_id, user_id):
                 # Mirrors CaseService.close_case: one closure rule — the
                 # engine executor derives closure_reason and stamps closed_at

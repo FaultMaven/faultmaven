@@ -494,8 +494,6 @@ as `session_ttl_seconds`.
 | `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. The `local` preset sets 60; it applies only to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server). `standard` and `enterprise` set 30 |
 | `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
 
-`SESSION_MAX_MEMORY_MB` (default 100) is declared and read by nothing.
-
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)
