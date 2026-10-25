@@ -636,6 +636,7 @@ class DIContainer(BaseDIContainer):
                 self.session_id = session_id
                 self.user_id = user_id
                 self.metadata = metadata or {}
+                self.provider_session_id = None
                 self.created_at = datetime.now(timezone.utc)
                 self.last_activity = datetime.now(timezone.utc)
                 # Sessions carry an explicit expiry from creation: without one,
@@ -661,7 +662,9 @@ class DIContainer(BaseDIContainer):
                 self.session_manager = MockSessionManager()  # Add mock session manager
                 self.session_manager.sessions = self.sessions  # Share session storage
 
-            async def create_session(self, user_id, client_id=None, metadata=None):
+            async def create_session(
+                self, user_id, client_id=None, metadata=None, provider_session_id=None
+            ):
                 """Create or resume a session.
 
                 Mirrors ``AuthSessionService.create_session``, including the
@@ -719,6 +722,7 @@ class DIContainer(BaseDIContainer):
 
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
+                session.provider_session_id = provider_session_id
                 session.client_id = client_id
                 session.session_resumed = False
                 self.sessions[session_id] = session

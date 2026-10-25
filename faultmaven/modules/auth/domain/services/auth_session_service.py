@@ -130,6 +130,7 @@ class AuthSessionService:
         user_id: str,
         client_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        provider_session_id: Optional[str] = None,
     ) -> Tuple[SessionContext, bool]:
         """Create new session or resume existing session for (user, client) pair
 
@@ -139,6 +140,8 @@ class AuthSessionService:
             user_id: User identifier (REQUIRED per spec)
             client_id: Client/device identifier for multi-device support (spec line 264)
             metadata: Additional session metadata (authentication context only)
+            provider_session_id: The IdP session an SSO login opened, which
+                logout ends. Server-set: no route passes a client's value.
 
         Returns:
             Tuple of (SessionContext, resumed: bool)
@@ -182,6 +185,7 @@ class AuthSessionService:
             last_activity=now,
             updated_at=now,
             metadata=metadata or {},
+            provider_session_id=provider_session_id,
         )
 
         await self._persist(session)

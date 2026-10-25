@@ -60,6 +60,15 @@ class SessionContext(BaseModel):
     session_resumed: bool = Field(
         False, description="Whether this session was resumed from existing"
     )
+    # Server-set only: the IdP session an SSO login opened, which logout
+    # revokes with the deployment's IdP key. It lived in ``metadata``, which
+    # clients write on create and replace on update, so a client could plant
+    # another user's IdP session id on a session of its own and have logout
+    # end it (#2301 review). No route accepts it.
+    provider_session_id: Optional[str] = Field(
+        None,
+        description="The IdP session this session's SSO login opened; server-set",
+    )
 
     # Timestamps
     created_at: datetime = Field(

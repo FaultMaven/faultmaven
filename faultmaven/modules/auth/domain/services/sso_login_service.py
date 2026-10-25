@@ -1406,17 +1406,21 @@ class SSOLoginService:
             "sso_provider": self._provider.provider_name,
             "username": user.username,
         }
-        if isinstance(provider_session_id, str) and provider_session_id:
-            # Persisted so the IdP session can be ended WITHOUT the browser.
-            # The logout URL only works if the browser completes a third-party
-            # navigation after local teardown; a closed tab leaves the IdP
-            # session alive with nothing able to reach it. This is what
-            # ``end_idp_session`` reads.
-            session_metadata["provider_session_id"] = provider_session_id
 
         session, _resumed = await self._sessions.create_session(
             user_id=user.user_id,
             metadata=session_metadata,
+            # Persisted so the IdP session can be ended WITHOUT the browser.
+            # The logout URL only works if the browser completes a third-party
+            # navigation after local teardown; a closed tab leaves the IdP
+            # session alive with nothing able to reach it. This is what
+            # ``end_idp_session`` reads: a server-set field, not ``metadata``,
+            # which clients write (#2301 review).
+            provider_session_id=(
+                provider_session_id
+                if isinstance(provider_session_id, str) and provider_session_id
+                else None
+            ),
         )
         session_id = getattr(session, "session_id", str(session))
 
@@ -1459,15 +1463,17 @@ class SSOLoginService:
         # Neither line names the session id: the caller supplied it, and the
         # logging policy strips session identifiers.
         if session is None:
-            logger.warning("sso_idp_teardown_no_session", user_id=user_id)
+            # Routine: a dashboard SSO session is never heartbeated, so it is
+            # gone SESSION_TIMEOUT_MINUTES after login, and logout comes later.
+            logger.info("sso_idp_teardown_no_session", user_id=user_id)
             return False
         if getattr(session, "user_id", None) != user_id:
             logger.warning("sso_idp_teardown_not_session_owner", user_id=user_id)
             return False
 
-        provider_session_id = (getattr(session, "metadata", None) or {}).get(
-            "provider_session_id"
-        )
+        # The server-set field. Never ``metadata``: a client writes that, and
+        # could plant another user's IdP session id in it.
+        provider_session_id = getattr(session, "provider_session_id", None)
         if not isinstance(provider_session_id, str) or not provider_session_id:
             return False
 

@@ -2213,7 +2213,13 @@ asked to accept, and it belongs to a person.
 # the `X-Session-Id` sent names a session of the signed-in caller. Any
 # signed-in user could end another user's IdP session by sending that user's
 # session id; with the 24-hour cap gone, a heartbeat kept such an id alive
-# indefinitely, so the check lands with the change that widened it.
+# indefinitely, so the check lands with the change that widened it. The IdP
+# handle it revokes moved out of the session's client-writable `metadata` into
+# a server-set field no route accepts: a client could plant another user's
+# IdP session id in `metadata` on create or update and log out. An SSO
+# session's `metadata` (echoed by `PUT /sessions/{id}` and
+# `POST /sessions/search`) no longer carries `provider_session_id`, and a
+# `provider_session_id` a client writes there is inert.
 #
 # MINOR because every client survives it: the copilot sends `timeout_minutes`
 # and reads neither response field (its heartbeat interval is its own, 10

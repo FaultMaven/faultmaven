@@ -287,6 +287,7 @@ class RedisSessionStore(ISessionStore):
             user_id=session_data.get("user_id"),
             client_id=session_data.get("client_id"),
             session_resumed=session_data.get("session_resumed", False),
+            provider_session_id=session_data.get("provider_session_id"),
             created_at=created_at,
             last_activity=last_activity,
             updated_at=updated_at,
@@ -318,6 +319,7 @@ class RedisSessionStore(ISessionStore):
             "updated_at": to_json_compatible(session.updated_at),
             "metadata": session.metadata or {},
             "session_resumed": session.session_resumed,
+            "provider_session_id": session.provider_session_id,
         }
         session.expires_at = await self._write_session(session.session_id, session_data)
 

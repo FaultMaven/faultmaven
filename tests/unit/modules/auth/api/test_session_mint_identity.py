@@ -58,7 +58,9 @@ NAMED_BY_CALLER = "user-someone-else-99"
 RESUMED = True
 
 
-async def _create_session_fake(user_id, client_id=None, metadata=None):
+async def _create_session_fake(
+    user_id, client_id=None, metadata=None, provider_session_id=None
+):
     """Stands in for ``AuthSessionService.create_session``.
 
     Signature-faithful, and both halves of that are load-bearing:
@@ -102,10 +104,15 @@ def _build_app(*, current_user):
     app.state.minted = []
 
     async def _session_service():
-        async def create_session_impl(user_id, client_id=None, metadata=None):
+        async def create_session_impl(
+            user_id, client_id=None, metadata=None, provider_session_id=None
+        ):
             app.state.minted.append(user_id)
             return await _create_session_fake(
-                user_id, client_id=client_id, metadata=metadata
+                user_id,
+                client_id=client_id,
+                metadata=metadata,
+                provider_session_id=provider_session_id,
             )
 
         return SimpleNamespace(
