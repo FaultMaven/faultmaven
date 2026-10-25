@@ -209,6 +209,8 @@ class _Analysis:
             return True
         if isinstance(value, ast.Name):
             return value.id in minted
+        if isinstance(value, ast.Await):
+            return self._is_id(value.value, minted)
         if isinstance(value, ast.Call):
             func = value.func
             if isinstance(func, ast.Name) and func.id in _ID_PRESERVING_CALLS:
@@ -267,16 +269,13 @@ class _Analysis:
         ]
         for _ in range(2):  # a name minted later in a loop still counts
             for node in assignments:
-                if self._is_id(node.value, minted):
-                    targets = (
-                        node.targets if isinstance(node, ast.Assign) else [node.target]
-                    )
-                    minted.update(
-                        n.id
-                        for t in targets
-                        for n in ast.walk(t)
-                        if isinstance(n, ast.Name)
-                    )
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                for target in targets:
+                    for name, value in _paired(target, node.value):
+                        if self._is_id(value, minted):
+                            minted.update(_bound_names(name))
         return minted
 
     def _scopes(self, scope: ast.AST | None = None, inherited: frozenset = frozenset()):
@@ -453,6 +452,33 @@ def _offenders(root: Path) -> dict[str, list[int]]:
         if lines:
             offenders[path.relative_to(root).as_posix()] = lines
     return offenders
+
+
+def _bound_names(target: ast.AST) -> list[str]:
+    """The names an assignment target binds: ``x``, and each name of a tuple
+    or list unpacking. ``x.attr = ...`` and ``x[k] = ...`` bind nothing: they
+    store into ``x``, which does not then hold the id."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for elt in target.elts for n in _bound_names(elt)]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    return []
+
+
+def _paired(target: ast.AST, value: ast.AST | None):
+    """``(target, value)``, or each element pair of a tuple assigned to a tuple
+    of the same length, so ``cid, n = mint(), 1`` binds ``cid`` alone."""
+    if (
+        isinstance(target, (ast.Tuple, ast.List))
+        and isinstance(value, (ast.Tuple, ast.List))
+        and len(target.elts) == len(value.elts)
+    ):
+        for t, v in zip(target.elts, value.elts):
+            yield from _paired(t, v)
+        return
+    yield target, value
 
 
 def _sinks(source: str) -> list[int]:
@@ -653,6 +679,23 @@ def test_the_refusing_middleware_is_registered_inside_logging(callee):
             '    def inner():\n        log(extra={"correlation_id": cid})\n',
             id="closure",
         ),
+        pytest.param(
+            "import uuid\nasync def _new_id():\n    return str(uuid.uuid4())\n"
+            "async def r():\n    cid = await _new_id()\n"
+            '    log(extra={"correlation_id": cid})\n',
+            id="awaited-helper-through-a-name",
+        ),
+        pytest.param(
+            "import uuid\nasync def _a():\n    return str(uuid.uuid4())\n"
+            "async def _b():\n    return await _a()\n"
+            "async def r():\n    correlation_id = await _b()\n",
+            id="awaited-helper-of-a-helper",
+        ),
+        pytest.param(
+            "import uuid\ndef r():\n    cid, other = str(uuid.uuid4()), 1\n"
+            '    log(extra={"correlation_id": cid})\n',
+            id="tuple-unpacking",
+        ),
     ],
 )
 def test_the_scan_flags_every_minting_shape(source):
@@ -711,6 +754,18 @@ def test_the_scan_flags_every_minting_shape(source):
             '    detail = f"Error: {exc}"\n    parsed = uuid.UUID(detail)\n'
             '    log(extra={"correlation_id": parsed})\n',
             id="uuid-parsed-not-minted",
+        ),
+        pytest.param(
+            "import uuid\ndef r(request):\n"
+            "    request.state.request_id = str(uuid.uuid4())\n"
+            '    log("upstream correlation id: %s", request.headers.get("x"))\n',
+            id="an-object-a-minted-id-is-stored-into",
+        ),
+        pytest.param(
+            "import secrets\ndef r(session):\n"
+            "    session['state'] = secrets.token_urlsafe()\n"
+            '    log(extra={"correlation_id": session.get("cid")})\n',
+            id="a-mapping-a-token-is-stored-into",
         ),
     ],
 )
