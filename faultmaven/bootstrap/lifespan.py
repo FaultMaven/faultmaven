@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from fastapi import FastAPI
 
 from faultmaven.bootstrap.composition import (
-    _is_test_environment,
     compose_application,
     decompose_application,
     stop_config_watcher,
@@ -105,91 +104,16 @@ async def lifespan(app: FastAPI):
 
         settings = get_settings()
 
-        # Fail fast if the running config contradicts DEPLOYMENT_MODE (ADR-004):
-        # a cloud deployment must present cloud identity, never silently run as standalone.
-        from faultmaven.config.deployment_coherence import validate_deployment_coherence
+        # Fail fast on everything the configuration alone decides: coherence
+        # with DEPLOYMENT_MODE, a persistent database, the stores several
+        # workers need, no wildcard CORS origin on a deployed box, a pseudonym
+        # key, and (outside test environments) the LLM provider's credential and
+        # capabilities. run_server runs the same
+        # gates before uvicorn forks several workers. What only the built
+        # clients can tell is refused inside composition.
+        from faultmaven.bootstrap.configuration_gates import validate_configuration
 
-        validate_deployment_coherence(settings)
-
-        # Fail fast if no persistent database is configured (fm#1647). An empty
-        # or in-memory DATABASE_URL used to boot as far as the enterprise seed
-        # and die there as "Critical bootstrap failure". Placed BEFORE
-        # resolve_pseudonym_key, which creates the data directory and writes
-        # the key file, so a refused boot leaves nothing on disk; and outside
-        # the test-environment skip below, because no test boots the app
-        # without a database. The jobs runner calls the same gate.
-        from faultmaven.config.persistent_database import require_persistent_database
-
-        require_persistent_database(settings)
-
-        # Fail fast if several server processes would each hold a store the
-        # deployment shares, when the configuration alone decides it (#2269):
-        # before anything is written, migrated, seeded or opened. What only
-        # the built clients can tell is refused inside composition, before
-        # the data layer (faultmaven/config/worker_stores.py).
-        from faultmaven.config.worker_stores import (
-            refuse_configured_per_process_stores,
-        )
-
-        refuse_configured_per_process_stores(settings)
-
-        # Fail fast if redaction has no pseudonym key it may use. Resolving is
-        # what creates the standalone key file, so doing it here also means the
-        # first redaction of the process is never the thing that writes it.
-        # In cloud an unset key raises: generating one per pod would give each
-        # replica a different placeholder for the same value, and discovering
-        # that mid-request — the regex pass runs on every sanitize call,
-        # whatever PROTECTION_SANITIZE_PII says — would surface as scattered
-        # 500s rather than a refusal to start (#971).
-        from faultmaven.infrastructure.security.pseudonym_key import (
-            resolve_pseudonym_key,
-        )
-
-        resolve_pseudonym_key(settings)
-
-        # Fail fast if no LLM provider was explicitly chosen, or the chosen
-        # provider's credential is missing. There is no default provider — a
-        # silent default would only fail later, mid-turn, with an opaque error.
-        # Skipped in test environments (pytest / SKIP_SERVICE_CHECKS), which
-        # boot the app without real credentials.
-        if not _is_test_environment(settings):
-            from faultmaven.config.llm_validation import (
-                validate_llm_provider_credentials,
-            )
-
-            validate_llm_provider_credentials(settings)
-
-            # Fail fast if the resolved investigation model (DA → CHAT) can't do
-            # tool calling: the engine needs it to gather evidence
-            # (search_file, deep_analysis), and concluding without reaching the
-            # evidence is the premature-conclusion failure we guarantee against.
-            # Explicit opt-out: ALLOW_TOOLLESS_INVESTIGATION (degraded/offline).
-            from faultmaven.config.investigation_capability import (
-                validate_investigation_tooling,
-                validate_structured_output_capacity,
-                warn_best_effort_enforcement,
-            )
-            from faultmaven.infrastructure.llm.providers.registry import get_registry
-
-            validate_investigation_tooling(settings, get_registry())
-
-            # Second capability axis: can the resolved structured-output model
-            # SERVE the engine's response schemas? A constrained-decoding backend
-            # can reject the larger stage schemas outright, and it does so only
-            # once a case reaches that stage — so without this gate an
-            # incompatible model runs several turns of a live investigation and
-            # then fails every remaining turn. Fails open when capacity is
-            # unmeasured; no opt-out flag, because there is no degraded mode that
-            # still records investigation state.
-            validate_structured_output_capacity(settings, get_registry())
-
-            # Third, ADVISORY axis: schema-enforcement class per resolved role.
-            # Warns (never blocks) when investigation/chat resolve to a model
-            # whose response schemas are only requested in-prompt
-            # (BEST_EFFORT) — the degraded-state failure is otherwise silent
-            # and discovered from broken investigations, not from boot.
-            # Classifier/synthesis roles are exempt by design.
-            warn_best_effort_enforcement(settings, get_registry())
+        validate_configuration(settings)
 
         logger.info("Configuration validated successfully")
 

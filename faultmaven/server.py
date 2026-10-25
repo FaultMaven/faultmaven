@@ -32,6 +32,8 @@ run_server('faultmaven_cloud.main:app')"
 """
 
 import re
+import sys
+from typing import Any
 
 # ``module.path:attribute`` -- the import-string form uvicorn resolves.
 _APP_IMPORT_STRING_RE = re.compile(
@@ -72,11 +74,15 @@ def run_server(app: str = "faultmaven.main:app") -> None:
 
     # Configuration from unified settings
     from faultmaven.config.settings import get_settings
+    from faultmaven.config.worker_stores import serving_processes
 
-    server = get_settings().server
-    # Note: workers is passed only if > 1 (uvicorn defaults to 1 worker).
-    # Validation happens in lifespan startup, which will catch invalid configurations
-    options: dict[str, int] = {"workers": server.workers} if server.workers > 1 else {}
+    settings = get_settings()
+    server = settings.server
+    if serving_processes(settings) > 1:
+        _prepare_workers(settings)
+    # Always passed: with ``workers`` unset uvicorn reads WEB_CONCURRENCY, and
+    # the settings would no longer say how many processes serve (#2281).
+    options: dict[str, int] = {"workers": server.workers}
     # access_log=False: uvicorn's plaintext access lines duplicate the
     # structured (JSON) request start/completion logs emitted by
     # LoggingMiddleware -- one access log, structured, with correlation IDs.
@@ -110,6 +116,42 @@ def run_server(app: str = "faultmaven.main:app") -> None:
         log_config=None,
         **options,
     )
+
+
+#: uvicorn's exit status for a startup that failed (``uvicorn.main.STARTUP_FAILURE``),
+#: which a refusal in the one-process lifespan also ends in.
+STARTUP_FAILURE = 3
+
+
+def _prepare_workers(settings: Any) -> None:
+    """What several workers need done once, before uvicorn forks them (#2281).
+
+    The configuration's refusals run here: refused only in each worker's
+    lifespan, they would not stop uvicorn, whose supervisor restarts a worker
+    that exits during startup forever. Then the startup migration runs once, so
+    the workers do not race on a first boot; each worker's own run then finds
+    the schema at head. With one process the lifespan does both, and its
+    refusal stops uvicorn.
+    """
+    from faultmaven.bootstrap.configuration_gates import validate_configuration
+    from faultmaven.infrastructure.logging.config import get_logger
+
+    # The app's logging, which nothing else installs in this process before
+    # uvicorn imports the app: without it the refusal and the migration's INFO
+    # lines would be printed raw or dropped.
+    # Named, not __name__, which is "__main__" under ``python -m``.
+    logger = get_logger("faultmaven.server")
+    try:
+        validate_configuration(settings, advisories=False)
+    except Exception as error:
+        # With its traceback in the same record: a refusal is one line of
+        # reason, and a bug inside a gate is not lost.
+        logger.error(f"Configuration initialization failed: {error}", exc_info=True)
+        sys.exit(STARTUP_FAILURE)
+    if settings.run_startup_migrations:
+        from faultmaven.bootstrap.data_init import migrate_before_workers
+
+        migrate_before_workers()
 
 
 if __name__ == "__main__":

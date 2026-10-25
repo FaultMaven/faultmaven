@@ -1,5 +1,6 @@
 """The API's idle keep-alive outlasts its proxy's (infra#377)."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -25,12 +26,11 @@ def test_run_passes_timeout_keep_alive(workers):
     with (
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run") as run,
+        # The configuration gates and the launcher migration have tests of their own.
+        patch("faultmaven.bootstrap.configuration_gates.validate_configuration"),
     ):
-        get.return_value.server = server
+        get.return_value = SimpleNamespace(server=server, run_startup_migrations=False)
         run_server()
     kwargs = run.call_args.kwargs
     assert kwargs["timeout_keep_alive"] == 90
-    if workers > 1:
-        assert kwargs["workers"] == workers
-    else:
-        assert "workers" not in kwargs
+    assert kwargs["workers"] == workers

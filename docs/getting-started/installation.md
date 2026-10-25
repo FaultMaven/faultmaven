@@ -177,7 +177,7 @@ The settings that back this infrastructure still exist in the codebase (see [Con
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |
 | `HOST` | `0.0.0.0` | Server host |
 | `PORT` | `8000` | Server port |
-| `WORKERS` | `1` | Server worker processes (`RELOAD=true` serves one and ignores it). More than one needs a Redis server and a ChromaDB server every worker reaches (`REDIS_URL` or `REDIS_HOST`, and `CHROMADB_URL`): startup refuses the in-process FakeRedis and a local ChromaDB, which each worker would hold alone |
+| `WORKERS` | `1` | Server worker processes (`RELOAD=true` serves one and ignores it). More than one needs a Redis server and a ChromaDB server every worker reaches (`REDIS_URL` or `REDIS_HOST`, and `CHROMADB_URL`): startup refuses the in-process FakeRedis and a local ChromaDB, which each worker would hold alone. It also needs PostgreSQL: several workers over a SQLite database are refused, since SQLite is the one-box install. `python -m faultmaven.server` refuses before any worker starts, and runs the startup migrations once before starting them (`WEB_CONCURRENCY` does not change the count) |
 
 #### Database Settings
 
