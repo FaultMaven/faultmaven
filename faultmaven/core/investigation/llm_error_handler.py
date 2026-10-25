@@ -32,7 +32,6 @@ from faultmaven.exceptions import (
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
     LLMErrorCategory,
-    LLMException,
     RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
@@ -276,8 +275,9 @@ def is_deadline_shaped(error: BaseException) -> bool:
 
     What the failure WAS, never which layer timed out: a ``TimeoutError``
     anywhere on the ``__cause__`` chain (the router's ``ExternalCallTimeout``,
-    the backstop ``wait_for``), or an ``LLMException`` saying the provider spent
-    its own deadline (every adapter turns its client timeout into a 504). Such
+    the backstop ``wait_for``), or a status saying the provider spent its own
+    deadline, read off any exception that carries one (every adapter turns its
+    client timeout into a 504; an untyped aiohttp/httpx 504 counts too). Such
     an attempt cost a full deadline and learned nothing, so it gets
     ``max_deadline_retries``; a prompt 5xx or a 429 was cheap to try and keeps
     ``max_retries``. By kind, not elapsed time: the handler has no per-call
@@ -287,10 +287,7 @@ def is_deadline_shaped(error: BaseException) -> bool:
     for cursor in walk_cause_chain(error):
         if isinstance(cursor, TimeoutError):
             return True
-        if (
-            isinstance(cursor, LLMException)
-            and cursor.status_code in _DEADLINE_STATUSES
-        ):
+        if _declared_http_status(cursor) in _DEADLINE_STATUSES:
             return True
     return False
 
@@ -345,6 +342,10 @@ class ErrorResult:
     # exception is not on the resulting ``__cause__`` chain and nothing
     # downstream could recover this by walking. Set in ``with_retry``.
     category: Optional[LLMErrorCategory] = None
+    # True on a RETRY granted under ``max_deadline_retries`` (#1294). The
+    # function that grants a retry records its class, and ``with_retry`` counts
+    # from it, so the cap and the count cannot classify one failure twice.
+    deadline_retry: bool = False
 
 
 class LLMErrorHandler:
@@ -854,15 +855,12 @@ class LLMErrorHandler:
             # would collide with the genuine open-breaker path, which reports
             # that code because it actually ASKED and got CircuitBreakerError.
             #
-            # One condition per cap (#1294): the refused iteration reaches a
-            # provider (below ``max_retries``; the breaker takes the last), and
-            # its class still grants it. A hung provider whose ONE retry is
-            # refused lost a paid attempt; ``max_deadline_retries`` alone would
-            # read ``1 < 1`` there.
-            lost_a_provider_attempt = retry_count + 1 < self.config.max_retries and (
-                not deadline_shaped
-                or deadline_retries_spent < self.config.max_deadline_retries
-            )
+            # The class's own cap was settled by the early return above, so a
+            # retry refused here is one its class still grants, and the
+            # structural test alone decides (#1294). A hung provider whose ONE
+            # retry is refused lost a paid attempt; measuring against
+            # ``max_deadline_retries`` would read ``1 < 1`` there.
+            lost_a_provider_attempt = retry_count + 1 < self.config.max_retries
             code = (
                 no_budget_code
                 if no_budget_code is not None
@@ -910,13 +908,15 @@ class LLMErrorHandler:
             action=ErrorAction.RETRY,
             message=f"Transient error. Retrying ({granted + 1}/{cap})...",
             retry_count=retry_count + 1,
+            deadline_retry=deadline_shaped,
         )
 
     async def with_retry(
         self,
         operation: Callable[[], Awaitable[T]],
         *,
-        deadline_retries_spent: int = 0,
+        carried_failure: Optional[BaseException] = None,
+        carried_attempt_seconds: float = 0.0,
     ) -> Tuple[Optional[T], Optional[ErrorResult]]:
         """
         Execute operation with automatic retry on transient errors.
@@ -952,22 +952,51 @@ class LLMErrorHandler:
 
         Args:
             operation: Async operation to execute
-            deadline_retries_spent: Deadline-shaped retries this generation has
-                already paid for before the ladder starts. The engine passes 1
-                when the tool loop's failure, which no ladder saw, was itself
-                deadline-shaped, so the ladder's first attempt IS that retry.
+            carried_failure: A failed attempt this generation already paid for
+                against the same provider, outside the ladder (the engine's tool
+                loop). It is classified as the ladder's FIRST failure, so it
+                meets the same cap, budget and backoff as any other: the ladder
+                may answer without calling ``operation`` at all, and otherwise
+                its first attempt is that failure's retry.
+            carried_attempt_seconds: What the carried attempt cost; it seeds
+                the worst-attempt estimate the budget check reads.
 
         Returns:
             Tuple of (result, error_result) where result is None if all attempts failed
         """
         retry_count = 0
+        deadline_retries_spent = 0
         last_error_result: Optional[ErrorResult] = None
         # Worst attempt cost seen in THIS ladder. Local, not instance state: one
         # handler serves every turn in the process, so an instance attribute
         # would leak one case's hung provider into another case's budgeting.
-        worst_attempt_seconds = 0.0
+        worst_attempt_seconds = (
+            carried_attempt_seconds if carried_failure is not None else 0.0
+        )
+        # A failure not yet classified: the carried one, then each attempt's.
+        failure: Optional[BaseException] = carried_failure
 
         while retry_count <= self.config.max_retries:
+            if failure is not None:
+                error_result = await self.handle_error(
+                    failure,
+                    retry_count,
+                    worst_attempt_seconds,
+                    deadline_retries_spent=deadline_retries_spent,
+                )
+                # Preserve the triggering exception so the caller can surface its
+                # real message (see ErrorResult.original_exception — callers fold
+                # it into their message text, deliberately NOT onto __cause__).
+                error_result.original_exception = failure
+                error_result.category = declared_llm_category(failure)
+                last_error_result = error_result
+                failure = None
+                if error_result.action != ErrorAction.RETRY:
+                    return None, error_result
+                retry_count = error_result.retry_count
+                deadline_retries_spent += error_result.deadline_retry
+                continue
+
             spendable = spendable_turn_budget()
             if spendable is not None and spendable <= 0:
                 # No room even to start. Reached when an earlier ladder in the
@@ -1019,28 +1048,7 @@ class LLMErrorHandler:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.monotonic() - started
                 )
-                error_result = await self.handle_error(
-                    e,
-                    retry_count,
-                    worst_attempt_seconds,
-                    deadline_retries_spent=deadline_retries_spent,
-                )
-                # Preserve the triggering exception so the caller can surface its
-                # real message (see ErrorResult.original_exception — callers fold
-                # it into their message text, deliberately NOT onto __cause__).
-                error_result.original_exception = e
-                error_result.category = declared_llm_category(e)
-                last_error_result = error_result
-
-                if error_result.action == ErrorAction.RETRY:
-                    retry_count = error_result.retry_count
-                    if is_deadline_shaped(e):
-                        deadline_retries_spent += 1
-                    continue
-
-                else:
-                    # Non-retryable error
-                    return None, error_result
+                failure = e
 
         return None, last_error_result
 

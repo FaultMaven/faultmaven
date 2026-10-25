@@ -268,25 +268,29 @@ provider. The ladder
 inside the preparation (`LLMErrorHandler.with_retry`) has two lengths, keyed
 on the failure's SHAPE, never its transport (#1294). A **deadline-shaped**
 failure (`is_deadline_shaped`: a `TimeoutError` anywhere on the `__cause__`
-chain, or an `LLMException` with status 504 or 524) spent a whole deadline and
-learned nothing, so it gets `max_deadline_retries=1` retry: `2T + 2s` against a
-hung provider. Every other retryable failure keeps `max_retries=3`: `3T + 14s`
-when every attempt is a slow non-504 5xx, a ceiling only that failure reaches.
-`T` is the resolved per-call ceiling —
+chain, or a 504 or 524 status on any exception that carries one) spent a whole
+deadline and learned nothing, so it gets `max_deadline_retries=1` retry: `2T +
+2s`, the pure deadline-shaped cost. Every other retryable failure keeps
+`max_retries=3`, and `3T + 14s` bounds every ladder, a mixed one included (a
+timeout, then slow 503s). `T` is the resolved per-call ceiling —
 `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`, NOT
 `LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
 threefold. Three PAID attempts on the long ladder, because the router's breaker
 opens on the third failure and short-circuits the fourth, plus the three
 backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
-refuses); the deadline ladder stays under the breaker. A ladder mixing the two
-classes costs at most `2T + 6s` (a timeout, a prompt 503, a timeout). The
-deadline count is per structured generation: the tool loop's attempt fails
-outside any ladder (`ToolCallingUnsupportedError`, chained from the provider's
-failure), so when it was deadline-shaped the fallback ladder starts with its
-retry spent (`with_retry(deadline_retries_spent=1)`). Measured on a virtual
-clock at T = 30 s against a hung provider: a ladder-only turn 96 → 62 s and a
-turn with tools 92 → 60 s at a 120 s turn; 104 → 62 s and 96 → 60 s at 240 s
-(134 → 60 s with a dedicated `DA_PROVIDER`). The cost moves to the breaker: a
+refuses); the deadline ladder stays under the breaker. The count is per
+structured generation: the tool loop's attempt fails outside any ladder
+(`ToolCallingUnsupportedError`, chained from the provider's failure), so when
+it was deadline-shaped and the fallback reaches the same provider, the ladder
+classifies it as its own first failure (`with_retry(carried_failure=...,
+carried_attempt_seconds=...)`) under the same cap, budget and backoff. A turn
+with tools then costs what a ladder-only turn costs. A dedicated `DA_PROVIDER`
+carries nothing: the chat provider the fallback reaches keeps its own retry.
+Measured on a virtual clock against a hung provider, before → after: at T =
+30 s, 96 → 62 s ladder-only and 92 → 62 s with tools at a 120 s turn, 104 → 62
+s and 96 → 62 s at 240 s; at T = 120 s, A = 240 s, both shapes end at 120 s
+`TURN_BUDGET_EXHAUSTED` (with tools it ran 235.5 s before). With a dedicated `DA_PROVIDER` the DA attempt comes
+first: 92 s at either turn (134 s before at 240 s). The cost moves to the breaker: a
 hard-down provider no longer opens it inside the first turn's ladder (two
 failures of three), so that turn ends `RETRY_EXHAUSTED` (where the full ladder
 fit, it ended `PROVIDER_CIRCUIT_OPEN`; both 503 + `Retry-After: 30`), the next

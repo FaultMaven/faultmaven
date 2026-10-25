@@ -1173,6 +1173,21 @@ def _wrapped_external_timeout():
         return outer
 
 
+def _aiohttp_504():
+    import aiohttp
+
+    return aiohttp.ClientResponseError(None, (), status=504, message="Gateway Timeout")
+
+
+def _httpx_504():
+    import httpx
+
+    request = httpx.Request("GET", "http://upstream.invalid/")
+    return httpx.HTTPStatusError(
+        "504", request=request, response=httpx.Response(504, request=request)
+    )
+
+
 def _breaker_open():
     from faultmaven.infrastructure.base_client import CircuitBreakerError
 
@@ -1208,6 +1223,9 @@ _SHAPES = [
         True,
         True,
     ),
+    # Untyped: the status they carry decides, not their class.
+    ("aiohttp_504", _aiohttp_504, True, None),
+    ("httpx_504", _httpx_504, True, None),
     ("external_call_timeout", _external_timeout, True, True),
     ("bare_asyncio_timeout", asyncio.TimeoutError, True, None),
     # The chain walk reaches the cause's declaration, so this one DECLARES.
@@ -1307,24 +1325,64 @@ class TestDeadlineShapedFailures:
         assert (result, error, calls["n"]) == ("answered", None, 2)
 
     @pytest.mark.asyncio
-    async def test_a_retry_already_paid_for_is_not_granted_again(self, ladder):
-        """The engine's tool-loop fallback starts the ladder with it spent."""
+    async def test_a_carried_hang_is_the_ladders_first_failure(self, ladder):
+        """The engine's tool-loop attempt: the ladder's first attempt is its
+        one retry, and a second hang ends it."""
         operation, calls = _failing(_external_timeout)
 
-        _, error = await ladder.with_retry(operation, deadline_retries_spent=1)
+        _, error = await ladder.with_retry(
+            operation, carried_failure=_external_timeout()
+        )
 
         assert calls["n"] == 1
         assert error.error_code == "RETRY_EXHAUSTED"
 
     @pytest.mark.asyncio
-    async def test_the_spent_deadline_retry_leaves_the_status_ladder_alone(
+    async def test_a_carried_hang_leaves_the_status_retries_to_the_overall_cap(
         self, ladder
     ):
         operation, calls = _failing(lambda: LLMException("busy", status_code=503))
 
-        await ladder.with_retry(operation, deadline_retries_spent=1)
+        await ladder.with_retry(operation, carried_failure=_external_timeout())
 
-        assert calls["n"] == 4
+        assert calls["n"] == 3  # 1 carried + 3 = 1 + max_retries
+
+    @pytest.mark.asyncio
+    async def test_a_carried_hang_meets_the_cap_before_any_attempt(self):
+        operation, calls = _failing(_external_timeout)
+        carried = _external_timeout()
+        no_deadline_retry = LLMErrorHandler(
+            RetryConfig(base_delay_seconds=0.0, max_deadline_retries=0)
+        )
+
+        _, error = await no_deadline_retry.with_retry(
+            operation, carried_failure=carried
+        )
+
+        assert calls["n"] == 0
+        assert error.error_code == "RETRY_EXHAUSTED"
+        assert error.original_exception is carried
+
+    @pytest.mark.asyncio
+    async def test_a_carried_hang_meets_the_budget_before_any_attempt(
+        self, ladder, monkeypatch
+    ):
+        """Its cost seeds the estimate: a hung provider whose one retry the
+        turn cannot afford is answered as the ladder-only turn is."""
+        from faultmaven.core.investigation import llm_error_handler as module
+        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+        operation, calls = _failing(_external_timeout)
+        carried = _external_timeout()
+
+        _, error = await ladder.with_retry(
+            operation, carried_failure=carried, carried_attempt_seconds=30.0
+        )
+
+        assert calls["n"] == 0
+        assert error.error_code == TURN_BUDGET_EXHAUSTED
+        assert error.original_exception is carried
 
     @pytest.mark.asyncio
     async def test_the_retry_message_cites_the_cap_that_governs(self, ladder):
@@ -1333,6 +1391,8 @@ class TestDeadlineShapedFailures:
 
         assert hang.message == "Transient error. Retrying (1/1)..."
         assert busy.message == "Transient error. Retrying (1/3)..."
+        # The grant records its class, and with_retry counts from it.
+        assert (hang.deadline_retry, busy.deadline_retry) == (True, False)
 
     @pytest.mark.asyncio
     async def test_a_refused_deadline_retry_reports_the_budget(
@@ -1353,3 +1413,22 @@ class TestDeadlineShapedFailures:
 
         assert refused.error_code == TURN_BUDGET_EXHAUSTED
         assert spent.error_code == "RETRY_EXHAUSTED"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_deadline_retry_after_a_503_reports_the_budget(
+        self, ladder, monkeypatch
+    ):
+        """A 503 spent a status retry (``retry_count = 1``); the timeout's own
+        retry is still owed and would reach the provider, so refusing it loses
+        a paid attempt. Measuring ``retry_count`` against the deadline cap
+        would read ``1 < 1`` and blame the provider."""
+        from faultmaven.core.investigation import llm_error_handler as module
+        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+
+        result = await ladder.handle_error(
+            _external_timeout(), 1, 30.0, deadline_retries_spent=0
+        )
+
+        assert result.error_code == TURN_BUDGET_EXHAUSTED

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -1710,10 +1711,10 @@ class StructuredOutputGenerator:
         # This covers both the tool-augmented (DA) and single-shot paths.
         # Off the event loop via the async boundary (#654).
         prompt = await case_redacted(prompt, redaction_ctx)
-        # Deadline-shaped retries this generation has already paid for, which
-        # the ladder below starts from (#1294). Non-zero only when the tool
-        # loop's own attempt failed by spending its deadline.
-        deadline_retries_spent = 0
+        # The tool loop's failed attempt, when the ladder below must count it
+        # as its own first failure (#1294), and what that attempt cost.
+        carried_failure: Optional[BaseException] = None
+        carried_attempt_seconds = 0.0
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -1736,6 +1737,7 @@ class StructuredOutputGenerator:
                 )
             else:
                 # Layer 2: Runtime fallback for unknown incompatibilities
+                tool_loop_started = time.monotonic()
                 try:
                     return await self._tool_augmented_generate(
                         prompt,
@@ -1755,13 +1757,23 @@ class StructuredOutputGenerator:
                     )
                     # A hung provider fails the tool loop OUTSIDE any ladder,
                     # and the fallback ladder would otherwise meet it as fresh
-                    # and pay two more full deadlines. That attempt was paid,
-                    # so the fallback's first attempt is its one retry
-                    # (#1294). The loop's failure rides on ``__cause__``; a
-                    # refusal (an incapable model, an ignored forced call)
-                    # carries no timeout and passes nothing on.
-                    if is_deadline_shaped(e):
-                        deadline_retries_spent = 1
+                    # and pay two more full deadlines. The ladder classifies
+                    # that paid attempt as its first failure, under its own
+                    # cap, budget and backoff (#1294). Only when the ladder
+                    # calls the provider that failed: a dedicated DA provider's
+                    # hang says nothing about the chat provider the fallback
+                    # reaches. The loop's own failure rides on ``__cause__``
+                    # (``e`` itself declares retryable=False); a refusal carries
+                    # no timeout and passes nothing on.
+                    cause = e.__cause__
+                    if (
+                        cause is not None
+                        and is_deadline_shaped(cause)
+                        and (self.deps.da_provider or self.deps.llm_provider)
+                        is self.deps.llm_provider
+                    ):
+                        carried_failure = cause
+                        carried_attempt_seconds = time.monotonic() - tool_loop_started
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file
                     # would run (directed-analysis index+stub). On the non-tool
@@ -2125,7 +2137,9 @@ class StructuredOutputGenerator:
 
         # Execute with retry and error handling
         result, error_result = await self.deps.llm_error_handler.with_retry(
-            operation=llm_operation, deadline_retries_spent=deadline_retries_spent
+            operation=llm_operation,
+            carried_failure=carried_failure,
+            carried_attempt_seconds=carried_attempt_seconds,
         )
 
         if result is not None:

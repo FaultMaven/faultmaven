@@ -47,8 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 class RetryLadderBudget:
     """Both ladders the engine runs, each modelled against one turn (#1294):
     a hung or 504-answering provider's (``2T + 2`` shipped), and a non-504
-    5xx's priced at the full ``T`` per attempt (``3T + 14``, a ceiling only a
-    SLOW 5xx reaches)."""
+    5xx's priced at the full ``T`` per attempt (``3T + 14``, which bounds every
+    ladder, a mixed one included)."""
 
     deadline_shaped: "LadderPlan"
     status_shaped: "LadderPlan"

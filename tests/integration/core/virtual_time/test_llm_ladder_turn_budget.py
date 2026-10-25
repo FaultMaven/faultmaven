@@ -630,7 +630,7 @@ class TestWhichVerdictTheBudgetReports:
             base_delay=0.1,
             bind=True,
         )
-        assert outcome.attempts < 3
+        assert outcome.attempts == 1  # its one retry refused
         assert outcome.error_code == TURN_BUDGET_EXHAUSTED
 
     async def test_the_two_verdicts_discriminate_on_the_same_turn_budget(self):

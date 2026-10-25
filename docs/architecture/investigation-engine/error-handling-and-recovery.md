@@ -200,7 +200,9 @@ class LLMErrorHandler:
             return await self._handle_rate_limit(error, retry_count)
 
         elif isinstance(error, TimeoutError):
-            return await self._handle_timeout(error, case, retry_count)
+            return await self._handle_timeout(
+                error, case, retry_count, deadline_retries_spent
+            )
 
         elif isinstance(error, AuthenticationError):
             return self._handle_auth_error(error)
@@ -242,21 +244,26 @@ class LLMErrorHandler:
         self,
         error: TimeoutError,
         case: Case,
-        retry_count: int
+        retry_count: int,
+        deadline_retries_spent: int,
     ) -> ErrorResult:
-        """Handle request timeouts: one retry, not the full ladder (§2.3)."""
+        """Handle a deadline-shaped failure: its own count and cap (§2.3)."""
 
-        if retry_count >= self.config.max_deadline_retries:
+        if (
+            retry_count >= self.config.max_retries
+            or deadline_retries_spent >= self.config.max_deadline_retries
+        ):
             return ErrorResult(
                 action=ErrorAction.FAIL,
-                message="Request timed out after every retry.",
-                error_code="TIMEOUT_EXCEEDED"
+                message="LLM service temporarily unavailable. Please try again in a few minutes.",
+                error_code="RETRY_EXHAUSTED"
             )
 
         return ErrorResult(
             action=ErrorAction.RETRY,
-            message="Request timed out. Retrying...",
-            retry_count=retry_count + 1
+            message="Transient error. Retrying (1/1)...",
+            retry_count=retry_count + 1,
+            deadline_retry=True,  # with_retry counts the grant from this
         )
 
     def _handle_billing(self, error: Exception) -> ErrorResult:
@@ -324,17 +331,16 @@ A failure that spent its deadline gets fewer attempts than one that did not.
 `is_deadline_shaped` (`core/investigation/llm_error_handler.py`) names the class
 by what the failure WAS, never by which layer timed out: a `TimeoutError`
 anywhere on the `__cause__` chain (the router's `ExternalCallTimeout`, the
-ladder's backstop `wait_for`), or an `LLMException` with status 504 or 524
-(every adapter turns its own client timeout into a 504; Cloudflare's 524 is an
-origin timeout OpenRouter passes through). Such an attempt cost a full `T` and
+ladder's backstop `wait_for`), or a 504 or 524 status on any exception that
+carries one, typed or not (every adapter turns its own client timeout into a
+504; Cloudflare's 524 is an origin timeout OpenRouter passes through). Such an attempt cost a full `T` and
 learned nothing. A prompt 502/503/500 and a 429 are cheap to have tried and
 weaker evidence the provider is down.
 
 | Class | Retries (`RetryConfig`) | Worst case, one ladder |
 |---|---|---|
-| Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`: two paid attempts, one backoff, under the breaker |
-| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs; a ceiling only a slow non-504 5xx reaches |
-| Mixed (timeout, prompt 503, timeout) | both caps apply | `2T + 6s` |
+| Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
+| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder, a mixed one included (a timeout, then slow 503s) |
 
 `T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`.
 The class is by kind, not by elapsed time: the handler has no `T` to compare an
@@ -347,17 +353,27 @@ still reports `TURN_BUDGET_EXHAUSTED`: a paid attempt was lost.
 **The count is per structured generation.** The tool loop's attempt fails
 outside any ladder (the loop raises `ToolCallingUnsupportedError` chained from
 the provider's failure), and the fallback ladder used to meet the hung provider
-as fresh. When the loop's failure was deadline-shaped, the fallback ladder
-starts with its retry spent (`with_retry(deadline_retries_spent=1)`), so its
-first attempt is that retry.
+as fresh. When the loop's failure was deadline-shaped and the fallback reaches
+the same provider, the ladder classifies it as its own first failure
+(`with_retry(carried_failure=e.__cause__, carried_attempt_seconds=...)`): the
+same cap, the same budget check against the attempt's measured cost, the same
+backoff. The ladder may then answer without an attempt (a cap of 0, or a retry
+the budget refuses: `TURN_BUDGET_EXHAUSTED`), and otherwise its first attempt
+is the one retry. A turn with tools costs what a ladder-only turn costs. With a
+dedicated `DA_PROVIDER` the two reach different providers and nothing is
+carried: the chat provider keeps its own retry. The retry a grant makes is
+recorded on the `ErrorResult` (`deadline_retry`), and `with_retry` counts from
+it.
 
-Measured on a virtual clock (`asyncio` timers at nominal cost) at T = 30 s,
-against a provider that never answers:
+Measured on a virtual clock (`asyncio` timers at nominal cost) against a
+provider that never answers, through the real `_generate_structured_output_inner`
+and the router's breaker, before → after:
 
-| Turn | `AGENT_REQUEST_TIMEOUT` 120 s | 240 s |
-|---|---|---|
-| Ladder only, before → after | 96 → 62 s | 104 → 62 s |
-| With tools, before → after | 92 → 60 s | 96 → 60 s (134 → 60 s with a dedicated `DA_PROVIDER`) |
+| Turn | T = 30 s, A = 120 s | T = 30 s, A = 240 s | T = 120 s, A = 240 s |
+|---|---|---|---|
+| Ladder only | 96 → 62 s | 104 → 62 s | 120 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
+| With tools | 92 → 62 s | 96 → 62 s | 235.5 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
+| With tools, dedicated `DA_PROVIDER` (also hung) | 92 → 92 s | 134 → 92 s | 235.5 → 235.5 s |
 
 **Breaker consequence.** The router's breaker opens on the third consecutive
 failure. A hard-down provider no longer reaches it inside the first turn's

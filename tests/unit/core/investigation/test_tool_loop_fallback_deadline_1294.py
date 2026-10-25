@@ -8,10 +8,10 @@ OUTSIDE any retry ladder: whatever it fails with becomes
 tool attempt plus the whole deadline ladder: three full deadlines where a
 deadline-shaped failure is owed one retry.
 
-So the invariant is per structured generation, not per ladder: a
-deadline-shaped failure is retried at most ``max_deadline_retries`` times across
-the tool loop and its fallback. Each test drives the real method with a fake
-provider (no live LLM call) and counts what the provider RECEIVED.
+So the invariant is per structured generation, not per ladder: the tool loop's
+failure, when the fallback reaches the same provider, is the ladder's FIRST
+failure, under its cap, budget and backoff. Each test drives the real method
+with a fake provider (no live LLM call) and counts what the provider RECEIVED.
 """
 
 import json
@@ -93,9 +93,10 @@ def _schema_call():
     )
 
 
-def _engine(generate):
-    """One provider for every call, tool-capable, single shot by function
-    calling; the shipped retry counts with the backoffs taken out."""
+def _engine(generate, *, da=None, config=None):
+    """One provider for every call (unless ``da`` is a dedicated DA provider),
+    tool-capable, single shot by function calling; the shipped retry counts
+    with the backoffs taken out."""
     provider = AsyncMock()
     provider.supports_tool_calling = Mock(return_value=True)
     provider.get_structured_output_strategy = MagicMock(
@@ -111,9 +112,11 @@ def _engine(generate):
     repo = MagicMock()
     repo.save = AsyncMock()
     engine = MilestoneEngine(
-        llm_provider=provider, repository=repo, investigation_tools=None
+        llm_provider=provider, repository=repo, investigation_tools=None, da_provider=da
     )
-    engine.deps.llm_error_handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
+    engine.deps.llm_error_handler = LLMErrorHandler(
+        config or RetryConfig(base_delay_seconds=0.0)
+    )
     return engine
 
 
@@ -203,3 +206,57 @@ class TestTheFallbackCarriesThePaidAttempt:
         # Two loop iterations: the reply, then the forced-schema re-ask.
         assert calls == {"tool_loop": 2, "single_shot": 2}
         assert raised.value.error_code == "RETRY_EXHAUSTED"
+
+    async def test_a_503_in_the_tool_loop_then_a_hang_gets_the_hangs_retry(self):
+        """A 503 is not deadline-shaped, so nothing is carried and the hang
+        on the tool-less path gets its own one retry."""
+        generate, calls = _counting(tool_loop=_busy, single_shot=_hang)
+        engine = _engine(generate)
+
+        with pytest.raises(MilestoneEngineError):
+            await _generate(engine)
+
+        assert calls == {"tool_loop": 1, "single_shot": 2}
+
+    async def test_with_no_deadline_retry_the_fallback_makes_no_attempt(self):
+        """The carried attempt meets the ladder's own cap: at 0 it is final."""
+        generate, calls = _counting(tool_loop=_hang, single_shot=_schema_call)
+        engine = _engine(
+            generate,
+            config=RetryConfig(base_delay_seconds=0.0, max_deadline_retries=0),
+        )
+
+        with pytest.raises(MilestoneEngineError) as raised:
+            await _generate(engine)
+
+        assert calls == {"tool_loop": 1, "single_shot": 0}
+        assert raised.value.error_code == "RETRY_EXHAUSTED"
+
+    async def test_a_dedicated_da_providers_hang_is_not_the_chat_providers(self):
+        """With ``DA_PROVIDER`` set the tool loop and the fallback reach two
+        providers, so the DA hang carries nothing: the chat provider's first
+        timeout keeps its retry, and its answer is the turn's (#1287)."""
+        da_calls = {"n": 0}
+
+        async def da_generate(**kwargs):
+            da_calls["n"] += 1
+            raise _adapter_timeout()
+
+        da = AsyncMock()
+        da.provider_name = "da"
+        da.supports_tool_calling = Mock(return_value=True)
+        da._generate = AsyncMock(side_effect=da_generate)
+        chat = {"n": 0}
+
+        def chat_hangs_once():
+            chat["n"] += 1
+            return _hang() if chat["n"] == 1 else _schema_call()
+
+        generate, calls = _counting(tool_loop=_hang, single_shot=chat_hangs_once)
+        engine = _engine(generate, da=da)
+
+        result = await _generate(engine)
+
+        assert result.agent_response == "fell back"
+        assert da_calls["n"] == 1
+        assert calls == {"tool_loop": 0, "single_shot": 2}
