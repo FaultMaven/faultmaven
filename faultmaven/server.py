@@ -144,8 +144,8 @@ def _prepare_workers(settings: Any) -> None:
     try:
         validate_configuration(settings, advisories=False)
     except Exception as error:
-        # With its traceback, as the one-process path logs it: a refusal is
-        # one line of reason, and a bug inside a gate is not lost.
+        # With its traceback in the same record: a refusal is one line of
+        # reason, and a bug inside a gate is not lost.
         logger.error(f"Configuration initialization failed: {error}", exc_info=True)
         sys.exit(STARTUP_FAILURE)
     if settings.run_startup_migrations:

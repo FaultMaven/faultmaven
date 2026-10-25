@@ -106,8 +106,9 @@ async def lifespan(app: FastAPI):
 
         # Fail fast on everything the configuration alone decides: coherence
         # with DEPLOYMENT_MODE, a persistent database, the stores several
-        # workers need, a pseudonym key, and (outside test environments) the
-        # LLM provider's credential and capabilities. run_server runs the same
+        # workers need, no wildcard CORS origin on a deployed box, a pseudonym
+        # key, and (outside test environments) the LLM provider's credential and
+        # capabilities. run_server runs the same
         # gates before uvicorn forks several workers. What only the built
         # clients can tell is refused inside composition.
         from faultmaven.bootstrap.configuration_gates import validate_configuration
