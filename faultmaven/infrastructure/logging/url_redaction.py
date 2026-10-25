@@ -65,9 +65,9 @@ from typing import Callable
 # a rejected run was retried at every "://" inside it, each retry scanning to
 # the same end: a line of n "://" cost O(n^2), 18.6 seconds at 64 KB (#2312).
 # Skipping those retries changes no output: every "://" inside the run stops
-# where the run does, and that stop is not a "?". The price is a Python call
-# per "://" run once a line holds a "?", query or not: linear, and what a run
-# with a query already cost.
+# where the run does, and that stop is not a "?". The price, once a line holds
+# a "?", is a Python call per "://" run, query or not, and a copy of each run
+# with no query into the result: both linear in the line.
 #
 # ESC is excluded so the console renderer's colour reset after a URL is not
 # swallowed with the query string.
