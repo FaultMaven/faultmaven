@@ -65,8 +65,13 @@ async def one_second_statement_timeout(monkeypatch):
 class _SlowCaseRead(SessionlessCaseRepository):
     """The turn's first read, the case load, as a statement the server cancels."""
 
+    backend_pid = None
+
     async def get(self, case_id):
         async with get_db_session() as session:
+            self.backend_pid = (
+                await session.execute(text("SELECT pg_backend_pid()"))
+            ).scalar()
             await session.execute(text("SELECT pg_sleep(5)"))
 
 
@@ -80,7 +85,10 @@ async def test_the_servers_statement_timeout_answers_503(one_second_statement_ti
     _assert_database_unavailable(response)
     service.commit_turn.assert_not_awaited()
     # The server cancelled its own statement; the client did not abort the
-    # connection, so it is back in the pool and answers the next read.
+    # connection, so the SAME backend is back in the pool and answers the next
+    # read (a client abort would hand out a fresh connection, another pid).
     assert one_second_statement_timeout.pool.checkedout() == 0
     async with get_db_session() as session:
-        assert (await session.execute(text("SELECT 42"))).scalar() == 42
+        pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar()
+    assert repository.backend_pid is not None
+    assert pid == repository.backend_pid

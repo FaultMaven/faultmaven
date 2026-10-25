@@ -380,7 +380,10 @@ async def get_db_session(
 
 #: SQLSTATE ``query_canceled``: what PostgreSQL sends when its own
 #: ``statement_timeout`` cancels a statement, the first bound a live but slow
-#: server meets (set below the command timeout by the ``begin`` listener).
+#: server meets (set below the command timeout by the ``begin`` listener). An
+#: operator's ``pg_cancel_backend`` sends the same code, and only the message
+#: tells them apart; both mean nothing was saved and a retry is safe, so both
+#: are a ``DatabaseTimeout``.
 QUERY_CANCELED_SQLSTATE = "57014"
 
 
