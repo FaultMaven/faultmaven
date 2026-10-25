@@ -381,8 +381,11 @@ async def shutdown_protection(app: FastAPI) -> None:
     logged, every middleware is shut down, and the failures are raised together
     at the end. Nor does a cancellation during one: the rest are still shut
     down, each closing its own Redis pool, and then the cancellation is
-    re-raised. Deferred here rather than through the teardown step runner,
-    because the API layer does not import infrastructure.
+    re-raised. When a cancellation and failures both occur, the cancellation
+    is raised, and each failure has already been logged: the
+    ``ExceptionGroup`` is raised only without a cancellation. Deferred here
+    rather than through the teardown step runner, because the API layer does
+    not import infrastructure.
     """
     failures = []
     cancelled: Optional[asyncio.CancelledError] = None

@@ -540,13 +540,23 @@ def _unpublish_then_stop(
     return _step
 
 
+def _stop_case_cleanup_scheduler(scheduler: Any) -> None:
+    """Stop the case cleanup scheduler, importing its stop inside the step.
+
+    Imported here rather than when the steps are built, so that a failure to
+    import is this one step's failure, logged, and not the whole shutdown's.
+    """
+    from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
+
+    stop_case_cleanup_scheduler(scheduler)
+
+
 def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
     """What :func:`_stop_serving` stops, as teardown steps, in order."""
     from faultmaven.infrastructure.llm.usage_ledger import (
         drain_pending_usage_writes,
         install_usage_ledger,
     )
-    from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
 
     async def _shutdown_protection() -> None:
         from faultmaven.api.protection import shutdown_protection
@@ -594,7 +604,7 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
         (
             "Stopping the case cleanup scheduler",
             _unpublish_then_stop(
-                app, "case_cleanup_scheduler", stop_case_cleanup_scheduler
+                app, "case_cleanup_scheduler", _stop_case_cleanup_scheduler
             ),
         ),
         (

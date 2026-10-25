@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -549,6 +550,39 @@ async def test_a_cancellation_during_any_stop_still_runs_every_stop(
     scheduler.shutdown.assert_called_once()
     assert usage_ledger.get_installed_usage_ledger() is None
     decompose.assert_awaited_once()
+
+
+async def test_a_stop_whose_import_fails_fails_alone(stop_serving, monkeypatch, caplog):
+    """The case-cleanup stop's import ran when the steps were built, outside
+    every step, so a failure to import skipped every stop. It is that one
+    step's failure now: logged, and every other stop still runs."""
+    from faultmaven.bootstrap import lifespan as lifespan_module
+
+    monkeypatch.setitem(sys.modules, "faultmaven.infrastructure.tasks", None)
+    usage_ledger.install_usage_ledger(usage_ledger.InMemoryUsageLedger())
+    app = FastAPI()
+    tasks = {h: asyncio.create_task(asyncio.sleep(3600)) for h in _TASK_HANDLES}
+    for handle, task in tasks.items():
+        setattr(app.state, handle, task)
+    app.state.case_cleanup_scheduler = object()
+
+    try:
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+        ):
+            await stop_serving(app, {})
+        running = [handle for handle, task in tasks.items() if not task.cancelled()]
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        await asyncio.wait(set(tasks.values()))
+
+    assert "Stopping the case cleanup scheduler failed (non-critical)" in caplog.text
+    assert running == [], f"left running after the shutdown: {running}"
+    left = [h for h in (*_TASK_HANDLES, "case_cleanup_scheduler") if h in app.state]
+    assert left == [], f"still on app.state: {left}"
+    assert usage_ledger.get_installed_usage_ledger() is None
+    lifespan_module.decompose_application.assert_awaited_once()
 
 
 async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):
