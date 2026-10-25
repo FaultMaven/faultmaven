@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from pydantic import BaseModel
 
+from faultmaven.config.settings import LLMProvider, get_settings
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
@@ -93,10 +94,11 @@ def _schema_call():
     )
 
 
-def _engine(generate, *, da=None, config=None):
+def _engine(generate, *, da=None, config=None, chat=None):
     """One provider for every call (unless ``da`` is a dedicated DA provider),
     tool-capable, single shot by function calling; the shipped retry counts
-    with the backoffs taken out."""
+    with the backoffs taken out. ``chat`` names the router's chat provider the
+    way ``LLMRouter`` does (``settings.llm.provider``)."""
     provider = AsyncMock()
     provider.supports_tool_calling = Mock(return_value=True)
     provider.get_structured_output_strategy = MagicMock(
@@ -109,6 +111,8 @@ def _engine(generate, *, da=None, config=None):
         )
     )
     provider.route = AsyncMock(side_effect=generate)
+    if chat is not None:
+        provider.settings.llm.provider = chat
     repo = MagicMock()
     repo.save = AsyncMock()
     engine = MilestoneEngine(
@@ -253,10 +257,58 @@ class TestTheFallbackCarriesThePaidAttempt:
             return _hang() if chat["n"] == 1 else _schema_call()
 
         generate, calls = _counting(tool_loop=_hang, single_shot=chat_hangs_once)
-        engine = _engine(generate, da=da)
+        engine = _engine(generate, da=da, chat=LLMProvider.GEMINI)
 
         result = await _generate(engine)
 
         assert result.agent_response == "fell back"
         assert da_calls["n"] == 1
         assert calls == {"tool_loop": 0, "single_shot": 2}
+
+    @pytest.mark.parametrize(
+        "chat,override,chat_calls",
+        [
+            (LLMProvider.FIREWORKS, None, 1),
+            (LLMProvider.GEMINI, None, 2),
+            (LLMProvider.GEMINI, LLMProvider.FIREWORKS, 1),
+        ],
+        ids=["da_names_the_chat_provider", "different", "structured_override"],
+    )
+    async def test_the_carry_follows_the_provider_the_fallback_reaches(
+        self, monkeypatch, chat, override, chat_calls
+    ):
+        """``DA_PROVIDER=fireworks`` is a concrete provider, never the router,
+        but the fallback reaches fireworks too when it is the chat provider or
+        the ``STRUCTURED_OUTPUT_PROVIDER``. Then the hung provider gets two
+        attempts in all; otherwise the chat provider keeps its own retry."""
+        monkeypatch.setattr(get_settings().llm, "structured_output_provider", override)
+        da = AsyncMock()
+        da.provider_name = "fireworks"
+        da.supports_tool_calling = Mock(return_value=True)
+        da._generate = AsyncMock(side_effect=_adapter_timeout())
+        generate, calls = _counting(tool_loop=_hang, single_shot=_adapter_timeout)
+        engine = _engine(generate, da=da, chat=chat)
+
+        with pytest.raises(MilestoneEngineError) as raised:
+            await _generate(engine)
+
+        assert da._generate.await_count == 1
+        assert calls == {"tool_loop": 0, "single_shot": chat_calls}
+        assert raised.value.error_code == "RETRY_EXHAUSTED"
+
+    async def test_a_verdict_about_the_tool_loops_request_is_not_carried(self):
+        """A 504 whose body says the context is exceeded judges the loop's
+        request (messages, tools, results). The fallback's prompt is another
+        request, so it gets its own tool-less attempt."""
+        generate, calls = _counting(
+            tool_loop=lambda: LLMException(
+                "upstream timed out: context length exceeded", status_code=504
+            ),
+            single_shot=_schema_call,
+        )
+        engine = _engine(generate)
+
+        result = await _generate(engine)
+
+        assert result.agent_response == "fell back"
+        assert calls == {"tool_loop": 1, "single_shot": 1}

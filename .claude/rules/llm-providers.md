@@ -280,12 +280,17 @@ opens on the third failure and short-circuits the fourth, plus the three
 backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
 refuses); the deadline ladder stays under the breaker. The count is per
 structured generation: the tool loop's attempt fails outside any ladder
-(`ToolCallingUnsupportedError`, chained from the provider's failure), so when
-it was deadline-shaped and the fallback reaches the same provider, the ladder
-classifies it as its own first failure (`with_retry(carried_failure=...,
-carried_attempt_seconds=...)`) under the same cap, budget and backoff. A turn
-with tools then costs what a ladder-only turn costs. A dedicated `DA_PROVIDER`
-carries nothing: the chat provider the fallback reaches keeps its own retry.
+(`ToolCallingUnsupportedError`, chained from the provider's failure), so the
+ladder classifies the failing call as its own first failure
+(`with_retry(carried_failure=..., carried_attempt_seconds=...)`) under the same
+cap, backoff and budget check, priced at that call's own cost (timed in the
+loop, not the loop's earlier iterations). The hung call and its retry then cost
+a turn with tools the same `2T + 2` as a ladder-only turn. Nothing is carried
+when the call went to another provider than the fallback reaches (compared by
+name: `DA_PROVIDER` unset or naming the fallback's provider,
+`STRUCTURED_OUTPUT_PROVIDER` when set, else the chat provider), or when it
+judged the request (`CONTEXT_OVERFLOW`, `OUTPUT_TRUNCATION`,
+`REQUEST_REJECTED`): the fallback sends a different request.
 Measured on a virtual clock against a hung provider, before → after: at T =
 30 s, 96 → 62 s ladder-only and 92 → 62 s with tools at a 120 s turn, 104 → 62
 s and 96 → 62 s at 240 s; at T = 120 s, A = 240 s, both shapes end at 120 s

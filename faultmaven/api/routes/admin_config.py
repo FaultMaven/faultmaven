@@ -1151,9 +1151,11 @@ async def get_env_config_status(
                 f"slow non-504 5xx gets {slow.attempts} of {slow.paid_attempts} "
                 f"attempts: {slow.full_ladder_seconds:.0f}s, "
                 f"{slow.afforded_seconds:.0f}s afforded, the bound on any mix "
-                f"of failures. Both hold for a turn with tools, whose tool-loop "
-                f"attempt is the ladder's first unless DA_PROVIDER sends it "
-                f"elsewhere, and both keep {slow.commit_reserve_seconds:g}s back "
+                f"of failures. Both hold for a turn with tools: its failing "
+                f"tool-loop call, at that call's own cost, is the ladder's first "
+                f"failure, unless it went to a provider the fallback does not "
+                f"reach or judged the request itself (an overflow, a cut, a "
+                f"rejection). Both keep {slow.commit_reserve_seconds:g}s back "
                 f"for the turn's commit."
             ),
             config_hint=(
