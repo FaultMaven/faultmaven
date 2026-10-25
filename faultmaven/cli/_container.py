@@ -1,25 +1,25 @@
-"""Run an operator command on the DI container it composes, then shut it down.
+"""Run an operator command, then tear down what it opened, on the loop it ran on.
 
-Whoever composes the container for a run shuts it down at the run's end, on
-every path. A command that awaits ``container.initialize()`` has opened what the
-container owns: with service checks on, a real ``redis.asyncio`` client whose
-connection pool is bound to the event loop it was opened on. Nothing else
-closes it, and a bare ``asyncio.run`` ends that loop over the open transports
-(#2237).
+Whoever composes for a run tears it down at the run's end, on every path, while
+the loop what it opened is bound to still runs. A bare ``asyncio.run`` ends that
+loop over open transports:
 
-``run_with_container`` takes the place of ``asyncio.run`` for every ``fm-*``
-command and for the dev scripts that compose. It awaits the command and then, in a
-``finally`` on the same loop, awaits the container's ``shutdown()`` and then
-``close_database()``, which disposes the database engine the container's stores
-opened on this loop (#2254): when the command returns, when it raises, and when
-``initialize()`` itself raised after building the client. Both run as steps of
-one teardown (``run_teardown``), so a failed shutdown still lets the engine be
-disposed. A failed step is logged and does not change the command's exit
-status, as in the jobs runner (``faultmaven/jobs/run.py``). Shutting down a
-container that was never initialized, or closing an engine never opened, does
-nothing, so an operation that does not compose runs here too:
-``fm-provision-sso-org``, ``fm-set-turn-cap`` and ``fm-wipe-deployment`` open
-only the engine.
+- the database engine the command's stores opened (#2254);
+- for a command that awaits ``container.initialize()``, what the container
+  owns: with service checks on, a real ``redis.asyncio`` client whose
+  connection pool is bound to that loop (#2237).
+
+``run_command`` takes the place of ``asyncio.run`` for a command that composes
+no container (``fm-provision-sso-org``, ``fm-set-turn-cap``,
+``fm-wipe-deployment``): it disposes the engine. ``run_with_container`` takes
+its place for the commands and dev scripts that compose: it shuts the container
+down, then disposes the engine. Each awaits the command and then, in a
+``finally`` on the same loop, runs those steps through ``run_teardown``: when
+the command returns, when it raises, and when ``initialize()`` itself raised
+after building the client. A failed step is logged, the steps after it still
+run, and the command's exit status is unchanged, as in the jobs runner
+(``faultmaven/jobs/run.py``). Disposing an engine never opened, or shutting
+down a container never initialized, does nothing.
 
 The container shut down is the one the command composed. A command that binds
 ``container`` at import passes that reference; otherwise the process singleton
@@ -29,27 +29,37 @@ is resolved when the shutdown runs, as the command resolved it.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Callable, Coroutine, TypeVar
+
+from faultmaven.infrastructure.concurrency.teardown import run_teardown
 
 T = TypeVar("T")
 
 
+def run_command(main: Coroutine[Any, Any, T]) -> T:
+    """``asyncio.run(main)``, disposing the database engine before the loop ends."""
+    return asyncio.run(_run_then_tear_down(main, composed=False, container=None))
+
+
 def run_with_container(main: Coroutine[Any, Any, T], container: Any = None) -> T:
-    """``asyncio.run(main)``, shutting ``container`` down and disposing the
-    database engine before the loop ends."""
-    return asyncio.run(_run_then_shut_down(main, container))
+    """:func:`run_command`, shutting ``container`` down before the engine goes."""
+    return asyncio.run(_run_then_tear_down(main, composed=True, container=container))
 
 
-async def _run_then_shut_down(main: Coroutine[Any, Any, T], container: Any) -> T:
+async def _run_then_tear_down(
+    main: Coroutine[Any, Any, T], *, composed: bool, container: Any
+) -> T:
     try:
         return await main
     finally:
-        if container is None:
-            from faultmaven.container import container
-        shutdown = container.shutdown
-        from faultmaven.bootstrap.composition import run_teardown
+        steps: list[tuple[str, Callable[[], Any]]] = []
+        if composed:
+            if container is None:
+                from faultmaven.container import container
+            # Resolved outside the steps: a container without a shutdown is a
+            # defect that surfaces, not a failed step that is logged.
+            steps.append(("Container shutdown", container.shutdown))
         from faultmaven.infrastructure.persistence.database import close_database
 
-        await run_teardown(
-            (("Container shutdown", shutdown), ("Database close", close_database))
-        )
+        steps.append(("Database close", close_database))
+        await run_teardown(steps)

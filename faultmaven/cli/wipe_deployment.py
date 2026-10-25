@@ -101,7 +101,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
-from faultmaven.cli._container import run_with_container
+from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -1358,12 +1358,11 @@ def main() -> None:
 
     # sys.exit inside main() keeps the CLI modules uniform: every one of them
     # exits from main() rather than returning a code for a caller to forward.
-    # Through run_with_container, which disposes the database engine this run
-    # opened before the loop ends (#2254); it composes no container, so the
-    # container's shutdown there is a no-op. The Redis clients it opens are
-    # its own, closed where it used them.
+    # Through run_command, which disposes the database engine this run opened
+    # before the loop ends (#2254). The Redis clients it opens are its own,
+    # closed where it used them.
     sys.exit(
-        run_with_container(
+        run_command(
             wipe_deployment(
                 mode=mode,
                 confirm_target=args.confirm_target,

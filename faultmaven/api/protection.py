@@ -9,6 +9,7 @@ Both are added before startup so they sit early in the middleware stack; each
 resolves its Redis client lazily from ``app.state`` on the first request.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional, Union
 
@@ -378,14 +379,22 @@ async def shutdown_protection(app: FastAPI) -> None:
 
     One middleware failing to shut down does not stop the rest: each failure is
     logged, every middleware is shut down, and the failures are raised together
-    at the end.
+    at the end. Nor does a cancellation during one: the rest are still shut
+    down, each closing its own Redis pool, and then the cancellation is
+    re-raised. Deferred here rather than through the teardown step runner,
+    because the API layer does not import infrastructure.
     """
     failures = []
+    cancelled: Optional[asyncio.CancelledError] = None
     for middleware in live_protection_middleware(app):
         try:
             await middleware.shutdown()
+        except asyncio.CancelledError as cancellation:
+            cancelled = cancelled or cancellation
         except Exception as e:
             logger.error(f"{type(middleware).__name__} shutdown failed: {e}")
             failures.append(e)
+    if cancelled is not None:
+        raise cancelled
     if failures:
         raise ExceptionGroup("protection middleware shutdown failed", failures)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -311,29 +312,20 @@ async def test_the_shutdown_removes_every_background_handle_it_stops(
             "funnel_metrics_task",
             "revocation_watermark_task",
             "loop_lag_task",
+            "llm_usage_retention_task",
         )
     }
     for name, task in tasks.items():
         setattr(app.state, name, task)
     app.state.case_cleanup_scheduler = object()
-    app.state.llm_usage_retention_task = object()
     monkeypatch.setattr(
         "faultmaven.infrastructure.tasks.stop_case_cleanup_scheduler", Mock()
-    )
-    monkeypatch.setattr(
-        "faultmaven.infrastructure.tasks.llm_usage_retention."
-        "stop_llm_usage_retention_scheduler",
-        AsyncMock(),
     )
 
     await stop_serving(app, {})
 
     assert all(task.cancelled() for task in tasks.values())
-    left = [
-        name
-        for name in (*tasks, "case_cleanup_scheduler", "llm_usage_retention_task")
-        if name in app.state
-    ]
+    left = [name for name in (*tasks, "case_cleanup_scheduler") if name in app.state]
     assert left == [], f"stopped, but still on app.state: {left}"
 
 
@@ -422,85 +414,141 @@ async def test_a_cancellation_during_a_metrics_task_stop_leaves_no_handle(
     assert handle not in app.state, f"{handle} left on app.state"
 
 
-@pytest.mark.parametrize(
-    "cancelled_during",
-    ["protection shutdown", "funnel_metrics_task", "revocation_watermark_task"],
+#: The shutdown's ten stops, in order: a background task by its handle on
+#: ``app.state``, any other stop by what it stops.
+_STOPS = (
+    "protection",
+    "ledger drain",
+    "ledger uninstall",
+    *_METRICS_TASKS,
+    "llm_config_watch_task",
+    "case_cleanup_scheduler",
+    "llm_usage_retention_task",
+    "monitoring",
 )
-async def test_a_cancellation_during_one_stop_still_runs_every_later_stop(
-    stop_serving, monkeypatch, cancelled_during
-):
-    """#2257: a cancellation during one stop skipped every stop after it. The
-    later tasks were left running with their handles on ``app.state``, where a
-    later shutdown on the app was handed tasks of a closed loop. Each stop is a
-    step of one teardown now: all run, then the cancellation propagates."""
-    from faultmaven.bootstrap import lifespan as lifespan_module
+_TASK_HANDLES = (*_METRICS_TASKS, "llm_config_watch_task", "llm_usage_retention_task")
+#: The stops with no await of their own: the cancellation is raised from them.
+_RAISED_FROM = ("ledger uninstall", "case_cleanup_scheduler")
 
+
+@pytest.mark.parametrize("cancelled_during", _STOPS)
+async def test_a_cancellation_during_any_stop_still_runs_every_stop(
+    monkeypatch, ledger_restored, cancelled_during
+):
+    """#2257: a cancellation during one stop skipped every stop after it, so the
+    later tasks were left running with their handles on ``app.state``.
+
+    Every stop is the real one. The shutdown is cancelled while the stop under
+    test waits on what it stops; a stop with no await raises the cancellation
+    instead. Every stop then runs, in order, and the cancellation propagates.
+    A stop that swallows it fails here, as the retention stop did."""
+    from faultmaven.api import protection
+    from faultmaven.bootstrap import lifespan as lifespan_module
+    from faultmaven.infrastructure import tasks as background_tasks
+    from faultmaven.infrastructure.observability.apm_integration import (
+        APMConfiguration,
+        APMProvider,
+        apm_integration,
+    )
+
+    ran = []
     in_progress, release = asyncio.Event(), asyncio.Event()
 
-    async def _slow_to_end():
+    async def _hangs(*_args):
+        await asyncio.Event().wait()
+
+    async def _background(handle):
         try:
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
-            in_progress.set()
-            await release.wait()  # still ending when the shutdown is cancelled
+            ran.append(handle)
+            if handle == cancelled_during:
+                in_progress.set()
+                await release.wait()  # still ending when the shutdown is cancelled
             raise
 
-    async def _protection_hangs(_app):
-        in_progress.set()
-        await asyncio.Event().wait()
+    def _record(owner, name, stop):
+        """Record ``stop`` when ``owner.name`` is called, and call the real one."""
+        real = getattr(owner, name)
 
-    if cancelled_during == "protection shutdown":
+        def _recording(*args, **kwargs):
+            ran.append(stop)
+            if stop != cancelled_during:
+                return real(*args, **kwargs)
+            in_progress.set()
+            outcome = real(*args, **kwargs)
+            if stop == "ledger uninstall":  # nothing it calls can raise it
+                raise asyncio.CancelledError()
+            return outcome
+
+        monkeypatch.setattr(owner, name, _recording)
+
+    middleware = SimpleNamespace(shutdown=AsyncMock())
+    if cancelled_during == "protection":
+        middleware.shutdown = _hangs
+    monkeypatch.setattr(
+        protection, "live_protection_middleware", lambda _: [middleware]
+    )
+    writes = (
+        {asyncio.create_task(_hangs())} if cancelled_during == "ledger drain" else set()
+    )
+    monkeypatch.setattr(usage_ledger, "_pending_writes", set(writes))
+    usage_ledger.install_usage_ledger(usage_ledger.InMemoryUsageLedger())
+    scheduler = Mock()
+    if cancelled_during == "case_cleanup_scheduler":
+        scheduler.shutdown.side_effect = asyncio.CancelledError()
+    if cancelled_during == "monitoring":
+        monkeypatch.setattr(apm_integration, "metrics_buffer", [object()])
         monkeypatch.setattr(
-            "faultmaven.api.protection.shutdown_protection", _protection_hangs
+            apm_integration,
+            "configurations",
+            {APMProvider.GENERIC: APMConfiguration(provider=APMProvider.GENERIC)},
         )
-    stop_case_cleanup, stop_retention = Mock(), AsyncMock()
-    monkeypatch.setattr(
-        "faultmaven.infrastructure.tasks.stop_case_cleanup_scheduler",
-        stop_case_cleanup,
-    )
-    monkeypatch.setattr(
-        "faultmaven.infrastructure.tasks.llm_usage_retention."
-        "stop_llm_usage_retention_scheduler",
-        stop_retention,
-    )
+        monkeypatch.setattr(
+            apm_integration, "export_callbacks", {APMProvider.GENERIC: _hangs}
+        )
+    _record(protection, "shutdown_protection", "protection")
+    _record(usage_ledger, "drain_pending_usage_writes", "ledger drain")
+    _record(usage_ledger, "install_usage_ledger", "ledger uninstall")
+    _record(background_tasks, "stop_case_cleanup_scheduler", "case_cleanup_scheduler")
+    _record(apm_integration, "stop_background_export", "monitoring")
+    decompose = AsyncMock()
+    monkeypatch.setattr(lifespan_module, "decompose_application", decompose)
     app = FastAPI()
     tasks = {
-        handle: asyncio.create_task(
-            _slow_to_end() if handle == cancelled_during else asyncio.sleep(3600)
-        )
-        for handle in (*_METRICS_TASKS, "llm_config_watch_task")
+        handle: asyncio.create_task(_background(handle)) for handle in _TASK_HANDLES
     }
     for handle, task in tasks.items():
         setattr(app.state, handle, task)
-    app.state.case_cleanup_scheduler = object()
-    app.state.llm_usage_retention_task = object()
+    app.state.case_cleanup_scheduler = scheduler
+    await asyncio.sleep(0)  # let the tasks start
 
-    shutdown = asyncio.create_task(stop_serving(app, {}))
+    shutdown = asyncio.create_task(lifespan_module._stop_serving(app, {}))
     try:
-        await in_progress.wait()
-        shutdown.cancel()
-        release.set()
+        if cancelled_during not in _RAISED_FROM:
+            reached = asyncio.ensure_future(in_progress.wait())
+            await asyncio.wait({reached, shutdown}, return_when=asyncio.FIRST_COMPLETED)
+            reached.cancel()
+            shutdown.cancel()
+            release.set()
         await asyncio.wait({shutdown})
-        # The task whose stop was cancelled is still ending; every other one
-        # is stopped by now.
-        running = [
-            handle
-            for handle, task in tasks.items()
-            if handle != cancelled_during and not task.cancelled()
-        ]
+        stopped = list(ran)
     finally:
-        for task in tasks.values():
+        for task in (*tasks.values(), *writes):
             task.cancel()
-        await asyncio.wait(set(tasks.values()))
+        await asyncio.wait({*tasks.values(), *writes})
 
-    assert running == [], f"left running after the shutdown: {running}"
-    stopped = (*tasks, "case_cleanup_scheduler", "llm_usage_retention_task")
-    left = [handle for handle in stopped if handle in app.state]
-    assert left == [], f"still on app.state: {left}"
-    stop_case_cleanup.assert_called_once()
-    stop_retention.assert_awaited_once()
-    lifespan_module.decompose_application.assert_awaited_once()
-    assert shutdown.cancelled(), "the cancellation did not propagate"
+    assert shutdown.cancelled(), "the cancellation was swallowed"
+    assert stopped == list(_STOPS), "a stop was skipped, or ran out of order"
+    left = [h for h in (*_TASK_HANDLES, "case_cleanup_scheduler") if h in app.state]
+    # A cancelled watcher stop leaves its handle for decompose_application's
+    # own stop of it (``stop_config_watcher``), which is stubbed here.
+    watcher = "llm_config_watch_task"
+    watcher_left = [watcher] if cancelled_during == watcher else []
+    assert left == watcher_left, f"still on app.state: {left}"
+    scheduler.shutdown.assert_called_once()
+    assert usage_ledger.get_installed_usage_ledger() is None
+    decompose.assert_awaited_once()
 
 
 async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):

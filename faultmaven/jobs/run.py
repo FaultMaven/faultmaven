@@ -525,7 +525,7 @@ async def run_job(
         # the engine's connections are bound to is still running. Each step
         # runs whatever the one before it did, and a failure to close does not
         # change what the run reported.
-        from faultmaven.bootstrap.composition import run_teardown
+        from faultmaven.infrastructure.concurrency.teardown import run_teardown
         from faultmaven.infrastructure.persistence.database import close_database
 
         await run_teardown(

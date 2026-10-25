@@ -10,18 +10,17 @@ manager (``bootstrap/middleware.py``). ``faultmaven.main`` imports
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from fastapi import FastAPI
 
 from faultmaven.bootstrap.composition import (
     _is_test_environment,
-    cancel_and_wait,
     compose_application,
     decompose_application,
-    run_teardown,
     stop_config_watcher,
 )
+from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait, run_teardown
 from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
 if TYPE_CHECKING:
@@ -521,20 +520,22 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
 
 
 def _unpublish_then_stop(
-    app: FastAPI, handle: str, stop: Callable[[Any], Awaitable[Any]]
-) -> Callable[[], Awaitable[None]]:
+    app: FastAPI, handle: str, stop: Callable[[Any], Any]
+) -> Callable[[], Any]:
     """A shutdown step: take ``handle`` off ``app.state``, then ``stop`` what it names.
 
     A no-op when startup never got as far as publishing it. The handle comes off
-    before the stop, so a stop that fails or is cancelled leaves none behind for
-    a later shutdown to be handed (#2257).
+    before the stop, so a stop that fails or is interrupted leaves none behind
+    for a later shutdown to be handed (#2257). The step returns what ``stop``
+    returns, which the step runner awaits when it is awaitable.
     """
 
-    async def _step() -> None:
+    def _step() -> Any:
         running = getattr(app.state, handle, None)
-        if running is not None:
-            delattr(app.state, handle)
-            await stop(running)
+        if running is None:
+            return None
+        delattr(app.state, handle)
+        return stop(running)
 
     return _step
 
@@ -545,23 +546,12 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
         drain_pending_usage_writes,
         install_usage_ledger,
     )
+    from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
 
     async def _shutdown_protection() -> None:
         from faultmaven.api.protection import shutdown_protection
 
         await shutdown_protection(app)
-
-    async def _stop_case_cleanup(scheduler: Any) -> None:
-        from faultmaven.infrastructure.tasks import stop_case_cleanup_scheduler
-
-        stop_case_cleanup_scheduler(scheduler)
-
-    async def _stop_llm_usage_retention(task: Any) -> None:
-        from faultmaven.infrastructure.tasks.llm_usage_retention import (
-            stop_llm_usage_retention_scheduler,
-        )
-
-        await stop_llm_usage_retention_scheduler(task)
 
     async def _clean_up_monitoring() -> None:
         from faultmaven.infrastructure.observability.apm_integration import (
@@ -603,13 +593,13 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
         ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
         (
             "Stopping the case cleanup scheduler",
-            _unpublish_then_stop(app, "case_cleanup_scheduler", _stop_case_cleanup),
+            _unpublish_then_stop(
+                app, "case_cleanup_scheduler", stop_case_cleanup_scheduler
+            ),
         ),
         (
             "Stopping the LLM usage retention scheduler",
-            _unpublish_then_stop(
-                app, "llm_usage_retention_task", _stop_llm_usage_retention
-            ),
+            _unpublish_then_stop(app, "llm_usage_retention_task", cancel_and_wait),
         ),
         ("Phase 2 monitoring cleanup", _clean_up_monitoring),
     )
@@ -622,8 +612,8 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
     handle off ``app.state`` as it stops it, then takes composition back
     through :func:`decompose_application`, whose last step disposes the
     database engine. Every stop runs through :func:`run_teardown`, whatever the
-    ones before it did: a cancellation during one is re-raised once all have
-    run (#2257).
+    ones before it did: an interruption during one (a cancellation included) is
+    re-raised once all have run (#2257).
     """
     try:
         logger.info("Shutting down FaultMaven API server...")
@@ -632,8 +622,8 @@ async def _stop_serving(app: FastAPI, published: Mapping[str, Any]) -> None:
         # Take composition back: the container (whose shared Redis client's pool
         # is bound to this event loop), the usage ledger, the services published
         # on app.state, which hold what that closed, and, last, the database
-        # engine. In a finally, so that an interruption the stops do not
-        # contain (a KeyboardInterrupt) still takes all of it back.
+        # engine. In a finally, so that what is raised outside the stops (in
+        # building them) still takes all of it back.
         await decompose_application(app, published)
 
     logger.info("FaultMaven API server shutdown complete")

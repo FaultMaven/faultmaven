@@ -64,7 +64,8 @@ def start_llm_usage_retention_scheduler(
             under which the scheduler is refused (see the module docstring).
 
     Returns:
-        The task, for :func:`stop_llm_usage_retention_scheduler`.
+        The task. The lifespan's shutdown cancels it and waits for it to end
+        (``cancel_and_wait``, ``faultmaven/infrastructure/concurrency/teardown.py``).
     """
     if is_multi_tenant:
         logger.warning(
@@ -81,17 +82,3 @@ def start_llm_usage_retention_scheduler(
         f"LLM usage retention scheduler started (interval: {interval_hours} hours)"
     )
     return task
-
-
-async def stop_llm_usage_retention_scheduler(
-    task: Optional["asyncio.Task[None]"],
-) -> None:
-    """Cancel the pruning task and wait for it to finish."""
-    if task is None:
-        return
-    task.cancel()
-    try:
-        await task
-    except (asyncio.CancelledError, Exception):
-        pass
-    logger.info("LLM usage retention scheduler stopped")

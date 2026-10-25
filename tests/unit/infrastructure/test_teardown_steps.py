@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from faultmaven.bootstrap.composition import run_teardown
+from faultmaven.infrastructure.concurrency.teardown import run_teardown
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +34,9 @@ async def test_every_step_runs_and_the_first_cancellation_propagates_after_the_l
     async def _last():
         ran.append("last")
 
-    with caplog.at_level(logging.WARNING, logger="faultmaven.bootstrap.composition"):
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
         with pytest.raises(asyncio.CancelledError) as raised:
             await run_teardown(
                 (
@@ -48,3 +50,27 @@ async def test_every_step_runs_and_the_first_cancellation_propagates_after_the_l
     assert ran == ["fails", "cancelled", "cancelled again", "last"]
     assert raised.value is first, "not the first cancellation"
     assert "A failing step failed (non-critical): the step blew up" in caplog.text
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+async def test_an_interruption_lets_every_step_run_then_propagates(interruption):
+    """Only a cancellation was deferred: a ``KeyboardInterrupt`` from one step
+    skipped the rest, and the CLI and jobs runners have no ``finally`` after
+    their teardown to catch what it skipped."""
+    ran = []
+    raised = interruption()
+
+    def _interrupted():
+        ran.append("interrupted")
+        raise raised
+
+    with pytest.raises(interruption) as propagated:
+        await run_teardown(
+            (
+                ("An interrupted step", _interrupted),
+                ("The last step", lambda: ran.append("last")),
+            )
+        )
+
+    assert ran == ["interrupted", "last"], "a step after the interruption was skipped"
+    assert propagated.value is raised

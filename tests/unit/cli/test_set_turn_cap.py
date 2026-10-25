@@ -463,7 +463,7 @@ def test_show_needs_no_confirmation(monkeypatch):
         coroutine.close()
         return 0
 
-    monkeypatch.setattr(set_turn_cap, "run_with_container", _fake_run)
+    monkeypatch.setattr(set_turn_cap, "run_command", _fake_run)
     assert _parse([*_SUBJECT, "--show"], monkeypatch) == 0
     assert captured.get("ran"), "--show was refused before it reached the read"
 
@@ -494,7 +494,7 @@ def test_each_mode_carries_its_value_into_the_write(monkeypatch, flags, expected
         return _noop()
 
     monkeypatch.setattr(set_turn_cap, "set_turn_cap", _capture)
-    monkeypatch.setattr(set_turn_cap, "run_with_container", _fake_run)
+    monkeypatch.setattr(set_turn_cap, "run_command", _fake_run)
     _parse([*_SUBJECT, *flags, "--yes"], monkeypatch)
     assert seen["new_value"] == expected
     assert seen["show_only"] is False
@@ -518,7 +518,7 @@ def test_the_subject_reaches_the_command_as_the_operator_named_it(monkeypatch):
         return _noop()
 
     monkeypatch.setattr(set_turn_cap, "set_turn_cap", _capture)
-    monkeypatch.setattr(set_turn_cap, "run_with_container", _fake_run)
+    monkeypatch.setattr(set_turn_cap, "run_command", _fake_run)
 
     _parse(
         ["--enterprise-id", ENTERPRISE, "--account-id", ACCOUNT, "--show"], monkeypatch

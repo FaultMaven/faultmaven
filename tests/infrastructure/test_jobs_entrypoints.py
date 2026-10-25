@@ -970,13 +970,29 @@ class TestJobsPathBootGates:
 
 
 @pytest.fixture
-def engine_url(tmp_path, monkeypatch):
-    """A database of the test's own; the process-global engine is put back after."""
+def engine(tmp_path, monkeypatch):
+    """A database of the test's own, and each ``(engine, loop)`` a ``dispose()``
+    ran on. The process-global engine is put back after."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
     from faultmaven.infrastructure.persistence import database
 
+    disposals = []
+    real_dispose = AsyncEngine.dispose
+
+    async def _dispose(self, *args, **kwargs):
+        disposals.append((self, asyncio.get_running_loop()))
+        await real_dispose(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", _dispose)
     monkeypatch.setattr(database, "_engine", None)
     monkeypatch.setattr(database, "_session_factory", None)
-    return f"sqlite+aiosqlite:///{tmp_path / 'faultmaven.db'}"
+    return SimpleNamespace(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'faultmaven.db'}", disposals=disposals
+    )
 
 
 class TestTheRunDisposesTheEngine:
@@ -987,8 +1003,10 @@ class TestTheRunDisposesTheEngine:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", ["succeeds", "fails", "a gate refuses"])
     async def test_the_engine_is_disposed(
-        self, outcome, mock_container, mock_settings, engine_url
+        self, outcome, mock_container, mock_settings, engine
     ):
+        import asyncio
+
         from sqlalchemy import text
 
         from faultmaven.config.deployment_coherence import DeploymentCoherenceError
@@ -999,9 +1017,10 @@ class TestTheRunDisposesTheEngine:
 
         async def _initialize():
             # What the container's stores do: open the engine on this loop.
-            async with database.get_engine(engine_url).connect() as connection:
+            run_engine = database.get_engine(engine.url)
+            async with run_engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))
-            opened.append(database._engine is not None)
+            opened.append((run_engine, asyncio.get_running_loop()))
 
         mock_container.initialize.side_effect = _initialize
         mock_settings.database.database_echo = False
@@ -1023,9 +1042,10 @@ class TestTheRunDisposesTheEngine:
                 expected = "failed" if outcome == "fails" else "completed"
                 assert result["status"] == expected
 
-        assert opened == [True], "the run did not open the engine"
+        assert len(opened) == 1, "the run did not open the engine"
+        assert engine.disposals == opened, "not disposed, or not on the run's loop"
+        assert database._engine is None, "the run left the database engine in place"
         mock_container.shutdown.assert_awaited_once()
-        assert database._engine is None, "the run left the database engine open"
 
 
 class TestSchedulerMultiTenantGate:

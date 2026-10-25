@@ -83,7 +83,7 @@ import argparse
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
-from faultmaven.cli._container import run_with_container
+from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     CAP_POLICY_SOURCES,
@@ -404,11 +404,10 @@ def main() -> None:
 
     require_persistent_database_or_exit()
 
-    # Through run_with_container, which disposes the database engine this run
-    # opened before the loop ends (#2254); it composes no container, so the
-    # container's shutdown there is a no-op.
+    # Through run_command, which disposes the database engine this run opened
+    # before the loop ends (#2254).
     sys.exit(
-        run_with_container(
+        run_command(
             set_turn_cap(
                 enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,

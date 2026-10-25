@@ -14,9 +14,9 @@ now applies the same rule to them, and this file pins two things:
    Everything ``main()`` calls before the gate must be on
    ``_ARGUMENT_ONLY_CALLS``, the calls that only parse and validate arguments.
    That makes the region before the gate fail closed. A branch that runs a
-   helper, ``asyncio.run``, ``run_with_container`` or ``run_until_complete``
-   before the gate fails here, whichever mode it hides behind. A behavioural run can only see the
-   modes it drives. The dev scripts that reach the database are found by
+   helper, ``asyncio.run``, ``run_command``, ``run_with_container`` or
+   ``run_until_complete`` before the gate fails here, whichever mode it hides
+   behind. A behavioural run can only see the modes it drives. The dev scripts that reach the database are found by
    scanning ``scripts/`` for the calls and imports that reach it, and are held
    to the gate too.
 2. **The helper's exit contract.** Exit 1 with the boot gate's message on
@@ -148,10 +148,11 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def _starts_an_event_loop(call: ast.Call) -> bool:
-    """``asyncio.run(...)``, ``run_with_container(...)`` (the commands' wrapper of
-    it, ``faultmaven/cli/_container.py``) or any ``....run_until_complete(...)``."""
+    """``asyncio.run(...)``, ``run_command(...)`` or ``run_with_container(...)``
+    (the commands' wrappers of it, ``faultmaven/cli/_container.py``) or any
+    ``....run_until_complete(...)``."""
     func = call.func
-    if isinstance(func, ast.Name) and func.id == "run_with_container":
+    if isinstance(func, ast.Name) and func.id in ("run_command", "run_with_container"):
         return True
     if not isinstance(func, ast.Attribute):
         return False

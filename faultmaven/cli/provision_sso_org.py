@@ -92,7 +92,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from faultmaven.cli._container import run_with_container
+from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -537,10 +537,9 @@ def main() -> None:
 
     require_persistent_database_or_exit()
 
-    # Through run_with_container, which disposes the database engine this run
-    # opened before the loop ends (#2254); it composes no container, so the
-    # container's shutdown there is a no-op.
-    success = run_with_container(
+    # Through run_command, which disposes the database engine this run opened
+    # before the loop ends (#2254).
+    success = run_command(
         provision(
             name=args.name,
             slug=args.slug,
