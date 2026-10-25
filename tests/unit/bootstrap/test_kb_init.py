@@ -779,7 +779,7 @@ class TestReconcileVectors:
         async def _list():
             return {p: list(c) for p, c in index.items() if c}
 
-        async def _delete_observed(chunk_ids, collection_name=None):
+        async def _delete_observed(chunk_ids):
             ids = list(chunk_ids)
             # Record the parents the observed ids belong to, in first-seen order.
             delete_batches.append(
