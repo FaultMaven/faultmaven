@@ -44,9 +44,13 @@ async def redis():
     await client.aclose()
 
 
+#: The session TTL the fixtures' store is built with: the setting's default.
+TTL_SECONDS = 1800
+
+
 @pytest.fixture
 def store(redis):
-    return RedisSessionStore(redis)
+    return RedisSessionStore(redis, session_ttl_seconds=TTL_SECONDS)
 
 
 @pytest.fixture
@@ -194,16 +198,22 @@ async def test_the_index_ttl_follows_its_longest_lived_member(service, redis, st
     index_ttl = await redis.pttl(index_key)
     session_ttl = await redis.pttl(f"{store.prefix}{first.session_id}")
 
-    assert 0 < session_ttl <= index_ttl <= store.default_ttl * 1000
+    assert 0 < session_ttl <= index_ttl <= TTL_SECONDS * 1000
 
     # A shorter-lived session does not shorten the index under a longer one.
-    store.default_ttl = 60
-    await service.create_session("user-a")
+    shorter = AuthSessionService(
+        session_store=RedisSessionStore(redis, session_ttl_seconds=60),
+        max_sessions_per_user=LIMIT,
+    )
+    await shorter.create_session("user-a")
     assert await redis.ttl(index_key) > 60
 
 
-async def test_the_index_lapses_with_its_last_session(service, store, redis):
-    store.default_ttl = 1
+async def test_the_index_lapses_with_its_last_session(redis):
+    service = AuthSessionService(
+        session_store=RedisSessionStore(redis, session_ttl_seconds=1),
+        max_sessions_per_user=LIMIT,
+    )
     session, _ = await service.create_session("user-a")
     index_key = _index_key("user-a")
 

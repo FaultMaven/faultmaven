@@ -109,7 +109,9 @@ def _build_app(service: AuthSessionService, current_user: DevUser) -> FastAPI:
 async def world():
     """The attacker owns ``own``; the victim owns ``victim``. Both are stored."""
     redis = fakeredis_aio.FakeRedis(decode_responses=True)
-    service = AuthSessionService(session_store=RedisSessionStore(redis))
+    service = AuthSessionService(
+        session_store=RedisSessionStore(redis, session_ttl_seconds=1800)
+    )
     own, _ = await service.create_session(ATTACKER, metadata=dict(SEED_METADATA))
     victim, _ = await service.create_session(VICTIM)
     attacker = DevUser(
@@ -449,10 +451,12 @@ async def test_metadata_round_trips(world, metadata):
     assert response.json()["metadata"] == metadata
     own_after = await _record(world, world.own_id)
     assert own_after["metadata"] == metadata
-    # An accepted update stamps the record.
+    # An accepted update stamps the record, and as a write re-arms its TTL,
+    # which moves the expiry it states (#2301).
     assert own_after["updated_at"] > own_before["updated_at"]
-    # Only metadata and the update stamp moved.
-    for field in ("metadata", "updated_at"):
+    assert own_after["expires_at"] > own_before["expires_at"]
+    # Only metadata, the update stamp and the expiry moved.
+    for field in ("metadata", "updated_at", "expires_at"):
         own_before.pop(field)
         own_after.pop(field)
     assert own_after == own_before

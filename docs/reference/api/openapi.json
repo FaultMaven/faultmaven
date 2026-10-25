@@ -619,7 +619,7 @@
               }
             ],
             "default": 180,
-            "description": "Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
+            "description": "Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last write (the server's setting); the response's timeout_minutes and expires_at report it.",
             "examples": [
               180,
               240,
@@ -3057,6 +3057,18 @@
             "title": "Session Storage",
             "type": "string"
           },
+          "session_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.",
+            "title": "Session Ttl Seconds"
+          },
           "timestamp": {
             "format": "date-time",
             "title": "Timestamp",
@@ -3077,6 +3089,7 @@
           "deployment",
           "db_backend",
           "session_storage",
+          "session_ttl_seconds",
           "vector_storage",
           "llm_provider",
           "pii_redaction_enabled",
@@ -7066,7 +7079,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.5.0"
+    "version": "14.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -13425,7 +13438,7 @@
         ]
       },
       "post": {
-        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Authenticated user from the JWT token, when one is presented\n- Auto-generated anonymous user otherwise (development/unauthenticated only)\n\nThe identity minted is the server's answer, never the caller's. A request\ncannot name the user its session is bound to; see the note on the\nresolution below.\n\n**Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
+        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Authenticated user from the JWT token, when one is presented\n- Auto-generated anonymous user otherwise (development/unauthenticated only)\n\nThe identity minted is the server's answer, never the caller's. A request\ncannot name the user its session is bound to; see the note on the\nresolution below.\n\n**Session Timeout:**\n- A session expires `SESSION_TIMEOUT_MINUTES` (default 30) after its last\n  write: creation, resumption, a heartbeat or an update re-arms it\n- The response's `timeout_minutes` is that setting and `expires_at` the\n  instant this write lapses; the request's `timeout_minutes` is ignored\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
         "operationId": "create_session_api_v1_sessions_post",
         "requestBody": {
           "content": {
@@ -13454,13 +13467,13 @@
                     "value": {
                       "client_id": "browser-client-abc123",
                       "created_at": "2025-01-15T10:00:00Z",
-                      "expires_at": "2025-01-15T13:00:00Z",
+                      "expires_at": "2025-01-15T10:30:00Z",
                       "message": "Session created successfully",
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": false,
                       "session_type": "troubleshooting",
                       "status": "inquiry",
-                      "timeout_minutes": 180,
+                      "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
                   },
@@ -13469,13 +13482,13 @@
                     "value": {
                       "client_id": "browser-client-abc123",
                       "created_at": "2025-01-15T09:30:00Z",
-                      "expires_at": "2025-01-15T14:30:00Z",
+                      "expires_at": "2025-01-15T10:45:00Z",
                       "message": "Session resumed successfully",
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": true,
                       "session_type": "troubleshooting",
                       "status": "inquiry",
-                      "timeout_minutes": 300,
+                      "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
                   }
@@ -13492,7 +13505,7 @@
                   "session_expired": {
                     "summary": "Session expired",
                     "value": {
-                      "detail": "Session expired after 180 minutes of inactivity"
+                      "detail": "Session expired after 30 minutes of inactivity"
                     }
                   }
                 }

@@ -86,14 +86,14 @@ async def test_a_pooled_connection_parses_with_hiredis_when_redis_py_can(
 
 
 async def test_the_session_store_saves_reads_expires_and_deletes(real_redis, namespace):
-    store = _namespaced_session_store(real_redis, namespace)
+    store = _namespaced_session_store(real_redis, namespace, session_ttl_seconds=1800)
 
     await store.save(SessionContext(session_id="session-1", user_id="user-1"))
 
     stored = await store.get_session("session-1")
     assert stored is not None
     assert (stored.session_id, stored.user_id) == ("session-1", "user-1")
-    assert 0 < await real_redis.ttl(f"{store.prefix}session-1") <= store.default_ttl
+    assert 0 < await real_redis.ttl(f"{store.prefix}session-1") <= 1800
 
     assert await store.delete_session("session-1") is True
     assert await store.get_session("session-1") is None
@@ -103,7 +103,7 @@ async def test_the_session_store_deletes_only_the_keys_holding_the_value(
     real_redis, namespace
 ):
     """``delete_keys_holding``: SCAN plus the compare-and-delete script."""
-    store = RedisSessionStore(real_redis)
+    store = RedisSessionStore(real_redis, session_ttl_seconds=1800)
     store.prefix = f"{namespace}session:"
     await store.set("s-1:current_case_id", "case-a")
     await store.set("s-2:current_case_id", "case-a")
@@ -224,9 +224,11 @@ async def test_idempotency_stores_a_keyed_response_and_replays_its_retry(
     assert len(calls) == 1, "the replayed retry must not reach the route"
 
 
-def _namespaced_session_store(real_redis, namespace) -> RedisSessionStore:
+def _namespaced_session_store(
+    real_redis, namespace, *, session_ttl_seconds: int = 1800
+) -> RedisSessionStore:
     """A session store whose session keys and user indexes are under ``namespace``."""
-    store = RedisSessionStore(real_redis)
+    store = RedisSessionStore(real_redis, session_ttl_seconds=session_ttl_seconds)
     store.prefix = f"{namespace}session:"
     store.user_index_prefix = f"{namespace}sessions:user:"
     return store
@@ -234,6 +236,43 @@ def _namespaced_session_store(real_redis, namespace) -> RedisSessionStore:
 
 async def _listed(service: AuthSessionService, user_id: str) -> list:
     return [s.session_id for s in await service.list_sessions(user_id)]
+
+
+async def test_a_session_lives_session_timeout_minutes_past_its_last_write(
+    real_redis, namespace, monkeypatch
+):
+    """The store's TTL is the setting (#2301), on the server's own SET/EXPIRE.
+
+    Built through the production factories from the environment, so a factory
+    that drops the setting fails: the store wrote a fixed 1800 s.
+    """
+    from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.providers.infrastructure import create_session_store
+    from faultmaven.container.providers.services import create_session_service
+
+    monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "7")
+    settings = FaultMavenSettings(_env_file=None)
+    store = create_session_store(real_redis, settings)
+    store.prefix = f"{namespace}session:"
+    store.user_index_prefix = f"{namespace}sessions:user:"
+    service = create_session_service(
+        store, settings, lambda: pytest.fail("the real session service failed")
+    )
+    timeout_ms = 7 * 60 * 1000
+
+    session, _ = await service.create_session("user-a")
+    key = f"{store.prefix}{session.session_id}"
+    index_key = f"{store.user_index_prefix}user-a"
+
+    assert timeout_ms - 5000 < await real_redis.pttl(key) <= timeout_ms
+    assert timeout_ms - 5000 < await real_redis.pttl(index_key) <= timeout_ms
+
+    # A heartbeat re-arms it, and moves the expiry the record states with it.
+    await real_redis.pexpire(key, 3000)
+    assert await service.update_last_activity(session.session_id) is True
+    assert timeout_ms - 5000 < await real_redis.pttl(key) <= timeout_ms
+    stored = await service.get_session(session.session_id)
+    assert stored.expires_at > session.expires_at
 
 
 async def test_the_session_limit_evicts_the_oldest_and_spares_other_users(
@@ -274,8 +313,7 @@ async def test_a_deleted_or_expired_session_leaves_the_user_index(
 
 
 async def test_the_user_index_lapses_with_its_last_session(real_redis, namespace):
-    store = _namespaced_session_store(real_redis, namespace)
-    store.default_ttl = 1
+    store = _namespaced_session_store(real_redis, namespace, session_ttl_seconds=1)
     service = AuthSessionService(session_store=store, max_sessions_per_user=10)
     session, _ = await service.create_session("user-a")
     index_key = f"{store.user_index_prefix}user-a"

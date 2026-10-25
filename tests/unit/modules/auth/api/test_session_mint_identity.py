@@ -78,10 +78,14 @@ async def _create_session_fake(user_id, client_id=None, metadata=None):
     those true as the real service changes; ``session_resumed`` in the vacuity
     control keeps the second true.
     """
+    now = datetime.now(timezone.utc)
     session = SimpleNamespace(
         session_id="sess-minted-0001",
         user_id=user_id,
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
+        # The real service's session carries the expiry its write set, and
+        # the route answers it (#2301).
+        expires_at=now,
     )
     return session, RESUMED
 

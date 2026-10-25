@@ -75,22 +75,17 @@ class SessionContext(BaseModel):
         description="Last update timestamp",
     )
     expires_at: Optional[datetime] = Field(
-        None, description="Session expiration time (TTL-based)"
+        None,
+        description=(
+            "When the session lapses: its last write plus SESSION_TIMEOUT_MINUTES, "
+            "the TTL the session store set with that write"
+        ),
     )
 
     # Session metadata (authentication context only)
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional session metadata"
     )
-
-    @property
-    def active(self) -> bool:
-        """Check if session is considered active based on last activity (24 hours default)"""
-        from datetime import timedelta, timezone
-
-        inactive_threshold = timedelta(hours=24)
-        time_since_activity = datetime.now(timezone.utc) - self.last_activity
-        return time_since_activity < inactive_threshold
 
     # json_encoders removed in Pydantic V2 - datetime serialization handled by default.
     # extra="forbid": a writer passing an undeclared field fails at construction

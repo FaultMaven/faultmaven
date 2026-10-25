@@ -1345,59 +1345,20 @@ class DatabaseSettings(BaseSettings):
 class SessionSettings(BaseSettings):
     """Session management configuration"""
 
+    # A session's lifetime: the TTL the session store sets on every session
+    # write (create, resume, heartbeat, update), so a session lapses this long
+    # after its last write and its ``expires_at`` names that instant (#2301).
+    # Clients pace their heartbeats inside it; the server has no heartbeat
+    # interval of its own.
     timeout_minutes: int = Field(
         default=30, validation_alias="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
     )
-    cleanup_interval_minutes: int = Field(
-        default=15, validation_alias="SESSION_CLEANUP_INTERVAL_MINUTES"
-    )
     max_memory_mb: int = Field(default=100, validation_alias="SESSION_MAX_MEMORY_MB")
-    heartbeat_interval_seconds: int = Field(
-        default=30, validation_alias="SESSION_HEARTBEAT_INTERVAL_SECONDS"
-    )
     # At least one: the limit evicts the oldest session to make room, and at 0
     # every create would fail (#2297 made the limit live).
     max_sessions_per_user: int = Field(
         default=10, validation_alias="SESSION_MAX_SESSIONS_PER_USER", ge=1
     )
-
-    # Session timeout bounds for validation (used by API routes)
-    min_timeout_minutes: int = Field(
-        default=60, validation_alias="SESSION_MIN_TIMEOUT_MINUTES", ge=1
-    )
-    max_timeout_minutes: int = Field(
-        default=480, validation_alias="SESSION_MAX_TIMEOUT_MINUTES", le=1440
-    )
-    default_timeout_minutes: int = Field(
-        default=180, validation_alias="SESSION_DEFAULT_TIMEOUT_MINUTES"
-    )
-
-    @field_validator("heartbeat_interval_seconds")
-    @classmethod
-    def validate_heartbeat_vs_timeout(cls, v, info):
-        """Ensure heartbeat is less than timeout for frontend compatibility"""
-        values = info.data
-        timeout_seconds = values.get("timeout_minutes", 30) * 60
-        if v >= timeout_seconds:
-            raise ValueError(
-                f"Heartbeat interval ({v}s) must be less than session timeout ({timeout_seconds}s)"
-            )
-        return v
-
-    @field_validator("cleanup_interval_minutes")
-    @classmethod
-    def validate_cleanup_interval(cls, v, info):
-        """Ensure cleanup interval is reasonable vs timeout"""
-        values = info.data
-        timeout = values.get("timeout_minutes", 180)
-
-        if v > timeout:
-            raise ValueError(
-                f"SESSION_CLEANUP_INTERVAL_MINUTES ({v}) should not exceed "
-                f"SESSION_TIMEOUT_MINUTES ({timeout}). "
-                f"Cleanup should run at least as often as session expiration."
-            )
-        return v
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -3582,12 +3543,6 @@ class FaultMavenSettings(BaseSettings):
         # Session timeout validation
         if self.session.timeout_minutes < 5:
             issues.append("Session timeout too short - frontend expects >= 5 minutes")
-
-        # Heartbeat validation
-        if self.session.heartbeat_interval_seconds >= (
-            self.session.timeout_minutes * 60
-        ):
-            issues.append("Heartbeat interval must be less than session timeout")
 
         # CORS validation
         browser_origins = [

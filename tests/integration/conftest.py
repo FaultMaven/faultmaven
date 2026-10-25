@@ -372,9 +372,8 @@ def session_service(session_redis) -> SessionService:
     writes carries a TTL.
     """
     return SessionService(
-        session_store=RedisSessionStore(session_redis),
+        session_store=RedisSessionStore(session_redis, session_ttl_seconds=1800),
         max_sessions_per_user=10,
-        inactive_threshold_hours=24,
     )
 
 

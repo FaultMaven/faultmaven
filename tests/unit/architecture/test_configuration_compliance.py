@@ -450,13 +450,9 @@ class TestConfigurationArchitectureCompliance:
         assert "warnings" in compatibility
 
         # Test with problematic configuration (short timeout)
-        # Must also set cleanup interval <= timeout to pass cross-field validation
         with patch.dict(
             os.environ,
-            {
-                "SESSION_TIMEOUT_MINUTES": "2",
-                "SESSION_CLEANUP_INTERVAL_MINUTES": "1",
-            },
+            {"SESSION_TIMEOUT_MINUTES": "2"},
             clear=False,
         ):
             reset_settings()

@@ -9,12 +9,18 @@ Each user's sessions are indexed in a set, ``sessions:user:<user_id>``, so a
 user's sessions are a set read rather than a keyspace scan (#2297). The store
 lists one user's sessions and never every user's: nothing in production reads
 such a listing, and enumerating sessions across users is what #1447 closed.
+
+The store owns a session's lifetime (#2301). It is built with one TTL,
+``SESSION_TIMEOUT_MINUTES`` (``create_session_store``), and every session write
+sets it and stamps the record's ``expires_at`` with the instant it lapses. A
+session therefore lives that long past its last write, and its ``expires_at``
+is the moment Redis drops it.
 """
 
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from faultmaven.models.common import SessionContext
@@ -45,19 +51,6 @@ end
 return 1
 """
 
-#: Extend a session's TTL and, when the session exists, index it and raise the
-#: index's TTL to match, as ``_SAVE_AND_INDEX`` does.
-_EXTEND_AND_INDEX = """
-if redis.call('EXPIRE', KEYS[1], ARGV[1]) == 0 then
-    return 0
-end
-redis.call('SADD', KEYS[2], ARGV[2])
-if redis.call('TTL', KEYS[2]) < tonumber(ARGV[1]) then
-    redis.call('EXPIRE', KEYS[2], ARGV[1])
-end
-return 1
-"""
-
 #: Read the members' sessions, and drop from the index each member whose session
 #: key is gone, in one step: a session re-written between a separate read and
 #: SREM would lose its index entry. KEYS[1] is the index, KEYS[2..n] the members'
@@ -82,14 +75,22 @@ class RedisSessionStore(ISessionStore):
     Works identically with real Redis and FakeRedis.
     """
 
-    def __init__(self, redis_client):
+    def __init__(self, redis_client, *, session_ttl_seconds: int):
         """Initialize Redis session store.
 
         Args:
             redis_client: Async Redis-compatible client (real or FakeRedis).
+            session_ttl_seconds: The TTL every session write sets, and the
+                default of ``set`` and ``extend_ttl``. Required: the store has
+                no lifetime of its own, and composition passes
+                ``SESSION_TIMEOUT_MINUTES`` (#2301).
         """
+        if session_ttl_seconds < 1:
+            raise ValueError(
+                f"session_ttl_seconds must be at least 1 (got {session_ttl_seconds})"
+            )
         self.redis_client = redis_client
-        self.default_ttl = 1800  # 30 minutes default
+        self.session_ttl_seconds = session_ttl_seconds
         self.prefix = "session:"
         #: Outside ``prefix``: ``get``/``set`` take caller-supplied session ids
         #: under it, and ``delete_keys_holding`` scans it.
@@ -131,7 +132,7 @@ class RedisSessionStore(ISessionStore):
         try:
             full_key = f"{self.prefix}{key}"
             serialized = self._serialize(value)
-            ttl = ttl if ttl is not None else self.default_ttl
+            ttl = ttl if ttl is not None else self.session_ttl_seconds
 
             await self.redis_client.set(full_key, serialized, ex=ttl)
         except Exception as e:
@@ -152,7 +153,7 @@ class RedisSessionStore(ISessionStore):
     async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """Extend session TTL."""
         full_key = f"{self.prefix}{key}"
-        ttl = ttl if ttl is not None else self.default_ttl
+        ttl = ttl if ttl is not None else self.session_ttl_seconds
         return await self.redis_client.expire(full_key, ttl)
 
     async def find_by_user_and_client(
@@ -231,17 +232,27 @@ class RedisSessionStore(ISessionStore):
 
     # High-level session management methods. Every session write goes through
     # ``_write_session`` and every session delete through ``delete_session``,
-    # so the user index follows them. ``set``, ``extend_ttl`` and ``delete``
-    # above are plain key operations and do not touch the index.
+    # so the user index and the record's ``expires_at`` follow them. ``set``,
+    # ``extend_ttl`` and ``delete`` above are plain key operations and touch
+    # neither.
 
     async def _write_session(
         self, session_id: str, session_data: Dict[str, Any]
-    ) -> None:
-        """Store a session for ``default_ttl``, indexed under its user when it has one."""
+    ) -> datetime:
+        """Store a session for ``session_ttl_seconds``, indexed under its user
+        when it has one, and return the instant it lapses.
+
+        The record's ``expires_at`` is set to that instant, so it never claims
+        a lifetime the key does not have.
+        """
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=self.session_ttl_seconds
+        )
+        session_data["expires_at"] = to_json_compatible(expires_at)
         user_id = session_data.get("user_id")
         if not user_id:
             await self.set(session_id, session_data)
-            return
+            return expires_at
 
         try:
             await self.redis_client.eval(
@@ -250,12 +261,13 @@ class RedisSessionStore(ISessionStore):
                 f"{self.prefix}{session_id}",
                 self._user_index_key(user_id),
                 self._serialize(session_data),
-                self.default_ttl,
+                self.session_ttl_seconds,
                 session_id,
             )
         except Exception as e:
             logger.error(f"Redis session write failed for session {session_id}: {e}")
             raise ConnectionError(f"Redis operation failed: {e}")
+        return expires_at
 
     @staticmethod
     def _to_session_context(session_data: Dict[str, Any]) -> SessionContext:
@@ -298,13 +310,14 @@ class RedisSessionStore(ISessionStore):
             "metadata": {},
         }
 
-        await self._write_session(session_id, session_data)
+        expires_at = await self._write_session(session_id, session_data)
 
         return SessionContext(
             session_id=session_id,
             user_id=user_id,
             created_at=created_at,
             last_activity=created_at,
+            expires_at=expires_at,
             metadata={},
         )
 
@@ -318,7 +331,11 @@ class RedisSessionStore(ISessionStore):
         return self._to_session_context(session_data)
 
     async def save(self, session: SessionContext) -> None:
-        """Save session context to Redis."""
+        """Save session context to Redis for ``session_ttl_seconds``.
+
+        Sets ``session.expires_at`` to the instant the write lapses, so the
+        caller holds the expiry it just bought, as the stored record does.
+        """
         session_data = {
             "session_id": session.session_id,
             "user_id": session.user_id,
@@ -326,13 +343,10 @@ class RedisSessionStore(ISessionStore):
             "created_at": to_json_compatible(session.created_at),
             "last_activity": to_json_compatible(session.last_activity),
             "updated_at": to_json_compatible(session.updated_at),
-            "expires_at": (
-                to_json_compatible(session.expires_at) if session.expires_at else None
-            ),
             "metadata": session.metadata or {},
             "session_resumed": session.session_resumed,
         }
-        await self._write_session(session.session_id, session_data)
+        session.expires_at = await self._write_session(session.session_id, session_data)
 
     async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
         """Update session with new data."""
@@ -362,23 +376,16 @@ class RedisSessionStore(ISessionStore):
         return deleted > 0
 
     async def extend_session(self, session_id: str) -> bool:
-        """Extend session TTL, and its user index's with it."""
-        session_data = await self.get(session_id)
-        user_id = (
-            session_data.get("user_id") if isinstance(session_data, dict) else None
-        )
-        if not user_id:
-            return await self.extend_ttl(session_id)
+        """Give a session ``session_ttl_seconds`` from now, its user index too.
 
-        extended = await self.redis_client.eval(
-            _EXTEND_AND_INDEX,
-            2,
-            f"{self.prefix}{session_id}",
-            self._user_index_key(user_id),
-            self.default_ttl,
-            session_id,
-        )
-        return bool(extended)
+        A re-write rather than an ``EXPIRE``: the record's ``expires_at`` moves
+        with the TTL, as on every other session write.
+        """
+        session_data = await self.get(session_id)
+        if not isinstance(session_data, dict):
+            return False
+        await self._write_session(session_id, session_data)
+        return True
 
     async def update_last_activity(self, session_id: str) -> bool:
         """Update last activity timestamp."""

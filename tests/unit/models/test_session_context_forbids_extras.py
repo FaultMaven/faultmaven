@@ -55,7 +55,9 @@ def test_an_undeclared_field_is_refused_as_extra_forbidden(field):
 def store():
     import fakeredis.aioredis as fakeredis_aio
 
-    return RedisSessionStore(fakeredis_aio.FakeRedis(decode_responses=True))
+    return RedisSessionStore(
+        fakeredis_aio.FakeRedis(decode_responses=True), session_ttl_seconds=1800
+    )
 
 
 @pytest.mark.unit

@@ -1068,6 +1068,45 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == expected
 
     @pytest.mark.asyncio
+    async def test_session_ttl_is_the_built_stores_not_the_setting(
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        live_backends,
+        monkeypatch,
+    ):
+        """The TTL the store gives every session write, read off the store the
+        composition root built (#2301): the setting and the store disagreed
+        for as long as the store ignored it, and only the store could show it."""
+        from faultmaven.config.settings import FaultMavenSettings
+        from faultmaven.container.providers.infrastructure import (
+            create_session_store,
+        )
+
+        redis = live_backends.fake_redis()
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=redis,
+            kb=None,
+            evidence=None,
+        )
+        monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "7")
+        rate_limited_app.state.session_store = create_session_store(
+            redis, FaultMavenSettings(_env_file=None)
+        )
+        # What the endpoint must NOT read: the settings it is handed.
+        mock_settings.session.timeout_minutes = 45
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.session_ttl_seconds == 7 * 60
+
+    @pytest.mark.asyncio
     async def test_db_backend_is_the_engine_not_the_configured_url(
         self, mock_admin_user, mock_settings, rate_limited_app, live_backends
     ):
@@ -1151,6 +1190,7 @@ class TestGetEnvConfigStatus:
 
         assert result.db_backend == "not initialized"
         assert result.session_storage == "not initialized"
+        assert result.session_ttl_seconds is None
         assert result.vector_storage == "disabled"
 
     @pytest.mark.asyncio

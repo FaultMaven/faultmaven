@@ -1338,12 +1338,21 @@ async def get_env_config_status(
         session_storage = session_storage_backend_name(
             getattr(request.app.state, "redis_client", None)
         )
+        # The session TTL the built store applies, not the setting read again:
+        # the setting said one thing while the store wrote every session for a
+        # fixed 1800 s, and only the store could show it (#2301).
+        session_ttl_seconds = getattr(
+            getattr(request.app.state, "session_store", None),
+            "session_ttl_seconds",
+            None,
+        )
 
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
             db_backend=db_backend,
             session_storage=session_storage,
+            session_ttl_seconds=session_ttl_seconds,
             vector_storage=vector_storage,
             llm_provider=(
                 settings.llm.provider.value if settings.llm.provider else "not_set"

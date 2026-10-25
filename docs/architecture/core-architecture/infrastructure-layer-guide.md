@@ -89,10 +89,11 @@ from faultmaven.models.interfaces import ISessionStore
 class RedisSessionStore(ISessionStore):
     """Lightweight Redis session store for high-frequency operations."""
 
-    def __init__(self):
+    def __init__(self, session_ttl_seconds: int):
         # Lightweight factory function - no BaseExternalClient overhead
         self.redis_client = create_redis_client()
-        self.default_ttl = 1800
+        # From SESSION_TIMEOUT_MINUTES, passed at composition; no default
+        self.session_ttl_seconds = session_ttl_seconds
         self.prefix = "session:"
 
     async def get(self, key: str) -> Optional[Dict]:
@@ -117,7 +118,7 @@ class RedisSessionStore(ISessionStore):
             value['last_activity'] = datetime.utcnow().isoformat()
 
         serialized = json.dumps(value)
-        ttl = ttl if ttl is not None else self.default_ttl
+        ttl = ttl if ttl is not None else self.session_ttl_seconds
 
         # Direct Redis call - minimal overhead
         await self.redis_client.set(full_key, serialized, ex=ttl)
