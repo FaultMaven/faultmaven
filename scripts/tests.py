@@ -35,6 +35,7 @@ Usage:
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -168,12 +169,36 @@ def status_tests():
         return 1
 
 
+#: Deselected by pytest.ini's ``addopts`` (``-m "not real_llm"``). pytest keeps
+#: only the last ``-m``, so any ``-m`` the runner passes replaces that one: every
+#: expression it builds deselects these too, unless the expression names one
+#: (#2288).
+OPT_IN_MARKERS = ("real_llm",)
+
+
+def marker_expression(selections: List[str]) -> Optional[str]:
+    """The one ``-m`` expression for ``selections``, ANDed, or ``None`` for none.
+
+    With no selection the runner passes no ``-m`` and pytest.ini's applies.
+    """
+    if not selections:
+        return None
+    terms = [f"({selection})" for selection in selections]
+    for marker in OPT_IN_MARKERS:
+        if not any(re.search(rf"\b{marker}\b", s) for s in selections):
+            terms.append(f"not {marker}")
+    return " and ".join(terms)
+
+
 def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
     """Build the pytest command based on arguments."""
     pytest_cmd = [get_pytest_path()]
 
     # Determine test paths
     test_paths: List[str] = []
+    # Every marker selection, combined into one -m below: pytest keeps only the
+    # last -m it is given.
+    marker_selections: List[str] = []
 
     # Check for CI mode first
     ci_mode = None
@@ -190,7 +215,7 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
         config = CI_MODES[ci_mode]
         test_paths = config["paths"]
         if config.get("markers"):
-            pytest_cmd.extend(["-m", config["markers"]])
+            marker_selections.append(config["markers"])
         if config.get("parallel") and not getattr(args, "no_parallel", False):
             try:
                 import xdist  # noqa: F401
@@ -215,7 +240,7 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
             test_paths.append(TEST_CATEGORIES["infrastructure"])
         if args.benchmarks:
             test_paths.append(TEST_CATEGORIES["benchmarks"])
-            pytest_cmd.extend(["-m", "benchmark"])
+            marker_selections.append("benchmark")
         if args.performance:
             # No env var: tests/performance/ gates on nothing since #1557.
             # It ran nine of its tests behind RUN_PERFORMANCE_TESTS "to
@@ -238,7 +263,10 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
     if args.keyword:
         pytest_cmd.extend(["-k", args.keyword])
     if args.marker:
-        pytest_cmd.extend(["-m", args.marker])
+        marker_selections.append(args.marker)
+    markers = marker_expression(marker_selections)
+    if markers:
+        pytest_cmd.extend(["-m", markers])
 
     # Behavior options
     if args.fail_fast:
@@ -353,7 +381,9 @@ def run_load_tests(args) -> int:
         return 1
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """The runner's command line: the ``run``/``status``/``stop``/``load``
+    subcommands, with the test arguments also on the top level."""
     parser = argparse.ArgumentParser(
         description="FaultMaven Test Runner - CI/CD Ready",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -400,8 +430,11 @@ Examples:
 
     # Add arguments to main parser as well for convenience
     _add_test_arguments(parser)
+    return parser
 
-    args, unknown = parser.parse_known_args()
+
+def main():
+    args, unknown = build_parser().parse_known_args()
 
     # Handle commands
     if args.command == "status":
