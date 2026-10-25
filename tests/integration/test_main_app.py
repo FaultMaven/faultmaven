@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from faultmaven.config.settings import get_settings, reset_settings
+from faultmaven.infrastructure.llm.providers.registry import reset_registry
 from faultmaven.main import app
 from faultmaven.models.exceptions import ConfigurationError
 
@@ -28,14 +29,17 @@ def _settings_under(environment: dict[str, str], *, clear: bool = False):
     patch; cold, it composed under it, and an emptied environment turned the
     service checks back on and reached for a real Redis. The cache is dropped
     on entry, so the boot reads this environment, and on exit, so the next
-    test reads its own.
+    test reads its own. So is the LLM provider registry, which keeps the
+    settings it was first built with.
     """
     with patch.dict(os.environ, environment, clear=clear):
         reset_settings()
+        reset_registry()
         try:
             yield
         finally:
             reset_settings()
+            reset_registry()
 
 
 def test_health_check(booted_app_client):
@@ -700,12 +704,17 @@ def test_health_check_with_session_metrics(booted_app_client):
 def test_application_uses_configuration_defaults(unshared_app_boot):
     """The application serves on the configuration defaults.
 
-    The environment is emptied but for a chat provider and
-    ``SKIP_SERVICE_CHECKS``: no Redis is reachable from a test, and with the
+    The environment is emptied but for a chat provider, ``REDIS_HOST`` and
+    ``SKIP_SERVICE_CHECKS``. No Redis is reachable from a test, and with the
     checks on, composition tries a real one first (the CI jobs set the flag
-    for the same reason).
+    for the same reason). A named Redis host also declines the zero-config
+    ``local`` preset, so the boot is on the settings' own defaults.
     """
-    minimal_config = {"CHAT_PROVIDER": "openai", "SKIP_SERVICE_CHECKS": "true"}
+    minimal_config = {
+        "CHAT_PROVIDER": "openai",
+        "REDIS_HOST": "localhost",
+        "SKIP_SERVICE_CHECKS": "true",
+    }
 
     with _settings_under(minimal_config, clear=True):
         # Application should work with minimal configuration
@@ -713,6 +722,7 @@ def test_application_uses_configuration_defaults(unshared_app_boot):
             assert (
                 get_settings().llm.provider == "openai"
             ), "the boot did not read the minimal environment"
+            assert "CONFIG_PRESET" not in os.environ, "a preset was applied"
             response = client.get("/health")
 
             # Should succeed with defaults
@@ -754,19 +764,27 @@ def test_health_endpoint_configuration_info(booted_app_client):
             assert isinstance(config_info["config_valid"], bool)
 
 
-def test_application_startup_with_invalid_configuration(unshared_app_boot):
+@pytest.mark.parametrize(
+    "setting, value, refusal",
+    [
+        ("CHAT_PROVIDER", "invalid_provider", "CHAT_PROVIDER"),
+        ("REDIS_PORT", "not_a_number", "redis_port"),
+    ],
+)
+def test_application_startup_with_invalid_configuration(
+    setting, value, refusal, unshared_app_boot
+):
     """An invalid setting stops the startup; the application never serves on it.
 
     This test used to accept any response, because the boot it ran read
     whatever settings an earlier test had cached rather than this environment.
+    ``SKIP_SERVICE_CHECKS`` keeps a startup that wrongly went on off the network,
+    so that it fails here as "did not raise".
     """
-    invalid_config = {
-        "CHAT_PROVIDER": "invalid_provider",
-        "SKIP_SERVICE_CHECKS": "true",
-    }
+    invalid_config = {setting: value, "SKIP_SERVICE_CHECKS": "true"}
 
     with _settings_under(invalid_config, clear=True):
-        with pytest.raises(ConfigurationError, match="CHAT_PROVIDER"):
+        with pytest.raises(ConfigurationError, match=refusal):
             with TestClient(app):
                 pass
 
@@ -955,7 +973,7 @@ def test_capabilities_publish_the_turn_ceiling_for_the_chat_provider(
     per request for the chat provider in force: an operator's provider switch
     (the dashboard override writes ``settings.llm.provider`` in place) moves
     them on the next read, on both paths."""
-    from faultmaven.config.settings import LLMProvider, get_settings
+    from faultmaven.config.settings import LLMProvider
     from faultmaven.core.investigation.turn_budget import (
         AUTO_TITLE_TIMEOUT_SECONDS,
         TURN_COMMIT_RESERVE_SECONDS,
