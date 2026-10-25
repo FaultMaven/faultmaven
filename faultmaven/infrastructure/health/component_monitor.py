@@ -1192,7 +1192,7 @@ class ComponentHealthMonitor:
         if not names:
             return {}  # asyncio.wait refuses an empty set
         # Stamped before the first probe starts, and carried to
-        # ``_record_abandoned_probe`` so a slow sweep cannot overwrite a
+        # ``_record_abandoned_probe`` so a slow sweep cannot overwrite an
         # observation a later sweep already made. Sweeps overlap: /health has
         # four callers and the Kubernetes probes co-fire.
         sweep_started_at = datetime.now(timezone.utc)

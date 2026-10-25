@@ -1,4 +1,4 @@
-"""Drive `check_all_components`' sweep-budget arm at the ordering that ships.
+"""Drive `check_components`' sweep-budget arm at the ordering that ships.
 
 The shipped constants are `_PROBE_TIMEOUT_SECONDS = 3.0` **below**
 `_ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0`: every probe carries its own deadline
@@ -16,9 +16,10 @@ test says nothing about whether the path it proves is reachable — and a reader
 takes it as evidence that it is (#1565, and #1564's own first revision).
 
 Shared by `test_component_health_gauge.py` (which introduced the pattern in
-#1564) and `test_component_monitor_probes.py` (converted by #1565), because
-two copies of a timing grammar is how the two files drift into proving
-different things about the same arm.
+#1564), `test_component_monitor_probes.py` (converted by #1565) and
+`tests/integration/test_readiness_and_redis.py` (#2266), because two copies of
+a timing grammar is how two files drift into proving different things about
+the same arm.
 """
 
 from __future__ import annotations
@@ -76,7 +77,10 @@ def probe_that_ignores_cancellation(
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
-                await asyncio.sleep(3600)  # the sweep's cancel ends this one
+                # Still pending after the sweep returns on 3.11: the sweep
+                # cancels wait_for's outer task, not this inner one, and the
+                # event loop's close ends it. It writes nothing back.
+                await asyncio.sleep(3600)
         if others is not None:
             return await others(component_name)
         return {"status": HealthStatus.HEALTHY, "metadata": {}}
