@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from faultmaven.config.tenant_context import get_current_enterprise_id
+from faultmaven.infrastructure.concurrency.bounded import wait_within
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE_SET
 
 logger = logging.getLogger(__name__)
@@ -341,7 +342,10 @@ def migration_database_url() -> str:
 
 
 #: How long the at-head check may wait on the database before the migration
-#: subprocess (itself bounded at 60 s) runs anyway (#2212).
+#: subprocess (itself bounded at 60 s) runs anyway (#2212). Held by
+#: ``wait_within``, not ``wait_for``: a read cancelled against a PostgreSQL that
+#: stopped answering never finishes its cancellation, and ``wait_for`` waits for
+#: it, so the boot hung instead of falling through (#2266).
 AT_HEAD_CHECK_TIMEOUT_SECONDS = 10.0
 
 
@@ -427,9 +431,10 @@ async def _schema_already_at_head() -> bool:
     try:
         if not persistent_database_configured(get_settings().database.database_url):
             return False
-        current = await asyncio.wait_for(
+        current = await wait_within(
             _database_revisions(migration_database_url()),
-            timeout=AT_HEAD_CHECK_TIMEOUT_SECONDS,
+            AT_HEAD_CHECK_TIMEOUT_SECONDS,
+            what="The at-head check's database read",
         )
         if not current:
             return False

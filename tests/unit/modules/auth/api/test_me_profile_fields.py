@@ -293,6 +293,41 @@ class TestHotPathBounds:
         assert created_at == "2026-08-19T21:04:10Z"
         assert last_login is None
 
+    async def test_a_read_whose_cancellation_hangs_degrades_at_the_bound(
+        self, monkeypatch
+    ):
+        """An asyncpg read cancelled against a PostgreSQL that stopped answering
+        never finishes its cancellation; the fallback still comes at the bound
+        (#2266)."""
+        monkeypatch.setattr(auth_api, "_PROFILE_READ_TIMEOUT_SECONDS", 0.01)
+        release = asyncio.Event()
+
+        class _SilentServer:
+            async def get_user(self, user_id: str) -> User | None:
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await release.wait()  # the driver's CancelRequest
+                    raise
+                return None
+
+        request_time = datetime(2026, 8, 19, 21, 4, 10, tzinfo=timezone.utc)
+        resolving = asyncio.ensure_future(
+            _resolve_profile_timestamps(
+                _principal(created_at=request_time), _SilentServer()
+            )
+        )
+        try:
+            done, _ = await asyncio.wait({resolving}, timeout=5)
+            assert done, "the profile read outlasted its bound"
+        finally:
+            release.set()
+            created_at, last_login = await resolving
+            await asyncio.sleep(0)  # the abandoned read settles
+
+        assert created_at == "2026-08-19T21:04:10Z"
+        assert last_login is None
+
 
 class TestContractBinding:
     """Bind the helper's one call to the real ``UserService`` signature. Every

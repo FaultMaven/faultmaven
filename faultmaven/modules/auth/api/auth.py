@@ -58,6 +58,7 @@ from faultmaven.config.tenant_context import (
 )
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException, UserLookupFailed
+from faultmaven.infrastructure.concurrency.bounded import wait_within
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.modules.auth.contracts import IUserQuery
@@ -1367,7 +1368,9 @@ async def _resolve_organization_summary(
 #: load/refocus), and the read degrades on failure anyway — so a stalled
 #: store (pool exhaustion waits ``database_pool_timeout``, default 30s)
 #: must become a fast fallback, not a proxy timeout that a client reads
-#: as "not authenticated" and turns into a sign-out.
+#: as "not authenticated" and turns into a sign-out. Held by ``wait_within``:
+#: a read cancelled against a PostgreSQL that stopped answering never finishes
+#: its cancellation, and ``wait_for`` would wait for it (#2266).
 _PROFILE_READ_TIMEOUT_SECONDS = 5.0
 
 #: Latch for degrade warnings that restate an unchanging fact: an unwired
@@ -1435,9 +1438,10 @@ async def _resolve_profile_timestamps(
         return fallback
 
     try:
-        stored = await asyncio.wait_for(
+        stored = await wait_within(
             user_service.get_user(current_user.user_id),
-            timeout=_PROFILE_READ_TIMEOUT_SECONDS,
+            _PROFILE_READ_TIMEOUT_SECONDS,
+            what="The /auth/me profile read",
         )
         if stored is None:
             # Equally observable: this is the *likelier* production route
