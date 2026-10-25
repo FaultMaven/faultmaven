@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.4.0
+**Version:** 14.5.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5224,6 +5224,26 @@ Request to update an existing case.
 
 ---
 
+### DatabaseTimeoutsStatus
+
+The bounds in force on a database that stops answering (#2280).
+
+Read from what the running process built — the database engine and the
+token-revocation store — not from settings. Each value is in seconds;
+``null`` means no bound is set: the setting is ``0``, or the bound does not
+apply to this deployment (the four PostgreSQL bounds on a SQLite engine,
+the revocation read on the Redis store).
+
+**Properties:**
+
+- `client_connection_check_interval_seconds` (object, required) — DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS: the server's client_connection_check_interval, set per transaction (opt-in).
+- `command_timeout_seconds` (object, required) — DATABASE_COMMAND_TIMEOUT_SECONDS: how long one PostgreSQL command may take before the client aborts its connection.
+- `connect_timeout_seconds` (object, required) — DATABASE_CONNECT_TIMEOUT_SECONDS: how long a new PostgreSQL connection may take to open.
+- `revocation_read_timeout_seconds` (object, required) — REVOCATION_READ_TIMEOUT_SECONDS: the deadline on the database token-revocation read every authenticated request makes; past it the request fails closed with 503 REVOCATION_STATE_UNKNOWN.
+- `statement_timeout_seconds` (object, required) — The server's statement_timeout, set per transaction: the command timeout less DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS, so a slow server cancels its own statement before the client gives up.
+
+---
+
 ### DerivedEvidenceSummary
 
 Summary of evidence derived from an uploaded file.
@@ -5292,6 +5312,7 @@ Read-only environment configuration status for dashboard display.
 **Properties:**
 
 - `auth_mode` (string, required) — 'local' or 'oauth'
+- `database_timeouts` (object, required) — The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read.
 - `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status

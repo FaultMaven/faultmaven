@@ -434,6 +434,50 @@ class TurnTimingStatus(BaseModel):
     )
 
 
+class DatabaseTimeoutsStatus(BaseModel):
+    """The bounds in force on a database that stops answering (#2280).
+
+    Read from what the running process built — the database engine and the
+    token-revocation store — not from settings. Each value is in seconds;
+    ``null`` means no bound is set: the setting is ``0``, or the bound does not
+    apply to this deployment (the four PostgreSQL bounds on a SQLite engine,
+    the revocation read on the Redis store).
+    """
+
+    command_timeout_seconds: Optional[float] = Field(
+        description=(
+            "DATABASE_COMMAND_TIMEOUT_SECONDS: how long one PostgreSQL command "
+            "may take before the client aborts its connection."
+        )
+    )
+    connect_timeout_seconds: Optional[float] = Field(
+        description=(
+            "DATABASE_CONNECT_TIMEOUT_SECONDS: how long a new PostgreSQL "
+            "connection may take to open."
+        )
+    )
+    statement_timeout_seconds: Optional[float] = Field(
+        description=(
+            "The server's statement_timeout, set per transaction: the command "
+            "timeout less DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS, so a slow "
+            "server cancels its own statement before the client gives up."
+        )
+    )
+    client_connection_check_interval_seconds: Optional[float] = Field(
+        description=(
+            "DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS: the server's "
+            "client_connection_check_interval, set per transaction (opt-in)."
+        )
+    )
+    revocation_read_timeout_seconds: Optional[float] = Field(
+        description=(
+            "REVOCATION_READ_TIMEOUT_SECONDS: the deadline on the database "
+            "token-revocation read every authenticated request makes; past it "
+            "the request fails closed with 503 REVOCATION_STATE_UNKNOWN."
+        )
+    )
+
+
 class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
@@ -491,6 +535,13 @@ class EnvConfigStatusResponse(BaseModel):
             "personal tenant, how many such tenants may be provisioned per "
             "hour deployment-wide, and how many investigation turns each one "
             "gets per UTC day."
+        )
+    )
+    database_timeouts: DatabaseTimeoutsStatus = Field(
+        description=(
+            "The bounds in force on a database that stops answering: the "
+            "PostgreSQL command, connect and statement timeouts the engine was "
+            "built with, and the deadline on the token-revocation read."
         )
     )
     timestamp: datetime

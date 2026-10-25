@@ -2719,6 +2719,80 @@
         "title": "CaseUpdateRequest",
         "type": "object"
       },
+      "DatabaseTimeoutsStatus": {
+        "description": "The bounds in force on a database that stops answering (#2280).\n\nRead from what the running process built \u2014 the database engine and the\ntoken-revocation store \u2014 not from settings. Each value is in seconds;\n``null`` means no bound is set: the setting is ``0``, or the bound does not\napply to this deployment (the four PostgreSQL bounds on a SQLite engine,\nthe revocation read on the Redis store).",
+        "properties": {
+          "client_connection_check_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS: the server's client_connection_check_interval, set per transaction (opt-in).",
+            "title": "Client Connection Check Interval Seconds"
+          },
+          "command_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_COMMAND_TIMEOUT_SECONDS: how long one PostgreSQL command may take before the client aborts its connection.",
+            "title": "Command Timeout Seconds"
+          },
+          "connect_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_CONNECT_TIMEOUT_SECONDS: how long a new PostgreSQL connection may take to open.",
+            "title": "Connect Timeout Seconds"
+          },
+          "revocation_read_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "REVOCATION_READ_TIMEOUT_SECONDS: the deadline on the database token-revocation read every authenticated request makes; past it the request fails closed with 503 REVOCATION_STATE_UNKNOWN.",
+            "title": "Revocation Read Timeout Seconds"
+          },
+          "statement_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The server's statement_timeout, set per transaction: the command timeout less DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS, so a slow server cancels its own statement before the client gives up.",
+            "title": "Statement Timeout Seconds"
+          }
+        },
+        "required": [
+          "command_timeout_seconds",
+          "connect_timeout_seconds",
+          "statement_timeout_seconds",
+          "client_connection_check_interval_seconds",
+          "revocation_read_timeout_seconds"
+        ],
+        "title": "DatabaseTimeoutsStatus",
+        "type": "object"
+      },
       "DerivedEvidenceSummary": {
         "description": "Summary of evidence derived from an uploaded file.",
         "properties": {
@@ -2938,6 +3012,10 @@
             "title": "Auth Mode",
             "type": "string"
           },
+          "database_timeouts": {
+            "$ref": "#/components/schemas/DatabaseTimeoutsStatus",
+            "description": "The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read."
+          },
           "db_backend": {
             "description": "'sqlite' or 'postgresql' \u2014 the dialect of the database engine the running process built; 'not initialized' before it has built one",
             "title": "Db Backend",
@@ -3005,6 +3083,7 @@
           "rate_limit_enabled",
           "turn_timing",
           "personal_tenant_limits",
+          "database_timeouts",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -6987,7 +7066,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.4.0"
+    "version": "14.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
