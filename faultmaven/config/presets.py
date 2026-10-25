@@ -423,6 +423,29 @@ def list_available_presets() -> List[Dict[str, Any]]:
 # AUTO-DETECTION FOR ZERO-CONFIG
 # =============================================================================
 
+#: The variables that name a Redis or ChromaDB server, with the meaning the
+#: settings give them. ``REDIS_URL`` and ``REDIS_HOST`` are the two the Redis
+#: client factory reads (``RedisClientFactory._build_config``; the URL wins).
+#: ``CHROMADB_URL`` selects the ChromaDB server. ``CHROMADB_HOST`` is in
+#: :func:`_names_a_server` below rather than here, because ``localhost``, its
+#: default, names the embedded store (``is_host_only_chroma_configured``).
+_SERVER_NAMING_VARIABLES = ("REDIS_URL", "REDIS_HOST", "CHROMADB_URL")
+
+
+def _names_a_server(environ: Mapping[str, str]) -> Optional[str]:
+    """The variable that points this box at a Redis or ChromaDB server, or ``None``.
+
+    A blank value names nothing, as in the settings' own predicates: an
+    unpopulated ConfigMap key or a trailing ``=`` in a ``.env`` reads as set
+    but empty.
+    """
+    for name in _SERVER_NAMING_VARIABLES:
+        if (environ.get(name) or "").strip():
+            return name
+    if (environ.get("CHROMADB_HOST") or "").strip() not in ("", "localhost"):
+        return "CHROMADB_HOST"
+    return None
+
 
 def detect_zero_config_preset() -> Optional[str]:
     """
@@ -432,7 +455,9 @@ def detect_zero_config_preset() -> Optional[str]:
     preset when CONFIG_PRESET is not explicitly set. A deployment is
     zero-config only when it configures no LLM provider at all: any provider in
     the provider registry (an API key, or ``LOCAL_LLM_URL`` for the local one),
-    Redis, ChromaDB or a non-development ``ENVIRONMENT`` declines the preset.
+    a Redis server (``REDIS_URL`` or ``REDIS_HOST``), a ChromaDB server
+    (``CHROMADB_URL``, or a ``CHROMADB_HOST`` other than ``localhost``) or a
+    non-development ``ENVIRONMENT`` declines the preset.
 
     Every one of those is read from the environment the settings are about to
     read (``environment_settings_read``): names case-insensitively, the process
@@ -468,8 +493,12 @@ def detect_zero_config_preset() -> Optional[str]:
         )
         return None
 
-    # If Redis or ChromaDB is configured, don't auto-apply local preset
-    if environ.get("REDIS_HOST") or environ.get("CHROMADB_URL"):
+    # A box pointed at a Redis or ChromaDB server is not zero-config, by
+    # whichever variable names it. REDIS_URL was missing here, so a Redis named
+    # by URL alone got the laptop preset (#2270).
+    server_variable = _names_a_server(environ)
+    if server_variable:
+        logger.debug("Zero-config preset declined: %s names a server", server_variable)
         return None
 
     # A deployed environment must not be silently reclassified as a dev box.

@@ -253,6 +253,73 @@ class TestZeroConfigDetection:
             result = detect_zero_config_preset()
             assert result is None
 
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("REDIS_URL", "redis://redis.internal:6379/0"),
+            ("REDIS_HOST", "redis.internal"),
+            ("CHROMADB_URL", "http://chroma.internal:8000"),
+            ("CHROMADB_HOST", "chroma.internal"),
+        ],
+    )
+    def test_any_variable_naming_a_redis_or_chromadb_server_declines_it(
+        self, name, value
+    ):
+        """A box pointed at a server is not zero-config, whichever variable names it.
+
+        ``REDIS_URL`` is the Redis client factory's other way to name the
+        server, and it wins over ``REDIS_HOST``. Detection asked ``REDIS_HOST``
+        alone, so a Redis named by URL got the laptop preset: ``DEBUG`` on,
+        protection and PII redaction off (#2270). ``CHROMADB_HOST`` other than
+        ``localhost`` sends the KB ingester to a server
+        (``is_host_only_chroma_configured``).
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {name: value}, clear=True):
+            assert detect_zero_config_preset() is None
+
+    def test_redis_url_alone_keeps_the_local_preset_off(self):
+        """The acceptance of #2270, end to end: nothing of the preset is applied."""
+        from faultmaven.config.presets import ensure_preset_applied
+
+        environ = {"REDIS_URL": "redis://redis.internal:6379/0"}
+        with patch.dict(os.environ, environ, clear=True):
+            ensure_preset_applied()
+            applied = dict(os.environ)
+
+        assert applied == environ
+
+    @pytest.mark.parametrize(
+        "environ",
+        [
+            {"REDIS_URL": ""},
+            {"REDIS_URL": "   "},
+            {"REDIS_HOST": ""},
+            {"CHROMADB_URL": " "},
+            {"CHROMADB_HOST": "localhost"},
+            {"CHROMADB_HOST": ""},
+        ],
+        ids=[
+            "blank_redis_url",
+            "whitespace_redis_url",
+            "blank_redis_host",
+            "whitespace_chromadb_url",
+            "embedded_chromadb_host",
+            "blank_chromadb_host",
+        ],
+    )
+    def test_a_blank_value_or_the_embedded_chromadb_host_names_no_server(self, environ):
+        """Set but empty names nothing, and ``CHROMADB_HOST=localhost`` is its
+        default, the embedded store: the box is still zero-config."""
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, environ, clear=True):
+            result = detect_zero_config_preset()
+
+        assert result is not None
+        assert result.value == "local"
+
     def test_detect_zero_config_returns_none_in_production(self):
         """Test that detect_zero_config_preset returns None in production."""
         from faultmaven.config.presets import detect_zero_config_preset
@@ -507,6 +574,7 @@ DOTENV_SCENARIOS = {
     "local_url_in_dotenv": ({}, "LOCAL_LLM_URL=http://ollama:11434/v1\n"),
     # The other reads go through the same view, in any letter case.
     "redis_in_dotenv": ({}, "REDIS_HOST=redis\n"),
+    "redis_url_in_dotenv": ({}, "REDIS_URL=redis://redis:6379/0\n"),
     "chromadb_lowercase_in_dotenv": ({}, "chromadb_url=http://chroma:8000\n"),
     "production_in_dotenv": ({}, "ENVIRONMENT=production\n"),
     "staging_lowercase_in_dotenv": ({}, "environment=staging\n"),
@@ -595,6 +663,7 @@ class TestDetectionReadsWhatTheSettingsRead:
         [
             ("REDIS_HOST", "x"),
             ("redis_host", "x"),
+            ("Redis_Url", "x"),
             ("ChromaDB_Url", "x"),
             ("environment", "production"),
             ("Environment", "staging"),
@@ -628,6 +697,7 @@ class TestDetectionReadsWhatTheSettingsRead:
         [
             "local_url_in_dotenv",
             "redis_in_dotenv",
+            "redis_url_in_dotenv",
             "chromadb_lowercase_in_dotenv",
             "production_in_dotenv",
             "staging_lowercase_in_dotenv",
