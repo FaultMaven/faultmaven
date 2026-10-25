@@ -30,7 +30,11 @@ from fastapi import (
 )
 from pydantic import ValidationError
 
-from faultmaven.api.exception_handlers import llm_service_error_http_exception
+from faultmaven.api.exception_handlers import (
+    DATABASE_UNAVAILABLE,
+    database_unavailable_http_exception,
+    llm_service_error_http_exception,
+)
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_evidence_reclassifier,
@@ -51,6 +55,7 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.exceptions import (
     CASE_TERMINAL,
+    DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
     RawModelContentRefused,
@@ -432,6 +437,29 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                     "running turn can still hold its claim (an upper bound, "
                     "not when it finishes)."
                 ),
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+    503: {
+        "description": (
+            "Unavailable; nothing of the turn committed, and a retry after "
+            "`Retry-After` seconds is safe. Told apart by `x-error-code`: "
+            f"`{DATABASE_UNAVAILABLE}` (the database did not answer while the "
+            "turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage "
+            "allowance could not be checked); `LLM_OVER_CAPACITY`, "
+            "`LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI "
+            "provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the "
+            "authentication every route requires could not read the token "
+            "revocation store)."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Which dependency was unavailable.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": "Seconds; sent with every 503 this route answers.",
                 "schema": {"type": "integer"},
             },
         },
@@ -858,12 +886,25 @@ async def submit_turn(
             # slow server is not this case: its statement_timeout cancels the
             # statement first, and nothing commits.
             with bind_turn_deadline(agent_timeout):
-                prepared = await asyncio.wait_for(
-                    investigation_service.prepare_turn(
-                        case_id=case_id, user_id=current_user.user_id, payload=payload
-                    ),
-                    timeout=agent_timeout,
-                )
+                try:
+                    prepared = await asyncio.wait_for(
+                        investigation_service.prepare_turn(
+                            case_id=case_id,
+                            user_id=current_user.user_id,
+                            payload=payload,
+                        ),
+                        timeout=agent_timeout,
+                    )
+                except DatabaseTimeout as unavailable:
+                    # The database did not answer while the turn was prepared
+                    # (#2280). The preparation commits nothing, so this is the
+                    # 503 the revocation read answers for the same cause, not a
+                    # timeout of the turn: REQUEST_TIMEOUT would tell the client
+                    # the same input will exhaust the ceiling again.
+                    logger.error(
+                        "Turn on case %s not prepared: %s", case_id, unavailable
+                    )
+                    raise database_unavailable_http_exception() from unavailable
                 try:
                     response = await investigation_service.commit_turn(
                         prepared,
@@ -904,6 +945,12 @@ async def submit_turn(
 
             return await _turn_gated_for_viewer(request, current_user, response)
 
+        except DatabaseTimeout:
+            # After the preparation (whose own is answered 503 above): reading a
+            # replayed turn, or gating the committed response for the viewer.
+            # The turn may have committed, so neither "nothing was saved"
+            # answer may be given; it is the 500 of any later failure.
+            raise
         except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
             # Both mean the same thing to the client, and are answered the
             # same way: the turn ran out of time and NOTHING of it was

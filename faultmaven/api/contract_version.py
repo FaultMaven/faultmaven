@@ -2165,6 +2165,16 @@ asked to accept, and it belongs to a person.
 # The Dashboard's hand-declared `EnvConfigStatus` ignores an extra key, and the
 # generated client types only widen.
 #
+# `POST /cases/{case_id}/turns` documents a 503 (it answered several without
+# documenting one): `DATABASE_UNAVAILABLE` (new, `Retry-After: 5`, nothing
+# committed) when the database does not answer while the turn is prepared,
+# beside the 503 codes the route already answered (`TENANT_TURN_CAP_UNAVAILABLE`,
+# `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_INVALID_RESPONSE`, and
+# `REVOCATION_STATE_UNKNOWN` from authentication). Its two 504s keep their
+# meaning: a database timeout is never answered `REQUEST_TIMEOUT` or
+# `LLM_TIMEOUT`. MINOR: a newly documented status on a route that already
+# answered 503s, with one new code under it; no request shape changes.
+#
 # Behaviour a client may notice without a schema change: against a PostgreSQL
 # that stops answering, an authenticated request is answered 503
 # `REVOCATION_STATE_UNKNOWN` after REVOCATION_READ_TIMEOUT_SECONDS (5 s) where

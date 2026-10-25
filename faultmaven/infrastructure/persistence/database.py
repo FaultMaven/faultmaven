@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import event, text
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -36,6 +37,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
+from faultmaven.exceptions import DatabaseTimeout, walk_cause_chain
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.pg_connection import (
     PgBounds,
@@ -331,6 +333,7 @@ async def get_db_session(
     - Session creation
     - Automatic commit on success
     - Automatic rollback on exception
+    - A database timeout raised as ``DatabaseTimeout`` (#2280)
     - Session cleanup
 
     Args:
@@ -338,6 +341,10 @@ async def get_db_session(
 
     Yields:
         AsyncSession for database operations
+
+    Raises:
+        DatabaseTimeout: The database did not answer in time (a driver or
+            pool timeout escaped the session, bare or wrapped).
 
     Example:
         async with get_db_session() as session:
@@ -354,11 +361,33 @@ async def get_db_session(
         # commits. No-op on SQLite.
         yield session
         await session.commit()
-    except Exception:
+    except Exception as failure:
         await session.rollback()
+        # A timeout out of a session is the database's (#2280): a session body
+        # awaits nothing else. Named here, at the one door every repository
+        # goes through, so the callers above can tell it from their own
+        # timeouts by type, however a repository wrapped it on the way out.
+        if _is_database_timeout(failure):
+            raise DatabaseTimeout(
+                f"The database did not answer in time: {failure}"
+            ) from failure
         raise
     finally:
         await session.close()
+
+
+def _is_database_timeout(failure: BaseException) -> bool:
+    """A driver or pool timeout on ``failure``'s cause chain, not yet named.
+
+    The driver's command and connect timeouts arrive as a bare ``TimeoutError``
+    (SQLAlchemy does not wrap it), the pool's as ``sqlalchemy.exc.TimeoutError``.
+    One already named ``DatabaseTimeout`` (an inner session's) is left as it
+    is, so it is never wrapped twice.
+    """
+    chain = list(walk_cause_chain(failure))
+    if any(isinstance(cause, DatabaseTimeout) for cause in chain):
+        return False
+    return any(isinstance(cause, (TimeoutError, PoolTimeoutError)) for cause in chain)
 
 
 # ============================================================

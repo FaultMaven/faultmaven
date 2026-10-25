@@ -11362,6 +11362,23 @@
             },
             "description": "Validation Error"
           },
+          "503": {
+            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds; sent with every 503 this route answers.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "Which dependency was unavailable.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "504": {
             "description": "Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).",
             "headers": {

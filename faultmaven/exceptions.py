@@ -87,6 +87,28 @@ class ExternalServiceException(FaultMavenException):
     pass
 
 
+class DatabaseTimeout(TimeoutError):
+    """The database did not answer within its bound (#2280).
+
+    Raised by ``get_db_session``, the one session every repository reads and
+    writes through, in place of a timeout escaping it: the driver's command or
+    connect timeout (``DATABASE_COMMAND_TIMEOUT_SECONDS``,
+    ``DATABASE_CONNECT_TIMEOUT_SECONDS``) or SQLAlchemy's pool timeout, whether
+    raised bare or already wrapped by a repository on its way out. Anything
+    above a session can then tell the database's timeout from every other
+    ``TimeoutError`` (the turn ceiling's, an LLM call's) by type, on the
+    ``__cause__`` chain, rather than by reading a message: the turn route
+    answers it 503 ``DATABASE_UNAVAILABLE`` where the turn's own timeouts are
+    504s.
+
+    Subclasses ``TimeoutError``, as ``ExternalCallTimeout`` does, so every
+    existing ``except TimeoutError`` keeps catching it. Declares no
+    ``retryable``, ``status_code`` or ``error_code``: the LLM error mapper reads
+    those on the cause chain, and a database timeout must never be reported as
+    the AI provider's.
+    """
+
+
 class ExternalCallTimeout(ExternalServiceException, TimeoutError):
     """A call to an external service exceeded its CLIENT-SIDE deadline.
 
