@@ -180,7 +180,7 @@ tests/
 │   ├── api/               # API endpoint tests
 │   ├── modules/           # Module integration tests (agent, auth, case, knowledge)
 │   └── real_llm/          # Opt-in tests against a live LLM provider
-├── performance/           # Wall-clock overhead tests, against performance/budgets.py
+├── performance/           # Wall-clock tests (latency, throughput, overhead), against performance/budgets.py
 └── load/                  # Locust load tests (locustfile.py)
 ```
 

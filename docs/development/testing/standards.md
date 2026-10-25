@@ -275,8 +275,9 @@ class TestMilestoneEngine:
         assert result["case_updated"].turn_history[-1].turn_number == 1
 ```
 
-`tests/unit/core/investigation/test_narration_overclaim_apply.py` drives the
-engine the same way.
+`tests/unit/core/investigation/test_narration_overclaim_apply.py` also drives
+`process_turn` with only the LLM seam and persistence stubbed, though on
+unspecced mocks, which this guide no longer recommends.
 
 ### **Error Handling Integration**
 ```python
@@ -329,12 +330,13 @@ class TestExternalClientIntegration:
 
 Never compare a duration against a literal.
 `tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and accepts
-these routes only: a latency or a rate through `assert_latency_within` /
+these routes (and the exemptions it names): a latency or a rate through `assert_latency_within` /
 `assert_throughput_at_least` (`tests/wallclock`) against a `budgets.py` row
 (`tests/performance/`, `tests/benchmarks/`), a growth question through
 `assert_linear_growth`, a deadline question onto `VirtualTimeLoop`, or a
 measurement that is not a clock. `tests/performance/` takes each statistic over
-several windows (`tests/wallclock/sampling.py`); `tests/benchmarks/` times
+several windows (`tests/wallclock/sampling.py`), but for one order-statistic test
+the guard names; `tests/benchmarks/` times
 through `measure_min_latency` (`tests/benchmarks/conftest.py`). The worked
 example is pattern 6 in [patterns.md](patterns.md); the method, and which
 instrument answers which question, is in [performance.md](performance.md).

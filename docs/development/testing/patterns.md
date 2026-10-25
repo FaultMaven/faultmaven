@@ -637,9 +637,9 @@ These modern testing patterns provide a comprehensive foundation for testing Fau
 
 Key benefits of these patterns:
 - **Clean State Management**: Proper container reset and environment isolation
-- **Interface Compliance**: All mocks implement proper interface contracts
+- **Interface Compliance**: Mocks are autospecced on their interface contracts, but for the known gaps
 - **Realistic Testing**: Focus on business logic validation rather than mock verification
-- **Performance Awareness**: Judge timings against `budgets.py` rows, never against literals
+- **Performance Awareness**: Judge timings by the routes the calibration guard accepts, never against literals
 - **Error Handling**: Comprehensive error scenario coverage and graceful degradation testing
 - **Cross-Layer Integration**: End-to-end workflow validation through all architectural layers
 

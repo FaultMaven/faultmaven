@@ -18,7 +18,7 @@ FaultMaven's tests follow the Clean Architecture layering:
 tests/
 ├── conftest.py             # Global test configuration and fixtures (reset_container, booted_app_client)
 ├── case_builders.py        # Plain keyword-override Case builders
-├── network_guard.py        # Refuses non-loopback connects and foreign names; admits the job's PostgreSQL/Redis, never a model-server port
+├── network_guard.py        # Refuses non-loopback connects, foreign names and loopback ports the test did not bind; admits the job's PostgreSQL/Redis, never a model-server port
 ├── unit/                   # Unit tests, by layer
 │   ├── api/                # API Layer: routes, middleware, composition root
 │   ├── modules/            # Feature modules: agent, auth, case, evidence, knowledge, preprocessing, report
@@ -42,7 +42,7 @@ tests/
 │   ├── test_kb_ingestion_and_indexing.py # Knowledge base integration
 │   └── test_readiness_and_redis.py # System readiness testing
 ├── benchmarks/             # Benchmarks, against benchmarks/budgets.py
-├── performance/            # Wall-clock overhead, against performance/budgets.py
+├── performance/            # Wall-clock latency, throughput and overhead, against performance/budgets.py
 │   ├── test_logging_overhead.py    # Logging performance validation
 │   └── test_context_overhead.py    # Context creation performance
 └── load/                   # Locust load tests
@@ -265,7 +265,7 @@ FaultMaven's Clean Architecture testing approach with **1425+ tests** ensures co
 
 Key benefits:
 - **Clean State Management**: Proper container reset ensures test isolation
-- **Interface Compliance**: All dependencies tested through interface contracts
+- **Interface Compliance**: Dependencies mocked through their interface contracts, but for the known gaps
 - **Architecture Validation**: Tests validate Clean Architecture layer boundaries
-- **Performance Monitoring**: Timings judged against `budgets.py` rows through the shared helpers
+- **Performance Monitoring**: Timings judged by the routes the calibration guard accepts, never against literals
 - **Cross-Layer Integration**: End-to-end workflow testing through all layers

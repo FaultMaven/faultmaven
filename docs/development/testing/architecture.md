@@ -364,8 +364,8 @@ async def test_error_propagation_across_layers():
 ### Performance and Resource Management
 
 A duration is never judged against a literal.
-`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and
-accepts these routes only: a latency or a rate through `assert_latency_within`
+`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and accepts
+these routes (and the exemptions it names): a latency or a rate through `assert_latency_within`
 / `assert_throughput_at_least` against a `budgets.py` row (`tests/performance/`,
 `tests/benchmarks/`), a growth question through `assert_linear_growth`, a
 deadline question onto `VirtualTimeLoop`, or a measurement that is not a clock.
