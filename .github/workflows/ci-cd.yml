@@ -482,12 +482,13 @@ jobs:
   # (Installs the [cloud] extras-set via requirements/cloud.txt.)
   #
   # The Redis service is the cloud pairing (fm#1031): a real Redis 7.2 read
-  # through the hiredis parser cloud.txt pins. Only the pairing check step and
-  # tests/integration/test_real_redis_stores.py reach it; the module drives the
-  # session, revocation, rate-limit and idempotency stores on it. The rest of
-  # the suite runs under SKIP_SERVICE_CHECKS, so its composition uses the
-  # in-process FakeRedis, which works under hiredis because each event loop has
-  # a FakeRedis client of its own (#2247).
+  # through the hiredis parser cloud.txt pins. Two steps name it in their env,
+  # and only they reach it: the pairing check, and the step that runs
+  # tests/integration/test_real_redis_stores.py alone. The suite step names no
+  # Redis, so every Redis consumer in it resolves the in-process FakeRedis (one
+  # client per event loop, #2247), and tests/network_guard.py refuses a
+  # connection to any Redis the step does not name: a suite test that reached
+  # for the server fails instead of using it (#2243).
   #
   # Test PostgreSQL Integration also installs cloud.txt but selects `-m postgres`,
   # whose tests talk to PostgreSQL directly and never construct a Redis client or
@@ -567,18 +568,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
-      # The discrete host/port/db path, which is the one the cloud ConfigMap
-      # uses (REDIS_HOST/REDIS_PORT/REDIS_DB — no REDIS_URL). Job-scoped rather
-      # than step-scoped so the pairing check below and the real-Redis module
-      # in the suite cannot drift into pointing at different servers. Unset, the
-      # pairing check resolves the settings default (the in-cluster service
-      # name), cannot reach it, and fails on the FakeRedis fallback; the module
-      # skips, because tests/conftest.py defaults REDIS_HOST to empty.
-      REDIS_HOST: "localhost"
-      REDIS_PORT: "6379"
-      REDIS_DB: "0"
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -606,14 +595,50 @@ jobs:
           echo "✓ Cloud dependencies verified"
 
       - name: Verify the cloud Redis pairing
-        # Before the suite: the pairing this job claims, and the real-Redis
-        # module in the suite (tests/integration/test_real_redis_stores.py),
+        # First: the pairing this job claims, and the real-Redis step below,
         # hold only if the app reaches the real server through hiredis. The
         # FakeRedis fallback is silent by design (standalone wants it), so a
         # broken service container fails here, by name, rather than passing on
-        # the stand-in (fm#1031). The rest of the suite runs on the in-process
-        # FakeRedis either way (SKIP_SERVICE_CHECKS).
+        # the stand-in (fm#1031).
         run: python scripts/check_redis_pairing.py
+        env:
+          # The discrete host/port/db path the cloud ConfigMap uses (no
+          # REDIS_URL). Named here and in the real-Redis step only, and the
+          # same in both.
+          REDIS_HOST: "localhost"
+          REDIS_PORT: "6379"
+          REDIS_DB: "0"
+
+      - name: Run the real-Redis store tests
+        # The one test module that reaches the job's Redis, run alone. Before
+        # the suite: it takes seconds and rests only on what the pairing check
+        # just proved, so a failure shows now rather than after the suite. The
+        # path selects it; the -m and --ignore are the ones every pytest command
+        # in this job must carry (#2090, pinned by
+        # tests/unit/ci/test_benchmark_calibration.py).
+        run: |
+          pytest tests/integration/test_real_redis_stores.py \
+            -m "not benchmark and not performance" \
+            --ignore=tests/performance \
+            -p no:cacheprovider \
+            -v
+        env:
+          # The suite step's env (see the comments there), plus the Redis the
+          # pairing check names.
+          SKIP_SERVICE_CHECKS: "true"
+          OPIK_ENABLED: "false"
+          OPIK_TRACK_DISABLE: "true"
+          PROMETHEUS_ENABLED: "true"
+          TRACING_ENABLED: "true"
+          METRICS_ENABLED: "true"
+          PROTECTION_ENABLED: "true"
+          SANITIZE_PII: "true"
+          USER_STORAGE_TYPE: "inmemory"
+          CASE_STORAGE_TYPE: "inmemory"
+          VECTOR_STORAGE_TYPE: "inmemory"
+          REDIS_HOST: "localhost"
+          REDIS_PORT: "6379"
+          REDIS_DB: "0"
 
       - name: Run Tests (Cloud)
         run: |
@@ -627,6 +652,7 @@ jobs:
             --cov-report=term-missing \
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
+            --ignore=tests/integration/test_real_redis_stores.py \
             --durations=0 \
             --durations-min=1.0 \
             -v
@@ -655,12 +681,19 @@ jobs:
           METRICS_ENABLED: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
-          # SKIP_SERVICE_CHECKS hands the composition root the in-process
-          # FakeRedis, so the suite's sessions, rate limits and revocation run on
-          # the stand-in, not on the job's Redis (REDIS_HOST/PORT/DB at job
-          # level). What drives that server is the pairing check above and
-          # tests/integration/test_real_redis_stores.py (#2243). Users, cases and
-          # vectors stay in-process too.
+          # No REDIS_*: this step names no Redis. Every Redis consumer in the
+          # suite resolves the in-process FakeRedis: the composition root under
+          # SKIP_SERVICE_CHECKS, and an app served without its lifespan from
+          # the empty REDIS_HOST tests/conftest.py sets. tests/network_guard.py
+          # refuses a connection to any Redis the step does not name. So
+          # sessions, rate limits and request deduplication run on the stand-in;
+          # revocation is the SQL store (DEPLOYMENT_MODE is not cloud), and
+          # IdempotencyMiddleware is not mounted under SKIP_SERVICE_CHECKS. The
+          # real-Redis step above, ignored here, drives the server (#2243).
+          #
+          # Inert: tests/conftest.py pops these three at import
+          # (ENV_VARS_TO_CLEAR), so the suite runs on the settings defaults,
+          # cases in SQLite and vectors in a local Chroma.
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"

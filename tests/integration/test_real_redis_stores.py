@@ -1,18 +1,18 @@
 """The Redis-backed stores, driven against a real Redis server (#2243).
 
-Every CI test job sets ``SKIP_SERVICE_CHECKS``, under which the composition root
-hands the app the in-process FakeRedis (``create_redis_client``). So the suite's
-sessions, revocation, rate limits and idempotency all run on the stand-in, even
-in ``Test Cloud``, whose Redis service exists for the cloud pairing: a real
-server read through the ``hiredis`` parser that ``requirements/cloud.txt`` pins
-(fm#1031). ``scripts/check_redis_pairing.py`` proves that job can reach that
-server. This module drives each store against it.
+The suite steps of Test Standalone and Test Cloud set ``SKIP_SERVICE_CHECKS`` and
+name no Redis, so every Redis consumer in them resolves the in-process FakeRedis.
+Test Cloud's Redis service is the cloud pairing: a real server read through the
+``hiredis`` parser ``requirements/cloud.txt`` pins (fm#1031). Two steps of that
+job name it: ``scripts/check_redis_pairing.py``, and the step that runs this
+module alone. This module drives the stores' commands and their server-side
+scripts against it.
 
-**Gate.** The module runs only where ``REDIS_HOST`` names a server. Unset (Test
-Standalone, plain local runs) it skips. Set, a server that does not answer
-FAILS each test: ``get_async_redis_client()`` falls back to FakeRedis silently,
-and a broken service container must not turn this module green on the
-stand-in.
+**Gate.** Marked ``cloud``, so Test Standalone deselects it. It runs only where
+``REDIS_HOST`` or ``REDIS_URL`` names a server, and skips elsewhere. Where one is
+named and does not answer, each test FAILS: ``get_async_redis_client()`` falls
+back to FakeRedis silently, and a broken service container must not turn this
+module green on the stand-in.
 
 **Isolation.** Each test builds its own client on its own event loop, writes
 only under a namespace no other test uses, deletes what it wrote, and closes
@@ -28,6 +28,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import Body, FastAPI
+from redis.utils import HIREDIS_AVAILABLE
 
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
@@ -45,42 +46,44 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
 )
 
-try:
-    import hiredis  # noqa: F401
-
-    HIREDIS_IMPORTS = True
-except ImportError:
-    HIREDIS_IMPORTS = False
-
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.cloud,
     pytest.mark.skipif(
-        not os.environ.get("REDIS_HOST"),
-        reason="REDIS_HOST is unset: no real Redis to drive (Test Cloud sets it)",
+        not (os.environ.get("REDIS_HOST") or os.environ.get("REDIS_URL")),
+        reason="neither REDIS_HOST nor REDIS_URL names a Redis to drive "
+        "(Test Cloud's real-Redis step sets REDIS_HOST)",
     ),
 ]
 
-# The pairing check's own reading of the parser, so this module and the CI step
-# gather the same evidence. ``scripts/`` is not a package, so it loads by path.
-_PAIRING_SCRIPT = (
-    Path(__file__).resolve().parents[2] / "scripts" / "check_redis_pairing.py"
-)
-_spec = importlib.util.spec_from_file_location("check_redis_pairing", _PAIRING_SCRIPT)
-_pairing = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_pairing)
+
+def _named_server() -> str:
+    """The variable naming this run's Redis; ``REDIS_URL`` wins, as in the factory."""
+    if os.environ.get("REDIS_URL"):
+        return "REDIS_URL"  # its value can carry a password, so it is not shown
+    port = os.environ.get("REDIS_PORT", "6379")
+    return f"REDIS_HOST={os.environ['REDIS_HOST']!r} REDIS_PORT={port!r}"
+
+
+def _pairing_check():
+    """``scripts/check_redis_pairing.py``, loaded by path: ``scripts/`` is no package."""
+    path = Path(__file__).resolve().parents[2] / "scripts" / "check_redis_pairing.py"
+    spec = importlib.util.spec_from_file_location("check_redis_pairing", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
 async def real_redis():
-    """A client of this test's own on the server ``REDIS_HOST`` names, or a failure."""
+    """A client of this test's own on the named server, or a failure."""
     client = await get_async_redis_client()
     if is_fakeredis(client):
         pytest.fail(
-            f"REDIS_HOST={os.environ['REDIS_HOST']!r} "
-            f"REDIS_PORT={os.environ.get('REDIS_PORT', '6379')!r} is set, but "
-            "get_async_redis_client() resolved the in-process FakeRedis: the server "
-            "did not answer. This module exists to drive that server, so it fails "
-            "rather than skips; check that the Redis service is up.",
+            f"{_named_server()} is set, but get_async_redis_client() resolved the "
+            "in-process FakeRedis: the server did not answer. This module exists to "
+            "drive that server, so it fails rather than skips; check that the "
+            "Redis service is up.",
             pytrace=False,
         )
     yield client
@@ -92,21 +95,22 @@ async def namespace(real_redis):
     """A key prefix no other test uses; every key under it is deleted afterwards."""
     prefix = f"fm-test-real-redis:{uuid.uuid4().hex}:"
     yield prefix
-    keys = [key async for key in real_redis.scan_iter(match=f"{prefix}*")]
+    keys = [key async for key in real_redis.scan_iter(match=f"{prefix}*", count=1000)]
     if keys:
         await real_redis.delete(*keys)
 
 
-async def test_a_pooled_connection_parses_with_hiredis_when_it_imports(
+async def test_a_pooled_connection_parses_with_hiredis_when_redis_py_can(
     real_redis, namespace
 ):
     key = f"{namespace}parser"
     await real_redis.set(key, "ok", ex=60)
     assert await real_redis.get(key) == "ok"
 
-    parser = _pairing._live_parser_class(real_redis)
+    # The pairing check's own reading, so the module and the CI step agree.
+    parser = _pairing_check()._live_parser_class(real_redis)
 
-    if HIREDIS_IMPORTS:
+    if HIREDIS_AVAILABLE:
         assert parser.__name__ == "_AsyncHiredisParser", parser
     else:
         assert "hiredis" not in parser.__module__, parser
@@ -125,6 +129,25 @@ async def test_the_session_store_saves_reads_expires_and_deletes(real_redis, nam
 
     assert await store.delete_session("session-1") is True
     assert await store.get_session("session-1") is None
+
+
+async def test_the_session_store_deletes_only_the_keys_holding_the_value(
+    real_redis, namespace
+):
+    """``delete_keys_holding``: SCAN plus the compare-and-delete script."""
+    store = RedisSessionStore(real_redis)
+    store.prefix = f"{namespace}session:"
+    await store.set("s-1:current_case_id", "case-a")
+    await store.set("s-2:current_case_id", "case-a")
+    await store.set("s-3:current_case_id", "case-b")
+
+    deleted = await store.delete_keys_holding("*:current_case_id", "case-a")
+
+    assert deleted == 2
+    assert await store.get("s-1:current_case_id") is None
+    assert await store.get("s-2:current_case_id") is None
+    # The positive control: a pointer holding another value is kept.
+    assert await store.get("s-3:current_case_id") == "case-b"
 
 
 async def test_the_revocation_store_answers_per_token_and_per_user(
@@ -146,6 +169,25 @@ async def test_the_revocation_store_answers_per_token_and_per_user(
     assert not await store.is_user_revoked("user-1", issued_at=int(watermark) + 1)
     assert not await store.is_user_revoked("user-2", issued_at=int(watermark) - 1)
     assert await store.count_user_watermarks() == 1
+
+
+async def test_the_revocation_store_clears_only_a_watermark_older_than_the_instant(
+    real_redis, namespace
+):
+    """``clear_user_revocation_if_before``: the server-side compare-and-delete."""
+    store = RedisTokenRevocationStore(
+        real_redis, key_prefix=f"{namespace}revoked:token:"
+    )
+    watermark = time.time()
+    await store.revoke_user_tokens_before("user-1", watermark, ttl=60)
+
+    # The positive control: an instant that is not later leaves it in place.
+    assert await store.clear_user_revocation_if_before("user-1", watermark) is False
+    assert await store.is_user_revoked("user-1", issued_at=int(watermark) - 1)
+
+    assert await store.clear_user_revocation_if_before("user-1", watermark + 1)
+    assert not await store.is_user_revoked("user-1", issued_at=int(watermark) - 1)
+    assert await store.count_user_watermarks() == 0
 
 
 async def test_the_rate_limiter_window_script_admits_then_refuses(
