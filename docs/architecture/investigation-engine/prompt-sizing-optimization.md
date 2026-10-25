@@ -269,9 +269,10 @@ are now fixed on `main`:
 - **Extra fields never rendered.** `turn_token_spend` logs via
   `logger.info("turn_token_spend", extra={...})`, but the stdlib logging path
   rendered only `%(message)s`, dropping every `extra` field. Fixed by routing all
-  logs through a single `structlog.stdlib.ProcessorFormatter` with `ExtraAdder`
-  (+ `PositionalArgumentsFormatter`), so stdlib `extra={...}` fields render as
-  JSON facility-wide, not just for the token log. `turn_token_spend` now also
+  logs through a single `structlog.stdlib.ProcessorFormatter` that lifts a
+  record's `extra` (`lift_record_extra`, + `PositionalArgumentsFormatter`), so
+  stdlib `extra={...}` fields render as JSON facility-wide, not just for the
+  token log. `turn_token_spend` now also
   emits `spend_weighted_tokens` (the guard measure) alongside the raw buckets.
 - **Models served were unpriced.** `pricing.py` had no entry for the models
   actually served, so `estimated_cost_usd = 0` and every call was flagged

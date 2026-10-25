@@ -56,7 +56,7 @@ Recording the decision where it is **made** is the point of this stream.
 |---|---|
 | logger | `faultmaven.telemetry.case` |
 | level | `INFO`, **pinned on the logger itself** |
-| rendering | root structlog handler (`ProcessorFormatter` + `ExtraAdder`) — fields render as top-level JSON keys |
+| rendering | root structlog handler (`ProcessorFormatter` + `lift_record_extra`) — fields render as top-level JSON keys, `event` included |
 | point | `turn_messages._emit_committed_turn` (`investigation_service/turn_messages.py`), run by the turn's settlement after its one commit (#1882); a turn that did not commit gets the `error` row instead |
 | cardinality | exactly **one row per consumed turn**, every route |
 

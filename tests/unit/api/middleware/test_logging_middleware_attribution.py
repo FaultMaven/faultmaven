@@ -288,3 +288,21 @@ class TestTheCallersValueIsKeptUnderACallersName:
         record = _line(caplog, "Request started")
         assert log_field(record, "user_id") is None
         assert "[user:" not in record.getMessage()
+
+
+@pytest.mark.unit
+class TestTheCaseTheRequestNamesIsAClaim:
+    """The case id a request names is recorded as ``claimed_case_id`` (#2268).
+
+    Under ``case_id`` it was also stamped on every record of the request, where
+    it displaced the case a line was actually about.
+    """
+
+    def test_the_request_lines_carry_it_as_claimed_case_id(self, caplog):
+        with caplog.at_level("INFO"):
+            _get(_app(), headers={"X-Case-ID": "case-claimed"})
+
+        for needle in ("Request started", "Request completed"):
+            line = _line(caplog, needle)
+            assert log_field(line, "claimed_case_id") == "case-claimed", needle
+            assert log_field(line, "case_id") is None, needle

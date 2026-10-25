@@ -300,9 +300,9 @@ class TestThePreFetchLogCarriesIdentity:
     async def test_a_structured_reader_gets_fields_not_a_sentence(self, push, caplog):
         """Pinned the way a consumer actually reads it.
 
-        The root handler is structlog's ``ProcessorFormatter`` with
-        ``ExtraAdder``, so anything passed as ``extra`` lands as a top-level key
-        on the JSON line. An aggregator keys on ``kb_runbook_ids``; it does not
+        The root handler is structlog's ``ProcessorFormatter``, whose
+        ``lift_record_extra`` lands what is passed as ``extra`` as a top-level
+        key on the JSON line. An aggregator keys on ``kb_runbook_ids``; it does not
         parse the English.
 
         ``kb_prefetch_top_score`` is asserted against a fixture whose first hit

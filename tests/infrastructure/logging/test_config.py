@@ -16,6 +16,15 @@ from faultmaven.infrastructure.logging.config import (
     LoggingConfig,
     get_logger,
 )
+from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
+
+
+def _log_through(path: str, name: str, message: str, extra: dict) -> None:
+    """Log ``message`` with stdlib-style ``extra`` down one of the two paths."""
+    if path == "native":
+        structlog.get_logger(name).info(message, extra=extra)
+    else:
+        logging.getLogger(name).info(message, extra=extra)
 
 
 class TestFaultMavenLogger:
@@ -189,6 +198,190 @@ class TestFaultMavenLogger:
         assert record["note"] == "kept"
         assert "exception" not in record, "the caller's exc_info rendered a traceback"
         assert record["extra"] == {"exc_info": True, "exception": "caller data"}
+
+    def _rendered(self, emit, config=None) -> str:
+        """What the FaultMaven root handler writes for the records ``emit`` logs."""
+        import io
+
+        FaultMavenLogger(config=config or self._json_config())
+        handler = self._fm_root_handler()
+        buf = io.StringIO()
+        orig_stream = handler.stream
+        handler.stream = buf
+        try:
+            emit()
+        finally:
+            handler.stream = orig_stream
+        return buf.getvalue().strip()
+
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_lines_own_case_id_is_never_displaced_by_the_requests_claim(self, path):
+        """During a request that names case A, a line about case B says B.
+
+        The request's claim was stamped as ``case_id`` on every record, so on
+        the native path it displaced the line's own ``case_id`` (#2268). It is
+        ``claimed_case_id`` now, on both paths.
+        """
+        import json
+
+        coordinator = LoggingCoordinator()
+        coordinator.start_request(claimed_case_id="case-A")
+        try:
+            line = self._rendered(
+                lambda: _log_through(
+                    path,
+                    "faultmaven.tests.attribution_2268",
+                    "about B",
+                    {"case_id": "case-B"},
+                )
+            )
+        finally:
+            coordinator.end_request()
+
+        record = json.loads(line)
+        assert record["case_id"] == "case-B"
+        assert record["claimed_case_id"] == "case-A"
+        assert "extra" not in record
+
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_callers_user_id_never_replaces_the_verified_principal(self, path):
+        """A verified principal is one of the keys a caller's ``extra`` never
+        replaces, on either path: the caller's value stays under ``extra``.
+
+        The stdlib path's ``ExtraAdder`` wrote a caller's ``user_id`` over the
+        request's verified one, where the native path kept it apart (#2268).
+        """
+        import json
+
+        coordinator = LoggingCoordinator()
+        coordinator.start_request(user_id="verified-principal")
+        try:
+            line = self._rendered(
+                lambda: _log_through(
+                    path,
+                    "faultmaven.tests.attribution_2268",
+                    "acting",
+                    {"user_id": "the-target"},
+                )
+            )
+        finally:
+            coordinator.end_request()
+
+        record = json.loads(line)
+        assert record["user_id"] == "verified-principal"
+        assert record["extra"] == {"user_id": "the-target"}
+
+    @pytest.mark.parametrize("log_format", ["json", "console"])
+    @pytest.mark.parametrize("directive", ["exc_info", "stack_info"])
+    def test_a_lifted_directive_renders_nothing(self, directive, log_format):
+        """A caller's ``exc_info``/``stack_info`` stays data under ``extra``: no
+        traceback and no stack is rendered, under either renderer."""
+        config = self._json_config()
+        config.LOG_FORMAT = log_format
+        try:
+            raise RuntimeError("in flight")
+        except RuntimeError:
+            line = self._rendered(
+                lambda: structlog.get_logger("faultmaven.tests.lift_2268").info(
+                    "handled", extra={directive: True}
+                ),
+                config,
+            )
+        assert "Traceback" not in line
+        assert "Stack (most recent call last)" not in line
+        assert directive in line, "the caller's value was dropped"
+
+    @pytest.mark.parametrize(
+        "key",
+        ["exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"],
+    )
+    def test_every_key_the_formatter_acts_on_stays_caller_data(self, key):
+        """Listed here, not read from the constant, so that cutting a key from
+        ``_FORMATTER_KEYS`` fails this test: lifted, each would trigger a
+        traceback or stack, be overwritten, or vanish (#2262, #2268)."""
+        import json
+
+        line = self._rendered(
+            lambda: structlog.get_logger("faultmaven.tests.lift_2268").info(
+                "handled", extra={key: "caller data", "note": "kept"}
+            )
+        )
+        record = json.loads(line)
+        assert record["extra"] == {key: "caller data"}
+        assert record["note"] == "kept"
+
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_callers_own_field_wins_over_a_context_stamp(self, path):
+        """A route's own ``correlation_id`` (the one its 500 body names) is the
+        line's, as a record's own field is wherever the context only fills in."""
+        import json
+
+        coordinator = LoggingCoordinator()
+        coordinator.start_request()
+        try:
+            line = self._rendered(
+                lambda: _log_through(
+                    path,
+                    "faultmaven.tests.attribution_2268",
+                    "failed",
+                    {"correlation_id": "route-minted"},
+                )
+            )
+        finally:
+            coordinator.end_request()
+
+        record = json.loads(line)
+        assert record["correlation_id"] == "route-minted"
+        assert "extra" not in record
+
+    def test_a_stdlib_lines_event_name_is_the_callers(self):
+        """The case-telemetry stream names each line by ``extra={"event": ...}``
+        on a stdlib logger, and a structured consumer keys on it."""
+        import json
+
+        line = self._rendered(
+            lambda: logging.getLogger("faultmaven.tests.telemetry_2268").info(
+                "case-telemetry case=c turn=3", extra={"event": "case_turn"}
+            )
+        )
+        assert json.loads(line)["event"] == "case_turn"
+
+    @pytest.mark.parametrize("key", ["level", "logger", "timestamp"])
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_callers_value_never_replaces_the_loggers_own_facts(self, path, key):
+        """The logger's own facts are not the caller's to replace; on the
+        stdlib path ``extra={"level": "top"}`` used to (#2268)."""
+        import json
+
+        line = self._rendered(
+            lambda: _log_through(
+                path, "faultmaven.tests.facts_2268", "parsed", {key: "caller"}
+            )
+        )
+        record = json.loads(line)
+        assert record[key] != "caller"
+        assert record["extra"] == {key: "caller"}
+
+    @pytest.mark.parametrize("held", [{"a": 1}, "plain"])
+    def test_a_protected_value_joins_whatever_extra_the_caller_passed(self, held):
+        """A caller's own ``extra`` key and a protected value it also passed
+        both survive, under ``extra``."""
+        import json
+
+        line = self._rendered(
+            lambda: logging.getLogger("faultmaven.tests.held_2268").info(
+                "parsed", extra={"extra": held, "level": "top"}
+            )
+        )
+        expected = (
+            {**held, "level": "top"}
+            if isinstance(held, dict)
+            else {
+                "extra": held,
+                "level": "top",
+            }
+        )
+        assert json.loads(line)["extra"] == expected
 
     def test_reconfigure_preserves_foreign_root_handlers(self, caplog):
         """Re-running configuration mid-process must NOT drop foreign root
@@ -442,7 +635,7 @@ class TestFaultMavenLogger:
         mock_ctx.correlation_id = "test-correlation-id"
         mock_ctx.claimed_session_id = "test-session-id"
         mock_ctx.user_id = "test-user-id"
-        mock_ctx.case_id = "test-case-id"
+        mock_ctx.claimed_case_id = "test-case-id"
         mock_ctx.agent_phase = "define_blast_radius"
 
         with patch(
@@ -457,7 +650,7 @@ class TestFaultMavenLogger:
             assert result["correlation_id"] == "test-correlation-id"
             assert result["claimed_session_id"] == "test-session-id"
             assert result["user_id"] == "test-user-id"
-            assert result["case_id"] == "test-case-id"
+            assert result["claimed_case_id"] == "test-case-id"
             assert result["agent_phase"] == "define_blast_radius"
             assert result["message"] == "test"
 

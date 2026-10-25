@@ -57,6 +57,46 @@ _FORMATTER_KEYS = frozenset(
 )
 
 
+#: Keys a caller's ``extra`` never replaces when the event already holds them:
+#: the logger's own facts, and a ``user_id`` (the request context stamps one
+#: only when verified; a native keyword ``user_id`` is held the same way). The
+#: formatter's keys are never lifted at all.
+_UNREPLACEABLE_KEYS = frozenset({"level", "logger", "timestamp", "user_id"})
+
+
+def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
+    """Write a caller's ``extra`` fields onto the event, by the one rule both
+    paths share.
+
+    A caller's ``extra`` field wins over whatever the event already holds for
+    that key: a request-context stamp, and equally a keyword or bound field of
+    the same call. So a telemetry line's ``event`` name and a route's own
+    ``correlation_id`` arrive as the caller wrote them, as they did on the stdlib
+    path before (#2268). The value it replaces is not kept.
+
+    The exceptions are the logger's own facts, a ``user_id`` the event already
+    holds, and the keys the formatter acts on (a traceback directive) or writes:
+    a caller's value for one of those stays under ``extra``, beside whatever the
+    caller passed as ``extra`` itself (#2262, #2268). One is lost instead: on
+    the stdlib path a caller's ``_record`` never reaches this function, since
+    the record's attribute of that name is where structlog keeps the record.
+    """
+    kept = {}
+    for key, value in fields.items():
+        if key in _FORMATTER_KEYS or (key in _UNREPLACEABLE_KEYS and key in event_dict):
+            kept[key] = value
+        else:
+            event_dict[key] = value
+    if kept:
+        held = event_dict.get("extra")
+        if held is None:
+            event_dict["extra"] = kept
+        elif isinstance(held, dict):
+            event_dict["extra"] = {**held, **kept}
+        else:
+            event_dict["extra"] = {"extra": held, **kept}
+
+
 def lift_stdlib_extra(
     _logger: Any, _method: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -65,29 +105,40 @@ def lift_stdlib_extra(
     A structlog logger takes fields as keyword arguments, so the stdlib idiom
     ``logger.info(msg, extra={...})`` made ``extra`` one nested field, and every
     key inside it was invisible to a log query and to a reader of the record's
-    fields (#2262). The foreign (stdlib) pre-chain has ``ExtraAdder`` for the
-    same idiom; this is its counterpart for native structlog events.
-
-    Runs after the request attribution and the other shared processors, and
-    never overwrites a key already in the event: a caller's ``user_id`` cannot
-    replace the verified principal, nor its ``level`` or ``timestamp`` the
-    logger's own. A key that collides stays under ``extra``, so nothing is lost;
-    so does a key the formatter acts on, which a caller's data must neither
-    trigger (a traceback) nor have overwritten.
+    fields (#2262). Runs after the shared processors, by :func:`_lift_fields`'
+    rule; :func:`lift_record_extra` applies the same rule to plain stdlib
+    records (#2268).
     """
     extra = event_dict.get("extra")
     if not isinstance(extra, dict):
         return event_dict
-    kept = {}
-    for key, value in extra.items():
-        if key in event_dict or key in _FORMATTER_KEYS:
-            kept[key] = value
-        else:
-            event_dict[key] = value
-    if kept:
-        event_dict["extra"] = kept
-    else:
-        del event_dict["extra"]
+    del event_dict["extra"]
+    _lift_fields(event_dict, extra)
+    return event_dict
+
+
+#: Collects a stdlib record's ``extra`` fields, the attributes a plain
+#: LogRecord does not have, without writing them onto the event.
+_RECORD_EXTRA = structlog.stdlib.ExtraAdder()
+
+
+def lift_record_extra(
+    logger: Any, method: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Lift a stdlib record's ``extra={...}`` fields into the event, by
+    :func:`_lift_fields`' rule.
+
+    ``ExtraAdder`` wrote every field over whatever the event held, the logger's
+    own ``level`` included (a caller's ``extra={"level": "top"}`` replaced the
+    record's level), where the native path kept every collision under ``extra``.
+    One rule for both paths now (#2268).
+    """
+    record = event_dict.get("_record")
+    if record is None:
+        return event_dict
+    fields = _RECORD_EXTRA(logger, method, {"_record": record})
+    del fields["_record"]
+    _lift_fields(event_dict, fields)
     return event_dict
 
 
@@ -273,13 +324,13 @@ class FaultMavenLogger:
         # One formatter renders BOTH structlog events and plain stdlib records.
         # For FOREIGN (stdlib) records — including third-party libs and every
         # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
-        # runs the shared processors PLUS ExtraAdder, so the ``extra`` fields are
-        # merged onto the event dict and actually render (previously they were
-        # silently dropped by ``basicConfig(format="%(message)s")``).
+        # runs the shared processors PLUS lift_record_extra, so the ``extra``
+        # fields are merged onto the event dict and actually render (previously
+        # they were silently dropped by ``basicConfig(format="%(message)s")``).
         formatter = structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=[
                 *shared_processors,
-                structlog.stdlib.ExtraAdder(),
+                lift_record_extra,
             ],
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -364,8 +415,12 @@ class FaultMavenLogger:
                 event_dict["claimed_session_id"] = ctx.claimed_session_id
             if "user_id" not in event_dict and ctx.user_id:
                 event_dict["user_id"] = ctx.user_id
-            if "case_id" not in event_dict and ctx.case_id:
-                event_dict["case_id"] = ctx.case_id
+            # ``claimed_case_id`` for the same reason, and so that it never
+            # competes with a record's own ``case_id``: under that name the
+            # request's claim displaced the case a line was actually about
+            # (#2268).
+            if "claimed_case_id" not in event_dict and ctx.claimed_case_id:
+                event_dict["claimed_case_id"] = ctx.claimed_case_id
             if "agent_phase" not in event_dict and ctx.agent_phase:
                 event_dict["agent_phase"] = ctx.agent_phase
 

@@ -60,7 +60,7 @@ except Exception as e:
 - Decision records: target 5–10% sampling if volume high; otherwise 100% during hardening
 
 ## Structure
-- JSON logs with fields: timestamp, level, component, claimed_session_id, case_id, event, payload
+- JSON logs with fields: timestamp, level, component, claimed_session_id, claimed_case_id, event, payload
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
@@ -137,7 +137,7 @@ and a `__main__` run followed by uvicorn importing the string mounts them twice.
 | `client_ip` | started | The **resolved** client — the same address the rate limiters enforce on, not the socket peer |
 | `query_param_names` | started | Parameter **names** only. Values never reach a record: the SSO callback carries the IdP authorization code as a query parameter |
 | `claimed_session_id` | all | The session id the **caller** sent, off the header / query / JSON body. Recorded for correlation, never resolved to an account, and named so no reader takes it as established fact (fm#1461) |
-| `case_id` | all | Extracted from the header / query / JSON body when present. Caller-asserted too, and deliberately NOT renamed: it says what the request was about, not who made it |
+| `claimed_case_id` | all | The case id the request names, off the header / query / JSON body. Caller-asserted, and a WHAT rather than a WHO, so it need not be verified; named apart from `case_id` because, stamped on every record of the request, it used to displace the case a line was actually about (#2268). A record's own `case_id` is the case the code logging it knows it is about |
 | `user_id` | all | Who the request acts as — the **verified** subject, or nothing. See below |
 | `enterprise_id` | completed, failed | The enterprise the request was bound to: the isolation boundary (ADR-017) |
 | `organization_id` | completed, failed | The billing organization, or `null` for an account in none. Attribution only, never a visibility predicate |
