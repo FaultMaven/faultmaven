@@ -17,21 +17,25 @@ This guide documents the modern testing patterns developed for FaultMaven's Clea
 ```python
 from faultmaven.container import container
 
-def test_service_with_container_pattern():
+async def test_service_with_container_pattern():
     """Standard pattern for container-based testing."""
     # ALWAYS reset container for clean state
     container.reset()
 
-    # Get service through container (dependency injection)
-    agent_service = container.get_agent_service()
+    # Compose it: a getter never does (#2249)
+    await container.initialize()
+    try:
+        # Get service through container (dependency injection)
+        agent_service = container.get_agent_service()
 
-    # Validate service is properly initialized
-    assert agent_service is not None
+        # Validate service is properly initialized
+        assert agent_service is not None
 
-    # Test service functionality
-    # ... test code here
-
-    # Container automatically manages cleanup
+        # Test service functionality
+        # ... test code here
+    finally:
+        # Close what initialize() opened, on this loop, and reset
+        await container.shutdown()
 ```
 
 **Key Principles**:
@@ -273,16 +277,17 @@ def test_performance_pattern():
     start_time = time.time()
     memory_start = psutil.Process(os.getpid()).memory_info().rss
 
-    # Perform operations
+    # Perform operations (a getter never composes the container, #2249:
+    # this measures reset and lookup, not composition)
     iterations = 100
     for i in range(iterations):
         container.reset()
         agent_service = container.get_agent_service()
         knowledge_service = container.get_knowledge_service()
 
-        # Validate services are created
-        assert agent_service is not None
-        assert knowledge_service is not None
+        # Validate nothing is composed behind the caller's back
+        assert agent_service is None
+        assert knowledge_service is None
 
     # Measure results
     elapsed_time = time.time() - start_time

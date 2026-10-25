@@ -14,6 +14,20 @@ from pydantic import SecretStr
 from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
 
 
+def make_private_container():
+    """A container of the caller's own; the process singleton is untouched.
+
+    Given what ``BaseDIContainer.__new__`` gives the singleton, from the table
+    it builds from.
+    """
+    from faultmaven.container import DIContainer
+
+    instance = object.__new__(DIContainer)
+    for name, factory in DIContainer._CONSTRUCTED_STATE:
+        setattr(instance, name, factory())
+    return instance
+
+
 def make_chroma_settings(
     *,
     cloud: bool = False,

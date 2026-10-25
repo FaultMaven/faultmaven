@@ -187,8 +187,9 @@ open htmlcov/index.html
 Common fixtures are available in `conftest.py`:
 
 ```python
-def test_with_container(reset_container):
-    """Test with clean DI container state."""
+async def test_with_container(reset_container):
+    """Test with clean DI container state; the fixture shuts it down after."""
+    await reset_container.initialize()  # a getter never composes it (#2249)
     service = reset_container.get_agent_service()
     assert service is not None
 

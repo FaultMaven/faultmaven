@@ -336,7 +336,7 @@ class DIContainer(BaseDIContainer):
     # create_task(initialize()) with one running answered from a half-composed
     # container while nothing awaited the task. Every process initializes
     # before its first getter (the lifespan, the jobs runner, the fm-*
-    # commands), so a getter answers from what is composed, as all others do.
+    # commands), so a getter answers from what is composed.
 
     def get_agent_service(self):
         """Get the agent service with all dependencies injected"""
@@ -379,6 +379,13 @@ class DIContainer(BaseDIContainer):
 
     def get_oauth_service(self):
         """Get the OAuth service (if enabled)."""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            # Only warn if not currently initializing
+            if not getattr(self, "_initializing", False):
+                logger.warning(
+                    "OAuth service requested but container not initialized - this should not happen after startup"
+                )
         return getattr(self, "oauth_service", None)
 
     def get_metrics_collector(self):

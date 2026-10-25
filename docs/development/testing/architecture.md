@@ -135,6 +135,9 @@ async def test_service_lifecycle_management():
     """Test complete service lifecycle through container."""
     from faultmaven.container import container
 
+    # Reset for clean state, so the composition below is this loop's
+    container.reset()
+
     # A getter never composes the container (#2249): initialize it first, and
     # shut it down on the loop it was initialized on.
     await container.initialize()
@@ -313,12 +316,13 @@ def test_container_performance_overhead():
     from faultmaven.container import container
     import time
 
-    # Measure container reset performance
+    # Measure container reset performance (a getter never composes the
+    # container, #2249, so this is reset and lookup, not composition)
     start_time = time.time()
     for _ in range(100):
         container.reset()
         agent_service = container.get_agent_service()
-        assert agent_service is not None
+        assert agent_service is None
 
     elapsed_time = time.time() - start_time
 

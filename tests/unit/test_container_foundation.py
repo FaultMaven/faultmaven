@@ -121,7 +121,7 @@ class TestDIContainerInitialization:
     """Test container initialization behavior and lifecycle"""
 
     def test_lazy_initialization_default(self):
-        """Test that container starts uninitialized (lazy loading)"""
+        """Test that container starts uninitialized until initialize() is awaited"""
         container = DIContainer()
 
         # Should not be initialized by default
@@ -306,7 +306,7 @@ class TestDIContainerGetterMethods:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            # Mock initialize to prevent actual initialization and constructor errors
+            # A spy, to show the getter does not initialize the container
             with patch.object(container, "initialize") as mock_initialize:
                 # Access service before explicit initialization
                 service = container.get_agent_service()

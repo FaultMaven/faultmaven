@@ -138,7 +138,7 @@ def test_container_does_not_substitute_a_stub_knowledge_service():
     from faultmaven._container_impl import DIContainer
 
     container = object.__new__(DIContainer)
-    container._initialized = True  # skip lazy-init; we want the raw lookup
+    container._initialized = True  # a composed container: no not-initialized warning
     assert "knowledge_service" not in container.__dict__
 
     assert container.get_knowledge_service() is None

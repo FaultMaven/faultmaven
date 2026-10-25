@@ -229,9 +229,10 @@ class BaseDIContainer:
         """Ensure container is initialized before returning services.
 
         This method is called by getter methods to trigger initialization
-        if it hasn't happened yet. It calls this base class's synchronous
-        initialize(). ``DIContainer`` overrides every getter that calls it and
-        never composes from a getter (#2249): its initialize() is a coroutine.
+        if it hasn't happened yet. It calls ``self.initialize()`` without
+        awaiting it, which only this base class's synchronous initialize()
+        supports. ``DIContainer``'s is a coroutine, so it overrides every getter
+        that calls this, and none of its getters composes (#2249).
         """
         if not self._initialized and not getattr(self, "_initializing", False):
             self.initialize()
