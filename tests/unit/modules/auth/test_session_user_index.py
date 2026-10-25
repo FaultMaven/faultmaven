@@ -12,17 +12,23 @@ against a real Redis in ``tests/integration/test_real_redis_stores.py``.
 """
 
 import asyncio
+import json
+import uuid
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
 import pytest
 
+from faultmaven.models.common import SessionContext
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
+from tests.utils import minimal_session_service
 
 pytestmark = [pytest.mark.unit, pytest.mark.session]
 
@@ -71,6 +77,71 @@ async def test_one_session_over_the_limit_evicts_the_oldest(service, redis):
     assert await _ids(service, "user-a") == created[1:]
     assert await service.get_session(created[0]) is None
     assert await _indexed(redis, "user-a") == set(created[1:])
+
+
+async def test_a_user_already_over_the_limit_converges_on_the_next_create(
+    service, store
+):
+    """Over the limit already, as concurrent creates, a lowered limit or older
+    sessions joining the index on a later write leave a user: one create
+    brings them back to the limit, not to one fewer than they had."""
+    now = datetime.now(timezone.utc)
+    seeded = [f"seeded-{i}" for i in range(LIMIT + 2)]
+    for age, session_id in zip(range(len(seeded), 0, -1), seeded):
+        moment = now - timedelta(minutes=age)
+        await store.save(
+            SessionContext(
+                session_id=session_id,
+                user_id="user-a",
+                created_at=moment,
+                last_activity=moment,
+            )
+        )
+
+    newest, _ = await service.create_session("user-a")
+
+    assert await _ids(service, "user-a") == [*seeded[-(LIMIT - 1) :], newest.session_id]
+
+
+async def test_an_unreadable_session_record_is_skipped_not_fatal(service, redis):
+    good, _ = await service.create_session("user-a")
+    for session_id, created_at in (("bad-null", None), ("bad-number", 12345)):
+        record = {
+            "session_id": session_id,
+            "user_id": "user-a",
+            "created_at": created_at,
+            "last_activity": created_at,
+        }
+        await redis.set(f"session:{session_id}", json.dumps(record), ex=60)
+        await redis.sadd(_index_key("user-a"), session_id)
+
+    assert await _ids(service, "user-a") == [good.session_id]
+
+    again, _ = await service.create_session("user-a")
+    assert await _ids(service, "user-a") == [good.session_id, again.session_id]
+
+
+async def test_the_degraded_stand_in_converges_to_the_same_limit():
+    """``MinimalSessionService`` mirrors ``AuthSessionService``, the limit too."""
+    service = minimal_session_service(
+        SimpleNamespace(session=SimpleNamespace(max_sessions_per_user=LIMIT))
+    )
+    first, _ = await service.create_session("user-a")
+    other, _ = await service.create_session("user-b")
+    # Over the limit already, as a lowered limit would leave the user.
+    for _ in range(LIMIT + 1):
+        extra = type(first)(str(uuid.uuid4()), "user-a")
+        service.sessions[extra.session_id] = extra
+
+    newest, _ = await service.create_session("user-a")
+
+    listed = [s.session_id for s in await service.list_sessions("user-a")]
+    assert len(listed) == LIMIT
+    assert listed[-1] == newest.session_id
+    assert first.session_id not in listed
+    assert [s.session_id for s in await service.list_sessions("user-b")] == [
+        other.session_id
+    ]
 
 
 async def test_the_listing_holds_only_that_users_live_sessions(service):

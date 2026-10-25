@@ -625,6 +625,10 @@ class DIContainer(BaseDIContainer):
         _session_ttl = timedelta(
             hours=getattr(getattr(_settings, "session", None), "ttl_hours", 24)
         )
+        # The per-user session limit, sourced as AuthSessionService sources it.
+        _max_sessions = getattr(
+            getattr(_settings, "session", None), "max_sessions_per_user", 10
+        )
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
@@ -684,6 +688,24 @@ class DIContainer(BaseDIContainer):
                             existing.last_activity = datetime.now(timezone.utc)
                             existing.session_resumed = True
                             return existing, True
+
+                # The per-user limit, by AuthSessionService's rule: delete the
+                # least recently active live sessions until there is room for
+                # one more, so a user already over it converges (#2297).
+                now = datetime.now(timezone.utc)
+                live = sorted(
+                    (
+                        s
+                        for s in self.sessions.values()
+                        if s.user_id == user_id
+                        and not (s.expires_at and now > s.expires_at)
+                    ),
+                    key=lambda s: s.last_activity,
+                )
+                excess = len(live) - _max_sessions + 1
+                if excess > 0:
+                    for oldest in live[:excess]:
+                        await self.delete_session(oldest.session_id)
 
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)

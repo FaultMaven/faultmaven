@@ -322,3 +322,27 @@ async def test_the_user_index_lapses_with_its_last_session(real_redis, namespace
 
     assert await real_redis.exists(index_key) == 0
     assert await _listed(service, "user-a") == []
+
+
+async def test_a_user_over_the_session_limit_converges_on_the_next_create(
+    real_redis, namespace
+):
+    """One create brings an over-limit user back to the limit: after a lowered
+    limit, and after concurrent creates the unlocked count let through."""
+    store = _namespaced_session_store(real_redis, namespace)
+    roomy = AuthSessionService(session_store=store, max_sessions_per_user=5)
+    for _ in range(5):
+        await roomy.create_session("user-a")
+
+    lowered = AuthSessionService(session_store=store, max_sessions_per_user=2)
+    newest, _ = await lowered.create_session("user-a")
+
+    listed = await _listed(lowered, "user-a")
+    assert len(listed) == 2 and listed[-1] == newest.session_id
+
+    service = AuthSessionService(session_store=store, max_sessions_per_user=3)
+    await asyncio.gather(*(service.create_session("user-b") for _ in range(4)))
+    newest, _ = await service.create_session("user-b")
+
+    listed = await _listed(service, "user-b")
+    assert len(listed) == 3 and listed[-1] == newest.session_id

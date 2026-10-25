@@ -1035,8 +1035,11 @@ def request_with_authorization(authorization: Optional[str] = None) -> "Request"
     )
 
 
-def minimal_session_service():
+def minimal_session_service(settings=None):
     """The session stand-in ``create_session_service`` installs when Redis is down.
+
+    ``settings`` is what the container would hold; the stand-in reads its
+    ``session`` section (the TTL and the per-user limit) and defaults without it.
 
     Built through the production factory rather than copied, so a change to the
     degraded fallback reaches whatever is measuring it instead of leaving it
@@ -1067,7 +1070,7 @@ def minimal_session_service():
     from faultmaven.container import DIContainer
 
     container = object.__new__(DIContainer)
-    container.settings = None
+    container.settings = settings
     return container._create_minimal_session_service()
 
 

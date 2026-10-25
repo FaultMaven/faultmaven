@@ -412,11 +412,17 @@ class RedisSessionStore(ISessionStore):
 
         sessions = []
         for value in values:
+            # Any exception: the parse is pure, so whatever it raises means the
+            # record is corrupt (a ``created_at`` of null raises AttributeError,
+            # not ValueError). One bad record must not fail the listing, and with
+            # it the limit check on every create, until its TTL lapses.
             try:
-                session_data = json.loads(value)
-                session = self._to_session_context(session_data)
-            except (ValueError, KeyError, TypeError) as e:
-                logger.warning(f"Skipping unreadable session of user {user_id}: {e}")
+                session = self._to_session_context(json.loads(value))
+            except Exception as e:
+                logger.warning(
+                    f"Skipping unreadable session of user {user_id}: "
+                    f"{type(e).__name__}: {e}"
+                )
                 continue
             # The index names this user's sessions; the record is the authority.
             if session.user_id == user_id:

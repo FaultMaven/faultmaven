@@ -525,22 +525,28 @@ class AuthSessionService:
         return await self.get_session(session_id)
 
     async def _enforce_session_limit(self, user_id: str) -> None:
-        """Enforce max sessions per user limit
+        """Make room for one more session within the per-user limit
+
+        Deletes the user's least recently active sessions until fewer than
+        ``max_sessions_per_user`` remain. Usually that is one session, but a
+        user can already be over the limit: concurrent creates (nothing locks
+        the count), a lowered limit, or older sessions that joined the index on
+        a later write. Deleting one per create would never bring them back
+        under it; this converges on the next create.
 
         Args:
             user_id: User identifier
-
-        Raises:
-            ServiceException: If limit exceeded and cleanup fails
         """
         user_sessions = await self.get_user_sessions(user_id)
+        excess = len(user_sessions) - self.max_sessions_per_user + 1
+        if excess <= 0:
+            return
 
-        if len(user_sessions) >= self.max_sessions_per_user:
-            # Clean up oldest session
-            oldest_session = min(user_sessions, key=lambda s: s.last_activity)
-            await self.delete_session(oldest_session.session_id)
+        by_activity = sorted(user_sessions, key=lambda s: s.last_activity)
+        for session in by_activity[:excess]:
+            await self.delete_session(session.session_id)
             logger.info(
-                f"Deleted oldest session for user {user_id} to enforce limit: {oldest_session.session_id}"
+                f"Deleted oldest session for user {user_id} to enforce limit: {session.session_id}"
             )
 
     async def _is_active(self, session: SessionContext) -> bool:
