@@ -16,6 +16,7 @@ The listener here stands in for any interrupted step of that setup.
 
 import asyncio
 
+import aiosqlite
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -142,5 +143,63 @@ async def test_a_cancellation_during_the_close_of_a_failed_setup_still_propagate
                 await connection.execute(text("SELECT 1"))
         assert not _is_open(opened[0])
     finally:
+        monkeypatch.undo()
+        await engine.dispose()
+
+
+async def test_a_real_cancellation_during_the_close_still_propagates(
+    tmp_path, monkeypatch
+):
+    """The floor on aiosqlite: a cancellation landing in the close's own await.
+
+    The setup fails; the pool closes the connection gracefully; the task is
+    cancelled while that close is in flight. SQLAlchemy 2.0.55 then force-closes
+    through ``aiosqlite.Connection.stop()`` (new in aiosqlite 0.22.1) and
+    re-raises the cancellation. Without ``stop()`` the force-close raises, the
+    pool logs and swallows it, and the cancelled task carries on with the
+    setup's error.
+    """
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'fm-2258-close.db'}", poolclass=NullPool
+    )
+    opened = []
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _setup_fails(dbapi_connection, _connection_record):
+        opened.append(dbapi_connection.driver_connection)
+        raise RuntimeError("the setup failed")
+
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    real_close = aiosqlite.Connection.close
+
+    async def _held_close(self):
+        closing.set()
+        await release.wait()
+        # stop() clears _running at once when the pool force-closed it.
+        if self._running:
+            await real_close(self)
+
+    monkeypatch.setattr(aiosqlite.Connection, "close", _held_close)
+
+    async def _check_out():
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
+    task = asyncio.ensure_future(_check_out())
+    closing_seen = asyncio.ensure_future(closing.wait())
+    try:
+        await asyncio.wait({task, closing_seen}, return_when=asyncio.FIRST_COMPLETED)
+        assert closing.is_set(), "the pool never closed the connection"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled(), "the cancellation during the close was swallowed"
+
+        await asyncio.to_thread(opened[0]._thread.join, 5)
+        assert not _is_open(opened[0])
+    finally:
+        release.set()
+        closing_seen.cancel()
         monkeypatch.undo()
         await engine.dispose()

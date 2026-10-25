@@ -47,10 +47,10 @@ dependencies = [
 
     # Database (SQLite in base, PostgreSQL drivers in cloud)
     # >=2.0.55: the pool closes a new connection whose `connect` events raise
-    # (sqlalchemy#13548 in 2.0.53, its cancellation regression #13678 in
+    # (sqlalchemy#13548 in 2.0.53, its cancellation regression sqlalchemy#13678 in
     # 2.0.55). Before it, a turn cancelled during SQLite's per-checkout setup
     # orphaned the connection and its worker thread (fm#2258). <2.1: 2.1.0-2.1.4
-    # lack #13678, and moving to 2.1 is its own upgrade.
+    # lack sqlalchemy#13678, and moving to 2.1 is its own upgrade.
     "sqlalchemy>=2.0.55,<2.1",
     "alembic>=1.13.0",
     # >=0.22.1: Connection.stop(), which SQLAlchemy 2.0.55's terminate path calls
