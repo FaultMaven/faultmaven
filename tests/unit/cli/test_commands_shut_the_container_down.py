@@ -18,6 +18,11 @@ succeeds with a ``shutdown()`` that raises. ``fm-personal-tenant`` is listed
 once per operation, because each has its own call site; only ``retire``
 composes, and the shutdown of a container that was never initialized does
 nothing.
+
+Every run also disposes the database engine before its loop ends (#2254),
+the three commands that open only the engine included (``OPENS_ONLY_THE_ENGINE``).
+They run through ``run_command``, which shuts no container down. A stand-in
+opens a real engine, and its ``dispose()`` is recorded with the loop it ran on.
 """
 
 from __future__ import annotations
@@ -30,8 +35,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from faultmaven.cli._container import run_with_container
 from faultmaven.container import DIContainer
+from faultmaven.infrastructure.persistence import database
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +53,7 @@ _REPORTS_A_BOOL = {
     "demote_platform_admin",
     "promote_platform_admin",
     "provision_service_account",
+    "provision_sso_org",
 }
 
 #: ``module[:operation]`` -> the async function its ``main()`` runs, and an argv.
@@ -84,6 +94,23 @@ COMMANDS = {
         "fm-personal-tenant re-anchor --subject user_01HPLANTED "
         f"--enterprise-id {ENTERPRISE_ID}",
     ),
+}
+
+
+#: The commands that compose no container and reach the database engine through
+#: the process-global session factory: ``module`` -> its async function, an argv.
+OPENS_ONLY_THE_ENGINE = {
+    "provision_sso_org": (
+        "provision",
+        "fm-provision-sso-org --name Acme --slug acme --workos-org-id org_01H "
+        "--domain acme.example",
+    ),
+    "set_turn_cap": (
+        "set_turn_cap",
+        f"fm-set-turn-cap --enterprise-id {ENTERPRISE_ID} "
+        f"--organization-id {ORGANIZATION_ID} --show",
+    ),
+    "wipe_deployment": ("wipe_deployment", "fm-wipe-deployment"),
 }
 
 
@@ -168,7 +195,10 @@ def test_the_command_shuts_the_container_down_on_the_loop_it_initialized_on(
         with pytest.raises(expected):
             module.main()
     else:
-        with caplog.at_level(logging.WARNING, logger="faultmaven.cli._container"):
+        # A failed step is logged by the teardown's step runner.
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+        ):
             with pytest.raises(SystemExit) as exited:
                 module.main()
         # The command's own status; a failed shutdown does not change it.
@@ -182,3 +212,100 @@ def test_the_command_shuts_the_container_down_on_the_loop_it_initialized_on(
     assert container.loops["shutdown"] is container.loops["initialize"]
     if binds_at_import:
         container.singleton_shutdown.assert_not_awaited()
+
+
+@pytest.fixture
+def engine(tmp_path, monkeypatch):
+    """A database of the test's own, and each ``(engine, loop)`` a ``dispose()``
+    ran on. The process-global engine is put back after."""
+    disposals = []
+    real_dispose = AsyncEngine.dispose
+
+    async def _dispose(self, *args, **kwargs):
+        disposals.append((self, asyncio.get_running_loop()))
+        await real_dispose(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", _dispose)
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_session_factory", None)
+    return SimpleNamespace(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'faultmaven.db'}", disposals=disposals
+    )
+
+
+async def _open_the_engine(url):
+    """What a run's stores do: open the engine on the running loop.
+
+    Returns ``(engine, loop)``, as its disposal on this loop is recorded."""
+    opened = database.get_engine(url)
+    async with opened.connect() as connection:
+        await connection.execute(text("SELECT 1"))
+    return opened, asyncio.get_running_loop()
+
+
+@pytest.mark.parametrize("outcome", ["returns", "raises", "shutdown raises"])
+def test_the_run_disposes_the_database_engine_the_command_opened(
+    outcome, container, engine
+):
+    """#2254: the run shut the container down and left the engine its stores
+    opened, so ``asyncio.run`` closed the loop over the engine's connections.
+    The engine is disposed after the shutdown, on the run's loop, whatever the
+    command or the shutdown did."""
+    opened = []
+
+    async def _command():
+        opened.append(await _open_the_engine(engine.url))
+        if outcome == "raises":
+            raise _CommandFailed()
+        return 0
+
+    if outcome == "shutdown raises":
+        container.shutdown.side_effect = RuntimeError("the pool would not close")
+    if outcome == "raises":
+        with pytest.raises(_CommandFailed):
+            run_with_container(_command(), container=container)
+    else:
+        assert run_with_container(_command(), container=container) == 0
+
+    assert len(opened) == 1, "the command did not open the engine"
+    assert engine.disposals == opened, "not disposed, or not on the run's loop"
+    assert database._engine is None, "the run left the database engine in place"
+    container.shutdown.assert_awaited_once()
+
+
+@pytest.mark.parametrize("command", sorted({**COMMANDS, **OPENS_ONLY_THE_ENGINE}))
+def test_every_command_disposes_the_engine_before_its_loop_ends(
+    command, container, engine, monkeypatch
+):
+    """#2254, through each command's own call site: three commands ran their
+    work in a bare ``asyncio.run``, and none of the others' runs disposed the
+    engine either. A command that composes nothing shuts no container down."""
+    module_name = command.partition(":")[0]
+    module = importlib.import_module(f"faultmaven.cli.{module_name}")
+    work_name, argv = {**COMMANDS, **OPENS_ONLY_THE_ENGINE}[command]
+    if hasattr(module, "container"):
+        monkeypatch.setattr(module, "container", container)
+    else:
+        monkeypatch.setattr("faultmaven.container.container", container)
+    opened = []
+
+    async def _work(*_args, **_kwargs):
+        opened.append(await _open_the_engine(engine.url))
+        return True if module_name in _REPORTS_A_BOOL else 0
+
+    monkeypatch.setattr(module, work_name, _work)
+    monkeypatch.setattr(module, "require_persistent_database_or_exit", lambda: None)
+    monkeypatch.setattr(sys, "argv", argv.split())
+
+    with pytest.raises(SystemExit) as exited:
+        module.main()
+
+    assert exited.value.code == 0
+    assert len(opened) == 1, "the command did not open the engine"
+    assert engine.disposals == opened, "not disposed, or not on the run's loop"
+    assert database._engine is None, "the run left the database engine in place"
+    if module_name in OPENS_ONLY_THE_ENGINE:
+        container.shutdown.assert_not_awaited()
+        container.singleton_shutdown.assert_not_awaited()
+    else:
+        container.shutdown.assert_awaited_once()

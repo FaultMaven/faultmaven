@@ -969,6 +969,85 @@ class TestJobsPathBootGates:
         rls_guard.assert_awaited_once_with(is_multi_tenant=False)
 
 
+@pytest.fixture
+def engine(tmp_path, monkeypatch):
+    """A database of the test's own, and each ``(engine, loop)`` a ``dispose()``
+    ran on. The process-global engine is put back after."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from faultmaven.infrastructure.persistence import database
+
+    disposals = []
+    real_dispose = AsyncEngine.dispose
+
+    async def _dispose(self, *args, **kwargs):
+        disposals.append((self, asyncio.get_running_loop()))
+        await real_dispose(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", _dispose)
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_session_factory", None)
+    return SimpleNamespace(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'faultmaven.db'}", disposals=disposals
+    )
+
+
+class TestTheRunDisposesTheEngine:
+    """#2254: the runner shut the container down and left the database engine
+    its stores opened, so ``asyncio.run`` closed the loop over the engine's
+    connections. The run's end disposes it, after the container's shutdown."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["succeeds", "fails", "a gate refuses"])
+    async def test_the_engine_is_disposed(
+        self, outcome, mock_container, mock_settings, engine
+    ):
+        import asyncio
+
+        from sqlalchemy import text
+
+        from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+        from faultmaven.infrastructure.persistence import database
+        from faultmaven.jobs.run import run_job
+
+        opened = []
+
+        async def _initialize():
+            # What the container's stores do: open the engine on this loop.
+            run_engine = database.get_engine(engine.url)
+            async with run_engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            opened.append((run_engine, asyncio.get_running_loop()))
+
+        mock_container.initialize.side_effect = _initialize
+        mock_settings.database.database_echo = False
+        provider = "multi" if outcome == "a gate refuses" else "single"
+        with _fake_job("tenant_neutral", mock_container, mock_settings, provider) as (
+            job_run,
+            rls_guard,
+            _set_enterprise,
+            _maint,
+        ):
+            if outcome == "fails":
+                job_run.side_effect = RuntimeError("the job blew up")
+            if outcome == "a gate refuses":
+                rls_guard.side_effect = DeploymentCoherenceError("role is RLS-exempt")
+                with pytest.raises(DeploymentCoherenceError):
+                    await run_job("fake_job")
+            else:
+                result = await run_job("fake_job")
+                expected = "failed" if outcome == "fails" else "completed"
+                assert result["status"] == expected
+
+        assert len(opened) == 1, "the run did not open the engine"
+        assert engine.disposals == opened, "not disposed, or not on the run's loop"
+        assert database._engine is None, "the run left the database engine in place"
+        mock_container.shutdown.assert_awaited_once()
+
+
 class TestSchedulerMultiTenantGate:
     """The in-process cleanup scheduler is refused under multi (same hazard)."""
 

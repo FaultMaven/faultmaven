@@ -169,7 +169,9 @@ async def test_a_failing_teardown_step_neither_replaces_the_refusal_nor_skips_th
     composition.close_failure = ConnectionError("the pool would not close")
     app = FastAPI()
 
-    with caplog.at_level(logging.WARNING, logger="faultmaven.bootstrap.composition"):
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
         with pytest.raises(RuntimeError) as refused:
             await compose_application(app, object())
 

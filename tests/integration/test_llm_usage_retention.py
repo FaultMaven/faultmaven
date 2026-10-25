@@ -220,9 +220,9 @@ class TestTheInProcessScheduler:
         assert start_llm_usage_retention_scheduler(is_multi_tenant=True) is None
 
     async def test_prunes_at_start_and_stops(self, monkeypatch):
+        from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait
         from faultmaven.infrastructure.tasks.llm_usage_retention import (
             start_llm_usage_retention_scheduler,
-            stop_llm_usage_retention_scheduler,
         )
 
         passes: list[tuple[int, int]] = []
@@ -237,7 +237,7 @@ class TestTheInProcessScheduler:
             if passes:
                 break
             await asyncio.sleep(0.01)
-        await stop_llm_usage_retention_scheduler(task)
+        await cancel_and_wait(task)  # as the lifespan's shutdown stops it
 
         assert passes == [(400, 90)], "one pass at start, at the default horizons"
         assert task.done()
