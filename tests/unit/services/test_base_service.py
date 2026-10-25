@@ -14,14 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.services.base import BaseService
+from tests.utils import log_field
 
-
-def _field(record, name):
-    """A structured field, wherever this stack put it (the idiom of
-    ``tests/unit/api/middleware/test_logging_middleware_attribution.py``)."""
-    if isinstance(record.msg, dict) and name in record.msg:
-        return record.msg[name]
-    return record.__dict__.get(name)
+pytestmark = pytest.mark.unit
 
 
 def _the_record(caplog, event):
@@ -124,10 +119,10 @@ class TestLogOperation:
             service.log_operation("update_case", case_id="case_123", status="active")
 
         record = _the_record(caplog, "update_case")
-        assert _field(record, "service") == "my_service"
-        assert _field(record, "case_id") == "case_123"
-        assert _field(record, "status") == "active"
-        assert _field(record, "extra") is None
+        assert log_field(record, "service") == "my_service"
+        assert log_field(record, "case_id") == "case_123"
+        assert log_field(record, "status") == "active"
+        assert log_field(record, "extra") is None
 
     def test_log_operation_with_no_extra_args(self):
         """Test log_operation works with no extra arguments."""
@@ -175,14 +170,14 @@ class TestLogError:
                 service.log_error("save_case", exc, case_id="case_xyz", user_id="u1")
 
         record = _the_record(caplog, "save_case failed: 'missing_key'")
-        assert _field(record, "service") == "error_test_service"
-        assert _field(record, "error_type") == "KeyError"
-        assert _field(record, "case_id") == "case_xyz"
-        assert _field(record, "user_id") == "u1"
-        assert _field(record, "extra") is None
+        assert log_field(record, "service") == "error_test_service"
+        assert log_field(record, "error_type") == "KeyError"
+        assert log_field(record, "case_id") == "case_xyz"
+        assert log_field(record, "user_id") == "u1"
+        assert log_field(record, "extra") is None
 
-    def test_log_error_includes_exc_info(self):
-        """Test that log_error includes exc_info=True."""
+    def test_log_error_passes_the_exception_as_exc_info(self):
+        """The exception itself, so the traceback renders outside its ``except`` too."""
         service = ConcreteService("test_service")
 
         with patch.object(service.logger, "error") as mock_error:
@@ -190,7 +185,7 @@ class TestLogError:
             service.log_error("run_task", exc)
 
             call_kwargs = mock_error.call_args[1]
-            assert call_kwargs["exc_info"] is True
+            assert call_kwargs["exc_info"] is exc
 
 
 class TestLogMetric:
@@ -277,3 +272,74 @@ class TestHealthCheck:
 
         assert result["status"] == "healthy"
         assert result["layer"] == "service"
+
+
+class TestStdlibExtraOnStructlogLoggers:
+    """``extra={...}`` handed to a structlog logger is lifted into the event (#2262).
+
+    ``BaseService``'s helpers, ``UserService`` and the request-summary
+    middleware all pass the stdlib idiom to structlog-backed loggers; one
+    processor lifts it for all of them.
+    """
+
+    def test_extra_on_a_unified_logger_becomes_top_level_fields(self, caplog):
+        from faultmaven.infrastructure.logging.unified import get_unified_logger
+
+        logger = get_unified_logger("faultmaven.tests.lift_2262", "service")
+        with caplog.at_level(logging.INFO):
+            logger.info("password reset refused", extra={"refusal_reason": "stale"})
+
+        record = _the_record(caplog, "password reset refused")
+        assert log_field(record, "refusal_reason") == "stale"
+        assert log_field(record, "extra") is None
+
+    def test_a_colliding_key_never_replaces_the_verified_principal(self, caplog):
+        """A caller's ``user_id`` stays under ``extra``; the record's is the request's."""
+        from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
+
+        service = ConcreteService("attribution_service")
+        coordinator = LoggingCoordinator()
+        coordinator.start_request(user_id="verified-principal")
+        try:
+            with caplog.at_level(logging.INFO):
+                service.log_operation("create_case", user_id="the-target")
+        finally:
+            coordinator.end_request()
+
+        record = _the_record(caplog, "create_case")
+        assert log_field(record, "user_id") == "verified-principal"
+        assert log_field(record, "extra") == {"user_id": "the-target"}
+        assert log_field(record, "service") == "attribution_service"
+
+    def test_every_error_in_a_request_is_logged(self, caplog):
+        """Logging a service error registers nothing that suppresses the next one."""
+        from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
+
+        service = ConcreteService("cascade_service")
+        coordinator = LoggingCoordinator()
+        coordinator.start_request()
+        try:
+            with caplog.at_level(logging.ERROR):
+                for op in ("write_sidecar", "retrieve_file"):
+                    try:
+                        raise OSError(op)
+                    except OSError as exc:
+                        service.log_error(op, exc)
+        finally:
+            coordinator.end_request()
+
+        _the_record(caplog, "write_sidecar failed: write_sidecar")
+        _the_record(caplog, "retrieve_file failed: retrieve_file")
+
+    def test_an_error_logged_outside_its_except_keeps_its_traceback(self, caplog):
+        service = ConcreteService("deferred_service")
+        try:
+            raise RuntimeError("deferred")
+        except RuntimeError as caught:
+            saved = caught
+
+        with caplog.at_level(logging.ERROR):
+            service.log_error("deferred_op", saved)
+
+        record = _the_record(caplog, "deferred_op failed: deferred")
+        assert log_field(record, "exc_info") is saved

@@ -1069,3 +1069,16 @@ def minimal_session_service():
     container = object.__new__(DIContainer)
     container.settings = None
     return container._create_minimal_session_service()
+
+
+def log_field(record, name):
+    """Read a structured field off a captured log record, wherever this stack put it.
+
+    Fields passed to a structlog logger arrive as keys of the event dict in
+    ``record.msg``; fields passed to a plain stdlib logger via ``extra`` arrive
+    as record attributes. Checking only one of the two silently finds nothing
+    and turns an assertion into a tautology.
+    """
+    if isinstance(record.msg, dict) and name in record.msg:
+        return record.msg[name]
+    return record.__dict__.get(name)

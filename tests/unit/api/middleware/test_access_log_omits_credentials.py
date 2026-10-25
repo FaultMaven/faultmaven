@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware.logging import LoggingMiddleware
+from tests.utils import log_field
 
 
 def register_500_handler(app: FastAPI) -> None:
@@ -56,19 +57,6 @@ def client():
         counter.labels.return_value = MagicMock()
         duration.labels.return_value = MagicMock()
         yield TestClient(app, raise_server_exceptions=False)
-
-
-def _field(record, name):
-    """Read a structured field off a record, wherever this stack put it.
-
-    Fields passed to a structlog logger arrive as keys of the event dict in
-    ``record.msg``; fields passed to a plain stdlib logger via ``extra`` arrive
-    as record attributes. Checking only one of the two silently finds nothing
-    and turns an assertion into a tautology.
-    """
-    if isinstance(record.msg, dict) and name in record.msg:
-        return record.msg[name]
-    return record.__dict__.get(name)
 
 
 def _emitted(caplog) -> str:
@@ -123,7 +111,7 @@ class TestAccessLogOmitsQueryValues:
         recorded = [
             names
             for record in caplog.records
-            for names in [_field(record, "query_param_names")]
+            for names in [log_field(record, "query_param_names")]
             if names is not None
         ]
         assert recorded, "no record carried query_param_names at all"
