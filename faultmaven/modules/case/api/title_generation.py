@@ -985,7 +985,6 @@ async def _generate_and_persist_title(
     llm_provider,
     max_words: int,
     hint: Optional[str],
-    correlation_id: str,
     sanitizer,
     redis_client,
 ) -> tuple[str, str, int]:
@@ -1027,7 +1026,6 @@ async def _generate_and_persist_title(
                 "case_id": case_id,
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "correlation_id": correlation_id,
             },
         )
         context_text = (
@@ -1157,7 +1155,6 @@ async def _generate_and_persist_title(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to persist generated title",
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Verify persistence by re-fetching the case from database
@@ -1174,7 +1171,6 @@ async def _generate_and_persist_title(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Title saved but verification failed - possible database issue",
-                headers={"x-correlation-id": correlation_id},
             )
 
         logger.info(
@@ -1188,23 +1184,21 @@ async def _generate_and_persist_title(
         # Handle service-level exceptions with proper error detail
         logger.error(
             f"Service error persisting generated title: {e}",
-            extra={"case_id": case_id, "correlation_id": correlation_id},
+            extra={"case_id": case_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist generated title",
-            headers={"x-correlation-id": correlation_id},
         )
     except Exception as e:
         # Handle unexpected exceptions
         logger.error(
             f"Unexpected error persisting generated title: {e}",
-            extra={"case_id": case_id, "correlation_id": correlation_id},
+            extra={"case_id": case_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist generated title",
-            headers={"x-correlation-id": correlation_id},
         )
 
     return generated_title, title_source, len(user_message_content or "")
@@ -1252,7 +1246,9 @@ async def _auto_title_case_if_default(
     request's enterprise in this task. Moving this off the request would silently
     break that — ``get_current_enterprise_id`` is total, answering the Standalone
     enterprise for an unbound context rather than failing, so a detached task
-    would not raise, it would quietly address the wrong tenant.
+    would not raise, it would quietly address the wrong tenant. The same
+    placement is why this work's log lines carry the turn request's
+    correlation id, and need no id of their own (#2278).
 
     Cost is bounded by construction: it returns immediately unless the title is
     still the placeholder, so a case is named at most once, and a case too thin to
@@ -1282,7 +1278,6 @@ async def _auto_title_case_if_default(
                 llm_provider=llm_provider,
                 max_words=MAX_TITLE_WORDS_DEFAULT,
                 hint=None,
-                correlation_id=f"auto-title:{case_id}",
                 sanitizer=sanitizer,
                 redis_client=redis_client,
             ),

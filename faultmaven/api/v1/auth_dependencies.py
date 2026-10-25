@@ -24,7 +24,6 @@ Design Principles:
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -237,7 +236,7 @@ async def get_current_user_optional(
         # ``list_sessions("")`` returns every session.
         # ``.get``, not ``["sub"]``. A subscript raises KeyError on an ABSENT
         # claim, and the catch-all at the bottom of this function turns that
-        # into a correlation-id'd WARNING — so the absent case never reached
+        # into a WARNING — so the absent case never reached
         # the guard below, the ``not isinstance`` arm was unreachable for it,
         # and the test covering this layer was green through the catch-all
         # rather than through the check it names. Measured: absent ->
@@ -291,10 +290,7 @@ async def get_current_user_optional(
         raise
     except Exception as e:
         # Log unexpected errors but don't fail the request for optional auth
-        correlation_id = str(uuid.uuid4())
-        logger.warning(
-            f"Unexpected error in JWT validation: {e} (correlation: {correlation_id})"
-        )
+        logger.warning(f"Unexpected error in JWT validation: {e}")
         return None
 
 
@@ -328,10 +324,7 @@ async def require_authentication(
           caller may legitimately omit the header (issue #880)
     """
     if not user:
-        correlation_id = str(uuid.uuid4())
-        logger.info(
-            f"Authentication required but not provided (correlation: {correlation_id})"
-        )
+        logger.info("Authentication required but not provided")
         raise HTTPException(
             status_code=401,
             detail="Authentication required. Please log in to access this resource.",
@@ -448,77 +441,6 @@ async def check_auth_services_health(request: Request) -> dict:
 
 
 # Convenience Dependencies (commonly used patterns)
-async def get_authenticated_user_context(
-    user: DevUser = Depends(require_authentication), correlation_id: str = None
-) -> dict:
-    """Get complete authenticated user context for request processing
-
-    Args:
-        user: Authenticated user
-        correlation_id: Optional correlation ID for request tracing
-
-    Returns:
-        Dict with user context information
-
-    Notes:
-        - Provides rich context for request processing
-        - Includes user info and request metadata
-        - Useful for audit logging and tracing
-    """
-    if not correlation_id:
-        correlation_id = str(uuid.uuid4())
-
-    return {
-        "user_id": user.user_id,
-        "username": user.username,
-        "email": user.email,
-        "is_dev_user": user.is_dev_user,
-        "correlation_id": correlation_id,
-        "authenticated": True,
-    }
-
-
-async def get_optional_user_context(
-    user: Optional[DevUser] = Depends(get_current_user_optional),
-    correlation_id: str = None,
-) -> dict:
-    """Get user context for optional authentication scenarios
-
-    Args:
-        user: Optional user
-        correlation_id: Optional correlation ID for request tracing
-
-    Returns:
-        Dict with user context (may indicate unauthenticated)
-
-    Notes:
-        - For endpoints that work with or without authentication
-        - Always returns context dict, authenticated field indicates status
-        - Correlation ID provided for all requests (auth and unauth)
-    """
-    if not correlation_id:
-        correlation_id = str(uuid.uuid4())
-
-    if user:
-        return {
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "is_dev_user": user.is_dev_user,
-            "correlation_id": correlation_id,
-            "authenticated": True,
-        }
-    else:
-        return {
-            "user_id": None,
-            "username": None,
-            "email": None,
-            "is_dev_user": False,
-            "correlation_id": correlation_id,
-            "authenticated": False,
-        }
-
-
 async def require_platform_admin(
     user: DevUser = Depends(require_authentication),
 ) -> DevUser:

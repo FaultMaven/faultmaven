@@ -472,6 +472,53 @@ async def test_same_key_different_body_is_refused_with_409():
     assert app.state.route_calls["cases"] == 1, "the conflicting request must not run"
 
 
+def _as_deployed(app):
+    """``app`` with the real ``LoggingMiddleware`` around this middleware, as
+    ``setup_middleware`` stacks them: it registers ``LoggingMiddleware`` later,
+    which puts it further out (``test_routes_mint_no_correlation_id_2278.py``
+    pins that order). A refusal is then written inside the request's context."""
+    from faultmaven.api.middleware.logging import LoggingMiddleware
+
+    app.add_middleware(LoggingMiddleware)
+    return app
+
+
+def _names_the_requests_id(response) -> None:
+    """The body names the request's id, the one ``X-Correlation-ID`` carries,
+    not a fresh one (#2278)."""
+    request_id = response.headers.get("X-Correlation-ID")
+    assert request_id
+    assert response.json()["correlation_id"] == request_id
+
+
+async def test_a_key_reuse_refusal_names_the_requests_correlation_id():
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(_as_deployed(app)) as client:
+        await client.post("/api/v1/cases", headers=headers, json={"title": "first"})
+        conflict = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": "second"}
+        )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["error_type"] == "IdempotencyKeyReuse"
+    _names_the_requests_id(conflict)
+
+
+async def test_an_invalid_key_refusal_names_the_requests_correlation_id():
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": "not a key"}
+
+    async with _client(_as_deployed(app)) as client:
+        refused = await client.post("/api/v1/cases", headers=headers, json={})
+
+    assert refused.status_code == 400
+    assert refused.json()["error_type"] == "InvalidIdempotencyKey"
+    assert app.state.route_calls["cases"] == 0
+    _names_the_requests_id(refused)
+
+
 async def test_conflicting_request_does_not_overwrite_the_stored_response():
     """A refused request must leave the original entry intact and replayable."""
     app, _ = _build_app()

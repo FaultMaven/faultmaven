@@ -16,6 +16,7 @@ from faultmaven.infrastructure.logging.coordinator import (
     LoggingCoordinator,
     PerformanceTracker,
     RequestContext,
+    current_correlation_id,
     request_context,
 )
 
@@ -577,3 +578,39 @@ class TestContextIsolation:
         assert result["correlation_id"] == ctx.correlation_id
 
         coordinator.end_request()
+
+
+@pytest.mark.unit
+class TestCurrentCorrelationId:
+    """The one reader of the request's id (#2278): what a route names in a
+    response body is the id ``LoggingMiddleware`` stamps and returns."""
+
+    def teardown_method(self):
+        request_context.set(None)
+
+    def test_it_is_none_outside_a_request(self):
+        assert current_correlation_id() is None
+
+    def test_it_is_the_requests_id_while_the_request_runs(self):
+        coordinator = LoggingCoordinator()
+        ctx = coordinator.start_request()
+        assert current_correlation_id() == ctx.correlation_id
+        coordinator.end_request()
+        assert current_correlation_id() is None
+
+    async def test_work_awaited_through_a_task_reads_the_requests_id(self):
+        """The turn route awaits its auto-title through ``asyncio.wait_for``,
+        which runs it in a task of its own: the task copies the request's
+        context, so the auto-title's lines carry the turn's id."""
+        coordinator = LoggingCoordinator()
+        ctx = coordinator.start_request()
+        try:
+
+            async def side_work():
+                return current_correlation_id()
+
+            assert await asyncio.wait_for(side_work(), timeout=1) == (
+                ctx.correlation_id
+            )
+        finally:
+            coordinator.end_request()

@@ -126,7 +126,6 @@ async def _name(case, service, *, llm=None, sanitizer=SANITIZER):
         llm_provider=llm,
         max_words=8,
         hint=None,
-        correlation_id="c-1967",
         sanitizer=sanitizer,
         redis_client=None,
     )
@@ -930,7 +929,6 @@ async def test_the_hint_is_scrubbed_before_it_reaches_the_prompt(sanitize_pii):
             llm_provider=model,
             max_words=8,
             hint=f"the db password={SECRET} is the one being rejected",
-            correlation_id="c-1967",
             sanitizer=SANITIZER,
             redis_client=None,
         )
@@ -1005,7 +1003,9 @@ def test_the_title_route_answers_an_unavailable_gate_503(sanitizer):
 
     assert response.status_code == 503, response.text
     assert response.json()["detail"] == "Title generation is temporarily unavailable"
-    assert response.headers["x-correlation-id"]
+    # The route sets no id of its own; ``LoggingMiddleware``, absent from this
+    # app, is what sets the request's (#2278).
+    assert "x-correlation-id" not in response.headers
     assert SECRET not in response.text and "password" not in response.text
     service.update_case.assert_not_awaited()
     assert case.title == "Case-260101-1"

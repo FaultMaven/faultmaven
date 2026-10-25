@@ -801,7 +801,6 @@ class TestTheClaimIsOwnerTokened:
                 fingerprint="f" * 64,
                 case_service=case_service,
                 response_bound_seconds=138.5,
-                correlation_id="c",
             )
 
         a = await _open()
@@ -845,7 +844,6 @@ def _opener(redis, case_service=None, *, response_bound_seconds: float = 138.5):
             fingerprint="f" * 64,
             case_service=case_service,
             response_bound_seconds=response_bound_seconds,
-            correlation_id="c",
         )
 
     return case, _open

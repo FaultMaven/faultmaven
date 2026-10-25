@@ -161,7 +161,7 @@ re-raised without a `__cause__` link — so no provider status is reachable,
 only that code (threaded onto the wrapper's `details["error_code"]`; this
 is `MilestoneEngineError`'s documented cross-layer signal). Route handlers
 must classify off both typed signals via
-`llm_service_error_http_exception(exc, correlation_id)`
+`llm_service_error_http_exception(exc)`
 (`api/exception_handlers.py`), never by substring-matching the message.
 Message matching silently mis-routed real failures to a bare 500: a
 provider that raised `"…timed out…"` (which does not contain the
@@ -214,9 +214,8 @@ detail and no `Retry-After`, because the same request is refused again. The
 retry loop does not classify it either: `LLMErrorHandler.with_retry`
 re-raises it, so it stays on the chain instead of becoming an engine code.
 
-For an LLM failure the global answer equals the inline one, less
-`x-correlation-id`. `/turns` keeps calling the helper inline and keeps the
-wide reading. No 500 body carries the exception text: a `ServiceException`'s
+For an LLM failure the global answer equals the inline one. `/turns` keeps
+calling the helper inline and keeps the wide reading. No 500 body carries the exception text: a `ServiceException`'s
 message carries whatever it wrapped.
 
 What the typed predicate still misroutes: an LLM failure re-wrapped into a

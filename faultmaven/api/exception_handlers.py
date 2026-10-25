@@ -131,9 +131,7 @@ def _details_error_code(exc: BaseException) -> Optional[str]:
     return code if isinstance(code, str) else None
 
 
-def quota_exhausted_http_exception(
-    correlation_id: Optional[str] = None,
-) -> HTTPException:
+def quota_exhausted_http_exception() -> HTTPException:
     """Build the canonical HTTP 402 response for billing/quota exhaustion.
 
     A permanent, operator-actionable condition — the provider is out of credits.
@@ -143,13 +141,10 @@ def quota_exhausted_http_exception(
     (or a ServiceException carrying ``error_code == QUOTA_EXHAUSTED``) matches,
     so every LLM-calling endpoint surfaces billing identically.
     """
-    headers = {"x-error-code": QUOTA_EXHAUSTED}
-    if correlation_id is not None:
-        headers["x-correlation-id"] = correlation_id
     return HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail=QUOTA_EXHAUSTED_DETAIL,
-        headers=headers,
+        headers={"x-error-code": QUOTA_EXHAUSTED},
     )
 
 
@@ -188,11 +183,9 @@ def revocation_state_unknown_http_exception() -> HTTPException:
     reconnect — are seconds-scale. A client that honours it recovers without
     discarding its credential.
 
-    No ``x-correlation-id``, unlike ``quota_exhausted_http_exception``: that
-    one is raised from route handlers that already hold a correlation id,
-    while these four raise from dependencies, and ``RequestIdMiddleware``
-    already stamps ``X-Request-ID`` on the response. A second id would be the
-    same value under a second name.
+    No ``x-correlation-id``, from this or any builder here: ``LoggingMiddleware``
+    sets ``X-Correlation-ID`` to the request's own id on every response that
+    passes through it (#2278).
     """
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -262,11 +255,8 @@ def _llm_http(
     error_code: str,
     detail: str,
     retry_after: Optional[str],
-    correlation_id: Optional[str],
 ) -> HTTPException:
     headers = {"x-error-code": error_code}
-    if correlation_id is not None:
-        headers["x-correlation-id"] = correlation_id
     if retry_after is not None:
         headers["Retry-After"] = retry_after
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
@@ -277,9 +267,7 @@ def _model_content_refused(exc: BaseException) -> bool:
     return any(isinstance(c, RawModelContentRefused) for c in walk_cause_chain(exc))
 
 
-def model_content_refused_http_exception(
-    correlation_id: Optional[str] = None,
-) -> HTTPException:
+def model_content_refused_http_exception() -> HTTPException:
     """The boundary outcome of a model-content refusal (#1998).
 
     A send site handed the model boundary content the redaction module did not
@@ -289,13 +277,10 @@ def model_content_refused_http_exception(
     turn mapping would otherwise read as ``LLM_PROVIDER_ERROR``) — and no
     ``Retry-After``: the same request is refused again.
     """
-    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None, correlation_id)
+    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None)
 
 
-def llm_service_error_http_exception(
-    exc: BaseException,
-    correlation_id: Optional[str] = None,
-) -> HTTPException:
+def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
     """Map an LLM-calling ``ServiceException`` to a precise HTTP response.
 
     Classifies off the TYPED metadata already attached to the failure — the
@@ -342,12 +327,12 @@ def llm_service_error_http_exception(
     # 0. A model-content refusal (#1998): FaultMaven's fault, not the
     #    provider's, and not transient.
     if _model_content_refused(exc):
-        return model_content_refused_http_exception(correlation_id)
+        return model_content_refused_http_exception()
 
     # 1. Permanent billing / quota exhaustion — 402, no Retry-After. Checked
     #    first: it must never be mistaken for a transient 429/5xx.
     if is_quota_exhausted_service_error(exc) or is_billing_error(exc):
-        return quota_exhausted_http_exception(correlation_id)
+        return quota_exhausted_http_exception()
 
     # 2. Provider status on the raw LLMException (direct-propagation path).
     llm = next((c for c in walk_cause_chain(exc) if isinstance(c, LLMException)), None)
@@ -358,7 +343,6 @@ def llm_service_error_http_exception(
             "RATE_LIMIT_EXCEEDED",
             "Rate limit exceeded. Please wait before sending another message.",
             "60",
-            correlation_id,
         )
     if sc == 504:
         return _llm_http(
@@ -366,7 +350,6 @@ def llm_service_error_http_exception(
             "LLM_TIMEOUT",
             "The AI provider timed out. Please try again.",
             "30",
-            correlation_id,
         )
     if sc == 503:
         return _llm_http(
@@ -375,7 +358,6 @@ def llm_service_error_http_exception(
             "AI service temporarily unavailable due to high demand. "
             "Please try again.",
             "60",
-            correlation_id,
         )
     if sc is not None and sc >= 500:
         return _llm_http(
@@ -383,7 +365,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_UNAVAILABLE",
             "The AI provider is temporarily unavailable. Please try again.",
             "60",
-            correlation_id,
         )
     if sc is not None:
         # Other 4xx — the provider rejected the request itself; retrying the
@@ -393,7 +374,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_ERROR",
             "The AI provider could not process this request.",
             None,
-            correlation_id,
         )
     # No provider status. Fall back to the retryability the raising code
     # DECLARED, on any exception in the chain — not only on an ``LLMException``.
@@ -419,7 +399,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_UNAVAILABLE",
             "The AI provider is temporarily unavailable. Please try again.",
             "30",
-            correlation_id,
         )
     if declared is False:
         return _llm_http(
@@ -427,7 +406,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_ERROR",
             "The AI provider could not process this request.",
             None,
-            correlation_id,
         )
 
     # 3. Engine's semantic failure code (retry-loop path — no LLMException on the
@@ -439,7 +417,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_UNAVAILABLE",
             "The AI provider is temporarily unavailable. Please try again.",
             "30",
-            correlation_id,
         )
     if code in _TERMINAL_ENGINE_CODES:
         return _llm_http(
@@ -447,7 +424,6 @@ def llm_service_error_http_exception(
             "LLM_PROVIDER_ERROR",
             "The AI provider could not process this request.",
             None,
-            correlation_id,
         )
 
     # 4. Direct schema-parse failure (ValidationError / JSONDecodeError that
@@ -460,7 +436,6 @@ def llm_service_error_http_exception(
             "LLM_INVALID_RESPONSE",
             "The AI provider returned an incomplete response. Please try again.",
             "30",
-            correlation_id,
         )
 
     # 5. Genuinely unclassifiable — a static sentence, never the exception
@@ -474,7 +449,6 @@ def llm_service_error_http_exception(
         "SERVICE_ERROR",
         SERVICE_ERROR_DETAIL,
         "10",
-        correlation_id,
     )
 
 
@@ -944,7 +918,7 @@ def global_service_exception_http_exception(exc: BaseException) -> HTTPException
         return quota_exhausted_http_exception()
     if _is_llm_failure(exc):
         return llm_service_error_http_exception(exc)
-    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None, None)
+    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None)
 
 
 async def service_exception_handler(
@@ -969,8 +943,7 @@ async def service_exception_handler(
     get a static 500.
 
     Rendered through ``http_exception_handler`` so, for an LLM failure, body
-    and headers match an inline ``raise llm_service_error_http_exception(e)``
-    except ``x-correlation-id``, which only a route holding one can add.
+    and headers match an inline ``raise llm_service_error_http_exception(e)``.
 
     What this does NOT reach, measured when it was added: a route arm that
     catches ``ServiceException`` itself (inventoried by

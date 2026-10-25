@@ -744,6 +744,19 @@ request_context: ContextVar[Optional[RequestContext]] = ContextVar(
 )
 
 
+def current_correlation_id() -> Optional[str]:
+    """The correlation id of the request being served, or None outside one.
+
+    It is the id ``LoggingMiddleware`` stamps on every log line of the request
+    and returns as the ``X-Correlation-ID`` response header, so an id a route
+    names in a response body (an ``Error ID``) is found by the same log query
+    as the request's own lines. A route reads it here rather than minting one
+    of its own: a second id matches neither the header nor those lines (#2278).
+    """
+    ctx = request_context.get()
+    return ctx.correlation_id if ctx else None
+
+
 class LoggingCoordinator:
     """
     Coordinates all logging for a request lifecycle.

@@ -11,7 +11,6 @@ handler here uses.
 import asyncio
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
 
@@ -59,6 +58,7 @@ from faultmaven.exceptions import (
     SessionException,
     ValidationException,
 )
+from faultmaven.infrastructure.logging.coordinator import current_correlation_id
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapExceeded,
@@ -165,8 +165,6 @@ async def get_case_messages_enhanced(
     Supports pagination and includes metadata about message retrieval status.
     """
     case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
     # The body varies by viewer: stored runbook excerpts are gated for the
     # requester (#1919), so no shared or browser cache may serve one reader's
     # page to another. The same headers ``list_cases`` sets.
@@ -213,12 +211,10 @@ async def get_case_messages_enhanced(
     except Exception as e:
         logger.error(
             f"Unexpected error in get_case_messages_enhanced: {e}",
-            extra={"correlation_id": correlation_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get messages",
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -586,7 +582,6 @@ async def submit_turn(
     `LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
     """
     case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
     # The keyed turn's claim, held from the idempotency step until the turn is
     # fully answered (released in ``finally``, #1888).
     keyed: Optional[KeyedTurn] = None
@@ -602,7 +597,6 @@ async def submit_turn(
             raise HTTPException(
                 status_code=400,
                 detail="Valid case_id is required",
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Size cap on text-shaped form fields. Multipart files are bounded by
@@ -620,7 +614,6 @@ async def submit_turn(
                     f"pasted_content exceeds the {_max_text_bytes // (1024 * 1024)}MB "
                     f"limit. Upload as a file instead."
                 ),
-                headers={"x-correlation-id": correlation_id},
             )
         if query and len(query.encode("utf-8")) > _max_text_bytes:
             raise HTTPException(
@@ -628,7 +621,6 @@ async def submit_turn(
                 detail=(
                     f"query exceeds the {_max_text_bytes // (1024 * 1024)}MB limit."
                 ),
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Per-attachment size cap. Starlette >= 1.1 bounds only non-file form
@@ -642,7 +634,6 @@ async def submit_turn(
                         f"{upload.filename or 'attachment'} exceeds the "
                         f"{_max_text_bytes // (1024 * 1024)}MB upload limit."
                     ),
-                    headers={"x-correlation-id": correlation_id},
                 )
 
         # Verify case exists and user has access.
@@ -663,7 +654,6 @@ async def submit_turn(
             raise HTTPException(
                 status_code=404,
                 detail="Case not found or access denied",
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Each file's bytes, read ONCE: the idempotency step fingerprints them
@@ -703,7 +693,6 @@ async def submit_turn(
                 ),
                 case_service=case_service,
                 response_bound_seconds=turn_ceiling.response_bound_seconds,
-                correlation_id=correlation_id,
             )
             if keyed.replay is not None:
                 if http_response is not None:
@@ -718,7 +707,6 @@ async def submit_turn(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot submit new data to a closed case. Only questions about the case are allowed.",
                     headers={
-                        "x-correlation-id": correlation_id,
                         "x-error-code": CASE_TERMINAL,
                     },
                 )
@@ -727,7 +715,6 @@ async def submit_turn(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot change status of a closed case.",
                     headers={
-                        "x-correlation-id": correlation_id,
                         "x-error-code": CASE_TERMINAL,
                     },
                 )
@@ -736,7 +723,6 @@ async def submit_turn(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot reclassify files on a closed case.",
                     headers={
-                        "x-correlation-id": correlation_id,
                         "x-error-code": CASE_TERMINAL,
                     },
                 )
@@ -746,7 +732,6 @@ async def submit_turn(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot submit new data to a closed case.",
                     headers={
-                        "x-correlation-id": correlation_id,
                         "x-error-code": CASE_TERMINAL,
                     },
                 )
@@ -777,7 +762,7 @@ async def submit_turn(
             # is the only party that knows this, so an unparseable value is
             # dropped to None rather than guessed at: unknown is honest, and
             # "now" would be the exact false claim this field exists to stop.
-            observed_at_dt = _parse_observed_at(observed_at, correlation_id)
+            observed_at_dt = _parse_observed_at(observed_at)
 
             # Determine source type from the explicit `input_type` form field.
             # The clients set it (``"paste"`` → ``text_paste``) — the Copilot
@@ -827,7 +812,6 @@ async def submit_turn(
                         + ", ".join(t.value for t in IntentType)
                         + "."
                     ),
-                    headers={"x-correlation-id": correlation_id},
                 )
             try:
                 intent = QueryIntent(type=parsed_intent_type, **data)
@@ -835,7 +819,6 @@ async def submit_turn(
                 raise HTTPException(
                     status_code=422,
                     detail=f"Invalid fields for intent_type={intent_type!r}: {e}",
-                    headers={"x-correlation-id": correlation_id},
                 )
 
         payload = TurnPayload(query=query, attachments=attachments, intent=intent)
@@ -888,7 +871,6 @@ async def submit_turn(
                         keyed=keyed,
                         case=case,
                         case_service=case_service,
-                        correlation_id=correlation_id,
                     )
                     if http_response is not None:
                         http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
@@ -943,7 +925,6 @@ async def submit_turn(
                     "request is likely to time out again."
                 ),
                 headers={
-                    "x-correlation-id": correlation_id,
                     "x-error-code": "REQUEST_TIMEOUT",
                 },
             )
@@ -965,7 +946,6 @@ async def submit_turn(
                 "Reload the case and resubmit if still applicable."
             ),
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": "CASE_VERSION_CONFLICT",
                 "x-expected-version": str(e.expected_version),
                 "x-actual-version": str(e.actual_version),
@@ -982,7 +962,6 @@ async def submit_turn(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=capped.user_message,
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": "TENANT_TURN_CAP_EXCEEDED",
                 "Retry-After": str(capped.retry_after_seconds),
             },
@@ -995,7 +974,6 @@ async def submit_turn(
         logger.error(
             "Turn refused: the tenant turn cap could not be applied: %s",
             unavailable,
-            extra={"correlation_id": correlation_id},
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1004,7 +982,6 @@ async def submit_turn(
                 "Please try again in a moment."
             ),
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": "TENANT_TURN_CAP_UNAVAILABLE",
                 "Retry-After": "10",
             },
@@ -1013,26 +990,23 @@ async def submit_turn(
         raise HTTPException(
             status_code=404,
             detail=str(e),
-            headers={"x-correlation-id": correlation_id},
         )
     except PermissionDeniedException as e:
         raise HTTPException(
             status_code=403,
             detail=str(e),
-            headers={"x-correlation-id": correlation_id},
         )
     except HTTPException:
         raise
     except ServiceException as e:
         logger.error(
             f"Turn processing failed: {e}",
-            extra={"correlation_id": correlation_id},
         )
         # Classify off the typed provider metadata (LLMException.status_code /
         # retryable on the __cause__ chain), not the message string — see
         # llm_service_error_http_exception. Covers billing (→402), rate limits,
         # over-capacity, timeouts, provider 4xx/5xx, and schema-parse failures.
-        raise llm_service_error_http_exception(e, correlation_id)
+        raise llm_service_error_http_exception(e)
     except RawModelContentRefused:
         # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
         raise
@@ -1040,13 +1014,13 @@ async def submit_turn(
         logger.error(
             f"Unexpected error processing turn: {e}",
             exc_info=True,
-            extra={"correlation_id": correlation_id},
         )
+        # The Error ID is the request's own id: the ``X-Correlation-ID``
+        # header and every log line of this request carry it (#2278).
         raise HTTPException(
             status_code=500,
-            detail=f"An unexpected error occurred. Error ID: {correlation_id}",
+            detail=f"An unexpected error occurred. Error ID: {current_correlation_id()}",
             headers={
-                "x-correlation-id": correlation_id,
                 "x-error-code": "UNEXPECTED_ERROR",
                 "Retry-After": "10",
             },

@@ -822,20 +822,21 @@ class TestQuotaExhaustedHttpException:
         from faultmaven.api.exception_handlers import quota_exhausted_http_exception
         from faultmaven.exceptions import QUOTA_EXHAUSTED
 
-        exc = quota_exhausted_http_exception("corr-123")
+        exc = quota_exhausted_http_exception()
         assert exc.status_code == 402
         assert exc.headers["x-error-code"] == QUOTA_EXHAUSTED
-        assert exc.headers["x-correlation-id"] == "corr-123"
         # Retrying cannot add credits — no Retry-After.
         assert "Retry-After" not in exc.headers
         assert "credit" in exc.detail.lower()
 
-    def test_correlation_id_optional(self):
+    def test_it_sets_no_correlation_id_of_its_own(self):
+        """``LoggingMiddleware`` sets ``X-Correlation-ID`` on the response; a
+        builder's own id would be a second one (#2278)."""
         from faultmaven.api.exception_handlers import quota_exhausted_http_exception
 
         exc = quota_exhausted_http_exception()
         assert exc.status_code == 402
-        assert "x-correlation-id" not in exc.headers
+        assert "x-correlation-id" not in {k.lower() for k in exc.headers}
 
     def test_is_quota_exhausted_service_error_predicate(self):
         from faultmaven.api.exception_handlers import (
@@ -871,12 +872,12 @@ class TestLLMServiceErrorHttpException:
     does, so these exercise the real ``__cause__`` chain the classifier walks.
     """
 
-    def _classify(self, cause, correlation_id="corr-1"):
+    def _classify(self, cause):
         from faultmaven.api.exception_handlers import (
             llm_service_error_http_exception,
         )
 
-        return llm_service_error_http_exception(_wrap(cause), correlation_id)
+        return llm_service_error_http_exception(_wrap(cause))
 
     def _llm(self, message="provider boom", **kwargs):
         from faultmaven.exceptions import LLMException
@@ -979,7 +980,7 @@ class TestLLMServiceErrorHttpException:
         from faultmaven.exceptions import QUOTA_EXHAUSTED, ServiceException
 
         wrapped = ServiceException("x", details={"error_code": QUOTA_EXHAUSTED})
-        exc = llm_service_error_http_exception(wrapped, "corr-9")
+        exc = llm_service_error_http_exception(wrapped)
         assert exc.status_code == 402
         assert exc.headers["x-error-code"] == QUOTA_EXHAUSTED
         assert "Retry-After" not in exc.headers
@@ -1013,11 +1014,17 @@ class TestLLMServiceErrorHttpException:
         # ServiceException handler this fallback answers for every route.
         assert "some internal failure" not in exc.detail
 
-    def test_correlation_id_threaded_and_optional(self):
-        with_id = self._classify(self._llm(status_code=429), correlation_id="cid-x")
-        assert with_id.headers["x-correlation-id"] == "cid-x"
-        without = self._classify(self._llm(status_code=429), correlation_id=None)
-        assert "x-correlation-id" not in without.headers
+    def test_no_arm_sets_a_correlation_id_of_its_own(self):
+        """The request's id is ``LoggingMiddleware``'s to set (#2278)."""
+        from faultmaven.exceptions import ServiceException
+
+        for cause in (
+            self._llm(status_code=429),
+            self._llm(status_code=400),
+            ServiceException("some internal failure"),
+        ):
+            headers = self._classify(cause).headers
+            assert "x-correlation-id" not in {k.lower() for k in headers}
 
     def test_typed_metadata_found_through_nested_cause(self):
         # ServiceException → RuntimeError → LLMException: still classified typed.
@@ -1035,7 +1042,7 @@ class TestLLMServiceErrorHttpException:
             llm_service_error_http_exception,
         )
 
-        exc = llm_service_error_http_exception(wrapped, "c")
+        exc = llm_service_error_http_exception(wrapped)
         assert exc.status_code == 503
         assert exc.headers["x-error-code"] == "LLM_OVER_CAPACITY"
 
@@ -1056,7 +1063,7 @@ class TestLLMServiceErrorHttpException:
             "Turn processing failed: Structured output generation failed",
             details={"error_code": code},
         )
-        return llm_service_error_http_exception(wrapped, "corr-e")
+        return llm_service_error_http_exception(wrapped)
 
     def test_engine_retry_exhausted_maps_to_503(self):
         exc = self._by_engine_code("RETRY_EXHAUSTED")
@@ -1135,7 +1142,7 @@ class TestLLMServiceErrorHttpException:
             except ExternalCallTimeout as inner:
                 raise ServiceException("Turn processing failed") from inner
         except ServiceException as outer:
-            exc = llm_service_error_http_exception(outer, "corr-t")
+            exc = llm_service_error_http_exception(outer)
 
         assert exc.status_code == 503
         assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
@@ -1151,7 +1158,7 @@ class TestLLMServiceErrorHttpException:
         from faultmaven.exceptions import ServiceException
 
         exc = llm_service_error_http_exception(
-            ServiceException("Turn processing failed: something odd"), "corr-u"
+            ServiceException("Turn processing failed: something odd")
         )
         assert exc.status_code == 500
         assert exc.headers["x-error-code"] == "SERVICE_ERROR"
@@ -1207,7 +1214,7 @@ class TestLLMServiceErrorHttpException:
             raise ServiceException("Turn processing failed") from eng
         except ServiceException as outer:
             wrapped = outer
-        exc = llm_service_error_http_exception(wrapped, "c")
+        exc = llm_service_error_http_exception(wrapped)
         assert exc.status_code == 503
         assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
 
@@ -1226,7 +1233,7 @@ class TestLLMServiceErrorHttpException:
             ) from llm
         except ServiceException as outer:
             wrapped = outer
-        exc = llm_service_error_http_exception(wrapped, "c")
+        exc = llm_service_error_http_exception(wrapped)
         assert exc.status_code == 429  # provider status beats the engine code
 
     def test_unknown_engine_code_falls_back_to_500(self):

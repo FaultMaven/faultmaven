@@ -8,7 +8,6 @@ every handler here uses.
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -176,10 +175,7 @@ async def delete_case_data(
             )
 
         # Return 204 No Content for successful deletion
-        return Response(
-            status_code=status.HTTP_204_NO_CONTENT,
-            headers={"x-correlation-id": str(uuid.uuid4())},
-        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     except HTTPException:
         raise

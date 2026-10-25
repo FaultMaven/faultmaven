@@ -73,7 +73,7 @@ def resolve_paste_source_meta(
     return meta, prefix
 
 
-def _parse_observed_at(raw: Optional[str], correlation_id: str) -> Optional[datetime]:
+def _parse_observed_at(raw: Optional[str]) -> Optional[datetime]:
     """Parse the caller-supplied ``observed_at`` into an aware UTC instant.
 
     Fails to ``None`` — never to "now" and never to a 4xx. This field is a
@@ -93,11 +93,7 @@ def _parse_observed_at(raw: Optional[str], correlation_id: str) -> Optional[date
     try:
         parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
     except (ValueError, AttributeError):
-        logger.warning(
-            "Ignoring un-parseable observed_at %r (correlation_id=%s)",
-            raw[:64],
-            correlation_id,
-        )
+        logger.warning("Ignoring un-parseable observed_at %r", raw[:64])
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -106,11 +102,7 @@ def _parse_observed_at(raw: Optional[str], correlation_id: str) -> Optional[date
     # Small tolerance so ordinary clock skew between the caller and this host
     # doesn't discard a legitimate just-now observation.
     if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
-        logger.warning(
-            "Ignoring future observed_at %s (correlation_id=%s)",
-            parsed.isoformat(),
-            correlation_id,
-        )
+        logger.warning("Ignoring future observed_at %s", parsed.isoformat())
         return None
     return parsed
 

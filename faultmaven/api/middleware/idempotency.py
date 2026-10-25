@@ -19,7 +19,6 @@ import hashlib
 import json
 import logging
 from typing import Any, Dict, Optional
-from uuid import uuid4
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -31,6 +30,7 @@ from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_REPLAYED_HEADER,
     is_valid_idempotency_key,
 )
+from faultmaven.infrastructure.logging.coordinator import current_correlation_id
 
 from .route_policy import (
     APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
@@ -262,7 +262,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 content={
                     "detail": "Invalid Idempotency-Key format. Must be a valid UUID or similar identifier.",
                     "error_type": "InvalidIdempotencyKey",
-                    "correlation_id": str(uuid4()),
+                    "correlation_id": current_correlation_id(),
                     "timestamp": self._get_timestamp(),
                 },
             )
@@ -349,7 +349,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                             ),
                             "error_type": "IdempotencyKeyReuse",
                             "error_code": IDEMPOTENCY_KEY_REUSE,
-                            "correlation_id": str(uuid4()),
+                            "correlation_id": current_correlation_id(),
                             "timestamp": self._get_timestamp(),
                         },
                     )

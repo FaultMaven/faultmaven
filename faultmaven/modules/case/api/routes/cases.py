@@ -9,7 +9,6 @@ handler here uses.
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -124,7 +123,6 @@ async def delete_case(
     Returns 204 No Content on success.
     """
     case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
 
     try:
         # DELETE stays idempotent for a case the caller cannot see: the service
@@ -141,7 +139,6 @@ async def delete_case(
         if not deleted:
             logger.warning(
                 f"Refused delete of case {case_id}: caller is not the owner",
-                extra={"correlation_id": correlation_id},
             )
             error_response = ErrorResponse(
                 schema_version="3.1.0",
@@ -153,21 +150,15 @@ async def delete_case(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
             )
 
-        # Success response with correlation header
-        return Response(
-            status_code=status.HTTP_204_NO_CONTENT,
-            headers={"x-correlation-id": correlation_id},
-        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except HTTPException:
         raise
     except AuthorizationError as e:
         # Authorization errors should not be treated as idempotent success
         logger.warning(
             f"Authorization error in delete_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0", error=ErrorDetail(code="FORBIDDEN", message=str(e))
@@ -175,23 +166,17 @@ async def delete_case(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
     except NotFoundError:
         # NotFoundError is treated as success for idempotent DELETE
         # REST principle: DELETE is idempotent, resource deletion succeeds whether or not resource exists
         logger.info(
             f"Case not found in delete_case, treating as idempotent success: {case_id}",
-            extra={"correlation_id": correlation_id},
         )
-        return Response(
-            status_code=status.HTTP_204_NO_CONTENT,
-            headers={"x-correlation-id": correlation_id},
-        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as e:
         logger.error(
             f"Unexpected error in delete_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -202,7 +187,6 @@ async def delete_case(
         raise HTTPException(
             status_code=500,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -229,7 +213,6 @@ async def create_case(
 
     Returns CaseSummary with basic case info and milestone progress.
     """
-    correlation_id = str(uuid.uuid4())
     case_service = check_case_service_available(case_service)
 
     try:
@@ -280,12 +263,10 @@ async def create_case(
                 # registered and nothing below catches it.
                 logger.warning(
                     f"Cannot evaluate session ownership for {request.session_id}: {exc}",
-                    extra={"correlation_id": correlation_id},
                 )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Session service unavailable",
-                    headers={"x-correlation-id": correlation_id},
                 )
 
             if session is None or session.user_id != current_user.user_id:
@@ -311,7 +292,6 @@ async def create_case(
                         if session is None
                         else "session belongs to another user"
                     ),
-                    extra={"correlation_id": correlation_id},
                 )
                 error_response = ErrorResponse(
                     schema_version="3.1.0",
@@ -323,7 +303,6 @@ async def create_case(
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=error_response.model_dump(),
-                    headers={"x-correlation-id": correlation_id},
                 )
 
         # Create case using new model. Origin is derived from the creating
@@ -342,7 +321,6 @@ async def create_case(
 
         # Set Location header
         response.headers["Location"] = f"/api/v1/cases/{case_entity.case_id}"
-        response.headers["x-correlation-id"] = correlation_id
 
         # Return summary (v2.0 API model), with the creator's name (ADR-020
         # D5): the creator drives a new case.
@@ -353,7 +331,6 @@ async def create_case(
     except ValidationException as e:
         logger.error(
             f"Validation error in create_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -362,12 +339,10 @@ async def create_case(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
     except ServiceException as e:
         logger.error(
             f"Service error in create_case: {e}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -379,7 +354,6 @@ async def create_case(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -465,8 +439,6 @@ async def list_cases(
       instant always answer alike.
     """
     case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
 
     # Prevent browser/extension caching to ensure title updates are visible immediately
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -500,7 +472,6 @@ async def list_cases(
             # Same status code; `HTTP_422_UNPROCESSABLE_ENTITY` warns on access.
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
     try:
@@ -566,17 +537,14 @@ async def list_cases(
 
         # Set pagination headers
         response.headers["X-Total-Count"] = str(total_count)
-        response.headers["x-correlation-id"] = correlation_id
 
         return list_response
 
     except ServiceException as e:
         # Service-level errors
-        correlation_id = str(uuid.uuid4())
         logger = logging.getLogger(__name__)
         logger.error(
             f"Service error in list_cases: {e}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -588,16 +556,13 @@ async def list_cases(
         return JSONResponse(
             status_code=503,
             content=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
     except Exception as e:
         # Unexpected errors
-        correlation_id = str(uuid.uuid4())
         logger = logging.getLogger(__name__)
         logger.error(
             f"Unexpected error in list_cases: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -608,7 +573,6 @@ async def list_cases(
         return JSONResponse(
             status_code=500,
             content=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -666,9 +630,6 @@ async def get_case(
     Returns full case details with milestone progress, investigation stage,
     and completion percentage.
     """
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
-
     # Prevent browser/extension caching to ensure title updates are visible immediately
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
@@ -687,7 +648,6 @@ async def get_case(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Convert to CaseDetail (v2.0 API model with milestones)
@@ -701,10 +661,8 @@ async def get_case(
     except HTTPException:
         raise
     except Exception as e:
-        correlation_id = str(uuid.uuid4())
         logger.error(
             f"Unexpected error in get_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         # Restored from old implementation - proper error response format
         error_response = ErrorResponse(
@@ -714,7 +672,6 @@ async def get_case(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -727,7 +684,6 @@ async def get_case(
 async def get_case_ui(
     request: Request,
     case_id: str,
-    response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> CaseUIResponse:
@@ -742,9 +698,6 @@ async def get_case_ui(
     This endpoint eliminates multiple API calls by returning all UI state
     in a single response optimized for the current investigation phase.
     """
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
-
     try:
         case_service = check_case_service_available(case_service)
 
@@ -760,7 +713,6 @@ async def get_case_ui(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Transform to UI response based on phase
@@ -802,7 +754,6 @@ async def get_case_ui(
     except Exception as e:
         logger.error(
             f"Unexpected error in get_case_ui: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -813,7 +764,6 @@ async def get_case_ui(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -840,7 +790,6 @@ async def get_case_ui(
 async def update_case(
     case_id: str,
     request: CaseUpdateRequest,
-    response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
@@ -851,9 +800,6 @@ async def update_case(
     Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
     the answer an absent case gets.
     """
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
-
     try:
         # DRIVER only, at the route as well as in ``update_case`` (ADR-020
         # D2). Resolved through the driver so a reader who does not drive is
@@ -887,7 +833,6 @@ async def update_case(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
             )
 
         success = await case_service.update_case(case_id, updates, current_user.user_id)
@@ -902,7 +847,6 @@ async def update_case(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
             )
 
         # Return successful update response as expected by tests
@@ -917,7 +861,6 @@ async def update_case(
     except NotFoundError as e:
         logger.warning(
             f"Case not found in update_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -926,12 +869,10 @@ async def update_case(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
     except AuthorizationError as e:
         logger.warning(
             f"Authorization error in update_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0", error=ErrorDetail(code="FORBIDDEN", message=str(e))
@@ -939,12 +880,10 @@ async def update_case(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
     except ValidationException as e:
         logger.error(
             f"Validation error in update_case: {e}",
-            extra={"correlation_id": correlation_id},
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -953,12 +892,10 @@ async def update_case(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
     except Exception as e:
         logger.error(
             f"Unexpected error in update_case: {e}",
-            extra={"correlation_id": correlation_id},
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -970,7 +907,6 @@ async def update_case(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_response.model_dump(),
-            headers={"x-correlation-id": correlation_id},
         )
 
 
@@ -1018,8 +954,6 @@ async def generate_case_title(
       retry later.
     """
     case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
 
     try:
         logger = logging.getLogger(__name__)
@@ -1101,7 +1035,6 @@ async def generate_case_title(
                     llm_provider=getattr(request.app.state, "llm_provider", None),
                     max_words=max_words,
                     hint=hint,
-                    correlation_id=correlation_id,
                     sanitizer=getattr(request.app.state, "sanitizer", None),
                     redis_client=getattr(request.app.state, "redis_client", None),
                 )
@@ -1113,11 +1046,8 @@ async def generate_case_title(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Title generation is temporarily unavailable",
-                headers={"x-correlation-id": correlation_id},
             )
 
-        # Persist success atomically and return X-Correlation-ID on all responses
-        response.headers["x-correlation-id"] = correlation_id
         response.headers["x-title-source"] = (
             title_source  # Log source=llm vs fallback for telemetry
         )
@@ -1135,11 +1065,7 @@ async def generate_case_title(
 
         return TitleResponse(schema_version="3.1.0", title=generated_title)
 
-    except HTTPException as he:
-        # Ensure X-Correlation-ID on all error responses
-        if "x-correlation-id" not in (he.headers or {}):
-            he.headers = he.headers or {}
-            he.headers["x-correlation-id"] = correlation_id
+    except HTTPException:
         raise
     except FaultMavenException:
         # Typed service exceptions (ValidationException, ConflictError,
@@ -1154,12 +1080,10 @@ async def generate_case_title(
     except Exception as e:
         logger.error(
             f"Unexpected error in generate_case_title: {e}",
-            extra={"correlation_id": correlation_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate title",
-            headers={"x-correlation-id": correlation_id},
         )
 
 

@@ -16,6 +16,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from ...infrastructure.logging.coordinator import current_correlation_id
 from ...infrastructure.protection import RequestHasher
 from ...models.protection import (
     DuplicateRequestError,
@@ -473,7 +474,10 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         error = DuplicateRequestError(
             original_timestamp=original_timestamp or datetime.now(timezone.utc),
             ttl_remaining=ttl_remaining,
-            correlation_id=request.headers.get("x-correlation-id", ""),
+            # The request's own id, the one X-Correlation-ID carries, never an
+            # id the caller sent: a client could otherwise have the refusal
+            # name any id it liked (#2278).
+            correlation_id=current_correlation_id() or "",
         )
 
         error_response = ProtectionErrorResponse.from_duplicate_error(error)

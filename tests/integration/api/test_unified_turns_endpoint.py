@@ -608,7 +608,7 @@ class TestObservedAtParsing:
     def _parse(self, raw):
         from faultmaven.modules.case.api.routes.dependencies import _parse_observed_at
 
-        return _parse_observed_at(raw, "corr-1")
+        return _parse_observed_at(raw)
 
     def test_iso_instant_is_parsed_to_utc(self):
         assert self._parse("2026-08-04T17:36:17+00:00") == datetime(
