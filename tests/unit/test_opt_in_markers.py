@@ -8,9 +8,8 @@ a collection hook in ``tests/conftest.py`` now, which no ``-m`` replaces.
 """
 
 import configparser
+import os
 import shlex
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,10 +21,11 @@ from tests.conftest import (
     pytest_collection_modifyitems,
 )
 
+pytest_plugins = ["pytester"]
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LANE = "tests/integration/real_llm/"
 
 
 @pytest.mark.parametrize(
@@ -116,34 +116,48 @@ def test_pytest_ini_holds_no_marker_expression():
     assert "-m" not in shlex.split(config["pytest"]["addopts"])
 
 
+_SUITE = """
+import pytest
+
+
+@pytest.mark.real_llm
+def test_live():
+    pass
+
+
+def test_plain():
+    pass
+"""
+
+
 @pytest.mark.parametrize(
     ("argv", "collected"),
     [
-        ([], 0),
-        (["-m", "not cloud"], 0),  # the expression that used to select it
-        (["-m", "real_llm"], 1),
+        ([], ["test_plain"]),
+        (["-m", "not cloud"], ["test_plain"]),  # the shape that used to select it
+        (["-m", "real_llm"], ["test_live"]),
     ],
 )
-def test_a_pytest_run_collects_the_lane_only_when_named(argv, collected):
-    """Collected, never run: ``--collect-only`` makes no call."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-qq",
-            "-p",
-            "no:cacheprovider",
-        ]
-        + argv
-        + [LANE],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=120,
+def test_a_pytest_run_collects_the_lane_only_when_named(
+    pytester, monkeypatch, argv, collected
+):
+    """A suite of one lane test and one other, collected (never run) in a child
+    process with the root conftest loaded, the way
+    ``test_a_warning_fails_the_run.py`` runs its suites."""
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+    )
+    pytester.makeini("[pytest]\nmarkers =\n    real_llm: the live-model lane\n")
+    pytester.makepyfile(test_lane=_SUITE)
+
+    result = pytester.runpytest_subprocess(
+        "-p", "no:cacheprovider", "-p", "tests.conftest", "--collect-only", "-q", *argv
     )
 
-    assert result.returncode in (0, 5), result.stdout + result.stderr  # 5: none
-    node_ids = [line for line in result.stdout.splitlines() if line.startswith(LANE)]
-    assert len(node_ids) == collected, result.stdout
+    names = [
+        line.rsplit("::", 1)[-1]
+        for line in result.stdout.lines
+        if line.startswith("test_lane.py::")
+    ]
+    assert names == collected, result.stdout.str()

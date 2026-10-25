@@ -1586,8 +1586,8 @@ _stand_in_for_the_local_llm_service_check()
 #: Lanes that run only when the ``-m`` expression names them (#2288). This
 #: used to be ``-m "not real_llm"`` in pytest.ini's ``addopts``, but pytest
 #: keeps only the last ``-m`` it is given, so any ``-m`` on the command line
-#: (``pytest -m "not cloud"``, every preset of ``scripts/tests.py``) replaced it
-#: and selected the live-model tests.
+#: replaced it, and one the live-model tests satisfy selected them
+#: (``pytest -m "not cloud"``, ``scripts/tests.py --ci-full`` and ``--ci-nightly``).
 OPT_IN_MARKERS = ("real_llm",)
 
 
@@ -1596,13 +1596,15 @@ def markers_named_by(markexpr: str) -> set:
 
     So ``real_llm-x`` names ``real_llm-x``, and ``skipif(reason="real_llm")``
     names ``skipif`` and ``reason``: the quoted value is a string, not a name.
-    An expression the lexer refuses names nothing; pytest refuses it too.
+    An expression the lexer refuses names nothing; pytest refuses it too, with
+    its own message. (The lexer raises ``SyntaxError`` from pytest 9 and its
+    own ``ParseError`` before.)
     """
     from _pytest.mark.expression import Scanner, TokenType
 
     try:
         tokens = list(Scanner(markexpr).lex(markexpr))
-    except SyntaxError:
+    except Exception:
         return set()
     return {token.value for token in tokens if token.type is TokenType.IDENT}
 
