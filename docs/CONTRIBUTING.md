@@ -52,12 +52,13 @@ To get started with local development for the `faultmaven` monolith:
 
         Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
 
-        A lockfile is not the whole environment: **Test Cloud also runs a real Redis**, because `cloud.txt` pins `hiredis` and the cloud deployment runs a server. Only the pairing check and `tests/integration/test_real_redis_stores.py` reach it, each in a step of its own; the rest of the suite names no Redis and needs none. The module needs a Redis named by `REDIS_HOST` (or `REDIS_URL`). Run alone without one, it skips every test and the integration conftest's all-skipped guard fails the run, so give it a server (#2243):
+        A lockfile is not the whole environment: **Test Cloud also runs a real Redis**, because `cloud.txt` pins `hiredis` and the cloud deployment runs a server. Only the pairing check and the real-Redis step reach it, each a step of its own; the rest of the suite names no Redis and needs none. That step runs `tests/integration/test_real_redis_stores.py`, which needs a Redis named by `REDIS_HOST` (or `REDIS_URL`): run alone without one, it skips every test and the integration conftest's all-skipped guard fails the run. It also runs `tests/integration/test_architectural_compliance.py`, which both required jobs' suite steps run too, on FakeRedis: that module takes a server wherever one is named and the stand-in otherwise. Give them a server (#2243):
 
         ```bash
         docker run --rm -d -p 6379:6379 redis:7.2-alpine
         REDIS_HOST=localhost python scripts/check_redis_pairing.py   # what CI asserts before the suite
         REDIS_HOST=localhost pytest tests/integration/test_real_redis_stores.py
+        REDIS_HOST=localhost pytest tests/integration/test_architectural_compliance.py
         ```
 
 3.  **Install Dependencies**

@@ -4,13 +4,15 @@ The suite steps of Test Standalone and Test Cloud set ``SKIP_SERVICE_CHECKS`` an
 name no Redis, so every Redis consumer in them resolves the in-process FakeRedis.
 Test Cloud's Redis service is the cloud pairing: a real server read through the
 ``hiredis`` parser ``requirements/cloud.txt`` pins (fm#1031). Two steps of that
-job name it: ``scripts/check_redis_pairing.py``, and the step that runs this
-module alone. This module drives the stores' commands and their server-side
-scripts against it.
+job name it: ``scripts/check_redis_pairing.py``, and the real-Redis step, which
+runs this module alone in a pytest call of its own. This module drives the
+stores' commands and their server-side scripts against it.
 
-**Gate.** Marked ``cloud``, so Test Standalone deselects it. It runs only where
-``REDIS_HOST`` or ``REDIS_URL`` names a server, and skips elsewhere. Where one is
-named and does not answer, each test FAILS: ``get_async_redis_client()`` falls
+**Gate.** Marked ``cloud``, so Test Standalone deselects it. Every test takes
+``real_redis`` (``tests/integration/conftest.py``), so it runs only where
+``REDIS_HOST`` or ``REDIS_URL`` names a server, and skips elsewhere, unless
+``FM_TEST_REQUIRE_REDIS`` is set, as the real-Redis step sets it: then nothing
+named is a failure. Where one is named and does not answer, each test FAILS: ``get_async_redis_client()`` falls
 back to FakeRedis silently, and a broken service container must not turn this
 module green on the stand-in.
 
@@ -20,7 +22,6 @@ the client.
 """
 
 import importlib.util
-import os
 import time
 import uuid
 from pathlib import Path
@@ -33,10 +34,6 @@ from redis.utils import HIREDIS_AVAILABLE
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
-from faultmaven.infrastructure.redis_client import (
-    get_async_redis_client,
-    is_fakeredis,
-)
 from faultmaven.models.common import SessionContext
 from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
@@ -46,23 +43,7 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.cloud,
-    pytest.mark.skipif(
-        not (os.environ.get("REDIS_HOST") or os.environ.get("REDIS_URL")),
-        reason="neither REDIS_HOST nor REDIS_URL names a Redis to drive "
-        "(Test Cloud's real-Redis step sets REDIS_HOST)",
-    ),
-]
-
-
-def _named_server() -> str:
-    """The variable naming this run's Redis; ``REDIS_URL`` wins, as in the factory."""
-    if os.environ.get("REDIS_URL"):
-        return "REDIS_URL"  # its value can carry a password, so it is not shown
-    port = os.environ.get("REDIS_PORT", "6379")
-    return f"REDIS_HOST={os.environ['REDIS_HOST']!r} REDIS_PORT={port!r}"
+pytestmark = [pytest.mark.integration, pytest.mark.cloud]
 
 
 def _pairing_check():
@@ -72,22 +53,6 @@ def _pairing_check():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture
-async def real_redis():
-    """A client of this test's own on the named server, or a failure."""
-    client = await get_async_redis_client()
-    if is_fakeredis(client):
-        pytest.fail(
-            f"{_named_server()} is set, but get_async_redis_client() resolved the "
-            "in-process FakeRedis: the server did not answer. This module exists to "
-            "drive that server, so it fails rather than skips; check that the "
-            "Redis service is up.",
-            pytrace=False,
-        )
-    yield client
-    await client.aclose()
 
 
 @pytest.fixture

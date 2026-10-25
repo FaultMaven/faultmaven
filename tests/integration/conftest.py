@@ -2,7 +2,8 @@
 Integration test configuration and fixtures.
 
 The all-skipped guard, the per-test shutdown of a served app's protection
-middleware, and the shared service fixtures for tests under tests/integration/.
+middleware, the real-Redis client, and the shared service fixtures for tests
+under tests/integration/.
 """
 
 import asyncio
@@ -12,46 +13,36 @@ from collections import Counter
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
-# Conditional Redis import - only available in enterprise edition
-try:
-    import redis.asyncio as redis
-
-    REDIS_AVAILABLE = True
-except ImportError:
-    redis = None
-    REDIS_AVAILABLE = False
-
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.redis_client import (
+    get_async_redis_client,
+    get_fakeredis_client,
+    is_fakeredis,
+)
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService as SessionService,
 )
-
-# Conditional RedisSessionStore import - only available in enterprise edition
-if REDIS_AVAILABLE:
-    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-        RedisSessionStore,
-    )
-else:
-    RedisSessionStore = None
+from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+    RedisSessionStore,
+)
 
 # Legacy services/domain/* was removed; use extracted module path.
 # This import triggers: CaseService -> persistence -> chromadb -> protobuf -> ctypes
 # But _ctypes mock is already loaded from root conftest above
 from faultmaven.modules.case.domain.services.case_service import CaseService
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
+    SQLiteCaseRepository,
+)
+from tests.utils import seed_enterprises, seed_users
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
 pytest_asyncio.asyncio_default_test_loop_scope = "function"
-
-# Test configuration
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_URL = (
-    f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
-    if REDIS_PASSWORD
-    else f"redis://{REDIS_HOST}:{REDIS_PORT}"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -263,65 +254,176 @@ async def _end_the_service_of(apps) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# The Redis a test runs on
+#
+# The suite steps of Test Standalone and Test Cloud name no Redis, so every
+# Redis consumer in them resolves the in-process FakeRedis; Test Cloud's
+# real-Redis step names its server in REDIS_HOST. Two fixtures read that:
+#
+# - ``real_redis``, for a test that exists to drive a real server: it skips
+#   where none is named.
+# - ``session_redis``, for a test of behaviour both stacks share: the named
+#   server, or the standalone stack's stand-in where none is named.
+#
+# Where a server is named and does not answer, both FAIL:
+# ``get_async_redis_client()`` falls back to FakeRedis silently, and a broken
+# service container must not turn a test green on the stand-in (#2243).
+#
+# Where none is named, a run that must reach a server says so with
+# ``FM_TEST_REQUIRE_REDIS`` (below), and both fail instead.
+# ---------------------------------------------------------------------------
+
+#: Test-only. Set to any non-empty value, it says this run must reach a named
+#: Redis: where neither ``REDIS_URL`` nor ``REDIS_HOST`` names one, every test
+#: that takes ``real_redis`` or ``session_redis`` FAILS, instead of skipping or
+#: running on the stand-in. Test Cloud's real-Redis step sets it, so a step
+#: that lost its ``REDIS_*`` env cannot pass on FakeRedis.
+REQUIRE_REDIS_ENV = "FM_TEST_REQUIRE_REDIS"
+
+
+def _named_redis() -> str | None:
+    """The variable naming this run's Redis, or None when nothing names one.
+
+    ``REDIS_URL`` wins, as in the client factory. An empty ``REDIS_HOST``, what
+    ``tests/conftest.py`` sets when the caller set none, names nothing.
+    """
+    if os.environ.get("REDIS_URL"):
+        return "REDIS_URL"  # its value can carry a password, so it is not shown
+    if os.environ.get("REDIS_HOST"):
+        port = os.environ.get("REDIS_PORT", "6379")
+        return f"REDIS_HOST={os.environ['REDIS_HOST']!r} REDIS_PORT={port!r}"
+    return None
+
+
+def _fail_if_a_redis_is_required() -> None:
+    """Called where nothing names a Redis: fail if this run requires one."""
+    if os.environ.get(REQUIRE_REDIS_ENV):
+        pytest.fail(
+            f"{REQUIRE_REDIS_ENV} is set, so this run must reach a named Redis, "
+            "but neither REDIS_URL nor REDIS_HOST names one. Set REDIS_URL, or "
+            "REDIS_HOST (with REDIS_PORT), to the server this run drives.",
+            pytrace=False,
+        )
+
+
+async def _answering_client(named: str):
+    """A client of this test's own on the named server, or a failure.
+
+    Built by ``get_async_redis_client()``, the application's own resolution
+    and ping, on this test's event loop. The caller closes it.
+    """
+    client = await get_async_redis_client()
+    if is_fakeredis(client):
+        # Not closed: it is the loop's shared stand-in, not this test's own.
+        pytest.fail(
+            f"{named} is set, but get_async_redis_client() resolved the "
+            "in-process FakeRedis: the server did not answer (the captured log "
+            "names the reason). A test given the named Redis exists to run on "
+            "that server, so it fails rather than skips; check that the Redis "
+            "service is up.",
+            pytrace=False,
+        )
+    return client
+
+
+@pytest.fixture
+async def real_redis():
+    """A client of this test's own on the named Redis, or a skip, or a failure."""
+    named = _named_redis()
+    if named is None:
+        _fail_if_a_redis_is_required()
+        pytest.skip(
+            "neither REDIS_HOST nor REDIS_URL names a Redis to drive "
+            "(Test Cloud's real-Redis step sets REDIS_HOST)"
+        )
+    client = await _answering_client(named)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def session_redis():
+    """The named Redis, else the standalone stack's in-process stand-in.
+
+    Never a skip. Where nothing names a server (and ``FM_TEST_REQUIRE_REDIS``
+    is unset), the client is the one the standalone composition builds its
+    stores on, ``get_fakeredis_client()``: this loop's shared client, so it is
+    not closed here.
+    """
+    named = _named_redis()
+    if named is None:
+        _fail_if_a_redis_is_required()
+        yield get_fakeredis_client()
+        return
+    client = await _answering_client(named)
+    yield client
+    await client.aclose()
+
+
 # Architectural Compliance Test Fixtures
 
 
-@pytest_asyncio.fixture
-async def session_service() -> SessionService:
-    """Create SessionService with real Redis for integration testing
+@pytest.fixture
+def session_service(session_redis) -> SessionService:
+    """An ``AuthSessionService`` over a ``RedisSessionStore`` on ``session_redis``.
 
-    Note: Uses RedisSessionStore which creates its own Redis client from .env.
-    Does NOT clean Redis - tests work with existing data to simulate
-    production environment where FLUSHDB may be disabled.
-
-    Requires enterprise edition with redis installed.
+    Nothing is cleaned: each test's ids are unique, and every key the store
+    writes carries a TTL.
     """
-    if not REDIS_AVAILABLE or RedisSessionStore is None:
-        pytest.skip("RedisSessionStore not available - requires enterprise edition")
-
-    # Create RedisSessionStore - it will use create_redis_client() from .env
-    try:
-        session_store = RedisSessionStore()
-    except Exception as e:
-        pytest.skip(f"Redis not reachable - skipping: {e}")
-
-    # Verify Redis connectivity before proceeding
-    try:
-        client = redis.from_url(REDIS_URL)
-        await client.ping()
-        await client.aclose()
-    except Exception as e:
-        pytest.skip(f"Redis not reachable at {REDIS_URL} - skipping: {e}")
-
-    # Create SessionService with session store
-    service = SessionService(
-        session_store=session_store,
+    return SessionService(
+        session_store=RedisSessionStore(session_redis),
         max_sessions_per_user=10,
         inactive_threshold_hours=24,
     )
 
-    return service
 
+@pytest.fixture
+async def case_db_session(tmp_path):
+    """One session on a SQLite database of this test's own.
 
-@pytest_asyncio.fixture
-async def case_service() -> CaseService:
-    """Create CaseService with real dependencies for integration testing
-
-    Note: Uses services from dependency injection container.
-    Does NOT clean Redis - tests work with existing data.
+    The schema is built from the ORM metadata, and foreign keys are enforced
+    as the application's engine enforces them. The Standalone enterprise, the
+    one a case created outside a request is stamped with, is seeded; a case's
+    owner has to be seeded too (``case_owners``), because ``cases.user_id`` is
+    a foreign key to ``users``.
     """
-    from faultmaven.container import container
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'cases.db'}", poolclass=NullPool
+    )
 
-    # Ensure container is initialized (idempotent - safe to call multiple times)
-    await container.initialize()
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enforce_foreign_keys(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
-    # Return the case service from the container
-    service = container.get_case_service()
-    if service is None:
-        raise RuntimeError(
-            "case_service is None - container initialization may have failed"
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            await seed_enterprises(session, [STANDALONE_ENTERPRISE_ID])
+            yield session
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def case_owners(case_db_session):
+    """Seed accounts a case may name as its owner: ``await case_owners(id, ...)``."""
+
+    async def seed(*user_ids: str) -> None:
+        await seed_users(
+            case_db_session, user_ids, enterprise_id=STANDALONE_ENTERPRISE_ID
         )
-    return service
+
+    return seed
+
+
+@pytest.fixture
+def case_service(case_db_session) -> CaseService:
+    """The real ``CaseService`` over the SQLite repository on ``case_db_session``."""
+    return CaseService(case_repository=SQLiteCaseRepository(case_db_session))
 
 
 #: The URL the engine fixtures below point the process at. One spelling, in one

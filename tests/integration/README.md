@@ -15,20 +15,23 @@ This directory contains integration test infrastructure focused on:
 The integration directory contains:
 
 #### `test_architectural_compliance.py` ✅ NEW (2025-10-24)
-Comprehensive spec compliance testing with 17 tests validating [case-and-session-concepts.md v2.0](../../docs/architecture/case-and-session/case-and-session-concepts.md):
+Comprehensive spec compliance testing with 15 tests validating [case-and-session-concepts.md](../../docs/architecture/case-and-session/case-and-session-concepts.md):
 
 - **Session Resumption Tests** (3 tests) - client_id-based session resumption validation
 - **Multi-Device Support Tests** (2 tests) - Concurrent sessions on multiple devices
-- **Case Access Tests** (3 tests) - Case persistence and cross-session access
+- **Case Persistence Test** (1 test) - Cases outlive the sessions of their owner
 - **Forbidden Field Validation Tests** (4 tests) - Session updates reject case data
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** a reachable Redis, given through the environment (`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked. Until #2081 is fixed, the 16 that take `session_service` skip whether or not Redis is reachable: the fixture never builds its store.
+**Setup:** none. The 14 that take `session_service` run on the Redis the environment names (`REDIS_URL`, or `REDIS_HOST` with `REDIS_PORT`; the suite never reads `.env`, `tests/conftest.py` blocks it), and on the standalone stack's in-process FakeRedis where none is named. A named Redis that does not answer fails them. Both required jobs run the module in their suite steps on FakeRedis, and Test Cloud runs it again in its real-Redis step against the server. Cases go to a SQLite database of each test's own.
 
 **Run tests:**
 ```bash
-# All compliance tests
+# All compliance tests, on FakeRedis
+pytest tests/integration/test_architectural_compliance.py -v
+
+# The same, against a Redis server
 REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/test_architectural_compliance.py -v
 
 # Specific test
@@ -53,7 +56,8 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Service fixtures**: `session_service` (real Redis; it currently always skips, #2081) and `case_service` (the DI container's)
+- **Redis**: `real_redis`, a client of the test's own on the Redis `REDIS_URL` / `REDIS_HOST` names, which skips where none is named; `session_redis`, the named Redis or else the standalone stack's FakeRedis, which never skips. Both fail where the named Redis does not answer, and where `FM_TEST_REQUIRE_REDIS` is set and nothing names one (Test Cloud's real-Redis step sets it)
+- **Service fixtures**: `session_service` (an `AuthSessionService` on `session_redis`) and `case_service` (the real `CaseService` on a SQLite database of the test's own, whose case owners `case_owners` seeds)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration

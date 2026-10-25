@@ -378,8 +378,9 @@ question, is in [performance.md](performance.md).
 `tests/network_guard.py` refuses every connection to a non-loopback address,
 and every loopback connection except to a port the test process bound itself
 and to the PostgreSQL / Redis its job names in `DATABASE_URL` / `REDIS_URL` /
-`REDIS_HOST` (`tests/integration/test_real_redis_stores.py`, run alone in one
-Test Cloud step, reaches its Redis that way). A model-server port is never
+`REDIS_HOST` (the `real_redis` and `session_redis` fixtures in
+`tests/integration/conftest.py`, run against a server in Test Cloud's
+real-Redis step, reach its Redis that way). A model-server port is never
 allowed, and a name that is not this machine's is not resolved. Any non-empty
 `FM_TEST_ALLOW_LIVE_NETWORK`, read once when the guard installs, disables it
 for the whole process; the opt-in real-LLM lane (`-m real_llm`, described in
