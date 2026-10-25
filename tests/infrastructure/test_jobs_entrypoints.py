@@ -1066,16 +1066,23 @@ class TestATeardownStepWhoseImportFailsFailsAlone:
             _set_enterprise,
             _maint,
         ):
-            # The import fails from the job onward, as it would at the teardown.
-            job_run.side_effect = lambda **_kwargs: monkeypatch.setitem(
-                sys.modules, "faultmaven.infrastructure.persistence.database", None
-            )
+
+            async def _job(**_kwargs):
+                # The import fails from the job onward, as it would at the
+                # teardown.
+                monkeypatch.setitem(
+                    sys.modules, "faultmaven.infrastructure.persistence.database", None
+                )
+                return {"status": "completed"}
+
+            job_run.side_effect = _job
             with caplog.at_level(
                 logging.WARNING,
                 logger="faultmaven.infrastructure.concurrency.teardown",
             ):
-                await run_job("fake_job")
+                result = await run_job("fake_job")
 
+        assert result == {"status": "completed"}, "the teardown changed the result"
         assert "Database close failed (non-critical)" in caplog.text
         mock_container.shutdown.assert_awaited_once()
 

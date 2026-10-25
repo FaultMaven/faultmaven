@@ -81,6 +81,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.infrastructure.concurrency.teardown import run_teardown
 from faultmaven.infrastructure.logging.url_redaction import RedactingFormatter
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
@@ -526,8 +527,6 @@ async def run_job(
         # runs whatever the one before it did, and a failure to close does not
         # change what the run reported. Each step imports what it needs, so a
         # failed import is that step's failure alone (#2267).
-        from faultmaven.infrastructure.concurrency.teardown import run_teardown
-
         async def _close_the_database() -> None:
             from faultmaven.infrastructure.persistence.database import (
                 close_database,

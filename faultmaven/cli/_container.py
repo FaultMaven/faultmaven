@@ -57,10 +57,13 @@ async def _run_then_tear_down(
         steps: list[tuple[str, Callable[[], Any]]] = []
         if composed:
             if container is None:
+                # The singleton is imported, and its shutdown resolved, inside
+                # the step: a failure there is that step's alone.
                 steps.append(("Container shutdown", _shut_down_the_container))
             else:
-                # Resolved outside the steps: a container without a shutdown is
-                # a defect that surfaces, not a failed step that is logged.
+                # A passed container's shutdown is resolved here: a container
+                # without one is the caller's defect, which surfaces rather
+                # than being logged as a failed step.
                 steps.append(("Container shutdown", container.shutdown))
         steps.append(("Database close", _close_the_database))
         await run_teardown(steps)
