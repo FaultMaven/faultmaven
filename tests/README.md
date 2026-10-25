@@ -82,8 +82,9 @@ python scripts/tests.py --ci-nightly
 python scripts/tests.py --ci-cloud
 
 # The PostgreSQL suite (marked `postgres`), as CI runs it, with DATABASE_URL
-# naming a PostgreSQL server
-pytest tests/ -m postgres
+# naming a PostgreSQL server on localhost: the tests expect the schema at head
+alembic upgrade head
+SKIP_SERVICE_CHECKS=true pytest tests/ -m postgres
 ```
 
 ## Test Categories
@@ -259,7 +260,8 @@ Ensure `pytest-asyncio` is installed and use `@pytest.mark.asyncio`.
 The `cloud` and `postgres` tests skip unless `REDIS_URL` (or `REDIS_HOST`) or a
 PostgreSQL `DATABASE_URL` names a server. The repository's `docker-compose.yml`
 starts neither (it runs the API and the Dashboard), so point those variables at
-a server you run yourself.
+a server you run yourself on localhost: the test network guard
+(`tests/network_guard.py`) refuses every connection to another host.
 
 ### Parallel Execution Issues
 
