@@ -103,10 +103,11 @@ def rebuild_app_under(environment):
     """
     from faultmaven.config.settings import reset_settings
 
-    with pytest.MonkeyPatch.context() as patch:
-        for name, value in environment.items():
-            patch.setenv(name, value)
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            for name, value in environment.items():
+                patch.setenv(name, value)
+            reset_settings()
+            return rebuild_app()
+    finally:
         reset_settings()
-        app = rebuild_app()
-    reset_settings()
-    return app

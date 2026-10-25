@@ -30,6 +30,8 @@ import pytest
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 
+from faultmaven.models.exceptions import InvalidGrantError
+from faultmaven.modules.auth.contracts import OAuthTokenDTO
 from tests.integration._app_rebuild import rebuild_app_under
 
 #: The app below is built under this, and this module's tests run under it
@@ -39,9 +41,6 @@ OAUTH_ENVIRONMENT = {"SKIP_SERVICE_CHECKS": "true", "OAUTH_ENABLED": "true"}
 app = rebuild_app_under(OAUTH_ENVIRONMENT)
 
 pytestmark = pytest.mark.usefixtures("oauth_environment")
-
-from faultmaven.models.exceptions import InvalidGrantError
-from faultmaven.modules.auth.contracts import OAuthTokenDTO
 
 TOKEN_URL = "/api/v1/auth/oauth/token"
 REVOKE_URL = "/api/v1/auth/oauth/revoke"

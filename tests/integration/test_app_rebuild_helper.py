@@ -14,13 +14,18 @@ existing app would satisfy the restore assertions while doing nothing.
 """
 
 import os
+import pathlib
 import sys
 
 import pytest
 
 from tests.integration._app_rebuild import rebuild_app
 
+pytest_plugins = ["pytester"]
+
 pytestmark = [pytest.mark.integration]
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def test_rebuild_returns_a_new_app_without_publishing_it():
@@ -56,10 +61,11 @@ def test_rebuild_under_an_environment_builds_with_it_and_puts_it_back(monkeypatc
     so every test collected with them ran with it (#2291). ``rebuild_app_under``
     builds with the environment it is given, on settings read from it, and
     leaves the process's own environment and settings after."""
-    from faultmaven.config.settings import get_settings
+    from faultmaven.config.settings import get_settings, reset_settings
     from tests.integration import _app_rebuild
 
     monkeypatch.delenv("OAUTH_ENABLED", raising=False)
+    reset_settings()
     assert get_settings().auth.oauth_enabled is False  # cached, without it
     seen = {}
 
@@ -74,3 +80,50 @@ def test_rebuild_under_an_environment_builds_with_it_and_puts_it_back(monkeypatc
     assert seen == {"environment": "true", "settings": True}
     assert "OAUTH_ENABLED" not in os.environ
     assert get_settings().auth.oauth_enabled is False
+
+
+_OPTED_IN = """
+import os
+
+import pytest
+
+OAUTH_ENVIRONMENT = {"FM_TEST_OAUTH_PROBE": "set"}
+pytestmark = pytest.mark.usefixtures("oauth_environment")
+
+
+def test_runs_under_its_environment():
+    assert os.environ["FM_TEST_OAUTH_PROBE"] == "set"
+"""
+
+_AFTER = """
+import os
+
+
+def test_a_later_module_does_not_see_it():
+    assert "FM_TEST_OAUTH_PROBE" not in os.environ
+"""
+
+
+def test_the_oauth_environment_is_the_modules_alone(pytester, monkeypatch):
+    """``oauth_environment`` sets a module's ``OAUTH_ENVIRONMENT`` for that
+    module's tests and puts it back after them (#2291): a module collected and
+    run after it sees none of it. Run in a child process with the fixture's
+    conftest loaded, the way ``test_a_warning_fails_the_run.py`` runs suites."""
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+    )
+    monkeypatch.delenv("FM_TEST_OAUTH_PROBE", raising=False)
+    pytester.makepyfile(test_a_opted_in=_OPTED_IN, test_b_after=_AFTER)
+
+    result = pytester.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "tests.conftest",
+        "-p",
+        "tests.integration.modules.auth.conftest",
+        timeout=600,
+    )
+
+    result.assert_outcomes(passed=2)

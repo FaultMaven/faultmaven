@@ -19,7 +19,6 @@ the production default), because that is the branch that was unguarded — the
 auto-approve branch reached ``create_authorization_code`` and was always covered.
 """
 
-import os
 from datetime import datetime
 
 import pytest
@@ -27,6 +26,11 @@ from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
 from faultmaven.config.settings import AuthSettings, reset_settings
+from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
+from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
+    InMemoryOAuthCodeRepository,
+)
 from tests.integration._app_rebuild import rebuild_app_under
 
 #: The app below is built under this, and this module's tests run under it
@@ -36,12 +40,6 @@ OAUTH_ENVIRONMENT = {"SKIP_SERVICE_CHECKS": "true", "OAUTH_ENABLED": "true"}
 app = rebuild_app_under(OAUTH_ENVIRONMENT)
 
 pytestmark = pytest.mark.usefixtures("oauth_environment")
-
-from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
-from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
-    InMemoryOAuthCodeRepository,
-)
 
 ALLOWED_CLIENT = "faultmaven-copilot"
 # Matches the pattern this file's ``auth_settings`` fixture supplies, NOT the
