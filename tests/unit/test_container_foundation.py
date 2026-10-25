@@ -57,6 +57,9 @@ class TestDIContainerSingleton:
 
     def test_singleton_thread_safety(self):
         """Test singleton pattern is thread-safe"""
+        # The shared fixture resets the container through its proxy, which
+        # builds the singleton; the threads must race to build the first one.
+        DIContainer._instance = None
         containers = []
         errors = []
 

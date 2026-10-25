@@ -29,6 +29,10 @@ import os
 
 from faultmaven.config.settings import get_settings
 
+# Settings cached before the fixture runs, with service checks on: the fixture
+# must reset them for its environment to count.
+assert get_settings().server.skip_service_checks is False
+
 
 def test_the_fixture_composes_with_service_checks_skipped(reset_container):
     assert os.environ["SKIP_SERVICE_CHECKS"] == "true"
