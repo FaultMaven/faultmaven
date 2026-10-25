@@ -6,8 +6,12 @@ step: if it fails, no step runs, the engine disposal and the container's
 shutdown included. Twice such imports were moved into their steps by hand
 (#2257, #2267), and the second pass still missed one (``run_teardown`` itself,
 imported in the jobs runner's ``finally``). This scan finds every block that
-calls ``run_teardown``, and every step builder passed to it, and refuses an
-import in them outside a nested function.
+calls ``run_teardown``, and every function that builds its steps: one called in
+its arguments (directly, as a keyword, inside a wrapper such as ``tuple()``, or
+through a name bound in that block), and any function those call while
+building. It refuses an import in them outside a step: a nested function or
+lambda, which runs when the step does. A class body runs where it is defined,
+so an import in one is outside every step.
 """
 
 from __future__ import annotations
@@ -22,7 +26,8 @@ import faultmaven
 pytestmark = pytest.mark.unit
 
 _PACKAGE = Path(faultmaven.__file__).parent
-_NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+#: What runs only when called: a step's body. A class body is not among them.
+_DEFERRED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 #: Every module that runs a teardown. A new one fails the count test below, so
 #: the scan is known to have looked at it.
@@ -35,10 +40,9 @@ _TEARDOWN_RUNNERS = {
 
 
 def _shallow(node: ast.AST):
-    """``node`` and what it contains, short of functions and classes: a step's
-    body runs when the step does, and a definition's own block is scanned as a
-    block of its own."""
-    if isinstance(node, _NESTED):
+    """``node`` and what it contains, short of functions and lambdas, whose
+    bodies run only when called."""
+    if isinstance(node, _DEFERRED):
         return
     yield node
     for child in ast.iter_child_nodes(node):
@@ -50,7 +54,7 @@ def _own(node: ast.AST):
     block is scanned as a block of its own."""
     yield node
     for child in ast.iter_child_nodes(node):
-        if not isinstance(child, (ast.stmt, ast.excepthandler, *_NESTED)):
+        if not isinstance(child, (ast.stmt, ast.excepthandler, *_DEFERRED)):
             yield from _own(child)
 
 
@@ -77,10 +81,44 @@ def _blocks(tree: ast.AST):
                 yield block
 
 
+def _called(nodes, functions, bound) -> list[ast.AST]:
+    """The module functions ``nodes`` call, directly or through a name bound to
+    an expression that calls one, short of deferred bodies."""
+    found, names_seen = [], set()
+    pending = list(nodes)
+    while pending:
+        for node in _shallow(pending.pop()):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in functions
+            ):
+                found.append(functions[node.func.id])
+            elif isinstance(node, ast.Name) and node.id in bound:
+                if node.id not in names_seen:
+                    names_seen.add(node.id)
+                    pending.append(bound[node.id])
+    return found
+
+
+def _bindings(block: list[ast.stmt]) -> dict[str, ast.expr]:
+    bound = {}
+    for stmt in block:
+        targets = (
+            stmt.targets
+            if isinstance(stmt, ast.Assign)
+            else [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name) and stmt.value is not None:
+                bound[target.id] = stmt.value
+    return bound
+
+
 def imports_outside_steps(source: str) -> tuple[int, list[str]]:
     """``(teardowns found, imports outside their steps as "line: module")``."""
     tree = ast.parse(source)
-    builders = {
+    functions = {
         node.name: node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -92,14 +130,20 @@ def imports_outside_steps(source: str) -> tuple[int, list[str]]:
             continue
         teardowns += len(calls)
         scanned = list(block)
-        for call in calls:
-            for arg in call.args:
-                if (
-                    isinstance(arg, ast.Call)
-                    and isinstance(arg.func, ast.Name)
-                    and arg.func.id in builders
-                ):
-                    scanned.extend(builders[arg.func.id].body)
+        arguments = [
+            value
+            for call in calls
+            for value in (*call.args, *(keyword.value for keyword in call.keywords))
+        ]
+        builders = _called(arguments, functions, _bindings(block))
+        followed = set()
+        while builders:
+            builder = builders.pop()
+            if id(builder) in followed:
+                continue
+            followed.add(id(builder))
+            scanned.extend(builder.body)
+            builders.extend(_called(builder.body, functions, _bindings(builder.body)))
         for stmt in scanned:
             for node in _shallow(stmt):
                 if isinstance(node, ast.Import):
@@ -145,6 +189,69 @@ async def run():
         1,
         ["6: faultmaven.infrastructure.concurrency.teardown"],
     )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "await run_teardown(_stops())",
+        "await run_teardown(steps=_stops())",
+        "await run_teardown(tuple(_stops()))",
+        "steps = _stops()\n    await run_teardown(steps)",
+    ],
+    ids=["positional", "keyword", "wrapped", "bound"],
+)
+def test_the_scan_follows_a_builder_however_it_is_passed(call):
+    source = f"""
+def _stops():
+    from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
+
+    return (("LLM usage ledger uninstall", lambda: install_usage_ledger(None)),)
+
+
+async def stop():
+    {call}
+"""
+    assert imports_outside_steps(source)[1] == [
+        "3: faultmaven.infrastructure.llm.usage_ledger"
+    ]
+
+
+def test_the_scan_follows_what_a_builder_calls_while_building():
+    source = """
+def _unpublish_then_stop(name):
+    from faultmaven.infrastructure.tasks import stop_scheduler
+
+    async def _step():
+        from faultmaven.container import container
+
+    return _step
+
+
+def _stops():
+    return (("Stopping", _unpublish_then_stop("scheduler")),)
+
+
+async def stop():
+    await run_teardown(_stops())
+"""
+    assert imports_outside_steps(source)[1] == ["3: faultmaven.infrastructure.tasks"]
+
+
+def test_a_class_body_in_the_block_is_outside_every_step():
+    source = """
+async def run():
+    try:
+        pass
+    finally:
+        class _Steps:
+            from faultmaven.infrastructure.persistence.database import close_database
+
+        await run_teardown(())
+"""
+    assert imports_outside_steps(source)[1] == [
+        "7: faultmaven.infrastructure.persistence.database"
+    ]
 
 
 def test_the_scan_finds_an_import_in_a_step_builder():
