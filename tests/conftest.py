@@ -1583,6 +1583,47 @@ def _stand_in_for_the_local_llm_service_check() -> None:
 _stand_in_for_the_local_llm_service_check()
 
 
+#: Lanes that run only when the ``-m`` expression names them (#2288). This
+#: used to be ``-m "not real_llm"`` in pytest.ini's ``addopts``, but pytest
+#: keeps only the last ``-m`` it is given, so any ``-m`` on the command line
+#: replaced it, and one the live-model tests satisfy selected them
+#: (``pytest -m "not cloud"``, ``scripts/tests.py --ci-full`` and ``--ci-nightly``).
+OPT_IN_MARKERS = ("real_llm",)
+
+
+def markers_named_by(markexpr: str) -> set:
+    """The marker names a ``-m`` expression mentions, by pytest's own lexer.
+
+    So ``real_llm-x`` names ``real_llm-x``, and ``skipif(reason="real_llm")``
+    names ``skipif`` and ``reason``: the quoted value is a string, not a name.
+    An expression the lexer refuses names nothing; pytest refuses it too, with
+    its own message. (The lexer raises ``SyntaxError`` from pytest 9 and its
+    own ``ParseError`` before.)
+    """
+    from _pytest.mark.expression import Scanner, TokenType
+
+    try:
+        tokens = list(Scanner(markexpr).lex(markexpr))
+    except Exception:
+        return set()
+    return {token.value for token in tokens if token.type is TokenType.IDENT}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Deselect the opt-in lanes the ``-m`` expression does not name."""
+    named = markers_named_by(config.option.markexpr or "")
+    lanes = [marker for marker in OPT_IN_MARKERS if marker not in named]
+    if not lanes:
+        return
+    kept, deselected = [], []
+    for item in items:
+        opted_in = any(item.get_closest_marker(lane) for lane in lanes)
+        (deselected if opted_in else kept).append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = kept
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item, nextitem):
     """Give each test the logging state as the session configured it.
