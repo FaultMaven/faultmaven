@@ -639,6 +639,13 @@ except ImportError:
 #     falling back on RuntimeError to `_send_sync_notification`, which itself
 #     calls `asyncio.run(...)` (alerting.py:469) -- and that raises inside a
 #     running loop.
+#   * `apm_integration` buffers a metric for every request through the
+#     performance middleware, and a live app flushes the buffer: its lifespan
+#     starts a background loop that flushes at once and then every 30 s, and
+#     its shutdown flushes once more -- to the Prometheus pushgateway
+#     (localhost:9091) when PROMETHEUS_ENABLED. Left in place, one test's
+#     metrics were flushed by whichever app boot ran next on that worker, and
+#     the network guard failed THAT test (#2296).
 # The accumulating state is therefore reset between tests by the autouse
 # `_reset_observability_singletons` fixture below; without it every TestClient
 # request leaves residue and any future assertion on /metrics/* would be
@@ -674,6 +681,10 @@ OBSERVABILITY_RESET_FIELDS = {
         "alert_manager",
         ("active_alerts", "alert_history", "suppressed_rules"),
     ),
+    "faultmaven.infrastructure.observability.apm_integration": (
+        "apm_integration",
+        ("metrics_buffer",),
+    ),
 }
 
 
@@ -687,7 +698,9 @@ def _reset_observability_singletons():
     they accumulate for the whole session, which would make any assertion on
     /metrics/* order-dependent. No test asserts on those endpoints today -- this
     exists so that the first one to do so is not silently coupled to whatever
-    ran before it.
+    ran before it. The APM buffer is the case that already bit: a live app
+    flushes it over the network, so one test's metrics reached the network
+    guard in another (#2296).
 
     Costs one dict lookup per test when the modules were never imported.
     """
