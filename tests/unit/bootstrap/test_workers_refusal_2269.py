@@ -26,6 +26,8 @@ from faultmaven.bootstrap.composition import (
     _wire_composition_root,
     compose_application,
 )
+from faultmaven.config.persistent_database import NonPersistentDatabaseError
+from faultmaven.config.serving_gates import refuse_unservable_configuration
 from faultmaven.config.worker_stores import (
     PerProcessStoresError,
     configured_per_process_stores,
@@ -164,6 +166,17 @@ def test_several_workers_over_sqlite_are_refused(settings_from, database_url):
     with pytest.raises(PerProcessStoresError, match="SQLite") as refused:
         refuse_configured_per_process_stores(settings)
     assert "DATABASE_URL" in str(refused.value)
+
+
+def test_a_database_url_no_engine_opens_is_refused_by_its_own_gate(settings_from):
+    """A non-numeric port made the SQLite check raise ``make_url``'s raw
+    ``ValueError``; the persistent-database gate, which runs first, refuses it
+    by name (#2281)."""
+    settings = settings_from(DATABASE_URL="postgresql+asyncpg://fm@127.0.0.1:5432x/fm")
+
+    refuse_configured_per_process_stores(settings)  # not this gate's to refuse
+    with pytest.raises(NonPersistentDatabaseError):
+        refuse_unservable_configuration(settings)
 
 
 @pytest.mark.parametrize("environ", [{"WORKERS": "1"}, {"RELOAD": "true"}])

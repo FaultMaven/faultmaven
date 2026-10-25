@@ -105,33 +105,16 @@ async def lifespan(app: FastAPI):
 
         settings = get_settings()
 
-        # Fail fast if the running config contradicts DEPLOYMENT_MODE (ADR-004):
-        # a cloud deployment must present cloud identity, never silently run as standalone.
-        from faultmaven.config.deployment_coherence import validate_deployment_coherence
+        # Fail fast on a configuration no server process may run: incoherent
+        # with DEPLOYMENT_MODE, no persistent database, or several processes
+        # over SQLite or a process-local store. Before resolve_pseudonym_key
+        # (which writes the key file), so a refused boot leaves nothing on
+        # disk, and outside the test-environment skip below. run_server runs
+        # the same gates before uvicorn forks (faultmaven/config/serving_gates.py).
+        # What only the built clients can tell is refused inside composition.
+        from faultmaven.config.serving_gates import refuse_unservable_configuration
 
-        validate_deployment_coherence(settings)
-
-        # Fail fast if no persistent database is configured (fm#1647). An empty
-        # or in-memory DATABASE_URL used to boot as far as the enterprise seed
-        # and die there as "Critical bootstrap failure". Placed BEFORE
-        # resolve_pseudonym_key, which creates the data directory and writes
-        # the key file, so a refused boot leaves nothing on disk; and outside
-        # the test-environment skip below, because no test boots the app
-        # without a database. The jobs runner calls the same gate.
-        from faultmaven.config.persistent_database import require_persistent_database
-
-        require_persistent_database(settings)
-
-        # Fail fast if several server processes would each hold a store the
-        # deployment shares, when the configuration alone decides it (#2269):
-        # before anything is written, migrated, seeded or opened. What only
-        # the built clients can tell is refused inside composition, before
-        # the data layer (faultmaven/config/worker_stores.py).
-        from faultmaven.config.worker_stores import (
-            refuse_configured_per_process_stores,
-        )
-
-        refuse_configured_per_process_stores(settings)
+        refuse_unservable_configuration(settings)
 
         # Fail fast if redaction has no pseudonym key it may use. Resolving is
         # what creates the standalone key file, so doing it here also means the

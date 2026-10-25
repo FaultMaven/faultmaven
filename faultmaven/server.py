@@ -71,25 +71,27 @@ def run_server(app: str = "faultmaven.main:app") -> None:
     import uvicorn
 
     # Configuration from unified settings
+    from faultmaven.config.serving_gates import refuse_unservable_configuration
     from faultmaven.config.settings import get_settings
-    from faultmaven.config.worker_stores import (
-        refuse_configured_per_process_stores,
-        serving_processes,
-    )
+    from faultmaven.config.worker_stores import serving_processes
 
     settings = get_settings()
     server = settings.server
-    # Before uvicorn forks: several processes over stores the configuration
-    # alone makes process-local are refused here, so the launcher exits with no
-    # worker started. Refused in each worker's lifespan instead, uvicorn
-    # restarts the worker forever (#2281). The lifespan still checks, for a
-    # launch that does not come through here.
-    refuse_configured_per_process_stores(settings)
+    # Before uvicorn forks, the gates each worker's lifespan runs first, in the
+    # same order, so a configuration they refuse exits here with no worker
+    # started. Refused only in the workers, uvicorn restarts them forever
+    # (#2281).
+    refuse_unservable_configuration(settings)
     # Several workers on PostgreSQL: migrate once here, so they do not race on a
     # first boot; each worker's lifespan then finds the schema at head (#2281).
     if serving_processes(settings) > 1 and settings.run_startup_migrations:
+        # The app's logging: until uvicorn imports the app, nothing has
+        # installed it in this process, and the migration's INFO lines would be
+        # dropped and its warnings printed raw.
         from faultmaven.bootstrap.data_init import migrate_before_workers
+        from faultmaven.infrastructure.logging.config import get_logger
 
+        get_logger(__name__)
         migrate_before_workers()
     # Always passed: with ``workers`` unset uvicorn reads WEB_CONCURRENCY, and
     # the settings would no longer say how many processes serve (#2281).

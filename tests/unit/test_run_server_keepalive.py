@@ -26,8 +26,8 @@ def test_run_passes_timeout_keep_alive(workers):
     with (
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run") as run,
-        # The stores refusal and the launcher migration have tests of their own.
-        patch("faultmaven.config.worker_stores.refuse_configured_per_process_stores"),
+        # The configuration gates and the launcher migration have tests of their own.
+        patch("faultmaven.config.serving_gates.refuse_unservable_configuration"),
     ):
         get.return_value = SimpleNamespace(server=server, run_startup_migrations=False)
         run_server()

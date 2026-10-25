@@ -26,7 +26,10 @@ from fastapi import FastAPI
 from uvicorn.importer import import_from_string
 
 import faultmaven.main
+from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.config.persistent_database import NonPersistentDatabaseError
 from faultmaven.config.settings import ServerSettings
+from faultmaven.config.worker_stores import PerProcessStoresError
 from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
@@ -46,8 +49,8 @@ def _launch(app=None, **server_fields):
     with (
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run", autospec=True) as run,
-        # The stores refusal reads more than ``server``; it has tests of its own.
-        patch("faultmaven.config.worker_stores.refuse_configured_per_process_stores"),
+        # The gates read more than ``server``; they have tests of their own.
+        patch("faultmaven.config.serving_gates.refuse_unservable_configuration"),
     ):
         # No launcher migration here; that has tests of its own.
         get.return_value = SimpleNamespace(server=server, run_startup_migrations=False)
@@ -111,31 +114,72 @@ def test_web_concurrency_cannot_change_the_worker_count(monkeypatch):
     assert uvicorn.Config(DEFAULT_APP, workers=kwargs["workers"]).workers == 1
 
 
+@pytest.mark.parametrize(
+    ("environ", "refusal", "names"),
+    [
+        # Several processes over the in-process FakeRedis.
+        ({"SKIP_SERVICE_CHECKS": "true"}, PerProcessStoresError, "FakeRedis"),
+        # No persistent database: refused as that, ahead of the SQLite refusal.
+        (
+            {"DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+            NonPersistentDatabaseError,
+            "DATABASE_URL",
+        ),
+        # Incoherent with DEPLOYMENT_MODE: refused ahead of everything else.
+        (
+            {"DEPLOYMENT_MODE": "cloud", "AUTH_MODE": "local"},
+            DeploymentCoherenceError,
+            "DEPLOYMENT_MODE",
+        ),
+    ],
+)
 def test_a_refusal_the_configuration_decides_exits_before_uvicorn_starts(
-    monkeypatch,
+    monkeypatch, environ, refusal, names
 ):
-    """WORKERS>1 over FakeRedis (SKIP_SERVICE_CHECKS) is refused in the
-    launcher, so no worker is started for uvicorn to restart forever (#2281)."""
+    """The launcher runs each worker's configuration gates, in their order,
+    before it migrates or uvicorn forks: refused only in the workers, uvicorn
+    restarts them forever (#2281)."""
     from faultmaven.config.settings import get_settings, reset_settings
-    from faultmaven.config.worker_stores import PerProcessStoresError
 
     for name, value in {
         "CONFIG_PRESET": "none",
         "DEPLOYMENT_MODE": "standalone",
-        "SKIP_SERVICE_CHECKS": "true",
+        "SKIP_SERVICE_CHECKS": "false",
         "RELOAD": "false",
         "WORKERS": "2",
+        "RUN_STARTUP_MIGRATIONS": "true",
+        "REDIS_URL": "redis://127.0.0.1:6390/0",
+        "CHROMADB_URL": "http://chroma.internal:8000",
+        "VECTOR_STORAGE_TYPE": "chromadb",
+        # Never connected to: the launcher refuses before it migrates.
+        "DATABASE_URL": "postgresql+asyncpg://fm@127.0.0.1:1/fm",
+        **environ,
     }.items():
         monkeypatch.setenv(name, value)
     reset_settings()
     try:
-        with patch("uvicorn.run", autospec=True) as run:
-            with pytest.raises(PerProcessStoresError, match="WORKERS=2"):
+        with (
+            patch("uvicorn.run", autospec=True) as run,
+            patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
+        ):
+            with pytest.raises(refusal, match=names):
                 run_server()
+        migrate.assert_not_called()
         run.assert_not_called()
         assert get_settings().server.workers == 2
     finally:
         reset_settings()
+
+
+@pytest.mark.parametrize("workers", ["0", "-1"])
+def test_fewer_than_one_worker_is_refused_by_the_settings(monkeypatch, workers):
+    """``workers`` reaches uvicorn whatever its value now (#2281), and no count
+    below one serves anything."""
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("WORKERS", workers)
+    with pytest.raises(ValidationError, match="workers"):
+        ServerSettings()
 
 
 def test_default_app_is_the_faultmaven_app():
@@ -200,7 +244,9 @@ def test_several_workers_are_migrated_once_before_uvicorn_forks(
     workers, reload, run_startup_migrations, migrates
 ):
     """Each worker's lifespan runs the startup migrations; launched together on
-    a first boot they raced (#2281). The launcher migrates first, once."""
+    a first boot they raced (#2281). The launcher migrates first, once, after
+    the configuration gates and with the app's logging installed (until uvicorn
+    imports the app, nothing else installs it in this process)."""
     from unittest.mock import MagicMock
 
     order = MagicMock()
@@ -208,18 +254,29 @@ def test_several_workers_are_migrated_once_before_uvicorn_forks(
     with (
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run", autospec=True) as run,
-        patch("faultmaven.config.worker_stores.refuse_configured_per_process_stores"),
+        patch(
+            "faultmaven.config.serving_gates.refuse_unservable_configuration"
+        ) as gates,
+        patch("faultmaven.infrastructure.logging.config.get_logger") as logging,
         patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
     ):
         get.return_value = SimpleNamespace(
             server=server, run_startup_migrations=run_startup_migrations
         )
-        order.attach_mock(migrate, "migrate")
-        order.attach_mock(run, "run")
+        for name, mock in [
+            ("gates", gates),
+            ("logging", logging),
+            ("migrate", migrate),
+            ("run", run),
+        ]:
+            order.attach_mock(mock, name)
         run_server()
 
     names = [name for name, _args, _kwargs in order.mock_calls]
-    assert names == (["migrate", "run"] if migrates else ["run"])
+    if migrates:
+        assert names == ["gates", "logging", "migrate", "run"]
+    else:
+        assert names == ["gates", "run"]
 
 
 @pytest.mark.parametrize("at_head", [True, False])

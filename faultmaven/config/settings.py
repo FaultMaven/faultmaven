@@ -143,7 +143,11 @@ class ServerSettings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8090)
     reload: bool = Field(default=False)
-    workers: int = Field(default=1)
+    workers: int = Field(
+        default=1,
+        ge=1,
+        description="Server processes uvicorn runs. Ignored under RELOAD.",
+    )
     timeout_keep_alive: int = Field(
         default=75,
         ge=1,

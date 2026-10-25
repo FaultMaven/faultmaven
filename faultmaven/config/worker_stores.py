@@ -12,10 +12,12 @@ network and wrong for one held inside the process:
 So several processes are refused when either store is process-local, at the
 earliest point that can know it:
 
-1. **Before composition** (:func:`refuse_configured_per_process_stores`, from the
-   lifespan), when the configuration alone decides it: ``SKIP_SERVICE_CHECKS``
-   (no Redis server is even tried), no Redis server named, or no ChromaDB
-   server selected. Nothing is migrated, seeded or opened first.
+1. **Before composition** (:func:`refuse_configured_per_process_stores`, from
+   the lifespan, and before uvicorn forks, from ``run_server``; both through
+   ``faultmaven/config/serving_gates.py``), when the configuration alone
+   decides it: ``SKIP_SERVICE_CHECKS`` (no Redis server is even tried), no
+   Redis server named, or no ChromaDB server selected. Nothing is migrated,
+   seeded or opened first.
 2. **Right after the container builds its clients**, before the data layer
    (:func:`refuse_built_per_process_stores`, from the composition root), for
    what only the built clients can tell: standalone falls back to FakeRedis
@@ -45,6 +47,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, List, Sequence
 
 from faultmaven.config.deployment_coherence import is_external_chroma_configured
+from faultmaven.config.settings import _parse_database_url
 
 #: What each process would hold alone.
 FAKEREDIS = (
@@ -205,14 +208,10 @@ def refuse_sqlite_across_workers(settings: Any) -> None:
     processes = serving_processes(settings)
     if processes <= 1:
         return
-    from sqlalchemy.engine import make_url
-    from sqlalchemy.exc import ArgumentError
-
-    try:
-        backend = make_url(settings.database.database_url or "").get_backend_name()
-    except ArgumentError:
-        return  # not a URL at all: require_persistent_database refuses it
-    if backend == "sqlite":
+    # ``None`` for a value no engine can open, which require_persistent_database
+    # (run before this, faultmaven/config/serving_gates.py) refuses.
+    url = _parse_database_url(settings.database.database_url)
+    if url is not None and url.get_backend_name() == "sqlite":
         raise PerProcessStoresError(
             f"WORKERS={processes} runs {processes} server processes over one "
             "SQLite database, the one-box install, which serves one process. "

@@ -16,10 +16,11 @@ settings validation, which tests construct freely.
 
 Called from these entrypoints, before any of them writes anything:
 
-- the web lifespan (``faultmaven/main.py``), straight after the deployment
-  coherence gate and before ``resolve_pseudonym_key`` (which creates the data
-  directory and writes the standalone key file), and outside the
-  test-environment skip, because no test boots the app without a database;
+- the web lifespan, straight after the deployment coherence gate and before
+  ``resolve_pseudonym_key`` (which creates the data directory and writes the
+  standalone key file), and outside the test-environment skip, because no test
+  boots the app without a database; ``run_server`` runs the same gates in the
+  same order before uvicorn forks (``faultmaven/config/serving_gates.py``);
 - the CronJob runner (``faultmaven/jobs/run.py``), which mirrors the coherence
   gate — without it a job fails in the container's bootstrap exactly the way
   the API used to;

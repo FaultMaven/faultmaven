@@ -49,6 +49,13 @@ timeout, runs the subprocess. The subprocess is given 60 seconds; past that it
 logs `Alembic migration timed out after 60 seconds` and raises `RuntimeError`,
 and the app does not start. A failed migration stops the boot the same way.
 
+With several workers (`WORKERS` above 1, which needs PostgreSQL), the launcher
+(`python -m faultmaven.server`) runs this same check and migration once, before
+uvicorn starts the workers, so they do not race on a first boot; each worker's
+own startup run then finds the schema at head. Under `ALEMBIC_CONFIG` the check
+does not apply, so each worker also runs `alembic upgrade head`, which finds
+nothing to do.
+
 ### PostgreSQL: no one but the schema's owner creates in `public`
 
 On PostgreSQL, `PUBLIC` must not hold `CREATE` on schema `public`. A role that
