@@ -116,4 +116,10 @@ async def test_the_composed_knowledge_service_writes_only_through_the_guarded_st
     assert isinstance(knowledge_service._vector_store, KnowledgeVectorStore)
     assert knowledge_service._vector_store is fresh_container.knowledge_vector_store
     assert knowledge_service._vector_store is not plain_store
+    # One KB store per process: kb_qa and the registered service hold the
+    # service's instance, not a second one (#2284 follow-up).
+    assert knowledge_service._vector_store is fresh_container.get_service(
+        "knowledge_vector_store"
+    )
+    assert fresh_container.kb_qa_tool._vector_store is knowledge_service._vector_store
     assert fresh_container.runbook_kb.vector_store.collection_name == KB_COLLECTION

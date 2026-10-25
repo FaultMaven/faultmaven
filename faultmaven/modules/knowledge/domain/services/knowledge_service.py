@@ -448,8 +448,7 @@ class KnowledgeService:
                 vector search. Off by default so existing callers are unchanged;
                 the KB pre-fetch that feeds the investigation prompt and the
                 cause seeder passes True, because the terms that identify an
-                incident are exactly the ones an embedding smooths away. Falls
-                back to pure vector search on a store without ``hybrid_search``.
+                incident are exactly the ones an embedding smooths away.
             min_score: Minimum raw cosine a hit must carry. Honoured only on
                 the hybrid path, where results are ordered by the reranker's
                 blend and a caller's own post-filter would therefore thin its
@@ -479,28 +478,7 @@ class KnowledgeService:
                         # Default to global scope when caller provides no filter —
                         # prevents unintentional cross-tenant reads.
                         effective_filters = filters if filters else {"scope": "global"}
-                        wants_hybrid = use_hybrid and not hasattr(
-                            self._vector_store, "hybrid_search"
-                        )
-                        if wants_hybrid:
-                            # Silence here would disable the #1272 seeding gate
-                            # without a trace: no hybrid means no reranker, so
-                            # no `rerank_score` on any hit. A caller that ASKED
-                            # on any hit, and the seeder reads that absence as
-                            # "unmeasured, therefore not judged" and admits
-                            # everything. The floor is dropped too. A caller
-                            # that ASKED for hybrid and did not get it must be
-                            # able to find out why. (The KB cause seeder,
-                            # which gated on these fields, was removed in
-                            # fm#1295; the fields are still carried out.)
-                            logger.warning(
-                                "KB search asked for hybrid retrieval but the "
-                                "vector store does not provide it — falling "
-                                "back to pure vector search. Hits will carry no "
-                                "grounding evidence, so any consumer gating on "
-                                "it is inactive for this search."
-                            )
-                        if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
+                        if use_hybrid:
                             results = await self._vector_store.hybrid_search(
                                 collection_name=KB_COLLECTION,
                                 query=sanitized_query,

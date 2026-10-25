@@ -13,10 +13,8 @@ filter into the ``ToolContext``, and the tool searches under it unchanged.
 import logging
 from typing import Any, Dict
 
-from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-    KnowledgeVectorStore,
-)
 from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
 
@@ -50,7 +48,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
 
 **Returns**: Relevant runbooks and documentation with citations."""
 
-    def __init__(self, vector_store: KnowledgeVectorStore, llm_router: LLMRouter):
+    def __init__(self, vector_store: IKnowledgeVectorStore, llm_router: LLMRouter):
         super().__init__(
             vector_store=vector_store,
             llm_router=llm_router,

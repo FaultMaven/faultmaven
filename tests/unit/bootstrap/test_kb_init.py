@@ -964,19 +964,6 @@ class TestReconcileVectors:
         assert delete_batches == []  # the safety guard held
         assert orphaned_rows == []
 
-    @pytest.mark.asyncio
-    async def test_skips_when_store_cannot_enumerate(self):
-        """A store that can't enumerate (e.g. the ChromaDBVectorStore fallback)
-        degrades to a clean no-op — and warns, since drift goes uncleaned."""
-        svc = MagicMock()
-        svc._vector_store = object()  # no list_all_chunk_ids_by_parent
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
-            svc, self._factory({"kb_aaaaaaaaaaaa"})
-        )
-        assert cleaned == []
-        assert unpublished_cleaned == []
-        assert orphaned_rows == []
-
 
 # ---------------------------------------------------------------------------
 # Cross-store repair (6.3): re-embed orphaned rows (SQL present, vectors gone),

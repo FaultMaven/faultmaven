@@ -92,6 +92,7 @@ from typing import (
 
 from sqlalchemy import select, text
 
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from faultmaven.utils.runbook_id import is_builtin_item_id
 
 logger = logging.getLogger(__name__)
@@ -409,20 +410,11 @@ async def sweep_authored_orphans(
             "this run is not a dry run."
         )
         return result
-    store = getattr(knowledge_service, "_vector_store", None)
+    store: Optional[IKnowledgeVectorStore] = getattr(
+        knowledge_service, "_vector_store", None
+    )
     if store is None:
         result.skipped = "no_vector_store"
-        return result
-    if not (
-        hasattr(store, "list_chunk_ids_by_parent")
-        and hasattr(store, "delete_chunk_ids")
-    ):
-        logger.warning(
-            "KB authored-orphan sweep skipped: wired vector store %s cannot list "
-            "chunk ids by stamp — authored vectors with no row are NOT swept.",
-            type(store).__name__,
-        )
-        result.skipped = "store_cannot_enumerate"
         return result
     try:
         await _sweep(
@@ -439,7 +431,7 @@ async def sweep_authored_orphans(
 
 
 async def _sweep(
-    store: Any,
+    store: IKnowledgeVectorStore,
     db_session_factory: Callable[[], Awaitable[Any]],
     result: AuthoredSweepResult,
     *,
@@ -589,7 +581,7 @@ async def _sweep(
 
 
 async def _delete(
-    store: Any,
+    store: IKnowledgeVectorStore,
     chunk_ids: List[str],
     where: Dict[str, Any],
     counts: SweepCounts,

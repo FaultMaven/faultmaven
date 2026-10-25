@@ -404,6 +404,23 @@ def create_knowledge_vector_store(
     return store
 
 
+def register_knowledge_vector_store(
+    container: BaseDIContainer, kb_chromadb_client: Any
+) -> IKnowledgeVectorStore | None:
+    """Build the process's one KB vector store and register it.
+
+    Set on ``container.knowledge_vector_store`` (None when none is built), where
+    ``register_tools`` (``kb_qa``) and ``register_services``
+    (``KnowledgeService``) read it: every consumer gets this instance, because
+    each store holds its own term-stats index and blocking executor.
+    """
+    store = create_knowledge_vector_store(container.settings, kb_chromadb_client)
+    if store:
+        container._register_service("knowledge_vector_store", store)
+    container.knowledge_vector_store = store
+    return store
+
+
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
     """Create Redis client for session storage.
 
@@ -718,12 +735,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         container._register_failed("vector_store", str(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
-    knowledge_vector_store = create_knowledge_vector_store(settings, kb_chromadb_client)
-    if knowledge_vector_store:
-        container._register_service("knowledge_vector_store", knowledge_vector_store)
-        container.knowledge_vector_store = knowledge_vector_store
-    else:
-        container.knowledge_vector_store = None
+    register_knowledge_vector_store(container, kb_chromadb_client)
 
     # Case vector store (dynamic per-case collections) — uses evidence client
     case_vector_store = create_case_vector_store(settings, evidence_chromadb_client)

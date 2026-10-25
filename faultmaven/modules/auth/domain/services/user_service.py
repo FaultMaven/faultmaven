@@ -30,12 +30,9 @@ from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import AuditEventType
 from faultmaven.utils.serialization import to_json_compatible
 
-# Interface imports for clean architecture compliance
 # Redis type is for DI signatures only — the actual client is injected at runtime
 if TYPE_CHECKING:
     from redis.asyncio import Redis
-
-    from faultmaven.models.interfaces import IVectorStore
 
 from faultmaven.exceptions import (
     AuthorizationError,
