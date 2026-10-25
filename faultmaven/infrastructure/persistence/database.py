@@ -8,6 +8,8 @@ Features:
 - Settings-based database URL configuration
 - Context manager for session lifecycle
 - Pool pre-ping for connection health
+- Bounded PostgreSQL connections: a silent server fails a command instead of
+  holding it (``pg_connection``, #2280)
 - Proper transaction handling
 
 Configuration is read from the unified settings system (faultmaven.config.settings).
@@ -35,6 +37,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.pg_connection import (
+    PgBounds,
+    enable_tcp_liveness,
+    pg_bounds,
+    pg_connect_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +89,22 @@ def active_database_backend() -> Optional[str]:
     return _engine.dialect.name if _engine is not None else None
 
 
+def active_database_bounds() -> Optional[PgBounds]:
+    """The bounds the PostgreSQL engine this process built runs with (#2280).
+
+    ``None`` before :func:`get_engine` has built one, and for a SQLite engine,
+    which none of them applies to. Read from what the engine was built with,
+    for the reason :func:`active_database_backend` is.
+    """
+    return _engine_bounds
+
+
 # ============================================================
 # Engine Configuration
 # ============================================================
 
 _engine: Optional[AsyncEngine] = None
+_engine_bounds: Optional[PgBounds] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 
@@ -99,7 +118,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
     Returns:
         AsyncEngine instance
     """
-    global _engine
+    global _engine, _engine_bounds
 
     if _engine is not None:
         return _engine
@@ -184,7 +203,10 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
                 cursor.close()
 
     else:
-        # PostgreSQL: Use connection pooling
+        # PostgreSQL: Use connection pooling. The connect args bound a server
+        # that stops answering (#2280): a command or connect past its timeout
+        # aborts the connection instead of sending a CancelRequest, which a
+        # silent server never answers. ``pg_connection`` holds the reasoning.
         _engine = create_async_engine(
             url,
             echo=db_config.database_echo,
@@ -193,7 +215,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             max_overflow=db_config.database_max_overflow,
             pool_timeout=db_config.database_pool_timeout,
             pool_recycle=db_config.database_pool_recycle,
+            connect_args=pg_connect_args(url, db_config),
         )
+        _engine_bounds = pg_bounds(url, db_config)
+        event.listen(_engine.sync_engine, "connect", enable_tcp_liveness)
+        _begin_statement = _transaction_settings_statement(_engine_bounds)
+        _begin_params = _transaction_settings_params(_engine_bounds)
 
         # Re-apply the RLS tenant scope on EVERY transaction begin. The scope is
         # transaction-local (set_config(..., is_local=true)), so setting it once
@@ -214,6 +241,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # transactions rather than inside one. Code that holds a single session
         # across several steps (the fm-* provisioning CLIs) does not get that
         # for free and must bind first or not at all; #935 was this bug.
+        #
+        # The same SELECT sets the server's statement_timeout (and the opted-in
+        # client_connection_check_interval), transaction-scoped too, so a live
+        # but slow server cancels its own statement before the client's command
+        # timeout aborts the connection (#2280). No extra round trip, and safe
+        # behind a pooler, which refuses or drops a startup parameter.
         @event.listens_for(_engine.sync_engine, "begin")
         def _scope_tenant_per_transaction(conn):
             from faultmaven.config.tenant_context import (
@@ -221,14 +254,36 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             )
 
             conn.execute(
-                text(
-                    "SELECT set_config('app.current_enterprise_id', "
-                    ":enterprise_id, true)"
-                ),
-                {"enterprise_id": get_current_enterprise_id()},
+                _begin_statement,
+                {"enterprise_id": get_current_enterprise_id(), **_begin_params},
             )
 
     return _engine
+
+
+def _transaction_settings_statement(timeouts: PgBounds):
+    """The ``begin`` listener's one SELECT: the tenant GUC, then each server timeout set."""
+    settings = ["set_config('app.current_enterprise_id', :enterprise_id, true)"]
+    if timeouts.statement_timeout_ms is not None:
+        settings.append("set_config('statement_timeout', :statement_timeout, true)")
+    if timeouts.client_connection_check_interval_ms is not None:
+        settings.append(
+            "set_config('client_connection_check_interval', "
+            ":client_connection_check_interval, true)"
+        )
+    return text("SELECT " + ", ".join(settings))
+
+
+def _transaction_settings_params(timeouts: PgBounds) -> dict[str, str]:
+    """The timeouts' bind values, in milliseconds as text, as ``set_config`` takes them."""
+    params = {}
+    if timeouts.statement_timeout_ms is not None:
+        params["statement_timeout"] = str(timeouts.statement_timeout_ms)
+    if timeouts.client_connection_check_interval_ms is not None:
+        params["client_connection_check_interval"] = str(
+            timeouts.client_connection_check_interval_ms
+        )
+    return params
 
 
 def get_session_factory(
@@ -361,11 +416,12 @@ async def close_database() -> None:
 
     Call this during application shutdown or between tests.
     """
-    global _engine, _session_factory
+    global _engine, _engine_bounds, _session_factory
 
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+        _engine_bounds = None
         _session_factory = None
         logger.info("Database connections closed")
 
@@ -376,8 +432,9 @@ def reset_engine() -> None:
 
     Use for testing to create fresh database connections.
     """
-    global _engine, _session_factory
+    global _engine, _engine_bounds, _session_factory
     _engine = None
+    _engine_bounds = None
     _session_factory = None
 
 

@@ -1106,6 +1106,80 @@ class DatabaseSettings(BaseSettings):
     database_pool_timeout: int = Field(default=30)
     database_pool_recycle: int = Field(default=1800)
 
+    # Bounds on a PostgreSQL that stops answering (#2280). Built into the engine
+    # by faultmaven/infrastructure/persistence/pg_connection.py; 0 disables one.
+    database_command_timeout_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds one PostgreSQL command may take before the client aborts "
+            "its connection (asyncpg command_timeout). The aborted connection "
+            "is discarded and no CancelRequest is sent, so a silent server "
+            "cannot hold the caller. 0 disables the bound, for an operator "
+            "command with a legitimately long statement."
+        ),
+    )
+    database_connect_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0,
+        description=(
+            "Seconds a new PostgreSQL connection may take to open "
+            "(asyncpg's connect timeout). 0 disables the bound."
+        ),
+    )
+    database_statement_timeout_margin_seconds: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "How far below DATABASE_COMMAND_TIMEOUT_SECONDS the server's "
+            "statement_timeout is set, per transaction, so a live but slow "
+            "server cancels its own statement before the client aborts the "
+            "connection. Must be less than the command timeout while that is "
+            "on; with the command timeout off, no statement_timeout is set."
+        ),
+    )
+    database_client_connection_check_interval_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "PostgreSQL 14+ client_connection_check_interval, set per "
+            "transaction: how often the server checks, during a long query, "
+            "that the client is still connected. 0 sets nothing and leaves "
+            "the server's own value; a server older than 14 refuses any "
+            "other value on every transaction."
+        ),
+    )
+    revocation_read_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        description=(
+            "Seconds the database token-revocation store may take to answer "
+            "the read every authenticated request makes. Past it the request "
+            "fails closed with 503 REVOCATION_STATE_UNKNOWN. 0 disables the "
+            "bound."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def statement_timeout_fits_below_the_command_timeout(self) -> "DatabaseSettings":
+        """Refuse a margin that leaves the server's statement_timeout at or below zero.
+
+        The server is meant to cancel a slow statement before the client gives
+        up on the connection; a margin at or above the command timeout would
+        set no usable statement_timeout, so the client abort would be the only
+        bound left on a live but slow server.
+        """
+        command = self.database_command_timeout_seconds
+        margin = self.database_statement_timeout_margin_seconds
+        if command > 0 and margin >= command:
+            raise ValueError(
+                f"DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS ({margin:g}) must be "
+                f"less than DATABASE_COMMAND_TIMEOUT_SECONDS ({command:g}): the "
+                "server's statement_timeout is the command timeout minus the "
+                "margin."
+            )
+        return self
+
     # ============================================
     # Redis Configuration (K8s ClusterIP internal service)
     # ============================================
