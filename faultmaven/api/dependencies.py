@@ -10,7 +10,7 @@ only consumer.
 
 from typing import Any, Optional
 
-from faultmaven.infrastructure.chroma_client import is_server_backed
+from faultmaven.infrastructure.chroma_client import chroma_client_kind
 from faultmaven.infrastructure.persistence.database import active_database_backend
 from faultmaven.infrastructure.redis_client import is_fakeredis
 
@@ -71,12 +71,7 @@ def vector_storage_backend_name(kb_client: Any, evidence_client: Any) -> str:
     constructions.
     """
 
-    def kind(client: Any) -> Optional[str]:
-        if client is None:
-            return None
-        return "server" if is_server_backed(client) else "persistent"
-
-    kb, evidence = kind(kb_client), kind(evidence_client)
+    kb, evidence = chroma_client_kind(kb_client), chroma_client_kind(evidence_client)
     if kb is None and evidence is None:
         return "disabled"
     if kb == evidence == "server":

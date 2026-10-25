@@ -82,8 +82,19 @@ def is_host_only_chroma_configured(settings: Any) -> bool:
     off it. Empty means "not configured", which means the embedded client.
     """
     db = settings.database
-    host = (db.chromadb_host or "").strip()
-    return not (db.chromadb_url or "").strip() and host not in ("", "localhost")
+    return not (db.chromadb_url or "").strip() and names_remote_chroma_host(
+        db.chromadb_host
+    )
+
+
+def names_remote_chroma_host(host: Any) -> bool:
+    """Whether a ``CHROMADB_HOST`` value names a remote server.
+
+    Not when blank (see :func:`is_host_only_chroma_configured`), and not
+    ``localhost``, its default, which names the embedded store. The one rule
+    for that value, shared with the zero-config preset check.
+    """
+    return (host or "").strip() not in ("", "localhost")
 
 
 def _plain(obj: Any, name: str) -> str:
@@ -161,11 +172,13 @@ def _check_cloud(settings: Any) -> List[str]:
 
     # 3. A Redis server must be named. The session store is always
     # RedisSessionStore over the container's Redis client, real or FakeRedis;
-    # no setting selects it. What names the server is REDIS_URL or REDIS_HOST,
-    # the two the client factory reads (the URL wins). The factory refuses the
-    # FakeRedis fallback under cloud when the server it names is unusable
-    # (``fakeredis_or_fail``); this check catches a configuration that names
-    # none at all.
+    # no setting selects it. The guard that matters is the client factory's:
+    # under cloud it refuses the FakeRedis fallback whenever the server it was
+    # given is unusable (``fakeredis_or_fail``, at composition). REDIS_HOST
+    # defaults to the in-cluster service name, so this check fires only when
+    # REDIS_HOST is set blank and REDIS_URL is unset, the one case the
+    # configuration alone decides; it refuses that before composition, with
+    # a configuration message, instead of at the client factory.
     has_redis = bool(getattr(db, "redis_url", None)) or bool(
         getattr(db, "redis_host", None)
     )

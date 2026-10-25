@@ -68,6 +68,14 @@ def create_persistent_client(path: str) -> Any:
             # client built outside the one door, with no request timeout
             # and no credential (#2056).
             chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
+            # The server host and port, pinned empty for the same reason: read
+            # from CHROMA_SERVER_HOST / CHROMA_SERVER_HTTP_PORT or ``.env``,
+            # they leave a local client claiming a server, and
+            # ``is_server_backed`` (the startup refusal of several processes
+            # over a local store, GET /admin/config/status) reads the host to
+            # tell the two apart (#2269).
+            chroma_server_host=None,
+            chroma_server_http_port=None,
         ),
     )
 

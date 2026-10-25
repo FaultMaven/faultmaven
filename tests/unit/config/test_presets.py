@@ -96,6 +96,50 @@ class TestPresetDefinitions:
         # Should have PII redaction enabled
         assert defaults.get("PROTECTION_ENABLED") == "true"
 
+    def test_every_preset_key_is_a_variable_the_settings_read(self):
+        """A preset writes into ``os.environ``; a key no setting reads is dead.
+
+        The enterprise preset set ``AUTO_SANITIZE_BASED_ON_PROVIDER``, removed
+        with v4.0.0's single ``SANITIZE_PII``, and the presets set the storage
+        selectors of #2269. The names are collected from the settings classes
+        themselves: a field's ``validation_alias``, else its name under its
+        section's ``env_prefix``.
+        """
+        from pydantic import BaseModel
+
+        from faultmaven.config.presets import PRESETS
+        from faultmaven.config.settings import FaultMavenSettings
+
+        read = set()
+
+        def collect(section):
+            prefix = section.model_config.get("env_prefix", "") or ""
+            for name, field in section.model_fields.items():
+                kind = field.annotation
+                if isinstance(kind, type) and issubclass(kind, BaseModel):
+                    collect(kind)
+                elif isinstance(field.validation_alias, str):
+                    read.add(field.validation_alias.upper())
+                else:
+                    read.add(f"{prefix}{name}".upper())
+
+        collect(FaultMavenSettings)
+        # The positive control: the walk reaches the nested sections.
+        assert {
+            "REDIS_URL",
+            "SESSION_TIMEOUT_MINUTES",
+            "WORKERS",
+            "SANITIZE_PII",
+        } <= read
+
+        dead = {
+            preset.name: sorted(
+                key for key in preset.defaults if key.upper() not in read
+            )
+            for preset in PRESETS.values()
+        }
+        assert dead == {preset.name: [] for preset in PRESETS.values()}
+
     def test_no_preset_sets_a_rate_limit_key(self):
         """No preset may hand out a rate-limiting env key.
 

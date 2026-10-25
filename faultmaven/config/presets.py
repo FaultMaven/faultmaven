@@ -160,7 +160,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             # PII redaction only — see the local preset's note on rate limiting.
             "PROTECTION_ENABLED": "true",
             "SANITIZE_PII": "true",
-            "AUTO_SANITIZE_BASED_ON_PROVIDER": "true",
             # Observability - full monitoring
             "LOG_LEVEL": "INFO",
             "ENABLE_PERFORMANCE_MONITORING": "true",
@@ -428,7 +427,7 @@ def list_available_presets() -> List[Dict[str, Any]]:
 #: client factory reads (``RedisClientFactory._build_config``; the URL wins).
 #: ``CHROMADB_URL`` selects the ChromaDB server. ``CHROMADB_HOST`` is in
 #: :func:`_names_a_server` below rather than here, because ``localhost``, its
-#: default, names the embedded store (``is_host_only_chroma_configured``).
+#: default, names the embedded store (``names_remote_chroma_host``).
 _SERVER_NAMING_VARIABLES = ("REDIS_URL", "REDIS_HOST", "CHROMADB_URL")
 
 
@@ -439,10 +438,12 @@ def _names_a_server(environ: Mapping[str, str]) -> Optional[str]:
     unpopulated ConfigMap key or a trailing ``=`` in a ``.env`` reads as set
     but empty.
     """
+    from faultmaven.config.deployment_coherence import names_remote_chroma_host
+
     for name in _SERVER_NAMING_VARIABLES:
         if (environ.get(name) or "").strip():
             return name
-    if (environ.get("CHROMADB_HOST") or "").strip() not in ("", "localhost"):
+    if names_remote_chroma_host(environ.get("CHROMADB_HOST")):
         return "CHROMADB_HOST"
     return None
 

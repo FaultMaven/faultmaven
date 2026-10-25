@@ -41,8 +41,10 @@ def unique_id(prefix: str) -> str:
 class TestArchitecturalCompliance:
     """Integration tests for spec compliance verification
 
-    NOTE: These tests require Redis (the cloud profile); the ``session_service``
-    fixture skips them when no Redis server is reachable.
+    NOTE: These tests require Redis (the cloud profile). As written, the
+    ``session_service`` fixture skips every one of them, Redis or not: it
+    builds ``RedisSessionStore()`` without the client that constructor
+    requires, and reports the ``TypeError`` as "Redis not reachable".
     """
 
     # ============================================================================

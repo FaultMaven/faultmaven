@@ -243,8 +243,10 @@ def is_server_backed(client: Any) -> bool:
     the external server" from ``CHROMADB_URL`` being set would then mislabel a
     local tree as the shared server.
 
-    ``chroma_server_host`` is populated by ``HttpClient`` and left unset by
-    ``PersistentClient`` (verified against the pinned chromadb). Unknown shapes
+    ``chroma_server_host`` is populated by ``HttpClient``. A ``PersistentClient``
+    takes it from ``CHROMA_SERVER_HOST`` or ``.env`` unless its settings pin it,
+    so the one door for local clients
+    (``chromadb_store.create_persistent_client``) pins it empty. Unknown shapes
     answer ``False``: a caller sweeping stores then keeps BOTH local clients
     instead of collapsing to one.
     """
@@ -252,6 +254,18 @@ def is_server_backed(client: Any) -> bool:
         return bool(getattr(client.get_settings(), "chroma_server_host", None))
     except Exception:
         return False
+
+
+def chroma_client_kind(client: Any) -> Optional[str]:
+    """``"server"``, ``"persistent"`` (a local tree), or ``None`` for no client.
+
+    The one classification of a built ChromaDB client: what
+    ``GET /admin/config/status`` reports and what the startup refusal of
+    several server processes over a local store reads.
+    """
+    if client is None:
+        return None
+    return "server" if is_server_backed(client) else "persistent"
 
 
 def build_http_client(

@@ -1516,7 +1516,6 @@ S3_REGION=us-east-1
 # SANITIZATION
 # ============================================================
 SANITIZE_PII=true
-AUTO_SANITIZE_BASED_ON_PROVIDER=true
 PII_REDACT_EMAILS=true
 PII_REDACT_PHONE_NUMBERS=true
 PII_REDACT_IP_ADDRESSES=false

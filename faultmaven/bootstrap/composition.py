@@ -173,6 +173,57 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
         logger.warning(banner)
 
 
+def _refuse_built_per_process_stores(
+    container: Any, settings: "FaultMavenSettings"
+) -> None:
+    """Refuse several server processes over the clients ``initialize()`` built.
+
+    The configuration's own verdict was refused before composition
+    (``refuse_configured_per_process_stores``); this asks the clients, because
+    standalone falls back to FakeRedis when the named Redis does not answer
+    and to a local ``PersistentClient`` when the ChromaDB server does not.
+    Classified by the predicates ``GET /admin/config/status`` reports with.
+
+    Raises:
+        PerProcessStoresError: a ``RuntimeError``, so never tolerated.
+    """
+    from faultmaven.config.worker_stores import (
+        built_per_process_stores,
+        refuse_per_process_stores,
+        serving_processes,
+    )
+
+    processes = serving_processes(settings)
+    if processes <= 1:
+        return
+
+    from faultmaven.infrastructure.chroma_client import chroma_client_kind
+    from faultmaven.infrastructure.redis_client import is_fakeredis
+
+    redis_client = getattr(container, "redis_client", None)
+    if redis_client is None:
+        redis = "missing"
+    else:
+        redis = "fakeredis" if is_fakeredis(redis_client) else "server"
+    local_chroma = [
+        label
+        for label, attr in (
+            ("KB", "kb_chromadb_client"),
+            ("evidence", "evidence_chromadb_client"),
+        )
+        if chroma_client_kind(getattr(container, attr, None)) == "persistent"
+    ]
+    refuse_per_process_stores(
+        settings,
+        built_per_process_stores(settings, redis=redis, local_chroma=local_chroma),
+    )
+    logger.info(
+        "WORKERS=%d: this process's Redis client is a server connection, and "
+        "no ChromaDB client it built is a local PersistentClient",
+        processes,
+    )
+
+
 async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:
     """Initialize the DI container and wire every service onto ``app.state``.
 
@@ -184,6 +235,11 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     from faultmaven.container import container
 
     await container.initialize()
+
+    # Refuse several server processes if a client just built is process-local
+    # (a runtime fallback the configuration could not foresee, #2269): before
+    # the data layer migrates, seeds or writes anything.
+    _refuse_built_per_process_stores(container, settings)
 
     # Verify critical services are available IMMEDIATELY after initialization
     user_store = container.get_user_store()
@@ -599,6 +655,12 @@ async def compose_application(
                     f"Composition root failed: {e}. A partially wired application "
                     "would serve an API missing whole service layers."
                 ) from e
+            # Several server processes over a partial API: nothing says which
+            # stores exist, and with no Redis client published the middleware
+            # builds a FakeRedis in each process (#2269).
+            from faultmaven.config.worker_stores import refuse_partial_composition
+
+            refuse_partial_composition(settings, e)
             logger.error(f"Composition root failed: {e}", exc_info=True)
             logger.warning(
                 "Continuing with fallback service implementations — this deployment "

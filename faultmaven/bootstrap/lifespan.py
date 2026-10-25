@@ -122,6 +122,17 @@ async def lifespan(app: FastAPI):
 
         require_persistent_database(settings)
 
+        # Fail fast if several server processes would each hold a store the
+        # deployment shares, when the configuration alone decides it (#2269):
+        # before anything is written, migrated, seeded or opened. What only
+        # the built clients can tell is refused inside composition, before
+        # the data layer (faultmaven/config/worker_stores.py).
+        from faultmaven.config.worker_stores import (
+            refuse_configured_per_process_stores,
+        )
+
+        refuse_configured_per_process_stores(settings)
+
         # Fail fast if redaction has no pseudonym key it may use. Resolving is
         # what creates the standalone key file, so doing it here also means the
         # first redaction of the process is never the thing that writes it.
@@ -180,8 +191,6 @@ async def lifespan(app: FastAPI):
             # Classifier/synthesis roles are exempt by design.
             warn_best_effort_enforcement(settings, get_registry())
 
-        # WORKERS>1 is checked after composition (_start_serving), against
-        # the stores the container actually built.
         logger.info("Configuration validated successfully")
 
         # Make configuration available to app
@@ -208,90 +217,6 @@ async def lifespan(app: FastAPI):
         await _stop_serving(app, published)
 
 
-def refuse_per_process_stores_across_workers(app: FastAPI, workers: int) -> None:
-    """Refuse ``WORKERS>1`` when a store the workers must share lives in one process.
-
-    Every uvicorn worker runs this lifespan and composes its own container.
-    That is sound for a store each worker reaches over the network, and wrong
-    for one held inside the process. Two stores can be:
-
-    * Redis, when the container's client is the in-process FakeRedis: each
-      worker would keep its own sessions, token revocations, rate-limit
-      counters and idempotency claims;
-    * ChromaDB, when a client is a local ``PersistentClient``: every worker
-      would open the same directory, each with its own in-memory index.
-
-    Asked of the clients the composition root built (published on
-    ``app.state``), never of the configuration. Standalone falls back to
-    FakeRedis when the Redis that ``REDIS_URL``/``REDIS_HOST`` names cannot be
-    reached (the default host is a Kubernetes service name), and to a local
-    ``PersistentClient`` when ``CHROMADB_URL``'s server cannot, so a setting
-    says what was asked for, not what was built. No storage-type setting
-    decides either one (#2269).
-
-    Raises:
-        ValueError: ``workers > 1`` and either store is process-local. The
-            message names the settings that clear it.
-    """
-    if workers <= 1:
-        return
-
-    reasons: list[str] = []
-    remedies: list[str] = []
-
-    redis_client = getattr(app.state, "redis_client", None)
-    if redis_client is not None:
-        from faultmaven.infrastructure.redis_client import is_fakeredis
-
-        if is_fakeredis(redis_client):
-            reasons.append(
-                "Redis is the in-process FakeRedis, so each worker would keep "
-                "its own sessions, token revocations, rate limits and "
-                "idempotency claims"
-            )
-            remedies.append(
-                "REDIS_URL (or REDIS_HOST) naming a Redis server every worker reaches"
-            )
-
-    local_chroma = []
-    for label, attr in (
-        ("KB", "kb_chromadb_client"),
-        ("evidence", "evidence_chromadb_client"),
-    ):
-        client = getattr(app.state, attr, None)
-        if client is None:
-            continue
-        from faultmaven.infrastructure.chroma_client import is_server_backed
-
-        if not is_server_backed(client):
-            local_chroma.append(label)
-    if local_chroma:
-        stores = (
-            "store is a local PersistentClient"
-            if len(local_chroma) == 1
-            else "stores are local PersistentClients"
-        )
-        reasons.append(
-            f"the {' and '.join(local_chroma)} ChromaDB {stores}, which every "
-            "worker would open on the same directory"
-        )
-        remedies.append(
-            "CHROMADB_URL naming a ChromaDB server (with VECTOR_STORAGE_TYPE=chromadb)"
-        )
-
-    if reasons:
-        raise ValueError(
-            f"WORKERS={workers} runs {workers} worker processes, and "
-            f"{'; and '.join(reasons)}. Set WORKERS=1, or set "
-            f"{' and '.join(remedies)}."
-        )
-    logger.info(
-        "Multi-worker configuration (WORKERS=%d): Redis and ChromaDB are "
-        "servers the workers share",
-        workers,
-    )
-
-
 async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
     """The startup that follows composition: gates, preloads, background work.
 
@@ -299,10 +224,6 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
     so a startup refused part-way still leaves :func:`_stop_serving` a handle
     on what it got as far as starting.
     """
-    # Fail fast if several workers would each hold a store the deployment
-    # must share. First, so a refused worker preloads and starts nothing.
-    refuse_per_process_stores_across_workers(app, settings.server.workers)
-
     # Fail fast if the composition root withheld a route from idempotent
     # replay but left it collapsible by deduplication. That combination
     # cannot be built by ``declare_route_policy`` (it applies the
