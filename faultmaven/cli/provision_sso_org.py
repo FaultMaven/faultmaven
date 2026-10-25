@@ -90,9 +90,9 @@ explicitly, because the pod's environment holds the limited application role:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 
+from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -537,7 +537,9 @@ def main() -> None:
 
     require_persistent_database_or_exit()
 
-    success = asyncio.run(
+    # Through run_command, which disposes the database engine this run opened
+    # before the loop ends (#2254).
+    success = run_command(
         provision(
             name=args.name,
             slug=args.slug,

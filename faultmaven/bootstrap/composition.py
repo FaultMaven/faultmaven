@@ -24,13 +24,14 @@ pytest/SKIP_SERVICE_CHECKS.
 """
 
 import asyncio
-import inspect
 import logging
 import os
 import sys
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from fastapi import FastAPI
+
+from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait, run_teardown
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -615,25 +616,6 @@ async def compose_application(
     return _published_since(app, before)
 
 
-async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
-    """Cancel ``task`` and wait for it to end; return the exception it ended with.
-
-    Waited for through ``asyncio.wait``, which never raises the task's own
-    outcome: neither its cancellation nor its exception is raised here, so a
-    ``CancelledError`` that is raised is a cancellation of the caller, and
-    propagates. ``await task`` under ``except CancelledError`` cannot tell the
-    two apart, and swallows both.
-
-    When the wait completes, the exception is retrieved and returned (``None``
-    when the task was cancelled or returned). When the caller is cancelled
-    first, the task is no longer awaited, and an exception it ends with later
-    may be reported as never retrieved.
-    """
-    task.cancel()
-    await asyncio.wait({task})
-    return None if task.cancelled() else task.exception()
-
-
 async def stop_config_watcher(app: FastAPI) -> None:
     """Cancel the LLM config watcher composition started, and wait for it to end.
 
@@ -650,25 +632,6 @@ async def stop_config_watcher(app: FastAPI) -> None:
         logger.warning(f"LLM config watcher ended with an error: {error}")
 
 
-async def _teardown_step(
-    what: str, step: Callable[[], Any]
-) -> Optional[asyncio.CancelledError]:
-    """Run one step of a teardown, so that it cannot stop the steps after it.
-
-    An ``Exception`` is logged. A ``CancelledError`` is returned for the caller
-    to re-raise once the whole teardown has run: deferred, never swallowed.
-    """
-    try:
-        outcome = step()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except asyncio.CancelledError as cancelled:
-        return cancelled
-    except Exception as e:
-        logger.warning(f"{what} failed (non-critical): {e}")
-    return None
-
-
 async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take back everything composition installed. The one teardown of it.
 
@@ -678,9 +641,10 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     and, last, disposes the database engine. ``app.extra["di_container"]`` is
     the container singleton itself, which its shutdown resets, and stays.
 
-    Each step runs whatever the one before it did. One that raises is logged,
-    so a refusal being undone propagates as itself. One that is cancelled lets
-    the rest finish, and the cancellation is then re-raised.
+    Each step runs whatever the one before it did (:func:`run_teardown`). One
+    that raises is logged, so a refusal being undone propagates as itself. One
+    that is interrupted (a cancellation included) lets the rest finish, and the
+    interruption is then re-raised.
     """
     from faultmaven.container import container
     from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
@@ -709,13 +673,7 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # to release here beyond the engine.
         ("Database close", lambda: close_database()),
     )
-    deferred: Optional[asyncio.CancelledError] = None
-    for what, step in steps:
-        cancelled = await _teardown_step(what, step)
-        if deferred is None:
-            deferred = cancelled
-    if deferred is not None:
-        raise deferred
+    await run_teardown(steps)
 
 
 def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:

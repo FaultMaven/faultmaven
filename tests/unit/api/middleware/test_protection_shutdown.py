@@ -449,6 +449,34 @@ async def test_shutdown_protection_ends_every_middleware_when_one_fails(
     assert [str(e) for e in raised.value.exceptions] == ["rate limiter shutdown broke"]
 
 
+async def test_a_cancellation_during_one_middlewares_shutdown_ends_the_rest_first(
+    monkeypatch,
+):
+    """Only an ``Exception`` was contained: a cancellation during the first
+    middleware's shutdown skipped the others, leaving their own Redis pools
+    open. Every one is shut down, then the cancellation propagates."""
+    app = FastAPI()
+    setup_protection_middleware(app, environment=Environment.PRODUCTION)
+    app.add_middleware(IdempotencyMiddleware)
+    app.middleware_stack = app.build_middleware_stack()
+    built = sorted(type(m).__name__ for m in live_protection_middleware(app))
+    assert len(built) >= 2, "one middleware alone proves nothing here"
+    ended = []
+
+    async def _shutdown(self):
+        ended.append(type(self).__name__)
+        if len(ended) == 1:
+            raise asyncio.CancelledError()
+
+    for cls in (RateLimitMiddleware, DeduplicationMiddleware, IdempotencyMiddleware):
+        monkeypatch.setattr(cls, "shutdown", _shutdown)
+
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown_protection(app)
+
+    assert sorted(ended) == built, "a middleware after the cancellation was skipped"
+
+
 async def test_shutdown_protection_before_the_app_ever_served_does_nothing():
     app = FastAPI()
     setup_protection_middleware(app, environment=Environment.PRODUCTION)

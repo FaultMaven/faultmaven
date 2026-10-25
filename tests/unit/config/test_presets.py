@@ -754,3 +754,70 @@ class TestPresetInfo:
         assert "local" in names
         assert "standard" in names
         assert "enterprise" in names
+
+
+class TestConfigPresetNone:
+    """``CONFIG_PRESET=none``: no preset is applied, and none is detected (#2243).
+
+    Every case configures no provider, Redis or ChromaDB: the zero-config shape,
+    where an unset ``CONFIG_PRESET`` auto-applies ``local``.
+    """
+
+    @staticmethod
+    def _case_storage_default():
+        from faultmaven.config.settings import DatabaseSettings
+
+        return DatabaseSettings.model_fields["case_storage_type"].default
+
+    @pytest.mark.parametrize("spelling", ["none", "NONE", " None "])
+    def test_none_applies_no_preset_and_the_settings_see_none(self, spelling, caplog):
+        from faultmaven.config.presets import (
+            ensure_preset_applied,
+            get_current_preset_name,
+            get_preset_info,
+        )
+        from faultmaven.config.settings import FaultMavenSettings
+
+        with patch.dict(os.environ, {"CONFIG_PRESET": spelling}, clear=True):
+            with caplog.at_level("DEBUG", logger="faultmaven.config.presets"):
+                ensure_preset_applied()
+            untouched = dict(os.environ)
+            settings = FaultMavenSettings(_env_file=None)
+            current, active = get_current_preset_name(), settings.get_active_preset()
+            info = get_preset_info()
+
+        assert untouched == {"CONFIG_PRESET": spelling}, "a preset wrote defaults"
+        assert current is None and active is None
+        assert info["active"] is False and "error" not in info
+        assert settings.database.case_storage_type == self._case_storage_default()
+        assert "Unknown preset" not in caplog.text
+
+    def test_unset_still_applies_the_local_preset(self):
+        """The positive control: the same environment without the opt-out."""
+        from faultmaven.config.presets import PRESETS, PresetName, ensure_preset_applied
+        from faultmaven.config.settings import FaultMavenSettings
+
+        local = PRESETS[PresetName.LOCAL].defaults
+        with patch.dict(os.environ, {}, clear=True):
+            ensure_preset_applied()
+            applied = dict(os.environ)
+            settings = FaultMavenSettings(_env_file=None)
+            active = settings.get_active_preset()
+
+        assert applied == {
+            "CONFIG_PRESET": "local",
+            **{k: str(v) for k, v in local.items()},
+        }
+        assert active == "local"
+        assert settings.database.case_storage_type == local["CASE_STORAGE_TYPE"]
+        assert local["CASE_STORAGE_TYPE"] != self._case_storage_default()
+
+    def test_an_unknown_preset_is_still_reported(self, caplog):
+        """The capture's own control: it does see the warning ``none`` must not log."""
+        from faultmaven.config.presets import ensure_preset_applied
+
+        with patch.dict(os.environ, {"CONFIG_PRESET": "bogus"}, clear=True):
+            with caplog.at_level("DEBUG", logger="faultmaven.config.presets"):
+                ensure_preset_applied()
+
+        assert "Unknown preset: bogus" in caplog.text

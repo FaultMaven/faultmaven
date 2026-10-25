@@ -381,6 +381,10 @@ evidence_trail:
     * Set null for any milestone you did NOT change this turn. Null and empty
       string both mean "no justification" — a milestone you changed without a
       real one is rejected.
+    * solution_accepted is set with accepted_action_ref naming the SOLUTION the
+      user carried out (its ACTION_ID, or new_index_N for one proposed in the
+      same response). Each fix registers once; a fix after an earlier one
+      registers only when named, and is justified like the first.
 
     Example (completing a milestone):
     ✅ {{
@@ -488,7 +492,8 @@ You MUST respond with valid JSON matching these fields:
   - uncertainties: What remains unclear.
 - **state_updates**:
   - milestones: Map of milestone flags (True where data allows). Set stage-gate milestones
-    when you detect user compliance with a pending action (see <pending_action> in context).
+    when you detect user compliance with a pending action (see <pending_action> in context);
+    with solution_accepted, set accepted_action_ref to that action's ACTION_ID.
   - outcome: REQUIRED — exactly one of the values below. Pick the most
     specific one that fits this turn; ``other`` only when none apply.
 """ + _OUTCOME_PROMPT_BLOCK + "\n"

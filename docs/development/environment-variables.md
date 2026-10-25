@@ -45,7 +45,7 @@ get_settings() called (first time)
     ↓
 load_settings_dotenv()  ← Loads ./.env into the environment (never over a set variable, in any case)
     ↓
-Preset defaults applied (CONFIG_PRESET, or the zero-config `local` preset)
+Preset defaults applied (CONFIG_PRESET, or the zero-config `local` preset; none under CONFIG_PRESET=none)
     ↓
 FaultMavenSettings.__init__() ← Pydantic reads env vars
     ↓
@@ -125,8 +125,22 @@ Settings are loaded in this priority order (highest to lowest):
 
 1. **System environment** (OS-level env vars set before the process starts)
 2. **`.env` file** (never replaces 1, whatever the letter case of either name)
-3. **Preset defaults** (`CONFIG_PRESET`, or the zero-config `local` preset)
+3. **Preset defaults** (`CONFIG_PRESET`, or the zero-config `local` preset; none under `CONFIG_PRESET=none`)
 4. **Default values** (in `settings.py`)
+
+### `CONFIG_PRESET`
+
+A preset fills in variables that neither the environment nor the `.env` sets. It never overrides a value either of them sets.
+
+| Value | Effect |
+|-------|--------|
+| `local` (alias `minimal`) | Development defaults: `DEBUG`, a local LLM, in-memory cases, a local Chroma |
+| `standard` | Single-server production: Redis sessions, ChromaDB |
+| `enterprise` | Production server settings, cases and users in the database (`CASE_STORAGE_TYPE`/`USER_STORAGE_TYPE=database`), vectors in ChromaDB, OpenAI for chat, PII sanitized, and `DEPLOYMENT_MODE=multi-tenant`, which the settings refuse (they accept `standalone` or `cloud`), so set `DEPLOYMENT_MODE` yourself. It names no service: set `DATABASE_URL`, `REDIS_HOST` and `CHROMADB_URL` |
+| `none` (any letter case) | No preset. None is applied, and the zero-config `local` preset is not detected either. Every setting is the environment's, the `.env`'s or the default in `settings.py` |
+| unset | The zero-config `local` preset is applied when nothing configures an LLM provider, `REDIS_HOST`, `CHROMADB_URL` or an `ENVIRONMENT` other than `development`. Otherwise no preset is applied |
+
+`none` is the operator's opt-out from zero-config detection: a deployment that wants exactly what it configured, and nothing a preset would add. Test Cloud's test steps set it (#2243).
 
 ## ConversationThresholds Variables
 

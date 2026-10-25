@@ -52,11 +52,12 @@ To get started with local development for the `faultmaven` monolith:
 
         Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
 
-        A lockfile is not the whole environment: **Test Cloud also runs a real Redis**, because `cloud.txt` pins `hiredis` and the cloud deployment runs a server. The two halves belong together — reproducing that job locally means starting one, or the app falls back to the in-process FakeRedis and you get failures no deployment can have (fm#1031):
+        A lockfile is not the whole environment: **Test Cloud also runs a real Redis**, because `cloud.txt` pins `hiredis` and the cloud deployment runs a server. Only the pairing check and `tests/integration/test_real_redis_stores.py` reach it, each in a step of its own; the rest of the suite names no Redis and needs none. The module needs a Redis named by `REDIS_HOST` (or `REDIS_URL`). Run alone without one, it skips every test and the integration conftest's all-skipped guard fails the run, so give it a server (#2243):
 
         ```bash
         docker run --rm -d -p 6379:6379 redis:7.2-alpine
         REDIS_HOST=localhost python scripts/check_redis_pairing.py   # what CI asserts before the suite
+        REDIS_HOST=localhost pytest tests/integration/test_real_redis_stores.py
         ```
 
 3.  **Install Dependencies**

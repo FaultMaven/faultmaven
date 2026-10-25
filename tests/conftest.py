@@ -92,13 +92,13 @@ offline_tiktoken.install()
 
 # "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
 # in-process FakeRedis without a connection (``redis_client.py``), the zero-
-# config preset reads it as unset, and a caller's value is left alone (the
-# Cloud job sets ``REDIS_HOST`` to its service container, which the guard
-# allows). Unset, the settings default is the in-cluster service name
-# ``faultmaven-redis-master``: every test that composed the container or ran
-# the rate limiter looked that name up and tried to connect to it before the
-# same FakeRedis fallback, which is traffic to the network that the fallback
-# hid. Set here, before any settings object is built.
+# config preset reads it as unset, and a caller's value is left alone (Test
+# Cloud's real-Redis step sets ``REDIS_HOST`` to its service container, which
+# the guard allows; its suite step sets none). Unset, the settings default is
+# the in-cluster service name ``faultmaven-redis-master``: every test that
+# composed the container or ran the rate limiter looked that name up and tried
+# to connect to it before the same FakeRedis fallback, which is traffic to the
+# network that the fallback hid. Set here, before any settings object is built.
 os.environ.setdefault("REDIS_HOST", "")
 
 # Presidio is a server no test owns. Under the Cloud profile
@@ -1511,9 +1511,10 @@ _default_to_the_test_presidio_port()
 # (``DataSanitizer()`` is one) lowered the root to DEBUG for the rest of its
 # process. Measured: the turn-commit benchmark after the sanitizer tests emitted
 # 87,546 aiosqlite DEBUG records and its p50 went from ~70 ms to 224 ms, under
-# the Standalone env. The Cloud job sets ``REDIS_HOST``, so no preset applied
-# there and it ran at INFO: the same sequence measured 72 ms, which reproduces
-# the 3.07x Standalone/Cloud gap in TURN_COMMIT's p50 (``budgets.py``).
+# the Standalone env. Test Cloud's suite declined the preset (then with
+# ``REDIS_HOST``; ``CONFIG_PRESET=none`` since #2243), so it ran at INFO: the
+# same sequence measured 72 ms, which reproduces the 3.07x Standalone/Cloud gap
+# in TURN_COMMIT's p50 (``budgets.py``).
 #
 # So the level is pinned to the settings default, INFO, in both profiles, and
 # the singleton is configured here, at conftest import, before anything else
