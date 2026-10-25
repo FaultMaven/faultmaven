@@ -427,11 +427,13 @@ def _caller_scope(current_user: DevUser) -> str:
     Layer two of the #1447-review fix, and it is deliberately not the only one.
     ``get_current_user_optional`` now refuses a token whose ``sub`` names no
     subject, so in a correct system this never fires; it fires if any future
-    identity path hands a route a principal with a blank id. That matters here
-    more than elsewhere because the shape these services expose is a FILTER —
+    identity path hands a route a principal with a blank id. It mattered here
+    more than elsewhere because the shape these services exposed was a FILTER —
     ``if user_id:`` in both ``AuthSessionService.list_sessions`` and the
     minimal stand-in — and a filter that is skipped returns everything rather
-    than nothing.
+    than nothing. Both now list one named user's sessions and nothing for a
+    blank name, with no unfiltered form (#2297); this refusal stays as the
+    route's own layer.
 
     It REFUSES; it does not NORMALISE. The returned id is the principal's own
     bytes, unstripped, because the four sibling ownership checks on this router
@@ -972,8 +974,8 @@ async def search_sessions(
 
         # Search sessions
         # Same scope-not-filter rule as the listing: ``search_sessions``
-        # forwards this straight to ``list_sessions``, so a blank caller id
-        # would search every session rather than none.
+        # forwards this straight to ``list_sessions``, which lists one named
+        # user's sessions (#2297).
         sessions = await session_service.search_sessions(
             user_id=scope, query=query, status=status, limit=limit
         )

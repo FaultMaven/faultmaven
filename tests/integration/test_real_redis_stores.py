@@ -19,6 +19,7 @@ only under a namespace no other test uses, deletes what it wrote, and closes
 the client.
 """
 
+import asyncio
 import importlib.util
 import os
 import time
@@ -39,6 +40,9 @@ from faultmaven.infrastructure.redis_client import (
 )
 from faultmaven.models.common import SessionContext
 from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
@@ -117,8 +121,7 @@ async def test_a_pooled_connection_parses_with_hiredis_when_redis_py_can(
 
 
 async def test_the_session_store_saves_reads_expires_and_deletes(real_redis, namespace):
-    store = RedisSessionStore(real_redis)
-    store.prefix = f"{namespace}session:"
+    store = _namespaced_session_store(real_redis, namespace)
 
     await store.save(SessionContext(session_id="session-1", user_id="user-1"))
 
@@ -254,3 +257,68 @@ async def test_idempotency_stores_a_keyed_response_and_replays_its_retry(
     assert retry.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
     assert retry.json() == first.json() == {"created": 1, "title": "t"}
     assert len(calls) == 1, "the replayed retry must not reach the route"
+
+
+def _namespaced_session_store(real_redis, namespace) -> RedisSessionStore:
+    """A session store whose session keys and user indexes are under ``namespace``."""
+    store = RedisSessionStore(real_redis)
+    store.prefix = f"{namespace}session:"
+    store.user_index_prefix = f"{namespace}sessions:user:"
+    return store
+
+
+async def _listed(service: AuthSessionService, user_id: str) -> list:
+    return [s.session_id for s in await service.list_sessions(user_id)]
+
+
+async def test_the_session_limit_evicts_the_oldest_and_spares_other_users(
+    real_redis, namespace
+):
+    """The per-user index (#2297): its write, read and prune scripts on the server."""
+    store = _namespaced_session_store(real_redis, namespace)
+    service = AuthSessionService(session_store=store, max_sessions_per_user=3)
+    other, _ = await service.create_session("user-b")
+
+    created = [(await service.create_session("user-a"))[0].session_id for _ in range(4)]
+
+    assert await _listed(service, "user-a") == created[1:]
+    assert await service.get_session(created[0]) is None
+    assert await real_redis.smembers(f"{store.user_index_prefix}user-a") == set(
+        created[1:]
+    )
+    assert await _listed(service, "user-b") == [other.session_id]
+
+
+async def test_a_deleted_or_expired_session_leaves_the_user_index(
+    real_redis, namespace
+):
+    store = _namespaced_session_store(real_redis, namespace)
+    service = AuthSessionService(session_store=store, max_sessions_per_user=10)
+    deleted, _ = await service.create_session("user-a")
+    lapsed, _ = await service.create_session("user-a")
+    kept, _ = await service.create_session("user-a")
+
+    assert await service.delete_session(deleted.session_id) is True
+    await real_redis.pexpire(f"{store.prefix}{lapsed.session_id}", 1)
+    await asyncio.sleep(0.05)
+
+    assert await _listed(service, "user-a") == [kept.session_id]
+    assert await real_redis.smembers(f"{store.user_index_prefix}user-a") == {
+        kept.session_id
+    }
+
+
+async def test_the_user_index_lapses_with_its_last_session(real_redis, namespace):
+    store = _namespaced_session_store(real_redis, namespace)
+    store.default_ttl = 1
+    service = AuthSessionService(session_store=store, max_sessions_per_user=10)
+    session, _ = await service.create_session("user-a")
+    index_key = f"{store.user_index_prefix}user-a"
+
+    assert await real_redis.exists(index_key) == 1
+    assert await _listed(service, "user-a") == [session.session_id]
+
+    await asyncio.sleep(1.1)
+
+    assert await real_redis.exists(index_key) == 0
+    assert await _listed(service, "user-a") == []

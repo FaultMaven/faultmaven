@@ -34,8 +34,8 @@ class InMemorySessionStore:
     """Minimal session store honouring the surface AuthSessionService uses.
 
     Mirrors RedisSessionStore: `get_session(session_id, validate=True)` performs no
-    expiry enforcement of its own (that is the service's job), and `delete` removes
-    the row and reports whether anything was removed.
+    expiry enforcement of its own (that is the service's job), and `delete_session`
+    removes the row and reports whether anything was removed.
     """
 
     def __init__(self, *sessions: SessionContext):
@@ -45,7 +45,7 @@ class InMemorySessionStore:
     async def get_session(self, session_id, validate=True):
         return self._sessions.get(session_id)
 
-    async def delete(self, session_id):
+    async def delete_session(self, session_id):
         self.delete_calls.append(session_id)
         return self._sessions.pop(session_id, None) is not None
 

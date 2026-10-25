@@ -7,8 +7,7 @@ Core Responsibilities (Spec Lines 388-423):
 - Multi-device support via client_id (spec lines 263-269)
 - Session resumption for same client_id (spec lines 83-86)
 - Session authentication and authorization
-- Session analytics and monitoring
-- Session cleanup and maintenance
+- Per-user session limit (oldest evicted); expiry is the store's TTL
 
 NOT Responsible For (Spec Lines 102-107):
 - Case management (cases are independent resources)
@@ -407,7 +406,7 @@ class AuthSessionService:
         if not self.session_store:
             return False
 
-        success = await self.session_store.delete(session_id)
+        success = await self.session_store.delete_session(session_id)
 
         if success:
             logger.info(f"Deleted session {session_id}")
@@ -436,133 +435,37 @@ class AuthSessionService:
         if not self.session_store:
             return []
 
-        all_sessions = await self.session_store.list_sessions()
-        user_sessions = [
-            s for s in all_sessions if s.user_id == user_id and await self._is_active(s)
+        return [
+            s
+            for s in await self.session_store.list_sessions(user_id)
+            if await self._is_active(s)
         ]
 
-        return user_sessions
-
     @trace("session_service_list_sessions")
-    async def list_sessions(
-        self, user_id: Optional[str] = None
-    ) -> List[SessionContext]:
-        """List sessions, optionally filtered by user
+    async def list_sessions(self, user_id: str) -> List[SessionContext]:
+        """List one user's sessions
+
+        There is no listing of every user's sessions: the store indexes
+        sessions per user, and enumerating them across users is what #1447
+        closed. A blank ``user_id`` names nobody and lists nothing.
 
         Args:
-            user_id: Optional user filter
+            user_id: User identifier
 
         Returns:
-            List of sessions
+            The user's stored sessions, oldest first
         """
+        if not user_id or not user_id.strip():
+            return []
+
         if not self.session_store:
             return []
 
-        all_sessions = await self.session_store.list_sessions()
-
-        # ``is not None``, not truthiness. Only an OMITTED filter means "all";
-        # a filter that was supplied is honoured literally, so a blank caller
-        # id yields nothing rather than everything. Under ``if user_id:`` this
-        # method answered a falsy caller with every session and the identity
-        # each is bound to — the #1447 §1 payload behind a 200 instead of an
-        # anonymous call. ``get_user_sessions`` above already fails closed the
-        # same way; this brings the filter path in line with it.
-        if user_id is not None:
-            return [s for s in all_sessions if s.user_id == user_id]
-
-        return all_sessions
-
-    # =========================================================================
-    # Session Cleanup and Maintenance
-    # =========================================================================
-
-    @trace("session_service_cleanup_expired_sessions")
-    async def cleanup_expired_sessions(self) -> int:
-        """Clean up expired sessions
-
-        Returns:
-            Number of sessions cleaned up
-        """
-        if not self.session_store:
-            return 0
-
-        all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
-        cleaned = 0
-
-        for session in all_sessions:
-            if session.expires_at and now > session.expires_at:
-                await self.delete_session(session.session_id)
-                cleaned += 1
-
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} expired sessions")
-
-        return cleaned
-
-    @trace("session_service_cleanup_inactive_sessions")
-    async def cleanup_inactive_sessions(self) -> int:
-        """Clean up inactive sessions (no activity > threshold)
-
-        Returns:
-            Number of sessions cleaned up
-        """
-        if not self.session_store:
-            return 0
-
-        all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
-        cleaned = 0
-
-        for session in all_sessions:
-            time_since_activity = now - session.last_activity
-            if time_since_activity > self.inactive_threshold:
-                await self.delete_session(session.session_id)
-                cleaned += 1
-
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} inactive sessions")
-
-        return cleaned
+        return await self.session_store.list_sessions(user_id)
 
     # =========================================================================
     # Session Analytics and Monitoring
     # =========================================================================
-
-    @trace("session_service_get_session_analytics")
-    async def get_session_analytics(self) -> Dict[str, Any]:
-        """Get session analytics
-
-        Returns:
-            Analytics data for all sessions
-        """
-        if not self.session_store:
-            return {}
-
-        all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
-
-        active_sessions = [s for s in all_sessions if await self._is_active(s)]
-
-        # Group by user to track multi-device usage
-        sessions_by_user = {}
-        for session in active_sessions:
-            if session.user_id not in sessions_by_user:
-                sessions_by_user[session.user_id] = []
-            sessions_by_user[session.user_id].append(session)
-
-        return {
-            "total_sessions": len(all_sessions),
-            "active_sessions": len(active_sessions),
-            "unique_users": len(sessions_by_user),
-            "multi_device_users": len(
-                [u for u, sessions in sessions_by_user.items() if len(sessions) > 1]
-            ),
-            "average_sessions_per_user": (
-                len(active_sessions) / len(sessions_by_user) if sessions_by_user else 0
-            ),
-            "timestamp": to_json_compatible(now),
-        }
 
     @trace("session_service_get_user_session_analytics")
     async def get_user_session_analytics(self, user_id: str) -> Dict[str, Any]:
@@ -594,30 +497,6 @@ class AuthSessionService:
             ],
         }
 
-    @trace("session_service_get_session_health")
-    async def get_session_health(self) -> Dict[str, Any]:
-        """Get session health metrics
-
-        Returns:
-            Health metrics for session system
-        """
-        if not self.session_store:
-            return {"status": "unhealthy", "reason": "session_store not configured"}
-
-        all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
-
-        active = sum(1 for s in all_sessions if await self._is_active(s))
-        expired = sum(1 for s in all_sessions if s.expires_at and now > s.expires_at)
-
-        return {
-            "status": "healthy",
-            "total_sessions": len(all_sessions),
-            "active_sessions": active,
-            "expired_sessions": expired,
-            "timestamp": to_json_compatible(now),
-        }
-
     # =========================================================================
     # Private Helper Methods
     # =========================================================================
@@ -637,22 +516,13 @@ class AuthSessionService:
         if not self.session_store:
             return None
 
-        # Check if store has index lookup capability
-        if hasattr(self.session_store, "find_by_user_and_client"):
-            session_id = await self.session_store.find_by_user_and_client(
-                user_id, client_id
-            )
-            if session_id:
-                return await self.get_session(session_id)
-
-        # Fallback: search all sessions
-        all_sessions = await self.session_store.list_sessions()
-        for session in all_sessions:
-            if session.user_id == user_id and session.client_id == client_id:
-                if await self._is_active(session):
-                    return session
-
-        return None
+        # The (user, client) index is the one lookup; ISessionStore requires it.
+        session_id = await self.session_store.find_by_user_and_client(
+            user_id, client_id
+        )
+        if not session_id:
+            return None
+        return await self.get_session(session_id)
 
     async def _enforce_session_limit(self, user_id: str) -> None:
         """Enforce max sessions per user limit

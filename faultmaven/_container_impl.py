@@ -719,16 +719,15 @@ class DIContainer(BaseDIContainer):
                 """Whether the session exists and has not expired."""
                 return await self.get_session(session_id) is not None
 
-            async def list_sessions(self, user_id=None):
-                """Mirrors ``AuthSessionService.list_sessions``, fail-closed half
-                included: ``is not None``, not truthiness, so a blank caller id
-                yields nothing rather than every session (#1447 review). This is
-                the implementation the enumeration was measured against, so the
-                two must not differ here of all places."""
-                sessions = list(self.sessions.values())
-                if user_id is not None:
-                    return [s for s in sessions if s.user_id == user_id]
-                return sessions
+            async def list_sessions(self, user_id):
+                """Mirrors ``AuthSessionService.list_sessions``: one user's
+                sessions, nothing for a blank id, and no listing of every
+                user's (#2297). This is the implementation the #1447
+                enumeration was measured against, so the two must not differ
+                here of all places."""
+                if not user_id or not user_id.strip():
+                    return []
+                return [s for s in self.sessions.values() if s.user_id == user_id]
 
             async def delete_session(self, session_id):
                 if session_id in self.sessions:
