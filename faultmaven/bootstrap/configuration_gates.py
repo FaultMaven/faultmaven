@@ -23,8 +23,11 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     """Refuse a configuration no server process may run; each gate relies on
     the ones before it.
 
-    ``advisories=False`` skips the warnings that refuse nothing, so a launcher
-    that validates before the workers do does not print them twice.
+    ``advisories=False`` skips the schema-enforcement advisory, a warning that
+    refuses nothing, so a launcher that validates before the workers do does
+    not print it twice. Warnings a gate logs on its way to an answer (the
+    standalone coherence warning, the tool-less degraded warning, the provider
+    registry's initialisation) print in both.
 
     Each gate is imported where it runs, so a test that replaces one on its
     module replaces it here too.
@@ -32,6 +35,7 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     from faultmaven.bootstrap.composition import _is_test_environment
     from faultmaven.config.deployment_coherence import validate_deployment_coherence
     from faultmaven.config.persistent_database import require_persistent_database
+    from faultmaven.config.protection import refuse_wildcard_cors_on_a_deployed_box
     from faultmaven.config.worker_stores import refuse_configured_per_process_stores
     from faultmaven.infrastructure.security.pseudonym_key import (
         resolve_pseudonym_key,
@@ -54,6 +58,11 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     # is written, migrated, seeded or opened. What only the built clients can
     # tell is refused inside composition (faultmaven/config/worker_stores.py).
     refuse_configured_per_process_stores(settings)
+
+    # No wildcard CORS origin on a deployed box. Also checked where the CORS
+    # middleware is installed, which runs as the app is imported: in each
+    # worker, after the launcher's chance to refuse it once.
+    refuse_wildcard_cors_on_a_deployed_box(settings)
 
     # A pseudonym key redaction may use. Resolving is what creates the
     # standalone key file, so the first redaction of the process is never the

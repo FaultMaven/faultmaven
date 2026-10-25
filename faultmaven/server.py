@@ -139,11 +139,14 @@ def _prepare_workers(settings: Any) -> None:
     # The app's logging, which nothing else installs in this process before
     # uvicorn imports the app: without it the refusal and the migration's INFO
     # lines would be printed raw or dropped.
-    logger = get_logger(__name__)
+    # Named, not __name__, which is "__main__" under ``python -m``.
+    logger = get_logger("faultmaven.server")
     try:
         validate_configuration(settings, advisories=False)
     except Exception as error:
-        logger.error(f"Configuration initialization failed: {error}")
+        # With its traceback, as the one-process path logs it: a refusal is
+        # one line of reason, and a bug inside a gate is not lost.
+        logger.error(f"Configuration initialization failed: {error}", exc_info=True)
         sys.exit(STARTUP_FAILURE)
     if settings.run_startup_migrations:
         from faultmaven.bootstrap.data_init import migrate_before_workers

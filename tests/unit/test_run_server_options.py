@@ -30,6 +30,9 @@ from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.persistent_database import NonPersistentDatabaseError
 from faultmaven.config.settings import ServerSettings
 from faultmaven.config.worker_stores import PerProcessStoresError
+from faultmaven.infrastructure.security.pseudonym_key import (
+    PseudonymKeyUnavailableError,
+)
 from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
@@ -140,6 +143,20 @@ def test_web_concurrency_cannot_change_the_worker_count(monkeypatch):
             },
             DeploymentCoherenceError,
             "DEPLOYMENT_MODE",
+        ),
+        # A wildcard CORS origin on a deployed box: the shipped default holds
+        # chrome-extension://*, so a production box that sets none refuses.
+        # (The app also refuses it at import, in every worker.)
+        (
+            {"ENVIRONMENT": "production"},
+            RuntimeError,
+            "Wildcard CORS origins are not allowed",
+        ),
+        # A pseudonym key too short to use.
+        (
+            {"REDACTION_PSEUDONYM_KEY": "short"},
+            PseudonymKeyUnavailableError,
+            "REDACTION_PSEUDONYM_KEY is only 5 characters",
         ),
         # A configured provider with no credential, the gate the lifespan runs
         # outside test environments.

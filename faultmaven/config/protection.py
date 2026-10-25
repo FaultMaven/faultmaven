@@ -204,6 +204,41 @@ def is_deployed_environment(
     return _named_environment(environment) != "development" or is_cloud_deployment
 
 
+def refuse_wildcard_cors_on_a_deployed_box(settings: Any) -> None:
+    """Refuse a wildcard CORS origin on a deployed box.
+
+    Configuration alone decides it, so it is one of the startup gates
+    (``faultmaven/bootstrap/configuration_gates.py``), which the launcher runs
+    before uvicorn forks several workers, as well as a check where the CORS
+    middleware is installed (``setup_middleware``). The shipped
+    ``CORS_ALLOW_ORIGINS`` default holds ``chrome-extension://*``, so a
+    deployed box that leaves it unset meets this.
+
+    Raises:
+        RuntimeError: naming the wildcard origins and what to set instead.
+    """
+    if not is_deployed_environment(
+        settings.server.environment, is_cloud_deployment=settings.is_cloud
+    ):
+        return
+    wildcard_origins = [
+        origin for origin in settings.security.cors_allow_origins if "://*" in origin
+    ]
+    if wildcard_origins:
+        # Unwrapped: `server.environment` holds the Enum member, and a bare
+        # str() would put "Environment.STAGING" in front of an operator
+        # (#827) -- in the one message that tells them what to fix.
+        named_environment = getattr(
+            settings.server.environment, "value", settings.server.environment
+        )
+        raise RuntimeError(
+            "SECURITY ERROR: Wildcard CORS origins are not allowed on a deployed "
+            f"environment (ENVIRONMENT={named_environment}): {wildcard_origins}. "
+            "Configure CORS_ALLOW_ORIGINS with specific extension IDs "
+            "(e.g., chrome-extension://abc123def456)."
+        )
+
+
 def resolve_protection_profile(
     environment: Any = None, *, is_cloud_deployment: bool = False
 ) -> ProtectionProfile:

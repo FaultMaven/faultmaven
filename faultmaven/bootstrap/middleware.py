@@ -422,22 +422,11 @@ def setup_middleware(app):
     # same as production, and so is a cloud deployment whatever it names its
     # environment.
 
-    # SECURITY: Fail-fast validation - no wildcards allowed on a deployed box
-    if deployed:
-        wildcard_origins = [o for o in cors_origins if "://*" in o]
-        if wildcard_origins:
-            # Unwrapped: `server.environment` holds the Enum member, and a bare
-            # str() would put "Environment.STAGING" in front of an operator
-            # (#827) — in the one message that tells them what to fix.
-            named_environment = getattr(
-                settings.server.environment, "value", settings.server.environment
-            )
-            raise RuntimeError(
-                f"SECURITY ERROR: Wildcard CORS origins are not allowed on a deployed "
-                f"environment (ENVIRONMENT={named_environment}): {wildcard_origins}. "
-                "Configure CORS_ALLOW_ORIGINS with specific extension IDs "
-                "(e.g., chrome-extension://abc123def456)."
-            )
+    # SECURITY: no wildcard origin on a deployed box. Also a startup gate, so
+    # the launcher refuses it before uvicorn forks several workers.
+    from faultmaven.config.protection import refuse_wildcard_cors_on_a_deployed_box
+
+    refuse_wildcard_cors_on_a_deployed_box(settings)
 
     # Add production domain if not already present
     if "https://faultmaven.ai" not in cors_origins:
