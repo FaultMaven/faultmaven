@@ -16,6 +16,24 @@ import pytest
 from faultmaven.services.base import BaseService
 
 
+def _field(record, name):
+    """A structured field, wherever this stack put it (the idiom of
+    ``tests/unit/api/middleware/test_logging_middleware_attribution.py``)."""
+    if isinstance(record.msg, dict) and name in record.msg:
+        return record.msg[name]
+    return record.__dict__.get(name)
+
+
+def _the_record(caplog, event):
+    matches = [
+        r
+        for r in caplog.records
+        if (r.msg.get("event") if isinstance(r.msg, dict) else r.getMessage()) == event
+    ]
+    assert len(matches) == 1, f"expected one {event!r} record, got {len(matches)}"
+    return matches[0]
+
+
 class ConcreteService(BaseService):
     """Concrete implementation of BaseService for testing."""
 
@@ -93,27 +111,23 @@ class TestLogOperation:
             call_args = mock_info.call_args
             assert "create_case" in str(call_args)
 
-    def test_log_operation_includes_service_name(self):
-        """Test that log_operation includes service name in extra."""
+    def test_log_operation_fields_are_top_level_event_keys(self, caplog):
+        """The service name and every keyword arrive as fields of their own.
+
+        Passed as stdlib ``extra=`` to the structlog logger, they used to land
+        nested under one ``extra`` key, where no log query and no reader of the
+        record's fields finds them (#2262).
+        """
         service = ConcreteService("my_service")
 
-        with patch.object(service.logger, "info") as mock_info:
-            service.log_operation("test_op")
-
-            call_kwargs = mock_info.call_args[1]
-            assert "extra" in call_kwargs
-            assert call_kwargs["extra"]["service"] == "my_service"
-
-    def test_log_operation_includes_kwargs(self):
-        """Test that log_operation includes additional kwargs in extra."""
-        service = ConcreteService("test_service")
-
-        with patch.object(service.logger, "info") as mock_info:
+        with caplog.at_level(logging.INFO):
             service.log_operation("update_case", case_id="case_123", status="active")
 
-            call_kwargs = mock_info.call_args[1]
-            assert call_kwargs["extra"]["case_id"] == "case_123"
-            assert call_kwargs["extra"]["status"] == "active"
+        record = _the_record(caplog, "update_case")
+        assert _field(record, "service") == "my_service"
+        assert _field(record, "case_id") == "case_123"
+        assert _field(record, "status") == "active"
+        assert _field(record, "extra") is None
 
     def test_log_operation_with_no_extra_args(self):
         """Test log_operation works with no extra arguments."""
@@ -150,16 +164,22 @@ class TestLogError:
             assert "validate_input failed" in call_args
             assert "Invalid input data" in call_args
 
-    def test_log_error_includes_error_type(self):
-        """Test that log_error includes error type in extra."""
-        service = ConcreteService("test_service")
+    def test_log_error_fields_are_top_level_event_keys(self, caplog):
+        """The service, the error and every keyword arrive as fields of their own (#2262)."""
+        service = ConcreteService("error_test_service")
 
-        with patch.object(service.logger, "error") as mock_error:
-            exc = KeyError("missing_key")
-            service.log_error("get_case", exc)
+        with caplog.at_level(logging.ERROR):
+            try:
+                raise KeyError("missing_key")
+            except KeyError as exc:
+                service.log_error("save_case", exc, case_id="case_xyz", user_id="u1")
 
-            call_kwargs = mock_error.call_args[1]
-            assert call_kwargs["extra"]["error_type"] == "KeyError"
+        record = _the_record(caplog, "save_case failed: 'missing_key'")
+        assert _field(record, "service") == "error_test_service"
+        assert _field(record, "error_type") == "KeyError"
+        assert _field(record, "case_id") == "case_xyz"
+        assert _field(record, "user_id") == "u1"
+        assert _field(record, "extra") is None
 
     def test_log_error_includes_exc_info(self):
         """Test that log_error includes exc_info=True."""
@@ -171,29 +191,6 @@ class TestLogError:
 
             call_kwargs = mock_error.call_args[1]
             assert call_kwargs["exc_info"] is True
-
-    def test_log_error_includes_service_name(self):
-        """Test that log_error includes service name in extra."""
-        service = ConcreteService("error_test_service")
-
-        with patch.object(service.logger, "error") as mock_error:
-            exc = Exception("test")
-            service.log_error("op", exc)
-
-            call_kwargs = mock_error.call_args[1]
-            assert call_kwargs["extra"]["service"] == "error_test_service"
-
-    def test_log_error_includes_additional_kwargs(self):
-        """Test that log_error includes additional kwargs."""
-        service = ConcreteService("test_service")
-
-        with patch.object(service.logger, "error") as mock_error:
-            exc = ValueError("test")
-            service.log_error("save_case", exc, case_id="case_xyz", user_id="user_abc")
-
-            call_kwargs = mock_error.call_args[1]
-            assert call_kwargs["extra"]["case_id"] == "case_xyz"
-            assert call_kwargs["extra"]["user_id"] == "user_abc"
 
 
 class TestLogMetric:

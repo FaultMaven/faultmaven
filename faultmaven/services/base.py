@@ -616,7 +616,7 @@ class BaseService(ABC):
         Example:
             >>> self.log_operation("create_case", user_id="user123", title="Test Case")
         """
-        self.logger.info(operation, extra={"service": self.service_name, **kwargs})
+        self.logger.info(operation, service=self.service_name, **kwargs)
 
     def log_error(self, operation: str, error: Exception, **kwargs) -> None:
         """Log service error with context.
@@ -638,12 +638,10 @@ class BaseService(ABC):
         """
         self.logger.error(
             f"{operation} failed: {error}",
-            extra={
-                "service": self.service_name,
-                "error_type": type(error).__name__,
-                **kwargs,
-            },
+            error=error,
+            service=self.service_name,
             exc_info=True,
+            **kwargs,
         )
 
     async def health_check(self) -> Dict[str, Any]:
