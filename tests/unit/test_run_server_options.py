@@ -46,8 +46,11 @@ def _launch(app=None, **server_fields):
     with (
         patch("faultmaven.config.settings.get_settings") as get,
         patch("uvicorn.run", autospec=True) as run,
+        # The stores refusal reads more than ``server``; it has tests of its own.
+        patch("faultmaven.config.worker_stores.refuse_configured_per_process_stores"),
     ):
-        get.return_value = SimpleNamespace(server=server)
+        # No launcher migration here; that has tests of its own.
+        get.return_value = SimpleNamespace(server=server, run_startup_migrations=False)
         if app is None:
             run_server()
         else:
@@ -78,9 +81,8 @@ def test_every_uvicorn_option_is_passed(app, workers, reload):
         "timeout_keep_alive": 90,
         "ws": "none",
         "log_config": None,
+        "workers": workers,
     }
-    if workers > 1:
-        expected["workers"] = workers
     assert run.call_args.args == (app or DEFAULT_APP,)
     assert run.call_args.kwargs == expected
 
@@ -96,8 +98,44 @@ def test_access_log_is_off_and_uvicorn_installs_no_log_config(app):
     assert "log_config" in kwargs and kwargs["log_config"] is None
 
 
-def test_no_workers_kwarg_for_a_single_worker():
-    assert "workers" not in _launch(workers=1).call_args.kwargs
+def test_web_concurrency_cannot_change_the_worker_count(monkeypatch):
+    """With ``workers`` unset, uvicorn reads WEB_CONCURRENCY: WORKERS=1 plus
+    WEB_CONCURRENCY=4 served four processes, and every check that reads the
+    settings believed one (#2281). ``workers`` is always passed now."""
+    import uvicorn
+
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    kwargs = _launch(workers=1).call_args.kwargs
+
+    assert kwargs["workers"] == 1
+    assert uvicorn.Config(DEFAULT_APP, workers=kwargs["workers"]).workers == 1
+
+
+def test_a_refusal_the_configuration_decides_exits_before_uvicorn_starts(
+    monkeypatch,
+):
+    """WORKERS>1 over FakeRedis (SKIP_SERVICE_CHECKS) is refused in the
+    launcher, so no worker is started for uvicorn to restart forever (#2281)."""
+    from faultmaven.config.settings import get_settings, reset_settings
+    from faultmaven.config.worker_stores import PerProcessStoresError
+
+    for name, value in {
+        "CONFIG_PRESET": "none",
+        "DEPLOYMENT_MODE": "standalone",
+        "SKIP_SERVICE_CHECKS": "true",
+        "RELOAD": "false",
+        "WORKERS": "2",
+    }.items():
+        monkeypatch.setenv(name, value)
+    reset_settings()
+    try:
+        with patch("uvicorn.run", autospec=True) as run:
+            with pytest.raises(PerProcessStoresError, match="WORKERS=2"):
+                run_server()
+        run.assert_not_called()
+        assert get_settings().server.workers == 2
+    finally:
+        reset_settings()
 
 
 def test_default_app_is_the_faultmaven_app():
@@ -147,3 +185,54 @@ def test_malformed_app_is_rejected_before_uvicorn_starts(app):
 
     run.assert_not_called()
     get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("workers", "reload", "run_startup_migrations", "migrates"),
+    [
+        (2, False, True, True),
+        (1, False, True, False),
+        (2, True, True, False),  # RELOAD serves one process, which migrates itself
+        (2, False, False, False),  # a migration Job owns the schema
+    ],
+)
+def test_several_workers_are_migrated_once_before_uvicorn_forks(
+    workers, reload, run_startup_migrations, migrates
+):
+    """Each worker's lifespan runs the startup migrations; launched together on
+    a first boot they raced (#2281). The launcher migrates first, once."""
+    from unittest.mock import MagicMock
+
+    order = MagicMock()
+    server = ServerSettings(workers=workers, reload=reload)
+    with (
+        patch("faultmaven.config.settings.get_settings") as get,
+        patch("uvicorn.run", autospec=True) as run,
+        patch("faultmaven.config.worker_stores.refuse_configured_per_process_stores"),
+        patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
+    ):
+        get.return_value = SimpleNamespace(
+            server=server, run_startup_migrations=run_startup_migrations
+        )
+        order.attach_mock(migrate, "migrate")
+        order.attach_mock(run, "run")
+        run_server()
+
+    names = [name for name, _args, _kwargs in order.mock_calls]
+    assert names == (["migrate", "run"] if migrates else ["run"])
+
+
+@pytest.mark.parametrize("at_head", [True, False])
+def test_the_launcher_migration_runs_alembic_only_off_head(at_head):
+    from faultmaven.bootstrap import data_init
+
+    async def _at_head():
+        return at_head
+
+    with (
+        patch.object(data_init, "_schema_already_at_head", _at_head),
+        patch.object(data_init, "run_alembic_migrations") as alembic,
+    ):
+        data_init.migrate_before_workers()
+
+    assert alembic.called is (not at_head)

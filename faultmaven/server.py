@@ -72,11 +72,28 @@ def run_server(app: str = "faultmaven.main:app") -> None:
 
     # Configuration from unified settings
     from faultmaven.config.settings import get_settings
+    from faultmaven.config.worker_stores import (
+        refuse_configured_per_process_stores,
+        serving_processes,
+    )
 
-    server = get_settings().server
-    # Note: workers is passed only if > 1 (uvicorn defaults to 1 worker).
-    # Validation happens in lifespan startup, which will catch invalid configurations
-    options: dict[str, int] = {"workers": server.workers} if server.workers > 1 else {}
+    settings = get_settings()
+    server = settings.server
+    # Before uvicorn forks: several processes over stores the configuration
+    # alone makes process-local are refused here, so the launcher exits with no
+    # worker started. Refused in each worker's lifespan instead, uvicorn
+    # restarts the worker forever (#2281). The lifespan still checks, for a
+    # launch that does not come through here.
+    refuse_configured_per_process_stores(settings)
+    # Several workers on PostgreSQL: migrate once here, so they do not race on a
+    # first boot; each worker's lifespan then finds the schema at head (#2281).
+    if serving_processes(settings) > 1 and settings.run_startup_migrations:
+        from faultmaven.bootstrap.data_init import migrate_before_workers
+
+        migrate_before_workers()
+    # Always passed: with ``workers`` unset uvicorn reads WEB_CONCURRENCY, and
+    # the settings would no longer say how many processes serve (#2281).
+    options: dict[str, int] = {"workers": server.workers}
     # access_log=False: uvicorn's plaintext access lines duplicate the
     # structured (JSON) request start/completion logs emitted by
     # LoggingMiddleware -- one access log, structured, with correlation IDs.

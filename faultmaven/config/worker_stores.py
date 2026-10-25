@@ -27,6 +27,11 @@ earliest point that can know it:
    and the request middleware builds a FakeRedis per process when no client
    was published.
 
+Several processes over one **SQLite** database are refused too (#2281, owner
+ruling 2026-10-25): SQLite is the one-box install and serves one process.
+Several workers need PostgreSQL, and ``run_server`` then migrates once before
+uvicorn forks, so the workers do not race on a first boot.
+
 No storage-type setting decides any of this: ``SESSION_STORAGE_TYPE`` and
 ``CASE_STORAGE_TYPE`` selected nothing and are gone.
 
@@ -190,8 +195,38 @@ def refuse_per_process_stores(settings: Any, found: Iterable[PerProcessStore]) -
     )
 
 
+def refuse_sqlite_across_workers(settings: Any) -> None:
+    """Refuse several server processes over one SQLite database (#2281).
+
+    Raises:
+        PerProcessStoresError: when several processes would serve and
+            ``DATABASE_URL`` names SQLite.
+    """
+    processes = serving_processes(settings)
+    if processes <= 1:
+        return
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    try:
+        backend = make_url(settings.database.database_url or "").get_backend_name()
+    except ArgumentError:
+        return  # not a URL at all: require_persistent_database refuses it
+    if backend == "sqlite":
+        raise PerProcessStoresError(
+            f"WORKERS={processes} runs {processes} server processes over one "
+            "SQLite database, the one-box install, which serves one process. "
+            "Set WORKERS=1, or set DATABASE_URL to a PostgreSQL server."
+        )
+
+
 def refuse_configured_per_process_stores(settings: Any) -> None:
-    """Refuse before composition what the configuration alone decides."""
+    """Refuse before composition (and before uvicorn forks, in ``run_server``)
+    what the configuration alone decides: a SQLite database, then the
+    process-local stores."""
+    if serving_processes(settings) <= 1:
+        return
+    refuse_sqlite_across_workers(settings)
     refuse_per_process_stores(settings, configured_per_process_stores(settings))
 
 

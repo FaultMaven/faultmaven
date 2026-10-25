@@ -563,6 +563,18 @@ def run_alembic_migrations() -> bool:
         raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 
+def migrate_before_workers() -> None:
+    """Bring the schema to head once, before several worker processes start.
+
+    Each worker's lifespan runs the startup migrations, and launched together
+    on a first boot they raced: one failed with ``table ... already exists``
+    (#2281). ``run_server`` calls this before uvicorn forks, so every worker
+    then finds the schema at head and skips its own run.
+    """
+    if not asyncio.run(_schema_already_at_head()):
+        run_alembic_migrations()
+
+
 async def _create_admin_user(user_store: Any) -> Any:
     """Create the default admin user if it doesn't already exist.
 

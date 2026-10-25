@@ -97,6 +97,7 @@ EXPECTED_UVICORN_KWARGS = {
     "timeout_keep_alive": 33,
     "ws": "none",
     "log_config": None,
+    "workers": 1,
 }
 
 

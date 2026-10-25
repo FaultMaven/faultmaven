@@ -73,6 +73,8 @@ def settings_from(monkeypatch):
             "REDIS_HOST": "",
             "CHROMADB_URL": "http://chroma.internal:8000",
             "VECTOR_STORAGE_TYPE": "chromadb",
+            # Several workers need PostgreSQL (#2281); never connected to here.
+            "DATABASE_URL": "postgresql+asyncpg://fm@127.0.0.1:1/fm",
         }
         for name, value in {**base, **environ}.items():
             monkeypatch.setenv(name, value)
@@ -148,6 +150,27 @@ def test_no_chromadb_server_selected_is_refused(settings_from, environ):
     assert "PersistentClient" in str(refused.value)
     assert "CHROMADB_URL naming a ChromaDB server" in str(refused.value)
     assert "FakeRedis" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    ["sqlite+aiosqlite:////tmp/fm-2281.db", "sqlite:///relative.db"],
+)
+def test_several_workers_over_sqlite_are_refused(settings_from, database_url):
+    """SQLite is the one-box install and serves one process (#2281, owner
+    ruling); several workers need PostgreSQL."""
+    settings = settings_from(DATABASE_URL=database_url)
+
+    with pytest.raises(PerProcessStoresError, match="SQLite") as refused:
+        refuse_configured_per_process_stores(settings)
+    assert "DATABASE_URL" in str(refused.value)
+
+
+@pytest.mark.parametrize("environ", [{"WORKERS": "1"}, {"RELOAD": "true"}])
+def test_one_process_over_sqlite_passes(settings_from, environ):
+    refuse_configured_per_process_stores(
+        settings_from(DATABASE_URL="sqlite+aiosqlite:////tmp/fm-2281.db", **environ)
+    )
 
 
 def test_named_servers_pass_the_configuration_check(settings_from):
