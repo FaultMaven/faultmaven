@@ -4,6 +4,7 @@ Purpose: Tests for the main FastAPI application lifecycle
 """
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -11,7 +12,34 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from faultmaven.config.settings import get_settings, reset_settings
+from faultmaven.infrastructure.llm.providers.registry import reset_registry
 from faultmaven.main import app
+from faultmaven.models.exceptions import ConfigurationError
+
+
+@contextmanager
+def _settings_under(environment: dict[str, str], *, clear: bool = False):
+    """Run the block with ``environment`` in force for the settings it builds.
+
+    Settings are a process-wide cache, and patching ``os.environ`` changes
+    nothing an already cached object read. So a test that patched the
+    environment and booted passed or failed on whether an earlier test on its
+    worker had left settings cached (#2253): warm, the boot never saw the
+    patch; cold, it composed under it, and an emptied environment turned the
+    service checks back on and reached for a real Redis. The cache is dropped
+    on entry, so the boot reads this environment, and on exit, so the next
+    test reads its own. So is the LLM provider registry, which keeps the
+    settings it was first built with.
+    """
+    with patch.dict(os.environ, environment, clear=clear):
+        reset_settings()
+        reset_registry()
+        try:
+            yield
+        finally:
+            reset_settings()
+            reset_registry()
 
 
 def test_health_check(booted_app_client):
@@ -674,13 +702,27 @@ def test_health_check_with_session_metrics(booted_app_client):
 
 
 def test_application_uses_configuration_defaults(unshared_app_boot):
-    """Test that application can use configuration manager defaults."""
-    # Test with minimal environment configuration
-    minimal_config = {"CHAT_PROVIDER": "openai", "REDIS_HOST": "localhost"}
+    """The application serves on the configuration defaults.
 
-    with patch.dict(os.environ, minimal_config, clear=True):
+    The environment is emptied but for a chat provider, ``REDIS_HOST`` and
+    ``SKIP_SERVICE_CHECKS``. No Redis is reachable from a test, and with the
+    checks on, composition tries a real one first (the CI jobs set the flag
+    for the same reason). A named Redis host also declines the zero-config
+    ``local`` preset, so the boot is on the settings' own defaults.
+    """
+    minimal_config = {
+        "CHAT_PROVIDER": "openai",
+        "REDIS_HOST": "localhost",
+        "SKIP_SERVICE_CHECKS": "true",
+    }
+
+    with _settings_under(minimal_config, clear=True):
         # Application should work with minimal configuration
         with TestClient(app) as client:
+            assert (
+                get_settings().llm.provider == "openai"
+            ), "the boot did not read the minimal environment"
+            assert "CONFIG_PRESET" not in os.environ, "a preset was applied"
             response = client.get("/health")
 
             # Should succeed with defaults
@@ -722,31 +764,29 @@ def test_health_endpoint_configuration_info(booted_app_client):
             assert isinstance(config_info["config_valid"], bool)
 
 
-def test_application_startup_with_invalid_configuration(unshared_app_boot):
-    """Test application behavior with invalid configuration."""
-    # Mock invalid configuration
-    invalid_config = {
-        "CHAT_PROVIDER": "invalid_provider",
-        "REDIS_HOST": "",  # Empty required field
-        "REDIS_PORT": "not_a_number",
-    }
+@pytest.mark.parametrize(
+    "setting, value, refusal",
+    [
+        ("CHAT_PROVIDER", "invalid_provider", "CHAT_PROVIDER"),
+        ("REDIS_PORT", "not_a_number", "redis_port"),
+    ],
+)
+def test_application_startup_with_invalid_configuration(
+    setting, value, refusal, unshared_app_boot
+):
+    """An invalid setting stops the startup; the application never serves on it.
 
-    with patch.dict(os.environ, invalid_config, clear=True):
-        # Application should handle invalid configuration gracefully
-        # This test verifies the app doesn't crash during initialization
-        assert isinstance(app, FastAPI)
+    This test used to accept any response, because the boot it ran read
+    whatever settings an earlier test had cached rather than this environment.
+    ``SKIP_SERVICE_CHECKS`` keeps a startup that wrongly went on off the network,
+    so that it fails here as "did not raise".
+    """
+    invalid_config = {setting: value, "SKIP_SERVICE_CHECKS": "true"}
 
-        # Health check might report configuration issues
-        with TestClient(app) as client:
-            response = client.get("/health")
-
-            # Should respond (even if with errors)
-            assert response.status_code in [200, 500, 503]
-
-            if response.status_code != 200:
-                data = response.json()
-                # Should include error information
-                assert "error" in data or "status" in data
+    with _settings_under(invalid_config, clear=True):
+        with pytest.raises(ConfigurationError, match=refusal):
+            with TestClient(app):
+                pass
 
 
 @pytest.mark.phase3
@@ -860,8 +900,16 @@ class TestPhase3MainApplicationValidation:
         ]
 
         for flags in flag_combinations:
-            with patch.dict(os.environ, flags, clear=True):
+            with _settings_under(flags):
                 with TestClient(app) as client:
+                    observability = get_settings().observability
+                    assert observability.enable_performance_monitoring is (
+                        flags["ENABLE_PERFORMANCE_MONITORING"] == "true"
+                    )
+                    assert observability.enable_detailed_tracing is (
+                        flags["ENABLE_DETAILED_TRACING"] == "true"
+                    )
+
                     # Application should work consistently
                     response = client.get("/health")
                     assert response.status_code == 200
@@ -925,7 +973,7 @@ def test_capabilities_publish_the_turn_ceiling_for_the_chat_provider(
     per request for the chat provider in force: an operator's provider switch
     (the dashboard override writes ``settings.llm.provider`` in place) moves
     them on the next read, on both paths."""
-    from faultmaven.config.settings import LLMProvider, get_settings
+    from faultmaven.config.settings import LLMProvider
     from faultmaven.core.investigation.turn_budget import (
         AUTO_TITLE_TIMEOUT_SECONDS,
         TURN_COMMIT_RESERVE_SECONDS,

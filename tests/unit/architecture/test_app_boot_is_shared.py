@@ -142,8 +142,9 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         "_serving_with_global_limit": ("real", 1),
     },
     "tests/integration/test_main_app.py": {
-        # Boots under a patched environment (`patch.dict(..., clear=True)`), so
-        # the lifespan it runs is not the shared one.
+        # Boot under an environment of their own (`_settings_under`), so the
+        # lifespan they run is not the shared one; the invalid-configuration
+        # boot must REFUSE.
         "test_application_uses_configuration_defaults": ("real", 1),
         "test_application_startup_with_invalid_configuration": ("real", 1),
         "TestPhase3MainApplicationValidation.test_feature_flags_integration_clean": (
