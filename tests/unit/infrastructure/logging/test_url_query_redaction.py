@@ -78,8 +78,10 @@ class TestRedactUrls:
 
         With "?" allowed in the pre-query class, the greedy group backtracked
         to the LAST question mark, so only the trailing one was replaced and
-        the key shipped verbatim. RFC 3986 permits "?" inside a query, and a
-        sentence ending in "?" right after a URL produces the same shape.
+        the key shipped verbatim. With the query optional (#2312) the same
+        mutation swallows the query into the run and replaces nothing. RFC 3986
+        permits "?" inside a query, and a sentence ending in "?" right after a
+        URL produces the same shape.
         """
         assert redact_urls(
             f"Failed to reach https://api.x/v1?key={API_KEY_SHAPE}?"
@@ -140,6 +142,33 @@ class TestRedactUrls:
             lambda count: "a" * count + "? ://x",
             small=256,
             label="redact_urls on a long near-miss run",
+        )
+
+    @pytest.mark.performance
+    def test_a_line_of_many_scheme_separators_does_not_blow_up(self):
+        """‼ #2312. The guard above has one "://", so it cannot see this.
+
+        With the query required, a run with no "?" after it was retried at
+        every "://" inside it, each retry scanning to the run's end. Measured on
+        that version: 1.3 s for 16 KB of "://", 18.6 s for 64 KB; on this one,
+        0.33 ms and 0.82 ms. The leading "?" only gets the line past the
+        substring pre-check.
+        """
+        assert_linear_growth(
+            redact_urls,
+            lambda count: "?" + "://" * count,
+            small=256,
+            label='redact_urls on a run of "://" with no query',
+        )
+
+    def test_a_url_after_a_run_with_no_query_is_still_redacted(self):
+        """A run with no query matches whole and the scan resumes past it, so
+        what follows the run's end must still be scanned."""
+        assert redact_urls("x://a://b'https://h/p?key=K") == (
+            "x://a://b'https://h/p?<redacted>"
+        )
+        assert redact_urls_bytes(b"x://a://b'https://h/p?key=K") == (
+            b"x://a://b'https://h/p?<redacted>"
         )
 
     @pytest.mark.parametrize(
