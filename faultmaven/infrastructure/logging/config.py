@@ -64,15 +64,19 @@ _UNREPLACEABLE_KEYS = frozenset({"level", "logger", "timestamp", "user_id"})
 
 
 def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
-    """Write a caller's fields onto the event, by the one rule both paths share.
+    """Write a caller's ``extra`` fields onto the event, by the one rule both
+    paths share.
 
-    A caller's own field wins over what the request context stamped: the
-    context fills in only what a record does not say, as
-    ``add_request_context`` does for keyword fields. So a telemetry line's
-    ``event`` name and a route's own ``correlation_id`` arrive as the caller
-    wrote them. A field that collides with an unreplaceable key, or that the
-    formatter would act on (a traceback directive) or overwrite, stays under
-    ``extra`` instead, so nothing is lost (#2262, #2268).
+    A caller's ``extra`` field wins over whatever the event already holds for
+    that key: a request-context stamp, and equally a keyword or bound field of
+    the same call. So a telemetry line's ``event`` name and a route's own
+    ``correlation_id`` arrive as the caller wrote them, as they did on the stdlib
+    path before (#2268). The value it replaces is not kept.
+
+    The exceptions are the logger's own facts, a ``user_id`` the event already
+    holds, and the keys the formatter acts on (a traceback directive) or writes:
+    a caller's value for one of those stays under ``extra``, beside whatever the
+    caller passed as ``extra`` itself (#2262, #2268).
     """
     kept = {}
     for key, value in fields.items():
@@ -82,7 +86,12 @@ def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
             event_dict[key] = value
     if kept:
         held = event_dict.get("extra")
-        event_dict["extra"] = {**held, **kept} if isinstance(held, dict) else kept
+        if held is None:
+            event_dict["extra"] = kept
+        elif isinstance(held, dict):
+            event_dict["extra"] = {**held, **kept}
+        else:
+            event_dict["extra"] = {"extra": held, **kept}
 
 
 def lift_stdlib_extra(

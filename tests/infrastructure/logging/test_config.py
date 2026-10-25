@@ -245,7 +245,8 @@ class TestFaultMavenLogger:
 
     @pytest.mark.parametrize("path", ["native", "stdlib"])
     def test_a_callers_user_id_never_replaces_the_verified_principal(self, path):
-        """One rule on both paths: a colliding key stays under ``extra``.
+        """A verified principal is one of the keys a caller's ``extra`` never
+        replaces, on either path: the caller's value stays under ``extra``.
 
         The stdlib path's ``ExtraAdder`` wrote a caller's ``user_id`` over the
         request's verified one, where the native path kept it apart (#2268).
@@ -345,20 +346,42 @@ class TestFaultMavenLogger:
         )
         assert json.loads(line)["event"] == "case_turn"
 
+    @pytest.mark.parametrize("key", ["level", "logger", "timestamp"])
     @pytest.mark.parametrize("path", ["native", "stdlib"])
-    def test_a_callers_level_never_replaces_the_records(self, path):
+    def test_a_callers_value_never_replaces_the_loggers_own_facts(self, path, key):
         """The logger's own facts are not the caller's to replace; on the
         stdlib path ``extra={"level": "top"}`` used to (#2268)."""
         import json
 
         line = self._rendered(
             lambda: _log_through(
-                path, "faultmaven.tests.level_2268", "parsed", {"level": "top"}
+                path, "faultmaven.tests.facts_2268", "parsed", {key: "caller"}
             )
         )
         record = json.loads(line)
-        assert record["level"] == "info"
-        assert record["extra"] == {"level": "top"}
+        assert record[key] != "caller"
+        assert record["extra"] == {key: "caller"}
+
+    @pytest.mark.parametrize("held", [{"a": 1}, "plain"])
+    def test_a_protected_value_joins_whatever_extra_the_caller_passed(self, held):
+        """A caller's own ``extra`` key and a protected value it also passed
+        both survive, under ``extra``."""
+        import json
+
+        line = self._rendered(
+            lambda: logging.getLogger("faultmaven.tests.held_2268").info(
+                "parsed", extra={"extra": held, "level": "top"}
+            )
+        )
+        expected = (
+            {**held, "level": "top"}
+            if isinstance(held, dict)
+            else {
+                "extra": held,
+                "level": "top",
+            }
+        )
+        assert json.loads(line)["extra"] == expected
 
     def test_reconfigure_preserves_foreign_root_handlers(self, caplog):
         """Re-running configuration mid-process must NOT drop foreign root
