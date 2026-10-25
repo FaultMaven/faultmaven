@@ -51,7 +51,6 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
@@ -669,6 +668,7 @@ else:
 from faultmaven.api.exception_handlers import (
     get_exception_handlers,
     http_exception_handler,
+    internal_server_error_handler,
     request_validation_exception_handler,
 )
 
@@ -696,27 +696,11 @@ app.add_exception_handler(RequestValidationError, request_validation_exception_h
 app.add_exception_handler(HTTPException, http_exception_handler)
 
 
-@app.exception_handler(500)
-async def internal_server_error_handler(request: Request, exc):
-    """Custom 500 handler for internal server errors with Request ID for correlation"""
-    # Extract Request ID from middleware (stored in request.state by RequestIdMiddleware)
-    request_id = getattr(request.state, "request_id", None)
-
-    # Path only, never the full URL. request.url renders the query string, and
-    # the SSO callback carries the IdP authorization code there -- so any
-    # unhandled exception on that route wrote a live credential to an ERROR
-    # record. The redaction filter cannot reach this one: it covers the foreign
-    # stdlib loggers that print URLs, and this is a first-party structlog event.
-    logger.error(
-        f"Internal server error on {request.method} {request.url.path}: {exc}",
-        extra={"request_id": request_id} if request_id else {},
-    )
-
-    error_response = {"detail": "Internal server error"}
-    if request_id:
-        error_response["request_id"] = request_id
-
-    return JSONResponse(status_code=500, content=error_response)
+# The 500 for an unhandled exception. Registered by status code, which Starlette
+# hands to ServerErrorMiddleware, the outermost layer. It lives beside the other
+# handlers because PerformanceTrackingMiddleware, which catches the exception
+# first wherever it is mounted, answers with it too (#2294).
+app.add_exception_handler(500, internal_server_error_handler)
 
 
 @app.get("/")

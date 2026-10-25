@@ -22,6 +22,10 @@ This module provides exception handlers for:
   the encoder cannot render answers its own status instead of crashing the
   handler into a 500. Keyed on FastAPI's HTTPException; Starlette's own class
   (router-raised 404/405) still goes to FastAPI's default handler.
+- An exception nothing maps → 500 ``{"detail": "Internal server error"}``,
+  naming the request's correlation id in the body and ``X-Correlation-ID``
+  (``internal_server_error_handler``, which ``main.py`` registers for status
+  500, #2294)
 
 ``OAuthProtocolError`` is the one handler here that does not answer the
 common ``{"error", "detail", "status_code"}`` shape: the OAuth token and
@@ -982,6 +986,83 @@ async def model_content_refused_handler(
         exc_info=exc,
     )
     return await http_exception_handler(request, model_content_refused_http_exception())
+
+
+# =============================================================================
+# The 500 for an unhandled exception (#2294)
+# =============================================================================
+
+#: The ``request.state`` attribute that carries the correlation id
+#: ``LoggingMiddleware`` logged an unhandled exception under. ``request.state``
+#: is the ASGI ``scope["state"]`` dict, one per request and shared by every
+#: layer's ``Request``, so the 500 built outside the middleware reads what it
+#: wrote. The ``request_context`` ContextVar cannot carry the id there:
+#: ``end_request`` clears it before the middleware re-raises, and a
+#: ``BaseHTTPMiddleware`` outside it runs it in a child task whose context
+#: the outer layer never sees.
+_LOGGED_FAILURE_CORRELATION_ID = "logged_failure_correlation_id"
+
+
+def record_logged_failure(request: Request, correlation_id: str) -> None:
+    """Tell the 500's builder this request's unhandled exception was logged,
+    and under which correlation id.
+
+    ``LoggingMiddleware`` calls it on its error path, after logging the failure
+    and before re-raising.
+    """
+    setattr(request.state, _LOGGED_FAILURE_CORRELATION_ID, correlation_id)
+
+
+async def internal_server_error_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """The 500 for an exception nothing inside the app mapped to a response.
+
+    Two layers answer one. ``main.py`` registers this for status 500, which
+    Starlette gives to ``ServerErrorMiddleware``, the outermost layer.
+    ``PerformanceTrackingMiddleware``, mounted outside ``LoggingMiddleware``
+    unless ``SKIP_SERVICE_CHECKS`` is set (no deployment sets it), catches the
+    exception first and answers with this too, so the two answers are one.
+
+    The body can name two ids, which mean different things:
+
+    - ``correlation_id``, also set as ``X-Correlation-ID``: the request's own
+      id. ``LoggingMiddleware`` stamps it on every log line of the request and
+      returns it on every other response, so it is the id a user reports and
+      an operator's log query finds (#2278). Present when ``LoggingMiddleware``
+      saw the exception, which covers the route, its dependencies and every
+      middleware registered before it. An exception raised outside it was
+      served under no correlation id, and this names none.
+    - ``request_id``: ``RequestIdMiddleware``'s id, the caller's own
+      ``X-Request-ID`` when one was sent. Kept when that middleware ran, which
+      is on every deployment and never in a pytest-built app: a caller that
+      sent its own id gets it back.
+
+    The exception is logged once. ``LoggingMiddleware`` logged it already,
+    under the correlation id and with its traceback, when it handed one over;
+    otherwise it is logged here. Path only, never the full URL: the SSO
+    callback's query string carries the identity provider's authorization code.
+    """
+    correlation_id = getattr(request.state, _LOGGED_FAILURE_CORRELATION_ID, None)
+    request_id = getattr(request.state, "request_id", None)
+
+    if correlation_id is None:
+        logger.error(
+            "Internal server error on %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+            extra={"request_id": request_id} if request_id else {},
+        )
+
+    content: Dict[str, Any] = {"detail": "Internal server error"}
+    headers: Dict[str, str] = {}
+    if correlation_id is not None:
+        content["correlation_id"] = correlation_id
+        headers["X-Correlation-ID"] = correlation_id
+    if request_id:
+        content["request_id"] = request_id
+    return JSONResponse(status_code=500, content=content, headers=headers)
 
 
 def get_exception_handlers() -> dict[Type[Exception], Callable]:

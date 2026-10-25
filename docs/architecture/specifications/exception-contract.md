@@ -542,8 +542,11 @@ Both shapes are valid depending on route needs:
   #331).
 - **Omit `try/except` entirely when** the route doesn't need either.
   Typed exceptions propagate to global handlers; unhandled
-  exceptions go to FastAPI's default 500 (which still logs the
-  traceback). Pattern from knowledge `verify_draft` (PR #334).
+  exceptions get the app's 500, `internal_server_error_handler`
+  (`api/exception_handlers.py`). `LoggingMiddleware` logs the
+  traceback under the request's correlation id, and the 500 names that
+  id in `X-Correlation-ID` and in its body's `correlation_id` (#2294).
+  Pattern from knowledge `verify_draft` (PR #334).
 
 The choice is per-route. Use the simpler "no wrapper" form unless
 there's a specific reason to add the envelope/logging layer.

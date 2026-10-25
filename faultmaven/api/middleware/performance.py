@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Sequence
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from faultmaven.api.exception_handlers import internal_server_error_handler
 from faultmaven.utils.serialization import to_json_compatible
 
 from ...infrastructure.logging.coordinator import LoggingCoordinator
@@ -108,15 +109,17 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
             error = e
             status_code = 500
             self.error_count += 1
-            self.logger.error(f"Request {request_id} failed: {e}")
 
-            # Create error response
-            from fastapi.responses import JSONResponse
-
-            response = JSONResponse(
-                status_code=500,
-                content={"detail": "Internal server error", "request_id": request_id},
-            )
+            # The app's one 500 for an unhandled exception, the one main.py
+            # registers. Answered here rather than re-raised, so the 500 still
+            # passes out through CORS; it names the request's correlation id
+            # and logs the exception only if LoggingMiddleware did not (#2294).
+            #
+            # Safe in place, and allowlisted as such in
+            # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``: the
+            # handler takes the exception only to log it, and its body is a
+            # static message plus the request's ids.
+            response = await internal_server_error_handler(request, e)
 
         finally:
             # Calculate timing

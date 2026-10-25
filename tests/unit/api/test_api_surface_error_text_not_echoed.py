@@ -141,6 +141,16 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
         "object untouched."
     ),
     (
+        "faultmaven/api/middleware/performance.py",
+        "dispatch",
+        "response",
+    ): (
+        "The app's 500 handler. `internal_server_error_handler` receives the "
+        "exception only to log it, when `LoggingMiddleware` has not, and its "
+        "body is the static `Internal server error` plus the request's ids "
+        "(#2294). The other value `response` holds is the downstream response."
+    ),
+    (
         "faultmaven/api/middleware/rate_limiting.py",
         "dispatch",
         "self._create_rate_limit_response(e, request)",
