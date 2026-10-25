@@ -231,12 +231,15 @@ async def test_request_lifecycle_coordination(
 
 ### **Real Business Logic Testing**
 ```python
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, create_autospec
 
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.agent.tools.base import AgentToolRegistry
+from faultmaven.modules.case.contracts import ICaseRepository
 from tests.case_builders import investigating_case
 
 
@@ -245,13 +248,15 @@ class TestMilestoneEngine:
 
     @pytest.fixture
     def engine(self):
-        """The real engine; its LLM seam and the persistence are stubbed."""
-        llm = MagicMock()
-        llm.provider_name = "test-provider"
-        llm.config.default_model = "test-model"
-        repository = MagicMock()
-        repository.save = AsyncMock(side_effect=lambda case, **_: case)
-        engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
+        """The real engine on specced dependencies: the provider and the case
+        repository by their interfaces, the tool registry (typed `Any`) by its
+        class. The one stub is the structured-output call, which returns a
+        real response schema."""
+        engine = MilestoneEngine(
+            create_autospec(ILLMProvider, instance=True),
+            create_autospec(ICaseRepository, instance=True),
+            investigation_tools=create_autospec(AgentToolRegistry, instance=True),
+        )
         engine.generator.generate_structured_output = AsyncMock(
             return_value=InvestigationResponse_Diagnosis.model_validate(
                 {"agent_response": "Check the pool size next.", "state_updates": {}}
@@ -261,7 +266,7 @@ class TestMilestoneEngine:
 
     async def test_troubleshooting_workflow(self, engine):
         """Test complete troubleshooting workflow."""
-        # Use real engine; only the LLM and persistence are stubbed
+        # Real engine logic; no LLM is reached
         case = investigating_case(statement="Database timeout errors", current_turn=1)
 
         # Execute real business logic
@@ -325,26 +330,14 @@ class TestExternalClientIntegration:
 ## **Performance Testing Integration**
 
 ### **Real Performance Measurement**
-```python
-@pytest.mark.performance
-async def test_operation_performance(self, service):
-    """Test actual operation performance."""
-    import time
 
-    start_time = time.time()
-
-    results = await asyncio.gather(*[
-        service.process_data(f"test_{i}")
-        for i in range(100)
-    ])
-
-    duration = time.time() - start_time
-
-    # Verify performance requirements
-    assert len(results) == 100
-    assert duration < 5.0  # 100 operations in under 5 seconds
-    assert all(result.success for result in results)
-```
+A timing lives in `tests/performance/` (or `tests/benchmarks/`), against a row
+of that directory's `budgets.py`, and reaches its threshold only through
+`assert_latency_within` / `assert_throughput_at_least` from `tests/wallclock`,
+over several windows (`tests/wallclock/sampling.py`). Never compare a duration
+against a literal: `tests/unit/ci/test_benchmark_calibration.py` scans all of
+`tests/` for one and fails the build. The worked example is pattern 6 in
+[patterns.md](patterns.md); the method is in [performance.md](performance.md).
 
 ---
 

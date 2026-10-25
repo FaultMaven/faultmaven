@@ -11,17 +11,20 @@ tests/
 ├── unit/                    # Unit tests (~100 files)
 │   ├── api/                 # API layer tests (routes, middleware, models)
 │   ├── architecture/        # Architecture validation tests
+│   ├── bootstrap/           # Startup: migrations gate, KB pack ingestion, lifespan
+│   ├── ci/                  # CI gates: docs-only classifier, benchmark calibration
+│   ├── cli/                 # Operator console (fm-*) commands
 │   ├── config/              # Configuration and settings tests
 │   ├── container/           # Dependency injection container tests
-│   ├── core/                # Core domain logic tests
+│   ├── core/                # Core domain logic tests (investigation engine, prompts)
 │   ├── infrastructure/      # Infrastructure adapter tests
-│   ├── investigation/       # Investigation engine tests
+│   ├── jobs/                # Background job tests
 │   ├── models/              # Domain model tests
-│   ├── modules/             # Feature module tests (agent, evidence)
-│   ├── prompts/             # Prompt template tests
+│   ├── modules/             # Feature module tests (agent and its tools, auth, case, evidence, knowledge, preprocessing, report)
 │   ├── providers/           # Provider implementation tests
+│   ├── scripts/             # Dev and maintenance script tests
+│   ├── security/            # Security tests
 │   ├── services/            # Service layer tests
-│   ├── tools/               # Agent tool tests
 │   └── utils/               # Utility function tests
 ├── integration/             # Integration tests (~25 files)
 │   ├── api/                 # API integration tests
@@ -115,7 +118,7 @@ The test runner supports predefined CI/CD pipeline configurations:
 | `unit` | Unit tests |
 | `integration` | Integration tests |
 | `slow` | Long-running tests (the required Test Standalone/Test Cloud jobs run them; `scripts/tests.py --ci` skips them) |
-| `enterprise` | Requires Redis, PostgreSQL, etc. |
+| `cloud` | Cloud tests requiring Redis, PostgreSQL |
 | `security` | Security-focused tests |
 | `benchmark` | Performance benchmarks |
 | `performance` | Wall-clock tests: `tests/performance` and the defensive growth checks (excluded from the required jobs; run in `benchmarks.yml`) |

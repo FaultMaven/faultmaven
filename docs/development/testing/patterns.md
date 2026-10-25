@@ -50,7 +50,7 @@ async def test_service_with_container_pattern():
 **Purpose**: Mock dependencies by the type the service is given, so a mock answers only what the real dependency would
 
 ```python
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -58,6 +58,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
 )
+from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -88,7 +89,7 @@ async def test_service_with_interface_mocks():
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,
-        db_session_factory=MagicMock(),  # required; a search never opens a session
+        db_session_factory=create_autospec(get_db_session),  # required; a search never opens a session
     )
 
     # Test service with mocked dependencies
@@ -109,15 +110,19 @@ async def test_service_with_interface_mocks():
 ```
 
 **Key Principles**:
-- Use `create_autospec(Type, instance=True)`: it checks every call against the
-  real signature. `Mock(spec=Type)` checks attribute names only, and a bare
+- Mock interfaces, not concrete providers: where the code is typed against an
+  interface that declares what it calls, mock that interface with
+  `create_autospec(Interface, instance=True)` (`ITracer`, `IKnowledgeIngester`)
+- Spec a concrete class only where no interface declares the call, and treat
+  that as a known gap: `KnowledgeService` is typed against `ISanitizer` and
+  `IVectorStore`, which declare neither `asanitize` nor the `search` signature
+  it calls (#2284), so its sanitizer and store are specced on `DataSanitizer`
+  and `KnowledgeVectorStore`
+- Use `create_autospec`, not `Mock(spec=...)`: it checks every call against the
+  real signature. `Mock(spec=...)` checks attribute names only, and a bare
   `AsyncMock` accepts any call, which is how a vector-store call with the wrong
   signature went unnoticed
   (`tests/unit/modules/knowledge/test_knowledge_service_vector_search_contract.py`)
-- Spec on the interface in `faultmaven/models/interfaces.py` where it declares
-  the method the service calls (`ITracer.trace`), otherwise on the class the
-  container passes: `ISanitizer` declares no `asanitize`, and the knowledge
-  vector store implements no interface
 - `create_autospec` makes each async method an `AsyncMock`; check it with `assert_awaited_*`
 - Pass mocks to the constructor; never assign them onto the container
 
@@ -223,8 +228,10 @@ async def test_cross_layer_integration(reset_container):
             assert agent_service is not None
             assert knowledge_service is not None
 
-            # Step 5: Test Service layer integration, down to the vector store
-            # (the test process's own, empty knowledge base)
+            # Step 5: Test Service layer integration. Under SKIP_SERVICE_CHECKS
+            # the composition builds no vector store, so the composed knowledge
+            # service answers through its no-store branch
+            assert reset_container.get_service("knowledge_vector_store") is None
             kb_results = await knowledge_service.search_knowledge(
                 "database connection issues",
                 limit=3
@@ -239,9 +246,10 @@ async def test_cross_layer_integration(reset_container):
 - Validate each layer's functionality independently
 - Test layer interactions and data flow
 - Use realistic test data and scenarios
-- Leave `REDIS_HOST` as `tests/conftest.py` sets it (empty): the composition
-  then uses the in-process FakeRedis. A host there is a connection
-  `tests/network_guard.py` refuses
+- Know what `reset_container` composes: it sets `SKIP_SERVICE_CHECKS=true`, so
+  the composition uses the in-process FakeRedis, whatever `REDIS_HOST` says,
+  and builds no vector stores. A search that must reach a store builds its
+  unit directly (pattern 2)
 
 ### 5. Error Handling and Graceful Degradation Pattern
 
@@ -251,26 +259,28 @@ async def test_cross_layer_integration(reset_container):
 @pytest.mark.asyncio
 async def test_error_handling_pattern():
     """Pattern for testing error handling across layers."""
-    from unittest.mock import MagicMock, create_autospec
+    from unittest.mock import create_autospec
 
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         KnowledgeVectorStore,
     )
+    from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.security.redaction import DataSanitizer
     from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
 
+    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer.asanitize.side_effect = lambda data: data
+
     def knowledge_service(vector_store):
-        sanitizer = create_autospec(DataSanitizer, instance=True)
-        sanitizer.asanitize.side_effect = lambda data: data
         return KnowledgeService(
             knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
             sanitizer=sanitizer,
             tracer=create_autospec(ITracer, instance=True),
             vector_store=vector_store,
-            db_session_factory=MagicMock(),
+            db_session_factory=create_autospec(get_db_session),
         )
 
     # Create mock that simulates external service failure
@@ -283,10 +293,12 @@ async def test_error_handling_pattern():
 
     assert "Vector store unavailable" in str(exc_info.value)
 
-    # Test 2: Invalid input is refused before any dependency is reached
+    # Test 2: Invalid input is refused before the sanitizer or the vector
+    # store is called: both still show Test 1's call only
     with pytest.raises(ValueError, match="Query cannot be empty"):
         await knowledge_service(vector_store).search_knowledge("   ")
-    assert vector_store.search.await_count == 1  # only Test 1's call
+    assert sanitizer.asanitize.await_count == 1
+    assert vector_store.search.await_count == 1
 
     # Test 3: Graceful degradation: no vector store, no results
     assert await knowledge_service(vector_store=None).search_knowledge("test") == []
@@ -303,60 +315,41 @@ async def test_error_handling_pattern():
 **Purpose**: Test performance characteristics and resource usage
 
 ```python
-import time
-import psutil
-import os
+# tests/performance/test_sanitization_throughput.py, abridged
+import pytest
 
-def test_performance_pattern():
-    """Pattern for testing performance and resource usage."""
-    from faultmaven.container import container
+from faultmaven.infrastructure.security.redaction import DataSanitizer
+from tests.wallclock import assert_throughput_at_least
+from tests.wallclock.sampling import fastest_of_windows
 
-    # Measure container operations
-    start_time = time.time()
-    memory_start = psutil.Process(os.getpid()).memory_info().rss
+from .budgets import SANITIZE_DOCUMENT_BATCH
 
-    # Perform operations (a getter never composes the container, #2249:
-    # this measures reset and lookup, not composition)
-    iterations = 100
-    for i in range(iterations):
-        container.reset()
-        agent_service = container.get_agent_service()
-        knowledge_service = container.get_knowledge_service()
+#: Timed repetitions per statistic; the FASTEST is the statistic.
+SAMPLES = 5
 
-        # Validate nothing is composed behind the caller's back
-        assert agent_service is None
-        assert knowledge_service is None
-
-    # Measure results
-    elapsed_time = time.time() - start_time
-    memory_end = psutil.Process(os.getpid()).memory_info().rss
-    memory_used = memory_end - memory_start
-
-    # Validate performance requirements
-    avg_time_per_operation = elapsed_time / iterations
-    assert avg_time_per_operation < 0.01  # Less than 10ms per operation
-    assert memory_used < 10 * 1024 * 1024  # Less than 10MB total
-
-    # Log performance metrics for monitoring
-    print(f"Average operation time: {avg_time_per_operation:.4f}s")
-    print(f"Memory used: {memory_used / 1024 / 1024:.2f}MB")
+def _fastest_seconds(work) -> float:
+    work()  # warm-up: compiled patterns and first-call costs are nobody's budget
+    return fastest_of_windows(lambda window: window.seconds(work), SAMPLES)
 
 @pytest.mark.performance
-def test_calibrated_performance():
+def test_document_batch_sanitization_throughput():
     """A wall-clock threshold goes through the shared helper, never a literal."""
-    from tests.wallclock import assert_latency_within
+    sanitizer = DataSanitizer()
+    documents = _document_batch()  # the module's 50 small documents, PII in each
 
-    from .budgets import SOME_OPERATION
+    seconds = _fastest_seconds(lambda: [sanitizer.sanitize(d) for d in documents])
+    batch_rate = len(documents) / seconds
 
-    start = time.perf_counter()
-    do_the_work()
-    elapsed = time.perf_counter() - start
-
-    assert_latency_within(elapsed, SOME_OPERATION, "Some operation")
+    assert_throughput_at_least(
+        batch_rate, SANITIZE_DOCUMENT_BATCH, "DataSanitizer documents/s"
+    )
 ```
 
 **Key Principles**:
-- Measure actual performance metrics
+- Measure actual performance metrics, in `tests/performance/` (or
+  `tests/benchmarks/`), against a row of that directory's `budgets.py`
+- Take each statistic over several windows (`tests/wallclock/sampling.py`), so
+  one stalled window cannot fail the test
 - Never compare a duration against a literal. `tests/benchmarks/` and
   `tests/performance/` both route every threshold through
   `assert_latency_within` / `assert_throughput_at_least`, so the machine
@@ -433,11 +426,12 @@ def test_error_scenarios_pattern(error_type, expected_behavior):
 async def test_async_pattern():
     """Pattern for async testing with proper mock setup."""
     import asyncio
-    from unittest.mock import MagicMock, create_autospec
+    from unittest.mock import create_autospec
 
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         KnowledgeVectorStore,
     )
+    from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.security.redaction import DataSanitizer
     from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -458,7 +452,7 @@ async def test_async_pattern():
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,
-        db_session_factory=MagicMock(),
+        db_session_factory=create_autospec(get_db_session),
     )
 
     # Concurrent async operations
@@ -613,7 +607,7 @@ def test_with_built_cases():
 - ✅ **Environment Isolation**: Use clean environment fixtures
 - ✅ **Async Testing**: Use `AsyncMock` for async interface methods
 - ✅ **Error Testing**: Test both success and failure scenarios
-- ✅ **Performance Testing**: Monitor container and service performance
+- ✅ **Performance Testing**: Time against a `budgets.py` row, through the shared helpers
 - ✅ **Integration Testing**: Test cross-layer workflows
 - ✅ **Resource Management**: Ensure proper cleanup and isolation
 
@@ -623,7 +617,7 @@ def test_with_built_cases():
 ✅ **Constructor Injection**: Pass mocks to the unit under test; use `container.get_*_service()` after `await container.initialize()`
 
 ❌ **Unspecced Mocks**: Don't use a bare `Mock()`; it answers any call
-✅ **Interface Mocking**: Spec on the interface (`ITracer`), or on the class the container passes where no interface declares the call
+✅ **Interface Mocking**: `create_autospec` on the interface (`ITracer`); on a concrete class only where no interface declares the call (#2284)
 
 ❌ **Persistent State**: Don't let tests affect each other
 ✅ **Clean State**: Reset container and environment between tests
