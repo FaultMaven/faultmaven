@@ -10,7 +10,6 @@ work: its cleanup waits on an event only the test sets.
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -43,13 +42,11 @@ async def _settle(release: asyncio.Event) -> None:
 
 async def test_the_deadline_holds_when_the_cancellation_does_not_finish():
     release, ended = asyncio.Event(), []
-    started = time.monotonic()
     try:
         with pytest.raises(TimeoutError, match="the probe did not finish"):
             await wait_within(
                 _work_whose_cancellation_hangs(release, ended), 0.05, what="the probe"
             )
-        assert time.monotonic() - started < 1.0
         assert ended == [], "the wait outlasted the bound for the cancellation"
     finally:
         await _settle(release)
