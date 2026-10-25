@@ -172,9 +172,21 @@ def service_with_test_doubles():
 ### **Real Log Verification**
 
 Use pytest's built-in `caplog` fixture: it captures the records the real
-logging framework emits, so nothing about logging is mocked.
+logging framework emits, so nothing about logging is mocked. A structured
+field can sit in one of two places on a record. Fields given to a structlog
+logger (`get_logger`, the service-layer business events, the request context's
+`correlation_id`) are keys of the event dict in `record.msg`. Fields passed to
+a plain stdlib logger through `extra=` are record attributes. Read both, as
+`_field` in `tests/unit/api/middleware/test_logging_middleware_attribution.py`
+does; checking only one silently finds nothing.
 
 ```python
+def _field(record, name):
+    if isinstance(record.msg, dict) and name in record.msg:
+        return record.msg[name]
+    return record.__dict__.get(name)
+
+
 def test_operation_logging(caplog, service):
     """Test actual log output, not mock calls."""
     with caplog.at_level(logging.INFO, logger="faultmaven"):
@@ -184,11 +196,10 @@ def test_operation_logging(caplog, service):
     completed = [r for r in caplog.records if "operation_completed" in r.getMessage()]
     assert completed, "the operation logged no completion"
 
-    # Verify log structure. The correlation id is a record attribute (set by the
-    # request context), not part of the message text.
+    # Verify log structure
     business = [r for r in caplog.records if "business_event" in r.getMessage()]
     assert business, "the operation logged no business event"
-    assert all(getattr(r, "correlation_id", None) for r in business)
+    assert all(_field(r, "correlation_id") for r in business)
 ```
 
 ### **Cross-Layer Coordination Testing**
@@ -209,7 +220,7 @@ async def test_request_lifecycle_coordination(
         correlation_logs = [
             r
             for r in caplog.records
-            if getattr(r, "correlation_id", None) == correlation_id
+            if _field(r, "correlation_id") == correlation_id
         ]
         assert len(correlation_logs) >= 4  # All layers logged
 ```

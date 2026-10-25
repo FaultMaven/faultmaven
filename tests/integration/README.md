@@ -24,7 +24,7 @@ Comprehensive spec compliance testing with 17 tests validating [case-and-session
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** a reachable Redis. These tests are `cloud`-marked and drive a real Redis-backed session service; without one they fail rather than skip. The suite never reads `.env` (`tests/conftest.py` blocks it), so give the server through the environment: `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth.
+**Setup:** a reachable Redis, given through the environment (`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked. Until #2081 is fixed, the 16 that take `session_service` skip whether or not Redis is reachable: the fixture never builds its store.
 
 **Run tests:**
 ```bash
@@ -53,7 +53,7 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Service fixtures**: `session_service` (real Redis) and `case_service` (the DI container's)
+- **Service fixtures**: `session_service` (real Redis; it currently always skips, #2081) and `case_service` (the DI container's)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration
@@ -95,7 +95,7 @@ Optional settings:
 export LOG_LEVEL=DEBUG
 
 # Point the Redis-backed suites at a real Redis (REDIS_PASSWORD if it requires auth).
-# Without one, a suite that needs it fails rather than skips.
+# They self-skip without one.
 export REDIS_HOST=localhost
 export REDIS_PORT=6379
 
