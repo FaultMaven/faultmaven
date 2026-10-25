@@ -93,8 +93,9 @@ class DatabaseTimeout(TimeoutError):
     Raised by ``get_db_session``, the one session every repository reads and
     writes through, in place of a timeout escaping it: the driver's command or
     connect timeout (``DATABASE_COMMAND_TIMEOUT_SECONDS``,
-    ``DATABASE_CONNECT_TIMEOUT_SECONDS``) or SQLAlchemy's pool timeout, whether
-    raised bare or already wrapped by a repository on its way out. Anything
+    ``DATABASE_CONNECT_TIMEOUT_SECONDS``), SQLAlchemy's pool timeout, or the
+    server's own ``statement_timeout`` (SQLSTATE 57014), whether raised bare or
+    already wrapped by a repository on its way out. Anything
     above a session can then tell the database's timeout from every other
     ``TimeoutError`` (the turn ceiling's, an LLM call's) by type, on the
     ``__cause__`` chain, rather than by reading a message: the turn route

@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from faultmaven.exceptions import DatabaseTimeout, walk_cause_chain
+from faultmaven.infrastructure.persistence.db_errors import sqlstate
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.pg_connection import (
     PgBounds,
@@ -343,8 +344,9 @@ async def get_db_session(
         AsyncSession for database operations
 
     Raises:
-        DatabaseTimeout: The database did not answer in time (a driver or
-            pool timeout escaped the session, bare or wrapped).
+        DatabaseTimeout: The database did not answer in time: a driver or pool
+            timeout, or the server's statement_timeout, escaped the session,
+            bare or wrapped.
 
     Example:
         async with get_db_session() as session:
@@ -376,18 +378,31 @@ async def get_db_session(
         await session.close()
 
 
-def _is_database_timeout(failure: BaseException) -> bool:
-    """A driver or pool timeout on ``failure``'s cause chain, not yet named.
+#: SQLSTATE ``query_canceled``: what PostgreSQL sends when its own
+#: ``statement_timeout`` cancels a statement, the first bound a live but slow
+#: server meets (set below the command timeout by the ``begin`` listener).
+QUERY_CANCELED_SQLSTATE = "57014"
 
-    The driver's command and connect timeouts arrive as a bare ``TimeoutError``
-    (SQLAlchemy does not wrap it), the pool's as ``sqlalchemy.exc.TimeoutError``.
-    One already named ``DatabaseTimeout`` (an inner session's) is left as it
-    is, so it is never wrapped twice.
+
+def _is_database_timeout(failure: BaseException) -> bool:
+    """A database timeout on ``failure``'s cause chain, not yet named.
+
+    Three shapes, each read by type or by the SQLSTATE the server sent, never by
+    message: the driver's command and connect timeouts arrive as a bare
+    ``TimeoutError`` (SQLAlchemy does not wrap it), the pool's as
+    ``sqlalchemy.exc.TimeoutError``, and the server's ``statement_timeout`` as a
+    ``DBAPIError`` carrying SQLSTATE 57014. One already named
+    ``DatabaseTimeout`` (an inner session's) is left as it is, so it is never
+    wrapped twice.
     """
     chain = list(walk_cause_chain(failure))
     if any(isinstance(cause, DatabaseTimeout) for cause in chain):
         return False
-    return any(isinstance(cause, (TimeoutError, PoolTimeoutError)) for cause in chain)
+    return any(
+        isinstance(cause, (TimeoutError, PoolTimeoutError))
+        or sqlstate(cause) == QUERY_CANCELED_SQLSTATE
+        for cause in chain
+    )
 
 
 # ============================================================

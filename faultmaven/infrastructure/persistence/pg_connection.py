@@ -34,7 +34,9 @@ imports, and a SQLite deployment runs, without it.
 **Private asyncpg API.** The connection class overrides
 ``Connection._cancel_current_command`` and sets ``_aborted`` / reads
 ``_transport``; asyncpg has no public hook that decides whether a cancel is
-sent. asyncpg stays pinned in the lockfiles, and
+sent. It also overrides ``Connection._cleanup_stmts`` (reading
+``_stmts_to_close`` and ``_protocol``), whose Close of evicted statements
+asyncpg sends with no timeout at all. asyncpg stays pinned in the lockfiles, and
 ``tests/unit/infrastructure/persistence/test_pg_connection_2280.py`` pins the
 method and the behaviour against a loopback stand-in for a frozen server, so an
 upgrade that moves them fails there.
@@ -89,6 +91,22 @@ def abort_on_cancel_connection_class() -> type:
             self._transport.abort()
             if not waiter.done():
                 waiter.set_result(None)
+
+        async def _cleanup_stmts(self) -> None:
+            """Close evicted prepared statements under the command timeout.
+
+            asyncpg's own closes them with ``NO_TIMEOUT``. It runs after a new
+            prepare whenever a statement was evicted (SQLAlchemy keeps its own
+            cache of them per connection), so a server that froze between the
+            prepare's reply and the Close's held the read unbounded. ``None``
+            is asyncpg's spelling of "the connection's command timeout": on
+            expiry it aborts the connection like any other command, and the
+            statements go with it.
+            """
+            to_close = self._stmts_to_close
+            self._stmts_to_close = set()
+            for stmt in to_close:
+                await self._protocol.close_statement(stmt, None)
 
     return AbortOnCancelConnection
 

@@ -18,6 +18,7 @@ socket options and the SQLite arm run everywhere.
 from __future__ import annotations
 
 import asyncio
+import gc
 import importlib.util
 import socket
 from types import SimpleNamespace
@@ -25,8 +26,11 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from faultmaven.config.settings import DatabaseSettings
+from faultmaven.exceptions import DatabaseTimeout
 from faultmaven.infrastructure.persistence import database, pg_connection
 from tests.silent_postgres import SilentPostgres
 from tests.utils import reset_settings_singleton
@@ -277,6 +281,15 @@ class TestTheAsyncpgHookStillExists:
         assert callable(getattr(asyncpg.Connection, "_cancel_current_command", None))
         assert {"_aborted", "_transport"} <= set(asyncpg.Connection.__slots__)
 
+    def test_the_statement_cleanup_hook_and_the_state_it_touches(self):
+        """The abort class also overrides ``_cleanup_stmts`` and reads
+        ``_stmts_to_close`` and ``_protocol``; renamed, the override would be
+        dead and asyncpg's unbounded Close back in force."""
+        import asyncpg
+
+        assert callable(getattr(asyncpg.Connection, "_cleanup_stmts", None))
+        assert {"_stmts_to_close", "_protocol"} <= set(asyncpg.Connection.__slots__)
+
 
 # ============================================================
 # Against a server that stops answering
@@ -350,6 +363,153 @@ class TestAgainstASilentServer:
             assert conn.is_closed()
             assert server.cancel_requests == 0
         await _settle(leftovers)
+
+
+async def _queue_a_statement_for_close(conn) -> None:
+    """Prepare a named statement and drop it: asyncpg queues its Close, sent
+    after the next prepare (what SQLAlchemy's statement-cache eviction does)."""
+    statement = await conn.prepare("SELECT 1")
+    del statement
+    gc.collect()
+    assert conn._stmts_to_close, "positive control: a Close is queued"
+
+
+@requires_asyncpg
+class TestAnEvictedStatementsClose:
+    """asyncpg closes evicted prepared statements with no timeout at all. A
+    server that froze between a prepare's reply and that Close held the read
+    with no bound, whatever the command timeout."""
+
+    async def test_the_stock_connection_waits_on_the_close_unbounded(self):
+        import asyncpg
+
+        leftovers = []
+        async with SilentPostgres(answer_prepares=True) as server:
+            conn = await _connect(server, asyncpg.Connection, "command_timeout")
+            await _queue_a_statement_for_close(conn)
+
+            prepare, done = await _outcome(conn.prepare("SELECT 2"), within=1.0)
+            leftovers.append(prepare)
+
+            assert server.closes == 1
+            assert not done, "the Close waited past five command timeouts"
+        await _settle(leftovers)
+        conn.terminate()
+
+    async def test_the_abort_connection_bounds_it_by_the_command_timeout(self):
+        leftovers = []
+        async with SilentPostgres(answer_prepares=True) as server:
+            conn = await _connect(
+                server,
+                pg_connection.abort_on_cancel_connection_class(),
+                "command_timeout",
+            )
+            await _queue_a_statement_for_close(conn)
+
+            prepare, done = await _outcome(conn.prepare("SELECT 2"), within=1.0)
+            leftovers.append(prepare)
+            await asyncio.sleep(0.2)  # room for a CancelRequest to arrive, if sent
+
+            assert server.closes == 1
+            assert done, "the Close is still waiting"
+            assert isinstance(prepare.exception(), TimeoutError)
+            assert conn.is_closed()
+            assert server.cancel_requests == 0
+        await _settle(leftovers)
+
+
+# ============================================================
+# A database timeout is named at the session
+# ============================================================
+
+
+class _DriverError(Exception):
+    """A driver exception carrying the SQLSTATE PostgreSQL sent."""
+
+    def __init__(self, code):
+        super().__init__("driver")
+        self.sqlstate = code
+
+
+def _dbapi_error(driver_error) -> DBAPIError:
+    """The shape SQLAlchemy's asyncpg dialect raises: the driver's exception is
+    ``orig.__cause__`` (``db_errors``' two hops)."""
+    orig = Exception("dbapi")
+    orig.__cause__ = driver_error
+    return DBAPIError("SELECT pg_sleep(5)", {}, orig)
+
+
+def _wrapped_by_a_repository(exc: BaseException) -> Exception:
+    """As every case repository does: ``RepositoryException(...) from e``."""
+    try:
+        raise exc
+    except BaseException as cause:
+        try:
+            raise RuntimeError("Failed to get case") from cause
+        except RuntimeError as wrapper:
+            return wrapper
+
+
+async def _out_of_a_session(exc: BaseException) -> BaseException:
+    database.get_engine("sqlite+aiosqlite:///:memory:")
+    with pytest.raises(BaseException) as raised:
+        async with database.get_db_session():
+            raise exc
+    return raised.value
+
+
+class TestADatabaseTimeoutIsNamed:
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(lambda: TimeoutError(), id="the driver's timeout"),
+            pytest.param(lambda: PoolTimeoutError("pool"), id="the pool's timeout"),
+            pytest.param(
+                lambda: _dbapi_error(_DriverError("57014")),
+                id="the server's statement_timeout",
+            ),
+            pytest.param(
+                lambda: _wrapped_by_a_repository(_dbapi_error(_DriverError("57014"))),
+                id="the server's statement_timeout, wrapped",
+            ),
+        ],
+    )
+    async def test_each_shape_comes_out_as_a_database_timeout(
+        self, database_env, fresh_engine, make
+    ):
+        original = make()
+        raised = await _out_of_a_session(original)
+
+        assert isinstance(raised, DatabaseTimeout)
+        assert raised.__cause__ is original
+
+    @requires_asyncpg
+    async def test_asyncpgs_own_query_canceled_error(self, database_env, fresh_engine):
+        import asyncpg
+
+        cancelled = asyncpg.exceptions.QueryCanceledError(
+            "canceling statement due to statement timeout"
+        )
+        raised = await _out_of_a_session(_dbapi_error(cancelled))
+
+        assert isinstance(raised, DatabaseTimeout)
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(lambda: RuntimeError("a bug"), id="not the database's"),
+            pytest.param(
+                lambda: _dbapi_error(_DriverError("23505")), id="another SQLSTATE"
+            ),
+            pytest.param(lambda: DatabaseTimeout("already named"), id="already named"),
+        ],
+    )
+    async def test_anything_else_passes_through_as_itself(
+        self, database_env, fresh_engine, make
+    ):
+        original = make()
+
+        assert await _out_of_a_session(original) is original
 
 
 @requires_asyncpg

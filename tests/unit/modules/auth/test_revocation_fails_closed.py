@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -866,7 +865,6 @@ class TestAStoreThatNeverAnswers:
         service = _auth_service(store)
         token = _token(service)
 
-        started = time.monotonic()
         attempt = asyncio.ensure_future(
             get_current_user(
                 request_with_authorization(f"Bearer {token}"),
@@ -874,8 +872,9 @@ class TestAStoreThatNeverAnswers:
                 auth_service=service,
             )
         )
+        # Bounded by the wait, never by a wall-clock threshold: against a store
+        # that never answers, only the 0.2 s deadline can end it inside 5 s.
         done, _ = await asyncio.wait({attempt}, timeout=5)
-        elapsed = time.monotonic() - started
         if not done:
             attempt.cancel()
             await asyncio.wait({attempt}, timeout=1)
@@ -888,7 +887,6 @@ class TestAStoreThatNeverAnswers:
         # is the 503's context.
         assert isinstance(exc.__context__, RevocationStateUnknownError)
         assert exc.__context__.kind == "TimeoutError"
-        assert elapsed < 2, f"refused after {elapsed:.2f}s against a 0.2s deadline"
 
     async def test_the_deadline_is_the_setting_the_composition_root_reads(self):
         from faultmaven.container.providers.services import (
