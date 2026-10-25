@@ -46,7 +46,11 @@ dependencies = [
     "tiktoken>=0.5.0",
 
     # Database (SQLite in base, PostgreSQL drivers in cloud)
-    "sqlalchemy>=2.0.0",
+    # >=2.0.55: the pool closes a new connection whose `connect` events raise
+    # (sqlalchemy#13548 in 2.0.53, its cancellation regression #13678 in
+    # 2.0.55). Before it, a turn cancelled during SQLite's per-checkout setup
+    # orphaned the connection and its worker thread (fm#2250).
+    "sqlalchemy>=2.0.55",
     "alembic>=1.13.0",
     "aiosqlite>=0.19.0",
 

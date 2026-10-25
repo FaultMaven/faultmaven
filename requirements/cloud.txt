@@ -717,7 +717,7 @@ spacy-legacy==3.0.12
     # via spacy
 spacy-loggers==1.0.5
     # via spacy
-sqlalchemy==2.0.49
+sqlalchemy==2.0.55
     # via
     #   faultmaven (pyproject.toml)
     #   alembic
