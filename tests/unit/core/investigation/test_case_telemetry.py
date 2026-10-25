@@ -525,8 +525,8 @@ def test_stream_survives_a_root_logger_raised_above_info(caplog):
 
 
 def test_fields_ride_on_the_record_for_the_json_formatter(caplog):
-    """``extra=`` is how the structlog ``ProcessorFormatter`` (via ``ExtraAdder``)
-    renders these as top-level JSON keys, so the payload has to be ON the record
+    """``extra=`` is how the structlog ``ProcessorFormatter`` (via
+    ``lift_record_extra``) renders these as top-level JSON keys, so the payload has to be ON the record
     rather than interpolated into the message."""
     with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
         emit_case_turn(

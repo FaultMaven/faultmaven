@@ -119,7 +119,8 @@ logger = logging.getLogger(TELEMETRY_LOGGER_NAME)
 # Pinned, and propagation left ON. Pinning the level makes the stream immune to
 # the root level; leaving propagation on means it renders through the one root
 # handler (the structlog ``ProcessorFormatter``, which merges ``extra`` via
-# ``ExtraAdder``) rather than needing a second handler that could double-emit.
+# ``lift_record_extra``, ``event`` included) rather than needing a second
+# handler that could double-emit.
 logger.setLevel(logging.INFO)
 
 _diag = logging.getLogger(__name__)

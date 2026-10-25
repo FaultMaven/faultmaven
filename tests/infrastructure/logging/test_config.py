@@ -10,13 +10,11 @@ import pytest
 import structlog
 
 from faultmaven.infrastructure.logging.config import (
-    _FORMATTER_KEYS,
     NOISY_THIRD_PARTY_LOGGERS,
     FaultMavenLogger,
     LateBindingStreamHandler,
     LoggingConfig,
     get_logger,
-    lift_stdlib_extra,
 )
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 
@@ -291,6 +289,76 @@ class TestFaultMavenLogger:
         assert "Traceback" not in line
         assert "Stack (most recent call last)" not in line
         assert directive in line, "the caller's value was dropped"
+
+    @pytest.mark.parametrize(
+        "key",
+        ["exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"],
+    )
+    def test_every_key_the_formatter_acts_on_stays_caller_data(self, key):
+        """Listed here, not read from the constant, so that cutting a key from
+        ``_FORMATTER_KEYS`` fails this test: lifted, each would trigger a
+        traceback or stack, be overwritten, or vanish (#2262, #2268)."""
+        import json
+
+        line = self._rendered(
+            lambda: structlog.get_logger("faultmaven.tests.lift_2268").info(
+                "handled", extra={key: "caller data", "note": "kept"}
+            )
+        )
+        record = json.loads(line)
+        assert record["extra"] == {key: "caller data"}
+        assert record["note"] == "kept"
+
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_callers_own_field_wins_over_a_context_stamp(self, path):
+        """A route's own ``correlation_id`` (the one its 500 body names) is the
+        line's, as a record's own field is wherever the context only fills in."""
+        import json
+
+        coordinator = LoggingCoordinator()
+        coordinator.start_request()
+        try:
+            line = self._rendered(
+                lambda: _log_through(
+                    path,
+                    "faultmaven.tests.attribution_2268",
+                    "failed",
+                    {"correlation_id": "route-minted"},
+                )
+            )
+        finally:
+            coordinator.end_request()
+
+        record = json.loads(line)
+        assert record["correlation_id"] == "route-minted"
+        assert "extra" not in record
+
+    def test_a_stdlib_lines_event_name_is_the_callers(self):
+        """The case-telemetry stream names each line by ``extra={"event": ...}``
+        on a stdlib logger, and a structured consumer keys on it."""
+        import json
+
+        line = self._rendered(
+            lambda: logging.getLogger("faultmaven.tests.telemetry_2268").info(
+                "case-telemetry case=c turn=3", extra={"event": "case_turn"}
+            )
+        )
+        assert json.loads(line)["event"] == "case_turn"
+
+    @pytest.mark.parametrize("path", ["native", "stdlib"])
+    def test_a_callers_level_never_replaces_the_records(self, path):
+        """The logger's own facts are not the caller's to replace; on the
+        stdlib path ``extra={"level": "top"}`` used to (#2268)."""
+        import json
+
+        line = self._rendered(
+            lambda: _log_through(
+                path, "faultmaven.tests.level_2268", "parsed", {"level": "top"}
+            )
+        )
+        record = json.loads(line)
+        assert record["level"] == "info"
+        assert record["extra"] == {"level": "top"}
 
     def test_reconfigure_preserves_foreign_root_handlers(self, caplog):
         """Re-running configuration mid-process must NOT drop foreign root
@@ -912,15 +980,3 @@ class TestSingletonBehavior:
 
             # FaultMavenLogger should be instantiated only once
             assert mock_logger_class.call_count == 1
-
-
-@pytest.mark.parametrize("key", sorted(_FORMATTER_KEYS))
-def test_every_key_the_formatter_acts_on_stays_under_extra(key):
-    """Each reserved key is kept as data under ``extra``, never lifted where the
-    formatter would act on it or overwrite it (#2262, pinned whole by #2268)."""
-    event = lift_stdlib_extra(
-        None, "info", {"event": "x", "extra": {key: "caller data", "note": "kept"}}
-    )
-    assert key not in event
-    assert event["extra"] == {key: "caller data"}
-    assert event["note"] == "kept"

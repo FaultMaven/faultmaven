@@ -285,8 +285,8 @@ class KbPrefetcher:
                 # re-running the case. Emitted twice on purpose: in the message
                 # for a human reading a log, and under ``extra`` as separate
                 # fields for a structured consumer (the root handler is
-                # structlog's ProcessorFormatter with ExtraAdder, so these land
-                # as top-level keys on the JSON line).
+                # structlog's ProcessorFormatter, whose lift_record_extra lands
+                # these as top-level keys on the JSON line).
                 _kb_ids = [
                     str(r.get("parent_document_id") or "") for r in case.kb_context
                 ]
