@@ -58,8 +58,9 @@ _FORMATTER_KEYS = frozenset(
 
 
 #: Keys a caller's ``extra`` never replaces when the event already holds them:
-#: the logger's own facts, and the request's verified principal (``user_id`` is
-#: stamped only when verified). The formatter's keys are never lifted at all.
+#: the logger's own facts, and a ``user_id`` (the request context stamps one
+#: only when verified; a native keyword ``user_id`` is held the same way). The
+#: formatter's keys are never lifted at all.
 _UNREPLACEABLE_KEYS = frozenset({"level", "logger", "timestamp", "user_id"})
 
 
@@ -76,7 +77,9 @@ def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
     The exceptions are the logger's own facts, a ``user_id`` the event already
     holds, and the keys the formatter acts on (a traceback directive) or writes:
     a caller's value for one of those stays under ``extra``, beside whatever the
-    caller passed as ``extra`` itself (#2262, #2268).
+    caller passed as ``extra`` itself (#2262, #2268). One is lost instead: on
+    the stdlib path a caller's ``_record`` never reaches this function, since
+    the record's attribute of that name is where structlog keeps the record.
     """
     kept = {}
     for key, value in fields.items():
