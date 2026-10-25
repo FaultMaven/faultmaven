@@ -53,7 +53,11 @@ graph TD
 ```python
 import pytest
 from unittest.mock import Mock, patch
-from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator, RequestContext
+from faultmaven.infrastructure.logging.coordinator import (
+    LoggingCoordinator,
+    RequestContext,
+    request_context,
+)
 
 class TestLoggingCoordinator:
     """Unit tests for LoggingCoordinator."""
@@ -105,24 +109,22 @@ class TestLoggingCoordinator:
         # Execute
         coordinator.end_request()
 
-        # Verify
-        assert coordinator.context is None
+        # Verify: the request lives in the per-task ContextVar, never on the
+        # coordinator (#2293), and ending the request clears it
+        assert request_context.get() is None
 
-    @patch('faultmaven.infrastructure.logging.coordinator.request_context')
-    def test_context_variable_management(self, mock_context_var, coordinator):
+    def test_context_variable_management(self, coordinator):
         """Test context variable is properly managed."""
-        # Setup
-        mock_context_var.set = Mock()
-        mock_context_var.get = Mock(return_value=None)
-
         # Execute
         context = coordinator.start_request()
-        coordinator.end_request()
 
-        # Verify context variable interactions
-        assert mock_context_var.set.call_count == 2  # Set context, then clear
-        mock_context_var.set.assert_any_call(context)
-        mock_context_var.set.assert_any_call(None)
+        # Verify: start_request sets the context variable...
+        assert request_context.get() is context
+
+        # ...and end_request reads it back, summarizes it and clears it
+        summary = coordinator.end_request()
+        assert summary["correlation_id"] == context.correlation_id
+        assert request_context.get() is None
 ```
 
 ### 2. Testing RequestContext Deduplication
