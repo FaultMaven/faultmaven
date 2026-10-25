@@ -1,6 +1,6 @@
 # FaultMaven Test Suite
 
-Comprehensive test suite with 140+ test files organized for CI/CD pipelines.
+Comprehensive test suite organized for CI/CD pipelines.
 
 ## Directory Structure
 
@@ -8,22 +8,25 @@ Comprehensive test suite with 140+ test files organized for CI/CD pipelines.
 tests/
 ├── conftest.py              # Shared fixtures and test configuration
 ├── utils.py                 # Test utilities (ID generators, helpers)
-├── unit/                    # Unit tests (~100 files)
+├── unit/                    # Unit tests
 │   ├── api/                 # API layer tests (routes, middleware, models)
 │   ├── architecture/        # Architecture validation tests
+│   ├── bootstrap/           # Startup: migrations gate, KB pack ingestion, lifespan
+│   ├── ci/                  # CI gates: docs-only classifier, benchmark calibration
+│   ├── cli/                 # Operator console (fm-*) commands
 │   ├── config/              # Configuration and settings tests
 │   ├── container/           # Dependency injection container tests
-│   ├── core/                # Core domain logic tests
+│   ├── core/                # Core domain logic tests (investigation engine, prompts)
 │   ├── infrastructure/      # Infrastructure adapter tests
-│   ├── investigation/       # Investigation engine tests
+│   ├── jobs/                # Background job tests
 │   ├── models/              # Domain model tests
-│   ├── modules/             # Feature module tests (agent, evidence)
-│   ├── prompts/             # Prompt template tests
+│   ├── modules/             # Feature module tests (agent and its tools, auth, case, evidence, knowledge, preprocessing, report)
 │   ├── providers/           # Provider implementation tests
+│   ├── scripts/             # Dev and maintenance script tests
+│   ├── security/            # Security tests
 │   ├── services/            # Service layer tests
-│   ├── tools/               # Agent tool tests
 │   └── utils/               # Utility function tests
-├── integration/             # Integration tests (~25 files)
+├── integration/             # Integration tests
 │   ├── api/                 # API integration tests
 │   ├── conftest.py          # Integration-specific fixtures
 │   ├── mock_servers.py      # get_free_port(), for tests that serve on loopback
@@ -115,7 +118,7 @@ The test runner supports predefined CI/CD pipeline configurations:
 | `unit` | Unit tests |
 | `integration` | Integration tests |
 | `slow` | Long-running tests (the required Test Standalone/Test Cloud jobs run them; `scripts/tests.py --ci` skips them) |
-| `enterprise` | Requires Redis, PostgreSQL, etc. |
+| `cloud` | Cloud tests requiring Redis, PostgreSQL |
 | `security` | Security-focused tests |
 | `benchmark` | Performance benchmarks |
 | `performance` | Wall-clock tests: `tests/performance` and the defensive growth checks (excluded from the required jobs; run in `benchmarks.yml`) |
@@ -193,9 +196,20 @@ async def test_with_container(reset_container):
     service = reset_container.get_agent_service()
     assert service is not None
 
-def test_with_sample_data(sample_case, sample_session_context):
-    """Test with pre-built sample data."""
-    assert sample_case.case_id.startswith("case_")
+def test_with_started_app(booted_app_client):
+    """Test against the started app, shared by the module's tests."""
+    assert booted_app_client.get("/health").status_code == 200
+```
+
+Sample data comes from plain keyword-override builders, not fixtures:
+
+```python
+from tests.case_builders import inquiry_case
+
+def test_with_sample_data():
+    """Test with a pre-built case (tests/case_builders.py)."""
+    case = inquiry_case(statement="Pods crash on start")
+    assert case.case_id.startswith("case_")
 ```
 
 ### Async Tests
@@ -212,13 +226,15 @@ async def test_async_operation():
 ### Parameterized Tests
 
 ```python
+from faultmaven.infrastructure.llm.providers.registry import configuration_env_var
+
 @pytest.mark.parametrize("provider,expected", [
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
-    ("fireworks", "Fireworks"),
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("fireworks", "FIREWORKS_API_KEY"),
 ])
-def test_provider_names(provider, expected):
-    assert get_provider_name(provider) == expected
+def test_provider_env_vars(provider, expected):
+    assert configuration_env_var(provider) == expected
 ```
 
 ## Troubleshooting

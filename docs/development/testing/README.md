@@ -63,10 +63,10 @@ pytest
 pytest --cov=faultmaven --cov-report=html
 
 # Run specific test file
-pytest tests/unit/test_example.py
+pytest tests/unit/test_container_integration_comprehensive.py
 
 # Run specific test class or method
-pytest tests/unit/test_example.py::TestClass::test_method
+pytest tests/unit/test_container_integration_comprehensive.py::TestContainerSingleton::test_container_singleton_pattern
 
 # Run tests with verbose output
 pytest -v
@@ -111,27 +111,29 @@ Read the raw data, as the snippet does. `coverage report` and `coverage json` ke
 
 ```python
 import pytest
-from faultmaven.services.example_service import ExampleService
 
-class TestExampleService:
-    """Tests for ExampleService"""
+from faultmaven.models.api import DataType
+from faultmaven.modules.preprocessing.classifier import DataClassifier
+
+class TestDataClassifier:
+    """Tests for DataClassifier"""
 
     @pytest.fixture
-    def service(self):
-        """Fixture providing ExampleService instance"""
-        return ExampleService()
+    def classifier(self):
+        """Fixture providing DataClassifier instance"""
+        return DataClassifier()
 
-    def test_example_method_success(self, service):
-        """Test example_method with valid input"""
+    def test_classify_log_line(self, classifier):
+        """Test classify with a log line"""
         # Arrange
-        input_data = {"key": "value"}
+        content = "2024-08-28 10:00:01 ERROR Database connection timeout"
 
         # Act
-        result = service.example_method(input_data)
+        result = classifier.classify("app.log", content)
 
         # Assert
-        assert result.success is True
-        assert result.data == expected_output
+        assert result.data_type == DataType.LOGS_AND_ERRORS
+        assert result.classification_failed is False
 ```
 
 ## Testing Requirements
@@ -176,10 +178,10 @@ tests/
 │   └── utils/             # Utility function tests
 ├── integration/           # Tests with real dependencies
 │   ├── api/               # API endpoint tests
-│   ├── database/          # Database integration tests
-│   └── external/          # External service integration
-└── performance/           # Performance and load tests
-    └── locust/            # Locust performance tests
+│   ├── modules/           # Module integration tests (agent, auth, case, knowledge)
+│   └── real_llm/          # Opt-in tests against a live LLM provider
+├── performance/           # Wall-clock tests (latency, throughput, overhead), against performance/budgets.py
+└── load/                  # Locust load tests (locustfile.py)
 ```
 
 ## Common Testing Scenarios
@@ -198,32 +200,47 @@ async def test_async_function():
 ### Mocking External Services
 
 ```python
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-@patch('faultmaven.services.external_service.ExternalAPI')
+# Placeholders: `your_module`, `ExternalAPI` and `service_using_api` stand for
+# the module under test, the client class it imports, and its entry point.
+# Patch the name where the module under test looks it up.
+@patch('your_module.ExternalAPI')
 def test_with_mocked_service(mock_api):
     mock_api.return_value.fetch_data.return_value = {"data": "mocked"}
     result = service_using_api()
-    assert result == expected
+    assert result == {"data": "mocked"}
 ```
 
 ### Testing Database Operations
 
 ```python
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from faultmaven.infrastructure.persistence.models import Base, EnterpriseModel
+
 @pytest.fixture
 async def db_session():
-    """Fixture providing test database session"""
-    async with AsyncSessionLocal() as session:
-        yield session
-        await session.rollback()  # Rollback after each test
+    """Fixture providing a session on a throwaway in-memory SQLite, one per test"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        yield session  # nothing to roll back: the database goes with its engine
+    await engine.dispose()
 
 async def test_database_operation(db_session):
     # Test database operation
-    entity = Entity(name="test")
+    entity = EnterpriseModel(enterprise_id="ent_test", name="test", slug="test")
     db_session.add(entity)
     await db_session.flush()
 
-    assert entity.id is not None
+    name = await db_session.scalar(
+        select(EnterpriseModel.name).where(EnterpriseModel.enterprise_id == "ent_test")
+    )
+    assert name == "test"
 ```
 
 ## Related Documentation

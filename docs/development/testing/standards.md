@@ -28,17 +28,11 @@ This document establishes the new testing architecture and standards for FaultMa
 - Verify cross-layer communication
 - Test error propagation and coordination
 
-#### **API Tests** (`tests/api/`)
+#### **API Tests** (`tests/unit/api/`, `tests/integration/api/`)
 - Test HTTP endpoints with real service layer
 - Mock only infrastructure dependencies
 - Verify request/response contracts
 - Test authentication and validation
-
-#### **End-to-End Tests** (`tests/e2e/`)
-- Full system workflow testing
-- Minimal mocking of external systems
-- Real database/cache integration where feasible
-- User journey validation
 
 #### **Real-LLM Integration Tests** (`tests/integration/real_llm/`)
 
@@ -231,25 +225,59 @@ async def test_request_lifecycle_coordination(
 
 ### **Real Business Logic Testing**
 ```python
-class TestAgentService:
-    """Test agent service with real AI processing flow."""
+from unittest.mock import create_autospec
 
-    async def test_troubleshooting_workflow(self, agent_service):
-        """Test complete troubleshooting workflow."""
-        # Use real service with mocked LLM only
-        request = TroubleshootingRequest(
-            query="Database timeout errors",
-            context={"environment": "production"}
+import pytest
+
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.agent.tools.base import AgentToolRegistry
+from faultmaven.modules.case.contracts import ICaseRepository
+from tests.case_builders import investigating_case
+
+
+class TestMilestoneEngine:
+    """Test the investigation engine with the real turn flow."""
+
+    @pytest.fixture
+    def engine(self):
+        """The real engine on specced dependencies: the provider and the case
+        repository by their interfaces. The tool registry is typed `Any` and
+        has no interface, a known gap, so it is specced on its class. The one
+        stub is the structured-output call, autospecced on the real method and
+        returning a real response schema."""
+        engine = MilestoneEngine(
+            create_autospec(ILLMProvider, instance=True),
+            create_autospec(ICaseRepository, instance=True),
+            investigation_tools=create_autospec(AgentToolRegistry, instance=True),
         )
+        engine.generator.generate_structured_output = create_autospec(
+            engine.generator.generate_structured_output,
+            return_value=InvestigationResponse_Diagnosis.model_validate(
+                {"agent_response": "Check the pool size next.", "state_updates": {}}
+            )
+        )
+        return engine
+
+    async def test_troubleshooting_workflow(self, engine):
+        """Test complete troubleshooting workflow."""
+        # Real engine logic; no LLM is reached
+        case = investigating_case(statement="Database timeout errors", current_turn=1)
 
         # Execute real business logic
-        response = await agent_service.process_query(request)
+        result = await engine.process_turn(
+            case=case, user_message="Connections time out", redaction_ctx=None
+        )
 
         # Verify business outcomes
-        assert response.findings
-        assert response.confidence_score > 0.5
-        assert response.recommendations
+        assert result["agent_response"] == "Check the pool size next."
+        assert result["case_updated"].turn_history[-1].turn_number == 1
 ```
+
+`tests/unit/core/investigation/test_narration_overclaim_apply.py` also drives
+`process_turn` with only the LLM seam and persistence stubbed, though on
+unspecced mocks, which this guide no longer recommends.
 
 ### **Error Handling Integration**
 ```python
@@ -299,26 +327,19 @@ class TestExternalClientIntegration:
 ## **Performance Testing Integration**
 
 ### **Real Performance Measurement**
-```python
-@pytest.mark.performance
-async def test_operation_performance(self, service):
-    """Test actual operation performance."""
-    import time
 
-    start_time = time.time()
-
-    results = await asyncio.gather(*[
-        service.process_data(f"test_{i}")
-        for i in range(100)
-    ])
-
-    duration = time.time() - start_time
-
-    # Verify performance requirements
-    assert len(results) == 100
-    assert duration < 5.0  # 100 operations in under 5 seconds
-    assert all(result.success for result in results)
-```
+Never compare a duration against a literal.
+`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and accepts
+these routes (and the exemptions it names): a latency or a rate through `assert_latency_within` /
+`assert_throughput_at_least` (`tests/wallclock`) against a `budgets.py` row
+(`tests/performance/`, `tests/benchmarks/`), a growth question through
+`assert_linear_growth`, a deadline question onto `VirtualTimeLoop`, or a
+measurement that is not a clock. `tests/performance/` takes each statistic over
+several windows (`tests/wallclock/sampling.py`), but for one order-statistic test
+the guard names; `tests/benchmarks/` times
+through `measure_min_latency` (`tests/benchmarks/conftest.py`). The worked
+example is pattern 6 in [patterns.md](patterns.md); the method, and which
+instrument answers which question, is in [performance.md](performance.md).
 
 ---
 
@@ -377,8 +398,8 @@ with patch('service.component_a') as mock_a:
         with patch('service.logger') as mock_log:
             # Test becomes meaningless
 
-# Good: Mock only boundaries
-external_api_mock = Mock()
+# Good: Mock only boundaries, specced on the boundary's interface
+external_api_mock = create_autospec(ExternalAPI, instance=True)
 service = ServiceClass(external_api=external_api_mock)
 result = service.real_business_logic(data)
 ```

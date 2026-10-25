@@ -71,7 +71,6 @@ Integration test configuration and fixtures:
 - **Interface Compliance**: Real-world validation that implementations meet interface contracts
 - **Error Propagation**: Errors flow correctly across layer boundaries with proper recovery
 - **Context Propagation**: Request context and correlation IDs maintained across container services
-- **Performance Characteristics**: Container overhead validation and service performance testing
 
 ## Running Integration Tests - New Architecture
 
@@ -208,7 +207,6 @@ New integration tests should focus on:
 4. **End-to-End Architecture Workflows**: Complete user scenarios through all architectural layers
 5. **Settings Integration**: Testing configuration propagation through container to services
 6. **Error Handling Integration**: Cross-layer error propagation and graceful degradation
-7. **Performance Integration**: Container overhead and cross-layer performance characteristics
 
 ### Maintenance Philosophy - New Architecture
 

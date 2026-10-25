@@ -16,55 +16,64 @@ FaultMaven's testing architecture follows Clean Architecture principles with the
 
 1. **Layer Isolation**: Tests are organized by architectural layer (API, Service, Core, Infrastructure)
 2. **Dependency Direction**: Dependencies always point inward toward the core domain
-3. **Interface Contracts**: All dependencies are injected through interfaces, not concrete implementations
-4. **Container-Based Resolution**: All services are resolved through the dependency injection container
+3. **Interface Contracts**: Dependencies are typed against interfaces, and tests mock those interfaces, not concrete providers
+4. **Container-Based Resolution**: The application resolves its services through the dependency injection container; a unit test builds its unit directly, on mocked dependencies
 5. **Mock External Boundaries**: Only mock at system boundaries (external APIs, databases, file systems)
 
 ### Container-Based Testing Strategy
 
-All tests use the FaultMaven dependency injection container for:
+Tests whose subject is the composition use the FaultMaven dependency injection container for:
 
-- **Service Resolution**: All services obtained through `container.get_*_service()` methods
+- **Service Resolution**: Services obtained through `container.get_*_service()` methods, after `await container.initialize()`
 - **Clean State Management**: `container.reset()` ensures isolation between tests
 - **Interface Injection**: Dependencies injected as interfaces for proper abstraction
-- **Mock Integration**: Test-specific mocks integrated through container patterns
-- **Lifecycle Management**: Proper initialization and cleanup of container services
+- **Mock Integration**: Mocks are passed to the unit under test's constructor, never set on the container
+- **Lifecycle Management**: `initialize()` composes, `shutdown()` closes what it opened (the `reset_container` fixture shuts down after the test)
 
 ## Comprehensive Test Architecture
 
 ### 1. LLM Registry Testing (`test_llm_registry_comprehensive.py`)
 
-**Coverage**: 37+ tests across 7 test classes
-**Focus**: Centralized 7-provider management with fallback chains
+**Coverage**: 52 tests across 8 test classes (`tests/infrastructure/`)
+**Focus**: Centralized 9-provider management with fallback chains
 
 #### Test Classes Overview
 
 ```python
 class TestProviderRegistryInitialization:
-    """Registry initialization patterns (4 tests)"""
-    def test_singleton_initialization(self)
-    def test_lazy_provider_loading(self)
-    def test_registry_reset_isolation(self)
-    def test_concurrent_initialization_safety(self)
+    """Registry initialization patterns (5 tests)"""
+    def test_registry_singleton(self)
+    def test_registry_reset(self)
+    def test_lazy_initialization(self)
+    def test_initialization_without_settings(self)
+    def test_initialization_with_mock_settings(self, clean_env)
 
 class TestProviderConfiguration:
-    """Schema-driven configuration (8 tests)"""
-    def test_provider_schema_validation(self)
-    def test_environment_based_provider_registration(self)
-    def test_provider_priority_ordering(self)
-    def test_api_key_based_provider_activation(self)
-    def test_model_configuration_validation(self)
-    def test_provider_capability_detection(self)
-    def test_invalid_provider_configuration_handling(self)
-    def test_provider_schema_completeness_validation(self)
+    """Schema-driven configuration (11 tests)"""
+    def test_provider_schema_completeness(self)
+    def test_get_valid_provider_names(self)
+    def test_provider_config_creation_with_api_key(self)
+    def test_provider_config_creation_without_api_key(self)
+    def test_local_provider_config_creation(self)
+    def test_local_provider_missing_requirements(self)
+    def test_per_provider_override_takes_precedence_over_global_default(self)
+    def test_schema_timeout_wins_over_provider_override(self)
+    def test_no_override_falls_through_to_global_default(self)
+    def test_provider_initialization_success(self, clean_env, mock_provider_classes)
+    def test_provider_initialization_failure(self, clean_env)
 
 class TestFallbackChain:
-    """Multi-provider fallback behavior (5 tests)"""
-    def test_primary_provider_selection(self)
-    def test_automatic_fallback_on_failure(self)
-    def test_fallback_chain_ordering(self)
-    def test_fallback_exhaustion_handling(self)
-    def test_provider_recovery_after_failure(self)
+    """Multi-provider fallback behavior (10 tests)"""
+    def test_fallback_chain_setup_primary_available(self, mock_provider_classes)
+    def test_fallback_chain_setup_primary_unavailable(self, clean_env, mock_provider_classes)
+    def test_invalid_primary_provider_fallback(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_success_first_provider(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_fallback_on_failure(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_all_providers_fail(self, mock_provider_classes)
+    async def test_route_request_confidence_threshold(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_skips_confidence_check_when_tools_present(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_without_tools_still_filters_by_confidence(self, clean_env, sample_env_vars, mock_provider_classes)
+    async def test_route_request_best_low_confidence_includes_zero(self, clean_env, sample_env_vars, mock_provider_classes)
 ```
 
 #### Key Testing Patterns
@@ -73,58 +82,64 @@ class TestFallbackChain:
 ```python
 def test_provider_fallback_chain():
     """Test multi-provider fallback behavior."""
-    registry = get_provider_registry()
-    registry.reset()  # Clean state
+    from faultmaven.config.settings import reset_settings
+    from faultmaven.infrastructure.llm.providers.registry import (
+        get_registry,
+        reset_registry,
+    )
 
     # Configure multiple providers
     with patch.dict(os.environ, {
         'CHAT_PROVIDER': 'openai',
+        'STRICT_PROVIDER_MODE': 'false',  # the default is the primary alone
         'OPENAI_API_KEY': 'sk-test',
         'FIREWORKS_API_KEY': 'fw-test',
         'ANTHROPIC_API_KEY': 'claude-test'
     }):
-        # Test primary provider selection
-        primary = registry.get_primary_provider()
-        assert primary.name == 'openai'
+        # Clean state: the registry reads the settings when it is built
+        reset_settings()
+        reset_registry()
+        try:
+            registry = get_registry()
 
-        # Test fallback chain
-        fallback_chain = registry.get_fallback_chain()
-        assert len(fallback_chain) >= 2
-        assert 'fireworks' in [p.name for p in fallback_chain]
+            # Test primary provider selection: the chain starts with it
+            fallback_chain = registry.get_fallback_chain()
+            assert fallback_chain[0] == 'openai'
 
-        # Test provider availability
-        available = registry.get_available_providers()
-        assert len(available) == 3  # openai, fireworks, anthropic
+            # Test fallback chain (provider names)
+            assert len(fallback_chain) >= 2
+            assert 'fireworks' in fallback_chain
+
+            # Test provider availability
+            available = registry.get_available_providers()
+            assert {'openai', 'fireworks', 'anthropic'} <= set(available)
+        finally:
+            reset_registry()
+            reset_settings()
 ```
 
 ### 2. Container Integration Testing (`test_container_integration_comprehensive.py`)
 
-**Coverage**: 38+ tests across 9 test classes
+**Coverage**: 18 tests across 8 test classes (`tests/unit/`)
 **Focus**: Complete dependency injection container system
 
 #### Test Classes Overview
 
 ```python
 class TestContainerSingleton:
-    """Singleton pattern validation (4 tests)"""
-    def test_container_singleton_instance(self)
-    def test_container_state_persistence(self)
-    def test_container_reset_cleanup(self)
-    def test_container_thread_safety(self)
+    """Singleton pattern validation (2 tests)"""
+    def test_container_singleton_pattern(self)
+    def test_container_reset_creates_new_instance(self)
 
 class TestServiceLifecycleManagement:
-    """Service creation and lifecycle (4 tests)"""
-    def test_service_lazy_initialization(self)
-    def test_service_singleton_behavior(self)
-    def test_service_dependency_resolution(self)
-    def test_service_cleanup_on_container_reset(self)
+    """Service creation and lifecycle (1 test)"""
+    async def test_graceful_degradation_without_interfaces(self, clean_env)
 
 class TestInterfaceResolutionAndInjection:
-    """Dependency injection patterns (4 tests)"""
-    def test_interface_to_implementation_mapping(self)
-    def test_dependency_injection_chain(self)
-    def test_circular_dependency_detection(self)
-    def test_interface_compliance_validation(self)
+    """Dependency injection patterns (3 tests)"""
+    def test_service_getter_methods(self, clean_env, mock_services)
+    def test_service_getter_never_initializes(self, clean_env)
+    def test_infrastructure_provider_getters(self, clean_env, mock_services)
 ```
 
 #### Key Testing Patterns
@@ -165,27 +180,26 @@ async def test_service_lifecycle_management():
 **Focus**: FastAPI endpoint validation with proper dependency injection
 
 ```python
-@pytest.mark.asyncio
-async def test_api_endpoint_with_container(async_client):
+def test_api_endpoint_with_container(booted_app_client):
     """Test API endpoint using container-injected services."""
-    from faultmaven.container import container
-
-    # Ensure clean container state
-    container.reset()
+    # booted_app_client (tests/conftest.py) is a TestClient over the started
+    # app: its lifespan composed the container. Sign in as the local admin.
+    login = booted_app_client.post(
+        "/api/v1/auth/dev-login", json={"username": "admin"}
+    )
+    token = login.json()["access_token"]
 
     # Test API endpoint
-    response = await async_client.post(
-        "/agent/query",
-        json={
-            "query": "Database connection issues",
-            "session_id": "api-test-session"
-        }
+    response = booted_app_client.post(
+        "/api/v1/cases",
+        json={"title": "Database connection issues"},
+        headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     data = response.json()
-    assert data["session_id"] == "api-test-session"
-    assert len(data["response"]) > 50
+    assert data["title"] == "Database connection issues"
+    assert data["state"] == "inquiry"
 ```
 
 ### Service Layer Testing
@@ -196,34 +210,40 @@ async def test_api_endpoint_with_container(async_client):
 @pytest.mark.asyncio
 async def test_service_with_mock_dependencies():
     """Test service layer with properly mocked dependencies."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider, ISanitizer
+    from unittest.mock import create_autospec
 
-    # Reset container and inject mocks
-    container.reset()
-
-    # Create interface-compliant mocks
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(return_value="Mock response")
-
-    mock_sanitizer = Mock(spec=ISanitizer)
-    mock_sanitizer.sanitize = Mock(return_value="sanitized query")
-
-    # Inject mocks through container
-    container._llm_provider = mock_llm
-    container._sanitizer = mock_sanitizer
-
-    # Test service operation
-    agent_service = container.get_agent_service()
-    result = await agent_service.process_query(
-        "Test query",
-        "service-test-session"
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
     )
 
-    # Validate service behavior
-    assert result.session_id == "service-test-session"
-    mock_sanitizer.sanitize.assert_called_once()
-    mock_llm.generate_response.assert_called_once()
+    # Create specced mocks
+    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store.search.return_value = []
+    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer.asanitize.return_value = "sanitized query"
+
+    # Inject the mocks through the constructor
+    knowledge_service = KnowledgeService(
+        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
+        sanitizer=sanitizer,
+        tracer=create_autospec(ITracer, instance=True),
+        vector_store=vector_store,
+        db_session_factory=create_autospec(get_db_session),  # required; a search never opens a session
+    )
+
+    # Test service operation
+    results = await knowledge_service.search_knowledge("Test query")
+
+    # Validate service behavior: the store sees the sanitized query
+    assert results == []
+    sanitizer.asanitize.assert_awaited_once_with("Test query")
+    assert vector_store.search.await_args.kwargs["query"] == "sanitized query"
 ```
 
 ### Core Domain Testing
@@ -233,16 +253,17 @@ async def test_service_with_mock_dependencies():
 ```python
 def test_core_domain_logic():
     """Test core domain logic without external dependencies."""
-    from faultmaven.core.processing.classifier import DataClassifier
+    from faultmaven.models.api import DataType
+    from faultmaven.modules.preprocessing.classifier import DataClassifier
 
     classifier = DataClassifier()
 
     # Test with realistic data
-    system_log = "2024-08-28 ERROR: Database connection timeout"
-    result = classifier.classify(system_log)
+    system_log = "2024-08-28 10:00:01 ERROR Database connection timeout"
+    result = classifier.classify("app.log", system_log)
 
-    assert result == DataType.SYSTEM_LOGS
-    assert classifier.confidence_score > 0.8
+    assert result.data_type == DataType.LOGS_AND_ERRORS
+    assert result.confidence > 0.8
 ```
 
 ### Infrastructure Layer Testing
@@ -253,25 +274,47 @@ def test_core_domain_logic():
 @pytest.mark.asyncio
 async def test_infrastructure_with_fallback():
     """Test infrastructure layer with fallback behavior."""
-    from faultmaven.infrastructure.llm.router import LLMRouter
-
-    router = LLMRouter()
+    from faultmaven.config.settings import reset_settings
+    from faultmaven.infrastructure.llm.providers.base import LLMResponse
+    from faultmaven.infrastructure.llm.providers.registry import (
+        get_registry,
+        reset_registry,
+    )
+    from tests.model_content import vetted
 
     # Test with realistic provider configuration
     with patch.dict(os.environ, {
         'CHAT_PROVIDER': 'openai',
+        'STRICT_PROVIDER_MODE': 'false',
         'OPENAI_API_KEY': 'test-key',
         'FIREWORKS_API_KEY': 'fallback-key'
     }):
-        # Test primary provider
-        response = await router.route("Test query")
-        assert len(response) > 50
+        reset_settings()
+        reset_registry()
+        try:
+            registry = get_registry()
+            fallback_answer = LLMResponse(
+                content="Fallback answer",
+                confidence=0.9,
+                provider="fireworks",
+                model="test-model",
+                tokens_used=10,
+                response_time_ms=5,
+            )
 
-        # Test fallback behavior (simulate primary failure)
-        with patch.object(router.primary_provider, 'generate_response',
-                         side_effect=Exception("Primary failed")):
-            fallback_response = await router.route("Test query")
-            assert len(fallback_response) > 50  # Fallback worked
+            # Test fallback behavior (simulate primary failure). Each provider's
+            # send, _generate, is patched: no test reaches a provider
+            with patch.object(registry.get_provider('openai'), '_generate',
+                              side_effect=Exception("Primary failed")), \
+                 patch.object(registry.get_provider('fireworks'), '_generate',
+                              return_value=fallback_answer):
+                response = await registry.route_request(
+                    prompt=vetted("Test query"), max_tokens=100
+                )
+                assert response.content == "Fallback answer"  # Fallback worked
+        finally:
+            reset_registry()
+            reset_settings()
 ```
 
 ## Advanced Testing Scenarios
@@ -282,85 +325,65 @@ async def test_infrastructure_with_fallback():
 @pytest.mark.asyncio
 async def test_error_propagation_across_layers():
     """Test error handling and recovery across all layers."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider
+    from unittest.mock import create_autospec
 
-    container.reset()
-
-    # Create mock that raises exception
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(
-        side_effect=Exception("LLM service unavailable")
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
     )
 
-    container._llm_provider = mock_llm
+    # Create mock that raises exception
+    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store.search.side_effect = Exception("Vector store unavailable")
+    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer.asanitize.side_effect = lambda data: data
+
+    knowledge_service = KnowledgeService(
+        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
+        sanitizer=sanitizer,
+        tracer=create_autospec(ITracer, instance=True),
+        vector_store=vector_store,
+        db_session_factory=create_autospec(get_db_session),
+    )
 
     # Test error propagation through service layer
-    agent_service = container.get_agent_service()
-
     with pytest.raises(Exception) as exc_info:
-        await agent_service.process_query("Test", "error-session")
+        await knowledge_service.search_knowledge("Test")
 
     # Validate proper error handling
-    assert "LLM service unavailable" in str(exc_info.value)
+    assert "Vector store unavailable" in str(exc_info.value)
 
-    # Test graceful degradation if implemented
-    # (Service should handle errors gracefully in production)
+    # Test graceful degradation: patterns.md, pattern 5
 ```
 
 ### Performance and Resource Management
 
-```python
-def test_container_performance_overhead():
-    """Test container performance and resource usage."""
-    from faultmaven.container import container
-    import time
-
-    # Measure container reset performance (a getter never composes the
-    # container, #2249, so this is reset and lookup, not composition)
-    start_time = time.time()
-    for _ in range(100):
-        container.reset()
-        agent_service = container.get_agent_service()
-        assert agent_service is None
-
-    elapsed_time = time.time() - start_time
-
-    # Container operations should be fast
-    assert elapsed_time < 1.0  # Less than 1 second for 100 operations
-    assert elapsed_time / 100 < 0.01  # Less than 10ms per operation
-```
+A duration is never judged against a literal.
+`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and accepts
+these routes (and the exemptions it names): a latency or a rate through `assert_latency_within`
+/ `assert_throughput_at_least` against a `budgets.py` row (`tests/performance/`,
+`tests/benchmarks/`), a growth question through `assert_linear_growth`, a
+deadline question onto `VirtualTimeLoop`, or a measurement that is not a clock.
+No row times the container. The worked example is pattern 6 in
+[patterns.md](patterns.md); the method, and which instrument answers which
+question, is in [performance.md](performance.md).
 
 ### Integration Testing with External Services
 
-```python
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_external_service_integration():
-    """Test integration with external services when available."""
-    from faultmaven.container import container
-
-    # Skip if external services not available
-    if os.getenv('SKIP_SERVICE_CHECKS', 'false').lower() == 'true':
-        pytest.skip("External service checks disabled")
-
-    container.reset()
-
-    # Test with real external services if available
-    try:
-        agent_service = container.get_agent_service()
-        result = await agent_service.process_query(
-            "Simple test query",
-            "external-integration-session"
-        )
-
-        assert result.session_id == "external-integration-session"
-        assert len(result.response) > 20
-
-    except Exception as e:
-        # Log but don't fail if external services unavailable
-        pytest.skip(f"External services unavailable: {e}")
-```
+`tests/network_guard.py` refuses every connection to a non-loopback address,
+and every loopback connection except to a port the test process bound itself
+and to the PostgreSQL / Redis its job names in `DATABASE_URL` / `REDIS_URL` /
+`REDIS_HOST` (`tests/integration/test_real_redis_stores.py`, run alone in one
+Test Cloud step, reaches its Redis that way). A model-server port is never
+allowed, and a name that is not this machine's is not resolved. Any non-empty
+`FM_TEST_ALLOW_LIVE_NETWORK`, read once when the guard installs, disables it
+for the whole process; the opt-in real-LLM lane (`-m real_llm`, described in
+[standards.md](standards.md)) is what it is for.
 
 ## Best Practices for Architecture Testing
 
@@ -374,7 +397,8 @@ async def test_external_service_integration():
 ### 2. Interface-Based Mocking
 
 - **Mock interfaces**: Mock `ILLMProvider`, not `OpenAIProvider`
-- **Implement properly**: Use `Mock(spec=Interface)` for compliance
+- **Implement properly**: Use `create_autospec(Interface, instance=True)`; it checks call signatures, which `Mock(spec=Interface)` does not
+- **Known gap**: Spec a concrete class only where no interface declares the call (`KnowledgeService`'s sanitizer and vector store, #2284; the engine's `AgentToolRegistry`, typed `Any`)
 - **Realistic behavior**: Mocks should behave like real implementations
 - **Error scenarios**: Test both success and failure paths
 
@@ -387,7 +411,6 @@ async def test_external_service_integration():
 
 ### 4. Performance Considerations
 
-- **Container overhead**: Monitor container operation performance
 - **Test execution time**: Keep tests fast with proper mocking
 - **Resource usage**: Ensure proper cleanup and resource management
 - **Concurrent testing**: Validate thread safety and isolation
@@ -404,59 +427,37 @@ async def test_external_service_integration():
 ### Container Testing Utilities
 
 ```python
-# tests/conftest.py
-@pytest.fixture(autouse=True)
-def reset_container():
-    """Automatically reset container before each test."""
+# tests/conftest.py: requested by name, not autouse
+@pytest.fixture(scope="function")
+async def reset_container():
+    """Reset the DI container before each test, and shut it down after it."""
     from faultmaven.container import container
+
     container.reset()
-    yield
+    os.environ["SKIP_SERVICE_CHECKS"] = "true"
+
+    yield container
+
+    # Closes what an initialize() in the test opened, on the test's loop
+    await container.shutdown()
     container.reset()
-
-@pytest.fixture
-def mock_container_dependencies():
-    """Provide common mock dependencies for container testing."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider, ISanitizer
-
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(return_value="Mock response")
-
-    mock_sanitizer = Mock(spec=ISanitizer)
-    mock_sanitizer.sanitize = Mock(return_value="sanitized")
-
-    container._llm_provider = mock_llm
-    container._sanitizer = mock_sanitizer
-
-    return {
-        'llm_provider': mock_llm,
-        'sanitizer': mock_sanitizer
-    }
 ```
 
 ### Environment Testing Utilities
 
 ```python
-# tests/utils/environment.py
-@contextmanager
-def test_environment(**env_vars):
-    """Context manager for temporary environment variables."""
-    original_env = os.environ.copy()
-    try:
-        os.environ.update(env_vars)
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+# pytest's monkeypatch restores each variable it sets after the test
+def test_with_custom_environment(monkeypatch):
+    from faultmaven.config.settings import LLMProvider, get_settings, reset_settings
 
-# Usage
-def test_with_custom_environment():
-    with test_environment(
-        CHAT_PROVIDER='fireworks',
-        FIREWORKS_API_KEY='test-key'
-    ):
+    monkeypatch.setenv('CHAT_PROVIDER', 'fireworks')
+    monkeypatch.setenv('FIREWORKS_API_KEY', 'test-key')
+    reset_settings()  # get_settings() caches the instance it built first
+    try:
         settings = get_settings()
         assert settings.llm.provider == LLMProvider.FIREWORKS
+    finally:
+        reset_settings()
 ```
 
 ## Troubleshooting Architecture Tests
@@ -475,9 +476,14 @@ def test_example():
 **Interface Mock Issues**:
 ```python
 # Problem: Mock doesn't implement interface properly
-# Solution: Use spec parameter
-mock_service = Mock(spec=IServiceInterface)
-mock_service.method_name = Mock(return_value="value")
+# Solution: Spec it on the interface; a name the interface lacks raises
+# AttributeError, and a call with the wrong arguments raises TypeError
+from unittest.mock import create_autospec
+
+from faultmaven.models.interfaces import ITracer
+
+mock_tracer = create_autospec(ITracer, instance=True)
+mock_tracer.trace("operation")  # ITracer declares trace(operation)
 ```
 
 **Environment Variable Issues**:
@@ -493,8 +499,15 @@ def test_with_clean_env(clean_env):
 **Async Testing Issues**:
 ```python
 # Problem: Async mocks not working properly
-# Solution: Use AsyncMock for async methods
-mock_service.async_method = AsyncMock(return_value="result")
+# Solution: Use AsyncMock for async methods; create_autospec makes one for each
+from unittest.mock import create_autospec
+
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KnowledgeVectorStore,
+)
+
+vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+vector_store.search.return_value = []  # search is an AsyncMock: await it
 ```
 
 ## Conclusion
@@ -502,8 +515,8 @@ mock_service.async_method = AsyncMock(return_value="result")
 This architecture testing guide provides comprehensive patterns for testing FaultMaven's Clean Architecture implementation with dependency injection. The **1425+ tests** across **4 new comprehensive test files** ensure robust validation of all architectural components while maintaining proper isolation and realistic testing scenarios.
 
 Key takeaways:
-- Always use container-based patterns for service resolution
-- Mock interfaces, not implementations
+- Resolve composed services through the container; build the unit under test directly
+- Mock interfaces, not implementations (a concrete class only where no interface declares the call)
 - Maintain clean state with proper container reset
 - Test cross-layer integration with realistic scenarios
 - Validate error handling and graceful degradation
