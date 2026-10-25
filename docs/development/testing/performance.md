@@ -9,7 +9,8 @@ for the FaultMaven platform.
 
 ```bash
 # Install dependencies (if not already installed)
-pip install -r requirements-test.txt
+pip install -r requirements/test.txt
+pip install -e . --no-deps
 
 # Run all benchmarks
 pytest tests/benchmarks/ -m benchmark -v
@@ -21,8 +22,8 @@ pytest tests/benchmarks/ -m benchmark -v
 # Case operation benchmarks only
 pytest tests/benchmarks/test_case_operations.py -m benchmark -v
 
-# Session operation benchmarks only
-pytest tests/benchmarks/test_session_operations.py -m benchmark -v
+# Knowledge-item and knowledge-search benchmarks only
+pytest tests/benchmarks/test_knowledge_item_operations.py tests/benchmarks/test_knowledge_search.py -m benchmark -v
 
 # Memory usage benchmarks
 pytest tests/benchmarks/test_memory_usage.py -m benchmark -v

@@ -24,12 +24,12 @@ Comprehensive spec compliance testing with 17 tests validating [case-and-session
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** Tests use Redis configuration from `.env` file. Configure `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` in your `.env`.
+**Setup:** a reachable Redis, given through the environment (`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth); the suite never reads `.env` (`tests/conftest.py` blocks it). The tests are `cloud`-marked. Until #2081 is fixed, the 16 that take `session_service` skip whether or not Redis is reachable: the fixture never builds its store.
 
 **Run tests:**
 ```bash
 # All compliance tests
-./run_tests.py --integration
+REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/test_architectural_compliance.py -v
 
 # Specific test
 .venv/bin/pytest tests/integration/test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id -v
@@ -43,8 +43,6 @@ Knowledge base integration testing with vector store operations
 #### `test_readiness_and_redis.py`
 System readiness and Redis integration validation
 
-### Core Infrastructure Files
-
 ### Infrastructure Files
 
 #### `mock_servers.py`
@@ -55,7 +53,7 @@ Integration test configuration and fixtures:
 
 - **All-skipped guard**: a session that selects tests and skips every one fails
 - **Served-app teardown**: each test ends the protection middleware of the apps it served
-- **Service fixtures**: `session_service` (real Redis) and `case_service` (the DI container's)
+- **Service fixtures**: `session_service` (real Redis; it currently always skips, #2081) and `case_service` (the DI container's)
 - **Database isolation**: `in_memory_database_url` points `DATABASE_URL` at an in-memory SQLite for one test
 
 ## Test Philosophy - New Architecture Integration
@@ -81,7 +79,9 @@ Integration test configuration and fixtures:
 
 Install test dependencies:
 ```bash
-pip install -r ../../requirements-test.txt
+# from the repository root: the lockfile pins the dependencies, not the package
+pip install -r requirements/test.txt
+pip install -e . --no-deps
 ```
 
 **No environment variables are required.** These tests run in-process — they
@@ -94,9 +94,10 @@ Optional settings:
 # Enable debug logging for integration test debugging
 export LOG_LEVEL=DEBUG
 
-# Point the Redis-backed suites at a real Redis (they self-skip without one)
-export REDIS_HOST=192.168.0.111
-export REDIS_PORT=30379
+# Point the Redis-backed suites at a real Redis (REDIS_PASSWORD if it requires auth).
+# They self-skip without one.
+export REDIS_HOST=localhost
+export REDIS_PORT=6379
 
 # Point the postgres-marked suites at a scratch PostgreSQL
 export DATABASE_URL=postgresql://…
@@ -104,7 +105,7 @@ export DATABASE_URL=postgresql://…
 
 `SKIP_SERVICE_CHECKS` is **not** a test-runner switch. It is a live application
 config knob (read by the DI container providers and the middleware wiring in
-`faultmaven/main.py`), so a handful of suites that boot an in-process app set it
+`faultmaven/bootstrap/middleware.py`), so a handful of suites that boot an in-process app set it
 deliberately. Setting it no longer changes which tests run.
 
 ### Basic Execution
@@ -143,7 +144,7 @@ None are required. Optional ones:
 # Enable debug logging
 LOG_LEVEL=DEBUG pytest tests/integration/ -v
 
-# Back the Redis-dependent suites with a real Redis
+# Back the Redis-dependent suites with a real Redis (REDIS_PASSWORD if it requires auth)
 REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/ -v
 ```
 
@@ -154,74 +155,6 @@ REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/ -v
 - **Full Suite**: Completes in < 30 seconds
 - **Memory Usage**: < 50MB peak during execution
 - **Async Operations**: Proper async/await patterns with cleanup
-
-### Common Patterns - New Architecture Integration
-
-#### Container-Based Integration Testing
-```python
-from faultmaven.container import container
-from faultmaven.config.settings import get_settings
-
-@pytest.mark.asyncio
-async def test_settings_container_services_integration():
-    """Test complete Settings → Container → Services flow."""
-    # Reset container for clean state
-    container.reset()
-
-    # Test with realistic environment configuration
-    test_env = {
-        'CHAT_PROVIDER': 'fireworks',
-        'FIREWORKS_API_KEY': 'test-key',
-        'REDIS_HOST': 'localhost'
-    }
-
-    with patch.dict(os.environ, test_env):
-        # Validate settings layer
-        settings = get_settings()
-        assert settings.llm.provider == LLMProvider.OPENAI  # placeholder default
-
-        # Validate container initialization
-        agent_service = container.get_agent_service()
-        assert agent_service is not None
-
-        # Validate end-to-end service operation
-        result = await agent_service.process_query(
-            "Test troubleshooting query",
-            "integration-test-session"
-        )
-
-        assert result.session_id == "integration-test-session"
-        assert len(result.response) > 50
-```
-
-#### Interface Compliance Integration Testing
-```python
-@pytest.mark.asyncio
-async def test_interface_compliance_real_scenario():
-    """Test interface compliance in production-like scenarios."""
-    container.reset()
-
-    # Get services through container (interface resolution)
-    agent_service = container.get_agent_service()
-    knowledge_service = container.get_knowledge_service()
-
-    # Validate services implement expected interfaces
-    assert hasattr(agent_service, 'process_query')
-    assert hasattr(knowledge_service, 'search_knowledge_base')
-
-    # Test cross-service integration
-    kb_result = await knowledge_service.search_knowledge_base(
-        "database connection issues", limit=3
-    )
-    assert isinstance(kb_result, list)
-
-    # Test agent service with knowledge integration
-    agent_result = await agent_service.process_query(
-        "Database connection problems",
-        "interface-test-session"
-    )
-    assert agent_result.session_id == "interface-test-session"
-```
 
 ## Troubleshooting
 
