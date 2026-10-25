@@ -89,7 +89,7 @@ For the data-type × backend × deployment breakdown, see:
 │   - Cases, evidence, hypotheses, reports, knowledge items             │
 │                                                                        │
 │ Redis (real or FakeRedis for local deployment):                        │
-│   - Session state (session:{id}, idle timeout 30 min / record TTL 24h)│
+│   - Session state (session:{id}, TTL 30 min past its last write)     │
 │   - Job queue (job:{id}, TTL: 24 hours)                               │
 │   - Report metadata now in PostgreSQL (reports table)                 │
 │   - Protection state (rate limit windows, dedup keys)                │
@@ -172,14 +172,14 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ## Data Retention & Lifecycle
 
-For auth/session TTL detail (JWT lifetimes, session record TTL, inactivity timeout) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
+For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
 
 | Data Category | Retention Period | Cleanup Strategy |
 |---------------|------------------|------------------|
 | **User Accounts** | Indefinite (soft delete) | Soft delete after 30 days inactive (configurable) |
 | **Active Cases** | Indefinite | User-controlled closure |
 | **Resolved Cases** | 1 year default | Archive to cold storage after 90 days |
-| **Session State** | 30 min idle / 24 h record TTL | Automatic Redis expiration |
+| **Session State** | 30 min past the last write (`SESSION_TIMEOUT_MINUTES`) | Automatic Redis expiration |
 | **Raw Artifacts** | 90 days default | S3 lifecycle policy |
 | **User Knowledge Base** | Indefinite | User-controlled deletion |
 | **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |

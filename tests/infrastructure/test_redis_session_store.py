@@ -27,7 +27,7 @@ def redis_client():
 @pytest.fixture
 def session_store(redis_client):
     """Create RedisSessionStore backed by FakeRedis."""
-    return RedisSessionStore(redis_client)
+    return RedisSessionStore(redis_client, session_ttl_seconds=1800)
 
 
 class TestRedisSessionStore:
@@ -45,9 +45,9 @@ class TestRedisSessionStore:
 
     def test_initialization(self, redis_client):
         """Test successful initialization"""
-        store = RedisSessionStore(redis_client)
+        store = RedisSessionStore(redis_client, session_ttl_seconds=1800)
 
-        assert store.default_ttl == 1800  # 30 minutes
+        assert store.session_ttl_seconds == 1800
         assert store.prefix == "session:"
         assert store.redis_client is redis_client
 
@@ -121,7 +121,7 @@ class TestRedisSessionStore:
 
         ttl = await redis_client.ttl("session:test-123")
         assert ttl > 0
-        assert ttl <= session_store.default_ttl
+        assert ttl <= session_store.session_ttl_seconds
 
     @pytest.mark.asyncio
     async def test_delete_success(self, session_store, redis_client):
@@ -174,7 +174,7 @@ class TestRedisSessionStore:
 
         assert result is True
         ttl = await redis_client.ttl("session:test-123")
-        assert ttl <= session_store.default_ttl
+        assert ttl <= session_store.session_ttl_seconds
 
     @pytest.mark.asyncio
     async def test_extend_ttl_failure(self, session_store):
@@ -206,11 +206,16 @@ class TestRedisSessionStore:
         await session_store.delete(test_key)
         assert await redis_client.exists(expected_full_key) == 0
 
-    def test_configuration_defaults(self, redis_client):
-        """Test default configuration values"""
-        store = RedisSessionStore(redis_client)
+    def test_the_session_ttl_is_required_and_positive(self, redis_client):
+        """The store has no session lifetime of its own (#2301): composition
+        passes SESSION_TIMEOUT_MINUTES, and no constant stands in for it."""
+        with pytest.raises(TypeError):
+            RedisSessionStore(redis_client)
+        with pytest.raises(ValueError, match="session_ttl_seconds"):
+            RedisSessionStore(redis_client, session_ttl_seconds=0)
 
-        assert store.default_ttl == 1800
+        store = RedisSessionStore(redis_client, session_ttl_seconds=1800)
+        assert store.session_ttl_seconds == 1800
         assert store.prefix == "session:"
 
     @pytest.mark.asyncio
@@ -267,12 +272,12 @@ class TestRedisSessionStoreIntegration:
 
     @pytest.fixture
     def session_store(self, redis_client):
-        return RedisSessionStore(redis_client)
+        return RedisSessionStore(redis_client, session_ttl_seconds=1800)
 
     @pytest.mark.asyncio
     async def test_interface_compliance_comprehensive(self, redis_client):
         """Comprehensive test of interface compliance"""
-        store = RedisSessionStore(redis_client)
+        store = RedisSessionStore(redis_client, session_ttl_seconds=1800)
 
         assert hasattr(store, "get")
         assert hasattr(store, "set")

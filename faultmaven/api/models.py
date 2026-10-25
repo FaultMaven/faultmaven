@@ -498,6 +498,15 @@ class EnvConfigStatusResponse(BaseModel):
             "before the composition root has set it"
         )
     )
+    session_ttl_seconds: Optional[int] = Field(
+        description=(
+            "The TTL the session store the process built sets on every session "
+            "write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather "
+            "than from settings. A session lapses this long after its last write "
+            "(creation, resumption, a heartbeat, an update). Null before the "
+            "composition root has built the store."
+        )
+    )
     vector_storage: str = Field(
         description=(
             "What the running process's KB and evidence ChromaDB clients talk to: "

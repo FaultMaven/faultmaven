@@ -475,6 +475,25 @@ How the server is launched, and what `run_server` fixes: [Logging policy, launch
 |----------|------|---------|-------------|
 | `TIMEOUT_KEEP_ALIVE` | int (>= 1) | 75 | Seconds uvicorn holds an idle keep-alive connection. Keep it above the fronting proxy's upstream keep-alive (ingress-nginx `upstream-keepalive-timeout`, 60 s) and every client's idle expiry (slack-agent httpx `keepalive_expiry`, 5 s), so a POST is never sent on a connection the API just closed |
 
+## Sessions
+
+`SessionSettings` (`settings.session`). A session lives in Redis (FakeRedis on
+standalone) under one clock: the session store is built with
+`SESSION_TIMEOUT_MINUTES` and every session write (creation, resumption, a
+heartbeat, an update) sets it as the key's TTL, so a session lapses that long
+after its last write. Its `expires_at` is that instant, and
+`POST /api/v1/sessions` answers it with `timeout_minutes`. There is no separate
+inactivity timeout, no absolute lifetime and no server-side heartbeat interval:
+clients pace their own heartbeats (the Copilot pings every 10 minutes,
+`VITE_HEARTBEAT_INTERVAL_MS`), so keep the timeout at least twice their
+interval. `GET /admin/config/status` reports the TTL the running store applies
+as `session_ttl_seconds`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. A preset fills it in when it is unset: `local` sets 60, `standard` and `enterprise` set 30. A preset applies when `CONFIG_PRESET` names it, and `local` also applies by itself to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server) |
+| `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.5.0
+**Version:** 14.6.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -3692,9 +3692,10 @@ cannot name the user its session is bound to; see the note on the
 resolution below.
 
 **Session Timeout:**
-- Sessions automatically expire after `timeout_minutes` of inactivity
-- Default timeout: 180 minutes (3 hours)
-- Min timeout: 60 minutes, Max timeout: 480 minutes
+- A session expires `SESSION_TIMEOUT_MINUTES` (default 30) after its last
+  write: creation, resumption, a heartbeat or an update re-arms it
+- The response's `timeout_minutes` is that setting and `expires_at` the
+  instant this write lapses; the request's `timeout_minutes` is ignored
 - Expired sessions cannot be resumed and return 404/410 errors
 
 **Frontend Crash Recovery:**
@@ -3721,7 +3722,7 @@ Returns:
 - `201` — Session created or resumed successfully
 - `404` — Session expired or not found (when resuming with client_id)
 - `410` — Session gone (alternative to 404 for expired sessions)
-- `422` — Validation error (invalid timeout_minutes)
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4604,7 +4605,7 @@ See: docs/architecture/case-and-session/case-and-session-concepts.md.
 - `client_id` (object, optional) — Client/device identifier for session resumption. If provided, existing session for this client will be resumed.
 - `metadata` (object, optional)
 - `session_type` (object, optional)
-- `timeout_minutes` (object, optional) — Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)
+- `timeout_minutes` (object, optional) — Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last write (the server's setting); the response's timeout_minutes and expires_at report it.
 
 ---
 
@@ -5322,6 +5323,7 @@ Read-only environment configuration status for dashboard display.
 - `pii_redaction_enabled` (boolean, required)
 - `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and no environment variable turns it off. A deployment reports false here only if protection setup raised and the development carve-out let it boot anyway.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
+- `session_ttl_seconds` (object, required) — The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.
 - `timestamp` (string, required)
 - `turn_timing` (object, required) — The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities.
 - `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ

@@ -50,6 +50,9 @@ class TestCompositionRootPattern:
         # Redis or FakeRedis), so ``None is None`` must not pass this.
         assert app.state.redis_client is not None
         assert app.state.redis_client is container.get_redis_client()
+        # The store whose TTL the panel reports (#2301), likewise always built.
+        assert app.state.session_store is not None
+        assert app.state.session_store is container.get_session_store()
         assert app.state.kb_chromadb_client is getattr(
             container, "kb_chromadb_client", None
         )

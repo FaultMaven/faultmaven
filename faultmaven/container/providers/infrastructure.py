@@ -447,12 +447,18 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any:
 
 
 def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
-    """Create session store backed by Redis (real or FakeRedis)."""
+    """Create session store backed by Redis (real or FakeRedis).
+
+    Its TTL is ``SESSION_TIMEOUT_MINUTES``: every session write sets it, so a
+    session lapses that long after its last write (#2301).
+    """
     from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
         RedisSessionStore,
     )
 
-    store = RedisSessionStore(redis_client)
+    store = RedisSessionStore(
+        redis_client, session_ttl_seconds=settings.session.timeout_minutes * 60
+    )
     logger.info("✅ Session store: Redis")
     return store
 

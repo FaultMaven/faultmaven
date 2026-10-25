@@ -465,6 +465,11 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # client (never None), so this is always populated.
     app.state.redis_client = container.get_redis_client()
 
+    # The session store the container built, so GET /admin/config/status can
+    # report the TTL it gives sessions: the value in effect, not the setting
+    # read again (#2301, where the store ignored the setting).
+    app.state.session_store = container.get_session_store()
+
     # The ChromaDB clients the container built (``None`` when skipped), so
     # GET /admin/config/status can report what they talk to without a route
     # reaching into the container.

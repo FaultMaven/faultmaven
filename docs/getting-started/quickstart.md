@@ -373,7 +373,7 @@ Fine-tune FaultMaven behavior:
 ```bash
 # .env customization
 MAX_UPLOAD_SIZE_MB=50                    # Increase upload limit
-SESSION_TIMEOUT_MINUTES=240              # 4-hour session timeout
+SESSION_TIMEOUT_MINUTES=240              # Sessions lapse 4 hours after their last activity
 LOG_LEVEL=DEBUG                          # Verbose logging
 ENABLE_WEB_SEARCH=true                   # Enable web search tool
 TAVILY_API_KEY=your_tavily_key           # Web search API key

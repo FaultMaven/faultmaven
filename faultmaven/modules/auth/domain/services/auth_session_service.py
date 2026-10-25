@@ -7,7 +7,8 @@ Core Responsibilities (Spec Lines 388-423):
 - Multi-device support via client_id (spec lines 263-269)
 - Session resumption for same client_id (spec lines 83-86)
 - Session authentication and authorization
-- Per-user session limit (oldest evicted); expiry is the store's TTL
+- Per-user session limit (oldest evicted); expiry is the store's TTL,
+  re-armed by every write (SESSION_TIMEOUT_MINUTES, #2301)
 
 NOT Responsible For (Spec Lines 102-107):
 - Case management (cases are independent resources)
@@ -21,7 +22,8 @@ Reference: docs/architecture/case-and-session-concepts.md
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -37,8 +39,8 @@ logger = logging.getLogger(__name__)
 #: The only ``SessionContext`` fields a client may set through
 #: ``update_session`` (#1834). An allow-list, because the deny-list it replaced
 #: left ``session_id`` writable, and ``save()`` keys its write on that field: a
-#: caller could overwrite another session's record. ``expires_at`` changes only
-#: through ``extend_session``; ``client_id`` belongs to the resumption index.
+#: caller could overwrite another session's record. ``expires_at`` is the
+#: store's to set, on every write; ``client_id`` belongs to the resumption index.
 CLIENT_UPDATABLE_SESSION_FIELDS = frozenset({"metadata"})
 
 #: The 400 for a value of the wrong type, one fixed message per allowed field.
@@ -86,17 +88,18 @@ class AuthSessionService:
         session_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         max_sessions_per_user: int = 10,
-        inactive_threshold_hours: int = 24,
-        session_ttl_hours: int = 24,
     ):
         """Initialize Auth Session Service
+
+        A session's lifetime is the store's: every write through ``_persist``
+        gives it the store's TTL (``SESSION_TIMEOUT_MINUTES``) and stamps its
+        ``expires_at`` with the instant that lapses (#2301). This service holds
+        no clock of its own, so nothing here can disagree with the TTL.
 
         Args:
             session_store: Session persistence store (ISessionStore interface)
             settings: Configuration settings
             max_sessions_per_user: Maximum concurrent sessions per user (multi-device)
-            inactive_threshold_hours: Hours before marking session inactive
-            session_ttl_hours: Session expiration TTL
         """
         self.session_store = session_store
         self._settings = settings
@@ -106,23 +109,16 @@ class AuthSessionService:
             self.max_sessions_per_user = getattr(
                 settings.session, "max_sessions_per_user", max_sessions_per_user
             )
-            timeout_hours = (
-                getattr(
-                    settings.session, "timeout_minutes", inactive_threshold_hours * 60
-                )
-                / 60
-            )
-            self.inactive_threshold = timedelta(hours=timeout_hours)
-            self.session_ttl = timedelta(
-                hours=getattr(settings.session, "ttl_hours", session_ttl_hours)
-            )
         else:
             self.max_sessions_per_user = max_sessions_per_user
-            self.inactive_threshold = timedelta(hours=inactive_threshold_hours)
-            self.session_ttl = timedelta(hours=session_ttl_hours)
 
         # Compatibility alias
         self.session_manager = self.session_store
+
+    @property
+    def session_ttl_seconds(self) -> Optional[int]:
+        """The TTL the store gives every session write; None without a store."""
+        return getattr(self.session_store, "session_ttl_seconds", None)
 
     # =========================================================================
     # Core Session Lifecycle Management
@@ -134,6 +130,7 @@ class AuthSessionService:
         user_id: str,
         client_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        provider_session_id: Optional[str] = None,
     ) -> Tuple[SessionContext, bool]:
         """Create new session or resume existing session for (user, client) pair
 
@@ -143,6 +140,8 @@ class AuthSessionService:
             user_id: User identifier (REQUIRED per spec)
             client_id: Client/device identifier for multi-device support (spec line 264)
             metadata: Additional session metadata (authentication context only)
+            provider_session_id: The IdP session an SSO login opened, which
+                logout ends. Server-set: no route passes a client's value.
 
         Returns:
             Tuple of (SessionContext, resumed: bool)
@@ -161,8 +160,11 @@ class AuthSessionService:
                 user_id, client_id
             )
             if existing_session:
-                # Session resumption - extend expiry and return
-                await self.extend_session(existing_session.session_id)
+                # Resuming is activity: the write re-arms the session's TTL.
+                now = datetime.now(timezone.utc)
+                existing_session.last_activity = now
+                existing_session.updated_at = now
+                await self._persist(existing_session)
                 existing_session.session_resumed = True
                 logger.info(
                     f"Session resumed for user {user_id}, client {client_id}: {existing_session.session_id}"
@@ -182,29 +184,11 @@ class AuthSessionService:
             created_at=now,
             last_activity=now,
             updated_at=now,
-            expires_at=now + self.session_ttl,
             metadata=metadata or {},
+            provider_session_id=provider_session_id,
         )
 
-        # Persist session
-        if self.session_store:
-            await self.session_store.save(session)
-
-            # Index by (user_id, client_id) for resumption if client_id provided
-            if client_id:
-                # Calculate TTL in seconds from expires_at
-                ttl_seconds = (
-                    int(
-                        (
-                            session.expires_at - datetime.now(timezone.utc)
-                        ).total_seconds()
-                    )
-                    if session.expires_at
-                    else self.session_ttl.total_seconds()
-                )
-                await self.session_store.index_session_by_client(
-                    user_id, client_id, session.session_id, int(ttl_seconds)
-                )
+        await self._persist(session)
 
         logger.info(f"Created new session for user {user_id}: {session.session_id}")
         return session, False
@@ -338,34 +322,8 @@ class AuthSessionService:
 
         updated.updated_at = datetime.now(timezone.utc)
 
-        if self.session_store:
-            await self.session_store.save(updated)
+        await self._persist(updated)
 
-        return True
-
-    @trace("session_service_extend_session")
-    async def extend_session(self, session_id: str, extend_by_hours: int = 24) -> bool:
-        """Extend session expiration
-
-        Args:
-            session_id: Session identifier
-            extend_by_hours: Hours to extend session by
-
-        Returns:
-            True if extended successfully
-        """
-        session = await self.get_session(session_id)
-        if not session:
-            return False
-
-        now = datetime.now(timezone.utc)
-        session.expires_at = now + timedelta(hours=extend_by_hours)
-        session.updated_at = now
-
-        if self.session_store:
-            await self.session_store.save(session)
-
-        logger.debug(f"Extended session {session_id} by {extend_by_hours} hours")
         return True
 
     @trace("session_service_update_last_activity")
@@ -385,8 +343,7 @@ class AuthSessionService:
         session.last_activity = datetime.now(timezone.utc)
         session.updated_at = session.last_activity
 
-        if self.session_store:
-            await self.session_store.save(session)
+        await self._persist(session)
 
         return True
 
@@ -550,7 +507,13 @@ class AuthSessionService:
             )
 
     async def _is_active(self, session: SessionContext) -> bool:
-        """Check if session is active (not expired and recent activity)
+        """Whether ``session`` has not expired
+
+        The TTL is the inactivity clock: a session with no write for
+        ``SESSION_TIMEOUT_MINUTES`` is gone, so every session left is active.
+        A second threshold on ``last_activity`` could only drop a live session
+        whose TTL a metadata update or an archive re-armed, and leave it out of
+        the per-user limit's count while it stays alive (#2301).
 
         Args:
             session: Session to check
@@ -558,15 +521,34 @@ class AuthSessionService:
         Returns:
             True if session is active
         """
-        now = datetime.now(timezone.utc)
+        return not (
+            session.expires_at and datetime.now(timezone.utc) > session.expires_at
+        )
 
-        # Check expiration
-        if session.expires_at and now > session.expires_at:
-            return False
+    async def _persist(self, session: SessionContext) -> None:
+        """Write ``session``, which re-arms its TTL
 
-        # Check recent activity
-        time_since_activity = now - session.last_activity
-        return time_since_activity < self.inactive_threshold
+        The store gives every session write its TTL (``SESSION_TIMEOUT_MINUTES``)
+        and sets ``session.expires_at`` to the instant it lapses, so a session
+        lives that long past its last write: a heartbeat, a resume, an update.
+        The (user, client) resumption index is re-armed to the same instant:
+        set once at creation, it lapsed under a session kept alive past it, and
+        the next resume minted a second session instead.
+
+        Args:
+            session: The session to write; its ``expires_at`` is set
+        """
+        if not self.session_store:
+            return
+        await self.session_store.save(session)
+        if session.client_id and session.expires_at:
+            remaining = session.expires_at - datetime.now(timezone.utc)
+            await self.session_store.index_session_by_client(
+                session.user_id,
+                session.client_id,
+                session.session_id,
+                max(1, math.ceil(remaining.total_seconds())),
+            )
 
     # =========================================================================
     # Enhanced Session Operations (Microservices Parity)
@@ -644,9 +626,7 @@ class AuthSessionService:
         session.metadata["status"] = "archived"
         session.updated_at = datetime.now(timezone.utc)
 
-        # Persist
-        if self.session_store:
-            await self.session_store.save(session)
+        await self._persist(session)
 
         logger.info(f"Session {session_id} archived")
         return True

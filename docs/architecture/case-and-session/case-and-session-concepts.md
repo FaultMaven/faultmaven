@@ -76,7 +76,7 @@ function getOrCreateClientId(): string {
 - **Identifier**: `session_id` (UUID v4)
 - **Formula**: `Session = User + Client + Authentication Context`
 - **Purpose**: Provides authentication and temporary state management
-- **Lifecycle**: Temporary (configurable TTL via `SESSION_TIMEOUT_MINUTES`; default 30 minutes)
+- **Lifecycle**: Temporary. A session lapses `SESSION_TIMEOUT_MINUTES` (default 30) after its last write: creation, resumption, a heartbeat or an update re-arms its Redis TTL, and its `expires_at` is the instant it lapses. There is no separate inactivity timeout and no absolute lifetime; a client keeps an idle session alive by heartbeating inside the timeout
 - **Scope**: **Multiple concurrent sessions per user** (one per client/device)
 - **Persistence**: Redis-backed with multi-index: (user_id, client_id) → session_id
 
@@ -644,7 +644,7 @@ async def create_session(user_id: str):
 
 ### Flow 5: Session Management and Case Persistence (Multi-Session)
 
-1. Individual sessions expire after configured TTL (authentication timeout)
+1. Individual sessions expire `SESSION_TIMEOUT_MINUTES` after their last write (heartbeats keep an open client's session alive)
 2. **Cases remain permanently accessible** - they are independent resources
 3. **Session resumption**: Same client_id can resume expired sessions
 4. **Multi-session resilience**: Other active sessions continue if one expires
@@ -807,7 +807,7 @@ API Flow:
 ### Example 3: Session Expiry and Case Persistence
 
 ```
-Day 1: session_abc123 expires after the configured TTL (default 30 minutes)
+Day 1: session_abc123 expires 30 minutes (the default `SESSION_TIMEOUT_MINUTES`) after its last write
 Day 2: User returns → new session_def456 created
 Day 2: GET /api/v1/cases (with X-Session-ID: session_def456)
        → Returns same cases (case_def456, case_ghi101, case_jkl202, case_mno303)
@@ -850,7 +850,7 @@ User can switch devices without losing access to any cases.
 ### 2. Clear Separation of Concerns
 - **User**: "Who owns the cases?"
 - **Client**: "Which device/browser?" (enables multi-device)
-- **Session**: "Who is authenticated and for how long?" (TTL configurable via `SESSION_TIMEOUT_MINUTES`; default 30 min)
+- **Session**: "Who is authenticated and for how long?" (lapses `SESSION_TIMEOUT_MINUTES` after its last write; default 30 min)
 - **Case**: "What specific problem needs solving?" (permanent record)
 - **Authorization**: user_id links cases to sessions for access control
 

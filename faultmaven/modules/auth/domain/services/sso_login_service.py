@@ -1406,17 +1406,21 @@ class SSOLoginService:
             "sso_provider": self._provider.provider_name,
             "username": user.username,
         }
-        if isinstance(provider_session_id, str) and provider_session_id:
-            # Persisted so the IdP session can be ended WITHOUT the browser.
-            # The logout URL only works if the browser completes a third-party
-            # navigation after local teardown; a closed tab leaves the IdP
-            # session alive with nothing able to reach it. This is what
-            # ``end_idp_session`` reads.
-            session_metadata["provider_session_id"] = provider_session_id
 
         session, _resumed = await self._sessions.create_session(
             user_id=user.user_id,
             metadata=session_metadata,
+            # Persisted so the IdP session can be ended WITHOUT the browser.
+            # The logout URL only works if the browser completes a third-party
+            # navigation after local teardown; a closed tab leaves the IdP
+            # session alive with nothing able to reach it. This is what
+            # ``end_idp_session`` reads: a server-set field, not ``metadata``,
+            # which clients write (#2301 review).
+            provider_session_id=(
+                provider_session_id
+                if isinstance(provider_session_id, str) and provider_session_id
+                else None
+            ),
         )
         session_id = getattr(session, "session_id", str(session))
 
@@ -1429,17 +1433,24 @@ class SSOLoginService:
             idp_logout_url=self._idp_logout_url(provider_session_id),
         )
 
-    async def end_idp_session(self, session_id: str) -> bool:
-        """End the IdP session behind a FaultMaven session. True if it ended.
+    async def end_idp_session(self, session_id: str, *, user_id: str) -> bool:
+        """End the IdP session behind ``user_id``'s FaultMaven session. True if
+        it ended.
 
         The only path that does not need the browser: logout can end the IdP
         session even if the user closes the tab before the redirect runs.
+
+        Only the session's own user may end it. ``session_id`` is whatever the
+        caller sent as ``X-Session-Id``, and a session id is not a credential:
+        without the owner check, any signed-in user holding another user's
+        session id ended that user's IdP session (#2301 review). A session that
+        is missing or belongs to someone else ends nothing.
 
         Never raises, and never reports a problem the caller can act on — it is
         invoked from a logout that has already revoked the local token, and the
         sign-out is not less successful because the IdP could not be reached.
         """
-        if not session_id:
+        if not session_id or not user_id:
             return False
         try:
             # validate=False: an expired session must still surrender its IdP
@@ -1449,12 +1460,20 @@ class SSOLoginService:
         except Exception as exc:
             logger.warning("sso_session_read_failed", error=type(exc).__name__)
             return False
+        # Neither line names the session id: the caller supplied it, and the
+        # logging policy strips session identifiers.
         if session is None:
+            # Routine: a dashboard SSO session is never heartbeated, so it is
+            # gone SESSION_TIMEOUT_MINUTES after login, and logout comes later.
+            logger.info("sso_idp_teardown_no_session", user_id=user_id)
+            return False
+        if getattr(session, "user_id", None) != user_id:
+            logger.warning("sso_idp_teardown_not_session_owner", user_id=user_id)
             return False
 
-        provider_session_id = (getattr(session, "metadata", None) or {}).get(
-            "provider_session_id"
-        )
+        # The server-set field. Never ``metadata``: a client writes that, and
+        # could plant another user's IdP session id in it.
+        provider_session_id = getattr(session, "provider_session_id", None)
         if not isinstance(provider_session_id, str) or not provider_session_id:
             return False
 
