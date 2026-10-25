@@ -68,7 +68,16 @@ from typing import Callable
 # quote's escape, and swallowing it left a bare quote and an invalid JSON line
 # (#2309). Excluding every backslash instead would stop the redaction at an
 # escaped backslash and leave the rest of the query visible.
-_URL_QUERY = re.compile(r"(://[^\s\"'<>?\x1b]*)\?(?:[^\s\"'<>\x1b\\]|\\\\|\\(?!\"))*")
+#
+# Written unrolled and possessive -- a run of ordinary characters, then any
+# number of (escape-ish backslash, run) -- rather than as a starred
+# alternation: Python's engine keeps a backtrack frame per pass of a starred
+# alternation, so that form held ~180 MB for a 1 MiB query. This one holds none
+# and runs at the speed of the plain class.
+_QUERY_CHAR = r"[^\s\"'<>\x1b\\]"
+_URL_QUERY = re.compile(
+    r"(://[^\s\"'<>?\x1b]*)\?" rf"{_QUERY_CHAR}*+(?:(?:\\\\|\\(?!\")){_QUERY_CHAR}*+)*+"
+)
 _URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
 _REPLACEMENT = r"\1?<redacted>"
 _REPLACEMENT_BYTES = rb"\1?<redacted>"

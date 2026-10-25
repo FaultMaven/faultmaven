@@ -15,6 +15,7 @@ they are the reason the design changed rather than growing a type list.
 import io
 import json
 import logging
+import tracemalloc
 
 import pytest
 import structlog
@@ -147,6 +148,10 @@ class TestRedactUrls:
             'bad url "https://h.example/p?a=X"',  # the URL ends a quoted span
             'x "https://h/p?a=1\\" y',  # a backslash ends the query, then a quote
             "q https://h/p?a=b\\c&key=K end",  # a backslash inside the query
+            # The query's last character is a backslash, at the end of the
+            # string: serialised, an escaped backslash then the closing quote.
+            # Pins the escaped pair being tried before the lone backslash.
+            "see https://h/p?a=1\\",
         ],
     )
     def test_a_json_line_stays_json_and_loses_its_whole_query(self, event):
@@ -161,6 +166,23 @@ class TestRedactUrls:
 
         assert "<redacted>" in redacted
         assert "a=" not in redacted and "key=" not in redacted
+
+    def test_a_long_query_holds_no_memory_in_proportion_to_its_length(self):
+        """A starred alternation made Python's engine keep a backtrack frame per
+        character: ~180 MB for a 1 MiB query, on a path every emitted record
+        takes. Measured with tracemalloc, not a clock."""
+        query = "://h?" + "a" * (1 << 20)
+
+        tracemalloc.start()
+        try:
+            redact_urls(query)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        # The input and its result are ~1 MiB each; the match must add nothing
+        # in proportion to the query.
+        assert peak < 8 * (1 << 20), f"{peak / (1 << 20):.1f} MiB"
 
     def test_plain_text_with_a_backslash_in_the_query_loses_all_of_it(self):
         assert redact_urls(f"GET https://h/p?a=b\\c&key={API_KEY_SHAPE} end") == (
