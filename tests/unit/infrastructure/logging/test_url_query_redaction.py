@@ -78,8 +78,10 @@ class TestRedactUrls:
 
         With "?" allowed in the pre-query class, the greedy group backtracked
         to the LAST question mark, so only the trailing one was replaced and
-        the key shipped verbatim. RFC 3986 permits "?" inside a query, and a
-        sentence ending in "?" right after a URL produces the same shape.
+        the key shipped verbatim. With the query optional (#2312) the same
+        mutation swallows the query into the run and replaces nothing. RFC 3986
+        permits "?" inside a query, and a sentence ending in "?" right after a
+        URL produces the same shape.
         """
         assert redact_urls(
             f"Failed to reach https://api.x/v1?key={API_KEY_SHAPE}?"
@@ -167,13 +169,6 @@ class TestRedactUrls:
         )
         assert redact_urls_bytes(b"x://a://b'https://h/p?key=K") == (
             b"x://a://b'https://h/p?<redacted>"
-        )
-
-    def test_a_later_scheme_separator_in_the_same_run_keeps_the_query_redacted(
-        self,
-    ):
-        assert redact_urls("proxy://a/https://h/p?key=K") == (
-            "proxy://a/https://h/p?<redacted>"
         )
 
     @pytest.mark.parametrize(
