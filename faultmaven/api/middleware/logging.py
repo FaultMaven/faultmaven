@@ -30,8 +30,12 @@ So the two values are now two fields, and the names say which is which:
 * ``claimed_session_id`` — the caller's own session id, recorded verbatim
   because it is genuinely useful for correlation, under a name no reader can
   mistake for identity. The rule is "fields that name WHO are verified;
-  fields that name WHAT need not be", so ``case_id`` keeps its name: it says
-  what the request was about, not who made it.
+  fields that name WHAT need not be".
+* ``claimed_case_id`` — the case the request named, by the same token: a WHAT,
+  so it need not be verified, but named for where it came from. Under the
+  plain ``case_id`` it was stamped on every record of the request and
+  displaced the case a line was actually about, as the code logging it knew
+  it (#2268).
 
 The cost is accepted and was ruled on: the single-tenant arm deliberately never
 reads the token, so its principal names no user and its lines now say
@@ -207,7 +211,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # stamped into ``user_id``, which let any caller choose whose name the
         # access log carried.
         claimed_session_id = await self._extract_session_id(request)
-        case_id = await self._extract_case_id(request)
+        claimed_case_id = await self._extract_claimed_case_id(request)
 
         # Initialize request context through coordinator with business context
         # HTTP-specific context goes in attributes dict
@@ -240,7 +244,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # which every record carries.
         context = self.coordinator.start_request(
             claimed_session_id=claimed_session_id,
-            case_id=case_id,
+            claimed_case_id=claimed_case_id,
             attributes=http_context,
         )
 
@@ -284,7 +288,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # dependency and has not run. The field is present and null rather
             # than missing so the three request lines share one shape.
             user_id=None,
-            case_id=case_id,
+            claimed_case_id=claimed_case_id,
             x_forwarded_for=request.headers.get("x-forwarded-for", "none"),
             x_real_ip=request.headers.get("x-real-ip", "none"),
             content_length=request.headers.get("content-length", "none"),
@@ -375,7 +379,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 user_id=bound_user_id,
                 enterprise_id=enterprise_id,
                 organization_id=organization_id,
-                case_id=case_id,
+                claimed_case_id=claimed_case_id,
             )
 
             # Add correlation header to response
@@ -458,7 +462,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         user_id=bound_user_id,
                         enterprise_id=enterprise_id,
                         organization_id=organization_id,
-                        case_id=case_id,
+                        claimed_case_id=claimed_case_id,
                     )
 
             # Generate request summary even for failed requests
@@ -569,15 +573,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    async def _extract_case_id(self, request: Request) -> Optional[str]:
+    async def _extract_claimed_case_id(self, request: Request) -> Optional[str]:
         """
-        Extract case_id from request headers or body.
+        The case id the request names: a header, a query parameter or a body field.
+
+        Unverified, so it is logged as ``claimed_case_id`` (#2268).
 
         Args:
             request: FastAPI request object
 
         Returns:
-            case_id if found, None otherwise
+            the case id the request names, or None
         """
         try:
             # Check header (support legacy X-Investigation-ID for compatibility)
@@ -616,7 +622,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         pass
 
         except Exception as e:
-            logger.warning(f"Failed to extract case_id: {e}")
+            logger.warning(f"Failed to extract the claimed case id: {e}")
 
         return None
 

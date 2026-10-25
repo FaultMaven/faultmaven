@@ -50,7 +50,10 @@ class RequestContext:
         user_id: Optional user identifier. Only ever a VERIFIED subject. The
             HTTP middleware leaves this unset, because nothing is verified until
             the tenancy binder runs, which is after this context is created.
-        case_id: Optional troubleshooting case identifier
+        claimed_case_id: The case id the CALLER named (a header, a query
+            parameter or a body field), if any, unverified like
+            ``claimed_session_id``. Named apart from ``case_id`` so that it never
+            displaces the case a record is actually about (#2268).
         agent_phase: Current agent phase (e.g., "define_blast_radius")
         start_time: Request start timestamp
         attributes: Additional request-scoped metadata
@@ -62,7 +65,7 @@ class RequestContext:
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     claimed_session_id: Optional[str] = None
     user_id: Optional[str] = None
-    case_id: Optional[str] = None
+    claimed_case_id: Optional[str] = None
     agent_phase: Optional[str] = None
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     attributes: Dict[str, Any] = field(default_factory=dict)
@@ -764,7 +767,7 @@ class LoggingCoordinator:
         Args:
             **initial_context: Initial context attributes. The declared fields
                 are ``known_fields`` below (``claimed_session_id``, ``user_id``,
-                ``case_id``, …); anything else lands in ``attributes``, which
+                ``claimed_case_id``, …); anything else lands in ``attributes``, which
                 the structlog processor does NOT stamp on records — so a
                 misspelt field name is silently inert rather than an error.
                 ``user_id`` takes a VERIFIED subject only: the HTTP middleware
@@ -779,7 +782,7 @@ class LoggingCoordinator:
             "correlation_id",
             "claimed_session_id",
             "user_id",
-            "case_id",
+            "claimed_case_id",
             "agent_phase",
             "start_time",
         }

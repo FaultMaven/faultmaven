@@ -65,8 +65,8 @@ def lift_stdlib_extra(
     A structlog logger takes fields as keyword arguments, so the stdlib idiom
     ``logger.info(msg, extra={...})`` made ``extra`` one nested field, and every
     key inside it was invisible to a log query and to a reader of the record's
-    fields (#2262). The foreign (stdlib) pre-chain has ``ExtraAdder`` for the
-    same idiom; this is its counterpart for native structlog events.
+    fields (#2262). :func:`lift_record_extra` applies the same rule to plain
+    stdlib records, so both paths settle a collision the same way (#2268).
 
     Runs after the request attribution and the other shared processors, and
     never overwrites a key already in the event: a caller's ``user_id`` cannot
@@ -88,6 +88,32 @@ def lift_stdlib_extra(
         event_dict["extra"] = kept
     else:
         del event_dict["extra"]
+    return event_dict
+
+
+#: Collects a stdlib record's ``extra`` fields, the attributes a plain
+#: LogRecord does not have, without writing them onto the event.
+_RECORD_EXTRA = structlog.stdlib.ExtraAdder()
+
+
+def lift_record_extra(
+    logger: Any, method: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Lift a stdlib record's ``extra={...}`` fields into the event, by
+    :func:`lift_stdlib_extra`'s rule.
+
+    ``ExtraAdder`` wrote them over whatever the event already held, so on this
+    path a caller's colliding key replaced the request attribution, where on the
+    native path it stayed under ``extra`` (#2268). One rule for both now.
+    """
+    record = event_dict.get("_record")
+    if record is None or "extra" in event_dict:
+        return event_dict
+    fields = _RECORD_EXTRA(logger, method, {"_record": record})
+    del fields["_record"]
+    if fields:
+        event_dict["extra"] = fields
+        lift_stdlib_extra(logger, method, event_dict)
     return event_dict
 
 
@@ -273,13 +299,13 @@ class FaultMavenLogger:
         # One formatter renders BOTH structlog events and plain stdlib records.
         # For FOREIGN (stdlib) records — including third-party libs and every
         # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
-        # runs the shared processors PLUS ExtraAdder, so the ``extra`` fields are
-        # merged onto the event dict and actually render (previously they were
-        # silently dropped by ``basicConfig(format="%(message)s")``).
+        # runs the shared processors PLUS lift_record_extra, so the ``extra``
+        # fields are merged onto the event dict and actually render (previously
+        # they were silently dropped by ``basicConfig(format="%(message)s")``).
         formatter = structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=[
                 *shared_processors,
-                structlog.stdlib.ExtraAdder(),
+                lift_record_extra,
             ],
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -364,8 +390,12 @@ class FaultMavenLogger:
                 event_dict["claimed_session_id"] = ctx.claimed_session_id
             if "user_id" not in event_dict and ctx.user_id:
                 event_dict["user_id"] = ctx.user_id
-            if "case_id" not in event_dict and ctx.case_id:
-                event_dict["case_id"] = ctx.case_id
+            # ``claimed_case_id`` for the same reason, and so that it never
+            # competes with a record's own ``case_id``: under that name the
+            # request's claim displaced the case a line was actually about
+            # (#2268).
+            if "claimed_case_id" not in event_dict and ctx.claimed_case_id:
+                event_dict["claimed_case_id"] = ctx.claimed_case_id
             if "agent_phase" not in event_dict and ctx.agent_phase:
                 event_dict["agent_phase"] = ctx.agent_phase
 
