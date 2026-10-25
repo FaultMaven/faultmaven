@@ -6,7 +6,7 @@ listener we register. On the aiosqlite adapter each step is an awaited round
 trip, so a task cancellation can land in one: a turn cancelled at its ceiling,
 on the production SQLite engine, whose ``NullPool`` opens a connection per
 checkout. Before SQLAlchemy 2.0.53 (sqlalchemy#13548, with the cancellation
-regression of that fix closed in 2.0.55, #13678) nothing closed that
+regression of that fix closed in 2.0.55, sqlalchemy#13678) nothing closed that
 connection: the connected ``aiosqlite.Connection`` and its worker thread were
 orphaned until the collector reported them, which failed the suite's warning
 gate in CI (#2250). ``pyproject.toml`` pins the floor that closes it.
@@ -192,6 +192,10 @@ async def test_a_real_cancellation_during_the_close_still_propagates(
         await asyncio.wait({task, closing_seen}, return_when=asyncio.FIRST_COMPLETED)
         assert closing.is_set(), "the pool never closed the connection"
         task.cancel()
+        # Bounded: a SQLAlchemy whose cancelled terminate waited for the held
+        # close would otherwise hang here until the CI job's timeout (#2266).
+        done, _ = await asyncio.wait({task}, timeout=10)
+        assert done, "the cancelled checkout waited for the held close"
         with pytest.raises(asyncio.CancelledError):
             await task
         assert task.cancelled(), "the cancellation during the close was swallowed"

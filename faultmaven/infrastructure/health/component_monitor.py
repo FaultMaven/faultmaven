@@ -1105,19 +1105,18 @@ class ComponentHealthMonitor:
         **What this arm actually covers, measured.** The sweep abandons a probe
         two ways: it outlived ``_ALL_COMPONENTS_TIMEOUT_SECONDS`` and was
         cancelled, or its task raised past ``check_component_health``'s own
-        ``except`` (``CancelledError`` is not an ``Exception``). **Neither is
-        reachable by a shipped probe today.** Every probe carries
-        ``_PROBE_TIMEOUT_SECONDS`` (3.0) *under* the sweep budget (4.0), so a
-        probe that observes cancellation always answers through
-        ``check_component_health``'s error arm — which already wrote back
-        before this method existed. A hung ``database`` was measured reaching
-        ``fatal_unhealthy: ['database']`` identically with and without this
-        change, and ``_check_database_health`` is fully async besides; the
-        three probes that do hand work to ``_PROBE_EXECUTOR`` are all
-        ``fatal=False``. Reaching the sweep-budget arm takes a probe that does
-        **not** observe cancellation promptly — which is the case
-        ``check_all_components``' own docstring says the budget is a backstop
-        for. So this is a backstop, not a live path, and it is written as one.
+        ``except`` (``CancelledError`` is not an ``Exception``). Every probe
+        carries ``_PROBE_TIMEOUT_SECONDS`` (3.0) *under* the sweep budget (4.0),
+        so a probe that observes cancellation answers through
+        ``check_component_health``'s error arm, which already wrote back before
+        this method existed: a hung ``database`` that observes cancellation was
+        measured reaching ``fatal_unhealthy: ['database']`` identically with and
+        without this change. Reaching the sweep-budget arm takes a probe that
+        does **not** observe cancellation promptly, and one shipped probe is
+        such a probe: the database probe on PostgreSQL. Its query, cancelled
+        while the server is silent, waits on asyncpg's CancelRequest, which has
+        no timeout, so its cancellation never finishes (#2266). For that case
+        this arm is the live path; otherwise it is a backstop.
 
         What it fixes is the **divergence**, which was live: both arms used to
         answer ``/health``'s ``components`` map with a FRESH ``ComponentHealth``
@@ -1167,12 +1166,19 @@ class ComponentHealthMonitor:
         return component_health
 
     async def check_all_components(self) -> Dict[str, ComponentHealth]:
-        """Check every registered component concurrently, under a sweep budget.
+        """Check every registered component, under the sweep budget."""
+        return await self.check_components(list(self.component_health.keys()))
+
+    async def check_components(self, names: List[str]) -> Dict[str, ComponentHealth]:
+        """Check the named components concurrently, under a sweep budget.
 
         Each probe already carries its own deadline; this is the backstop for
         anything that escapes it — a probe that does not observe cancellation
-        promptly, or a future registration that forgets its own bound. The
-        whole sweep is what ``/health`` waits on, so an unbounded sweep is an
+        promptly, or a future registration that forgets its own bound. A
+        shipped probe does reach it: the database probe's query, cancelled
+        against a PostgreSQL that stopped answering, never finishes its
+        cancellation (#2266). Every caller goes through here, the one-component
+        endpoint and the readiness check included, so none of them is an
         unbounded endpoint whatever the individual probes promise.
 
         ``asyncio.wait`` rather than ``wait_for(gather(...))``: cancelling a
@@ -1183,12 +1189,13 @@ class ComponentHealthMonitor:
         Returns:
             Dictionary mapping component names to their health status
         """
+        if not names:
+            return {}  # asyncio.wait refuses an empty set
         # Stamped before the first probe starts, and carried to
-        # ``_record_abandoned_probe`` so a slow sweep cannot overwrite a
+        # ``_record_abandoned_probe`` so a slow sweep cannot overwrite an
         # observation a later sweep already made. Sweeps overlap: /health has
         # four callers and the Kubernetes probes co-fire.
         sweep_started_at = datetime.now(timezone.utc)
-        names = list(self.component_health.keys())
         tasks = {
             asyncio.ensure_future(self.check_component_health(name)): name
             for name in names
@@ -1220,7 +1227,13 @@ class ComponentHealthMonitor:
 
         for task in done:
             component_name = tasks[task]
-            error = task.exception()
+            # A task that cancelled itself is done and abandoned too;
+            # ``exception()`` would raise its CancelledError out of the sweep.
+            error = (
+                asyncio.CancelledError("the probe was cancelled")
+                if task.cancelled()
+                else task.exception()
+            )
             if error is not None:
                 self.logger.error(f"Health check failed for {component_name}: {error}")
                 health_results[component_name] = self._record_abandoned_probe(
@@ -1520,19 +1533,12 @@ class ComponentHealthMonitor:
         ``_initialize_default_components``.
         """
         names = sorted(self.readiness_fatal_components)
-        results = await asyncio.gather(
-            *(self.check_component_health(name) for name in names),
-            return_exceptions=True,
-        )
+        results = await self.check_components(names)
 
         blocking: List[str] = []
         detail: Dict[str, Any] = {}
-        for name, result in zip(names, results):
-            if isinstance(result, BaseException):
-                self.logger.error(f"Readiness check failed for {name}: {result}")
-                blocking.append(name)
-                detail[name] = {"status": HealthStatus.UNHEALTHY.value}
-                continue
+        for name in names:
+            result = results[name]
             detail[name] = {
                 "status": result.status.value,
                 "response_time_ms": round(result.response_time_ms, 2),

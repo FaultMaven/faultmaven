@@ -214,6 +214,40 @@ async def test_a_database_read_past_the_bound_warns_and_runs_the_subprocess(
 
 
 @pytest.mark.unit
+async def test_a_read_whose_cancellation_hangs_still_runs_the_subprocess_at_the_bound(
+    tmp_path, monkeypatch, caplog
+):
+    """An asyncpg read cancelled against a PostgreSQL that stopped answering
+    never finishes its cancellation, and ``wait_for`` waited for it: the boot
+    hung instead of falling through to the bounded subprocess (#2266)."""
+    release = asyncio.Event()
+
+    async def read_against_a_silent_server(url: str) -> frozenset[str]:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release.wait()  # the driver's CancelRequest, never answered
+            raise
+        return frozenset()
+
+    monkeypatch.setattr(data_init, "AT_HEAD_CHECK_TIMEOUT_SECONDS", 0.05)
+    with patch.object(data_init, "_database_revisions", read_against_a_silent_server):
+        boot = asyncio.ensure_future(_boot(tmp_path / "silent.db"))
+        try:
+            done, _ = await asyncio.wait({boot}, timeout=5)
+            assert done, "the at-head check outlasted its bound"
+            subprocess_run = boot.result()
+        finally:
+            release.set()
+            boot.cancel()
+            await asyncio.wait({boot})
+            await asyncio.sleep(0)  # the abandoned read settles
+    subprocess_run.assert_called_once()
+    [warning] = _records(caplog, logging.WARNING)
+    assert "TimeoutError" in warning
+
+
+@pytest.mark.unit
 async def test_the_engine_is_disposed_when_the_read_is_cancelled():
     class HangingEngine:
         disposed = False

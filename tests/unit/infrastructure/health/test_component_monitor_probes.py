@@ -940,6 +940,65 @@ async def test_a_hanging_probe_does_not_take_the_others_with_it(monkeypatch):
     assert results["database"].status is HealthStatus.HEALTHY
 
 
+async def test_one_component_is_checked_under_the_sweep_budget(monkeypatch):
+    """``GET /health/components/{name}`` checks one component, outside any sweep.
+
+    It called ``check_component_health`` directly, so a probe that never
+    finishes its cancellation (the database on a PostgreSQL that stopped
+    answering, #2266) held the request open. It goes through
+    ``check_components`` now, under the same backstop as a sweep.
+    """
+    shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+    probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+
+    checking = asyncio.ensure_future(monitor.check_components(["database"]))
+    done, _ = await asyncio.wait({checking}, timeout=5)
+    if not done:
+        checking.cancel()
+    assert done, "the one-component check outlasted the sweep budget"
+
+    result = checking.result()["database"]
+    assert result.status is HealthStatus.UNHEALTHY
+    assert "sweep budget" in result.last_error
+
+
+async def test_the_readiness_check_is_under_the_sweep_budget(monkeypatch):
+    """The readiness check probes outside a sweep too, so the same backstop."""
+    shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("per_pod_and_fatal", fatal=True, fails_per_replica=True)
+    probe_that_ignores_cancellation(monitor, monkeypatch, "per_pod_and_fatal")
+
+    checking = asyncio.ensure_future(monitor.check_serving_readiness())
+    done, _ = await asyncio.wait({checking}, timeout=5)
+    if not done:
+        checking.cancel()
+    assert done, "the readiness check outlasted the sweep budget"
+
+    ready, detail = checking.result()
+    assert ready is False
+    assert detail["blocking"] == ["per_pod_and_fatal"]
+
+
+async def test_a_probe_that_cancels_itself_blocks_readiness(monkeypatch):
+    """A probe task that ends cancelled is abandoned like any other: the
+    readiness check reports it blocking rather than raising its
+    CancelledError past the route's guard."""
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("per_pod_and_fatal", fatal=True, fails_per_replica=True)
+
+    async def _cancels_itself(component_name):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(monitor, "check_component_health", _cancels_itself)
+
+    ready, detail = await asyncio.wait_for(monitor.check_serving_readiness(), 5)
+
+    assert ready is False
+    assert detail["blocking"] == ["per_pod_and_fatal"]
+
+
 async def test_a_cancellable_hang_is_abandoned_by_the_PROBE_arm_inside_a_sweep(
     monkeypatch,
 ):

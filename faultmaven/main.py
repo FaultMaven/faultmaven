@@ -1215,10 +1215,12 @@ async def health_check_component(component_name: str):
         from .infrastructure.health.component_monitor import component_monitor
         from .infrastructure.health.sla_tracker import sla_tracker
 
-        # Get component health
-        component_health = await component_monitor.check_component_health(
+        # Under the sweep's backstop: a probe that never finishes its
+        # cancellation (the database on a silent PostgreSQL) answers at the
+        # sweep budget instead of holding this request open (#2266).
+        component_health = (await component_monitor.check_components([component_name]))[
             component_name
-        )
+        ]
 
         # Get component metrics
         component_metrics = component_monitor.get_component_metrics(component_name)
