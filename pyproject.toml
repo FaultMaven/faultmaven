@@ -228,6 +228,12 @@ test = [
     # httpx with a StarletteDeprecationWarning.
     "httpx2>=2.0.0",
 
+    # The PostgreSQL connection class overrides a private asyncpg method
+    # (faultmaven/infrastructure/persistence/pg_connection.py, #2280). Its
+    # tests drive asyncpg against a loopback stand-in, so every test lane runs
+    # them, not only the cloud one.
+    "asyncpg>=0.29.0",
+
     # Mocking and test utilities
     "responses>=0.23.0",
     "freezegun>=1.2.0",

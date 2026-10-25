@@ -41,6 +41,7 @@ What this module pins, in the order the failure travels:
 
 from __future__ import annotations
 
+import asyncio
 import errno
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -832,3 +833,71 @@ class TestTheTenantBinder:
         # An HTTPException, not the raw domain exception: the latter would
         # leave the framework with nothing to map and become a 500.
         assert isinstance(exc_info.value, HTTPException)
+
+
+# ============================================================
+# 6. A store read that never returns is refused within its deadline (#2280)
+# ============================================================
+
+
+class _SilentSession:
+    """A session whose queries never return: a database that stopped answering."""
+
+    async def execute(self, *_args, **_kwargs):
+        await asyncio.Event().wait()
+
+
+@asynccontextmanager
+async def _silent_session_factory():
+    yield _SilentSession()
+
+
+class TestAStoreThatNeverAnswers:
+    """#2280: every authenticated request reads the revocation store, so a
+    database that stops answering used to hold every one of them, unbounded.
+    The read now has a deadline, and its ``TimeoutError`` is a store read
+    failure like any other: the request fails closed with the distinct 503."""
+
+    async def test_the_request_path_answers_503_within_the_deadline(self):
+        store = SqlTokenRevocationStore(
+            session_factory=_silent_session_factory, read_timeout_seconds=0.2
+        )
+        service = _auth_service(store)
+        token = _token(service)
+
+        attempt = asyncio.ensure_future(
+            get_current_user(
+                request_with_authorization(f"Bearer {token}"),
+                credentials=None,
+                auth_service=service,
+            )
+        )
+        # Bounded by the wait, never by a wall-clock threshold: against a store
+        # that never answers, only the 0.2 s deadline can end it inside 5 s.
+        done, _ = await asyncio.wait({attempt}, timeout=5)
+        if not done:
+            attempt.cancel()
+            await asyncio.wait({attempt}, timeout=1)
+        assert done, "the request is still waiting on a store that never answers"
+
+        exc = attempt.exception()
+        assert isinstance(exc, HTTPException)
+        _assert_is_the_distinct_refusal(exc)
+        # Raised inside the dependency's handler, so the refusal it classified
+        # is the 503's context.
+        assert isinstance(exc.__context__, RevocationStateUnknownError)
+        assert exc.__context__.kind == "TimeoutError"
+
+    async def test_the_deadline_is_the_setting_the_composition_root_reads(self):
+        from faultmaven.container.providers.services import (
+            create_token_revocation_store,
+        )
+
+        def settings(seconds: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                is_cloud=False,
+                database=SimpleNamespace(revocation_read_timeout_seconds=seconds),
+            )
+
+        assert create_token_revocation_store(settings(3.0)).read_timeout_seconds == 3.0
+        assert create_token_revocation_store(settings(0)).read_timeout_seconds is None

@@ -1,7 +1,8 @@
 """API Dependencies Module
 
 The names of the runtime backends ``GET /admin/config/status`` reports, decided
-by the infrastructure predicates that own each question.
+by the infrastructure predicates that own each question, and the database
+bounds it reports beside them.
 
 The request-scoped service factory and every dependency built on it were
 removed in #1935, together with the case-nested session routes that were their
@@ -10,8 +11,12 @@ only consumer.
 
 from typing import Any, Optional
 
+from faultmaven.api.models import DatabaseTimeoutsStatus
 from faultmaven.infrastructure.chroma_client import chroma_client_kind
-from faultmaven.infrastructure.persistence.database import active_database_backend
+from faultmaven.infrastructure.persistence.database import (
+    active_database_backend,
+    active_database_bounds,
+)
 from faultmaven.infrastructure.redis_client import is_fakeredis
 
 # This module used to re-export ``get_session_id`` (and import
@@ -26,6 +31,7 @@ from faultmaven.infrastructure.redis_client import is_fakeredis
 
 __all__ = [
     "database_backend_name",
+    "database_timeouts_status",
     "session_storage_backend_name",
     "vector_storage_backend_name",
 ]
@@ -49,6 +55,33 @@ def database_backend_name() -> str:
     """The dialect of the engine this process built, e.g. ``"postgresql"`` or
     ``"sqlite"``; ``"not initialized"`` before one exists."""
     return active_database_backend() or NOT_INITIALIZED
+
+
+def database_timeouts_status(
+    revocation_read_timeout_seconds: Optional[float],
+) -> DatabaseTimeoutsStatus:
+    """The bounds the database engine was built with, beside the revocation read's (#2280).
+
+    The four PostgreSQL bounds are ``None`` before the engine exists and on a
+    SQLite engine, where none applies. The revocation read's deadline is the
+    caller's to read off the store it holds.
+    """
+    bounds = active_database_bounds()
+
+    def seconds(milliseconds: Optional[int]) -> Optional[float]:
+        return milliseconds / 1000 if milliseconds is not None else None
+
+    return DatabaseTimeoutsStatus(
+        command_timeout_seconds=bounds.command_timeout_seconds if bounds else None,
+        connect_timeout_seconds=bounds.connect_timeout_seconds if bounds else None,
+        statement_timeout_seconds=(
+            seconds(bounds.statement_timeout_ms) if bounds else None
+        ),
+        client_connection_check_interval_seconds=(
+            seconds(bounds.client_connection_check_interval_ms) if bounds else None
+        ),
+        revocation_read_timeout_seconds=revocation_read_timeout_seconds,
+    )
 
 
 def session_storage_backend_name(redis_client: Any) -> str:

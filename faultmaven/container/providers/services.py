@@ -1078,7 +1078,9 @@ def create_token_revocation_store(
         "Token revocation store: database (revocations must survive a restart; "
         "reported as token_revocation_durable on GET /admin/config/status)"
     )
-    return SqlTokenRevocationStore()
+    return SqlTokenRevocationStore(
+        read_timeout_seconds=settings.database.revocation_read_timeout_seconds
+    )
 
 
 def create_signing_token_generator(

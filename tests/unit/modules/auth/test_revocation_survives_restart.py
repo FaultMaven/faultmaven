@@ -141,6 +141,7 @@ def _settings():
             jwt_public_key_path=None,
             jwt_secret_key=SimpleNamespace(get_secret_value=lambda: SECRET),
         ),
+        database=SimpleNamespace(revocation_read_timeout_seconds=5.0),
     )
 
 

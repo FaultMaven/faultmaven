@@ -245,7 +245,10 @@ lands inside a commit leaves its outcome unknown and one that lands after it
 answers 504 for a committed turn (#1882). Before it starts, `commit_turn` checks
 that at least `TURN_COMMIT_RESERVE_SECONDS` of the deadline is left and answers
 the same 504 `REQUEST_TIMEOUT` when it is not, with nothing committed; once
-started, the commit runs to its end. The reserve (3.5 s) is sized from the
+started, the commit runs to its end, bounded only by the database's command
+timeout: a database that stops answering mid-commit fails the turn with a 500
+and the outcome unknown (#2280; a keyed retry replays the receipt). The
+reserve (3.5 s) is sized from the
 measured p99 of the commit on SQLite and PostgreSQL times a safety factor of
 10, and **the LLM steps pay for it**: `spendable_turn_budget` and
 `backstop_turn_budget` both subtract it. After the commit the response path

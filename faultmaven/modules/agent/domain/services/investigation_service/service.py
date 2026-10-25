@@ -40,10 +40,12 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
+    DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
     ValidationException,
+    walk_cause_chain,
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
@@ -334,6 +336,8 @@ class InvestigationService:
         Raises:
             NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
+            DatabaseTimeout: The database did not answer in time, wherever in
+                the preparation (#2280); nothing is committed.
             ServiceException: If turn processing fails
             asyncio.CancelledError: Re-raised, never swallowed: the route's
                 ``wait_for`` cancels this on a timeout, and a coroutine that
@@ -631,6 +635,18 @@ class InvestigationService:
             # the load, and the case is not committed at this turn number, so a
             # consumer dedups on (case_id, turn) preferring the non-error row.
             _abandon()
+            # The database's own timeout passes through as itself (#2280), so
+            # the route can answer "the database is unavailable, nothing was
+            # saved" rather than a timeout of the turn or a generic failure.
+            # Looked for on the cause chain: the engine and the repositories
+            # wrap it on its way here.
+            if isinstance(e, DatabaseTimeout):
+                raise
+            if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(e)):
+                raise DatabaseTimeout(
+                    f"The database did not answer while a turn on case "
+                    f"{case_id} was being prepared: {e}"
+                ) from e
             logger.error(f"Failed to process turn for case {case_id}: {e}")
             # Preserve a typed error_code (e.g. QUOTA_EXHAUSTED billing) through
             # the wrap so the route handler can map it to a precise HTTP status
@@ -666,7 +682,10 @@ class InvestigationService:
         and emits the #1142 error row. This method then only maps what the
         commit raised, and a cancellation of this method reaches its caller
         untouched while the settlement runs to its end. So a 2xx means the
-        whole turn is committed, and an error means none of it is.
+        whole turn is committed, and an error means none of it is, except when
+        the database stops answering during the commit itself: the commit is
+        bounded by ``DATABASE_COMMAND_TIMEOUT_SECONDS`` (#2280), and the
+        ``ServiceException`` it then raises leaves the outcome unknown.
 
         Raises:
             TurnDeadlineExceeded: Too little budget left to start the commit.
@@ -674,7 +693,9 @@ class InvestigationService:
                 (409); nothing of the turn is committed.
             TurnReceiptExistsError: Another turn under the same key already
                 committed; nothing of this one is (the route replays that one).
-            ServiceException: The commit failed (500); nothing is committed.
+            ServiceException: The commit failed (500); nothing is committed,
+                unless the database timed out during the commit (#2280), which
+                leaves the outcome unknown.
         """
         try:
             check_commit_budget()

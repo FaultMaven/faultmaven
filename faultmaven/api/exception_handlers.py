@@ -201,6 +201,42 @@ def revocation_state_unknown_http_exception() -> HTTPException:
     )
 
 
+# A database that did not answer in time (#2280). Shaped like the revocation
+# refusal above, which answers the same cause on the authentication path: 503,
+# its own code, ``Retry-After: 5``.
+DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"
+
+DATABASE_UNAVAILABLE_DETAIL = (
+    "The database did not answer in time, so this request was not saved. "
+    "Please retry shortly."
+)
+
+
+def database_unavailable_http_exception() -> HTTPException:
+    """The refusal when the database did not answer and nothing was saved (#2280).
+
+    **503**, for the reason the revocation refusal is one: the server cannot
+    serve this right now, which is a dependency failure, not a verdict on the
+    request. Not the turn route's 504s: ``REQUEST_TIMEOUT`` says the turn used
+    its whole ceiling on this input and will likely do so again, which is false
+    for a database that stopped answering, and ``LLM_TIMEOUT`` names the AI
+    provider.
+
+    ``Retry-After: 5``, the revocation refusal's value: an operator's fix or a
+    failover is what ends it, and a client that waits and retries recovers
+    with it. Only for a request that committed nothing: a caller that cannot
+    say so must not use this.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=DATABASE_UNAVAILABLE_DETAIL,
+        headers={
+            "x-error-code": DATABASE_UNAVAILABLE,
+            "Retry-After": "5",
+        },
+    )
+
+
 def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     """The semantic ``error_code`` the engine attached, if any.
 

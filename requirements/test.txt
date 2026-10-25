@@ -36,6 +36,8 @@ apscheduler==3.11.2
     # via faultmaven (pyproject.toml)
 async-timeout==5.0.1
     # via redis
+asyncpg==0.31.0
+    # via faultmaven (pyproject.toml)
 attrs==23.2.0
     # via
     #   aiohttp

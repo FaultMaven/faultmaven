@@ -2,7 +2,9 @@
 
 The invariant (owner ruling): a 2xx turn response means everything the turn
 wrote is committed; a non-2xx means none of it is. The only writes a failed turn
-may leave are the ones whose truth does not depend on the turn committing.
+may leave are the ones whose truth does not depend on the turn committing. The
+one exception (owner ruling, #2280): a database that stops answering during the
+commit itself, which the command timeout fails with the outcome unknown.
 
 Driven through the REAL ``MilestoneEngine`` (its LLM seam stubbed, no provider
 call) and the REAL ``InvestigationService`` on the REAL ``SQLiteCaseRepository``
@@ -482,7 +484,14 @@ def _user() -> UserDTO:
     )
 
 
-async def _submit(sessions, monkeypatch, *, agent_timeout: float, generate=None):
+async def _submit(
+    sessions,
+    monkeypatch,
+    *,
+    agent_timeout: float,
+    generate=None,
+    repository_class=None,
+):
     """``POST /cases/{id}/turns`` through the route function, on the real
     service, with the turn ceiling forced to ``agent_timeout``."""
     monkeypatch.setattr(
@@ -495,7 +504,7 @@ async def _submit(sessions, monkeypatch, *, agent_timeout: float, generate=None)
         ),
     )
     async with sessions() as session:
-        repository = _Repository(session, sessions)
+        repository = (repository_class or _Repository)(session, sessions)
         engine = _engine(repository, generate=generate)
         service = _service(repository, engine)
 
@@ -591,6 +600,41 @@ class TestTheDeadline:
         committed = (await _committed(sessions))["case"]
         assert committed.current_turn == 5
         assert [m["role"] for m in committed.messages] == ["user", "assistant"]
+
+
+class _FrozenCommit(_Repository):
+    """A turn save that meets a database that stopped answering mid-commit.
+
+    asyncpg's command timeout surfaces through SQLAlchemy as a bare
+    ``TimeoutError`` (#2280), after the COMMIT may have reached the server."""
+
+    async def save(self, case, **rows):
+        raise TimeoutError()
+
+
+class TestADatabaseFrozenDuringTheCommit:
+    async def test_it_is_never_answered_as_the_504_that_commits_nothing(
+        self, sessions, monkeypatch
+    ):
+        """The one exception to "a non-2xx means none of it committed" (owner
+        ruling, #2280): the outcome is unknown, so the answer must not be the
+        504 that tells the client nothing was saved. It is the 500 a failed
+        commit gets, which invites a retry (a keyed one is answered from the
+        receipt). Pinned because a ``TimeoutError`` is easy to classify as the
+        route's own timeout."""
+        await _seed(sessions, _investigating_case())
+
+        with pytest.raises(HTTPException) as refused:
+            await _submit(
+                sessions,
+                monkeypatch,
+                agent_timeout=TURN_COMMIT_RESERVE_SECONDS + 30,
+                repository_class=_FrozenCommit,
+            )
+
+        assert refused.value.status_code == 500
+        assert refused.value.headers["x-error-code"] == "SERVICE_ERROR"
+        assert "nothing was saved" not in str(refused.value.detail)
 
 
 # ---------------------------------------------------------------------------
