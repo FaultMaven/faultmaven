@@ -622,7 +622,8 @@ class BaseService(ABC):
         """Log service error with context.
 
         Logs an error with exception information, service context,
-        and additional fields. Logs at ERROR level with exc_info=True.
+        and additional fields. Logs at ERROR level with the exception itself as
+        exc_info, so the traceback renders outside its ``except`` too.
 
         Args:
             operation: Name of the operation that failed

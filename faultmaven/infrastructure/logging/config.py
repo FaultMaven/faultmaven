@@ -48,6 +48,15 @@ NOISY_THIRD_PARTY_LOGGERS: Mapping[str, int] = MappingProxyType(
 )
 
 
+# Event keys the formatter's later steps read or write: format_exc_info and
+# StackInfoRenderer take exc_info / stack_info as directives and write
+# exception / stack; ProcessorFormatter writes the _record / _from_structlog
+# meta keys.
+_FORMATTER_KEYS = frozenset(
+    {"exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"}
+)
+
+
 def lift_stdlib_extra(
     _logger: Any, _method: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -62,14 +71,16 @@ def lift_stdlib_extra(
     Runs after the request attribution and the other shared processors, and
     never overwrites a key already in the event: a caller's ``user_id`` cannot
     replace the verified principal, nor its ``level`` or ``timestamp`` the
-    logger's own. A key that collides stays under ``extra``, so nothing is lost.
+    logger's own. A key that collides stays under ``extra``, so nothing is lost;
+    so does a key the formatter acts on, which a caller's data must neither
+    trigger (a traceback) nor have overwritten.
     """
     extra = event_dict.get("extra")
     if not isinstance(extra, dict):
         return event_dict
     kept = {}
     for key, value in extra.items():
-        if key in event_dict:
+        if key in event_dict or key in _FORMATTER_KEYS:
             kept[key] = value
         else:
             event_dict[key] = value
