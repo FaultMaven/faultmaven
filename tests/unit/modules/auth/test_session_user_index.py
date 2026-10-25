@@ -143,3 +143,18 @@ async def test_the_index_lapses_with_its_last_session(service, store, redis):
 
     assert await redis.exists(index_key) == 0
     assert await _ids(service, "user-a") == []
+
+
+def test_the_limit_is_set_by_its_session_variable_and_is_at_least_one(monkeypatch):
+    """``SESSION_MAX_SESSIONS_PER_USER`` names the limit, like the other session
+    settings, and below one is refused: at 0 every create would fail."""
+    from pydantic import ValidationError
+
+    from faultmaven.config.settings import SessionSettings
+
+    monkeypatch.setenv("SESSION_MAX_SESSIONS_PER_USER", "4")
+    assert SessionSettings().max_sessions_per_user == 4
+
+    monkeypatch.setenv("SESSION_MAX_SESSIONS_PER_USER", "0")
+    with pytest.raises(ValidationError, match="max_sessions_per_user|SESSION_MAX"):
+        SessionSettings()

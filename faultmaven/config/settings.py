@@ -1281,7 +1281,11 @@ class SessionSettings(BaseSettings):
     heartbeat_interval_seconds: int = Field(
         default=30, validation_alias="SESSION_HEARTBEAT_INTERVAL_SECONDS"
     )
-    max_sessions_per_user: int = Field(default=10)
+    # At least one: the limit evicts the oldest session to make room, and at 0
+    # every create would fail (#2297 made the limit live).
+    max_sessions_per_user: int = Field(
+        default=10, validation_alias="SESSION_MAX_SESSIONS_PER_USER", ge=1
+    )
 
     # Session timeout bounds for validation (used by API routes)
     min_timeout_minutes: int = Field(
