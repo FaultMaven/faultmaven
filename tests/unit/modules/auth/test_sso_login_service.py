@@ -1360,7 +1360,10 @@ async def test_the_sso_login_stores_its_handle_server_side_and_revokes_it(store)
     provider = RevokingProvider()
     sessions = AuthSessionService(
         session_store=RedisSessionStore(
-            fakeredis.FakeRedis(decode_responses=True), session_ttl_seconds=1800
+            # A private server: the default one is process-wide, so this
+            # session and its user index would outlive the test.
+            fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True),
+            session_ttl_seconds=1800,
         )
     )
     service = build_service(
