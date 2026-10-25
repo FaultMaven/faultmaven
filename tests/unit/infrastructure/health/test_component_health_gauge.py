@@ -650,10 +650,11 @@ async def test_no_component_failure_shape_reaches_the_health_fallback_body(
     # investigation model cannot call tools, and that verdict comes from the
     # AMBIENT LLM config, not from anything this test arranges. It depended on
     # the environment: the zero-config `local` preset (tool-capable) applies
-    # only when REDIS_HOST is unset, so under the Cloud job's REDIS_HOST the
-    # default provider had no key and the body read `degraded` unless an
-    # earlier file had left capable LLM state in the process -- which the
-    # serial order happened to do and an xdist worker did not (#1636). Pinned
+    # only when nothing declines it, so in Test Cloud's suite (declined then by
+    # REDIS_HOST, now by CONFIG_PRESET=none) the default provider had no key
+    # and the body read `degraded` unless an earlier file had left capable LLM
+    # state in the process -- which the serial order happened to do and an
+    # xdist worker did not (#1636). Pinned
     # capable, so the status below is the component monitor's verdict and
     # nothing else.
     from faultmaven.config import investigation_capability as capability_module

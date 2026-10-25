@@ -136,7 +136,7 @@ A preset fills in variables that neither the environment nor the `.env` sets. It
 |-------|--------|
 | `local` (alias `minimal`) | Development defaults: `DEBUG`, a local LLM, in-memory cases, a local Chroma |
 | `standard` | Single-server production: Redis sessions, ChromaDB |
-| `enterprise` | Production with PostgreSQL, Redis and ChromaDB |
+| `enterprise` | Production server settings, cases and users in the database (`CASE_STORAGE_TYPE`/`USER_STORAGE_TYPE=database`), vectors in ChromaDB, OpenAI for chat, PII sanitized, and `DEPLOYMENT_MODE=multi-tenant`, which the settings refuse (they accept `standalone` or `cloud`), so set `DEPLOYMENT_MODE` yourself. It names no service: set `DATABASE_URL`, `REDIS_HOST` and `CHROMADB_URL` |
 | `none` (any letter case) | No preset. None is applied, and the zero-config `local` preset is not detected either. Every setting is the environment's, the `.env`'s or the default in `settings.py` |
 | unset | The zero-config `local` preset is applied when nothing configures an LLM provider, `REDIS_HOST`, `CHROMADB_URL` or an `ENVIRONMENT` other than `development`. Otherwise no preset is applied |
 

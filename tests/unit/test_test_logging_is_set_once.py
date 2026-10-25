@@ -199,7 +199,8 @@ def test_11_the_middleware_logger_still_reaches_caplog(caplog, capsys):
 #: * ``LOG_LEVEL`` and ``CONFIG_PRESET`` because the child must start from
 #:   neither pin nor preset of the parent's: the preset never overrides a
 #:   ``LOG_LEVEL`` already set, and a set ``CONFIG_PRESET`` applies that
-#:   preset instead of the detected one;
+#:   preset instead of the detected one, except ``none``, which applies none
+#:   (#2243);
 #: * the rest because ``detect_zero_config_preset`` declines the preset when
 #:   any of them is set (``ENVIRONMENT`` only when it names something other
 #:   than ``development``). Test Cloud's suite declined the preset (then with

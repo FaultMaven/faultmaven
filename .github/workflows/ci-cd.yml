@@ -490,11 +490,13 @@ jobs:
   # connection to any Redis the step does not name: a suite test that reached
   # for the server fails instead of using it (#2243).
   #
-  # Both test steps also set CONFIG_PRESET=none. They name no provider, Redis
-  # or ChromaDB, so the zero-config `local` preset would otherwise apply
+  # The suite step sets CONFIG_PRESET=none. It names no provider, Redis or
+  # ChromaDB, so the zero-config `local` preset would otherwise apply
   # (detect_zero_config_preset). With it declined, this job runs the suite on
   # no preset at all, the environment's values and settings.py's defaults, the
-  # profile that caught #1636; Test Standalone runs it under `local`.
+  # profile that caught #1636; Test Standalone runs it under `local`. The
+  # real-Redis step sets it too, so its profile matches the suite's (its
+  # REDIS_HOST would decline the preset anyway).
   #
   # Test PostgreSQL Integration also installs cloud.txt but selects `-m postgres`,
   # whose tests talk to PostgreSQL directly and never construct a Redis client or

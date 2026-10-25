@@ -15,7 +15,7 @@ Usage:
     # Via environment variable
     CONFIG_PRESET=local  # Uses in-memory storage, no external deps
     CONFIG_PRESET=standard  # Requires Redis, ChromaDB
-    CONFIG_PRESET=enterprise  # Full production with PostgreSQL
+    CONFIG_PRESET=enterprise  # Production settings, database-backed; names no services
     CONFIG_PRESET=none  # No preset: none applied, and none auto-detected
 
     # Presets can be overridden by specific env vars
@@ -39,7 +39,7 @@ class PresetName(str, Enum):
     LOCAL = "local"  # Zero-config for local development
     MINIMAL = "minimal"  # Alias for local
     STANDARD = "standard"  # Basic production with Redis + ChromaDB
-    ENTERPRISE = "enterprise"  # Full production with PostgreSQL
+    ENTERPRISE = "enterprise"  # Production settings, database-backed; names no services
 
 
 @dataclass
@@ -140,9 +140,9 @@ PRESETS: Dict[str, PresetDefinition] = {
     ),
     PresetName.ENTERPRISE: PresetDefinition(
         name="enterprise",
-        description="Full production setup with PostgreSQL for persistence, "
-        "Redis for sessions/caching, ChromaDB for vectors. "
-        "Suitable for multi-tenant, high-availability deployments.",
+        description="Production settings with cases and users in the database "
+        "and vectors in ChromaDB. Names no service: set DATABASE_URL (PostgreSQL), "
+        "REDIS_HOST and CHROMADB_URL.",
         defaults={
             # Server
             "ENVIRONMENT": "production",
