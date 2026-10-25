@@ -51,34 +51,40 @@ tests/
 
 ```bash
 # Run all tests
-./faultmaven.sh test
+python scripts/tests.py
 
 # Run unit tests only
-./faultmaven.sh test --unit
+python scripts/tests.py --unit
 
 # Run with coverage
-./faultmaven.sh test --coverage
+python scripts/tests.py --coverage
 
 # Run in parallel
-./faultmaven.sh test --parallel
+python scripts/tests.py --parallel
 ```
 
-## CI/CD Pipeline Modes
+## Preset Modes
 
-The test runner supports predefined CI/CD pipeline configurations:
+The runner's preset selections. CI does not use them: its jobs run `pytest`
+directly (`.github/workflows/ci-cd.yml`).
 
 ```bash
-# Fast CI (unit tests, parallel) - for PR checks
-./faultmaven.sh test --ci
+# Unit tests, parallel, without the slow and cloud tests
+python scripts/tests.py --ci
 
-# Full CI (unit + integration + infrastructure) - for merge checks
-./faultmaven.sh test --ci-full
+# Unit + integration + infrastructure, parallel, without the slow and cloud tests
+python scripts/tests.py --ci-full
 
-# Nightly (all tests including benchmarks)
-./faultmaven.sh test --ci-nightly
+# Every test but the cloud ones, benchmarks included, one process
+python scripts/tests.py --ci-nightly
 
-# Enterprise (tests requiring Redis, PostgreSQL)
-./faultmaven.sh test --ci-enterprise
+# The tests marked `cloud`, which need a Redis server or a PostgreSQL DATABASE_URL
+python scripts/tests.py --ci-cloud
+
+# The PostgreSQL suite (marked `postgres`), as CI runs it, with DATABASE_URL
+# naming a PostgreSQL server on localhost: the tests expect the schema at head
+alembic upgrade head
+SKIP_SERVICE_CHECKS=true pytest tests/ -m postgres
 ```
 
 ## Test Categories
@@ -96,19 +102,19 @@ The test runner supports predefined CI/CD pipeline configurations:
 
 ```bash
 # By keyword
-./faultmaven.sh test -k "test_case"
+python scripts/tests.py -k "test_case"
 
 # By marker
-./faultmaven.sh test -m "security"
+python scripts/tests.py -m "security"
 
 # By directory
-./faultmaven.sh test --dir tests/unit/services
+python scripts/tests.py --dir tests/unit/services
 
 # Single file
-./faultmaven.sh test tests/unit/services/test_auth_service.py
+pytest tests/unit/services/test_base_service.py
 
 # Stop on first failure
-./faultmaven.sh test --fail-fast
+python scripts/tests.py --fail-fast
 ```
 
 ## Pytest Markers
@@ -129,13 +135,13 @@ Load tests use Locust for stress testing:
 
 ```bash
 # Interactive mode (web UI)
-./faultmaven.sh test load
+python scripts/tests.py load
 
 # Headless mode
-./faultmaven.sh test load --headless --users 50 --run-time 60s
+python scripts/tests.py load --headless --users 50 --run-time 60s
 
 # With CSV output
-./faultmaven.sh test load --headless --csv results
+python scripts/tests.py load --headless --csv results
 ```
 
 ## Background Execution
@@ -144,26 +150,26 @@ For CI pipelines or long-running test suites (not typical local development):
 
 ```bash
 # Run in background (useful for CI or full test suites)
-./faultmaven.sh test --ci-full --daemon
+python scripts/tests.py --ci-full --daemon
 
 # Check status
-./faultmaven.sh test status
+python scripts/tests.py status
 
 # View logs
 tail -f .faultmaven/tests.log
 
 # Stop background tests
-./faultmaven.sh test stop
+python scripts/tests.py stop
 ```
 
 ## Coverage Reports
 
 ```bash
 # Generate coverage report
-./faultmaven.sh test --coverage
+python scripts/tests.py --coverage
 
 # With minimum threshold
-./faultmaven.sh test --coverage --coverage-fail-under 75
+python scripts/tests.py --coverage --coverage-fail-under 75
 
 # View HTML report
 open htmlcov/index.html
@@ -173,7 +179,7 @@ open htmlcov/index.html
 
 ```bash
 # Generate JUnit XML for CI systems
-./faultmaven.sh test --ci --junit-xml test-results.xml
+python scripts/tests.py --ci --junit-xml test-results.xml
 ```
 
 ## Environment Variables
@@ -249,12 +255,13 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 Ensure `pytest-asyncio` is installed and use `@pytest.mark.asyncio`.
 
-### Docker Service Issues
+### Tests That Need Redis or PostgreSQL
 
-```bash
-docker-compose up -d
-docker-compose ps
-```
+The `cloud` and `postgres` tests skip unless `REDIS_URL` (or `REDIS_HOST`) or a
+PostgreSQL `DATABASE_URL` names a server. The repository's `docker-compose.yml`
+starts neither (it runs the API and the Dashboard), so point those variables at
+a server you run yourself on localhost: the test network guard
+(`tests/network_guard.py`) refuses every connection to another host.
 
 ### Parallel Execution Issues
 
@@ -263,5 +270,5 @@ docker-compose ps
 pip install pytest-xdist
 
 # Run without parallelism
-./faultmaven.sh test --no-parallel
+python scripts/tests.py --no-parallel
 ```

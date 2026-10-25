@@ -125,9 +125,6 @@ pytest -m security
 # API endpoint tests
 pytest -m api
 
-# Enhanced AI agent functionality tests
-pytest -m agent
-
 # Enhanced LLM provider and routing tests
 pytest -m llm
 
