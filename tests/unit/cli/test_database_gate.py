@@ -222,7 +222,11 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
         "acting on a store that dies with the process (#1659)."
     )
     first_gate = min(gate_lines)
-    early_loops = [line for line in _event_loop_lines(entry) if line < first_gate]
+    loops = _event_loop_lines(entry)
+    # Positive control: a loop start this census cannot recognise would read as
+    # "none before the gate".
+    assert loops, f"{command}: the census sees no event loop start in {attr}()"
+    early_loops = [line for line in loops if line < first_gate]
     assert not early_loops, (
         f"{command}: an event loop starts at line(s) {early_loops}, before "
         f"{GATE}() at line {first_gate}"

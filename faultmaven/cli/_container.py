@@ -7,8 +7,8 @@ connection pool is bound to the event loop it was opened on. Nothing else
 closes it, and a bare ``asyncio.run`` ends that loop over the open transports
 (#2237).
 
-``run_with_container`` takes the place of ``asyncio.run`` for those commands and
-for the dev scripts that compose. It awaits the command and then, in a
+``run_with_container`` takes the place of ``asyncio.run`` for every ``fm-*``
+command and for the dev scripts that compose. It awaits the command and then, in a
 ``finally`` on the same loop, awaits the container's ``shutdown()`` and then
 ``close_database()``, which disposes the database engine the container's stores
 opened on this loop (#2254): when the command returns, when it raises, and when
@@ -17,7 +17,9 @@ one teardown (``run_teardown``), so a failed shutdown still lets the engine be
 disposed. A failed step is logged and does not change the command's exit
 status, as in the jobs runner (``faultmaven/jobs/run.py``). Shutting down a
 container that was never initialized, or closing an engine never opened, does
-nothing, so an operation that does not compose may run here too.
+nothing, so an operation that does not compose runs here too:
+``fm-provision-sso-org``, ``fm-set-turn-cap`` and ``fm-wipe-deployment`` open
+only the engine.
 
 The container shut down is the one the command composed. A command that binds
 ``container`` at import passes that reference; otherwise the process singleton

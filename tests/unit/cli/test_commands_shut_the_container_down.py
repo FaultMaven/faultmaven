@@ -18,6 +18,10 @@ succeeds with a ``shutdown()`` that raises. ``fm-personal-tenant`` is listed
 once per operation, because each has its own call site; only ``retire``
 composes, and the shutdown of a container that was never initialized does
 nothing.
+
+The run also disposes the database engine before its loop ends (#2254). That
+holds for every command, the three that open only the engine included
+(``OPENS_ONLY_THE_ENGINE``): a stand-in opens a real engine, and none is left.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ _REPORTS_A_BOOL = {
     "demote_platform_admin",
     "promote_platform_admin",
     "provision_service_account",
+    "provision_sso_org",
 }
 
 #: ``module[:operation]`` -> the async function its ``main()`` runs, and an argv.
@@ -87,6 +92,23 @@ COMMANDS = {
         "fm-personal-tenant re-anchor --subject user_01HPLANTED "
         f"--enterprise-id {ENTERPRISE_ID}",
     ),
+}
+
+
+#: The commands that compose no container and reach the database engine through
+#: the process-global session factory: ``module`` -> its async function, an argv.
+OPENS_ONLY_THE_ENGINE = {
+    "provision_sso_org": (
+        "provision",
+        "fm-provision-sso-org --name Acme --slug acme --workos-org-id org_01H "
+        "--domain acme.example",
+    ),
+    "set_turn_cap": (
+        "set_turn_cap",
+        f"fm-set-turn-cap --enterprise-id {ENTERPRISE_ID} "
+        f"--organization-id {ORGANIZATION_ID} --show",
+    ),
+    "wipe_deployment": ("wipe_deployment", "fm-wipe-deployment"),
 }
 
 
@@ -226,4 +248,38 @@ def test_the_run_disposes_the_database_engine_the_command_opened(
 
     assert opened == [True], "the command did not open the engine"
     container.shutdown.assert_awaited_once()
+    assert database._engine is None, "the run left the database engine open"
+
+
+@pytest.mark.parametrize("command", sorted({**COMMANDS, **OPENS_ONLY_THE_ENGINE}))
+def test_every_command_disposes_the_engine_before_its_loop_ends(
+    command, container, engine_url, monkeypatch
+):
+    """#2254, through each command's own call site: three commands ran their
+    work in a bare ``asyncio.run``, and none of the others' runs disposed the
+    engine either."""
+    module_name = command.partition(":")[0]
+    module = importlib.import_module(f"faultmaven.cli.{module_name}")
+    work_name, argv = {**COMMANDS, **OPENS_ONLY_THE_ENGINE}[command]
+    if hasattr(module, "container"):
+        monkeypatch.setattr(module, "container", container)
+    else:
+        monkeypatch.setattr("faultmaven.container.container", container)
+    opened = []
+
+    async def _work(*_args, **_kwargs):
+        async with database.get_engine(engine_url).connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        opened.append(database._engine is not None)
+        return True if module_name in _REPORTS_A_BOOL else 0
+
+    monkeypatch.setattr(module, work_name, _work)
+    monkeypatch.setattr(module, "require_persistent_database_or_exit", lambda: None)
+    monkeypatch.setattr(sys, "argv", argv.split())
+
+    with pytest.raises(SystemExit) as exited:
+        module.main()
+
+    assert exited.value.code == 0
+    assert opened == [True], "the command did not open the engine"
     assert database._engine is None, "the run left the database engine open"
