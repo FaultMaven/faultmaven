@@ -38,25 +38,13 @@ from faultmaven.api.middleware.principal import (
     RequestPrincipal,
     publish_request_principal,
 )
+from tests.utils import log_field
 
 USER = "user_01HQXJ"
 ENTERPRISE = "11111111-1111-1111-1111-111111111111"
 ORGANIZATION = "22222222-2222-2222-2222-222222222222"
 SESSION_USER = "user-from-the-session-store"
 SESSION_ID = "sess-abc-123"
-
-
-def _field(record, name):
-    """Read a structured field off a record, wherever this stack put it.
-
-    Fields passed to a structlog logger arrive as keys of the event dict in
-    ``record.msg``; fields passed to a plain stdlib logger via ``extra`` arrive
-    as record attributes. Checking only one of the two silently finds nothing
-    and turns an assertion into a tautology.
-    """
-    if isinstance(record.msg, dict) and name in record.msg:
-        return record.msg[name]
-    return record.__dict__.get(name)
 
 
 def _line(caplog, needle):
@@ -132,9 +120,9 @@ class TestTheCompletedLineNamesTheBoundPrincipal:
 
         assert response.status_code == 200
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") == USER
-        assert _field(record, "enterprise_id") == ENTERPRISE
-        assert _field(record, "organization_id") == ORGANIZATION
+        assert log_field(record, "user_id") == USER
+        assert log_field(record, "enterprise_id") == ENTERPRISE
+        assert log_field(record, "organization_id") == ORGANIZATION
 
     def test_the_human_readable_message_names_both(self, caplog):
         """An operator reading the console renderer, not Loki, gets it too."""
@@ -167,9 +155,9 @@ class TestTheCompletedLineNamesTheBoundPrincipal:
 
         assert response.status_code == 500
         record = _line(caplog, "Request failed")
-        assert _field(record, "user_id") == USER
-        assert _field(record, "enterprise_id") == ENTERPRISE
-        assert _field(record, "organization_id") == ORGANIZATION
+        assert log_field(record, "user_id") == USER
+        assert log_field(record, "enterprise_id") == ENTERPRISE
+        assert log_field(record, "organization_id") == ORGANIZATION
         assert f"[enterprise: {ENTERPRISE}]" in record.getMessage()
 
     def test_an_account_in_no_organization_reports_no_organization(self, caplog):
@@ -181,8 +169,8 @@ class TestTheCompletedLineNamesTheBoundPrincipal:
             _get(app)
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "organization_id") is None
-        assert _field(record, "enterprise_id") == ENTERPRISE
+        assert log_field(record, "organization_id") is None
+        assert log_field(record, "enterprise_id") == ENTERPRISE
 
 
 @pytest.mark.unit
@@ -200,8 +188,8 @@ class TestTheActorIsNeverTheCallersToChoose:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") is None
-        assert _field(record, "enterprise_id") is None
+        assert log_field(record, "user_id") is None
+        assert log_field(record, "enterprise_id") is None
         assert "[user:" not in record.getMessage()
 
     def test_a_principal_naming_no_user_is_recorded_as_anonymous(self, caplog):
@@ -218,8 +206,8 @@ class TestTheActorIsNeverTheCallersToChoose:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") is None
-        assert _field(record, "enterprise_id") == ENTERPRISE
+        assert log_field(record, "user_id") is None
+        assert log_field(record, "enterprise_id") == ENTERPRISE
         assert "[user: anonymous]" in record.getMessage()
         assert SESSION_USER not in record.getMessage()
 
@@ -235,7 +223,7 @@ class TestTheActorIsNeverTheCallersToChoose:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request failed")
-        assert _field(record, "user_id") is None
+        assert log_field(record, "user_id") is None
         assert SESSION_USER not in record.getMessage()
 
     def test_the_session_store_is_never_consulted_at_all(self, caplog):
@@ -263,7 +251,7 @@ class TestTheActorIsNeverTheCallersToChoose:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") == USER
+        assert log_field(record, "user_id") == USER
 
 
 @pytest.mark.unit
@@ -280,8 +268,8 @@ class TestTheCallersValueIsKeptUnderACallersName:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, needle)
-        assert _field(record, "claimed_session_id") == SESSION_ID
-        assert _field(record, "session_id") is None, (
+        assert log_field(record, "claimed_session_id") == SESSION_ID
+        assert log_field(record, "session_id") is None, (
             "a caller-asserted value must not appear under the plain name, "
             "which trusted producers elsewhere in the app also write"
         )
@@ -298,5 +286,5 @@ class TestTheCallersValueIsKeptUnderACallersName:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request started")
-        assert _field(record, "user_id") is None
+        assert log_field(record, "user_id") is None
         assert "[user:" not in record.getMessage()

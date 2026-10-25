@@ -622,7 +622,8 @@ class BaseService(ABC):
         """Log service error with context.
 
         Logs an error with exception information, service context,
-        and additional fields. Logs at ERROR level with exc_info=True.
+        and additional fields. Logs at ERROR level with the exception itself as
+        exc_info, so the traceback renders outside its ``except`` too.
 
         Args:
             operation: Name of the operation that failed
@@ -643,7 +644,10 @@ class BaseService(ABC):
                 "error_type": type(error).__name__,
                 **kwargs,
             },
-            exc_info=True,
+            # The exception itself, not True: True renders sys.exc_info() at
+            # format time, which is empty when the error is logged outside the
+            # ``except`` that caught it.
+            exc_info=error,
         )
 
     async def health_check(self) -> Dict[str, Any]:

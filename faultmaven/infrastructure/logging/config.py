@@ -48,6 +48,49 @@ NOISY_THIRD_PARTY_LOGGERS: Mapping[str, int] = MappingProxyType(
 )
 
 
+# Event keys the formatter's later steps read or write: format_exc_info and
+# StackInfoRenderer take exc_info / stack_info as directives and write
+# exception / stack; ProcessorFormatter writes the _record / _from_structlog
+# meta keys.
+_FORMATTER_KEYS = frozenset(
+    {"exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"}
+)
+
+
+def lift_stdlib_extra(
+    _logger: Any, _method: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Lift a stdlib-style ``extra={...}`` dict into a structlog event's fields.
+
+    A structlog logger takes fields as keyword arguments, so the stdlib idiom
+    ``logger.info(msg, extra={...})`` made ``extra`` one nested field, and every
+    key inside it was invisible to a log query and to a reader of the record's
+    fields (#2262). The foreign (stdlib) pre-chain has ``ExtraAdder`` for the
+    same idiom; this is its counterpart for native structlog events.
+
+    Runs after the request attribution and the other shared processors, and
+    never overwrites a key already in the event: a caller's ``user_id`` cannot
+    replace the verified principal, nor its ``level`` or ``timestamp`` the
+    logger's own. A key that collides stays under ``extra``, so nothing is lost;
+    so does a key the formatter acts on, which a caller's data must neither
+    trigger (a traceback) nor have overwritten.
+    """
+    extra = event_dict.get("extra")
+    if not isinstance(extra, dict):
+        return event_dict
+    kept = {}
+    for key, value in extra.items():
+        if key in event_dict or key in _FORMATTER_KEYS:
+            kept[key] = value
+        else:
+            event_dict[key] = value
+    if kept:
+        event_dict["extra"] = kept
+    else:
+        del event_dict["extra"]
+    return event_dict
+
+
 class LateBindingStreamHandler(logging.StreamHandler):
     """A StreamHandler that resolves ``sys.stderr`` at emit time.
 
@@ -218,6 +261,7 @@ class FaultMavenLogger:
             processors=[
                 structlog.stdlib.filter_by_level,
                 *shared_processors,
+                lift_stdlib_extra,
                 structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
             ],
             context_class=dict,

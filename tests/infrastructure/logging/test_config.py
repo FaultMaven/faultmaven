@@ -160,6 +160,36 @@ class TestFaultMavenLogger:
         assert record["event"] == "environment=development ready"
         assert "positional_args" not in record
 
+    def test_lifted_extra_never_drives_the_formatter(self):
+        """A native event's ``extra`` is lifted, except keys the formatter acts on.
+
+        Lifted, a caller's ``exc_info`` would render the in-flight traceback and
+        its ``exception`` would be overwritten by that rendering (#2262).
+        """
+        import io
+        import json
+
+        FaultMavenLogger(config=self._json_config())  # pin JSON/INFO
+        handler = self._fm_root_handler()
+        buf = io.StringIO()
+        orig_stream = handler.stream
+        handler.stream = buf
+        caller_data = {"exc_info": True, "exception": "caller data", "note": "kept"}
+        try:
+            try:
+                raise RuntimeError("in flight")
+            except RuntimeError:
+                structlog.get_logger("faultmaven.tests.lift_2262").info(
+                    "handled", extra=caller_data
+                )
+        finally:
+            handler.stream = orig_stream
+
+        record = json.loads(buf.getvalue().strip())
+        assert record["note"] == "kept"
+        assert "exception" not in record, "the caller's exc_info rendered a traceback"
+        assert record["extra"] == {"exc_info": True, "exception": "caller data"}
+
     def test_reconfigure_preserves_foreign_root_handlers(self, caplog):
         """Re-running configuration mid-process must NOT drop foreign root
         handlers (regression: a blanket handlers.clear() removed pytest's
