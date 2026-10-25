@@ -4,7 +4,7 @@ Purpose: Test core container functionality according to interface-based architec
 
 This test suite validates:
 1. Singleton pattern implementation and integrity
-2. Lazy initialization behavior and lifecycle
+2. Initialization behavior and lifecycle
 3. Dependency graph resolution and injection
 4. Health monitoring and diagnostics
 5. Container state management and reset functionality
@@ -158,18 +158,6 @@ class TestDIContainerInitialization:
         await container.initialize()  # Third time
         assert container._initialized
 
-    def test_lazy_initialization_on_access(self):
-        """Test that accessing services triggers initialization"""
-        container = DIContainer()
-
-        # Should not be initialized yet
-        assert not container._initialized
-
-        # First service access should trigger initialization
-        service = container.get_agent_service()
-        assert container._initialized
-        assert service is not None
-
     @pytest.mark.asyncio
     async def test_initialization_prevents_reentrance(self):
         """Test that initialization prevents re-entrant calls"""
@@ -291,21 +279,11 @@ class TestDIContainerGetterMethods:
             getter = getattr(container, getter_name)
             assert callable(getter), f"Getter method {getter_name} should be callable"
 
-    def test_getter_lazy_initialization(self):
-        """Test that getters trigger initialization when needed"""
-        container = DIContainer()
-
-        # Should not be initialized
-        assert not container._initialized
-
-        # Any getter should trigger initialization
-        service = container.get_agent_service()
-        assert container._initialized
-        assert service is not None
-
-    def test_getter_consistency(self):
+    @pytest.mark.asyncio
+    async def test_getter_consistency(self):
         """Test that getters return consistent instances"""
         container = DIContainer()
+        await container.initialize()
 
         # Multiple calls to same getter should return same instance
         agent_service1 = container.get_agent_service()
@@ -338,8 +316,8 @@ class TestDIContainerGetterMethods:
                 warning_call = mock_logger.warning.call_args[0][0]
                 assert "not initialized" in warning_call
 
-                # Should have attempted to initialize automatically
-                mock_initialize.assert_called_once()
+                # A getter never composes the container (#2249)
+                mock_initialize.assert_not_called()
 
 
 class TestDIContainerHealthCheck:

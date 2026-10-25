@@ -98,9 +98,10 @@ _DATABASE_REACHING_CALLS = {
 }
 
 #: Modules whose import puts the database in reach. The container composes
-#: stores lazily on first access (``_container_impl`` runs ``asyncio.run`` from
-#: its getters), so importing it is enough, however the instance is then
-#: spelled. Models alone are not: ``generate_er_diagram.py`` reads metadata.
+#: stores in its ``initialize()``, which the call scan catches only when spelled
+#: ``container.initialize()``, so importing it is enough, however the instance
+#: is then spelled. Models alone are not: ``generate_er_diagram.py`` reads
+#: metadata.
 _DATABASE_REACHING_IMPORTS = (
     "faultmaven.container",
     "faultmaven._container_impl",
