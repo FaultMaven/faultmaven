@@ -603,10 +603,11 @@ class LLMErrorHandler:
         # NOT retryable: the breaker's recovery window (30s) outlasts either
         # backoff ladder (2+4+8 = 14s; a deadline-shaped failure's is 2s, #1294),
         # so every retry would be spent on a breaker guaranteed to still be open.
-        # A hard-down provider no longer opens it inside its first turn's
-        # ladder (two failures of three): that turn ends RETRY_EXHAUSTED, and
-        # the next ladder's first attempt pays one timeout and opens it, so its
-        # retry lands here.
+        # On a ladder-only turn a hard-down provider reaches two failures of
+        # three: that turn ends RETRY_EXHAUSTED, and the next ladder's first
+        # attempt pays one timeout and opens it, so its retry lands here. A
+        # turn with tools reaches three (the tool loop's attempt, then the
+        # ladder's two) and opens it in its first turn.
         #
         # Tested on ``error`` itself rather than walked down ``__cause__``,
         # because on this path it arrives unwrapped and that is a property of

@@ -1144,17 +1144,18 @@ async def get_env_config_status(
             enabled=budget.fits,
             description=(
                 f"A hung or 504-answering LLM provider gets {hung.attempts} of "
-                f"{hung.paid_attempts} attempts inside one turn: its retry "
+                f"{hung.paid_attempts} attempts inside one retry ladder: that "
                 f"ladder costs {hung.full_ladder_seconds:.0f}s (attempts plus "
-                f"backoff), and this turn's budget affords "
+                f"backoff), and a fresh turn's budget affords "
                 f"{hung.afforded_seconds:.0f}s of it. A provider answering a "
                 f"slow non-504 5xx gets {slow.attempts} of {slow.paid_attempts} "
                 f"attempts: {slow.full_ladder_seconds:.0f}s, "
                 f"{slow.afforded_seconds:.0f}s afforded, the bound on any mix "
                 f"of failures. On a turn with tools the tool loop's own attempt "
                 f"comes first, outside the ladder, so that turn pays it and then "
-                f"the ladder, bounded by the turn budget (#2319). Both keep "
-                f"{slow.commit_reserve_seconds:g}s back for the turn's commit."
+                f"the ladder, bounded by the turn budget (#2319). Both ladders "
+                f"keep {slow.commit_reserve_seconds:g}s back for the turn's "
+                f"commit."
             ),
             config_hint=(
                 "True when both retry ladders complete inside the turn "
