@@ -6,10 +6,13 @@ middleware, after the request's context has ended. The middleware hands the
 handler the id on ``request.state``, so the 500 names it.
 
 These drive the handler ``main.py`` registers, attached to a scratch app, for
-the two cases the real stack built under pytest cannot show:
+two cases the real stacks in
+``tests/integration/api/test_unhandled_500_names_the_requests_id_2294.py`` do
+not show:
 
-- ``RequestIdMiddleware`` mounted, as on every deployment and never in a
-  pytest-built app: the body keeps its ``request_id`` beside the correlation id.
+- ``RequestIdMiddleware`` mounted with nothing between ``LoggingMiddleware`` and
+  ``ServerErrorMiddleware``: the body keeps its ``request_id`` beside the
+  correlation id, and the 500 carries its ``X-Request-ID``.
 - An exception ``LoggingMiddleware`` never saw: the handler logs it itself,
   path only, and names no id it does not have.
 """
@@ -75,6 +78,9 @@ def test_the_body_keeps_the_request_id_beside_the_correlation_id():
         "correlation_id": correlation_id,
         "request_id": "chosen-by-the-caller-2294",
     }
+    # RequestIdMiddleware sets its header on every response it returns; the
+    # exception left it none, so the 500 carries it.
+    assert response.headers.get("X-Request-ID") == "chosen-by-the-caller-2294"
 
 
 def test_an_exception_logging_middleware_never_saw_is_logged_once_by_the_handler(

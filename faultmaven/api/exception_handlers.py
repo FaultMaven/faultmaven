@@ -1033,10 +1033,12 @@ async def internal_server_error_handler(
       saw the exception, which covers the route, its dependencies and every
       middleware registered before it. An exception raised outside it was
       served under no correlation id, and this names none.
-    - ``request_id``: ``RequestIdMiddleware``'s id, the caller's own
-      ``X-Request-ID`` when one was sent. Kept when that middleware ran, which
-      is on every deployment and never in a pytest-built app: a caller that
-      sent its own id gets it back.
+    - ``request_id``, also set as ``X-Request-ID``: ``RequestIdMiddleware``'s
+      id, the caller's own ``X-Request-ID`` when one was sent. Kept when that
+      middleware ran, which is on every deployment and never in a pytest-built
+      app: a caller that sent its own id gets it back. The middleware sets the
+      header on every response it returns, and an exception leaves it without
+      one, so it is set here.
 
     The exception is logged once. ``LoggingMiddleware`` logged it already,
     under the correlation id and with its traceback, when it handed one over;
@@ -1062,6 +1064,7 @@ async def internal_server_error_handler(
         headers["X-Correlation-ID"] = correlation_id
     if request_id:
         content["request_id"] = request_id
+        headers["X-Request-ID"] = request_id
     return JSONResponse(status_code=500, content=content, headers=headers)
 
 
