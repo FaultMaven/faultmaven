@@ -55,9 +55,17 @@ from typing import Callable
 # The pre-query class excludes "?" so the greedy run stops at the FIRST question
 # mark. Admitting it let the group backtrack to the LAST one, which shipped the
 # credential verbatim; RFC 3986 permits "?" inside a query. That exclusion is
-# the ONLY thing pinning the match, which is why the replacement below is a
-# capture group rather than a function -- a function that truncated at the first
-# "?" would mask the bug and make the mutation test for it vacuous.
+# the ONLY thing pinning the match, which is why the replacement below reuses
+# the group's boundary and never looks for a "?" itself -- one that truncated at
+# the first "?" would mask the bug and make the mutation test for it vacuous.
+#
+# The query is optional and the pre-query run possessive, so a run with no "?"
+# after it still matches, whole, and is put back unchanged; the scan resumes
+# past it. With the query required, a rejected run was retried at every "://"
+# inside it, each retry scanning to the same end: a line of n "://" cost
+# O(n^2), 14 seconds at 64 KB (#2312). Skipping those retries changes no
+# output: every "://" inside the run stops where the run does, and that stop is
+# not a "?".
 #
 # ESC is excluded so the console renderer's colour reset after a URL is not
 # swallowed with the query string.
@@ -79,11 +87,18 @@ from typing import Callable
 # breaks the JSON line but leaks nothing. The image and CI run current 3.11.
 _QUERY_CHAR = r"[^\s\"'<>\x1b\\]"
 _URL_QUERY = re.compile(
-    r"(://[^\s\"'<>?\x1b]*)\?" rf"{_QUERY_CHAR}*+(?:(?:\\\\|\\(?!\")){_QUERY_CHAR}*+)*+"
+    r"(://[^\s\"'<>?\x1b]*+)"
+    rf"(\?{_QUERY_CHAR}*+(?:(?:\\\\|\\(?!\")){_QUERY_CHAR}*+)*+)?"
 )
 _URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
-_REPLACEMENT = r"\1?<redacted>"
-_REPLACEMENT_BYTES = rb"\1?<redacted>"
+
+
+def _redact_query(match: re.Match[str]) -> str:
+    return match[0] if match[2] is None else match[1] + "?<redacted>"
+
+
+def _redact_query_bytes(match: re.Match[bytes]) -> bytes:
+    return match[0] if match[2] is None else match[1] + b"?<redacted>"
 
 
 def redact_urls(text: str) -> str:
@@ -95,14 +110,14 @@ def redact_urls(text: str) -> str:
     """
     if "?" not in text or "://" not in text:
         return text
-    return _URL_QUERY.sub(_REPLACEMENT, text)
+    return _URL_QUERY.sub(_redact_query, text)
 
 
 def redact_urls_bytes(data: bytes) -> bytes:
     """``redact_urls`` for renderers that emit bytes."""
     if b"?" not in data or b"://" not in data:
         return data
-    return _URL_QUERY_BYTES.sub(_REPLACEMENT_BYTES, data)
+    return _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
 
 
 def redacting_renderer(renderer: Callable) -> Callable:

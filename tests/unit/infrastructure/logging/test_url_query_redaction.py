@@ -142,6 +142,40 @@ class TestRedactUrls:
             label="redact_urls on a long near-miss run",
         )
 
+    @pytest.mark.performance
+    def test_a_line_of_many_scheme_separators_does_not_blow_up(self):
+        """‼ #2312. The guard above has one "://", so it cannot see this.
+
+        With the query required, a run with no "?" after it was retried at
+        every "://" inside it, each retry scanning to the run's end. Measured on
+        that version: 1.3 s for 16 KB of "://", 18.6 s for 64 KB; on this one,
+        0.33 ms and 0.82 ms. The leading "?" only gets the line past the
+        substring pre-check.
+        """
+        assert_linear_growth(
+            redact_urls,
+            lambda count: "?" + "://" * count,
+            small=256,
+            label='redact_urls on a run of "://" with no query',
+        )
+
+    def test_a_url_after_a_run_with_no_query_is_still_redacted(self):
+        """A run with no query matches whole and the scan resumes past it, so
+        what follows the run's end must still be scanned."""
+        assert redact_urls("x://a://b'https://h/p?key=K") == (
+            "x://a://b'https://h/p?<redacted>"
+        )
+        assert redact_urls_bytes(b"x://a://b'https://h/p?key=K") == (
+            b"x://a://b'https://h/p?<redacted>"
+        )
+
+    def test_a_later_scheme_separator_in_the_same_run_keeps_the_query_redacted(
+        self,
+    ):
+        assert redact_urls("proxy://a/https://h/p?key=K") == (
+            "proxy://a/https://h/p?<redacted>"
+        )
+
     @pytest.mark.parametrize(
         "event",
         [
