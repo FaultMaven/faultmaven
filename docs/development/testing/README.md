@@ -210,20 +210,33 @@ def test_with_mocked_service(mock_api):
 ### Testing Database Operations
 
 ```python
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from faultmaven.infrastructure.persistence.models import Base, EnterpriseModel
+
 @pytest.fixture
 async def db_session():
-    """Fixture providing test database session"""
-    async with AsyncSessionLocal() as session:
+    """Fixture providing a session on a throwaway in-memory SQLite"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         yield session
         await session.rollback()  # Rollback after each test
+    await engine.dispose()
 
 async def test_database_operation(db_session):
     # Test database operation
-    entity = Entity(name="test")
+    entity = EnterpriseModel(enterprise_id="ent_test", name="test", slug="test")
     db_session.add(entity)
     await db_session.flush()
 
-    assert entity.id is not None
+    name = await db_session.scalar(
+        select(EnterpriseModel.name).where(EnterpriseModel.enterprise_id == "ent_test")
+    )
+    assert name == "test"
 ```
 
 ## Related Documentation

@@ -42,54 +42,84 @@ async def test_service_with_container_pattern():
 - Always call `container.reset()` before test logic
 - Use container methods for service resolution (`container.get_*_service()`)
 - Let container manage service lifecycle and dependencies
-- No manual service instantiation outside of container
+- Use this pattern when the composition is what the test is about; a unit
+  test builds its unit directly, with mocked dependencies (pattern 2)
 
 ### 2. Interface-Based Mocking Pattern
 
-**Purpose**: Mock dependencies through interfaces rather than concrete implementations
+**Purpose**: Mock dependencies by the type the service is given, so a mock answers only what the real dependency would
 
 ```python
-from unittest.mock import Mock, AsyncMock
-from faultmaven.models.interfaces import ILLMProvider, ISanitizer
-from faultmaven.container import container
+from unittest.mock import MagicMock, create_autospec
+
+import pytest
+
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KB_COLLECTION,
+    KnowledgeVectorStore,
+)
+from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
 
 @pytest.mark.asyncio
 async def test_service_with_interface_mocks():
-    """Pattern for mocking dependencies through interfaces."""
-    # Reset container for clean state
-    container.reset()
+    """Pattern for building the unit under test on mocked dependencies."""
+    # Create specced mocks: a method the type lacks, or a call with the
+    # wrong arguments, fails the test
+    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store.search.return_value = [
+        {
+            "id": "kb_pool_chunk_0",
+            "content": "Raise the connection pool size",
+            "score": 0.92,
+            "metadata": {"title": "Database pool exhaustion"},
+        }
+    ]
 
-    # Create interface-compliant mocks
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(return_value="Mock LLM response")
+    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer.asanitize.side_effect = lambda data: data
 
-    mock_sanitizer = Mock(spec=ISanitizer)
-    mock_sanitizer.sanitize = Mock(return_value="sanitized input")
-
-    # Inject mocks through container
-    container._llm_provider = mock_llm
-    container._sanitizer = mock_sanitizer
-
-    # Get service with injected mocks
-    agent_service = container.get_agent_service()
+    # Pass the mocks to the constructor of the unit under test
+    service = KnowledgeService(
+        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
+        sanitizer=sanitizer,
+        tracer=create_autospec(ITracer, instance=True),
+        vector_store=vector_store,
+        db_session_factory=MagicMock(),  # required; a search never opens a session
+    )
 
     # Test service with mocked dependencies
-    result = await agent_service.process_query("test query", "session-1")
+    results = await service.search_knowledge("database timeout", limit=3)
 
     # Validate interactions
-    mock_sanitizer.sanitize.assert_called_once_with("test query")
-    mock_llm.generate_response.assert_called_once()
+    sanitizer.asanitize.assert_awaited_once_with("database timeout")
+    vector_store.search.assert_awaited_once_with(
+        collection_name=KB_COLLECTION,
+        query="database timeout",
+        k=3,
+        where={"scope": "global"},
+    )
 
     # Validate results
-    assert result.session_id == "session-1"
-    assert "Mock LLM response" in result.response
+    assert [r.title for r in results] == ["Database pool exhaustion"]
+    assert results[0].parent_document_id == "kb_pool"
 ```
 
 **Key Principles**:
-- Use `Mock(spec=Interface)` to ensure interface compliance
-- Mock methods should match interface signatures exactly
-- Use `AsyncMock` for async interface methods
-- Inject mocks through container, not direct instantiation
+- Use `create_autospec(Type, instance=True)`: it checks every call against the
+  real signature. `Mock(spec=Type)` checks attribute names only, and a bare
+  `AsyncMock` accepts any call, which is how a vector-store call with the wrong
+  signature went unnoticed
+  (`tests/unit/modules/knowledge/test_knowledge_service_vector_search_contract.py`)
+- Spec on the interface in `faultmaven/models/interfaces.py` where it declares
+  the method the service calls (`ITracer.trace`), otherwise on the class the
+  container passes: `ISanitizer` declares no `asanitize`, and the knowledge
+  vector store implements no interface
+- `create_autospec` makes each async method an `AsyncMock`; check it with `assert_awaited_*`
+- Pass mocks to the constructor; never assign them onto the container
 
 ### 3. Environment Isolation Pattern
 
@@ -98,7 +128,10 @@ async def test_service_with_interface_mocks():
 ```python
 import os
 from unittest.mock import patch
-from contextlib import contextmanager
+
+import pytest
+
+from faultmaven.config.settings import LLMProvider, get_settings, reset_settings
 
 @pytest.fixture
 def clean_env():
@@ -112,12 +145,15 @@ def clean_env():
             'FIREWORKS_', 'OPENAI_', 'ANTHROPIC_'
         ]):
             del os.environ[key]
+    # get_settings() caches the first instance it builds
+    reset_settings()
 
     yield
 
-    # Restore original environment
+    # Restore original environment, and drop the settings built from the test's
     os.environ.clear()
     os.environ.update(original_env)
+    reset_settings()
 
 def test_settings_with_environment_isolation(clean_env):
     """Test with isolated environment configuration."""
@@ -125,17 +161,15 @@ def test_settings_with_environment_isolation(clean_env):
     test_config = {
         'CHAT_PROVIDER': 'fireworks',
         'FIREWORKS_API_KEY': 'test-key-123',
-        'REDIS_HOST': '192.168.0.111',
-        'REDIS_PORT': '30379'
+        'REDIS_HOST': 'redis.test',
+        'REDIS_PORT': '6380'
     }
 
     with patch.dict(os.environ, test_config):
-        from faultmaven.config.settings import get_settings
-
         settings = get_settings()
         assert settings.llm.provider == LLMProvider.FIREWORKS
-        assert settings.llm.fireworks_api_key == 'test-key-123'
-        assert settings.database.redis_host == '192.168.0.111'
+        assert settings.llm.fireworks_api_key.get_secret_value() == 'test-key-123'
+        assert settings.database.redis_host == 'redis.test'
 
     # Environment automatically restored by fixture
 ```
@@ -145,67 +179,69 @@ def test_settings_with_environment_isolation(clean_env):
 - Clear relevant environment variables before test
 - Use `patch.dict` for temporary environment changes
 - Always restore original environment after test
+- Reset the settings singleton (`reset_settings()`) on both sides: `get_settings()` caches
 
 ### 4. Cross-Layer Integration Pattern
 
 **Purpose**: Test complete workflows through all architectural layers
 
 ```python
-@pytest.mark.asyncio
-async def test_cross_layer_integration():
-    """Pattern for testing complete architectural workflows."""
-    from faultmaven.container import container
-    from faultmaven.config.settings import get_settings
+import os
+from unittest.mock import patch
 
-    # Step 1: Reset container for clean state
-    container.reset()
+import pytest
+
+@pytest.mark.asyncio
+async def test_cross_layer_integration(reset_container):
+    """Pattern for testing complete architectural workflows."""
+    from faultmaven.config.settings import LLMProvider, get_settings, reset_settings
+
+    # Step 1: The reset_container fixture (tests/conftest.py) resets the
+    # container, and shuts it down after the test
 
     # Step 2: Configure environment (Settings layer)
     test_environment = {
         'CHAT_PROVIDER': 'openai',
         'OPENAI_API_KEY': 'sk-test-key',
-        'REDIS_HOST': 'localhost',
         'DEBUG': 'true'
     }
 
     with patch.dict(os.environ, test_environment):
-        # Step 3: Validate Settings layer
-        settings = get_settings()
-        assert settings.llm.provider == LLMProvider.OPENAI
-        assert settings.debug is True
+        reset_settings()  # get_settings() caches the instance it built first
+        try:
+            # Step 3: Validate Settings layer
+            settings = get_settings()
+            assert settings.llm.provider == LLMProvider.OPENAI
+            assert settings.server.debug is True
 
-        # Step 4: Validate Container layer (dependency resolution)
-        agent_service = container.get_agent_service()
-        knowledge_service = container.get_knowledge_service()
+            # Step 4: Compose the container (a getter never does, #2249) and
+            # validate the Container layer (dependency resolution)
+            await reset_container.initialize()
+            agent_service = reset_container.get_agent_service()
+            knowledge_service = reset_container.get_knowledge_service()
 
-        assert agent_service is not None
-        assert knowledge_service is not None
+            assert agent_service is not None
+            assert knowledge_service is not None
 
-        # Step 5: Test Service layer integration
-        kb_results = await knowledge_service.search_knowledge_base(
-            "database connection issues",
-            limit=3
-        )
-        assert isinstance(kb_results, list)
-
-        # Step 6: Test complete workflow (API → Service → Core → Infrastructure)
-        troubleshooting_result = await agent_service.process_query(
-            "My database keeps timing out",
-            "integration-test-session"
-        )
-
-        # Step 7: Validate end-to-end results
-        assert troubleshooting_result.session_id == "integration-test-session"
-        assert len(troubleshooting_result.response) > 100
-        assert any(keyword in troubleshooting_result.response.lower()
-                  for keyword in ['database', 'timeout', 'connection'])
+            # Step 5: Test Service layer integration, down to the vector store
+            # (the test process's own, empty knowledge base)
+            kb_results = await knowledge_service.search_knowledge(
+                "database connection issues",
+                limit=3
+            )
+            assert kb_results == []
+        finally:
+            reset_settings()
 ```
 
 **Key Principles**:
-- Test complete user workflows through all layers
+- Test workflows through the layers they cross, on the composed container
 - Validate each layer's functionality independently
 - Test layer interactions and data flow
 - Use realistic test data and scenarios
+- Leave `REDIS_HOST` as `tests/conftest.py` sets it (empty): the composition
+  then uses the in-process FakeRedis. A host there is a connection
+  `tests/network_guard.py` refuses
 
 ### 5. Error Handling and Graceful Degradation Pattern
 
@@ -215,43 +251,45 @@ async def test_cross_layer_integration():
 @pytest.mark.asyncio
 async def test_error_handling_pattern():
     """Pattern for testing error handling across layers."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider
-    from faultmaven.models.exceptions import LLMProviderError
+    from unittest.mock import MagicMock, create_autospec
 
-    container.reset()
-
-    # Create mock that simulates external service failure
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(
-        side_effect=LLMProviderError("External LLM service unavailable")
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
     )
 
-    container._llm_provider = mock_llm
-
-    # Test error propagation through service layer
-    agent_service = container.get_agent_service()
-
-    # Test 1: Error propagation
-    with pytest.raises(LLMProviderError) as exc_info:
-        await agent_service.process_query("test", "error-session")
-
-    assert "External LLM service unavailable" in str(exc_info.value)
-
-    # Test 2: Graceful degradation (if implemented)
-    # Some services might handle errors gracefully
-    try:
-        result = await agent_service.process_query_with_fallback(
-            "test", "fallback-session"
+    def knowledge_service(vector_store):
+        sanitizer = create_autospec(DataSanitizer, instance=True)
+        sanitizer.asanitize.side_effect = lambda data: data
+        return KnowledgeService(
+            knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
+            sanitizer=sanitizer,
+            tracer=create_autospec(ITracer, instance=True),
+            vector_store=vector_store,
+            db_session_factory=MagicMock(),
         )
 
-        # Validate fallback behavior
-        assert result.session_id == "fallback-session"
-        assert "fallback" in result.response.lower()
+    # Create mock that simulates external service failure
+    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store.search.side_effect = ConnectionError("Vector store unavailable")
 
-    except NotImplementedError:
-        # Graceful degradation not yet implemented
-        pytest.skip("Graceful degradation not implemented")
+    # Test 1: Error propagation through the service layer
+    with pytest.raises(ConnectionError) as exc_info:
+        await knowledge_service(vector_store).search_knowledge("test")
+
+    assert "Vector store unavailable" in str(exc_info.value)
+
+    # Test 2: Invalid input is refused before any dependency is reached
+    with pytest.raises(ValueError, match="Query cannot be empty"):
+        await knowledge_service(vector_store).search_knowledge("   ")
+    assert vector_store.search.await_count == 1  # only Test 1's call
+
+    # Test 3: Graceful degradation: no vector store, no results
+    assert await knowledge_service(vector_store=None).search_knowledge("test") == []
 ```
 
 **Key Principles**:
@@ -341,6 +379,8 @@ def test_calibrated_performance():
 **Purpose**: Test multiple scenarios with different parameters
 
 ```python
+from faultmaven.config.settings import LLMProvider
+
 @pytest.mark.parametrize("provider,api_key_env,expected", [
     ("openai", "OPENAI_API_KEY", LLMProvider.OPENAI),
     ("fireworks", "FIREWORKS_API_KEY", LLMProvider.FIREWORKS),
@@ -360,11 +400,11 @@ def test_provider_configuration_pattern(provider, api_key_env, expected, clean_e
         settings = get_settings()
         assert settings.llm.provider == expected
 
-        # Test provider-specific configuration
+        # Test provider-specific configuration (keys are SecretStr)
         if provider == "openai":
-            assert settings.llm.openai_api_key == 'test-api-key-value'
+            assert settings.llm.openai_api_key.get_secret_value() == 'test-api-key-value'
         elif provider == "fireworks":
-            assert settings.llm.fireworks_api_key == 'test-api-key-value'
+            assert settings.llm.fireworks_api_key.get_secret_value() == 'test-api-key-value'
         # ... etc for other providers
 
 @pytest.mark.parametrize("error_type,expected_behavior", [
@@ -392,48 +432,54 @@ def test_error_scenarios_pattern(error_type, expected_behavior):
 @pytest.mark.asyncio
 async def test_async_pattern():
     """Pattern for async testing with proper mock setup."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider, IVectorStore
+    import asyncio
+    from unittest.mock import MagicMock, create_autospec
 
-    container.reset()
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
 
-    # Setup async mocks
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(return_value="Async LLM response")
+    # Setup async mocks: autospec makes each async method an AsyncMock
+    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store.search.return_value = [
+        {"id": "kb_a_chunk_0", "content": "Mock search result 1", "score": 0.95},
+        {"id": "kb_b_chunk_0", "content": "Mock search result 2", "score": 0.87},
+    ]
+    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer.asanitize.side_effect = lambda data: data
 
-    mock_vector_store = Mock(spec=IVectorStore)
-    mock_vector_store.search = AsyncMock(return_value=[
-        {"content": "Mock search result 1", "score": 0.95},
-        {"content": "Mock search result 2", "score": 0.87}
-    ])
-
-    # Inject async mocks
-    container._llm_provider = mock_llm
-    container._vector_store = mock_vector_store
-
-    # Test async operations
-    knowledge_service = container.get_knowledge_service()
-    agent_service = container.get_agent_service()
+    knowledge_service = KnowledgeService(
+        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
+        sanitizer=sanitizer,
+        tracer=create_autospec(ITracer, instance=True),
+        vector_store=vector_store,
+        db_session_factory=MagicMock(),
+    )
 
     # Concurrent async operations
-    kb_task = knowledge_service.search_knowledge_base("test query")
-    agent_task = agent_service.process_query("test query", "async-session")
+    first_task = knowledge_service.search_knowledge("connection timeout")
+    second_task = knowledge_service.search_knowledge("pool exhausted")
 
     # Wait for both operations
-    kb_results, agent_result = await asyncio.gather(kb_task, agent_task)
+    first, second = await asyncio.gather(first_task, second_task)
 
     # Validate async results
-    assert len(kb_results) == 2
-    assert agent_result.session_id == "async-session"
+    assert [r.score for r in first] == [0.95, 0.87]
+    assert len(second) == 2
 
     # Validate async mock calls
-    mock_vector_store.search.assert_called_once()
-    mock_llm.generate_response.assert_called_once()
+    assert vector_store.search.await_count == 2
+    assert sanitizer.asanitize.await_count == 2
 ```
 
 **Key Principles**:
 - Use `@pytest.mark.asyncio` for async tests
-- Use `AsyncMock` for async interface methods
+- Use `AsyncMock` for async interface methods (`create_autospec` makes them)
 - Test concurrent operations with `asyncio.gather()`
 - Validate both results and mock interactions
 
@@ -442,8 +488,16 @@ async def test_async_pattern():
 **Purpose**: Test complex configuration scenarios
 
 ```python
-def test_configuration_pattern():
+def test_configuration_pattern(clean_env):
     """Pattern for testing complex configuration scenarios."""
+    from faultmaven.config.settings import (
+        Environment,
+        LogLevel,
+        get_settings,
+        reset_settings,
+    )
+    from faultmaven.models.exceptions import ConfigurationError
+
     # Test 1: Development configuration
     dev_config = {
         'ENVIRONMENT': 'development',
@@ -454,9 +508,10 @@ def test_configuration_pattern():
     }
 
     with patch.dict(os.environ, dev_config):
+        reset_settings()  # each scenario builds its own settings
         settings = get_settings()
-        assert settings.environment == Environment.DEVELOPMENT
-        assert settings.debug is True
+        assert settings.server.environment == Environment.DEVELOPMENT
+        assert settings.server.debug is True
         assert settings.logging.level == LogLevel.DEBUG
 
     # Test 2: Production configuration
@@ -466,17 +521,18 @@ def test_configuration_pattern():
         'LOG_LEVEL': 'INFO',
         'CHAT_PROVIDER': 'fireworks',
         'FIREWORKS_API_KEY': 'fw-prod-key',
-        'REDIS_HOST': '192.168.0.111',
-        'REDIS_PORT': '30379',
-        'CHROMADB_URL': 'http://chromadb.faultmaven.local:30080'
+        'REDIS_HOST': 'redis.test',
+        'REDIS_PORT': '6380',
+        'CHROMADB_URL': 'http://chromadb.test:8000'
     }
 
     with patch.dict(os.environ, prod_config):
+        reset_settings()
         settings = get_settings()
-        assert settings.environment == Environment.PRODUCTION
-        assert settings.debug is False
+        assert settings.server.environment == Environment.PRODUCTION
+        assert settings.server.debug is False
         assert settings.logging.level == LogLevel.INFO
-        assert settings.database.redis_host == '192.168.0.111'
+        assert settings.database.redis_host == 'redis.test'
 
     # Test 3: Invalid configuration handling
     invalid_config = {
@@ -485,7 +541,9 @@ def test_configuration_pattern():
     }
 
     with patch.dict(os.environ, invalid_config):
-        with pytest.raises(ValidationError) as exc_info:
+        reset_settings()
+        # get_settings() wraps the pydantic ValidationError
+        with pytest.raises(ConfigurationError) as exc_info:
             get_settings()
 
         assert "invalid_provider" in str(exc_info.value)
@@ -502,100 +560,48 @@ def test_configuration_pattern():
 ### Common Test Fixtures
 
 ```python
-# tests/conftest.py
+# tests/conftest.py: requested by name, not autouse
 
-@pytest.fixture(autouse=True)
-def reset_container():
-    """Automatically reset container before each test."""
+@pytest.fixture(scope="function")
+async def reset_container():
+    """Reset the DI container before each test, and shut it down after it."""
     from faultmaven.container import container
+
     container.reset()
-    yield
+    os.environ["SKIP_SERVICE_CHECKS"] = "true"
+
+    yield container
+
+    # Closes what an initialize() in the test opened, on the test's loop
+    await container.shutdown()
     container.reset()
-
-@pytest.fixture
-def clean_env():
-    """Provide clean environment for testing."""
-    original_env = os.environ.copy()
-    # Clear FaultMaven environment variables
-    for key in list(os.environ.keys()):
-        if key.startswith(('CHAT_', 'REDIS_', 'CHROMADB_', 'LLM_')):
-            del os.environ[key]
-    yield
-    os.environ.clear()
-    os.environ.update(original_env)
-
-@pytest.fixture
-def mock_dependencies():
-    """Provide common mock dependencies."""
-    from faultmaven.container import container
-    from faultmaven.models.interfaces import ILLMProvider, ISanitizer
-
-    mock_llm = Mock(spec=ILLMProvider)
-    mock_llm.generate_response = AsyncMock(return_value="Mock response")
-
-    mock_sanitizer = Mock(spec=ISanitizer)
-    mock_sanitizer.sanitize = Mock(return_value="sanitized")
-
-    container._llm_provider = mock_llm
-    container._sanitizer = mock_sanitizer
-
-    return {'llm': mock_llm, 'sanitizer': mock_sanitizer}
-
-@pytest.fixture
-def sample_settings_env():
-    """Provide sample environment variables for settings testing."""
-    return {
-        'ENVIRONMENT': 'development',
-        'DEBUG': 'true',
-        'CHAT_PROVIDER': 'openai',
-        'OPENAI_API_KEY': 'sk-test-key',
-        'REDIS_HOST': 'localhost',
-        'REDIS_PORT': '6379'
-    }
 ```
+
+`clean_env` (pattern 3) is a test module's own fixture: `tests/conftest.py`
+defines none.
 
 ### Test Helper Functions
 
 ```python
-# tests/utils/helpers.py
+# tests/case_builders.py and tests/utils.py: plain keyword-override builders
 
-def create_mock_llm_provider(response="Mock LLM response"):
-    """Create a mock LLM provider with standard response."""
-    from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.case.contracts import CaseState
+from tests.case_builders import inquiry_case, investigating_case
+from tests.utils import generate_case_id, generate_user_id
 
-    mock = Mock(spec=ILLMProvider)
-    mock.generate_response = AsyncMock(return_value=response)
-    mock.name = "mock_provider"
-    return mock
-
-def create_mock_sanitizer(sanitized_text="sanitized input"):
-    """Create a mock sanitizer with standard behavior."""
-    from faultmaven.models.interfaces import ISanitizer
-
-    mock = Mock(spec=ISanitizer)
-    mock.sanitize = Mock(return_value=sanitized_text)
-    mock.is_sensitive = Mock(return_value=False)
-    return mock
-
-async def create_test_session_result(session_id="test-session", response="Test response"):
-    """Create a test session result for validation."""
-    from faultmaven.models.api import QueryResponse
-
-    return QueryResponse(
-        session_id=session_id,
-        response=response,
-        confidence_score=0.95,
-        metadata={"test": "true"}
+def test_with_built_cases():
+    """Build the case a test needs, overriding only the fields that matter."""
+    case = investigating_case(
+        case_id=generate_case_id(),
+        user_id=generate_user_id(),
+        statement="Database connections time out",
     )
+    assert case.state == CaseState.INVESTIGATING
+    assert case.inquiry.problem_statement_confirmed is True
 
-def assert_container_state_clean():
-    """Assert that container is in clean state."""
-    from faultmaven.container import container
-
-    assert container._agent_service is None
-    assert container._knowledge_service is None
-    assert container._llm_provider is None
-    assert container._sanitizer is None
+    fresh = inquiry_case(statement="Pods crash on start")
+    assert fresh.state == CaseState.INQUIRY
+    assert fresh.inquiry.problem_statement_confirmed is False
 ```
 
 ## Best Practices Summary
@@ -603,7 +609,7 @@ def assert_container_state_clean():
 ### Testing Pattern Checklist
 
 - ✅ **Container Reset**: Always call `container.reset()` before test logic
-- ✅ **Interface Mocking**: Use `Mock(spec=Interface)` for dependency mocking
+- ✅ **Interface Mocking**: Use `create_autospec(Interface, instance=True)` for dependency mocking
 - ✅ **Environment Isolation**: Use clean environment fixtures
 - ✅ **Async Testing**: Use `AsyncMock` for async interface methods
 - ✅ **Error Testing**: Test both success and failure scenarios
@@ -613,11 +619,11 @@ def assert_container_state_clean():
 
 ### Common Anti-Patterns to Avoid
 
-❌ **Direct Service Instantiation**: Don't create services directly
-✅ **Container Resolution**: Use `container.get_*_service()` methods
+❌ **Mocks on the Container**: Don't assign mocks onto container attributes
+✅ **Constructor Injection**: Pass mocks to the unit under test; use `container.get_*_service()` after `await container.initialize()`
 
-❌ **Implementation Mocking**: Don't mock concrete classes
-✅ **Interface Mocking**: Mock interfaces like `ILLMProvider`
+❌ **Unspecced Mocks**: Don't use a bare `Mock()`; it answers any call
+✅ **Interface Mocking**: Spec on the interface (`ITracer`), or on the class the container passes where no interface declares the call
 
 ❌ **Persistent State**: Don't let tests affect each other
 ✅ **Clean State**: Reset container and environment between tests

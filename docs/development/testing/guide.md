@@ -166,38 +166,52 @@ def test_example():
     # ... test code
 ```
 
-**Service Resolution Through Container**: Always get services through container methods:
+**Service Resolution Through Container**: Get a composed service through container methods, after composing the container; a unit test builds its unit directly, with mocked dependencies ([patterns.md](patterns.md), pattern 2):
 ```python
-# Correct: Use container for service resolution
-agent_service = container.get_agent_service()
-knowledge_service = container.get_knowledge_service()
+# Correct: Compose the container, then use it for service resolution
+await reset_container.initialize()  # a getter never composes it (#2249)
+agent_service = reset_container.get_agent_service()
+knowledge_service = reset_container.get_knowledge_service()
 
-# Incorrect: Direct instantiation bypasses dependency injection
-# agent_service = AgentService(...)  # Don't do this
+# Incorrect: Assigning mocks onto the container
+# reset_container.llm_provider = mock_llm  # Don't do this: the composed
+#                                          # services already hold the real one
 ```
 
 ### Interface Compliance Testing
 
 **Mock Interfaces, Not Implementations**: Mock the interface contracts:
 ```python
+from unittest.mock import AsyncMock, Mock
+
+from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.models.interfaces import ILLMProvider
 
 # Correct: Mock interface
 mock_llm = Mock(spec=ILLMProvider)
-mock_llm.generate_response = AsyncMock(return_value="response")
+mock_llm.route = AsyncMock(return_value=LLMResponse(
+    content="response", confidence=0.9, provider="test",
+    model="test-model", tokens_used=0, response_time_ms=0,
+))
 
 # Incorrect: Mock concrete implementation
 # mock_llm = Mock(spec=OpenAIProvider)  # Don't do this
 ```
 
-**Validate Interface Methods**: Ensure all required methods are implemented:
+**Validate Interface Methods**: Ensure all required methods are implemented. `tests/unit/architecture/test_contract_signature_conformance.py` checks this, signatures included, for every module contract registered in it:
 ```python
 def test_service_implements_interface():
-    agent_service = container.get_agent_service()
+    import inspect
+
+    from faultmaven.modules.knowledge.contracts import IKnowledgeService
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
 
     # Validate interface methods exist
-    assert hasattr(agent_service, 'process_query')
-    assert callable(getattr(agent_service, 'process_query'))
+    for name, member in vars(IKnowledgeService).items():
+        if inspect.isfunction(member) and not name.startswith('_'):
+            assert callable(getattr(KnowledgeService, name, None)), name
 ```
 
 ### Environment Management
@@ -216,6 +230,8 @@ def clean_env():
 **Configuration Testing**: Test with realistic environment scenarios:
 ```python
 def test_production_configuration(clean_env):
+    from faultmaven.config.settings import Environment, get_settings, reset_settings
+
     prod_config = {
         'ENVIRONMENT': 'production',
         'CHAT_PROVIDER': 'fireworks',
@@ -223,25 +239,13 @@ def test_production_configuration(clean_env):
     }
 
     with patch.dict(os.environ, prod_config):
+        reset_settings()  # get_settings() caches the instance it built first
         settings = get_settings()
-        assert settings.environment == Environment.PRODUCTION
+        assert settings.server.environment == Environment.PRODUCTION
+    reset_settings()
 ```
 
 ### Performance and Resource Testing
-
-**Monitor Container Overhead**: Ensure container operations are performant:
-```python
-def test_container_performance():
-    import time
-
-    start_time = time.time()
-    for _ in range(100):
-        container.reset()
-        container.get_agent_service()
-
-    elapsed = time.perf_counter() - start_time
-    assert_latency_within(elapsed, CONTAINER_RESET, "Container reset x100")
-```
 
 ‼ **Never compare a duration against a literal** in `tests/benchmarks/`
 or `tests/performance/`. Both route every threshold through

@@ -193,9 +193,20 @@ async def test_with_container(reset_container):
     service = reset_container.get_agent_service()
     assert service is not None
 
-def test_with_sample_data(sample_case, sample_session_context):
-    """Test with pre-built sample data."""
-    assert sample_case.case_id.startswith("case_")
+def test_with_started_app(booted_app_client):
+    """Test against the started app, shared by the module's tests."""
+    assert booted_app_client.get("/health").status_code == 200
+```
+
+Sample data comes from plain keyword-override builders, not fixtures:
+
+```python
+from tests.case_builders import inquiry_case
+
+def test_with_sample_data():
+    """Test with a pre-built case (tests/case_builders.py)."""
+    case = inquiry_case(statement="Pods crash on start")
+    assert case.case_id.startswith("case_")
 ```
 
 ### Async Tests
@@ -212,13 +223,15 @@ async def test_async_operation():
 ### Parameterized Tests
 
 ```python
+from faultmaven.infrastructure.llm.providers.registry import configuration_env_var
+
 @pytest.mark.parametrize("provider,expected", [
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
-    ("fireworks", "Fireworks"),
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("fireworks", "FIREWORKS_API_KEY"),
 ])
-def test_provider_names(provider, expected):
-    assert get_provider_name(provider) == expected
+def test_provider_env_vars(provider, expected):
+    assert configuration_env_var(provider) == expected
 ```
 
 ## Troubleshooting

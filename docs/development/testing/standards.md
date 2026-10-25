@@ -231,25 +231,51 @@ async def test_request_lifecycle_coordination(
 
 ### **Real Business Logic Testing**
 ```python
-class TestAgentService:
-    """Test agent service with real AI processing flow."""
+from unittest.mock import AsyncMock, MagicMock
 
-    async def test_troubleshooting_workflow(self, agent_service):
-        """Test complete troubleshooting workflow."""
-        # Use real service with mocked LLM only
-        request = TroubleshootingRequest(
-            query="Database timeout errors",
-            context={"environment": "production"}
+import pytest
+
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+from tests.case_builders import investigating_case
+
+
+class TestMilestoneEngine:
+    """Test the investigation engine with the real turn flow."""
+
+    @pytest.fixture
+    def engine(self):
+        """The real engine; its LLM seam and the persistence are stubbed."""
+        llm = MagicMock()
+        llm.provider_name = "test-provider"
+        llm.config.default_model = "test-model"
+        repository = MagicMock()
+        repository.save = AsyncMock(side_effect=lambda case, **_: case)
+        engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=InvestigationResponse_Diagnosis.model_validate(
+                {"agent_response": "Check the pool size next.", "state_updates": {}}
+            )
         )
+        return engine
+
+    async def test_troubleshooting_workflow(self, engine):
+        """Test complete troubleshooting workflow."""
+        # Use real engine; only the LLM and persistence are stubbed
+        case = investigating_case(statement="Database timeout errors", current_turn=1)
 
         # Execute real business logic
-        response = await agent_service.process_query(request)
+        result = await engine.process_turn(
+            case=case, user_message="Connections time out", redaction_ctx=None
+        )
 
         # Verify business outcomes
-        assert response.findings
-        assert response.confidence_score > 0.5
-        assert response.recommendations
+        assert result["agent_response"] == "Check the pool size next."
+        assert result["case_updated"].turn_history[-1].turn_number == 1
 ```
+
+`tests/unit/core/investigation/test_narration_overclaim_apply.py` drives the
+engine the same way.
 
 ### **Error Handling Integration**
 ```python
