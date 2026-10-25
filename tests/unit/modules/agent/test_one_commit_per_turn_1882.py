@@ -659,14 +659,13 @@ class TestACancelledCommitStillCommits:
         """R7: a preparation that swallowed its cancellation would return a
         partial turn to ``wait_for`` as a success."""
         await _seed(sessions, _investigating_case())
+        entered = asyncio.Event()
 
         async def _hangs(*_args, **_kwargs):
+            entered.set()
             await asyncio.Event().wait()
 
         async with sessions() as session:
-            # The test cancels the turn, not a connect: a cancel inside the
-            # pool's connect events leaks the new connection (#2258).
-            await session.connection()
             repository = _Repository(session, sessions)
             service = _service(
                 repository, _engine(repository, generate=AsyncMock(side_effect=_hangs))
@@ -678,12 +677,14 @@ class TestACancelledCommitStillCommits:
                     payload=TurnPayload(query="what does the pool log show?"),
                 )
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
+            # Cancel inside the turn's LLM wait (R7), never in a connection
+            # checkout, whose connect events leak when cancelled (#2258).
+            await asyncio.wait_for(entered.wait(), timeout=10)
             preparing.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await preparing
 
+        assert entered.is_set(), "positive control: the turn reached its LLM wait"
         assert repository.saves == 0
         assert (await _committed(sessions))["case"].messages == []
 
