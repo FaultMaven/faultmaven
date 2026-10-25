@@ -33,11 +33,6 @@ from faultmaven.modules.case.contracts import (
     RunbookMetadata,
     RunbookSource,
 )
-from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import (
-    CaseState,
-    InvestigationStrategy,
-)
 from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
@@ -144,20 +139,6 @@ def inmemory_repository() -> InMemoryCaseRepository:
 async def postgresql_repository(async_session) -> PostgreSQLHybridCaseRepository:
     """Create PostgreSQLHybridCaseRepository instance."""
     return PostgreSQLHybridCaseRepository(async_session)
-
-
-@pytest.fixture
-def sample_case() -> Case:
-    """Create a sample case for testing."""
-    return Case(
-        case_id="case_test123",
-        user_id="test-user-001",
-        enterprise_id="test-org-001",
-        title="Test Case - API Slowness",
-        description="API experiencing high latency",
-        state=CaseState.RESOLVED,
-        investigation_strategy=InvestigationStrategy.POST_MORTEM,
-    )
 
 
 @pytest.fixture
