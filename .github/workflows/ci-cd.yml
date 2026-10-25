@@ -657,8 +657,12 @@ jobs:
           METRICS_ENABLED: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
-          # Sessions, rate limits and revocation go to the job's real Redis
-          # (REDIS_HOST/PORT/DB at job level); the rest stay in-process.
+          # SKIP_SERVICE_CHECKS hands the composition root the in-process
+          # FakeRedis, so the suite's sessions, rate limits and revocation run on
+          # the stand-in, not on the job's Redis (REDIS_HOST/PORT/DB at job
+          # level). What drives that server is the pairing check above and
+          # tests/integration/test_real_redis_stores.py (#2243). Users, cases and
+          # vectors stay in-process too.
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
