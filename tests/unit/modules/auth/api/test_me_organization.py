@@ -6,11 +6,13 @@ an organization row was unreadable, and a client must never be able to read the
 absent field as a permission signal.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.modules.auth.api import auth as auth_api
 from faultmaven.modules.auth.api.auth import _resolve_organization_summary
 from faultmaven.modules.auth.domain.models.api_auth import UserInfoResponse
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
@@ -71,6 +73,40 @@ class TestResolveOrganizationSummary:
         repo.get_organization = AsyncMock(side_effect=RuntimeError("db down"))
 
         assert await _resolve_organization_summary(_User(_ORG_ID), repo) is None
+
+    async def test_a_read_whose_cancellation_hangs_degrades_at_the_bound(
+        self, monkeypatch
+    ):
+        """An asyncpg read cancelled against a PostgreSQL that stopped
+        answering never finishes its cancellation; ``/auth/me`` still answers
+        without the label at the bound (#2266)."""
+        monkeypatch.setattr(auth_api, "_PROFILE_READ_TIMEOUT_SECONDS", 0.01)
+        release = asyncio.Event()
+
+        class _SilentServer:
+            async def get_organization(self, tenant_id):
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await release.wait()  # the driver's CancelRequest
+                    raise
+
+        resolving = asyncio.ensure_future(
+            _resolve_organization_summary(_User(_ORG_ID), _SilentServer())
+        )
+        try:
+            done, _ = await asyncio.wait({resolving}, timeout=5)
+            assert done, "the organization read outlasted its bound"
+            summary = resolving.result()
+        finally:
+            # Unbounded, the read was never cancelled: end it, so a failing
+            # run fails rather than waits.
+            release.set()
+            resolving.cancel()
+            await asyncio.wait({resolving})
+            await asyncio.sleep(0)  # the abandoned read settles
+
+        assert summary is None
 
     async def test_an_unwired_repository_degrades_too(self):
         """The composition root may not have wired one; that is not an error here.

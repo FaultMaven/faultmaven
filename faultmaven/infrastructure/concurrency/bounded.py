@@ -44,6 +44,8 @@ async def wait_within(work: Awaitable[T], timeout_s: float, *, what: str) -> T:
 
 
 def _abandon(task: "asyncio.Task[Any]", what: str) -> None:
+    """Cancel ``task`` and stop waiting for it: at the deadline, or because the
+    caller was itself cancelled."""
     task.cancel()
     _abandoned.add(task)
 
@@ -51,7 +53,7 @@ def _abandon(task: "asyncio.Task[Any]", what: str) -> None:
         _abandoned.discard(ended)
         if not ended.cancelled() and ended.exception() is not None:
             logger.debug(
-                "%s, given up on at its deadline, ended with %s",
+                "%s, given up on, ended with %s",
                 what,
                 type(ended.exception()).__name__,
             )

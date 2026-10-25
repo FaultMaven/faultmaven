@@ -236,9 +236,11 @@ async def test_a_read_whose_cancellation_hangs_still_runs_the_subprocess_at_the_
         try:
             done, _ = await asyncio.wait({boot}, timeout=5)
             assert done, "the at-head check outlasted its bound"
+            subprocess_run = boot.result()
         finally:
             release.set()
-            subprocess_run = await boot
+            boot.cancel()
+            await asyncio.wait({boot})
             await asyncio.sleep(0)  # the abandoned read settles
     subprocess_run.assert_called_once()
     [warning] = _records(caplog, logging.WARNING)

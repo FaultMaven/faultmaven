@@ -118,6 +118,4 @@ async def test_an_exception_after_the_deadline_is_retrieved(caplog):
         await wait_within(_fails_on_cancel(), 0.05, what="the probe")
     with caplog.at_level("DEBUG", logger="faultmaven.infrastructure.concurrency"):
         await _settle(release)
-    assert "the probe, given up on at its deadline, ended with ConnectionError" in (
-        caplog.text
-    )
+    assert "the probe, given up on, ended with ConnectionError" in (caplog.text)

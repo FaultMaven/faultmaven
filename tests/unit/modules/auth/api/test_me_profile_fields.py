@@ -320,9 +320,11 @@ class TestHotPathBounds:
         try:
             done, _ = await asyncio.wait({resolving}, timeout=5)
             assert done, "the profile read outlasted its bound"
+            created_at, last_login = resolving.result()
         finally:
             release.set()
-            created_at, last_login = await resolving
+            resolving.cancel()
+            await asyncio.wait({resolving})
             await asyncio.sleep(0)  # the abandoned read settles
 
         assert created_at == "2026-08-19T21:04:10Z"
