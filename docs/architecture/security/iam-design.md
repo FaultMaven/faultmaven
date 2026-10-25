@@ -550,10 +550,9 @@ with `METRICS_EXPORTER=prometheus_http`. The count that decides the flip:
 sum(increase(faultmaven_auth_session_anonymous_mints_total{bearer="absent", origin!="none"}[7d]))
 ```
 
-- **`sum()` and this query hold at `WORKERS=1`**, which Cloud runs: one
-  registry per pod. With several workers, each keeps its own registry and
-  `/metrics` answers from one of them, so neither the sum nor the increase is
-  the pod's count.
+- **`sum()` and this query hold at `WORKERS=1`**: one registry per pod. With
+  several workers, each keeps its own registry and `/metrics` answers from one
+  of them, so neither the sum nor the increase is the pod's count.
 - **The query is paired with the log.** `increase()` sees only what a scrape
   saw. It misses a mint between a pod's readiness and its first scrape, and one
   after its last scrape before the pod is replaced. While real traffic is near
@@ -568,9 +567,14 @@ A zero is trusted only after two positive controls:
   has been seen above zero for each extension family the copilot ships:
   `origin="chrome-extension"` and `origin="moz-extension"`. A family whose
   mints arrived without `Origin` would hide under `none`, and the count could
-  read zero falsely. `web` is not required here: the old Dashboard panel mints
-  without a bearer only when a token refresh fails, so its traffic may never
-  show;
+  read zero falsely. Firefox ships as a release zip loaded through
+  `about:debugging`, so organic `moz-extension` traffic may never appear: one
+  deliberate header-less mint from the shipped Firefox build meets the control,
+  and likewise from the shipped Chrome build if its organic traffic is absent.
+  Such a mint is made before the window opens, because it increments the
+  series the decision reads. `web` is not required here: the old Dashboard
+  panel mints without a bearer only when a token refresh fails, so its traffic
+  may never show;
 - before the window opens, one deliberate header-less `POST /api/v1/sessions`
   carrying a web `Origin` moves `origin="web"`. That proves the `web`
   classification end to end. It is run before the window, never inside it,
@@ -578,12 +582,13 @@ A zero is trusted only after two positive controls:
 
 `bearer="unresolved"` never reaches zero, by design: a revoked bearer that has
 not yet expired still mints anonymously, once per occurrence. Seven days of
-zero leaves no live anonymous session from a header-less browser client: a
-session's stored expiry (`expires_at`, 24 hours today) is fixed when it is
-minted, a heartbeat does not move it, and an anonymous id is never resumed.
-`unresolved` mints, and mints with no `Origin`, keep making anonymous sessions,
-by design. The 480-minute cap on a requested `timeout_minutes` is only reported
-back to the client; it does not expire the stored session.
+zero leaves no live anonymous session from a header-less client that sent an
+`Origin` other than `null`: a session's stored expiry (`expires_at`, 24 hours
+today) is fixed when it is minted, a heartbeat does not move it, and an
+anonymous id is never resumed. Mints under `origin="none"` (no, blank or `null`
+`Origin`) and `unresolved` mints keep making anonymous sessions, by design. The
+480-minute cap on a requested `timeout_minutes` is only reported back to the
+client; it does not expire the stored session.
 
 ## Local Mode Authentication
 

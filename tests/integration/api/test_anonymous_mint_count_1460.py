@@ -12,7 +12,13 @@ counter is a no-op unless ``ENABLE_METRICS`` is set at import, so a real
 ``prometheus_client.Counter`` on a private registry stands in for it; the route
 reads it as ``session_metrics.<name>`` and sees the swap. ``prometheus_client``
 ships with the ``cloud`` extra, so these run in the Test Cloud job.
+
+Each mint's warning line is asserted beside the counter: step 3 counts that
+line in the log store to catch mints no scrape saw, so a renamed or deleted
+line would make that count read zero.
 """
+
+import logging
 
 import pytest
 
@@ -28,6 +34,8 @@ prometheus_client = pytest.importorskip("prometheus_client")
 pytestmark = pytest.mark.integration
 
 NAME = "faultmaven_auth_session_anonymous_mints_total"
+LOGGER = "faultmaven.modules.auth.api.session"
+LINE = "Minted anonymous session ("
 SERIES = [
     (bearer, origin)
     for bearer in session_metrics.BEARER_KINDS
@@ -65,13 +73,21 @@ def _read(registry):
     }
 
 
-def _mint(client, registry, headers):
-    """Mint once; return the response and every series that moved, by how much."""
+def _mint(client, registry, caplog, headers):
+    """Mint once: the response, every series that moved and by how much, and
+    the minted-session warning lines the mint wrote."""
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    caplog.clear()
     before = _read(registry)
     response = client.post("/api/v1/sessions", json={}, headers=headers)
     after = _read(registry)
     moved = {s: after[s] - before[s] for s in SERIES if after[s] != before[s]}
-    return response, moved
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == LOGGER and r.getMessage().startswith(LINE)
+    ]
+    return response, moved, lines
 
 
 @pytest.mark.parametrize(
@@ -104,32 +120,39 @@ def _mint(client, registry, headers):
     ],
 )
 def test_an_anonymous_mint_moves_exactly_one_series(
-    booted_app_client, registry, headers, series
+    booted_app_client, registry, caplog, headers, series
 ):
-    response, moved = _mint(booted_app_client, registry, headers)
+    response, moved, lines = _mint(booted_app_client, registry, caplog, headers)
 
     assert response.status_code == 201, response.text
     # The anonymous arm's own shape: the branch under test was the one taken.
     assert response.json()["user_id"].startswith("user_")
     assert moved == {series: 1.0}
+    bearer, origin = series
+    assert len(lines) == 1, lines
+    assert f"bearer={bearer}, origin={origin}" in lines[0]
 
 
-def test_an_authenticated_mint_moves_nothing(booted_app_client, registry, admin):
+def test_an_authenticated_mint_moves_nothing(
+    booted_app_client, registry, caplog, admin
+):
     token, user_id = admin
 
-    response, moved = _mint(
+    response, moved, lines = _mint(
         booted_app_client,
         registry,
+        caplog,
         {"Authorization": f"Bearer {token}", "Origin": "chrome-extension://abc"},
     )
 
     assert response.status_code == 201, response.text
     assert response.json()["user_id"] == user_id
     assert moved == {}
+    assert lines == []
 
 
 def test_an_unreadable_revocation_store_mints_and_counts_nothing(
-    booted_app_client, registry, admin, monkeypatch
+    booted_app_client, registry, caplog, admin, monkeypatch
 ):
     """A 503 is not an anonymous mint: the store's failure must not fail open."""
     token, _ = admin
@@ -139,16 +162,17 @@ def test_an_unreadable_revocation_store_mints_and_counts_nothing(
 
     monkeypatch.setattr(AuthService, "_is_revoked", _store_down)
 
-    response, moved = _mint(
-        booted_app_client, registry, {"Authorization": f"Bearer {token}"}
+    response, moved, lines = _mint(
+        booted_app_client, registry, caplog, {"Authorization": f"Bearer {token}"}
     )
 
     assert response.status_code == 503, response.text
     assert response.headers["x-error-code"] == "REVOCATION_STATE_UNKNOWN"
     assert moved == {}
+    assert lines == []
 
 
-def test_a_failed_mint_counts_nothing(booted_app_client, registry, monkeypatch):
+def test_a_failed_mint_counts_nothing(booted_app_client, registry, caplog, monkeypatch):
     """Counted after the store write, so a mint that fails is not a mint."""
 
     class _StoreDown:
@@ -162,7 +186,8 @@ def test_a_failed_mint_counts_nothing(booted_app_client, registry, monkeypatch):
         booted_app_client.app.dependency_overrides, get_session_service, _service
     )
 
-    response, moved = _mint(booted_app_client, registry, {})
+    response, moved, lines = _mint(booted_app_client, registry, caplog, {})
 
     assert response.status_code == 500, response.text
     assert moved == {}
+    assert lines == []
