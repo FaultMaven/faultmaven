@@ -16,6 +16,7 @@ Usage:
     CONFIG_PRESET=local  # Uses in-memory storage, no external deps
     CONFIG_PRESET=standard  # Requires Redis, ChromaDB
     CONFIG_PRESET=enterprise  # Full production with PostgreSQL
+    CONFIG_PRESET=none  # No preset: none applied, and none auto-detected
 
     # Presets can be overridden by specific env vars
     CONFIG_PRESET=local
@@ -219,16 +220,34 @@ def preset_required_keys(preset: PresetDefinition, provider: str) -> Set[str]:
     return set(required_env_vars(provider)) - set(preset.defaults)
 
 
+#: ``CONFIG_PRESET=none``, in any letter case: no preset. None is applied, and
+#: the zero-config ``local`` preset is not auto-detected either (#2243).
+NO_PRESET = "none"
+
+
+def _preset_or_none(value: Optional[str]) -> Optional[str]:
+    """A ``CONFIG_PRESET`` value as a preset name: ``None`` when blank or ``none``."""
+    name = (value or "").lower().strip()
+    return None if name in ("", NO_PRESET) else name
+
+
+def preset_declined(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether ``CONFIG_PRESET=none`` declines every preset, the detected one too."""
+    if environ is None:
+        environ = _settings_view()
+    return (environ.get("CONFIG_PRESET") or "").lower().strip() == NO_PRESET
+
+
 def get_current_preset_name(
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[str]:
-    """Get the currently configured preset name, as the settings will read it."""
+    """Get the currently configured preset name, as the settings will read it.
+
+    ``None`` when no preset is configured, and for ``CONFIG_PRESET=none``.
+    """
     if environ is None:
         environ = _settings_view()
-    preset_name = environ.get("CONFIG_PRESET", "").lower().strip()
-    if not preset_name:
-        return None
-    return preset_name
+    return _preset_or_none(environ.get("CONFIG_PRESET"))
 
 
 def get_preset(preset_name: str) -> Optional[PresetDefinition]:
@@ -256,6 +275,8 @@ def get_preset_defaults(preset_name: Optional[str] = None) -> Dict[str, str]:
     """
     if preset_name is None:
         preset_name = get_current_preset_name()
+    else:
+        preset_name = _preset_or_none(preset_name)
 
     if not preset_name:
         return {}
@@ -354,6 +375,8 @@ def get_preset_info(preset_name: Optional[str] = None) -> Dict[str, Any]:
     """
     if preset_name is None:
         preset_name = get_current_preset_name()
+    else:
+        preset_name = _preset_or_none(preset_name)
 
     if not preset_name:
         return {
@@ -483,10 +506,16 @@ def ensure_preset_applied():
     Ensure a preset is applied for zero-config experience.
 
     This should be called early in application startup. It will:
-    1. Apply explicit CONFIG_PRESET if set
-    2. Otherwise, detect and apply best preset for zero-config
+    1. Apply nothing, and detect nothing, under CONFIG_PRESET=none
+    2. Apply explicit CONFIG_PRESET if set
+    3. Otherwise, detect and apply best preset for zero-config
     """
-    preset_name = get_current_preset_name()
+    environ = _settings_view()
+    if preset_declined(environ):
+        logger.debug("CONFIG_PRESET=none: no preset applied, none detected")
+        return
+
+    preset_name = get_current_preset_name(environ)
 
     if preset_name:
         # Explicit preset specified
@@ -508,6 +537,8 @@ __all__ = [
     "PresetDefinition",
     "PRESETS",
     "preset_required_keys",
+    "NO_PRESET",
+    "preset_declined",
     "get_current_preset_name",
     "get_preset",
     "get_preset_defaults",

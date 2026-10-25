@@ -490,6 +490,12 @@ jobs:
   # connection to any Redis the step does not name: a suite test that reached
   # for the server fails instead of using it (#2243).
   #
+  # Both test steps also set CONFIG_PRESET=none. They name no provider, Redis
+  # or ChromaDB, so the zero-config `local` preset would otherwise apply
+  # (detect_zero_config_preset). With it declined, this job runs the suite on
+  # no preset at all, the environment's values and settings.py's defaults, the
+  # profile that caught #1636; Test Standalone runs it under `local`.
+  #
   # Test PostgreSQL Integration also installs cloud.txt but selects `-m postgres`,
   # whose tests talk to PostgreSQL directly and never construct a Redis client or
   # boot the app, so it needs no Redis of its own.
@@ -624,7 +630,10 @@ jobs:
             -v
         env:
           # The suite step's env (see the comments there), plus the Redis the
-          # pairing check names.
+          # pairing check names. CONFIG_PRESET=none is redundant while
+          # REDIS_HOST is set (it declines the preset too), and kept so this
+          # step's profile is the suite's whatever names its Redis.
+          CONFIG_PRESET: "none"
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
           OPIK_TRACK_DISABLE: "true"
@@ -645,7 +654,9 @@ jobs:
           # Same flags as Test Standalone, including the floor rather than a
           # top-N. See the note there for why. This job's selection is the
           # larger of the two, so its report is the one that also covers the
-          # `cloud`-marked tests. The same `-n logical --dist loadfile` too.
+          # `cloud`-marked tests, all but tests/integration/
+          # test_real_redis_stores.py, which runs in its own step without
+          # --cov. The same `-n logical --dist loadfile` too.
           pytest tests/ \
             -n logical --dist loadfile \
             --cov=faultmaven \
@@ -657,6 +668,10 @@ jobs:
             --durations-min=1.0 \
             -v
         env:
+          # No preset (see the job header): without this, naming no provider,
+          # Redis or ChromaDB applies the zero-config `local` preset (DEBUG on,
+          # the local LLM, in-memory cases) to the whole suite.
+          CONFIG_PRESET: "none"
           # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
           # Both switches off. Unit tests call the real
@@ -692,8 +707,8 @@ jobs:
           # real-Redis step above, ignored here, drives the server (#2243).
           #
           # Inert: tests/conftest.py pops these three at import
-          # (ENV_VARS_TO_CLEAR), so the suite runs on the settings defaults,
-          # cases in SQLite and vectors in a local Chroma.
+          # (ENV_VARS_TO_CLEAR), and no preset sets them, so the suite runs on
+          # the settings defaults, cases in SQLite and vectors in a local Chroma.
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"

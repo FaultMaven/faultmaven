@@ -202,8 +202,9 @@ def test_11_the_middleware_logger_still_reaches_caplog(caplog, capsys):
 #:   preset instead of the detected one;
 #: * the rest because ``detect_zero_config_preset`` declines the preset when
 #:   any of them is set (``ENVIRONMENT`` only when it names something other
-#:   than ``development``). The Cloud job sets ``REDIS_HOST``, which is why
-#:   the leak only showed in Test Standalone.
+#:   than ``development``). Test Cloud's suite declined the preset (then with
+#:   ``REDIS_HOST``; ``CONFIG_PRESET=none`` since #2243), which is why the
+#:   leak only showed in Test Standalone.
 _PRESET_DECIDERS = (
     "LOG_LEVEL",
     "CONFIG_PRESET",
