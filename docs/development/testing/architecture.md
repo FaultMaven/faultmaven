@@ -429,18 +429,22 @@ for the whole process; the opt-in real-LLM lane (`-m real_llm`, described in
 ```python
 # tests/conftest.py: requested by name, not autouse
 @pytest.fixture(scope="function")
-async def reset_container():
-    """Reset the DI container before each test, and shut it down after it."""
+async def reset_container(monkeypatch):
+    """A fresh DI container for the test, shut down after it."""
+    from faultmaven.config.settings import reset_settings
     from faultmaven.container import container
 
+    # monkeypatch restores it after the test; fresh settings make it count
+    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "true")
+    reset_settings()
     container.reset()
-    os.environ["SKIP_SERVICE_CHECKS"] = "true"
 
     yield container
 
     # Closes what an initialize() in the test opened, on the test's loop
     await container.shutdown()
     container.reset()
+    reset_settings()
 ```
 
 ### Environment Testing Utilities

@@ -50,14 +50,13 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
-def reset_container_before_test():
+def reset_container_before_test(monkeypatch):
     """Reset container and settings before each test."""
+    # Set with monkeypatch, so the next test's environment is its own (#2283).
+    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "true")
     # Reset container singleton
     DIContainer._instance = None
     reset_settings()
-
-    # Set test environment variables
-    os.environ["SKIP_SERVICE_CHECKS"] = "true"
 
     yield
 
