@@ -134,13 +134,15 @@ A preset fills in variables that neither the environment nor the `.env` sets. It
 
 | Value | Effect |
 |-------|--------|
-| `local` (alias `minimal`) | Development defaults: `DEBUG`, a local LLM, in-memory cases, a local Chroma |
+| `local` (alias `minimal`) | Development defaults: `DEBUG`, a local LLM, a local Chroma, PII redaction off |
 | `standard` | Single-server production: Redis sessions, ChromaDB |
-| `enterprise` | Production server settings, cases and users in the database (`CASE_STORAGE_TYPE`/`USER_STORAGE_TYPE=database`), vectors in ChromaDB, OpenAI for chat, PII sanitized, and `DEPLOYMENT_MODE=multi-tenant`, which the settings refuse (they accept `standalone` or `cloud`), so set `DEPLOYMENT_MODE` yourself. It names no service: set `DATABASE_URL`, `REDIS_HOST` and `CHROMADB_URL` |
+| `enterprise` | Production server settings with `WORKERS=4`, vectors in ChromaDB, OpenAI for chat, PII sanitized, and `DEPLOYMENT_MODE=multi-tenant`, which the settings refuse (they accept `standalone` or `cloud`), so set `DEPLOYMENT_MODE` yourself. It names no service: set `DATABASE_URL`, `REDIS_HOST` and `CHROMADB_URL`. With more than one worker, startup refuses the in-process Redis stand-in and a local Chroma, which each worker would hold alone |
 | `none` (any letter case) | No preset. None is applied, and the zero-config `local` preset is not detected either. Every setting is the environment's, the `.env`'s or the default in `settings.py` |
 | unset | The zero-config `local` preset is applied when nothing configures an LLM provider, `REDIS_HOST`, `CHROMADB_URL` or an `ENVIRONMENT` other than `development`. Otherwise no preset is applied |
 
 `none` is the operator's opt-out from zero-config detection: a deployment that wants exactly what it configured, and nothing a preset would add. Test Cloud's test steps set it (#2243).
+
+No preset chooses where cases and users are kept: under every one they are in the database `DATABASE_URL` names (the SQLite file by default). Sessions are in Redis, the server `REDIS_URL` or `REDIS_HOST` names, or the in-process stand-in when none is reachable on standalone. `GET /admin/config/status` reports which stores the running process built.
 
 ## ConversationThresholds Variables
 

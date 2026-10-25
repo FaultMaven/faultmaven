@@ -45,11 +45,10 @@ class TestPresetDefinitions:
         local_preset = PRESETS[PresetName.LOCAL]
         defaults = local_preset.defaults
 
-        # Sessions use FakeRedis (no config needed); vectors use local
-        # ChromaDB PersistentClient (no external server needed).
-        assert "SESSION_STORAGE_TYPE" not in defaults
+        # Vectors use the local ChromaDB PersistentClient (no external server
+        # needed). Sessions use FakeRedis when no Redis server is reachable, and
+        # cases the DATABASE_URL SQLite file: no setting selects either.
         assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
-        assert defaults.get("CASE_STORAGE_TYPE") == "inmemory"
 
         # Should use local LLM
         assert defaults.get("CHAT_PROVIDER") == "local"
@@ -79,8 +78,8 @@ class TestPresetDefinitions:
         standard_preset = PRESETS[PresetName.STANDARD]
         defaults = standard_preset.defaults
 
-        # Sessions: Redis auto-selected via REDIS_HOST in preset
-        assert "SESSION_STORAGE_TYPE" not in defaults
+        # Sessions: Redis via REDIS_HOST in the preset
+        assert defaults.get("REDIS_HOST") == "localhost"
         # Should use ChromaDB for vectors
         assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
 
@@ -90,10 +89,6 @@ class TestPresetDefinitions:
 
         enterprise_preset = PRESETS[PresetName.ENTERPRISE]
         defaults = enterprise_preset.defaults
-
-        # Should use database storage
-        assert defaults.get("CASE_STORAGE_TYPE") == "database"
-        assert defaults.get("USER_STORAGE_TYPE") == "database"
 
         # Should be multi-tenant
         assert defaults.get("DEPLOYMENT_MODE") == "multi-tenant"
@@ -189,8 +184,6 @@ class TestPresetApplication:
 
             # Check that preset values were applied
             assert os.environ.get("VECTOR_STORAGE_TYPE") == "chromadb"
-            # SESSION_STORAGE_TYPE no longer in presets (FakeRedis auto-selected)
-            assert os.environ.get("SESSION_STORAGE_TYPE") is None
 
     def test_apply_preset_defaults_does_not_override_existing(self):
         """Test that apply_preset_defaults does not override existing env vars."""
@@ -764,10 +757,10 @@ class TestConfigPresetNone:
     """
 
     @staticmethod
-    def _case_storage_default():
-        from faultmaven.config.settings import DatabaseSettings
+    def _session_timeout_default():
+        from faultmaven.config.settings import SessionSettings
 
-        return DatabaseSettings.model_fields["case_storage_type"].default
+        return SessionSettings.model_fields["timeout_minutes"].default
 
     @pytest.mark.parametrize("spelling", ["none", "NONE", " None "])
     def test_none_applies_no_preset_and_the_settings_see_none(self, spelling, caplog):
@@ -789,7 +782,7 @@ class TestConfigPresetNone:
         assert untouched == {"CONFIG_PRESET": spelling}, "a preset wrote defaults"
         assert current is None and active is None
         assert info["active"] is False and "error" not in info
-        assert settings.database.case_storage_type == self._case_storage_default()
+        assert settings.session.timeout_minutes == self._session_timeout_default()
         assert "Unknown preset" not in caplog.text
 
     def test_unset_still_applies_the_local_preset(self):
@@ -809,8 +802,9 @@ class TestConfigPresetNone:
             **{k: str(v) for k, v in local.items()},
         }
         assert active == "local"
-        assert settings.database.case_storage_type == local["CASE_STORAGE_TYPE"]
-        assert local["CASE_STORAGE_TYPE"] != self._case_storage_default()
+        timeout = int(local["SESSION_TIMEOUT_MINUTES"])
+        assert settings.session.timeout_minutes == timeout
+        assert timeout != self._session_timeout_default()
 
     def test_an_unknown_preset_is_still_reported(self, caplog):
         """The capture's own control: it does see the warning ``none`` must not log."""

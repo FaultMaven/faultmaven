@@ -159,15 +159,20 @@ def _check_cloud(settings: Any) -> List[str]:
             "likely the SQLite default). SQLite is single-writer and standalone-only."
         )
 
-    # 3. Sessions must be real Redis.
-    session_type = str(getattr(db, "session_storage_type", "inmemory") or "inmemory")
+    # 3. A Redis server must be named. The session store is always
+    # RedisSessionStore over the container's Redis client, real or FakeRedis;
+    # no setting selects it. What names the server is REDIS_URL or REDIS_HOST,
+    # the two the client factory reads (the URL wins). The factory refuses the
+    # FakeRedis fallback under cloud when the server it names is unusable
+    # (``fakeredis_or_fail``); this check catches a configuration that names
+    # none at all.
     has_redis = bool(getattr(db, "redis_url", None)) or bool(
         getattr(db, "redis_host", None)
     )
-    if session_type != "redis" or not has_redis:
+    if not has_redis:
         problems.append(
-            "Cloud requires real Redis sessions: set SESSION_STORAGE_TYPE=redis with "
-            "REDIS_URL or REDIS_HOST. FakeRedis is ephemeral and standalone-only."
+            "Cloud requires a real Redis server: set REDIS_URL or REDIS_HOST. "
+            "FakeRedis is ephemeral and standalone-only."
         )
 
     # 4. The hosted identity provider must be configured (ADR-015 D7). Cloud

@@ -1253,17 +1253,6 @@ class DatabaseSettings(BaseSettings):
     )
 
     # ============================================
-    # Storage Adapter Selection
-    # ============================================
-    user_storage_type: str = Field(default="inmemory")
-    case_storage_type: str = Field(default="database")
-
-    # ============================================
-    # Session Storage Adapter Configuration
-    # ============================================
-    session_storage_type: str = Field(default="inmemory")
-
-    # ============================================
     # Vector Storage Adapter Configuration
     # ============================================
     # "chromadb" (default) uses local ChromaDB PersistentClient, or HttpClient
@@ -3578,12 +3567,10 @@ class FaultMavenSettings(BaseSettings):
             "preset": get_preset_info(),
             "environment": self.server.environment.value,
             "tenant_provider": self.providers.tenant_provider,
-            "storage": {
-                "session": self.database.session_storage_type,
-                "vector": self.database.vector_storage_type,
-                "case": self.database.case_storage_type,
-                "user": self.database.user_storage_type,
-            },
+            # Only the vector store has a selector. Cases and users live in
+            # DATABASE_URL, and sessions in the Redis the container resolves;
+            # GET /admin/config/status reports what was actually built.
+            "storage": {"vector": self.database.vector_storage_type},
             "llm_provider": self.llm.provider.value if self.llm.provider else "not_set",
             # ``protection_enabled`` here is PII redaction (ProtectionSettings
             # in config/settings.py), not the request-path protections. Rate
@@ -3686,7 +3673,7 @@ def get_settings() -> FaultMavenSettings:
     - If no LLM provider is configured (an API key, or LOCAL_LLM_URL), as the
       settings read them (``environment_settings_read``), auto-applies the
       'local' preset
-    - Uses in-memory storage and local LLM (Ollama) for quick startup
+    - Uses a local LLM (Ollama) and the local stores for quick startup
     - No external dependencies required
 
     Raises:

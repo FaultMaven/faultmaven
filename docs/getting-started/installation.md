@@ -103,9 +103,7 @@ Standalone uses the following defaults:
 
 ```python
 # Storage (no external dependencies)
-database_url = "sqlite:///./data/faultmaven.db"
-user_storage_type = "inmemory"
-case_storage_type = "database"
+database_url = "sqlite:///./data/faultmaven.db"  # cases, users and every other table
 # Sessions: FakeRedis (in-process, no external server needed)
 # Vectors: ChromaDB PersistentClient (local, no external server needed)
 vector_storage_type = "chromadb"
@@ -179,16 +177,16 @@ The settings that back this infrastructure still exist in the codebase (see [Con
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |
 | `HOST` | `0.0.0.0` | Server host |
 | `PORT` | `8000` | Server port |
+| `WORKERS` | `1` | Server worker processes. More than one needs a Redis server and a ChromaDB server every worker reaches (`REDIS_URL` or `REDIS_HOST`, and `CHROMADB_URL`): startup refuses the in-process FakeRedis and a local ChromaDB, which each worker would hold alone |
 
 #### Database Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:///./data/faultmaven.db` | Database connection URL |
-| `USER_STORAGE_TYPE` | `inmemory` | User storage: `inmemory`, `postgresql` |
-| `CASE_STORAGE_TYPE` | `database` | Case storage: `database` (SQLite/PostgreSQL), `inmemory` (testing only) |
-| `REDIS_HOST` | _(unset)_ | Sessions: FakeRedis when unset, real Redis when set |
-| `VECTOR_STORAGE_TYPE` | `inmemory` | Vector storage: `inmemory`, `chromadb` |
+| `DATABASE_URL` | `sqlite:///./data/faultmaven.db` | Database connection URL. Cases, users and every other table live here; its dialect (SQLite or PostgreSQL) picks the repository |
+| `REDIS_URL` | _(unset)_ | Redis server URL for sessions; wins over `REDIS_HOST` |
+| `REDIS_HOST` | `faultmaven-redis-master` | Redis server host for sessions. Standalone uses the in-process FakeRedis when the named server does not answer |
+| `VECTOR_STORAGE_TYPE` | `chromadb` | Vector storage: ChromaDB, a local `PersistentClient` unless `CHROMADB_URL` names a server |
 
 #### Cloud-Surface Settings (configured in Cloud, not the Standalone template)
 

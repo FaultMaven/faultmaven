@@ -1807,8 +1807,8 @@ SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'symptom_eviden
 **Test end-to-end with FaultMaven API**:
 
 ```bash
-# Start API with database config
-CASE_STORAGE_TYPE=database python -m faultmaven.server
+# Start the API against the PostgreSQL database under test (DATABASE_URL picks the store)
+DATABASE_URL=postgresql+asyncpg://faultmaven:<password>@localhost:5432/faultmaven_cases python -m faultmaven.server
 
 # Create case via API
 curl -X POST http://localhost:8090/api/v1/cases \
@@ -1837,7 +1837,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
 - [x] Baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
 - [x] Repository implementation (`postgresql_hybrid_case_repository/repository.py`, `sqlite_case_repository/`)
-- [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
+- [x] Container wiring (`create_case_repository`: a persistent `DATABASE_URL` gets `SessionlessCaseRepository`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
 - [x] `case_actions.triggered_by` column + read path wired (migration 008)
 - [x] Evidence/Solution audit fields wired end-to-end (migration 009): `Evidence` adds `primary_purpose`/`analysis`/`processing_mode`/`advances_milestones`/`collected_by`; `Solution` adds `proposed_by`/`applied_by`/`verification_method`/`verification_evidence_id`/`effectiveness` and renames `implemented_at`→`applied_at`, `verification_timestamp`→`verified_at`
@@ -1850,7 +1850,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 - [ ] Run performance benchmarks (Section 8.3)
 - [ ] Run API integration tests (Section 8.4)
 - [ ] Verify all indexes are used (EXPLAIN ANALYZE)
-- [ ] Update `.env` to use `CASE_STORAGE_TYPE=database`
+- [ ] Point `DATABASE_URL` at the PostgreSQL database
 - [ ] Deploy FaultMaven API with hybrid repository
 - [ ] Monitor production metrics (query performance, error rates)
 

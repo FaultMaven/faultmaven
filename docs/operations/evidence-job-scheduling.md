@@ -480,15 +480,11 @@ Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
             - name: ENVIRONMENT
               value: "production"
 
-            # Storage-type selectors, also absent from faultmaven-config
-            # (infra#149). Under DEPLOYMENT_MODE=cloud the coherence gate
-            # refuses to run without SESSION_STORAGE_TYPE=redis.
-            - name: SESSION_STORAGE_TYPE
-              value: "redis"
+            # The vector-store selector, at its default. Sessions and cases
+            # have no selector: they use the Redis that REDIS_URL/REDIS_HOST
+            # names and the database that DATABASE_URL names (#2269).
             - name: VECTOR_STORAGE_TYPE
               value: "chromadb"
-            - name: CASE_STORAGE_TYPE
-              value: "postgres_hybrid"
 
             # The BYPASSRLS maintenance role, read key-by-key. Deliberately NOT
             # `optional: true`: a missing Secret or key must fail the pod with
@@ -599,25 +595,17 @@ spec:
             - --cross-tenant-maintenance
             - --verbose
           env:
-            # env[0]/env[1] = PROFILE/ENVIRONMENT, and the three storage-type
-            # selectors — copied from base/cronjobs/case-cleanup.yaml. None of
-            # these five keys is in faultmaven-config, so envFrom does not
-            # supply them (infra#149). Without them the container initializes
-            # against the wrong backends, and under DEPLOYMENT_MODE=cloud the
-            # coherence gate refuses to start at all. Do not rely on the
-            # runner's generic warning path to catch that: it would let a
-            # CROSS-TENANT sweep proceed against a partially-initialized
-            # container.
+            # env[0]/env[1] = PROFILE/ENVIRONMENT, then the vector-store
+            # selector at its default — copied from
+            # base/cronjobs/case-cleanup.yaml. Sessions and cases have no
+            # selector: they use the Redis that REDIS_URL/REDIS_HOST names and
+            # the database that DATABASE_URL names (#2269).
             - name: PROFILE
               value: "enterprise"
             - name: ENVIRONMENT
               value: "production"
-            - name: SESSION_STORAGE_TYPE
-              value: "redis"
             - name: VECTOR_STORAGE_TYPE
               value: "chromadb"
-            - name: CASE_STORAGE_TYPE
-              value: "postgres_hybrid"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -855,16 +843,6 @@ spec:
                 memory: "2Gi"
                 cpu: "1000m"
 ```
-
-> **⚠ Known gap in this manifest (infra#149).** Unlike its sibling
-> `kubernetes/apps/faultmaven/base/cronjobs/case-cleanup.yaml` and the API
-> Deployment, `storage-cleanup.yaml` does **not** set
-> `SESSION_STORAGE_TYPE`, `VECTOR_STORAGE_TYPE` or `CASE_STORAGE_TYPE`, and none
-> of the three is in `faultmaven-config`. Standalone is unaffected, but under
-> `DEPLOYMENT_MODE=cloud` the deployment-coherence gate refuses the run
-> ("Cloud requires real Redis sessions"), so scheduled storage cleanup would
-> stop happening on every invocation. The illustration above matches the file as
-> deployed; do not "fix" it here.
 
 > **⚠ Under `TENANT_PROVIDER=multi` the base invocation above fails closed.**
 > Since #1232 `storage_cleanup` declares `JOB_TENANT_SCOPE="cross_tenant"`, so

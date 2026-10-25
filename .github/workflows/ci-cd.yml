@@ -467,8 +467,6 @@ jobs:
           METRICS_ENABLED: "false"
           PROTECTION_ENABLED: "false"
           SANITIZE_PII: "false"
-          USER_STORAGE_TYPE: "inmemory"
-          CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
 
       - name: Check Coverage Threshold
@@ -644,8 +642,6 @@ jobs:
           METRICS_ENABLED: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
-          USER_STORAGE_TYPE: "inmemory"
-          CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
           REDIS_HOST: "localhost"
           REDIS_PORT: "6379"
@@ -672,7 +668,7 @@ jobs:
         env:
           # No preset (see the job header): without this, naming no provider,
           # Redis or ChromaDB applies the zero-config `local` preset (DEBUG on,
-          # the local LLM, in-memory cases) to the whole suite.
+          # LOG_LEVEL=DEBUG, the local LLM) to the whole suite.
           CONFIG_PRESET: "none"
           # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
@@ -708,11 +704,9 @@ jobs:
           # IdempotencyMiddleware is not mounted under SKIP_SERVICE_CHECKS. The
           # real-Redis step above, ignored here, drives the server (#2243).
           #
-          # Inert: tests/conftest.py pops these three at import
-          # (ENV_VARS_TO_CLEAR), and no preset sets them, so the suite runs on
-          # the settings defaults, cases in SQLite and vectors in a local Chroma.
-          USER_STORAGE_TYPE: "inmemory"
-          CASE_STORAGE_TYPE: "inmemory"
+          # Inert: tests/conftest.py pops it at import (ENV_VARS_TO_CLEAR), so
+          # the suite runs on the settings default, vectors in a local Chroma.
+          # Cases are in SQLite: DATABASE_URL picks the store, no selector does.
           VECTOR_STORAGE_TYPE: "inmemory"
 
       - name: Check Coverage Threshold

@@ -654,9 +654,8 @@ async def test_no_component_failure_shape_reaches_the_health_fallback_body(
     # REDIS_HOST, now by CONFIG_PRESET=none) the default provider had no key
     # and the body read `degraded` unless an earlier file had left capable LLM
     # state in the process -- which the serial order happened to do and an
-    # xdist worker did not (#1636). Pinned
-    # capable, so the status below is the component monitor's verdict and
-    # nothing else.
+    # xdist worker did not (#1636). Pinned capable, so the status below is the
+    # component monitor's verdict and nothing else.
     from faultmaven.config import investigation_capability as capability_module
 
     monkeypatch.setattr(

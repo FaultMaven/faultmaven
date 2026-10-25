@@ -13,9 +13,9 @@ Design Principles:
 
 Usage:
     # Via environment variable
-    CONFIG_PRESET=local  # Uses in-memory storage, no external deps
+    CONFIG_PRESET=local  # Local LLM and local stores, no external deps
     CONFIG_PRESET=standard  # Requires Redis, ChromaDB
-    CONFIG_PRESET=enterprise  # Production settings, database-backed; names no services
+    CONFIG_PRESET=enterprise  # Production settings, four workers; names no services
     CONFIG_PRESET=none  # No preset: none applied, and none auto-detected
 
     # Presets can be overridden by specific env vars
@@ -39,7 +39,7 @@ class PresetName(str, Enum):
     LOCAL = "local"  # Zero-config for local development
     MINIMAL = "minimal"  # Alias for local
     STANDARD = "standard"  # Basic production with Redis + ChromaDB
-    ENTERPRISE = "enterprise"  # Production settings, database-backed; names no services
+    ENTERPRISE = "enterprise"  # Production settings, four workers; names no services
 
 
 @dataclass
@@ -59,8 +59,9 @@ class PresetDefinition:
 PRESETS: Dict[str, PresetDefinition] = {
     PresetName.LOCAL: PresetDefinition(
         name="local",
-        description="Zero-config for local development. Uses in-memory storage, "
-        "no external services required. Great for getting started quickly.",
+        description="Zero-config for local development. Uses a local LLM and the "
+        "local stores, no external services required. Great for getting started "
+        "quickly.",
         defaults={
             # Server
             "ENVIRONMENT": "development",
@@ -76,10 +77,10 @@ PRESETS: Dict[str, PresetDefinition] = {
             # FakeRedis and ChromaDB defaults to a local PersistentClient, so no
             # external service is required without skipping. SKIP_SERVICE_CHECKS
             # remains opt-in (e.g. pytest) for genuinely store-less runs.
-            # Storage - minimal external deps (FakeRedis for sessions, local ChromaDB PersistentClient for vectors)
+            # Storage - minimal external deps (FakeRedis for sessions, local
+            # ChromaDB PersistentClient for vectors). Cases and users go to
+            # DATABASE_URL, the SQLite file by default, under every preset.
             "VECTOR_STORAGE_TYPE": "chromadb",
-            "CASE_STORAGE_TYPE": "inmemory",
-            "USER_STORAGE_TYPE": "inmemory",
             # LLM - Default to local for true zero-config
             # Users can override with their preferred provider
             "CHAT_PROVIDER": "local",
@@ -114,8 +115,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "SKIP_SERVICE_CHECKS": "false",
             # Storage - external services (Redis auto-selected via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",
-            "CASE_STORAGE_TYPE": "inmemory",  # In-memory until PostgreSQL configured
-            "USER_STORAGE_TYPE": "inmemory",
             # Redis defaults (override with your actual values)
             "REDIS_HOST": "localhost",
             "REDIS_PORT": "6379",
@@ -140,9 +139,9 @@ PRESETS: Dict[str, PresetDefinition] = {
     ),
     PresetName.ENTERPRISE: PresetDefinition(
         name="enterprise",
-        description="Production settings with cases and users in the database "
-        "and vectors in ChromaDB. Names no service: set DATABASE_URL (PostgreSQL), "
-        "REDIS_HOST and CHROMADB_URL.",
+        description="Production settings with four workers and vectors in "
+        "ChromaDB. Names no service: set DATABASE_URL (PostgreSQL), REDIS_HOST "
+        "and CHROMADB_URL.",
         defaults={
             # Server
             "ENVIRONMENT": "production",
@@ -156,8 +155,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "DEPLOYMENT_MODE": "multi-tenant",
             # Storage - full external services (Redis via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",
-            "CASE_STORAGE_TYPE": "database",
-            "USER_STORAGE_TYPE": "database",
             # LLM - OpenAI as enterprise default
             "CHAT_PROVIDER": "openai",
             # PII redaction only — see the local preset's note on rate limiting.

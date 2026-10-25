@@ -13,9 +13,9 @@ Zero-Config Quick Start:
     # FaultMaven auto-detects and uses 'local' preset
 
     # Or explicitly set a preset:
-    CONFIG_PRESET=local      # In-memory storage, local LLM
+    CONFIG_PRESET=local      # Local LLM and local stores
     CONFIG_PRESET=standard   # Redis + ChromaDB, cloud LLM
-    CONFIG_PRESET=enterprise # Production settings, database-backed; names no services
+    CONFIG_PRESET=enterprise # Production settings, four workers; names no services
     CONFIG_PRESET=none       # No preset: none applied, none auto-detected
 """
 
