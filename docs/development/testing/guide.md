@@ -180,9 +180,9 @@ mock_llm.route.return_value = LLMResponse(
 # mock_llm = Mock(spec=OpenAIProvider)  # Don't do this
 ```
 
-Spec a concrete class only where no interface declares the call the code makes, and treat it as a known gap. The current cases: `KnowledgeService`'s sanitizer and vector store (#2284; [patterns.md](patterns.md), pattern 2), and the milestone engine's tool registry, typed `Any`, with no interface for `AgentToolRegistry` ([standards.md](standards.md)).
+When the code calls a method its dependency's interface does not declare, fix the interface rather than spec the mock on a concrete class: declare the method, so the interface mock carries it. #2284 did this for `KnowledgeService`'s sanitizer (`ISanitizer.asanitize`) and vector store (`IKnowledgeVectorStore`; [patterns.md](patterns.md), pattern 2) and for the milestone engine's tool registry (`IAgentToolRegistry`; [standards.md](standards.md)).
 
-**Validate Interface Methods**: Ensure all required methods are implemented. `tests/unit/architecture/test_contract_signature_conformance.py` checks this, signatures included, for every module contract registered in it:
+**Validate Interface Methods**: Ensure all required methods are implemented. `tests/unit/architecture/test_contract_signature_conformance.py` checks this, signatures included, for every module contract and shared port registered in it:
 ```python
 def test_service_implements_interface():
     import inspect
@@ -262,7 +262,7 @@ FaultMaven's Clean Architecture testing approach with **1425+ tests** ensures co
 
 Key benefits:
 - **Clean State Management**: Proper container reset ensures test isolation
-- **Interface Compliance**: Dependencies mocked through their interface contracts, but for the known gaps
+- **Interface Compliance**: Dependencies mocked through their interface contracts
 - **Architecture Validation**: Tests validate Clean Architecture layer boundaries
 - **Performance Monitoring**: Timings judged by the routes the calibration guard accepts, never against literals
 - **Cross-Layer Integration**: End-to-end workflow testing through all layers

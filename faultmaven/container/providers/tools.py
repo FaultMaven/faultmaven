@@ -17,6 +17,8 @@ from faultmaven.infrastructure.chroma_client import ChromaClientConfigError
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+    from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +106,8 @@ def create_registry_tools(
 
 
 def create_document_qa_tools(
-    case_vector_store: Any | None,
-    knowledge_vector_store: Any | None,
+    case_vector_store: CaseVectorStore | None,
+    knowledge_vector_store: IKnowledgeVectorStore | None,
     llm_provider: Any,
     settings: FaultMavenSettings,
 ) -> dict[str, Any | None]:
@@ -266,14 +268,11 @@ def register_tools(container: BaseDIContainer) -> None:
     llm_provider = container.get_service("llm_provider")
     case_vector_store = getattr(container, "case_vector_store", None)
 
-    # Create knowledge vector store for KB collections
-    from faultmaven.container.providers.infrastructure import (
-        create_knowledge_vector_store,
-    )
-
-    kb_chromadb_client = getattr(container, "kb_chromadb_client", None)
-    knowledge_vector_store = create_knowledge_vector_store(settings, kb_chromadb_client)
-    container.knowledge_vector_store = knowledge_vector_store
+    # The one KB vector store, built and registered by register_infrastructure
+    # (register_knowledge_vector_store). Building a second here gave kb_qa and
+    # KnowledgeService a store of their own, with its own term-stats index and
+    # circuit breaker, and left the registered one unused.
+    knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
 
     qa_tools = create_document_qa_tools(
         case_vector_store,

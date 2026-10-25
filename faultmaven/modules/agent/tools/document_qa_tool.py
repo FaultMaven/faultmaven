@@ -14,9 +14,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import get_settings
-from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-    KnowledgeVectorStore,
-)
 from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
 from faultmaven.infrastructure.llm.router import LLMRouter
@@ -24,7 +21,9 @@ from faultmaven.infrastructure.llm.truncation import (
     annotate_if_truncated,
     generate_with_truncation_retry,
 )
+from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -133,7 +132,7 @@ class DocumentQATool:
 
     def __init__(
         self,
-        vector_store: KnowledgeVectorStore,
+        vector_store: IKnowledgeVectorStore | CaseVectorStore,
         llm_router: LLMRouter,
         kb_config: KBConfig,
     ):
@@ -141,7 +140,8 @@ class DocumentQATool:
         Initialize KB-neutral document Q&A tool.
 
         Args:
-            vector_store: ChromaDB vector store instance
+            vector_store: The store ``kb_config`` names collections in: the KB
+                store for ``kb_qa``, ``CaseVectorStore`` for case evidence
             llm_router: LLM router for synthesis calls
             kb_config: KB-specific configuration strategy
         """
@@ -482,8 +482,9 @@ Answer:"""
     ) -> list:
         """Retrieve chunks per the KB config's search mode.
 
-        ``hybrid`` (when the store supports it) → vector + keyword + reranking;
-        otherwise pure vector search. Raises on store error, and that error is
+        ``hybrid`` (when the store supports it: the KB store does,
+        ``CaseVectorStore`` does not) → vector + keyword + reranking; otherwise
+        pure vector search. Raises on store error, and that error is
         NOT caught upstream: it propagates to the tool boundary so the adapter
         renders ``success=False`` rather than an answer (#943).
 

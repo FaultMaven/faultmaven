@@ -154,9 +154,9 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
 from faultmaven.modules.knowledge.taxonomy import RunbookDomain, render_vocabulary
 
 # ============================================================
-# Note: Knowledge module uses infrastructure/vector/ for vector store
-# The actual KnowledgeService implementation uses IVectorStore interface
-# from infrastructure layer, which is correct for vertical modules.
+# Note: KnowledgeService reads and writes vectors through IKnowledgeVectorStore
+# (faultmaven/models/interfaces.py), implemented by KnowledgeVectorStore
+# (faultmaven/infrastructure/knowledge/knowledge_vector_store.py).
 # ============================================================
 
 

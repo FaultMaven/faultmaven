@@ -92,7 +92,7 @@ from faultmaven.infrastructure.llm.usage_ledger import (
     warn_attribution_error,
 )
 from faultmaven.infrastructure.security.case_redaction import load_case_redaction
-from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.models.interfaces import IAgentToolRegistry, ILLMProvider
 from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM_MESSAGE
 from faultmaven.modules.case.contracts import (
     Case,
@@ -249,7 +249,7 @@ class MilestoneEngine:
         self,
         llm_provider: ILLMProvider,
         repository: Any,  # Case repository abstraction (duck typing)
-        investigation_tools: Any,
+        investigation_tools: IAgentToolRegistry | None,
         knowledge_service: IKnowledgeService | None = None,
         da_provider: Any | None = None,
         da_model: str | None = None,
@@ -266,9 +266,10 @@ class MilestoneEngine:
         Args:
             llm_provider: LLM provider implementation (ILLMProvider interface)
             repository: Case repository with save/get methods
-            investigation_tools: AgentToolRegistry with investigation tools
-                (search_file, deep_analysis, etc.). Required — DA turns use
-                these for evidence searching during generation.
+            investigation_tools: The investigation tool registry
+                (search_file, deep_analysis, etc.) DA turns search evidence
+                with during generation. None when no tool is available: every
+                turn then takes the tool-less path.
             knowledge_service: Optional knowledge service for KB searches
             da_provider: Dedicated provider for DA (directed analysis) turns
                 (configured via DA_PROVIDER in .env).

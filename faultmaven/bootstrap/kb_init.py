@@ -57,6 +57,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     resolve_sweep_mode,
     sweep_authored_orphans,
 )
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -578,19 +579,11 @@ async def _reconcile_vectors(
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     nothing = ReconcileResult([], [], [])
-    vector_store = getattr(knowledge_service, "_vector_store", None)
+    vector_store: Optional[IKnowledgeVectorStore] = getattr(
+        knowledge_service, "_vector_store", None
+    )
     if vector_store is None:
         logger.debug("Reconcile skipped: no vector store wired.")
-        return nothing
-    if not hasattr(vector_store, "list_all_chunk_ids_by_parent"):
-        # A store that can't enumerate (e.g. the generic ChromaDBVectorStore
-        # fallback when the KB client failed to init) silently leaves drift in
-        # place — surface that loudly, it is a degraded configuration, not a no-op.
-        logger.warning(
-            "Reconcile skipped: wired vector store %s cannot enumerate parents — "
-            "KB SQL<->vector drift will NOT be cleaned this boot.",
-            type(vector_store).__name__,
-        )
         return nothing
 
     try:
@@ -858,7 +851,7 @@ async def _delete_existing(
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     # ChromaDB chunks first (idempotent — no-op if not present). The vector store
-    # implements ``delete_documents_by_parent_id`` (IVectorStore contract); a
+    # implements ``delete_documents_by_parent_id`` (IKnowledgeVectorStore); a
     # missing method surfaces as a logged warning here rather than a silent skip,
     # so vector-side cleanup can never quietly become a no-op (the drift bug).
     try:

@@ -16,11 +16,7 @@ Architecture:
 """
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional
-
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore
+from typing import Dict, List, Optional
 
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.models.api_models import ProgressTransparencyInfo

@@ -1,7 +1,16 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ContextManager,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+)
 
 from pydantic import BaseModel, Field
 
@@ -163,6 +172,52 @@ class BaseTool(ABC):
             Examples in schema help the agent understand tool usage.
             Parameter descriptions should be clear and specific.
             Schema validation is performed automatically before execution.
+        """
+        pass
+
+
+class IAgentToolRegistry(ABC):
+    """The investigation tools one turn can give the model, run by name.
+
+    What the milestone engine calls on the registry it is given: the schemas
+    of every registered tool (to build the ``tools=`` a turn sends) and the
+    execution of the one the model called. Registering tools is the
+    composition root's business and not part of this port.
+
+    The tool and context types the implementation uses (``AgentTool``,
+    ``ToolContext``) live in the agent module, which imports this one; this
+    port names the tool by :class:`BaseTool`, whose ``get_schema`` is what the
+    engine reads, and passes the context through untyped.
+    """
+
+    @abstractmethod
+    def get_all_tools(self) -> Sequence[BaseTool]:
+        """Every registered tool, in registration order."""
+        pass
+
+    @abstractmethod
+    async def execute_tool(
+        self,
+        tool_name: str,
+        params: Dict[str, Any],
+        context: Any,
+    ) -> ToolResult:
+        """Validate ``params`` against the named tool's schema and run it.
+
+        Args:
+            tool_name: The tool the model called.
+            params: The arguments it called it with.
+            context: The turn's ``ToolContext``, handed to the tool.
+
+        Returns:
+            The tool's result. A failure is a result too, with ``success``
+            False and ``error`` saying why: an unknown tool, parameters the
+            schema rejects, or an exception the tool raised.
+
+        Raises:
+            RawModelContentRefused: A tool tried to send unminted content to a
+                model. A programming error, propagated and never turned into a
+                failed result (#1998).
         """
         pass
 
@@ -388,6 +443,30 @@ class ISanitizer(ABC):
         """
         pass
 
+    @abstractmethod
+    async def asanitize(self, data: Any) -> Any:
+        """:meth:`sanitize`, awaited without blocking the event loop.
+
+        The async boundary of this interface: every ``async`` caller uses it
+        instead of :meth:`sanitize`. The work a sanitize does (regex passes,
+        and a blocking round-trip to an external PII analyzer) runs off the
+        event loop, so awaiting it never stalls other requests or a liveness
+        probe (#654).
+
+        Args:
+            data: Anything :meth:`sanitize` accepts. ``None`` is returned as
+                is, without dispatching any work.
+
+        Returns:
+            What :meth:`sanitize` returns for ``data``.
+
+        Raises:
+            Whatever :meth:`sanitize` raises — in particular a refusal when
+            redaction is required and its analyzer is unavailable, rather
+            than un-analyzed text.
+        """
+        pass
+
 
 class IVectorStore(ABC):
     """Interface for vector database operations.
@@ -524,6 +603,166 @@ class IVectorStore(ABC):
             Number of chunks deleted.
         """
         return 0
+
+
+class IKnowledgeVectorStore(ABC):
+    """The knowledge-base vector store: one shared collection, every KB scope.
+
+    Not an :class:`IVectorStore`. That port is bound to one collection and
+    filters with ``filters``; this one names the collection on each search and
+    filters with a ChromaDB ``where`` clause, which on the KB collection must
+    name a scope key or the store refuses it. Which rows a caller may read is
+    decided by the ``where`` it passes (``build_kb_scope_filter``).
+
+    Declares what its consumers call: ``KnowledgeService`` (search, hybrid
+    search, write, delete) and the boot-time reconcile pass and authored-orphan
+    sweep, which reach the store through that service. Parameter names and
+    defaults are the implementation's. An optional parameter no consumer
+    passes belongs to the implementation and is not part of this port: the
+    per-call ``collection_name`` of the write, delete and listing methods
+    (each defaults to the KB collection), ``search``'s ``query_embedding`` and
+    ``hybrid_search``'s ``context_metadata`` / ``filter_mode``. With those two
+    left out, ``hybrid_search`` takes ``min_score`` by keyword only, as every
+    consumer passes it. The signature-conformance test holds the
+    implementation to this port.
+    """
+
+    @abstractmethod
+    async def search(
+        self,
+        collection_name: str,
+        query: str,
+        k: int = 5,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Pure vector search of one collection.
+
+        Args:
+            collection_name: The collection, named exactly.
+            query: Search text, embedded by the store.
+            k: Number of hits to return.
+            where: ChromaDB metadata filter. Required on the KB collection,
+                where it must name a scope key.
+
+        Returns:
+            Hits ordered by similarity, each ``{"id", "content", "metadata",
+            "score"}``; ``score`` is the cosine similarity.
+
+        Raises:
+            ValueError: A KB-collection query whose ``where`` names no scope
+                key.
+            KnowledgeBaseError: The embedding model is unavailable. Never an
+                empty result.
+        """
+        pass
+
+    @abstractmethod
+    async def hybrid_search(
+        self,
+        collection_name: str,
+        query: str,
+        k: int = 5,
+        where: Optional[Dict[str, Any]] = None,
+        *,
+        min_score: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Vector plus keyword-constrained recall, then a multi-signal rerank.
+
+        Args:
+            collection_name, query, k, where: As :meth:`search`.
+            min_score: Minimum cosine a candidate must carry, applied before
+                the top-``k`` cut.
+
+        Returns:
+            The top ``k`` hits in rerank order, each as :meth:`search` returns
+            it plus ``rerank_score``, the blend that decided the order. That
+            blend is relative to this candidate set; ``score`` stays the
+            absolute cosine.
+
+        Raises:
+            As :meth:`search`.
+        """
+        pass
+
+    @abstractmethod
+    async def add_documents(
+        self,
+        documents: List[Dict[str, Any]],
+        embeddings: Optional[List[List[float]]] = None,
+    ) -> None:
+        """Write chunks to the KB collection.
+
+        Args:
+            documents: Chunk dicts, each ``{"id", "content", "metadata"}``.
+                Metadata is held to the ``VectorMetadata`` schema, and a KB
+                chunk must carry a non-blank ``enterprise_id`` (#1168).
+            embeddings: One precomputed vector per document, or None.
+
+        Raises:
+            ValueError: Metadata that is not a dict, carries an undeclared key,
+                or (KB collection) lacks ``enterprise_id``.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_documents_by_parent_id(
+        self, parent_document_id: str, *, retries: int = 2
+    ) -> int:
+        """Delete every chunk of one document from the KB collection.
+
+        Args:
+            parent_document_id: The document whose chunks to delete.
+            retries: Further attempts after a failed one. A caller holding a
+                database transaction open across this call passes 0.
+
+        Returns:
+            The number of chunks deleted; 0 when the document has none.
+        """
+        pass
+
+    @abstractmethod
+    async def list_all_chunk_ids_by_parent(self) -> Dict[str, List[str]]:
+        """Every chunk id in the KB collection, keyed by the parent its id names.
+
+        Ids only, so no chunk text or metadata is read. An absent collection
+        is ``{}``.
+        """
+        pass
+
+    @abstractmethod
+    async def list_chunk_ids_by_parent(
+        self, where: Dict[str, Any]
+    ) -> Dict[str, List[str]]:
+        """The chunk ids matching ``where``, keyed by the parent their id names.
+
+        Raises:
+            ValueError: An empty ``where``; an unfiltered listing is
+                :meth:`list_all_chunk_ids_by_parent`.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_chunk_ids(
+        self, chunk_ids: Iterable[str], where: Dict[str, Any]
+    ) -> List[str]:
+        """Delete these chunk ids, and only those still matching ``where``.
+
+        Returns:
+            The chunk ids deleted.
+
+        Raises:
+            ValueError: An empty ``where``.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_observed_chunk_ids(self, chunk_ids: Iterable[str]) -> List[str]:
+        """Delete exactly these chunk ids, with no metadata condition.
+
+        Returns:
+            The chunk ids deleted.
+        """
+        pass
 
 
 class ISessionStore(ABC):

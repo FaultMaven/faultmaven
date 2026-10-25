@@ -433,13 +433,6 @@ async def test_a_failed_delete_is_counted_and_the_rest_proceed(world, monkeypatc
     assert result.enterprises[sc.E2].deleted == [sc.E2_ORPHAN.item_id]
 
 
-async def test_a_store_that_cannot_list_by_stamp_is_skipped(world):
-    result = await sweep_authored_orphans(
-        SimpleNamespace(_vector_store=object()), world.factory, max_parents=25
-    )
-    assert result.skipped == "store_cannot_enumerate"
-
-
 async def test_a_listing_that_raises_leaves_everything(world, monkeypatch):
     async def boom(*_a, **_k):
         raise RuntimeError("chroma unavailable")

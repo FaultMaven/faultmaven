@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
     from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+    from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +381,7 @@ def create_case_vector_store(
 
 def create_knowledge_vector_store(
     settings: FaultMavenSettings, chromadb_client=None
-) -> Any | None:
+) -> IKnowledgeVectorStore | None:
     """Create knowledge vector store for permanent KB collections.
 
     Uses collection names as-is from KBConfig (no prefix manipulation).
@@ -400,6 +401,23 @@ def create_knowledge_vector_store(
 
     store = KnowledgeVectorStore(client=chromadb_client)
     logger.info("✅ Knowledge vector store: ChromaDB (permanent KB collections)")
+    return store
+
+
+def register_knowledge_vector_store(
+    container: BaseDIContainer, kb_chromadb_client: Any
+) -> IKnowledgeVectorStore | None:
+    """Build the process's one KB vector store and register it.
+
+    Set on ``container.knowledge_vector_store`` (None when none is built), where
+    ``register_tools`` (``kb_qa``) and ``register_services``
+    (``KnowledgeService``) read it: every consumer gets this instance, because
+    each store holds its own term-stats index and circuit breaker.
+    """
+    store = create_knowledge_vector_store(container.settings, kb_chromadb_client)
+    if store:
+        container._register_service("knowledge_vector_store", store)
+    container.knowledge_vector_store = store
     return store
 
 
@@ -717,12 +735,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         container._register_failed("vector_store", str(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
-    knowledge_vector_store = create_knowledge_vector_store(settings, kb_chromadb_client)
-    if knowledge_vector_store:
-        container._register_service("knowledge_vector_store", knowledge_vector_store)
-        container.knowledge_vector_store = knowledge_vector_store
-    else:
-        container.knowledge_vector_store = None
+    register_knowledge_vector_store(container, kb_chromadb_client)
 
     # Case vector store (dynamic per-case collections) — uses evidence client
     case_vector_store = create_case_vector_store(settings, evidence_chromadb_client)

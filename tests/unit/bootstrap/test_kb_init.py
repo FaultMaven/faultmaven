@@ -13,11 +13,12 @@ import json
 import shutil
 from pathlib import Path
 from typing import Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
 from faultmaven.bootstrap import kb_init
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from tests.utils import regex_only_sanitizer
 
 RUNBOOK_MD = """---
@@ -778,7 +779,7 @@ class TestReconcileVectors:
         async def _list():
             return {p: list(c) for p, c in index.items() if c}
 
-        async def _delete_observed(chunk_ids, collection_name=None):
+        async def _delete_observed(chunk_ids):
             ids = list(chunk_ids)
             # Record the parents the observed ids belong to, in first-seen order.
             delete_batches.append(
@@ -790,9 +791,10 @@ class TestReconcileVectors:
                     index[parent].remove(chunk_id)
             return ids
 
-        vector_store = MagicMock()
-        vector_store.list_all_chunk_ids_by_parent = AsyncMock(side_effect=_list)
-        vector_store.delete_observed_chunk_ids = AsyncMock(side_effect=_delete_observed)
+        # The interface's spec: a call the port does not declare fails here.
+        vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
+        vector_store.list_all_chunk_ids_by_parent.side_effect = _list
+        vector_store.delete_observed_chunk_ids.side_effect = _delete_observed
         svc = MagicMock()
         svc._vector_store = vector_store
         return svc
@@ -962,19 +964,6 @@ class TestReconcileVectors:
         assert cleaned == []
         assert unpublished_cleaned == []
         assert delete_batches == []  # the safety guard held
-        assert orphaned_rows == []
-
-    @pytest.mark.asyncio
-    async def test_skips_when_store_cannot_enumerate(self):
-        """A store that can't enumerate (e.g. the ChromaDBVectorStore fallback)
-        degrades to a clean no-op — and warns, since drift goes uncleaned."""
-        svc = MagicMock()
-        svc._vector_store = object()  # no list_all_chunk_ids_by_parent
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
-            svc, self._factory({"kb_aaaaaaaaaaaa"})
-        )
-        assert cleaned == []
-        assert unpublished_cleaned == []
         assert orphaned_rows == []
 
 
@@ -1235,9 +1224,9 @@ class TestCrossStoreRepairSeam:
             # Only 'a' has vectors; 'b's Chroma write crashed mid-ingest.
             return {"kb_aaaaaaaaaaaa": ["kb_aaaaaaaaaaaa_chunk_0"]}
 
-        vector_store = MagicMock()
-        vector_store.list_all_chunk_ids_by_parent = AsyncMock(side_effect=_list)
-        vector_store.delete_observed_chunk_ids = AsyncMock(return_value=[])
+        vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
+        vector_store.list_all_chunk_ids_by_parent.side_effect = _list
+        vector_store.delete_observed_chunk_ids.return_value = []
         svc = MagicMock()
         svc._vector_store = vector_store
         svc.reindex_missing_vectors = AsyncMock(side_effect=_reindex)

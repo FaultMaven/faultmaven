@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.models.interfaces import IAgentToolRegistry, IKnowledgeVectorStore
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         OrganizationResolver,
     )
@@ -121,7 +122,7 @@ def create_case_service(
 
 
 def create_runbook_dedup_kb(
-    knowledge_vector_store: Any | None,
+    knowledge_vector_store: IKnowledgeVectorStore | None,
     kb_chromadb_client: Any | None,
 ) -> Any | None:
     """Create the runbook-dedup reader, bound to the KB WRITER's collection.
@@ -167,7 +168,7 @@ def create_runbook_dedup_kb(
 def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
-    investigation_tools: Any,
+    investigation_tools: IAgentToolRegistry | None,
     da_provider: Any | None = None,
     da_model: str | None = None,
     sanitizer: Any | None = None,
@@ -184,7 +185,8 @@ def create_milestone_engine(
     Args:
         llm_provider: LLM provider (ILLMProvider interface)
         case_repository: Case persistence layer (required)
-        investigation_tools: AgentToolRegistry with investigation tools (required)
+        investigation_tools: The investigation tool registry, or None when no
+            tool is available (``_create_investigation_tools``)
         da_provider: Dedicated provider for DA (directed analysis) turns
             (configured via DA_PROVIDER). Falls back to llm_provider when None.
         da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
@@ -228,7 +230,9 @@ def create_milestone_engine(
         return None
 
 
-def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
+def _create_investigation_tools(
+    container: "BaseDIContainer",
+) -> IAgentToolRegistry | None:
     """Create an AgentToolRegistry with investigation tools for MilestoneEngine.
 
     Registers tools that the LLM can call during the tool loop:
@@ -426,7 +430,7 @@ def create_data_service(
 
 
 def create_knowledge_service(
-    vector_store: Any | None,
+    vector_store: IKnowledgeVectorStore | None,
     knowledge_ingester: Any | None,
     sanitizer: Any,
     tracer: Any,

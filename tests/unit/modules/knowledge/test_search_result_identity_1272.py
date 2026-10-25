@@ -10,21 +10,22 @@ which runbook it was reading or to cite it back.
 
 import contextlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, create_autospec
 
 import pytest
 
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 
 
-class _Store:
-    def __init__(self, hits, supports_hybrid=True):
-        self._hits = hits
-        self.search = AsyncMock(return_value=hits)
-        if supports_hybrid:
-            self.hybrid_search = AsyncMock(return_value=hits)
+def _store(hits) -> IKnowledgeVectorStore:
+    """The store interface ``KnowledgeService`` is typed against (#2284)."""
+    store = create_autospec(IKnowledgeVectorStore, instance=True)
+    store.search.return_value = hits
+    store.hybrid_search.return_value = hits
+    return store
 
 
 def _service(store):
@@ -55,7 +56,7 @@ _HIT = {
 class TestHitIdentity:
     @pytest.mark.asyncio
     async def test_title_type_and_tags_come_from_chunk_metadata(self):
-        service = _service(_Store([_HIT]))
+        service = _service(_store([_HIT]))
         [result] = await service.search_knowledge(
             "disk full", filters={"scope": "global"}
         )
@@ -69,14 +70,14 @@ class TestHitIdentity:
     @pytest.mark.asyncio
     async def test_a_top_level_value_still_wins(self):
         hit = dict(_HIT, title="Explicit Title")
-        service = _service(_Store([hit]))
+        service = _service(_store([hit]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.title == "Explicit Title"
 
     @pytest.mark.asyncio
     async def test_missing_identity_still_degrades_gracefully(self):
         hit = {"id": "x", "content": "c", "score": 0.5, "metadata": {"scope": "global"}}
-        service = _service(_Store([hit]))
+        service = _service(_store([hit]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.title == "Untitled"
         assert result.document_type == "general"
@@ -84,7 +85,7 @@ class TestHitIdentity:
 
     @pytest.mark.asyncio
     async def test_rerank_score_is_propagated(self):
-        service = _service(_Store([_HIT]))
+        service = _service(_store([_HIT]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.rerank_score == pytest.approx(0.71)
 
@@ -92,7 +93,7 @@ class TestHitIdentity:
     async def test_pure_vector_hits_carry_no_rerank_score(self):
         """Absent, not defaulted — a consumer must be able to tell 'unknown'."""
         hit = {k: v for k, v in _HIT.items() if k != "rerank_score"}
-        service = _service(_Store([hit]))
+        service = _service(_store([hit]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.rerank_score is None
 
@@ -100,7 +101,7 @@ class TestHitIdentity:
 class TestHybridDispatch:
     @pytest.mark.asyncio
     async def test_use_hybrid_routes_to_hybrid_search_with_the_floor(self):
-        store = _Store([_HIT])
+        store = _store([_HIT])
         service = _service(store)
         await service.search_knowledge(
             "q", limit=10, filters={"scope": "global"}, use_hybrid=True, min_score=0.5
@@ -110,17 +111,8 @@ class TestHybridDispatch:
 
     @pytest.mark.asyncio
     async def test_default_is_unchanged_pure_vector(self):
-        store = _Store([_HIT])
+        store = _store([_HIT])
         service = _service(store)
         await service.search_knowledge("q", filters={"scope": "global"})
         store.hybrid_search.assert_not_called()
-        store.search.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_a_store_without_hybrid_falls_back(self):
-        store = _Store([_HIT], supports_hybrid=False)
-        service = _service(store)
-        await service.search_knowledge(
-            "q", filters={"scope": "global"}, use_hybrid=True
-        )
         store.search.assert_called_once()

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
-from faultmaven.models.interfaces import BaseTool, ToolResult
+from faultmaven.models.interfaces import BaseTool, IAgentToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ class AgentTool(BaseTool, ABC):
         return isinstance(value, expected)
 
 
-class AgentToolRegistry:
+class AgentToolRegistry(IAgentToolRegistry):
     """Registry for agent-specific tools.
 
     Manages available tools for agent execution and provides

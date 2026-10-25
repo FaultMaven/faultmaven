@@ -8,7 +8,7 @@ and flexibility in the knowledge management system.
 
 Core Responsibilities:
 - Knowledge document management via interfaces
-- Semantic search operations using IVectorStore
+- Semantic search operations using IKnowledgeVectorStore
 - Knowledge ingestion through IKnowledgeIngester
 - Runbook body security checks (a body holding a credential is refused, never
   rewritten, #2012) and title and query sanitization via ISanitizer
@@ -50,10 +50,10 @@ from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
+    IKnowledgeVectorStore,
     ILLMProvider,
     ISanitizer,
     ITracer,
-    IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
@@ -359,7 +359,7 @@ class KnowledgeService:
         knowledge_ingester: IKnowledgeIngester,
         sanitizer: ISanitizer,
         tracer: ITracer,
-        vector_store: Optional[IVectorStore] = None,
+        vector_store: Optional[IKnowledgeVectorStore] = None,
         redis_client: Optional[object] = None,
         settings: Optional[Any] = None,
         llm_provider: Optional[
@@ -376,7 +376,7 @@ class KnowledgeService:
             knowledge_ingester: Interface for document ingestion operations
             sanitizer: Interface for data sanitization (PII redaction)
             tracer: Interface for distributed tracing
-            vector_store: Optional interface for vector database operations
+            vector_store: Optional KB vector store (``IKnowledgeVectorStore``)
             redis_client: Optional Redis client for metadata storage
             settings: Configuration settings for the service
             llm_provider: Optional LLM for intelligent query processing
@@ -448,8 +448,7 @@ class KnowledgeService:
                 vector search. Off by default so existing callers are unchanged;
                 the KB pre-fetch that feeds the investigation prompt and the
                 cause seeder passes True, because the terms that identify an
-                incident are exactly the ones an embedding smooths away. Falls
-                back to pure vector search on a store without ``hybrid_search``.
+                incident are exactly the ones an embedding smooths away.
             min_score: Minimum raw cosine a hit must carry. Honoured only on
                 the hybrid path, where results are ordered by the reranker's
                 blend and a caller's own post-filter would therefore thin its
@@ -479,28 +478,7 @@ class KnowledgeService:
                         # Default to global scope when caller provides no filter —
                         # prevents unintentional cross-tenant reads.
                         effective_filters = filters if filters else {"scope": "global"}
-                        wants_hybrid = use_hybrid and not hasattr(
-                            self._vector_store, "hybrid_search"
-                        )
-                        if wants_hybrid:
-                            # Silence here would disable the #1272 seeding gate
-                            # without a trace: no hybrid means no reranker, so
-                            # no `rerank_score` on any hit. A caller that ASKED
-                            # on any hit, and the seeder reads that absence as
-                            # "unmeasured, therefore not judged" and admits
-                            # everything. The floor is dropped too. A caller
-                            # that ASKED for hybrid and did not get it must be
-                            # able to find out why. (The KB cause seeder,
-                            # which gated on these fields, was removed in
-                            # fm#1295; the fields are still carried out.)
-                            logger.warning(
-                                "KB search asked for hybrid retrieval but the "
-                                "vector store does not provide it — falling "
-                                "back to pure vector search. Hits will carry no "
-                                "grounding evidence, so any consumer gating on "
-                                "it is inactive for this search."
-                            )
-                        if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
+                        if use_hybrid:
                             results = await self._vector_store.hybrid_search(
                                 collection_name=KB_COLLECTION,
                                 query=sanitized_query,
@@ -1077,7 +1055,7 @@ class KnowledgeService:
 
             # Replacement is fully in hand (embeddings + validated chunk
             # dicts) — only now remove the old chunks. The vector store
-            # implements delete_documents_by_parent_id (IVectorStore
+            # implements delete_documents_by_parent_id (IKnowledgeVectorStore
             # contract) — calling it directly, with no hasattr guard, so a
             # store that silently lacks it raises here instead of leaving
             # stale vectors behind on every re-ingest (the KB drift this

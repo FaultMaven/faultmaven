@@ -47,7 +47,9 @@ A completeness tripwire scans ``faultmaven/modules/*/contracts.py`` and
 ``faultmaven/models/interfaces_case.py`` for ``I*`` interfaces so a newly
 added contract that is registered nowhere fails RED rather than passing
 silently. The scan FAILS CLOSED: an import error or an empty enumeration is a
-test failure, never a skip.
+test failure, never a skip. The shared ports
+(``faultmaven/models/interfaces.py``) are outside the scan; the ones a
+consumer is typed against are registered by hand (``SHARED_INTERFACE_MODULE``).
 
 NOT covered
 -----------
@@ -456,6 +458,9 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     Imports live here (not at module scope) so a broken import surfaces as a
     named failure inside a test rather than a collection error with no context.
     """
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
     from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
     from faultmaven.infrastructure.persistence.user_repository import (
         InMemoryUserRepository,
@@ -465,7 +470,14 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionRegistryEraser,
     )
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    from faultmaven.models.interfaces import (
+        IAgentToolRegistry,
+        IKnowledgeVectorStore,
+        ISanitizer,
+    )
     from faultmaven.models.interfaces_case import ICaseService
+    from faultmaven.modules.agent.tools.base import AgentToolRegistry
     from faultmaven.modules.auth.contracts import (
         IAccountDirectory,
         IAuthService,
@@ -640,6 +652,11 @@ def _build_registry() -> Dict[str, RegistryEntry]:
             interface=ISSOTenantRetirementProvider,
             reals=(WorkOSIdentityProvider,),
         ),
+        # Shared ports (``SHARED_INTERFACE_MODULE``) whose consumers are typed
+        # against them (#2284).
+        RegistryEntry(interface=ISanitizer, reals=(DataSanitizer,)),
+        RegistryEntry(interface=IKnowledgeVectorStore, reals=(KnowledgeVectorStore,)),
+        RegistryEntry(interface=IAgentToolRegistry, reals=(AgentToolRegistry,)),
     )
     return {entry.interface.__name__: entry for entry in entries}
 
@@ -740,6 +757,33 @@ def discover_interface_modules() -> List[str]:
     return found
 
 
+#: The shared ports (``faultmaven/models/interfaces.py``). Outside the
+#: completeness scan: most of its interfaces predate this guard and are not
+#: registered, so scanning it would fail the tripwire on each of them. A
+#: registry entry may still name one of its interfaces (#2284), and the
+#: stale-entry check resolves those names here, so a registered shared port
+#: that is renamed or removed still fails it.
+SHARED_INTERFACE_MODULE = "faultmaven.models.interfaces"
+
+
+def _interfaces_declared_in(module_name: str) -> Dict[str, type]:
+    """Every ``I*`` Protocol/ABC declared (not re-exported) in one module."""
+    declared: Dict[str, type] = {}
+    module = importlib.import_module(module_name)
+    for name, obj in vars(module).items():
+        if not name.startswith("I") or not inspect.isclass(obj):
+            continue
+        if len(name) < 2 or not name[1].isupper():
+            continue
+        if obj.__module__ != module_name:
+            continue  # re-export, counted where it is declared
+        is_protocol = getattr(obj, "_is_protocol", False)
+        is_abc = isinstance(obj, abc.ABCMeta)
+        if is_protocol or is_abc:
+            declared[name] = obj
+    return declared
+
+
 def discover_interfaces() -> Dict[str, type]:
     """Every ``I*`` Protocol/ABC declared in the scanned modules.
 
@@ -749,19 +793,16 @@ def discover_interfaces() -> Dict[str, type]:
     """
     discovered: Dict[str, type] = {}
     for module_name in discover_interface_modules():
-        module = importlib.import_module(module_name)
-        for name, obj in vars(module).items():
-            if not name.startswith("I") or not inspect.isclass(obj):
-                continue
-            if len(name) < 2 or not name[1].isupper():
-                continue
-            if obj.__module__ != module_name:
-                continue  # re-export, counted where it is declared
-            is_protocol = getattr(obj, "_is_protocol", False)
-            is_abc = isinstance(obj, abc.ABCMeta)
-            if is_protocol or is_abc:
-                discovered[name] = obj
+        discovered.update(_interfaces_declared_in(module_name))
     return discovered
+
+
+def discover_shared_interfaces() -> Dict[str, type]:
+    """Every ``I*`` Protocol/ABC declared in ``SHARED_INTERFACE_MODULE``.
+
+    Fails closed the same way as :func:`discover_interfaces`.
+    """
+    return _interfaces_declared_in(SHARED_INTERFACE_MODULE)
 
 
 # ============================================================
@@ -838,16 +879,18 @@ class TestContractRegistry:
         """
         try:
             discovered = discover_interfaces()
+            shared = discover_shared_interfaces()
         except Exception as exc:  # noqa: BLE001 - fail closed, never skip
             pytest.fail(
                 "Interface enumeration failed (fail-closed): "
                 f"{type(exc).__name__}: {exc}"
             )
 
-        assert discovered, (
-            "Interface enumeration found ZERO I* contracts. Either the scan "
-            "paths are wrong or the modules failed to expose their contracts; "
-            "either way this gate would pass while checking nothing."
+        assert discovered and shared, (
+            "Interface enumeration found ZERO I* contracts in the scanned "
+            "modules or in the shared ports. Either the scan paths are wrong "
+            "or the modules failed to expose their contracts; either way this "
+            "gate would pass while checking nothing."
         )
 
         registry = _registry_or_fail()
@@ -864,11 +907,11 @@ class TestContractRegistry:
         stale = sorted(
             name
             for name in (set(registry) | set(EXCLUDED_INTERFACES))
-            if name not in discovered
+            if name not in discovered and name not in shared
         )
         assert not stale, (
             "These registry/exclusion entries name interfaces that no longer "
-            "exist in the scanned contract modules:\n"
+            "exist in the scanned contract modules or the shared ports:\n"
             + "\n".join(f"  - {name}" for name in stale)
         )
 
@@ -1036,8 +1079,21 @@ def test_rule_a_real_implementation_conforms_to_contract(
     entry = registry[interface_name]
     real = next(r for r in entry.reals if r.__name__ == real_name)
 
+    divergences = rule_a_divergences(entry.interface, real)
+
+    assert (
+        not divergences
+    ), f"{real_name} diverges from its contract {interface_name}:\n" + _render(
+        divergences
+    )
+
+
+def rule_a_divergences(interface: type, real: type) -> List[Divergence]:
+    """Every way ``real`` fails to honour a call ``interface`` permits."""
+    interface_name = interface.__name__
+    real_name = real.__name__
     divergences: List[Divergence] = []
-    for member_name, declared in interface_members(entry.interface).items():
+    for member_name, declared in interface_members(interface).items():
         provided = _lookup_member(real, member_name)
         if provided is None:
             divergences.append(
@@ -1079,12 +1135,67 @@ def test_rule_a_real_implementation_conforms_to_contract(
                 provided_label=real_name,
             )
         )
+    return divergences
 
-    assert (
-        not divergences
-    ), f"{real_name} diverges from its contract {interface_name}:\n" + _render(
-        divergences
-    )
+
+def _sync_asanitize(self, data):  # pragma: no cover - never called
+    return data
+
+
+async def _renamed_min_score(
+    self, collection_name, query, k=5, where=None, min_cosine=None
+):  # pragma: no cover - never called
+    return []
+
+
+async def _renamed_context(
+    self, tool_name, params, ctx
+):  # pragma: no cover - never called
+    return None
+
+
+#: One drift per shared port registered for #2284: the member, the drifted
+#: replacement, and a phrase of the divergence Rule A must report for it.
+_SHARED_PORT_DRIFTS = (
+    ("ISanitizer", "asanitize", _sync_asanitize, "coroutine mismatch"),
+    (
+        "IKnowledgeVectorStore",
+        "hybrid_search",
+        _renamed_min_score,
+        "does not accept parameter 'min_score'",
+    ),
+    (
+        "IAgentToolRegistry",
+        "execute_tool",
+        _renamed_context,
+        "REQUIRES parameter 'ctx'",
+    ),
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "interface_name, member, drifted, expected",
+    _SHARED_PORT_DRIFTS,
+    ids=[drift[0] for drift in _SHARED_PORT_DRIFTS],
+)
+def test_rule_a_catches_drift_from_a_shared_port(
+    interface_name: str, member: str, drifted: Any, expected: str
+) -> None:
+    """Positive control: Rule A names a drifted member of each shared port.
+
+    The real implementation passes Rule A (above); the same class with one
+    member drifted from its port must not, or the pass proves nothing.
+    """
+    entry = _registry_or_fail()[interface_name]
+    (real,) = entry.reals
+    assert not rule_a_divergences(entry.interface, real)
+
+    drifted_real = type(f"Drifted{real.__name__}", (real,), {member: drifted})
+    divergences = rule_a_divergences(entry.interface, drifted_real)
+
+    assert {d.member for d in divergences} == {member}, _render(divergences)
+    assert any(expected in d.detail for d in divergences), _render(divergences)
 
 
 @pytest.mark.unit

@@ -212,20 +212,21 @@ async def test_service_with_mock_dependencies():
     """Test service layer with properly mocked dependencies."""
     from unittest.mock import create_autospec
 
-    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-        KnowledgeVectorStore,
-    )
     from faultmaven.infrastructure.persistence.database import get_db_session
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
-    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.models.interfaces import (
+        IKnowledgeIngester,
+        IKnowledgeVectorStore,
+        ISanitizer,
+        ITracer,
+    )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
 
-    # Create specced mocks
-    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    # Mock the interfaces the service is typed against
+    vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     vector_store.search.return_value = []
-    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer = create_autospec(ISanitizer, instance=True)
     sanitizer.asanitize.return_value = "sanitized query"
 
     # Inject the mocks through the constructor
@@ -327,20 +328,21 @@ async def test_error_propagation_across_layers():
     """Test error handling and recovery across all layers."""
     from unittest.mock import create_autospec
 
-    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-        KnowledgeVectorStore,
-    )
     from faultmaven.infrastructure.persistence.database import get_db_session
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
-    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.models.interfaces import (
+        IKnowledgeIngester,
+        IKnowledgeVectorStore,
+        ISanitizer,
+        ITracer,
+    )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
 
     # Create mock that raises exception
-    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     vector_store.search.side_effect = Exception("Vector store unavailable")
-    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer = create_autospec(ISanitizer, instance=True)
     sanitizer.asanitize.side_effect = lambda data: data
 
     knowledge_service = KnowledgeService(
@@ -399,7 +401,7 @@ for the whole process; the opt-in real-LLM lane (`-m real_llm`, described in
 
 - **Mock interfaces**: Mock `ILLMProvider`, not `OpenAIProvider`
 - **Implement properly**: Use `create_autospec(Interface, instance=True)`; it checks call signatures, which `Mock(spec=Interface)` does not
-- **Known gap**: Spec a concrete class only where no interface declares the call (`KnowledgeService`'s sanitizer and vector store, #2284; the engine's `AgentToolRegistry`, typed `Any`)
+- **A missing method is an interface defect**: when code calls a method its dependency's interface does not declare, declare it on the interface rather than spec the mock on a concrete class (#2284)
 - **Realistic behavior**: Mocks should behave like real implementations
 - **Error scenarios**: Test both success and failure paths
 
@@ -507,11 +509,9 @@ def test_with_clean_env(clean_env):
 # Solution: Use AsyncMock for async methods; create_autospec makes one for each
 from unittest.mock import create_autospec
 
-from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-    KnowledgeVectorStore,
-)
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 
-vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
 vector_store.search.return_value = []  # search is an AsyncMock: await it
 ```
 
@@ -521,7 +521,7 @@ This architecture testing guide provides comprehensive patterns for testing Faul
 
 Key takeaways:
 - Resolve composed services through the container; build the unit under test directly
-- Mock interfaces, not implementations (a concrete class only where no interface declares the call)
+- Mock interfaces, not implementations
 - Maintain clean state with proper container reset
 - Test cross-layer integration with realistic scenarios
 - Validate error handling and graceful degradation
