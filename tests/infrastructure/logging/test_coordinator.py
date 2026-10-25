@@ -279,10 +279,11 @@ class TestLoggingCoordinator:
         # Ensure context is cleared
         request_context.set(None)
 
-    def test_coordinator_creation(self):
-        """Test LoggingCoordinator initialization."""
+    def test_coordinator_holds_no_request_of_its_own(self):
+        """One coordinator serves every request in flight (#2293): the request
+        in hand lives in the per-task ContextVar, never on the instance."""
         coordinator = LoggingCoordinator()
-        assert coordinator.context is None
+        assert not hasattr(coordinator, "context")
 
     def test_start_request_creates_context(self):
         """Test start_request creates and sets context."""
@@ -298,7 +299,6 @@ class TestLoggingCoordinator:
         assert ctx.user_id == "test-user"
         assert ctx.error_context is not None
         assert ctx.performance_tracker is not None
-        assert coordinator.context == ctx
         assert request_context.get() == ctx
 
     def test_start_request_generates_correlation_id(self):
@@ -347,7 +347,6 @@ class TestLoggingCoordinator:
         assert summary["user_id"] == "test-user"
 
         # Context should be cleared
-        assert coordinator.context is None
         assert request_context.get() is None
 
     def test_end_request_without_context(self):
