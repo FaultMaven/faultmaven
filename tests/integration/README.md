@@ -24,12 +24,12 @@ Comprehensive spec compliance testing with 17 tests validating [case-and-session
 - **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
 - **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
 
-**Setup:** none. The suite never reads `.env` (`tests/conftest.py` blocks it); a test that needs Redis is given it through `REDIS_HOST` / `REDIS_PORT` in the environment.
+**Setup:** a reachable Redis. These tests are `cloud`-marked and drive a real Redis-backed session service; without one they fail rather than skip. The suite never reads `.env` (`tests/conftest.py` blocks it), so give the server through the environment: `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` if it requires auth.
 
 **Run tests:**
 ```bash
 # All compliance tests
-python scripts/tests.py --integration
+REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/test_architectural_compliance.py -v
 
 # Specific test
 .venv/bin/pytest tests/integration/test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id -v
@@ -79,7 +79,9 @@ Integration test configuration and fixtures:
 
 Install test dependencies:
 ```bash
-pip install -r requirements/test.txt   # from the repository root
+# from the repository root: the lockfile pins the dependencies, not the package
+pip install -r requirements/test.txt
+pip install -e . --no-deps
 ```
 
 **No environment variables are required.** These tests run in-process — they
@@ -92,9 +94,10 @@ Optional settings:
 # Enable debug logging for integration test debugging
 export LOG_LEVEL=DEBUG
 
-# Point the Redis-backed suites at a real Redis (they self-skip without one)
-export REDIS_HOST=192.168.0.111
-export REDIS_PORT=30379
+# Point the Redis-backed suites at a real Redis (REDIS_PASSWORD if it requires auth).
+# Without one, a suite that needs it fails rather than skips.
+export REDIS_HOST=localhost
+export REDIS_PORT=6379
 
 # Point the postgres-marked suites at a scratch PostgreSQL
 export DATABASE_URL=postgresql://…
@@ -102,7 +105,7 @@ export DATABASE_URL=postgresql://…
 
 `SKIP_SERVICE_CHECKS` is **not** a test-runner switch. It is a live application
 config knob (read by the DI container providers and the middleware wiring in
-`faultmaven/main.py`), so a handful of suites that boot an in-process app set it
+`faultmaven/bootstrap/middleware.py`), so a handful of suites that boot an in-process app set it
 deliberately. Setting it no longer changes which tests run.
 
 ### Basic Execution
@@ -141,7 +144,7 @@ None are required. Optional ones:
 # Enable debug logging
 LOG_LEVEL=DEBUG pytest tests/integration/ -v
 
-# Back the Redis-dependent suites with a real Redis
+# Back the Redis-dependent suites with a real Redis (REDIS_PASSWORD if it requires auth)
 REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/ -v
 ```
 
@@ -152,74 +155,6 @@ REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/ -v
 - **Full Suite**: Completes in < 30 seconds
 - **Memory Usage**: < 50MB peak during execution
 - **Async Operations**: Proper async/await patterns with cleanup
-
-### Common Patterns - New Architecture Integration
-
-#### Container-Based Integration Testing
-```python
-from faultmaven.container import container
-from faultmaven.config.settings import get_settings
-
-@pytest.mark.asyncio
-async def test_settings_container_services_integration():
-    """Test complete Settings → Container → Services flow."""
-    # Reset container for clean state
-    container.reset()
-
-    # Test with realistic environment configuration
-    test_env = {
-        'CHAT_PROVIDER': 'fireworks',
-        'FIREWORKS_API_KEY': 'test-key',
-        'REDIS_HOST': 'localhost'
-    }
-
-    with patch.dict(os.environ, test_env):
-        # Validate settings layer
-        settings = get_settings()
-        assert settings.llm.provider == LLMProvider.OPENAI  # placeholder default
-
-        # Validate container initialization
-        agent_service = container.get_agent_service()
-        assert agent_service is not None
-
-        # Validate end-to-end service operation
-        result = await agent_service.process_query(
-            "Test troubleshooting query",
-            "integration-test-session"
-        )
-
-        assert result.session_id == "integration-test-session"
-        assert len(result.response) > 50
-```
-
-#### Interface Compliance Integration Testing
-```python
-@pytest.mark.asyncio
-async def test_interface_compliance_real_scenario():
-    """Test interface compliance in production-like scenarios."""
-    container.reset()
-
-    # Get services through container (interface resolution)
-    agent_service = container.get_agent_service()
-    knowledge_service = container.get_knowledge_service()
-
-    # Validate services implement expected interfaces
-    assert hasattr(agent_service, 'process_query')
-    assert hasattr(knowledge_service, 'search_knowledge_base')
-
-    # Test cross-service integration
-    kb_result = await knowledge_service.search_knowledge_base(
-        "database connection issues", limit=3
-    )
-    assert isinstance(kb_result, list)
-
-    # Test agent service with knowledge integration
-    agent_result = await agent_service.process_query(
-        "Database connection problems",
-        "interface-test-session"
-    )
-    assert agent_result.session_id == "interface-test-session"
-```
 
 ## Troubleshooting
 

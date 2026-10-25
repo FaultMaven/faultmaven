@@ -184,9 +184,11 @@ def test_operation_logging(caplog, service):
     completed = [r for r in caplog.records if "operation_completed" in r.getMessage()]
     assert completed, "the operation logged no completion"
 
-    # Verify log structure
+    # Verify log structure. The correlation id is a record attribute (set by the
+    # request context), not part of the message text.
     business = [r for r in caplog.records if "business_event" in r.getMessage()]
-    assert all("correlation_id" in r.getMessage() for r in business)
+    assert business, "the operation logged no business event"
+    assert all(getattr(r, "correlation_id", None) for r in business)
 ```
 
 ### **Cross-Layer Coordination Testing**
@@ -205,7 +207,9 @@ async def test_request_lifecycle_coordination(
 
         # Verify coordination
         correlation_logs = [
-            r for r in caplog.records if correlation_id in r.getMessage()
+            r
+            for r in caplog.records
+            if getattr(r, "correlation_id", None) == correlation_id
         ]
         assert len(correlation_logs) >= 4  # All layers logged
 ```
