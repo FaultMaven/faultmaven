@@ -549,14 +549,31 @@ async def test_a_cancellation_during_any_stop_still_runs_every_stop(
     decompose.assert_awaited_once()
 
 
-async def test_a_stop_whose_import_fails_fails_alone(stop_serving, monkeypatch, caplog):
-    """The case-cleanup stop's import ran when the steps were built, outside
-    every step, so a failure to import skipped every stop. It is that one
-    step's failure now: logged, and every other stop still runs."""
+#: Each module a serving stop imports, and the stops that need it.
+_SERVING_STOP_IMPORTS = {
+    "faultmaven.infrastructure.tasks": ("Stopping the case cleanup scheduler",),
+    "faultmaven.infrastructure.llm.usage_ledger": (
+        "LLM usage ledger drain",
+        "LLM usage ledger uninstall",
+    ),
+    "faultmaven.api.protection": ("Protection middleware shutdown",),
+    "faultmaven.infrastructure.observability.apm_integration": (
+        "Phase 2 monitoring cleanup",
+    ),
+}
+
+
+@pytest.mark.parametrize("module", sorted(_SERVING_STOP_IMPORTS))
+async def test_a_stop_whose_import_fails_fails_alone(
+    module, stop_serving, monkeypatch, caplog
+):
+    """An import made while the stops were built, outside every step, would
+    skip every stop if it failed (#2257, #2267). Each is that step's failure
+    alone: logged, and every other stop still runs."""
     from faultmaven.bootstrap import lifespan as lifespan_module
 
-    monkeypatch.setitem(sys.modules, "faultmaven.infrastructure.tasks", None)
     usage_ledger.install_usage_ledger(usage_ledger.InMemoryUsageLedger())
+    monkeypatch.setitem(sys.modules, module, None)
     app = FastAPI()
     tasks = {h: asyncio.create_task(asyncio.sleep(3600)) for h in _TASK_HANDLES}
     for handle, task in tasks.items():
@@ -574,12 +591,69 @@ async def test_a_stop_whose_import_fails_fails_alone(stop_serving, monkeypatch, 
             task.cancel()
         await asyncio.wait(set(tasks.values()))
 
-    assert "Stopping the case cleanup scheduler failed (non-critical)" in caplog.text
+    failed = [
+        line for line in caplog.text.splitlines() if "failed (non-critical)" in line
+    ]
+    for stop in _SERVING_STOP_IMPORTS[module]:
+        assert any(f"{stop} failed" in line for line in failed), stop
+    assert len(failed) == len(_SERVING_STOP_IMPORTS[module]), failed
     assert running == [], f"left running after the shutdown: {running}"
     left = [h for h in (*_TASK_HANDLES, "case_cleanup_scheduler") if h in app.state]
+    # Unpublished before it is stopped, so a failed stop leaves no handle either.
     assert left == [], f"still on app.state: {left}"
-    assert usage_ledger.get_installed_usage_ledger() is None
+    ledger_uninstalled = usage_ledger.get_installed_usage_ledger() is None
+    assert ledger_uninstalled is (
+        module != "faultmaven.infrastructure.llm.usage_ledger"
+    )
     lifespan_module.decompose_application.assert_awaited_once()
+
+
+#: Each module a decomposition step imports, and the step that needs it.
+_DECOMPOSITION_IMPORTS = {
+    "faultmaven.container": "Container shutdown",
+    "faultmaven.infrastructure.llm.usage_ledger": "LLM usage ledger uninstall",
+    "faultmaven.infrastructure.persistence.database": "Database close",
+}
+
+
+@pytest.mark.parametrize("module", sorted(_DECOMPOSITION_IMPORTS))
+async def test_a_decomposition_step_whose_import_fails_fails_alone(
+    module, container, monkeypatch, ledger_restored, caplog
+):
+    """``decompose_application`` imported the container, the ledger and the
+    database before its steps, so one failed import would have skipped all of
+    them, the engine disposal included (#2267)."""
+    from faultmaven.bootstrap.composition import _ABSENT, decompose_application
+
+    app = FastAPI()
+    client = _RealClient()
+    container.redis_client = client
+    app.state.redis_client = client
+    close_database = AsyncMock()
+    monkeypatch.setattr("faultmaven.container.container", container)
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.close_database",
+        close_database,
+    )
+    usage_ledger.install_usage_ledger(usage_ledger.InMemoryUsageLedger())
+    monkeypatch.setitem(sys.modules, module, None)
+
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
+        await decompose_application(app, {"redis_client": _ABSENT})
+
+    failed = [
+        line for line in caplog.text.splitlines() if "failed (non-critical)" in line
+    ]
+    assert len(failed) == 1 and _DECOMPOSITION_IMPORTS[module] in failed[0], failed
+    assert "redis_client" not in app.state, "the composition is still published"
+    shut_down = module != "faultmaven.container"
+    assert client.aclose.await_count == (1 if shut_down else 0)
+    uninstalled = module != "faultmaven.infrastructure.llm.usage_ledger"
+    assert (usage_ledger.get_installed_usage_ledger() is None) is uninstalled
+    disposed = module != "faultmaven.infrastructure.persistence.database"
+    assert close_database.await_count == (1 if disposed else 0)
 
 
 async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog):

@@ -1048,6 +1048,45 @@ class TestTheRunDisposesTheEngine:
         mock_container.shutdown.assert_awaited_once()
 
 
+class TestATeardownStepWhoseImportFailsFailsAlone:
+    """#2267: the runner imported the database module outside its teardown
+    steps, so a failed import skipped the container's shutdown too."""
+
+    @pytest.mark.asyncio
+    async def test_the_container_is_shut_down_when_the_database_module_will_not_import(
+        self, mock_container, mock_settings, monkeypatch, caplog
+    ):
+        import logging
+
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("tenant_neutral", mock_container, mock_settings, "single") as (
+            job_run,
+            _rls_guard,
+            _set_enterprise,
+            _maint,
+        ):
+
+            async def _job(**_kwargs):
+                # The import fails from the job onward, as it would at the
+                # teardown.
+                monkeypatch.setitem(
+                    sys.modules, "faultmaven.infrastructure.persistence.database", None
+                )
+                return {"status": "completed"}
+
+            job_run.side_effect = _job
+            with caplog.at_level(
+                logging.WARNING,
+                logger="faultmaven.infrastructure.concurrency.teardown",
+            ):
+                result = await run_job("fake_job")
+
+        assert result == {"status": "completed"}, "the teardown changed the result"
+        assert "Database close failed (non-critical)" in caplog.text
+        mock_container.shutdown.assert_awaited_once()
+
+
 class TestSchedulerMultiTenantGate:
     """The in-process cleanup scheduler is refused under multi (same hazard)."""
 

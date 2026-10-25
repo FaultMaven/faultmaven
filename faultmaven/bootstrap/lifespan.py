@@ -552,11 +552,11 @@ def _stop_case_cleanup_scheduler(scheduler: Any) -> None:
 
 
 def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
-    """What :func:`_stop_serving` stops, as teardown steps, in order."""
-    from faultmaven.infrastructure.llm.usage_ledger import (
-        drain_pending_usage_writes,
-        install_usage_ledger,
-    )
+    """What :func:`_stop_serving` stops, as teardown steps, in order.
+
+    Each step imports what it needs, so a failed import is that step's failure
+    alone (#2267).
+    """
 
     async def _shutdown_protection() -> None:
         from faultmaven.api.protection import shutdown_protection
@@ -572,6 +572,18 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
         await apm_integration.flush_metrics()
         logger.info("✅ Phase 2 monitoring components cleaned up")
 
+    async def _drain_usage_ledger() -> None:
+        from faultmaven.infrastructure.llm.usage_ledger import (
+            drain_pending_usage_writes,
+        )
+
+        await drain_pending_usage_writes(timeout_s=5)
+
+    def _uninstall_usage_ledger() -> None:
+        from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
+
+        install_usage_ledger(None)
+
     return (
         # Owned clients first, then the shared one, then the engine. The
         # protection middleware closes only a Redis client it built for itself;
@@ -583,8 +595,8 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
         # than scheduled against a closing engine. A write still pending at the
         # timeout is counted. This is the uninstall on the serving path;
         # decompose_application's own is then a no-op.
-        ("LLM usage ledger drain", lambda: drain_pending_usage_writes(timeout_s=5)),
-        ("LLM usage ledger uninstall", lambda: install_usage_ledger(None)),
+        ("LLM usage ledger drain", _drain_usage_ledger),
+        ("LLM usage ledger uninstall", _uninstall_usage_ledger),
         (
             "Stopping the funnel metrics collector",
             _unpublish_then_stop(app, "funnel_metrics_task", cancel_and_wait),
