@@ -350,31 +350,14 @@ result is the same `FAIL` / `RETRY_EXHAUSTED` a spent full ladder reports, so
 the HTTP mapping does not move. A budget refusal of a hung provider's one retry
 still reports `TURN_BUDGET_EXHAUSTED`: a paid attempt was lost.
 
-**The count is per structured generation.** The tool loop's attempt fails
-outside any ladder (the loop raises `ToolCallingUnsupportedError` chained from
-the provider's failure), and the fallback ladder used to meet the hung provider
-as fresh. Now the ladder classifies the failing call as its own first failure
-(`with_retry(carried_failure=e.__cause__,
-carried_attempt_seconds=e.attempt_seconds)`): the same cap, the same backoff,
-and the same budget check, priced at that call's own duration (timed in the
-loop around the failing iteration's call, not the loop's earlier iterations).
-The ladder may then answer without an attempt (a cap of 0, or a retry the
-budget refuses: `TURN_BUDGET_EXHAUSTED`); otherwise its first attempt is the one
-retry. So the hung call and its retry cost a turn with tools the same `2T + 2`
-they cost a ladder-only turn, after whatever the loop's earlier iterations
-spent. Nothing is carried in two cases:
-
-- **A different provider.** "The same provider" is compared by name: an unset
-  `DA_PROVIDER`, or a DA provider named like the provider the fallback's call
-  resolves to (`STRUCTURED_OUTPUT_PROVIDER` when set, else the chat provider).
-  Otherwise a dedicated DA provider's hang leaves the chat provider its own
-  retry.
-- **A verdict about the request** (`CONTEXT_OVERFLOW`, `OUTPUT_TRUNCATION`,
-  `REQUEST_REJECTED`). The fallback sends a different request, and its own
-  prompt decides.
-
-The retry a grant makes is recorded on the `ErrorResult` (`deadline_retry`),
-and `with_retry` counts from it.
+**A turn with tools pays the tool loop's attempt first.** The count is per
+ladder. The tool loop's attempt fails outside any ladder (the loop raises
+`ToolCallingUnsupportedError` chained from the provider's failure), and the
+fallback ladder then makes its own attempts, so a turn with tools against a hung
+provider pays `T` for the tool attempt and then the ladder's `2T + 2`, bounded by
+the turn budget. Telling the ladder about that paid attempt is #2319. The retry
+a grant makes is recorded on the `ErrorResult` (`deadline_retry`), and
+`with_retry` counts from it.
 
 Measured on a virtual clock (`asyncio` timers at nominal cost) against a
 provider that never answers, through the real `_generate_structured_output_inner`
@@ -383,17 +366,18 @@ and the router's breaker, before → after:
 | Turn | T = 30 s, A = 120 s | T = 30 s, A = 240 s | T = 120 s, A = 240 s |
 |---|---|---|---|
 | Ladder only | 96 → 62 s | 104 → 62 s | 120 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
-| With tools | 92 → 62 s | 96 → 62 s | 235.5 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
-| With tools, dedicated `DA_PROVIDER` (also hung) | 92 → 92 s | 134 → 92 s | 235.5 → 235.5 s |
+| With tools | 92 → 92 s | 96 → 92 s | 235.5 → 235.5 s (`TURN_BUDGET_EXHAUSTED`) |
 
 **Breaker consequence.** The router's breaker opens on the third consecutive
-failure. A hard-down provider no longer reaches it inside the first turn's
-ladder (two failures), so that turn ends `RETRY_EXHAUSTED`, where it ended
-`PROVIDER_CIRCUIT_OPEN` whenever the full ladder fit; both answer 503 with
-`Retry-After: 30`, with different messages. The next turn pays one `T`, opens
-the breaker, and its retry is refused at once; the turn after is refused
-without an attempt. Over three turns: 62 + 32 + 0 s where it was 96 + 0 + 0 s.
-The breaker threshold is #1513's question.
+failure. On a ladder-only turn a hard-down provider no longer reaches it inside
+the first turn's ladder (two failures), so that turn ends `RETRY_EXHAUSTED`,
+where it ended `PROVIDER_CIRCUIT_OPEN` whenever the full ladder fit; both answer
+503 with `Retry-After: 30`, with different messages. The next turn pays one
+`T`, opens the breaker, and its retry is refused at once; the turn after is
+refused without an attempt. Over three turns: 62 + 32 + 0 s where it was 96 + 0
++ 0 s. A turn with tools still reaches three failures in its first turn (the
+tool attempt and the ladder's two) and opens it there: 92 + 0 + 0 s. The breaker
+threshold is #1513's question.
 
 `GET /admin/config/status`'s `llm_retry_ladder_fits_turn_budget` models both
 ladders from the same `RetryConfig` the running ladder reads

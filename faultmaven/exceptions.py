@@ -819,10 +819,6 @@ class ToolCallingUnsupportedError(LLMException):
     to a non-tool generation path.
     """
 
-    # What the failing tool-loop call itself cost, in seconds: the fallback
-    # ladder budgets its retry against it (#1294). 0.0 where nothing was sent.
-    attempt_seconds: float = 0.0
-
     def __init__(
         self,
         message: str = "Model does not support tool calling",

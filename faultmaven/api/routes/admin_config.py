@@ -1151,12 +1151,10 @@ async def get_env_config_status(
                 f"slow non-504 5xx gets {slow.attempts} of {slow.paid_attempts} "
                 f"attempts: {slow.full_ladder_seconds:.0f}s, "
                 f"{slow.afforded_seconds:.0f}s afforded, the bound on any mix "
-                f"of failures. Both hold for a turn with tools: its failing "
-                f"tool-loop call, at that call's own cost, is the ladder's first "
-                f"failure, unless it went to a provider the fallback does not "
-                f"reach or judged the request itself (an overflow, a cut, a "
-                f"rejection). Both keep {slow.commit_reserve_seconds:g}s back "
-                f"for the turn's commit."
+                f"of failures. On a turn with tools the tool loop's own attempt "
+                f"comes first, outside the ladder, so that turn pays it and then "
+                f"the ladder, bounded by the turn budget (#2319). Both keep "
+                f"{slow.commit_reserve_seconds:g}s back for the turn's commit."
             ),
             config_hint=(
                 "True when both retry ladders complete inside the turn "

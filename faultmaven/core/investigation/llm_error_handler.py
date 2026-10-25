@@ -312,7 +312,7 @@ class RetryConfig:
     max_delay_seconds: float = 30.0
     exponential_base: float = 2.0
     # Retries a deadline-shaped failure (``is_deadline_shaped``) gets in one
-    # structured generation, under ``max_retries``. One, the floor: a hung
+    # ladder, under ``max_retries``. One, the floor: a hung
     # provider got zero before #1287, and that was the bug. Two would cost
     # ``3T + 6`` (three paid attempts under the breaker), barely under the full
     # ladder's ``3T + 14`` (#1294).
@@ -522,7 +522,7 @@ class LLMErrorHandler:
                 budget check guard the BACKOFF alone — the honest reading for a
                 caller that has no cost estimate to offer.
             deadline_retries_spent: Retries already granted to deadline-shaped
-                failures in this structured generation (``is_deadline_shaped``);
+                failures in this ladder (``is_deadline_shaped``);
                 a deadline-shaped ``error`` is retried only while it is below
                 ``max_deadline_retries``.
 
@@ -914,9 +914,6 @@ class LLMErrorHandler:
     async def with_retry(
         self,
         operation: Callable[[], Awaitable[T]],
-        *,
-        carried_failure: Optional[BaseException] = None,
-        carried_attempt_seconds: float = 0.0,
     ) -> Tuple[Optional[T], Optional[ErrorResult]]:
         """
         Execute operation with automatic retry on transient errors.
@@ -947,19 +944,11 @@ class LLMErrorHandler:
         behaviour direct-call tests, background jobs and the CLI already had.
 
         A deadline-shaped failure (``is_deadline_shaped``) is retried at most
-        ``max_deadline_retries`` times in one structured generation; every other
-        retryable failure keeps the ``max_retries`` ladder (#1294).
+        ``max_deadline_retries`` times in this ladder; every other retryable
+        failure keeps the ``max_retries`` ladder (#1294).
 
         Args:
             operation: Async operation to execute
-            carried_failure: A failed attempt this generation already paid for
-                against the same provider, outside the ladder (the engine's tool
-                loop). It is classified as the ladder's FIRST failure, so it
-                meets the same cap, budget and backoff as any other: the ladder
-                may answer without calling ``operation`` at all, and otherwise
-                its first attempt is that failure's retry.
-            carried_attempt_seconds: What the carried attempt cost; it seeds
-                the worst-attempt estimate the budget check reads.
 
         Returns:
             Tuple of (result, error_result) where result is None if all attempts failed
@@ -970,33 +959,9 @@ class LLMErrorHandler:
         # Worst attempt cost seen in THIS ladder. Local, not instance state: one
         # handler serves every turn in the process, so an instance attribute
         # would leak one case's hung provider into another case's budgeting.
-        worst_attempt_seconds = (
-            carried_attempt_seconds if carried_failure is not None else 0.0
-        )
-        # A failure not yet classified: the carried one, then each attempt's.
-        failure: Optional[BaseException] = carried_failure
+        worst_attempt_seconds = 0.0
 
         while retry_count <= self.config.max_retries:
-            if failure is not None:
-                error_result = await self.handle_error(
-                    failure,
-                    retry_count,
-                    worst_attempt_seconds,
-                    deadline_retries_spent=deadline_retries_spent,
-                )
-                # Preserve the triggering exception so the caller can surface its
-                # real message (see ErrorResult.original_exception — callers fold
-                # it into their message text, deliberately NOT onto __cause__).
-                error_result.original_exception = failure
-                error_result.category = declared_llm_category(failure)
-                last_error_result = error_result
-                failure = None
-                if error_result.action != ErrorAction.RETRY:
-                    return None, error_result
-                retry_count = error_result.retry_count
-                deadline_retries_spent += error_result.deadline_retry
-                continue
-
             spendable = spendable_turn_budget()
             if spendable is not None and spendable <= 0:
                 # No room even to start. Reached when an earlier ladder in the
@@ -1048,7 +1013,28 @@ class LLMErrorHandler:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.monotonic() - started
                 )
-                failure = e
+                error_result = await self.handle_error(
+                    e,
+                    retry_count,
+                    worst_attempt_seconds,
+                    deadline_retries_spent=deadline_retries_spent,
+                )
+                # Preserve the triggering exception so the caller can surface its
+                # real message (see ErrorResult.original_exception — callers fold
+                # it into their message text, deliberately NOT onto __cause__).
+                error_result.original_exception = e
+                error_result.category = declared_llm_category(e)
+                last_error_result = error_result
+
+                if error_result.action == ErrorAction.RETRY:
+                    retry_count = error_result.retry_count
+                    # Counted from the grant, which recorded its class.
+                    deadline_retries_spent += error_result.deadline_retry
+                    continue
+
+                else:
+                    # Non-retryable error
+                    return None, error_result
 
         return None, last_error_result
 

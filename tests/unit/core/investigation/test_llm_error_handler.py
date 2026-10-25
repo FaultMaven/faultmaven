@@ -1325,66 +1325,6 @@ class TestDeadlineShapedFailures:
         assert (result, error, calls["n"]) == ("answered", None, 2)
 
     @pytest.mark.asyncio
-    async def test_a_carried_hang_is_the_ladders_first_failure(self, ladder):
-        """The engine's tool-loop attempt: the ladder's first attempt is its
-        one retry, and a second hang ends it."""
-        operation, calls = _failing(_external_timeout)
-
-        _, error = await ladder.with_retry(
-            operation, carried_failure=_external_timeout()
-        )
-
-        assert calls["n"] == 1
-        assert error.error_code == "RETRY_EXHAUSTED"
-
-    @pytest.mark.asyncio
-    async def test_a_carried_hang_leaves_the_status_retries_to_the_overall_cap(
-        self, ladder
-    ):
-        operation, calls = _failing(lambda: LLMException("busy", status_code=503))
-
-        await ladder.with_retry(operation, carried_failure=_external_timeout())
-
-        assert calls["n"] == 3  # 1 carried + 3 = 1 + max_retries
-
-    @pytest.mark.asyncio
-    async def test_a_carried_hang_meets_the_cap_before_any_attempt(self):
-        operation, calls = _failing(_external_timeout)
-        carried = _external_timeout()
-        no_deadline_retry = LLMErrorHandler(
-            RetryConfig(base_delay_seconds=0.0, max_deadline_retries=0)
-        )
-
-        _, error = await no_deadline_retry.with_retry(
-            operation, carried_failure=carried
-        )
-
-        assert calls["n"] == 0
-        assert error.error_code == "RETRY_EXHAUSTED"
-        assert error.original_exception is carried
-
-    @pytest.mark.asyncio
-    async def test_a_carried_hang_meets_the_budget_before_any_attempt(
-        self, ladder, monkeypatch
-    ):
-        """Its cost seeds the estimate: a hung provider whose one retry the
-        turn cannot afford is answered as the ladder-only turn is."""
-        from faultmaven.core.investigation import llm_error_handler as module
-        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
-
-        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
-        operation, calls = _failing(_external_timeout)
-        carried = _external_timeout()
-
-        _, error = await ladder.with_retry(
-            operation, carried_failure=carried, carried_attempt_seconds=30.0
-        )
-
-        assert calls["n"] == 0
-        assert error.error_code == TURN_BUDGET_EXHAUSTED
-        assert error.original_exception is carried
-
-    @pytest.mark.asyncio
     async def test_the_retry_message_cites_the_cap_that_governs(self, ladder):
         hang = await ladder.handle_error(_external_timeout(), 0)
         busy = await ladder.handle_error(LLMException("b", status_code=503), 0)

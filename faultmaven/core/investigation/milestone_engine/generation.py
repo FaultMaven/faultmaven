@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import time
 from typing import Any, Callable, Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -12,7 +11,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.llm_error_handler import (
     OutputTruncationError,
     classify_token_limit_reason,
-    is_deadline_shaped,
     is_output_truncation_error,
     is_truncated_json_error,
 )
@@ -54,11 +52,7 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
-from faultmaven.exceptions import (
-    LLMErrorCategory,
-    RawModelContentRefused,
-    declared_llm_category,
-)
+from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
     send_to_model,
@@ -103,14 +97,6 @@ from .text_budget import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Failures that judge the request rather than the provider (#1294): the tool
-# loop's request is not the fallback's, so its verdict is not carried.
-_REQUEST_VERDICTS = (
-    LLMErrorCategory.CONTEXT_OVERFLOW,
-    LLMErrorCategory.OUTPUT_TRUNCATION,
-    LLMErrorCategory.REQUEST_REJECTED,
-)
 
 
 # Generation cap for schema-bound calls, and the ceiling the truncation ladder
@@ -812,9 +798,6 @@ class StructuredOutputGenerator:
                     )
                 return result
 
-            # The failing call's own cost, if this iteration's call fails: the
-            # fallback ladder budgets its retry against it, not the loop's.
-            call_started = time.monotonic()
             try:
                 # Same ladder the non-tool structured path has had since #513:
                 # a cut body means the response is unusable, and the first
@@ -897,16 +880,14 @@ class StructuredOutputGenerator:
                     model_info,
                     e,
                 )
-                unsupported = ToolCallingUnsupportedError(
+                raise ToolCallingUnsupportedError(
                     message=(
                         f"Tool calling failed at iteration {iteration}: {e}. "
                         f"Falling back to non-tool path."
                     ),
                     provider=provider_name,
                     model=self.deps.da_model,
-                )
-                unsupported.attempt_seconds = time.monotonic() - call_started
-                raise unsupported from e
+                ) from e
 
             # Check for tool calls in response
             if not hasattr(response, "tool_calls") or not response.tool_calls:
@@ -1681,40 +1662,6 @@ class StructuredOutputGenerator:
                 )
             raise
 
-    def _tool_loop_failure_to_carry(self, unsupported: Any) -> Optional[BaseException]:
-        """The tool loop's own failure, when the fallback ladder must count it.
-
-        Only a deadline-shaped failure (#1294), and only when it is not a
-        verdict about the loop's REQUEST (an overflow, a cut, a rejection): the
-        fallback sends a different request, and its own prompt decides those.
-        Only when the fallback reaches the provider that failed, compared by
-        name: a dedicated DA provider is a concrete provider, never the router
-        object, though it can name the provider the router routes to.
-        """
-        cause = unsupported.__cause__
-        if cause is None or not is_deadline_shaped(cause):
-            return None
-        if declared_llm_category(cause) in _REQUEST_VERDICTS:
-            return None
-        da = self.deps.da_provider
-        if da is not None and da is not self.deps.llm_provider:
-            from faultmaven.config.settings import get_settings
-            from faultmaven.core.investigation.milestone_engine.cause_state import (
-                _resolve_chat_provider_name,
-            )
-
-            # The fallback's structured call goes where its llm_operation
-            # sends it: STRUCTURED_OUTPUT_PROVIDER when set, else the chat chain.
-            override = get_settings().llm.structured_output_provider
-            fallback = (
-                override.value
-                if override is not None
-                else _resolve_chat_provider_name(self.deps.llm_provider)
-            )
-            if getattr(da, "provider_name", None) != fallback:
-                return None
-        return cause
-
     async def _generate_structured_output_inner(
         self,
         prompt: str,
@@ -1762,10 +1709,6 @@ class StructuredOutputGenerator:
         # This covers both the tool-augmented (DA) and single-shot paths.
         # Off the event loop via the async boundary (#654).
         prompt = await case_redacted(prompt, redaction_ctx)
-        # The tool loop's failed attempt, when the ladder below must count it
-        # as its own first failure (#1294), and what that attempt cost.
-        carried_failure: Optional[BaseException] = None
-        carried_attempt_seconds = 0.0
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -1805,13 +1748,10 @@ class StructuredOutputGenerator:
                         "Falling back to non-tool structured output path.",
                         e,
                     )
-                    # A hung provider fails the tool loop OUTSIDE any ladder,
-                    # and the fallback ladder would otherwise meet it as fresh
-                    # and pay two more full deadlines. The ladder classifies
-                    # the failing call, at its own cost, as its first failure,
-                    # under its cap, budget and backoff (#1294).
-                    carried_failure = self._tool_loop_failure_to_carry(e)
-                    carried_attempt_seconds = e.attempt_seconds
+                    # The fallback ladder below starts fresh: a hung provider's
+                    # tool-loop attempt is paid here, outside it, and the
+                    # ladder then makes its own two deadline-shaped attempts.
+                    # Telling the ladder about that attempt is #2319.
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file
                     # would run (directed-analysis index+stub). On the non-tool
@@ -2175,9 +2115,7 @@ class StructuredOutputGenerator:
 
         # Execute with retry and error handling
         result, error_result = await self.deps.llm_error_handler.with_retry(
-            operation=llm_operation,
-            carried_failure=carried_failure,
-            carried_attempt_seconds=carried_attempt_seconds,
+            operation=llm_operation
         )
 
         if result is not None:

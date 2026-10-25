@@ -1491,7 +1491,7 @@ class TestGetEnvConfigStatus:
         )
         assert "62s" in feature.description
         assert "slow non-504 5xx gets 3 of 3 attempts: 104s" in feature.description
-        assert "Both hold for a turn with tools" in feature.description
+        assert "the tool loop's own attempt comes first" in feature.description
 
     @pytest.mark.asyncio
     async def test_retry_ladder_reports_incoherent_on_the_cluster_shape(

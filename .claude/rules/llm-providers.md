@@ -278,29 +278,22 @@ timeout, then slow 503s). `T` is the resolved per-call ceiling —
 threefold. Three PAID attempts on the long ladder, because the router's breaker
 opens on the third failure and short-circuits the fourth, plus the three
 backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
-refuses); the deadline ladder stays under the breaker. The count is per
-structured generation: the tool loop's attempt fails outside any ladder
-(`ToolCallingUnsupportedError`, chained from the provider's failure), so the
-ladder classifies the failing call as its own first failure
-(`with_retry(carried_failure=..., carried_attempt_seconds=...)`) under the same
-cap, backoff and budget check, priced at that call's own cost (timed in the
-loop, not the loop's earlier iterations). The hung call and its retry then cost
-a turn with tools the same `2T + 2` as a ladder-only turn. Nothing is carried
-when the call went to another provider than the fallback reaches (compared by
-name: `DA_PROVIDER` unset or naming the fallback's provider,
-`STRUCTURED_OUTPUT_PROVIDER` when set, else the chat provider), or when it
-judged the request (`CONTEXT_OVERFLOW`, `OUTPUT_TRUNCATION`,
-`REQUEST_REJECTED`): the fallback sends a different request.
-Measured on a virtual clock against a hung provider, before → after: at T =
-30 s, 96 → 62 s ladder-only and 92 → 62 s with tools at a 120 s turn, 104 → 62
-s and 96 → 62 s at 240 s; at T = 120 s, A = 240 s, both shapes end at 120 s
-`TURN_BUDGET_EXHAUSTED` (with tools it ran 235.5 s before). With a dedicated `DA_PROVIDER` the DA attempt comes
-first: 92 s at either turn (134 s before at 240 s). The cost moves to the breaker: a
-hard-down provider no longer opens it inside the first turn's ladder (two
-failures of three), so that turn ends `RETRY_EXHAUSTED` (where the full ladder
-fit, it ended `PROVIDER_CIRCUIT_OPEN`; both 503 + `Retry-After: 30`), the next
-turn pays one `T` and opens it, and the one after is refused at once — 62 + 32
-+ 0 s over three turns where it was 96 + 0 + 0 (#1513). The two settings
+refuses); the deadline ladder stays under the breaker. On a turn with tools
+the tool loop's own attempt comes first, outside the ladder
+(`ToolCallingUnsupportedError`, chained from the provider's failure), and the
+fallback ladder then makes its own attempts: that turn pays the tool attempt
+and then the ladder, bounded by the turn budget. Telling the ladder about the
+paid attempt is #2319. Measured on a virtual clock against a hung provider,
+before → after: a ladder-only turn 96 → 62 s at T = 30 s and a 120 s turn,
+104 → 62 s at 240 s, and 120 s both at T = 120 s, A = 240 s; a turn with tools
+92 → 92 s at 120 s, 96 → 92 s at 240 s, and 235.5 s both at T = 120 s. The cost
+moves to the breaker on a ladder-only turn: a hard-down provider no longer opens
+it inside the first turn's ladder (two failures of three), so that turn ends
+`RETRY_EXHAUSTED` (where the full ladder fit, it ended `PROVIDER_CIRCUIT_OPEN`;
+both 503 + `Retry-After: 30`), the next turn pays one `T` and opens it, and the
+one after is refused at once — 62 + 32 + 0 s over three turns where it was 96 +
+0 + 0 (#1513). A turn with tools still reaches three failures and opens it in
+its first turn (92 + 0 + 0 s). The two settings
 live in different classes with their own per-provider maps and nothing related
 them, so the turn used to be cancelled mid-ladder: the classification never ran
 and the caller got an opaque 504 instead of the honest 503 + `Retry-After`
