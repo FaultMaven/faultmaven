@@ -10,8 +10,9 @@ stores' commands and their server-side scripts against it.
 
 **Gate.** Marked ``cloud``, so Test Standalone deselects it. Every test takes
 ``real_redis`` (``tests/integration/conftest.py``), so it runs only where
-``REDIS_HOST`` or ``REDIS_URL`` names a server, and skips elsewhere. Where one is
-named and does not answer, each test FAILS: ``get_async_redis_client()`` falls
+``REDIS_HOST`` or ``REDIS_URL`` names a server, and skips elsewhere, unless
+``FM_TEST_REQUIRE_REDIS`` is set, as the real-Redis step sets it: then nothing
+named is a failure. Where one is named and does not answer, each test FAILS: ``get_async_redis_client()`` falls
 back to FakeRedis silently, and a broken service container must not turn this
 module green on the stand-in.
 
