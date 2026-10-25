@@ -18,7 +18,7 @@ FaultMaven's tests follow the Clean Architecture layering:
 tests/
 ├── conftest.py             # Global test configuration and fixtures (reset_container, booted_app_client)
 ├── case_builders.py        # Plain keyword-override Case builders
-├── network_guard.py        # Refuses connections a test did not start itself
+├── network_guard.py        # Refuses non-loopback connects and foreign names; admits the job's PostgreSQL/Redis, never a model-server port
 ├── unit/                   # Unit tests, by layer
 │   ├── api/                # API Layer: routes, middleware, composition root
 │   ├── modules/            # Feature modules: agent, auth, case, evidence, knowledge, preprocessing, report
@@ -183,7 +183,7 @@ mock_llm.route.return_value = LLMResponse(
 # mock_llm = Mock(spec=OpenAIProvider)  # Don't do this
 ```
 
-Spec a concrete class only where no interface declares the call the code makes, and treat it as a known gap: `KnowledgeService`'s sanitizer and vector store are the current case (#2284; [patterns.md](patterns.md), pattern 2).
+Spec a concrete class only where no interface declares the call the code makes, and treat it as a known gap. The current cases: `KnowledgeService`'s sanitizer and vector store (#2284; [patterns.md](patterns.md), pattern 2), and the milestone engine's tool registry, typed `Any`, with no interface for `AgentToolRegistry` ([standards.md](standards.md)).
 
 **Validate Interface Methods**: Ensure all required methods are implemented. `tests/unit/architecture/test_contract_signature_conformance.py` checks this, signatures included, for every module contract registered in it:
 ```python
@@ -267,5 +267,5 @@ Key benefits:
 - **Clean State Management**: Proper container reset ensures test isolation
 - **Interface Compliance**: All dependencies tested through interface contracts
 - **Architecture Validation**: Tests validate Clean Architecture layer boundaries
-- **Performance Monitoring**: Container overhead and service performance validation
+- **Performance Monitoring**: Timings judged against `budgets.py` rows through the shared helpers
 - **Cross-Layer Integration**: End-to-end workflow testing through all layers

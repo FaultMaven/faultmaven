@@ -1,6 +1,6 @@
 # FaultMaven Test Suite
 
-Comprehensive test suite with 140+ test files organized for CI/CD pipelines.
+Comprehensive test suite organized for CI/CD pipelines.
 
 ## Directory Structure
 
@@ -8,7 +8,7 @@ Comprehensive test suite with 140+ test files organized for CI/CD pipelines.
 tests/
 ├── conftest.py              # Shared fixtures and test configuration
 ├── utils.py                 # Test utilities (ID generators, helpers)
-├── unit/                    # Unit tests (~100 files)
+├── unit/                    # Unit tests
 │   ├── api/                 # API layer tests (routes, middleware, models)
 │   ├── architecture/        # Architecture validation tests
 │   ├── bootstrap/           # Startup: migrations gate, KB pack ingestion, lifespan
@@ -26,7 +26,7 @@ tests/
 │   ├── security/            # Security tests
 │   ├── services/            # Service layer tests
 │   └── utils/               # Utility function tests
-├── integration/             # Integration tests (~25 files)
+├── integration/             # Integration tests
 │   ├── api/                 # API integration tests
 │   ├── conftest.py          # Integration-specific fixtures
 │   ├── mock_servers.py      # get_free_port(), for tests that serve on loopback

@@ -63,10 +63,10 @@ pytest
 pytest --cov=faultmaven --cov-report=html
 
 # Run specific test file
-pytest tests/unit/test_example.py
+pytest tests/unit/test_container_integration_comprehensive.py
 
 # Run specific test class or method
-pytest tests/unit/test_example.py::TestClass::test_method
+pytest tests/unit/test_container_integration_comprehensive.py::TestContainerSingleton::test_container_singleton_pattern
 
 # Run tests with verbose output
 pytest -v
@@ -178,10 +178,10 @@ tests/
 │   └── utils/             # Utility function tests
 ├── integration/           # Tests with real dependencies
 │   ├── api/               # API endpoint tests
-│   ├── database/          # Database integration tests
-│   └── external/          # External service integration
-└── performance/           # Performance and load tests
-    └── locust/            # Locust performance tests
+│   ├── modules/           # Module integration tests (agent, auth, case, knowledge)
+│   └── real_llm/          # Opt-in tests against a live LLM provider
+├── performance/           # Wall-clock overhead tests, against performance/budgets.py
+└── load/                  # Locust load tests (locustfile.py)
 ```
 
 ## Common Testing Scenarios

@@ -28,17 +28,11 @@ This document establishes the new testing architecture and standards for FaultMa
 - Verify cross-layer communication
 - Test error propagation and coordination
 
-#### **API Tests** (`tests/api/`)
+#### **API Tests** (`tests/unit/api/`, `tests/integration/api/`)
 - Test HTTP endpoints with real service layer
 - Mock only infrastructure dependencies
 - Verify request/response contracts
 - Test authentication and validation
-
-#### **End-to-End Tests** (`tests/e2e/`)
-- Full system workflow testing
-- Minimal mocking of external systems
-- Real database/cache integration where feasible
-- User journey validation
 
 #### **Real-LLM Integration Tests** (`tests/integration/real_llm/`)
 
@@ -231,7 +225,7 @@ async def test_request_lifecycle_coordination(
 
 ### **Real Business Logic Testing**
 ```python
-from unittest.mock import AsyncMock, create_autospec
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -249,15 +243,17 @@ class TestMilestoneEngine:
     @pytest.fixture
     def engine(self):
         """The real engine on specced dependencies: the provider and the case
-        repository by their interfaces, the tool registry (typed `Any`) by its
-        class. The one stub is the structured-output call, which returns a
-        real response schema."""
+        repository by their interfaces. The tool registry is typed `Any` and
+        has no interface, a known gap, so it is specced on its class. The one
+        stub is the structured-output call, autospecced on the real method and
+        returning a real response schema."""
         engine = MilestoneEngine(
             create_autospec(ILLMProvider, instance=True),
             create_autospec(ICaseRepository, instance=True),
             investigation_tools=create_autospec(AgentToolRegistry, instance=True),
         )
-        engine.generator.generate_structured_output = AsyncMock(
+        engine.generator.generate_structured_output = create_autospec(
+            engine.generator.generate_structured_output,
             return_value=InvestigationResponse_Diagnosis.model_validate(
                 {"agent_response": "Check the pool size next.", "state_updates": {}}
             )
@@ -331,13 +327,17 @@ class TestExternalClientIntegration:
 
 ### **Real Performance Measurement**
 
-A timing lives in `tests/performance/` (or `tests/benchmarks/`), against a row
-of that directory's `budgets.py`, and reaches its threshold only through
-`assert_latency_within` / `assert_throughput_at_least` from `tests/wallclock`,
-over several windows (`tests/wallclock/sampling.py`). Never compare a duration
-against a literal: `tests/unit/ci/test_benchmark_calibration.py` scans all of
-`tests/` for one and fails the build. The worked example is pattern 6 in
-[patterns.md](patterns.md); the method is in [performance.md](performance.md).
+Never compare a duration against a literal.
+`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and accepts
+these routes only: a latency or a rate through `assert_latency_within` /
+`assert_throughput_at_least` (`tests/wallclock`) against a `budgets.py` row
+(`tests/performance/`, `tests/benchmarks/`), a growth question through
+`assert_linear_growth`, a deadline question onto `VirtualTimeLoop`, or a
+measurement that is not a clock. `tests/performance/` takes each statistic over
+several windows (`tests/wallclock/sampling.py`); `tests/benchmarks/` times
+through `measure_min_latency` (`tests/benchmarks/conftest.py`). The worked
+example is pattern 6 in [patterns.md](patterns.md); the method, and which
+instrument answers which question, is in [performance.md](performance.md).
 
 ---
 
@@ -396,8 +396,8 @@ with patch('service.component_a') as mock_a:
         with patch('service.logger') as mock_log:
             # Test becomes meaningless
 
-# Good: Mock only boundaries
-external_api_mock = Mock()
+# Good: Mock only boundaries, specced on the boundary's interface
+external_api_mock = create_autospec(ExternalAPI, instance=True)
 service = ServiceClass(external_api=external_api_mock)
 result = service.real_business_logic(data)
 ```

@@ -363,22 +363,27 @@ async def test_error_propagation_across_layers():
 
 ### Performance and Resource Management
 
-A duration is judged only in `tests/performance/` or `tests/benchmarks/`,
-against a row of that directory's `budgets.py`, through
-`assert_latency_within` / `assert_throughput_at_least`: never against a
-literal. No row times the container. The worked example is pattern 6 in
-[patterns.md](patterns.md); the method is in [performance.md](performance.md).
+A duration is never judged against a literal.
+`tests/unit/ci/test_benchmark_calibration.py` scans all of `tests/` and
+accepts these routes only: a latency or a rate through `assert_latency_within`
+/ `assert_throughput_at_least` against a `budgets.py` row (`tests/performance/`,
+`tests/benchmarks/`), a growth question through `assert_linear_growth`, a
+deadline question onto `VirtualTimeLoop`, or a measurement that is not a clock.
+No row times the container. The worked example is pattern 6 in
+[patterns.md](patterns.md); the method, and which instrument answers which
+question, is in [performance.md](performance.md).
 
 ### Integration Testing with External Services
 
 `tests/network_guard.py` refuses every connection to a non-loopback address,
 and every loopback connection except to a port the test process bound itself
 and to the PostgreSQL / Redis its job names in `DATABASE_URL` / `REDIS_URL` /
-`REDIS_HOST` (the Cloud job's real-Redis suites reach theirs that way). A
-model-server port is never allowed, and a name that is not this machine's is
-not resolved. The opt-in real-LLM lane (`-m real_llm` with
-`FM_TEST_ALLOW_LIVE_NETWORK=1`) is the one way past it, described in
-[standards.md](standards.md).
+`REDIS_HOST` (`tests/integration/test_real_redis_stores.py`, run alone in one
+Test Cloud step, reaches its Redis that way). A model-server port is never
+allowed, and a name that is not this machine's is not resolved. Any non-empty
+`FM_TEST_ALLOW_LIVE_NETWORK`, read once when the guard installs, disables it
+for the whole process; the opt-in real-LLM lane (`-m real_llm`, described in
+[standards.md](standards.md)) is what it is for.
 
 ## Best Practices for Architecture Testing
 
@@ -393,7 +398,7 @@ not resolved. The opt-in real-LLM lane (`-m real_llm` with
 
 - **Mock interfaces**: Mock `ILLMProvider`, not `OpenAIProvider`
 - **Implement properly**: Use `create_autospec(Interface, instance=True)`; it checks call signatures, which `Mock(spec=Interface)` does not
-- **Known gap**: Spec a concrete class only where no interface declares the call (`KnowledgeService`'s sanitizer and vector store, #2284)
+- **Known gap**: Spec a concrete class only where no interface declares the call (`KnowledgeService`'s sanitizer and vector store, #2284; the engine's `AgentToolRegistry`, typed `Any`)
 - **Realistic behavior**: Mocks should behave like real implementations
 - **Error scenarios**: Test both success and failure paths
 
@@ -406,7 +411,6 @@ not resolved. The opt-in real-LLM lane (`-m real_llm` with
 
 ### 4. Performance Considerations
 
-- **Container overhead**: Monitor container operation performance
 - **Test execution time**: Keep tests fast with proper mocking
 - **Resource usage**: Ensure proper cleanup and resource management
 - **Concurrent testing**: Validate thread safety and isolation

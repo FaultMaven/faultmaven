@@ -346,10 +346,13 @@ def test_document_batch_sanitization_throughput():
 ```
 
 **Key Principles**:
-- Measure actual performance metrics, in `tests/performance/` (or
-  `tests/benchmarks/`), against a row of that directory's `budgets.py`
-- Take each statistic over several windows (`tests/wallclock/sampling.py`), so
-  one stalled window cannot fail the test
+- Measure actual performance metrics. A latency or a rate is judged against a
+  row of `budgets.py` in `tests/performance/` or `tests/benchmarks/`; elsewhere,
+  a growth question goes through `assert_linear_growth` and a deadline question
+  onto `VirtualTimeLoop` ([performance.md](performance.md) has the table)
+- In `tests/performance/`, take each statistic over several windows
+  (`tests/wallclock/sampling.py`), so one stalled window cannot fail the test;
+  `tests/benchmarks/` times through `measure_min_latency`
 - Never compare a duration against a literal. `tests/benchmarks/` and
   `tests/performance/` both route every threshold through
   `assert_latency_within` / `assert_throughput_at_least`, so the machine
@@ -617,7 +620,7 @@ def test_with_built_cases():
 ✅ **Constructor Injection**: Pass mocks to the unit under test; use `container.get_*_service()` after `await container.initialize()`
 
 ❌ **Unspecced Mocks**: Don't use a bare `Mock()`; it answers any call
-✅ **Interface Mocking**: `create_autospec` on the interface (`ITracer`); on a concrete class only where no interface declares the call (#2284)
+✅ **Interface Mocking**: `create_autospec` on the interface (`ITracer`); on a concrete class only where no interface declares the call, a known gap (#2284; the engine's `AgentToolRegistry`)
 
 ❌ **Persistent State**: Don't let tests affect each other
 ✅ **Clean State**: Reset container and environment between tests
@@ -636,7 +639,7 @@ Key benefits of these patterns:
 - **Clean State Management**: Proper container reset and environment isolation
 - **Interface Compliance**: All mocks implement proper interface contracts
 - **Realistic Testing**: Focus on business logic validation rather than mock verification
-- **Performance Awareness**: Monitor container overhead and test execution performance
+- **Performance Awareness**: Judge timings against `budgets.py` rows, never against literals
 - **Error Handling**: Comprehensive error scenario coverage and graceful degradation testing
 - **Cross-Layer Integration**: End-to-end workflow validation through all architectural layers
 
