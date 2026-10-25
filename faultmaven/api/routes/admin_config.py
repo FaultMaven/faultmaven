@@ -1135,19 +1135,27 @@ async def get_env_config_status(
         # report" — which is the exact failure mode this entry exists to close.
         from faultmaven.config.retry_budget import describe_retry_ladder_budget
 
-        plan = describe_retry_ladder_budget(settings)
+        # Two ladders, one verdict (#1294): a failure that spent its deadline
+        # is retried less than one that did not, and the entry is true only
+        # when both fit. One member, so the schema does not move.
+        budget = describe_retry_ladder_budget(settings)
+        hung, slow = budget.deadline_shaped, budget.status_shaped
         features["llm_retry_ladder_fits_turn_budget"] = FeatureStatus(
-            enabled=plan.fits,
+            enabled=budget.fits,
             description=(
-                f"A hung LLM provider gets {plan.attempts} of "
-                f"{plan.paid_attempts} attempts inside one turn. The full "
-                f"retry ladder costs {plan.full_ladder_seconds:.0f}s "
-                f"(attempts plus backoff); this turn's budget affords "
-                f"{plan.afforded_seconds:.0f}s of it, after keeping "
-                f"{plan.commit_reserve_seconds:g}s back for the turn's commit."
+                f"A hung or 504-answering LLM provider gets {hung.attempts} of "
+                f"{hung.paid_attempts} attempts inside one turn: its retry "
+                f"ladder costs {hung.full_ladder_seconds:.0f}s (attempts plus "
+                f"backoff), and this turn's budget affords "
+                f"{hung.afforded_seconds:.0f}s of it. A provider answering a "
+                f"slow non-504 5xx gets {slow.attempts} of {slow.paid_attempts} "
+                f"attempts: {slow.full_ladder_seconds:.0f}s, "
+                f"{slow.afforded_seconds:.0f}s afforded, a ceiling only that "
+                f"failure reaches. Both keep "
+                f"{slow.commit_reserve_seconds:g}s back for the turn's commit."
             ),
             config_hint=(
-                "True when the whole retry ladder completes inside the turn "
+                "True when both retry ladders complete inside the turn "
                 "deadline with the turn's commit reserve left over. False "
                 "means LLM_REQUEST_TIMEOUT (or an entry in "
                 "LLM_PROVIDER_TIMEOUT_OVERRIDES) is too large for "

@@ -265,13 +265,33 @@ timeout from it rather than restating the arithmetic (#1905). Every
 `AGENT_PROVIDER_TIMEOUT_OVERRIDES` value is held to `AGENT_REQUEST_TIMEOUT`'s
 30–600 s (#1905), so the published ceiling is at most 600 s whatever the
 provider. The ladder
-inside the preparation (`LLMErrorHandler.with_retry`, `max_retries=3`)
-costs `3T + 14s` against a hung provider, where `T` is the resolved per-call
-ceiling — `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`,
-NOT `LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
-threefold. Three PAID attempts, because the router's breaker opens on the third
-failure and short-circuits the fourth, plus all four backoffs (2 + 4 + 8; the
-eight seconds are spent before the attempt the breaker refuses). The two settings
+inside the preparation (`LLMErrorHandler.with_retry`) has two lengths, keyed
+on the failure's SHAPE, never its transport (#1294). A **deadline-shaped**
+failure (`is_deadline_shaped`: a `TimeoutError` anywhere on the `__cause__`
+chain, or an `LLMException` with status 504 or 524) spent a whole deadline and
+learned nothing, so it gets `max_deadline_retries=1` retry: `2T + 2s` against a
+hung provider. Every other retryable failure keeps `max_retries=3`: `3T + 14s`
+when every attempt is a slow non-504 5xx, a ceiling only that failure reaches.
+`T` is the resolved per-call ceiling —
+`max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`, NOT
+`LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
+threefold. Three PAID attempts on the long ladder, because the router's breaker
+opens on the third failure and short-circuits the fourth, plus the three
+backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
+refuses); the deadline ladder stays under the breaker. A ladder mixing the two
+classes costs at most `2T + 6s` (a timeout, a prompt 503, a timeout). The
+deadline count is per structured generation: the tool loop's attempt fails
+outside any ladder (`ToolCallingUnsupportedError`, chained from the provider's
+failure), so when it was deadline-shaped the fallback ladder starts with its
+retry spent (`with_retry(deadline_retries_spent=1)`). Measured on a virtual
+clock at T = 30 s against a hung provider: a ladder-only turn 96 → 62 s and a
+turn with tools 92 → 60 s at a 120 s turn; 104 → 62 s and 96 → 60 s at 240 s
+(134 → 60 s with a dedicated `DA_PROVIDER`). The cost moves to the breaker: a
+hard-down provider no longer opens it inside the first turn's ladder (two
+failures of three), so that turn ends `RETRY_EXHAUSTED` (where the full ladder
+fit, it ended `PROVIDER_CIRCUIT_OPEN`; both 503 + `Retry-After: 30`), the next
+turn pays one `T` and opens it, and the one after is refused at once — 62 + 32
++ 0 s over three turns where it was 96 + 0 + 0 (#1513). The two settings
 live in different classes with their own per-provider maps and nothing related
 them, so the turn used to be cancelled mid-ladder: the classification never ran
 and the caller got an opaque 504 instead of the honest 503 + `Retry-After`
@@ -287,13 +307,17 @@ providers reached without the router, and **refuses a retry** whose backoff plus
 another attempt of the worst cost observed *in that ladder* would not fit.
 Refusing the ladder's last iteration reports `RETRY_EXHAUSTED` (nothing that
 could have changed the answer was lost); refusing an earlier one reports
-`TURN_BUDGET_EXHAUSTED`, whose remediation is the config. Both → 503. **Unbound
+`TURN_BUDGET_EXHAUSTED`, whose remediation is the config — a hung provider's
+one retry, refused, is such an earlier one. Both → 503. **Unbound
 context means unbounded**: outside a turn the budget reads `None` and every
 check is inert, which is why the binding is the seam the whole guard hangs on
-and has its own test. Whether a deployment's two timeouts actually fit — the
+and has its own test. Whether a deployment's two timeouts actually fit — each
 whole ladder plus the step reserve plus the commit reserve inside
-`AGENT_REQUEST_TIMEOUT`, so at a 120 s turn `LLM_REQUEST_TIMEOUT` ≤ 33 s — is
-reported by `GET /admin/config/status` as `llm_retry_ladder_fits_turn_budget`.
+`AGENT_REQUEST_TIMEOUT`, so at a 120 s turn `LLM_REQUEST_TIMEOUT` ≤ 33 s for the
+long ladder and ≤ 56 s for the deadline one — is reported by
+`GET /admin/config/status` as `llm_retry_ladder_fits_turn_budget`, true only
+when both fit (`config/retry_budget.model_retry_ladders`, which reads the same
+`RetryConfig` the running ladder does).
 
 ## Tool calling is required for the investigation role
 

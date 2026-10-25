@@ -24,6 +24,7 @@ import time
 
 import pytest
 
+from faultmaven.config.retry_budget import model_retry_ladders
 from faultmaven.core.investigation import turn_budget
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.turn_budget import (
@@ -42,11 +43,12 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.infrastructure.llm.router import LLM_CIRCUIT_BREAKER_THRESHOLD
 
-# The shipped ladder shape, SOURCED rather than restated — read from the two
-# modules production reads them from (``RetryConfig(max_retries=3,
-# base_delay_seconds=2.0, exponential_base=2.0)`` and the router's
-# ``circuit_breaker_threshold=3``), so a change to either lands here as a
-# failure instead of drifting silently past a table of literals.
+# The shipped STATUS-SHAPED ladder (a 5xx, a 429), SOURCED rather than restated —
+# read from the two modules production reads them from (``RetryConfig(
+# max_retries=3, base_delay_seconds=2.0, exponential_base=2.0)`` and the
+# router's ``circuit_breaker_threshold=3``), so a change to either lands here as
+# a failure instead of drifting silently past a table of literals. The
+# deadline-shaped ladder (#1294) is pinned in ``TestTheDeadlineShapedLadder``.
 _CONFIG = RetryConfig()
 _BACKOFFS = [
     LLMErrorHandler(_CONFIG).calculate_delay(n) for n in range(_CONFIG.max_retries)
@@ -65,7 +67,11 @@ def _plan(request_timeout: float, agent_timeout: float):
 
 @pytest.mark.unit
 class TestTheShippedLadderShape:
-    """The constants the arithmetic below is built on, asserted not assumed."""
+    """The constants the arithmetic below is built on, asserted not assumed.
+
+    These are the status-shaped ladder's. The report reads the same numbers
+    through ``model_retry_ladders``, asserted last.
+    """
 
     def test_backoff_schedule_is_two_four_eight(self):
         assert _BACKOFFS == [2.0, 4.0, 8.0]
@@ -84,6 +90,49 @@ class TestTheShippedLadderShape:
         assert _plan(request_timeout=10, agent_timeout=600).full_ladder_seconds == (
             3 * 10 + 14
         )
+
+    def test_the_report_models_this_ladder_for_status_shaped_failures(self):
+        status = model_retry_ladders(agent_timeout=600, attempt_seconds=10)
+        assert status.status_shaped == _plan(request_timeout=10, agent_timeout=600)
+
+
+# (id, T, A, full deadline-shaped ladder cost, fits, attempts afforded)
+#
+# The same boundary question for a hung or 504-answering provider, whose ladder
+# is 2T + 2 (#1294): at a 120s turn it fits up to T=56, where the status-shaped
+# ladder stops fitting at 33.
+_DEADLINE_POPULATION = [
+    ("shipped_default_30_120", 30, 120, 62.0, True, 2),
+    ("boundary_fits_56_120", 56, 120, 114.0, True, 2),
+    ("boundary_breaches_57_120", 57, 120, 116.0, False, 1),
+    ("production_120_240", 120, 240, 242.0, False, 1),
+    ("generous_turn_120_600", 120, 600, 242.0, True, 2),
+]
+
+
+@pytest.mark.unit
+class TestTheDeadlineShapedLadder:
+    """One retry for a failure that spent its deadline, modelled as it runs."""
+
+    def test_one_retry_two_paid_attempts_one_backoff(self):
+        assert _CONFIG.max_deadline_retries == 1
+        plan = model_retry_ladders(agent_timeout=600, attempt_seconds=10)
+        assert plan.deadline_shaped.paid_attempts == 2
+        assert plan.deadline_shaped.full_ladder_seconds == 2 * 10 + 2
+
+    @pytest.mark.parametrize(
+        "request_timeout,agent_timeout,full_seconds,fits,attempts",
+        [pytest.param(*row[1:], id=row[0]) for row in _DEADLINE_POPULATION],
+    )
+    def test_population(
+        self, request_timeout, agent_timeout, full_seconds, fits, attempts
+    ):
+        plan = model_retry_ladders(
+            agent_timeout=agent_timeout, attempt_seconds=request_timeout
+        ).deadline_shaped
+        assert plan.full_ladder_seconds == full_seconds
+        assert plan.fits is fits
+        assert plan.attempts == attempts
 
 
 # (id, LLM_REQUEST_TIMEOUT, AGENT_REQUEST_TIMEOUT, full ladder cost, fits, attempts afforded)

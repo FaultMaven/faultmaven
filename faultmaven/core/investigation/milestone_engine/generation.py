@@ -11,6 +11,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.llm_error_handler import (
     OutputTruncationError,
     classify_token_limit_reason,
+    is_deadline_shaped,
     is_output_truncation_error,
     is_truncated_json_error,
 )
@@ -1709,6 +1710,10 @@ class StructuredOutputGenerator:
         # This covers both the tool-augmented (DA) and single-shot paths.
         # Off the event loop via the async boundary (#654).
         prompt = await case_redacted(prompt, redaction_ctx)
+        # Deadline-shaped retries this generation has already paid for, which
+        # the ladder below starts from (#1294). Non-zero only when the tool
+        # loop's own attempt failed by spending its deadline.
+        deadline_retries_spent = 0
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -1748,6 +1753,15 @@ class StructuredOutputGenerator:
                         "Falling back to non-tool structured output path.",
                         e,
                     )
+                    # A hung provider fails the tool loop OUTSIDE any ladder,
+                    # and the fallback ladder would otherwise meet it as fresh
+                    # and pay two more full deadlines. That attempt was paid,
+                    # so the fallback's first attempt is its one retry
+                    # (#1294). The loop's failure rides on ``__cause__``; a
+                    # refusal (an incapable model, an ignored forced call)
+                    # carries no timeout and passes nothing on.
+                    if is_deadline_shaped(e):
+                        deadline_retries_spent = 1
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file
                     # would run (directed-analysis index+stub). On the non-tool
@@ -2111,7 +2125,7 @@ class StructuredOutputGenerator:
 
         # Execute with retry and error handling
         result, error_result = await self.deps.llm_error_handler.with_retry(
-            operation=llm_operation
+            operation=llm_operation, deadline_retries_spent=deadline_retries_spent
         )
 
         if result is not None:

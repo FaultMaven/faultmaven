@@ -279,8 +279,8 @@ def test_billing_signal_latches_past_trailing_transient():
 # ``call_external`` bounds each attempt with ``asyncio.wait_for``. When that
 # deadline expires the dependency never answered, which is exactly the
 # transient condition the ladder exists for — and is how every provider
-# classifies its OWN read timeout (``LLMException(status_code=504)``, four
-# attempts).
+# classifies its OWN read timeout (``LLMException(status_code=504)``). Both are
+# deadline-shaped (#1294): one retry, two attempts, never one.
 #
 # The outer deadline used to raise a bare ``TimeoutError("… timed out after
 # 30.0s")``, so retryability was decided by matching that sentence against a
@@ -295,20 +295,19 @@ def test_billing_signal_latches_past_trailing_transient():
 # list entirely, so the last-resort tier reads the exception's TYPE rather
 # than its sentence and the two spellings are no longer distinguishable.
 #
-# The four rows run through ONE harness — same client, same ``call_external``
+# The rows run through ONE harness — same client, same ``call_external``
 # invocation, same deadline, same handler — and only the provider's behaviour
-# differs. Three of them are controls, and each is anchored on behaviour this
-# change does NOT touch:
+# differs:
 #
-#   hang  -> 4   THE MEASUREMENT.
-#   503   -> 4   REACHABILITY. A raw 5xx was retryable before this change and
-#                after it, so this row measures only whether the ladder can
-#                reach four attempts IN THIS HARNESS. Without it, "hang -> 4"
-#                rests on a number a broken ladder could also produce — and the
-#                healthy-provider row could not tell the difference, because a
-#                ladder that never retries also yields exactly 1 there.
-#   400   -> 1   DISCRIMINATION. Proves 4 is not simply what this harness
-#                always returns.
+#   hang  -> 2   THE MEASUREMENT: one retry (#1294), and never zero (#1287).
+#   504   -> 2   SHAPE, NOT TRANSPORT. The provider's own timeout gets what the
+#                client-side one gets.
+#   503   -> 4   REACHABILITY. A prompt 5xx keeps the full ladder, so this row
+#                measures whether the ladder can reach four attempts IN THIS
+#                HARNESS — and that "hang -> 2" is a cap, not a ladder that
+#                cannot retry twice.
+#   400   -> 1   DISCRIMINATION. Proves the counts are not simply what this
+#                harness always returns.
 #   ok    -> 1   NO-ERROR. Proves a success costs one call and the harness is
 #                not erroring for some reason of its own.
 
@@ -317,6 +316,11 @@ async def _hanging_call(counter: list) -> None:
     """A provider that accepts the request and never answers."""
     counter.append(1)
     await asyncio.sleep(3600)
+
+
+async def _call_504(counter: list) -> None:
+    counter.append(1)
+    raise LLMException("upstream gateway timeout", status_code=504)
 
 
 async def _call_503(counter: list) -> None:
@@ -338,7 +342,8 @@ async def _call_ok(counter: list) -> str:
 @pytest.mark.parametrize(
     "label,call_func,expected_calls,expected_code",
     [
-        ("hang", _hanging_call, 4, "RETRY_EXHAUSTED"),
+        ("hang", _hanging_call, 2, "RETRY_EXHAUSTED"),
+        ("provider_504", _call_504, 2, "RETRY_EXHAUSTED"),
         ("retryable_503", _call_503, 4, "RETRY_EXHAUSTED"),
         ("terminal_400", _call_400, 1, None),
         ("success", _call_ok, 1, None),
@@ -347,7 +352,8 @@ async def _call_ok(counter: list) -> str:
 async def test_retry_ladder_attempt_counts(
     fast_handler, router, label, call_func, expected_calls, expected_code
 ):
-    """1 initial attempt + max_retries(3) = FOUR calls for a transient failure.
+    """A deadline-shaped failure: 1 + max_deadline_retries(1) = TWO calls; any
+    other transient failure: 1 + max_retries(3) = FOUR.
 
     ``router`` has its circuit breaker disabled, which isolates the ladder: the
     counts here are the ladder's, and only the ladder's. (The breaker's effect
@@ -369,9 +375,10 @@ async def test_retry_ladder_attempt_counts(
     assert len(calls) == expected_calls, (
         f"[{label}] got {len(calls)} provider call(s), expected "
         f"{expected_calls}. On the 'hang' row, one call means the client-side "
-        f"deadline was classified non-retryable again (fm#1287); on the "
-        f"'retryable_503' row, one call means the ladder is unreachable in "
-        f"this harness and the 'hang' row proves nothing."
+        f"deadline was classified non-retryable again (fm#1287), and four means "
+        f"it is on the full ladder again (fm#1294); on the 'retryable_503' row, "
+        f"fewer than four means the ladder is unreachable in this harness and "
+        f"the 'hang' row proves nothing."
     )
 
     if expected_code is None and label == "success":
@@ -389,14 +396,18 @@ async def test_retry_ladder_attempt_counts(
 
 @pytest.mark.asyncio
 async def test_hanging_provider_reports_open_breaker_not_unknown(fast_handler):
-    """With the breaker LIVE (as the real router runs it, threshold=3), the
-    ladder stops one attempt early because the fourth attempt meets an open
-    breaker — and that must be reported as such.
+    """With the breaker LIVE (as the real router runs it, threshold=3), a hung
+    provider's open breaker must be reported as such, not as UNKNOWN_ERROR.
 
     ``CircuitBreakerError`` carries no provider status and its message
     ("Circuit breaker is open for LLM_Providers") matches no retry phrase, so
     it used to reach the UNKNOWN_ERROR tail: the operator was told "unknown"
     about the one failure the system understands completely.
+
+    Since #1294 the breaker opens one ladder LATER. A deadline-shaped failure
+    gets two attempts, under the threshold, so the first ladder ends
+    RETRY_EXHAUSTED with the breaker still closed. The next ladder's first
+    attempt is the third failure and opens it, and its retry meets it.
     """
     breaker_router = _BreakerRouterLike(threshold=3)
     calls: list = []
@@ -410,13 +421,16 @@ async def test_hanging_provider_reports_open_breaker_not_unknown(fast_handler):
             retries=0,
         )
 
-    result, error = await fast_handler.with_retry(operation=llm_operation)
+    _, first = await fast_handler.with_retry(operation=llm_operation)
 
-    assert result is None
-    assert error is not None
-    assert error.action == ErrorAction.FAIL
-    assert error.error_code == PROVIDER_CIRCUIT_OPEN
-    # Three timeouts open the breaker; the fourth attempt never reaches the
-    # provider. Three is therefore the correct count here, and it is still
-    # three MORE than the pre-fix zero-retry behaviour.
+    assert first.action == ErrorAction.FAIL
+    assert first.error_code == "RETRY_EXHAUSTED"
+    assert len(calls) == 2
+    assert breaker_router.circuit_breaker.state == "closed"
+
+    _, second = await fast_handler.with_retry(operation=llm_operation)
+
+    assert second.action == ErrorAction.FAIL
+    assert second.error_code == PROVIDER_CIRCUIT_OPEN
+    # One more call opened the breaker; the retry never reached the provider.
     assert len(calls) == 3
