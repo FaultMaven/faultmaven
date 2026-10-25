@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Sequence
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from faultmaven.api.exception_handlers import internal_server_error_handler
 from faultmaven.utils.serialization import to_json_compatible
 
 from ...infrastructure.logging.coordinator import LoggingCoordinator
@@ -75,9 +76,6 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
         start_timestamp = datetime.now(timezone.utc)
 
-        # Generate unique request ID for correlation
-        request_id = f"req_{int(start_time * 1000000)}"
-
         # Extract request information
         method = request.method
         path = request.url.path
@@ -108,15 +106,17 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
             error = e
             status_code = 500
             self.error_count += 1
-            self.logger.error(f"Request {request_id} failed: {e}")
 
-            # Create error response
-            from fastapi.responses import JSONResponse
-
-            response = JSONResponse(
-                status_code=500,
-                content={"detail": "Internal server error", "request_id": request_id},
-            )
+            # The app's one 500 for an unhandled exception, the one main.py
+            # registers. Answered here rather than re-raised, so the 500 still
+            # passes out through CORS; it names the request's correlation id
+            # and logs the exception only if LoggingMiddleware did not (#2294).
+            #
+            # Safe in place, and allowlisted as such in
+            # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``: the
+            # handler takes the exception only to log it, and its body is a
+            # static message plus the request's ids.
+            response = await internal_server_error_handler(request, e)
 
         finally:
             # Calculate timing
@@ -130,7 +130,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
 
             # Record performance metrics
             await self._record_performance_metrics(
-                request_id=request_id,
+                request_ids=self._request_ids(request, response),
                 method=method,
                 path=path,
                 endpoint_category=endpoint_category,
@@ -142,9 +142,10 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
                 expected_threshold=expected_threshold,
             )
 
-            # Add performance headers to response
+            # Add performance headers to response. Not ``X-Request-ID``:
+            # RequestIdMiddleware owns it, and an id set here replaced the one
+            # on the request's log lines on every response (#2294).
             if response:
-                response.headers["X-Request-ID"] = request_id
                 response.headers["X-Response-Time"] = f"{duration_ms:.2f}ms"
                 response.headers["X-Performance-Category"] = endpoint_category
 
@@ -215,9 +216,33 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         # Default threshold
         return 1000.0
 
+    @staticmethod
+    def _request_ids(request: Request, response: Optional[Response]) -> Dict[str, str]:
+        """The ids the request was served under, to label its metrics with.
+
+        This middleware mints none. The ``req_<micros>`` id it used to mint
+        named nothing a log query finds, and the ``X-Request-ID`` it set
+        overwrote ``RequestIdMiddleware``'s on every response (#2294).
+
+        - ``correlation_id``: the id on every log line of the request.
+          ``LoggingMiddleware``, inside this one, sets it on every response it
+          returns, and the 500 for an unhandled exception carries it too.
+        - ``request_id``: ``RequestIdMiddleware``'s id, where that ran.
+        """
+        ids: Dict[str, str] = {}
+        correlation_id = (
+            response.headers.get("X-Correlation-ID") if response is not None else None
+        )
+        if correlation_id:
+            ids["correlation_id"] = correlation_id
+        request_id = getattr(request.state, "request_id", None)
+        if request_id:
+            ids["request_id"] = request_id
+        return ids
+
     async def _record_performance_metrics(
         self,
-        request_id: str,
+        request_ids: Dict[str, str],
         method: str,
         path: str,
         endpoint_category: str,
@@ -231,7 +256,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         """Record comprehensive performance metrics.
 
         Args:
-            request_id: Unique request identifier
+            request_ids: The request's ids (``_request_ids``)
             method: HTTP method
             path: Request path
             endpoint_category: Categorized endpoint type
@@ -250,7 +275,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
                 duration_ms=duration_ms,
                 success=is_success,
                 metadata={
-                    "request_id": request_id,
+                    **request_ids,
                     "endpoint_category": endpoint_category,
                     "path": path,
                     "status_code": status_code,
@@ -289,7 +314,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
                     "endpoint.category": endpoint_category,
                 },
                 attributes={
-                    "request_id": request_id,
+                    **request_ids,
                     "client_ip": client_ip,
                     "user_agent": user_agent,
                     "performance_threshold": expected_threshold,
@@ -307,7 +332,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
                         metric_name=f"{endpoint_category}.response_time",
                         metric_value=duration_ms,
                         metadata={
-                            "request_id": request_id,
+                            **request_ids,
                             "path": path,
                             "method": method,
                             "threshold_ratio": threshold_ratio,

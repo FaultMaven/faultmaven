@@ -1589,6 +1589,11 @@ class SecuritySettings(BaseSettings):
             "Link",
             "Deprecation",
             "Sunset",
+            # The two ids a user reports: the request's correlation id, on
+            # every log line of the request (#2278), and RequestIdMiddleware's
+            # id, the caller's own when one was sent. The Copilot is a
+            # cross-origin caller, and an id it cannot read it cannot report.
+            "X-Correlation-ID",
             "X-Request-ID",
             "Retry-After",
             "X-RateLimit-Limit",

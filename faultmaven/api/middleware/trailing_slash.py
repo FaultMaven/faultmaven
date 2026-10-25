@@ -48,15 +48,8 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
 
             logger.debug(f"Trailing slash middleware: {path} -> {new_path}")
 
-        # Proceed with the modified request
-        try:
-            response = await call_next(request)
-            return response
-        except Exception as e:
-            # Log the error cleanly without trying to serialize exception objects
-            logger.error(
-                f"Error in trailing slash middleware: {type(e).__name__}: {str(e)}",
-                exc_info=False,  # Avoid serialization issues with exception objects
-            )
-            # Re-raise to let FastAPI handle it properly
-            raise
+        # An exception from the route passes through unlogged. LoggingMiddleware,
+        # outside this one, logs it once under the request's correlation id; a
+        # line here logged it again, and named this middleware as its source
+        # (#2294).
+        return await call_next(request)

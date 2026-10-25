@@ -51,6 +51,7 @@ from fastapi import Request, Response
 from fastapi.routing import APIRoute
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from faultmaven.api.exception_handlers import record_logged_failure
 from faultmaven.api.middleware.client_ip import (
     parse_trusted_proxies,
     resolve_client_ip_once,
@@ -476,6 +477,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     extra=summary,
                     exc_info=True,
                 )
+
+            # The 500 is built outside this middleware, after the request's
+            # context has ended, so it is handed the id here: the response then
+            # names the id this failure was just logged under, and is not
+            # logged a second time under none (#2294).
+            record_logged_failure(request, context.correlation_id)
 
             # Re-raise the exception to maintain FastAPI error handling
             raise
