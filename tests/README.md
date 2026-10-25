@@ -63,22 +63,27 @@ python scripts/tests.py --coverage
 python scripts/tests.py --parallel
 ```
 
-## CI/CD Pipeline Modes
+## Preset Modes
 
-The test runner supports predefined CI/CD pipeline configurations:
+The runner's preset selections. CI does not use them: its jobs run `pytest`
+directly (`.github/workflows/ci-cd.yml`).
 
 ```bash
-# Fast CI (unit tests, parallel) - for PR checks
+# Unit tests, parallel, without the slow and cloud tests
 python scripts/tests.py --ci
 
-# Full CI (unit + integration + infrastructure) - for merge checks
+# Unit + integration + infrastructure, parallel, without the slow and cloud tests
 python scripts/tests.py --ci-full
 
-# Nightly (all tests including benchmarks)
+# Every test but the cloud ones, benchmarks included, one process
 python scripts/tests.py --ci-nightly
 
-# Cloud (tests requiring Redis, PostgreSQL)
+# The tests marked `cloud`, which need a Redis server or a PostgreSQL DATABASE_URL
 python scripts/tests.py --ci-cloud
+
+# The PostgreSQL suite (marked `postgres`), as CI runs it, with DATABASE_URL
+# naming a PostgreSQL server
+pytest tests/ -m postgres
 ```
 
 ## Test Categories
@@ -104,7 +109,7 @@ python scripts/tests.py -m "security"
 # By directory
 python scripts/tests.py --dir tests/unit/services
 
-# Single file (the runner takes directories; pytest takes a file)
+# Single file
 pytest tests/unit/services/test_base_service.py
 
 # Stop on first failure
@@ -249,12 +254,12 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 Ensure `pytest-asyncio` is installed and use `@pytest.mark.asyncio`.
 
-### Docker Service Issues
+### Tests That Need Redis or PostgreSQL
 
-```bash
-docker-compose up -d
-docker-compose ps
-```
+The `cloud` and `postgres` tests skip unless `REDIS_URL` (or `REDIS_HOST`) or a
+PostgreSQL `DATABASE_URL` names a server. The repository's `docker-compose.yml`
+starts neither (it runs the API and the Dashboard), so point those variables at
+a server you run yourself.
 
 ### Parallel Execution Issues
 
