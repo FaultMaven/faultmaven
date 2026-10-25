@@ -106,7 +106,7 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 │                                                                  │
 │  Business logic uses interfaces only (no deployment branching)   │
 │  • CaseService calls ICaseRepository                             │
-│  • KnowledgeService calls IVectorStore                           │
+│  • KnowledgeService calls IKnowledgeVectorStore                  │
 │  • EvidenceService calls IStorageBackend                         │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
@@ -418,6 +418,7 @@ If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will
 |-----------|---------|-----------------|
 | `ILLMProvider` | LLM integration | Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local (Ollama/vLLM) |
 | `IVectorStore` | Vector search | ChromaDB (PersistentClient local, HttpClient cloud) |
+| `IKnowledgeVectorStore` | Knowledge-base search and writes (one collection, every scope) | `KnowledgeVectorStore` over ChromaDB |
 | `ISessionStore` | Session management | Redis (cloud), FakeRedis (local) |
 | `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
 | `ICaseRepository` | Cross-module case access | SQLite, PostgreSQL hybrid, sessionless variants |

@@ -231,8 +231,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.agent.tools.base import AgentToolRegistry
+from faultmaven.models.interfaces import IAgentToolRegistry, ILLMProvider
 from faultmaven.modules.case.contracts import ICaseRepository
 from tests.case_builders import investigating_case
 
@@ -242,15 +241,14 @@ class TestMilestoneEngine:
 
     @pytest.fixture
     def engine(self):
-        """The real engine on specced dependencies: the provider and the case
-        repository by their interfaces. The tool registry is typed `Any` and
-        has no interface, a known gap, so it is specced on its class. The one
-        stub is the structured-output call, autospecced on the real method and
+        """The real engine on mocks of the interfaces it is typed against:
+        the provider, the case repository and the tool registry. The one stub
+        is the structured-output call, autospecced on the real method and
         returning a real response schema."""
         engine = MilestoneEngine(
             create_autospec(ILLMProvider, instance=True),
             create_autospec(ICaseRepository, instance=True),
-            investigation_tools=create_autospec(AgentToolRegistry, instance=True),
+            investigation_tools=create_autospec(IAgentToolRegistry, instance=True),
         )
         engine.generator.generate_structured_output = create_autospec(
             engine.generator.generate_structured_output,

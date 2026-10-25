@@ -8,7 +8,7 @@ and flexibility in the knowledge management system.
 
 Core Responsibilities:
 - Knowledge document management via interfaces
-- Semantic search operations using IVectorStore
+- Semantic search operations using IKnowledgeVectorStore
 - Knowledge ingestion through IKnowledgeIngester
 - Runbook body security checks (a body holding a credential is refused, never
   rewritten, #2012) and title and query sanitization via ISanitizer
@@ -50,10 +50,10 @@ from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
+    IKnowledgeVectorStore,
     ILLMProvider,
     ISanitizer,
     ITracer,
-    IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
@@ -359,7 +359,7 @@ class KnowledgeService:
         knowledge_ingester: IKnowledgeIngester,
         sanitizer: ISanitizer,
         tracer: ITracer,
-        vector_store: Optional[IVectorStore] = None,
+        vector_store: Optional[IKnowledgeVectorStore] = None,
         redis_client: Optional[object] = None,
         settings: Optional[Any] = None,
         llm_provider: Optional[
@@ -376,7 +376,7 @@ class KnowledgeService:
             knowledge_ingester: Interface for document ingestion operations
             sanitizer: Interface for data sanitization (PII redaction)
             tracer: Interface for distributed tracing
-            vector_store: Optional interface for vector database operations
+            vector_store: Optional KB vector store (``IKnowledgeVectorStore``)
             redis_client: Optional Redis client for metadata storage
             settings: Configuration settings for the service
             llm_provider: Optional LLM for intelligent query processing
@@ -1077,7 +1077,7 @@ class KnowledgeService:
 
             # Replacement is fully in hand (embeddings + validated chunk
             # dicts) — only now remove the old chunks. The vector store
-            # implements delete_documents_by_parent_id (IVectorStore
+            # implements delete_documents_by_parent_id (IKnowledgeVectorStore
             # contract) — calling it directly, with no hasattr guard, so a
             # store that silently lacks it raises here instead of leaving
             # stale vectors behind on every re-ingest (the KB drift this

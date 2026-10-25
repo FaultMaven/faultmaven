@@ -54,13 +54,14 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-    KB_COLLECTION,
-    KnowledgeVectorStore,
-)
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+from faultmaven.models.interfaces import (
+    IKnowledgeIngester,
+    IKnowledgeVectorStore,
+    ISanitizer,
+    ITracer,
+)
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -68,9 +69,10 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 @pytest.mark.asyncio
 async def test_service_with_interface_mocks():
     """Pattern for building the unit under test on mocked dependencies."""
-    # Create specced mocks: a method the type lacks, or a call with the
-    # wrong arguments, fails the test
-    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    # Mock the interfaces the service is typed against: a method the
+    # interface does not declare, or a call with the wrong arguments, fails
+    # the test
+    vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     vector_store.search.return_value = [
         {
             "id": "kb_pool_chunk_0",
@@ -80,7 +82,7 @@ async def test_service_with_interface_mocks():
         }
     ]
 
-    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer = create_autospec(ISanitizer, instance=True)
     sanitizer.asanitize.side_effect = lambda data: data
 
     # Pass the mocks to the constructor of the unit under test
@@ -110,14 +112,13 @@ async def test_service_with_interface_mocks():
 ```
 
 **Key Principles**:
-- Mock interfaces, not concrete providers: where the code is typed against an
-  interface that declares what it calls, mock that interface with
-  `create_autospec(Interface, instance=True)` (`ITracer`, `IKnowledgeIngester`)
-- Spec a concrete class only where no interface declares the call, and treat
-  that as a known gap: `KnowledgeService` is typed against `ISanitizer` and
-  `IVectorStore`, which declare neither `asanitize` nor the `search` signature
-  it calls (#2284), so its sanitizer and store are specced on `DataSanitizer`
-  and `KnowledgeVectorStore`
+- Mock interfaces, not concrete providers: mock the interface the code is
+  typed against with `create_autospec(Interface, instance=True)`
+  (`ISanitizer`, `IKnowledgeVectorStore`, `ITracer`, `IKnowledgeIngester`)
+- When the code calls a method its interface does not declare, declare it on
+  the interface rather than spec the mock on a concrete class: until #2284,
+  `ISanitizer` had no `asanitize` and `KnowledgeService`'s store was typed
+  `IVectorStore`, whose `search` takes neither `collection_name` nor `where`
 - Use `create_autospec`, not `Mock(spec=...)`: it checks every call against the
   real signature. `Mock(spec=...)` checks attribute names only, and a bare
   `AsyncMock` accepts any call, which is how a vector-store call with the wrong
@@ -261,17 +262,18 @@ async def test_error_handling_pattern():
     """Pattern for testing error handling across layers."""
     from unittest.mock import create_autospec
 
-    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-        KnowledgeVectorStore,
-    )
     from faultmaven.infrastructure.persistence.database import get_db_session
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
-    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.models.interfaces import (
+        IKnowledgeIngester,
+        IKnowledgeVectorStore,
+        ISanitizer,
+        ITracer,
+    )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
 
-    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer = create_autospec(ISanitizer, instance=True)
     sanitizer.asanitize.side_effect = lambda data: data
 
     def knowledge_service(vector_store):
@@ -284,7 +286,7 @@ async def test_error_handling_pattern():
         )
 
     # Create mock that simulates external service failure
-    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     vector_store.search.side_effect = ConnectionError("Vector store unavailable")
 
     # Test 1: Error propagation through the service layer
@@ -431,23 +433,24 @@ async def test_async_pattern():
     import asyncio
     from unittest.mock import create_autospec
 
-    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
-        KnowledgeVectorStore,
-    )
     from faultmaven.infrastructure.persistence.database import get_db_session
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
-    from faultmaven.models.interfaces import IKnowledgeIngester, ITracer
+    from faultmaven.models.interfaces import (
+        IKnowledgeIngester,
+        IKnowledgeVectorStore,
+        ISanitizer,
+        ITracer,
+    )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
 
     # Setup async mocks: autospec makes each async method an AsyncMock
-    vector_store = create_autospec(KnowledgeVectorStore, instance=True)
+    vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     vector_store.search.return_value = [
         {"id": "kb_a_chunk_0", "content": "Mock search result 1", "score": 0.95},
         {"id": "kb_b_chunk_0", "content": "Mock search result 2", "score": 0.87},
     ]
-    sanitizer = create_autospec(DataSanitizer, instance=True)
+    sanitizer = create_autospec(ISanitizer, instance=True)
     sanitizer.asanitize.side_effect = lambda data: data
 
     knowledge_service = KnowledgeService(
@@ -620,7 +623,7 @@ def test_with_built_cases():
 ✅ **Constructor Injection**: Pass mocks to the unit under test; use `container.get_*_service()` after `await container.initialize()`
 
 ❌ **Unspecced Mocks**: Don't use a bare `Mock()`; it answers any call
-✅ **Interface Mocking**: `create_autospec` on the interface (`ITracer`); on a concrete class only where no interface declares the call, a known gap (#2284; the engine's `AgentToolRegistry`)
+✅ **Interface Mocking**: `create_autospec` on the interface the code is typed against (`ITracer`, `ISanitizer`, `IAgentToolRegistry`)
 
 ❌ **Persistent State**: Don't let tests affect each other
 ✅ **Clean State**: Reset container and environment between tests
@@ -637,7 +640,7 @@ These modern testing patterns provide a comprehensive foundation for testing Fau
 
 Key benefits of these patterns:
 - **Clean State Management**: Proper container reset and environment isolation
-- **Interface Compliance**: Mocks are autospecced on their interface contracts, but for the known gaps
+- **Interface Compliance**: Mocks are autospecced on their interface contracts
 - **Realistic Testing**: Focus on business logic validation rather than mock verification
 - **Performance Awareness**: Judge timings by the routes the calibration guard accepts, never against literals
 - **Error Handling**: Comprehensive error scenario coverage and graceful degradation testing

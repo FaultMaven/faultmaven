@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
     from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+    from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +381,7 @@ def create_case_vector_store(
 
 def create_knowledge_vector_store(
     settings: FaultMavenSettings, chromadb_client=None
-) -> Any | None:
+) -> IKnowledgeVectorStore | None:
     """Create knowledge vector store for permanent KB collections.
 
     Uses collection names as-is from KBConfig (no prefix manipulation).

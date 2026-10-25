@@ -59,6 +59,7 @@ from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.interfaces import IKnowledgeVectorStore
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.taxonomy import RunbookStatus
 
@@ -299,7 +300,7 @@ class CorpusTermStats:
         return self.document_frequency(term) <= IDENTIFIER_DF_RATIO * self.n_chunks
 
 
-class KnowledgeVectorStore(BaseExternalClient):
+class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     """Vector store for the unified KB collection (faultmaven_kb).
 
     All KB scopes (global, team, personal) share one ChromaDB collection.

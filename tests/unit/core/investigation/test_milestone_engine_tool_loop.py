@@ -8,7 +8,7 @@ via the schema tool (termination signal).
 
 import json
 from typing import List, Optional
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, create_autospec, patch
 
 import pytest
 from pydantic import BaseModel, Field
@@ -37,7 +37,7 @@ from faultmaven.infrastructure.security.model_content import (
     model_output,
     provenance,
 )
-from faultmaven.models.interfaces import ToolResult
+from faultmaven.models.interfaces import IAgentToolRegistry, ToolResult
 from tests.model_content import disabled_redaction, vetted
 
 # =========================================================================
@@ -152,7 +152,7 @@ def _make_engine(
 
 
 def _make_mock_registry():
-    """Create a mock AgentToolRegistry."""
+    """Create a mock of the engine's tool registry interface."""
     mock_tool = MagicMock()
     mock_tool.name = "search_file"
     mock_tool.get_schema.return_value = {
@@ -165,9 +165,8 @@ def _make_mock_registry():
         },
     }
 
-    registry = MagicMock()
+    registry = create_autospec(IAgentToolRegistry, instance=True)
     registry.get_all_tools.return_value = [mock_tool]
-    registry.execute_tool = AsyncMock()
     return registry
 
 
@@ -1622,7 +1621,7 @@ def _real_da_registry(result_chars: int):
     from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
     from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
-    registry = MagicMock()
+    registry = create_autospec(IAgentToolRegistry, instance=True)
     registry.get_all_tools.return_value = [
         SearchFileTool(storage_service=MagicMock()),
         DeepAnalysisTool(tier2_service=MagicMock()),
@@ -1631,8 +1630,8 @@ def _real_da_registry(result_chars: int):
         VectorizeFileTool(case_vector_store=MagicMock(), storage_service=MagicMock()),
         CaseEvidenceQAAdapter(wrapped_tool=MagicMock()),
     ]
-    registry.execute_tool = AsyncMock(
-        return_value=ToolResult(success=True, data="r" * result_chars)
+    registry.execute_tool.return_value = ToolResult(
+        success=True, data="r" * result_chars
     )
     return registry
 
@@ -3029,9 +3028,9 @@ class TestVectorizedFlagPersistence:
         # The gate is `is not True` — fail-closed — so a stand-in returning a
         # bare string or a Mock reads as "not indexed" and would silently
         # exercise the refusal path while looking like a success case.
-        mock_registry = MagicMock()
-        mock_registry.execute_tool = AsyncMock(
-            return_value=ToolResult(success=tool_success, data=tool_data)
+        mock_registry = create_autospec(IAgentToolRegistry, instance=True)
+        mock_registry.execute_tool.return_value = ToolResult(
+            success=tool_success, data=tool_data
         )
         provider = AsyncMock()
         repo = MagicMock()
@@ -3417,10 +3416,8 @@ class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
     """
 
     def _engine(self, tool_data):
-        registry = MagicMock()
-        registry.execute_tool = AsyncMock(
-            return_value=ToolResult(success=True, data=tool_data)
-        )
+        registry = create_autospec(IAgentToolRegistry, instance=True)
+        registry.execute_tool.return_value = ToolResult(success=True, data=tool_data)
         repo = MagicMock()
         repo.save = AsyncMock()
         repo.update_evidence_vectorized = AsyncMock(return_value=True)

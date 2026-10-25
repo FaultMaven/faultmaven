@@ -17,6 +17,7 @@ from faultmaven.infrastructure.chroma_client import ChromaClientConfigError
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def create_registry_tools(
 
 def create_document_qa_tools(
     case_vector_store: Any | None,
-    knowledge_vector_store: Any | None,
+    knowledge_vector_store: IKnowledgeVectorStore | None,
     llm_provider: Any,
     settings: FaultMavenSettings,
 ) -> dict[str, Any | None]:

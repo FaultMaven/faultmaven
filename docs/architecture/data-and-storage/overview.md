@@ -57,8 +57,8 @@ For the data-type × backend × deployment breakdown, see:
              │    ├──> Redis (primary, TTL-based)
              │    └──> PostgreSQL (archive, optional)
              │
-             ├──> IVectorStore Interface (global KB)
-             │    └──> ChromaDBVectorStore: ChromaDB (faultmaven_kb)
+             ├──> IKnowledgeVectorStore Interface (global KB)
+             │    └──> KnowledgeVectorStore: ChromaDB (faultmaven_kb)
              │
              ├──> CaseVectorStore (per-case evidence)
              │    └──> ChromaDB (case_{case_id}, dynamic collections)

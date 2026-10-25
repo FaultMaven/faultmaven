@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ILLMProvider
+    from faultmaven.models.interfaces import IAgentToolRegistry, ILLMProvider
     from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 
@@ -24,7 +24,7 @@ class EngineDeps:
     llm_provider: ILLMProvider | None = None
     repository: Any = None
     knowledge_service: IKnowledgeService | None = None
-    investigation_tools: Any = None
+    investigation_tools: IAgentToolRegistry | None = None
     da_provider: Any | None = None
     da_model: str | None = None
     sanitizer: Any | None = None

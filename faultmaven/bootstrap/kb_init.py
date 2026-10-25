@@ -858,7 +858,7 @@ async def _delete_existing(
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     # ChromaDB chunks first (idempotent — no-op if not present). The vector store
-    # implements ``delete_documents_by_parent_id`` (IVectorStore contract); a
+    # implements ``delete_documents_by_parent_id`` (IKnowledgeVectorStore); a
     # missing method surfaces as a logged warning here rather than a silent skip,
     # so vector-side cleanup can never quietly become a no-op (the drift bug).
     try:
