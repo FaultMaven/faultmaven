@@ -185,7 +185,6 @@ async def test_the_knowledge_service_fails_closed_on_a_lookup_error():
         raise RuntimeError("database unavailable")
 
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=MagicMock(),
         tracer=MagicMock(),
         vector_store=MagicMock(),

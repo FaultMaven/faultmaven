@@ -16,10 +16,10 @@ interrupt it. These tests pin the fix against a real ``chromadb.HttpClient``:
   refuses an HTTP client the door did not build, and a "persistent" client
   cannot be turned into an HTTP one by the environment;
 - the configuration refusals (``ChromaClientConfigError``) are never answered
-  with a fallback or a degraded mode: not at either acquisition site, not in
-  the ingester's container wrapper, not in ``DIContainer.initialize``, and not
-  in the two channels that decide whether a failed container is terminal, the
-  jobs runner and ``compose_application``, in any deployment mode.
+  with a fallback or a degraded mode: not at the acquisition site, not in
+  ``DIContainer.initialize``, and not in the two channels that decide whether
+  a failed container is terminal, the jobs runner and ``compose_application``,
+  in any deployment mode.
 
 No test here reads a clock (#1579). Each judges an ORDER of events instead:
 whether the loop ran while the stub held a request, and whether the client
@@ -53,7 +53,6 @@ from fastapi import FastAPI
 from faultmaven.bootstrap.composition import compose_application
 from faultmaven.container import DIContainer
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
-from faultmaven.container.providers.tools import create_knowledge_ingester
 from faultmaven.infrastructure import chroma_client
 from faultmaven.infrastructure.chroma_client import (
     CHROMA_EXECUTOR,
@@ -73,7 +72,6 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
     create_persistent_client,
 )
 from faultmaven.jobs.run import run_job
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from tests.unit.container.conftest import make_chroma_settings
 
 pytestmark = [pytest.mark.unit]
@@ -234,19 +232,6 @@ def test_the_builder_sends_no_credential_when_none_is_configured(
     assert {auth for _, _, auth in stub.requests} == {None}
 
 
-def test_the_builder_applies_settings_overrides(stub: _StubChroma) -> None:
-    """The ingester passes ``allow_reset=True``; the builder keeps it."""
-    client = build_http_client(
-        make_chroma_settings(),
-        host="127.0.0.1",
-        port=stub.port,
-        ssl=False,
-        allow_reset=True,
-    )
-
-    assert client.get_settings().allow_reset is True
-
-
 def test_a_client_with_no_session_to_bound_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -318,24 +303,6 @@ def test_the_container_path_takes_tls_from_the_url(
     settings = client.get_settings()
     assert settings.chroma_server_ssl_enabled is ssl
     assert settings.chroma_server_http_port == port
-
-
-@pytest.mark.parametrize(
-    "branch,ssl",
-    [
-        ({"chromadb_url": "https://chroma.internal"}, True),
-        ({"chromadb_url": "http://chroma.internal"}, False),
-        ({"chromadb_host": "chromadb.faultmaven.svc"}, False),
-    ],
-    ids=["url-https", "url-http", "host"],
-)
-def test_the_ingester_takes_tls_from_the_url(
-    created_clients: List[Any], branch: dict, ssl: bool
-) -> None:
-    ingester = KnowledgeIngester(settings=make_chroma_settings(**branch))
-
-    assert ingester.degraded is False
-    assert ingester.chroma_client.get_settings().chroma_server_ssl_enabled is ssl
 
 
 # --------------------------------------------------------------------------- #
@@ -572,49 +539,15 @@ def test_container_refuses_a_client_with_no_session_and_does_not_fall_back(
     assert not (tmp_path / "chroma").exists()
 
 
-@pytest.mark.parametrize(
-    "branch",
-    [
-        {"chromadb_url": "http://chromadb:8000"},
-        {"chromadb_host": "chromadb.faultmaven.svc"},
-    ],
-    ids=["url", "host"],
-)
-@pytest.mark.parametrize("cloud", [False, True], ids=["standalone", "cloud"])
-def test_ingester_refuses_a_client_with_no_session_and_does_not_degrade(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool, branch: dict
-) -> None:
-    _no_session_client(monkeypatch)
-    settings = make_chroma_settings(cloud=cloud, **branch)
-    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
-
-    with pytest.raises(ChromaClientConfigError) as raised:
-        KnowledgeIngester(settings=settings)
-
-    assert not isinstance(raised.value, ChromaUnavailableError)
-    assert not (tmp_path / "chroma-kb").exists()
-
-
-def test_the_ingester_wrapper_does_not_turn_a_refusal_into_no_ingester(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``create_knowledge_ingester`` answers ordinary failures with ``None``;
-    ``None`` is the degraded mode a configuration refusal rules out."""
-    _no_session_client(monkeypatch)
-    settings = make_chroma_settings(chromadb_url="http://chromadb:8000")
-
-    with pytest.raises(ChromaClientConfigError):
-        create_knowledge_ingester(settings, sanitizer=object())
-
-
 def _refusing_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any, *, cloud: bool
 ) -> Any:
-    """Settings whose ``register_tools`` refuses: the ingester, host-only, with
-    a malformed token. Development, so standalone is the lenient posture."""
+    """Settings whose ``register_infrastructure`` refuses: an external ChromaDB
+    named by ``CHROMADB_URL``, with a malformed token. Development, so
+    standalone is the lenient posture."""
     monkeypatch.setenv("ENVIRONMENT", "development")
     settings = make_chroma_settings(
-        cloud=cloud, chromadb_host="chromadb.faultmaven.svc", auth_token="bad token"
+        cloud=cloud, chromadb_url="http://chromadb:8000", auth_token="bad token"
     )
     settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
     # The jobs runner refuses to start without a persistent database.
@@ -625,27 +558,25 @@ def _refusing_settings(
 
 @contextmanager
 def _real_container_refusing(settings: Any) -> Iterator[MagicMock]:
-    """The real ``DIContainer.initialize``, with infrastructure and services
-    stubbed and ``register_tools`` real, so the refusal is raised where it
-    is in production. Yields the ``register_services`` stub."""
+    """The real ``DIContainer.initialize`` and ``register_infrastructure``,
+    so the refusal is raised where it is in production: building the KB
+    ChromaDB client through the one door. Tools and services are stubbed;
+    the refusal comes before them. Yields the ``register_services`` stub."""
     container = DIContainer()
     container._initialized = False
     container._initializing = False
 
-    async def _infrastructure(composing: Any, *_args: Any, **_kwargs: Any) -> None:
-        # register_tools hands the ingester the composition's sanitizer, and
-        # refuses a container without one (#2235).
-        composing._register_service("sanitizer", object())
+    def _must_not_be_called(**kwargs: Any) -> None:  # pragma: no cover
+        raise AssertionError("no client may be built with a malformed token")
 
     with (
         patch("faultmaven._container_impl.get_settings", return_value=settings),
-        patch(
-            "faultmaven._container_impl.register_infrastructure",
-            new=MagicMock(side_effect=_infrastructure),
-        ),
+        patch.object(chromadb, "HttpClient", _must_not_be_called),
+        patch("faultmaven._container_impl.register_tools") as tools,
         patch("faultmaven._container_impl.register_services") as services,
     ):
         yield services
+    tools.assert_not_called()
     assert container._initialized is False
 
 

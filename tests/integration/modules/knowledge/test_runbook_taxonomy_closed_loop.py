@@ -244,7 +244,6 @@ async def session_factory(request, tmp_path, migrated_template):
 @pytest.fixture
 def service(session_factory, tmp_path):
     knowledge = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),

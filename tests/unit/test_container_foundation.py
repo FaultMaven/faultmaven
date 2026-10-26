@@ -498,16 +498,19 @@ class TestDIContainerErrorHandling:
         """Test graceful handling of partial service creation failures"""
         container = DIContainer()
 
-        # Mock failure in knowledge service creation
+        # File storage is optional: its failure is registered, not raised.
         with patch(
-            "faultmaven.modules.knowledge.domain.services.ingestion.KnowledgeIngester",
-            side_effect=Exception("Knowledge ingester unavailable"),
+            "faultmaven.modules.evidence.domain.services.file_storage_service"
+            ".FileStorageService",
+            side_effect=Exception("File storage unavailable"),
         ):
 
             await container.initialize()
 
-            # Should still be initialized
+            # Should still be initialized, with the failure on record
             assert container._initialized
+            failed = container._registry.get_info("file_storage_service")
+            assert failed.error == "File storage unavailable"
 
             # Other services should work
             assert container.get_agent_service() is not None

@@ -31,13 +31,12 @@ right.
 The write side is here for the same reason, but does NOT yet have the same
 coverage, and the difference matters. ``embed_texts_or_raise`` bounds exactly
 one indexing embed: ``KnowledgeService._index_document_in_vector_store``, the
-one #953 was about. Three write-side sites still hand-roll their own answer with
-no time bound — ``ingestion.py`` ``_process_and_store`` (no route caller today),
-``core/preprocessing/vector_storage.py`` (live via the ``vectorize_file`` agent
-tool) and ``runbook_kb.py``'s runbook indexing. They are the same drift this
-module exists to end; they are simply not ended yet. Read "one policy" below as
-an intent this module holds for the sites routed through it, not as a claim
-about every embed in the codebase.
+one #953 was about. One write-side site still hand-rolls its own answer with no
+time bound — ``core/preprocessing/vector_storage.py`` (live via the
+``vectorize_file`` agent tool). It is the same drift this module exists to end;
+it is simply not ended yet. Read "one policy" below as an intent this module
+holds for the sites routed through it, not as a claim about every embed in the
+codebase.
 
 The two bounds are deliberately DIFFERENT numbers, and this module is where
 that stays visible. A query may give up before a cold load finishes, because

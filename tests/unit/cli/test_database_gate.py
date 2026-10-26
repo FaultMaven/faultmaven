@@ -124,12 +124,6 @@ def _reaches_the_database(module: str) -> bool:
     )
 
 
-#: Scripts the scan finds that cannot run at all, each with the fact that makes
-#: it dead. The test re-checks the fact, so the exemption lapses when it does.
-_DEAD_SCRIPTS = {
-    "scripts/migration_backfill_scopes.py": "faultmaven.container.app_container",
-}
-
 #: The dev scripts that reach the database on ``main`` today. The scan below
 #: must find at least these. If it found none, it would pass without looking.
 _KNOWN_DATABASE_SCRIPTS = {
@@ -298,26 +292,6 @@ def _database_scripts() -> dict[str, ast.Module]:
 
 
 DATABASE_SCRIPTS = _database_scripts()
-LIVE_DATABASE_SCRIPTS = {
-    script: tree
-    for script, tree in DATABASE_SCRIPTS.items()
-    if script not in _DEAD_SCRIPTS
-}
-
-
-@pytest.mark.parametrize("script", sorted(_DEAD_SCRIPTS), ids=str)
-def test_a_dead_script_exemption_holds_only_while_the_script_is_dead(script):
-    """The exempted script imports a module that does not exist, so it dies
-    on import before it could reach anything. Once that module exists, the
-    exemption no longer holds and the script is held to the gate."""
-    import importlib.util
-
-    missing_module = _DEAD_SCRIPTS[script]
-    assert script in DATABASE_SCRIPTS, f"{script} is no longer found by the scan"
-    assert importlib.util.find_spec(missing_module) is None, (
-        f"{missing_module} exists now, so {script} can run: drop it from "
-        "_DEAD_SCRIPTS and gate it"
-    )
 
 
 def test_the_script_scan_finds_the_known_database_scripts():
@@ -356,9 +330,9 @@ def _unconditional_gate_lines(tree: ast.Module) -> list[int]:
     return [line for body in blocks for line in _top_level_gate_lines(body)]
 
 
-@pytest.mark.parametrize("script", sorted(LIVE_DATABASE_SCRIPTS), ids=str)
+@pytest.mark.parametrize("script", sorted(DATABASE_SCRIPTS), ids=str)
 def test_every_database_script_gates_before_it_runs_anything(script):
-    tree = LIVE_DATABASE_SCRIPTS[script]
+    tree = DATABASE_SCRIPTS[script]
     gate_calls = _unconditional_gate_lines(tree)
     assert gate_calls, (
         f"{script} reaches the database and never calls {GATE}() unconditionally "

@@ -1192,20 +1192,6 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     # ChromaDB Configuration
     # ============================================
-    # Default "localhost" → the embedded PersistentClient (no network), matching
-    # the documented "PersistentClient by default" local model and the KB/case
-    # vector stores. Any non-"localhost" host opts the ingestion service into an
-    # HTTP client: cloud/k8s deployments set CHROMADB_HOST to the in-cluster
-    # ChromaDB service (see faultmaven-enterprise-infra configmap). Same core,
-    # different configuration — local must not reach for a remote ChromaDB.
-    chromadb_host: str = Field(default="localhost")
-    chromadb_port: int = Field(default=8000)
-    # Max seconds to wait for an external (HTTP) ChromaDB to answer the initial
-    # connect/heartbeat. On timeout the ingestion service degrades (KB disabled)
-    # instead of blocking startup. Ignored for the local PersistentClient.
-    chromadb_connect_timeout: float = Field(
-        default=5.0, validation_alias="CHROMADB_CONNECT_TIMEOUT"
-    )
     # Empty default = no external ChromaDB server configured → go straight to
     # local PersistentClient. Cloud deployments set CHROMADB_URL explicitly to
     # opt in to HttpClient.
@@ -2441,7 +2427,7 @@ class EmbeddingSettings(BaseSettings):
 
     # NOTE: no ChromaDB persist directory here. There is exactly ONE knob for
     # the KB vector tree — ``DatabaseSettings.chromadb_kb_persist_dir`` — and
-    # that is the one the container, the ingester, the admin status route and
+    # that is the one the container, the admin status route and
     # ``fm-reset-kb`` all read. ``EmbeddingSettings`` carried a second,
     # never-read ``chroma_persist_directory`` defaulting to the same literal
     # ``./data/chroma-kb``; it was removed in fm#936 because a settings field

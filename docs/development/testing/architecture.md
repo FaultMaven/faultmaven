@@ -214,7 +214,6 @@ async def test_service_with_mock_dependencies():
 
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.models.interfaces import (
-        IKnowledgeIngester,
         IKnowledgeVectorStore,
         ISanitizer,
         ITracer,
@@ -231,7 +230,6 @@ async def test_service_with_mock_dependencies():
 
     # Inject the mocks through the constructor
     knowledge_service = KnowledgeService(
-        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,
@@ -330,7 +328,6 @@ async def test_error_propagation_across_layers():
 
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.models.interfaces import (
-        IKnowledgeIngester,
         IKnowledgeVectorStore,
         ISanitizer,
         ITracer,
@@ -346,7 +343,6 @@ async def test_error_propagation_across_layers():
     sanitizer.asanitize.side_effect = lambda data: data
 
     knowledge_service = KnowledgeService(
-        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,

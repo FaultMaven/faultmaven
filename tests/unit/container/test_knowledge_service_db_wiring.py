@@ -64,7 +64,6 @@ def test_knowledge_service_provider_always_wires_the_session_factory():
 
     service = create_knowledge_service(
         vector_store=None,
-        knowledge_ingester=None,
         sanitizer=None,
         tracer=None,
         llm_provider=None,
@@ -88,7 +87,6 @@ def test_a_db_less_knowledge_service_cannot_be_constructed():
     """
     with pytest.raises(TypeError, match="db_session_factory"):
         KnowledgeService(
-            knowledge_ingester=None,
             sanitizer=None,
             tracer=None,
         )
@@ -109,7 +107,6 @@ def test_an_explicit_none_session_factory_is_rejected_too():
     """
     with pytest.raises(ValueError, match="db_session_factory"):
         KnowledgeService(
-            knowledge_ingester=None,
             sanitizer=None,
             tracer=None,
             db_session_factory=None,

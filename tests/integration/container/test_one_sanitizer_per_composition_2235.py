@@ -77,8 +77,7 @@ async def test_a_composition_builds_one_sanitizer_and_the_router_holds_it(
 async def test_with_service_checks_on_presidio_is_probed_once_per_url(
     service_checks_on, presidio_probes, fresh_container, monkeypatch, caplog
 ):
-    """The acceptance criterion, and the one composition that builds the
-    knowledge ingester: it holds the same instance."""
+    """The acceptance criterion."""
     constructions = sanitizer_constructions(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
@@ -92,8 +91,5 @@ async def test_with_service_checks_on_presidio_is_probed_once_per_url(
     ]
     sanitizer = fresh_container.get_service("sanitizer")
     assert constructions == [sanitizer]
-    ingester = fresh_container.get_service("knowledge_ingester")
-    assert ingester is not None
-    assert ingester.sanitizer is sanitizer
     assert held_by_router is sanitizer
     assert _self_built_warnings(caplog) == []

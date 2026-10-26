@@ -14,9 +14,8 @@ fire, because the decoy made the directory exist.
 Four ways that goes wrong, all closed here:
 
 * an explicit ``CHROMADB_KB_PERSIST_DIR`` that points somewhere else;
-* a **remote** store — ``CHROMADB_URL`` (the container's client factory) or
-  ``CHROMADB_HOST`` alone (``KnowledgeIngester``'s k8s opt-in) — where no local
-  directory is the store in the first place;
+* a **remote** store — ``CHROMADB_URL``, which the container's client factory
+  dispatches on — where no local directory is the store in the first place;
 * the unset default, which is relative and must be read against the working
   directory exactly as ``create_persistent_client`` reads it, with no
   project-root anchoring to reintroduce a second spelling; and
@@ -399,82 +398,31 @@ async def test_a_real_store_is_wiped_whether_or_not_it_has_been_written_to(
     assert f"Removed {store}" in capsys.readouterr().out
 
 
-async def test_a_host_only_chromadb_wipes_the_local_store_and_warns(
+async def test_a_leftover_chromadb_host_changes_nothing(
     tmp_path, monkeypatch, capsys, configure, stub_db
 ):
-    """``CHROMADB_HOST`` alone is NOT the same answer as ``CHROMADB_URL``.
-
-    ``create_kb_chromadb_client`` dispatches on the URL, so under the host-only
-    opt-in it still returns a local ``PersistentClient`` (measured:
-    ``chroma_server_host`` is None) — the local tree really is the store this
-    deployment searches. Only ``KnowledgeIngester`` goes remote. Refusing here
-    would leave the searched store with no way to be reset, on the strength of
-    a second store this command has never claimed to touch. So it wipes, and it
-    says the other one exists.
+    """``CHROMADB_HOST`` named the server the dead KB ingester wrote to, and it
+    went with the ingester (#1782). The client factory never read it, so the
+    local tree was the store either way. A deployment that still sets it resets
+    exactly as one that does not: the same exit, deletes and output, and no
+    warning about a second store.
     """
     monkeypatch.chdir(tmp_path)
-    store = _store(tmp_path / "data" / "chroma-kb")
-    configure(CHROMADB_HOST="chromadb.faultmaven.svc")
-    session = stub_db(rows=7)
 
-    code = await reset_kb.reset_kb(
-        dry_run=False, all_drafts=False, rebuild=False, keep_chroma=False
-    )
+    async def _reset(**env):
+        store = _store(tmp_path / "data" / "chroma-kb")
+        configure(**env)
+        session = stub_db(rows=7)
+        code = await reset_kb.reset_kb(
+            dry_run=False, all_drafts=False, rebuild=False, keep_chroma=False
+        )
+        return code, session.deletes, store.exists(), capsys.readouterr().out
 
-    assert code == 0
-    assert session.deletes == 1
-    assert not store.exists(), "the store the client factory opens IS reset"
-    out = capsys.readouterr().out
-    assert "refusing" not in out.lower()
-    # …and the operator is told the reset was not total.
-    assert "CHROMADB_HOST=chromadb.faultmaven.svc" in out
-    assert "REMOTE" in out
-    assert "two places" in out
+    default = await _reset()
+    leftover = await _reset(CHROMADB_HOST="remote")
 
-
-async def test_a_blank_chromadb_host_is_not_a_remote_store(
-    tmp_path, monkeypatch, capsys, configure, stub_db
-):
-    """The same ``env_ignore_empty`` shape, one knob over. ``CHROMADB_HOST=``
-    arrives as a set field holding "", and a bare ``!= "localhost"`` reads that
-    as a configured server — which refused this command on an ordinary embedded
-    deployment whose store was right there, naming a knob with no value."""
-    monkeypatch.chdir(tmp_path)
-    store = _store(tmp_path / "data" / "chroma-kb")
-    configure(CHROMADB_HOST="")
-    session = stub_db(rows=7)
-
-    code = await reset_kb.reset_kb(
-        dry_run=False, all_drafts=False, rebuild=False, keep_chroma=False
-    )
-
-    assert code == 0
-    assert session.deletes == 1
-    assert not store.exists()
-    out = capsys.readouterr().out
-    assert "refusing" not in out.lower()
-    assert "REMOTE" not in out, "nothing remote is configured"
-
-
-async def test_the_default_chromadb_host_is_not_treated_as_remote(
-    tmp_path, monkeypatch, capsys, configure, stub_db
-):
-    """The positive control for the guard above. ``localhost`` is the shipped
-    default and means the embedded PersistentClient, so a check that read any
-    ``CHROMADB_HOST`` as remote would refuse every ordinary deployment."""
-    monkeypatch.chdir(tmp_path)
-    store = _store(tmp_path / "data" / "chroma-kb")
-    configure(CHROMADB_HOST="localhost")
-    session = stub_db(rows=7)
-
-    code = await reset_kb.reset_kb(
-        dry_run=False, all_drafts=False, rebuild=False, keep_chroma=False
-    )
-
-    assert code == 0
-    assert session.deletes == 1
-    assert not store.exists()
-    assert "refusing" not in capsys.readouterr().out.lower()
+    assert default[:3] == (0, 1, False), default
+    assert leftover == default
 
 
 async def test_a_store_that_is_not_there_is_refused_not_warned_about_afterwards(

@@ -362,7 +362,7 @@ metadata = {"tags": "postgresql,aws-rds,pgbouncer"}
 metadata = {"tags": ["postgresql", "aws-rds", "pgbouncer"]}
 ```
 
-The `VectorMetadata.to_chroma_metadata()` method handles this conversion. The `KnowledgeIngester` uses `",".join(document.tags)` for the same purpose.
+The `VectorMetadata.to_chroma_metadata()` method handles this conversion.
 
 ---
 

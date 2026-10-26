@@ -524,10 +524,6 @@ class DIContainer(BaseDIContainer):
         """Get the vector store interface implementation."""
         return getattr(self, "vector_store", None)
 
-    def get_knowledge_ingester(self):
-        """Get the knowledge ingester interface implementation."""
-        return getattr(self, "knowledge_ingester", None)
-
     def get_session_store(self):
         """Get the session store interface implementation."""
         return getattr(self, "session_store", None)

@@ -32,7 +32,6 @@ def make_chroma_settings(
     *,
     cloud: bool = False,
     chromadb_url: str = "",
-    chromadb_host: str = "localhost",
     vector_storage_type: str = "chromadb",
     auth_token: str | None = None,
     api_key: str | None = None,
@@ -43,16 +42,15 @@ def make_chroma_settings(
         DeploymentMode.CLOUD if cloud else DeploymentMode.STANDALONE
     )
     settings.database.chromadb_url = chromadb_url
-    settings.database.chromadb_host = chromadb_host
     settings.database.vector_storage_type = vector_storage_type
     settings.database.chromadb_auth_token = (
         SecretStr(auth_token) if auth_token else None
     )
     settings.database.chromadb_api_key = SecretStr(api_key) if api_key else None
     settings.server.skip_service_checks = skip_service_checks
-    # The ingester redacts with a sanitizer built from these settings when none
-    # is injected (#2235); with protection on it would health-check Presidio,
-    # which no ChromaDB client-path test is about.
+    # A sanitizer built from these settings, as register_infrastructure builds
+    # one, would health-check Presidio with protection on, which no ChromaDB
+    # client-path test is about.
     settings.protection.protection_enabled = False
     settings.protection.sanitize_pii = False
     return settings

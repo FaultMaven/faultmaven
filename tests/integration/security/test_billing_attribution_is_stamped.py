@@ -240,7 +240,7 @@ def test_the_knowledge_writer_reads_the_actors_organization():
     """``knowledge_items`` — ``ingest_runbook``'s parameter had no supplier.
 
     Asserted on the SOURCE rather than by a round trip: ``ingest_runbook``
-    reaches the row through the vector store and the ingester, so exercising it
+    reaches the row through the vector store and the indexer, so exercising it
     end to end would be a test of those. What the review found is narrower and
     checkable exactly here — the value it stamps came from a parameter nothing
     passed, and now comes from the same contextvar every peer writer reads.

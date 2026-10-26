@@ -201,7 +201,6 @@ async def _draft_row(session_factory, draft_id: str) -> ConversionDraftModel:
 class TestBothWritersStoreNoPath:
     async def test_upload_document_stores_no_path(self, session_factory, kb_root):
         service = KnowledgeService(
-            knowledge_ingester=MagicMock(),
             sanitizer=regex_only_sanitizer(),
             tracer=MagicMock(),
             vector_store=MagicMock(),

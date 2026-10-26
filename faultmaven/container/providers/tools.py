@@ -3,16 +3,12 @@
 This module contains factory functions for tool creation:
 - Core tools via tool registry
 - Document Q&A tools (case evidence, user KB, global KB)
-- Knowledge ingester
 """
 
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any, List
-
-from faultmaven.config.deployment_coherence import DeploymentCoherenceError
-from faultmaven.infrastructure.chroma_client import ChromaClientConfigError
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -21,36 +17,6 @@ if TYPE_CHECKING:
     from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
-
-
-def create_knowledge_ingester(
-    settings: FaultMavenSettings, sanitizer: Any
-) -> Any | None:
-    """Create knowledge ingester for tools that need it, redacting with the
-    composition's sanitizer (#2235)."""
-    if settings.server.skip_service_checks:
-        logger.debug("KnowledgeIngester skipped (SKIP_SERVICE_CHECKS=True)")
-        return None
-
-    try:
-        from faultmaven.modules.knowledge.domain.services.ingestion import (
-            KnowledgeIngester,
-        )
-
-        return KnowledgeIngester(settings=settings, sanitizer=sanitizer)
-    except DeploymentCoherenceError:
-        # A boot-refusal (e.g. ChromaUnavailableError under cloud, #901) must
-        # propagate — swallowing it here would re-open the fail-open path this
-        # gate exists to close.
-        raise
-    except ChromaClientConfigError:
-        # Nor may a ChromaDB client that must not be built (a malformed
-        # credential, a chromadb with no session to bound) become "no
-        # ingester": None is the degraded mode that class rules out.
-        raise
-    except Exception as e:
-        logger.warning(f"KnowledgeIngester creation failed: {e}")
-        return None
 
 
 def create_registry_tools(
@@ -69,10 +35,9 @@ def create_registry_tools(
     # health status), and never in the registry built by
     # `_create_investigation_tools`. The agent's real KB tool is `kb_qa`,
     # registered below. Deleted rather than wired: their retrieval path
-    # (KnowledgeIngester.search) queried the unified `faultmaven_kb` collection
-    # with only caller-supplied metadata filters and NO scope predicate, while
-    # ChromaDB metadata filtering is the only thing isolating one user's
-    # runbooks from another's. Wiring them would have handed the model an
+    # queried the unified `faultmaven_kb` collection with only caller-supplied
+    # metadata filters and NO scope predicate, while ChromaDB metadata
+    # filtering is the only thing isolating one user's runbooks from another's. Wiring them would have handed the model an
     # unscoped read over every tenant's personal KB (#943).
 
     # Web search tool is optional (may be disabled if no API key configured).
@@ -242,16 +207,6 @@ def register_tools(container: BaseDIContainer) -> None:
     settings = container.settings
 
     logger.info("🔍 Tools: Registering tools...")
-
-    # Create knowledge ingester
-    # The composition's sanitizer, registered by register_infrastructure; a
-    # miss raises rather than leaving the ingester to build its own (#2235).
-    ingester = create_knowledge_ingester(
-        settings, container.get_service("sanitizer", required=True)
-    )
-    if ingester:
-        container._register_service("knowledge_ingester", ingester)
-    container.knowledge_ingester = ingester
 
     # Create registry tools (includes web search if configured)
     tools = create_registry_tools(settings)

@@ -359,7 +359,6 @@ async def _session_factory(_engine):
 
 def _service(session_factory) -> KnowledgeService:
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),

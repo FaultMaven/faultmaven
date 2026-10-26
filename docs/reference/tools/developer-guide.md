@@ -409,12 +409,10 @@ Tools receive dependencies through DI container:
 class DIAwareTool(BaseTool):
     def __init__(
         self,
-        knowledge_ingester=None,  # Optional KB access
         settings=None,            # Optional settings
         sanitizer=None,          # Optional sanitizer
         **kwargs                 # Accept other DI params
     ):
-        self.knowledge_ingester = knowledge_ingester
         self.settings = settings
         self.sanitizer = sanitizer
         # Ignore other kwargs from registry
@@ -424,7 +422,6 @@ class DIAwareTool(BaseTool):
 
 | Dependency | Type | Use Case |
 |------------|------|----------|
-| `knowledge_ingester` | KnowledgeIngester | Access knowledge base |
 | `settings` | FaultMavenSettings | Read configuration |
 | `sanitizer` | DataSanitizer | PII redaction |
 | `llm_provider` | ILLMProvider | LLM access (rare) |
@@ -487,7 +484,6 @@ def mock_dependencies():
     return {
         'settings': Mock(),
         'sanitizer': Mock(sanitize=lambda x: x),
-        'knowledge_ingester': Mock()
     }
 
 @pytest.mark.asyncio

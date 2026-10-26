@@ -489,7 +489,6 @@ def _chroma(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(
         database=SimpleNamespace(
             chromadb_url=kwargs.get("chromadb_url", ""),
-            chromadb_host=kwargs.get("chromadb_host", "localhost"),
             vector_storage_type=kwargs.get("vector_storage_type", "chromadb"),
         )
     )
@@ -497,66 +496,26 @@ def _chroma(**kwargs) -> SimpleNamespace:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "kwargs,external,host_only",
+    "kwargs,external",
     [
         # Shipped default: embedded PersistentClient, nothing remote.
-        ({}, False, False),
+        ({}, False),
         # CHROMADB_URL — the container's client factory and the coherence gate.
-        ({"chromadb_url": "http://chroma.invalid:8000"}, True, False),
-        # …deselected by VECTOR_STORAGE_TYPE. Neither fires: the URL is not
-        # selected, and the host-only branch is gated on an unset URL.
+        ({"chromadb_url": "http://chroma.invalid:8000"}, True),
+        # …deselected by VECTOR_STORAGE_TYPE: the URL is not selected.
         (
             {
                 "chromadb_url": "http://chroma.invalid:8000",
                 "vector_storage_type": "faiss",
             },
             False,
-            False,
         ),
-        # CHROMADB_HOST alone — KnowledgeIngester's documented k8s opt-in, and
-        # the spelling a URL-only check misses.
-        ({"chromadb_host": "chromadb.faultmaven.svc"}, False, True),
-        # A URL wins: the ingester's host-only branch is unreachable then, so
-        # reporting it would name a knob that decided nothing.
-        (
-            {
-                "chromadb_url": "http://chroma.invalid:8000",
-                "chromadb_host": "chromadb.faultmaven.svc",
-            },
-            True,
-            False,
-        ),
-        # Whitespace is not a hostname.
-        ({"chromadb_host": "  localhost  "}, False, False),
-        # BLANK is not a hostname either, and this one bites hardest:
-        # pydantic-settings runs with env_ignore_empty off, so an unpopulated
-        # ConfigMap key or a trailing `=` in a .env arrives as a SET field
-        # holding "". A bare `!= "localhost"` read that as "a remote server is
-        # configured" — which refused fm-reset-kb on an ordinary embedded
-        # deployment and pointed KnowledgeIngester at HttpClient(host="").
-        ({"chromadb_host": ""}, False, False),
-        ({"chromadb_host": "   "}, False, False),
     ],
 )
-def test_the_two_remote_chroma_knobs_are_distinguished(kwargs, external, host_only):
-    """Two knobs can put ChromaDB on a server, and they mean DIFFERENT things.
-
-    ``CHROMADB_URL`` is what ``create_kb_chromadb_client`` dispatches on, so
-    under it no local tree is the store. ``CHROMADB_HOST`` alone moves only
-    ``KnowledgeIngester``; the client factory still hands out a local
-    ``PersistentClient``. Collapsing them into one "is it remote" answer is how
-    the first cut of this change came to refuse to reset a deployment whose
-    store was local. They are kept apart on purpose — and neither reads an
-    EMPTY value as a configuration.
+def test_chromadb_url_is_the_knob_that_puts_the_store_on_a_server(kwargs, external):
+    """``CHROMADB_URL`` is what ``create_kb_chromadb_client`` dispatches on, so
+    under it no local tree is the store.
     """
-    from faultmaven.config.deployment_coherence import (
-        is_external_chroma_configured,
-        is_host_only_chroma_configured,
-    )
+    from faultmaven.config.deployment_coherence import is_external_chroma_configured
 
-    settings = _chroma(**kwargs)
-    assert is_external_chroma_configured(settings) is external
-    assert is_host_only_chroma_configured(settings) is host_only
-    # Mutually exclusive by construction: the host-only branch is gated on an
-    # unset URL, so no configuration can report both.
-    assert not (external and host_only)
+    assert is_external_chroma_configured(_chroma(**kwargs)) is external

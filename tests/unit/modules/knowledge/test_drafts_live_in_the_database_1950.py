@@ -277,7 +277,6 @@ class TestUploadWritesNoFile:
         workdir.mkdir()
         monkeypatch.chdir(workdir)
         knowledge = KnowledgeService(
-            knowledge_ingester=MagicMock(),
             sanitizer=regex_only_sanitizer(),
             tracer=MagicMock(),
             vector_store=MagicMock(),
@@ -327,7 +326,6 @@ def _knowledge(session_factory) -> KnowledgeService:
     vector_store = MagicMock()
     vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=vector_store,

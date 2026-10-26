@@ -83,7 +83,6 @@ from .common import (
 from .interfaces import (  # Phase 3.2 additions; Phase 3.3 additions
     BaseTool,
     IDataClassifier,
-    IKnowledgeIngester,
     ILLMProvider,
     ILogProcessor,
     ISanitizer,
@@ -139,7 +138,6 @@ __all__ = [
     "IDataClassifier",
     "ILogProcessor",
     "IStorageBackend",
-    "IKnowledgeIngester",
     # Case models (from modules/case)
     "Case",
     "CaseState",

@@ -286,7 +286,6 @@ async def world():
         user_repository=MagicMock(),
     )
     knowledge = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=_Sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
@@ -357,7 +356,6 @@ def _deps(world: _World) -> EngineDeps:
 async def _push(kb_client, world: _World, case: Case) -> Set[str]:
     deps = _deps(world)
     deps.knowledge_service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=_Sanitizer(),
         tracer=MagicMock(),
         vector_store=KnowledgeVectorStore(kb_client),

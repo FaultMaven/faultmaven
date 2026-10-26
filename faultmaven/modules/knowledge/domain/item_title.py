@@ -41,11 +41,6 @@ has no ``=`` left for a pattern to match.
   ``verify_draft``. A draft is NOT author-only: ``GET /knowledge/drafts`` lists
   every global-scope draft to every user and a case's drafts are listed to its
   readers.
-* ``KnowledgeIngester.ingest_document`` / ``ingest_document_object``. Nothing
-  routes there today (``write_scope`` pins it dead), but they are the shape the
-  next publish path will have, and a revived one must not be the one that
-  publishes a title unscrubbed.
-
 A fifth writer belongs here as well.
 """
 

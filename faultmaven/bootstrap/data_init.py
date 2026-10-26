@@ -182,7 +182,7 @@ def resolve_kb_chroma_dir(settings: Any) -> Path:
     The single spelling shared by the startup bootstrap and ``fm-reset-kb``.
     Says nothing about whether a local tree is the store at all — under an
     external ChromaDB it is not; ask
-    :func:`~faultmaven.config.deployment_coherence.is_remote_chroma_configured`
+    :func:`~faultmaven.config.deployment_coherence.is_external_chroma_configured`
     first.
     """
     return resolve_data_dir(settings.database, "chromadb_kb_persist_dir")
@@ -239,13 +239,9 @@ def ensure_data_directories() -> None:
     needs the pre-creation in any case: ``create_persistent_client`` does its
     own ``makedirs`` on the path it opens.
 
-    That gate is :func:`is_external_chroma_configured`, deliberately NOT the
-    wider :func:`is_remote_chroma_configured`: the container's client factory
-    dispatches on the narrow one, so under the host-only opt-in
-    (``CHROMADB_HOST`` set, ``CHROMADB_URL`` unset) the container really does
-    open a local tree and this must create it. Only the ingester goes remote
-    there — an inconsistency this function has to accommodate rather than paper
-    over.
+    That gate is :func:`is_external_chroma_configured`, the predicate the
+    container's client factory dispatches on, so a tree is created exactly
+    when the container opens one.
 
     Takes no settings override on purpose: the whole point is that it reads
     the SAME source the server reads, and a settings parameter is a second

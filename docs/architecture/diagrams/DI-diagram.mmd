@@ -42,7 +42,6 @@ flowchart TB
     %% ============================================================
     subgraph TOOLS["🧰 Tools Provider &middot; providers/tools.py"]
         direction TB
-        Tools_Ingest["<b>Knowledge ingester</b><br/>create_knowledge_ingester()<br/>→ KnowledgeIngester"]
         Tools_QA["<b>Agent QA tools</b><br/>create_document_qa_tools()<br/>→ answer_from_kb (unified)<br/>→ answer_from_case_evidence (via adapter)"]
         Tools_Registry["<b>Tool registry</b><br/>create_registry_tools()<br/>→ search_file · deep_analysis<br/>→ web_search (Tavily) · list_evidence · read_file"]
     end
@@ -99,7 +98,7 @@ flowchart TB
 
     class Settings settings
     class Infra_LLM,Infra_Vec,Infra_Session,Infra_Persist,Infra_Prep infra
-    class Tools_Ingest,Tools_QA,Tools_Registry tools
+    class Tools_QA,Tools_Registry tools
     class Svc_Auth,Svc_Case,Svc_Other services
     class AppState state
     class Order note

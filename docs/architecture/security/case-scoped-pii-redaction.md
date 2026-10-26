@@ -213,14 +213,13 @@ No registry is loaded or saved, and nothing is reversed. The investigation path 
 
 ### Knowledge Item Titles
 
-**Files:** `modules/knowledge/domain/item_title.py`, `knowledge_service.py` (`ingest_runbook`, `upload_document`, `update_document_metadata`), `conversion_service/` (`service.py`, `job_persistence.py`, `runbook_scan.py`), `ingestion.py`
+**Files:** `modules/knowledge/domain/item_title.py`, `knowledge_service.py` (`ingest_runbook`, `upload_document`, `update_document_metadata`), `conversion_service/` (`service.py`, `job_persistence.py`, `runbook_scan.py`)
 
 The rule: **no text derived from a runbook title reaches any reader, log or transcript unscrubbed, on any create, convert, verify or update path** (#1981). A title is shown to every reader of the tier it lives in (team and global included) and is never reversed. So it is redacted with the DI sanitizer **once, where it enters as raw text**, the scrubbed value is assigned back to the object it came in on, and everything else is derived from that value: the draft's id slug, its file name, the text of a runbook made from a template, the stored analysis, the API response, the log line and the case-transcript notice. Scrubbing a derived copy does nothing: a slug of `password=hunter2` is `...-password-hunter2`, which has no `=` left for a pattern to match. One helper, `sanitize_item_title`, is called at each point of entry:
 
 - `ingest_runbook`, the one place a `knowledge_items` row is created (uploads, published drafts and the KB pack all reach it), and `upload_document`, which scrubs first because it writes the upload and draft rows from the title before `ingest_runbook` runs;
 - `update_document_metadata`;
-- `ConversionService`: a failure mode's title as soon as the model has written it (`convert_document`), a case's title as it arrives (`convert_from_case`), the title the model writes into a case draft's frontmatter (rewritten before the id is minted from it), the title typed into `create_runbook_from_template`, and `verify_draft`. `_persist_job_rows`, the one place a `conversion_drafts` row is written, redacts and cuts the title to the column and assigns the stored value back to the draft it returns, so the object and the row are one text. It is the backstop for the paths above and the entry for the disk scan, which derives nothing from a file's title first;
-- the dormant `KnowledgeIngester` entry points.
+- `ConversionService`: a failure mode's title as soon as the model has written it (`convert_document`), a case's title as it arrives (`convert_from_case`), the title the model writes into a case draft's frontmatter (rewritten before the id is minted from it), the title typed into `create_runbook_from_template`, and `verify_draft`. `_persist_job_rows`, the one place a `conversion_drafts` row is written, redacts and cuts the title to the column and assigns the stored value back to the draft it returns, so the object and the row are one text. It is the backstop for the paths above and the entry for the disk scan, which derives nothing from a file's title first.
 
 A draft is not author-only. `GET /knowledge/drafts` lists every global-scope draft to every user, and a case's drafts are listed to its readers (`GET /cases/{id}/reports`), so a draft's title is disclosed as soon as its row exists, well before it is published.
 

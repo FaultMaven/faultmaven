@@ -29,7 +29,6 @@ check (template, conversion, case)
 ``bulk_update_documents``                          ``TestBulkUpdate``
 the upload and update routes                       ``TestTheRoutesAnswer422``
 the KB pack (``shipped=True``)                     ``TestShippedPack`` (exempt)
-``KnowledgeIngester`` (dead)                       ``TestDeadIngesterPaths``
 =================================================  =============================
 
 Mutations, each restored from a ``cp`` backup:
@@ -80,7 +79,6 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.infrastructure.security.redaction import SECRET_PATTERNS
-from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.modules.knowledge.api import routes
 from faultmaven.modules.knowledge.api.routes import (
     RUNBOOK_SECURITY_HELP,
@@ -104,7 +102,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -450,7 +447,6 @@ async def session_factory():
 
 def _knowledge(session_factory) -> KnowledgeService:
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
@@ -1133,54 +1129,3 @@ class TestTheMessage:
 
         assert not result.passed
         assert any(f"line {line} (GITHUB_TOKEN)" in e for e in result.errors)
-
-
-class TestDeadIngesterPaths:
-    """``KnowledgeIngester.ingest_document`` / ``ingest_document_object`` have no
-    caller, and no longer hold the opposite policy: the body goes through as
-    written, the title is still scrubbed (#1981).
-
-    Mutation: restore the body ``asanitize`` in either method.
-    """
-
-    _BODY = "\n".join(["# Body", *FALSE_POSITIVES, *ADDRESSES])
-
-    @classmethod
-    def _ingester(cls) -> KnowledgeIngester:
-        ingester = KnowledgeIngester.__new__(KnowledgeIngester)
-        ingester.logger = MagicMock()
-        ingester.sanitizer = regex_only_sanitizer()
-        ingester._process_and_store = AsyncMock()
-        ingester._extract_text = AsyncMock(return_value=cls._BODY)
-        return ingester
-
-    async def test_ingest_document(self):
-        ingester = self._ingester()
-
-        await ingester.ingest_document(
-            "/dev/null", "Login fails (password=hunter2)", scope="personal"
-        )
-
-        document = ingester._process_and_store.await_args.args[0]
-        assert document.content == self._BODY
-        assert "hunter2" not in document.title
-
-    async def test_ingest_document_object(self):
-        ingester = self._ingester()
-        document = KnowledgeBaseDocument(
-            document_id="d1",
-            title="Login fails (password=hunter2)",
-            content=self._BODY,
-            document_type="runbook",
-            tags=[],
-            scope="personal",
-            owner_id="u1",
-            created_at="2026-10-15T00:00:00+00:00",
-            updated_at="2026-10-15T00:00:00+00:00",
-        )
-
-        await ingester.ingest_document_object(document)
-
-        stored = ingester._process_and_store.await_args.args[0]
-        assert stored.content == self._BODY
-        assert "hunter2" not in stored.title

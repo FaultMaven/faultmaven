@@ -61,12 +61,7 @@ refuse:
    the knob ``create_kb_chromadb_client`` dispatches on, and under it this
    command cannot reach the server's collections. It refuses before touching
    SQL rather than deleting every ``knowledge_items`` row and rmtree-ing
-   whatever local directory happens to be lying around. ``CHROMADB_HOST``
-   alone is a *different* answer: the client factory still returns a local
-   ``PersistentClient`` there, and only ``KnowledgeIngester`` goes remote, so
-   the local tree really is the store this deployment searches. That case
-   proceeds and warns, because refusing it would leave that store with no way
-   to be reset over a second store this command never claimed to touch.
+   whatever local directory happens to be lying around.
 2. *Which local directory?* Whatever ``CHROMADB_KB_PERSIST_DIR`` says, read
    exactly as ``create_persistent_client`` reads it — so a relative value
    (including the shipped default ``./data/chroma-kb``) is relative to THIS
@@ -323,10 +318,7 @@ async def reset_kb(
         return 1
 
     from faultmaven.bootstrap.data_init import UnusableDataDirError
-    from faultmaven.config.deployment_coherence import (
-        is_external_chroma_configured,
-        is_host_only_chroma_configured,
-    )
+    from faultmaven.config.deployment_coherence import is_external_chroma_configured
     from faultmaven.config.settings import get_settings
 
     settings = get_settings()
@@ -336,21 +328,10 @@ async def reset_kb(
     #
     # The gate is `is_external_chroma_configured`, the SAME predicate
     # `create_kb_chromadb_client` dispatches on, because this command must act
-    # on the store that factory opens and no other. `CHROMADB_HOST` alone does
-    # NOT reach here: under that opt-in the factory still returns a local
-    # PersistentClient (measured — `chroma_server_host` is None, the persist
-    # directory is the configured tree), and only `KnowledgeIngester` goes
-    # remote. Refusing there would leave the store the KB actually searches
-    # with no way to reset it, on the strength of a second store this command
-    # has never claimed to touch. It is warned about instead, below.
+    # on the store that factory opens and no other.
     remote_knob = (
         f"CHROMADB_URL={(settings.database.chromadb_url or '').strip()}"
         if is_external_chroma_configured(settings)
-        else None
-    )
-    split_host = (
-        (settings.database.chromadb_host or "").strip()
-        if is_host_only_chroma_configured(settings)
         else None
     )
 
@@ -407,16 +388,6 @@ async def reset_kb(
             # store it found.
             print(f"  ChromaDB path: {chroma_dir}")
             print(f"  ChromaDB path exists: {chroma_dir.exists()}")
-        if split_host:
-            # Not a refusal: the store this command wipes is the one the client
-            # factory opens, and that is local here. But the ingester writes to
-            # a server off the same knob, so a second copy of the KB's vectors
-            # exists that this command cannot reach — and saying nothing is how
-            # an operator concludes the reset was total.
-            print(f"  ⚠️  CHROMADB_HOST={split_host} also puts KnowledgeIngester on")
-            print("      a REMOTE ChromaDB, which this command does not touch. This")
-            print("      deployment's KB vectors live in two places; only the local")
-            print("      one is reset here.")
         print()
 
         if dry_run:

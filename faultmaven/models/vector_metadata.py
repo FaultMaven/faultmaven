@@ -59,18 +59,8 @@ class VectorMetadata(BaseModel):
     # with a live production caller (it also refuses a chunk with no tenant
     # stamp, #1168); and ``ChromaDBVectorStore``, which is still registered
     # over the same collection but has no live KB writer and checks no tenant
-    # stamp — #1782. It is NOT every writer in the codebase:
-    # ``KnowledgeIngester._process_and_store`` writes the same collection
-    # directly (stamping ``document_id``, which only its own read/delete
-    # methods filter on) and bypasses this guard — that whole subsystem has no
-    # production caller today (fm#1035 review; verified route→service→ingester).
-    # Its former entry points ``KnowledgeService.ingest_document``/
-    # ``update_document`` were DELETED in #1166; what remains is
-    # ``KnowledgeIngester.ingest_document`` and ``ingest_document_object``,
-    # neither of which anything calls. Reviving it without routing it through a
-    # guarded writer reopens the silent-key gap this schema exists to close.
-    # (Its knowledge-tier gap is closed separately: ``_process_and_store`` now
-    # refuses a document that names no tier, #1166.)
+    # stamp — #1782. A new writer of the collection that bypasses both reopens
+    # the silent-key gap this schema exists to close.
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion

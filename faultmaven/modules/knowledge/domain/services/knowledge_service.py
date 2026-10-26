@@ -9,7 +9,6 @@ and flexibility in the knowledge management system.
 Core Responsibilities:
 - Knowledge document management via interfaces
 - Semantic search operations using IKnowledgeVectorStore
-- Knowledge ingestion through IKnowledgeIngester
 - Runbook body security checks (a body holding a credential is refused, never
   rewritten, #2012) and title and query sanitization via ISanitizer
 - Distributed tracing via ITracer
@@ -49,7 +48,6 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces import (
-    IKnowledgeIngester,
     IKnowledgeVectorStore,
     ILLMProvider,
     ISanitizer,
@@ -356,7 +354,6 @@ class KnowledgeService:
 
     def __init__(
         self,
-        knowledge_ingester: IKnowledgeIngester,
         sanitizer: ISanitizer,
         tracer: ITracer,
         vector_store: Optional[IKnowledgeVectorStore] = None,
@@ -373,7 +370,6 @@ class KnowledgeService:
         Initialize with interface dependencies for better testability
 
         Args:
-            knowledge_ingester: Interface for document ingestion operations
             sanitizer: Interface for data sanitization (PII redaction)
             tracer: Interface for distributed tracing
             vector_store: Optional KB vector store (``IKnowledgeVectorStore``)
@@ -407,13 +403,6 @@ class KnowledgeService:
                 "and it is what binds the RLS tenant scope per transaction."
             )
 
-        # Retained as a constructor dependency (the container wires it, and
-        # the interface is part of the service's declared surface) but no
-        # longer called: its only two callers were KnowledgeService's own
-        # ingest_document/update_document, deleted in #1166. Publishing
-        # goes through ingest_runbook, which writes the SQL row first and
-        # so lands under the RLS write policies.
-        self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
         self._vector_store = vector_store
