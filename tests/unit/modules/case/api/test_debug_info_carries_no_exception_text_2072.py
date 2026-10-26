@@ -86,6 +86,8 @@ async def test_the_route_returns_a_code_and_logs_the_text(
     assert CASE_ID in record.getMessage()
     if arm == "STORAGE_READ_FAILED":
         assert record.exc_info is not None
+    else:
+        assert "m-1" in record.getMessage()
 
 
 async def test_a_stored_row_the_loader_rejects_is_a_read_failure(build_app, call_api):
@@ -171,9 +173,11 @@ def test_debug_error_produces_only_entries_the_model_accepts():
     coded = [debug_error(code, TimeoutError()) for code in STORAGE_ERROR_CODES]
     assert _debug_info(*coded).storage_errors == coded
 
-    odd = type("pkg.Odd", (Exception,), {})()
-    assert _debug_info(debug_error(STORAGE_READ_FAILED, odd)).storage_errors == [
-        "STORAGE_READ_FAILED: Exception"
-    ]
+    # Not identifiers to the shared pattern: a dotted name, and a non-ASCII
+    # one that ``str.isidentifier`` would accept and the model refuses.
+    for odd_name in ("pkg.Odd", "Ошибка"):
+        odd = type(odd_name, (Exception,), {})()
+        entry = debug_error(STORAGE_READ_FAILED, odd)
+        assert _debug_info(entry).storage_errors == ["STORAGE_READ_FAILED: Exception"]
     with pytest.raises(ValueError):
         debug_error("NOT_A_CODE", ValueError())
