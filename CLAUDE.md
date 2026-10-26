@@ -19,13 +19,13 @@ FaultMaven is an **AI-powered troubleshooting copilot**. It correlates the logs,
 | FaultMaven Copilot | Browser extension for in-context troubleshooting |
 | FaultMaven Slack Agent | Answers in the incident thread; while the beta runs, workspaces are connected by hand (fm#1457) |
 
-Python ≥ 3.11.5 (`requires-python`: earlier 3.11 releases mis-match the possessive regexes the secret redactors use; classifiers cover 3.11–3.13). License: FSL-1.1-ALv2 (`LICENSE`). Versions are not written here: the package version is `pyproject.toml` `version`, the contract version clients pin is `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
+Python ≥ 3.11.5 (`requires-python`: earlier 3.11 releases mis-match the possessive regexes the secret redactors use, and `import faultmaven` refuses one (`MINIMUM_PYTHON`); classifiers cover 3.11–3.13). License: FSL-1.1-ALv2 (`LICENSE`). Versions are not written here: the package version is `pyproject.toml` `version`, the contract version clients pin is `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
 
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|--------------|
-| Framework | Python 3.11+, FastAPI, Uvicorn, AsyncIO, Pydantic v2 + pydantic-settings |
+| Framework | Python 3.11.5+, FastAPI, Uvicorn, AsyncIO, Pydantic v2 + pydantic-settings |
 | LLM/AI | 9 providers behind one router (`faultmaven/infrastructure/llm/`) |
 | Database | SQLAlchemy 2.0 async (aiosqlite, asyncpg), SQLite (standalone), PostgreSQL (cloud), Alembic |
 | Vector DB | ChromaDB (PersistentClient in-process by default), BGE-M3 via sentence-transformers |
