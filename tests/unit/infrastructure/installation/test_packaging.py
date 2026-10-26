@@ -88,10 +88,16 @@ class TestProjectMetadata:
         assert len(parts) == 3, "Version should be in format X.Y.Z"
         assert all(part.isdigit() for part in parts), "Version parts should be numeric"
 
-    def test_python_requirement(self, pyproject_data: dict):
-        """Verify Python version requirement is >= 3.11."""
-        requires_python = pyproject_data["project"]["requires-python"]
-        assert ">=3.11" in requires_python
+    def test_python_requirement(self, pyproject_data: dict, pyproject_path: Path):
+        """The floor is 3.11.5, and the script that builds venvs uses the same.
+
+        3.11.0-3.11.4 mis-match possessive regexes (python/cpython#100061,
+        #106052), and the redactors use them: on 3.11.4 they leave passwords,
+        tokens and private keys in clear that 3.11.5+ masks.
+        """
+        assert pyproject_data["project"]["requires-python"] == ">=3.11.5"
+        script = (pyproject_path.parent / "scripts" / "sync-venv.sh").read_text()
+        assert '\nPYTHON_FLOOR="3.11.5"\n' in script
 
     def test_license_present(self, pyproject_data: dict):
         """Verify license is specified."""

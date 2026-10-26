@@ -27,6 +27,9 @@
 set -euo pipefail
 
 PYTHON_VERSION="3.11"
+# pyproject.toml's requires-python floor; the install below refuses anything
+# older, so an environment is created on, and kept to, a 3.11 that has it.
+PYTHON_FLOOR="3.11.5"
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
@@ -83,7 +86,7 @@ fi
 echo "Syncing $VENV to $LOCKFILE (Python ${PYTHON_VERSION})..."
 
 if [ ! -x "$VENV/bin/python" ]; then
-    uv venv "$VENV" --python "$PYTHON_VERSION" --quiet
+    uv venv "$VENV" --python ">=${PYTHON_FLOOR},<3.12" --quiet
 else
     # PYTHON_VERSION only binds at creation, so an environment made earlier on a
     # different interpreter would be synced from a lockfile compiled for 3.11 and
@@ -98,6 +101,13 @@ else
         echo "  Syncing anyway would install 3.11-resolved pins under $HAVE and stamp it as" >&2
         echo "  matching, which is the silent divergence this tooling exists to prevent." >&2
         echo "" >&2
+        echo "  Recreate it yourself when nothing is using it:" >&2
+        echo "      rm -rf $VENV && ./scripts/sync-venv.sh $EXTRA $VENV" >&2
+        exit 1
+    fi
+    if ! "$VENV/bin/python" -c 'import sys; sys.exit(sys.version_info[:3] < tuple(map(int, sys.argv[1].split("."))))' "$PYTHON_FLOOR"; then
+        FULL="$("$VENV/bin/python" -c 'import sys; print(sys.version.split()[0])')"
+        echo "✗ $VENV runs Python $FULL, below pyproject.toml's floor of $PYTHON_FLOOR." >&2
         echo "  Recreate it yourself when nothing is using it:" >&2
         echo "      rm -rf $VENV && ./scripts/sync-venv.sh $EXTRA $VENV" >&2
         exit 1

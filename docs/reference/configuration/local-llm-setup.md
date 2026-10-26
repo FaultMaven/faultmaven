@@ -78,7 +78,7 @@ This guide focuses on Docker's LLM ecosystem:
 **Required:**
 - Docker 20.10+ (for containerized deployment)
 - Docker Compose 2.0+ (for multi-service setup)
-- Python 3.11+ (for FaultMaven backend)
+- Python 3.11.5+ (for FaultMaven backend)
 - Git (for cloning repositories)
 
 **Optional but Recommended:**
