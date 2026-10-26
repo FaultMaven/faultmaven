@@ -5,7 +5,9 @@ description = "AI-powered troubleshooting copilot for incident investigation"
 readme = "README.md"
 # 3.11.0-3.11.4 mis-match possessive regexes (python/cpython#100061, #106052),
 # which the secret redactor relies on: measured on 3.11.4, it leaves passwords,
-# tokens and private keys in clear that 3.11.5 masks.
+# tokens and private keys in clear that 3.11.5 masks. MINIMUM_PYTHON in
+# faultmaven/__init__.py and PYTHON_FLOOR in scripts/sync-venv.sh follow this
+# floor; test_packaging fails until they do.
 requires-python = ">=3.11.5"
 license = {text = "FSL-1.1-ALv2"}
 authors = [

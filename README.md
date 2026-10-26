@@ -538,7 +538,7 @@ alembic upgrade head
 
 | Layer | Technologies |
 |-------|--------------|
-| **Framework** | Python 3.11+, FastAPI, Uvicorn, AsyncIO |
+| **Framework** | Python 3.11.5+, FastAPI, Uvicorn, AsyncIO |
 | **LLM/AI** | OpenAI, Anthropic, Fireworks, Gemini, Groq, Cohere, HuggingFace, OpenRouter |
 | **Database** | SQLAlchemy 2.0, SQLite (standalone), PostgreSQL (cloud), Alembic |
 | **Vector DB** | ChromaDB, sentence-transformers |

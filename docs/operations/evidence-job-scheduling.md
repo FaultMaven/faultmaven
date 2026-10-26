@@ -348,6 +348,70 @@ in the `kb_seed` result's `authored_orphans`.
 The job's status stays `completed` for every sweep outcome. The seeding
 succeeded, and these counts are the report.
 
+### 1c. KB Vector Enterprise Backfill (`kb_vector_enterprise_backfill`, #1777)
+
+**Purpose:** Stamp every KB chunk whose parent has a `knowledge_items` row with
+that row's `enterprise_id`. Chunks written before #1780 carry no stamp, or a
+stamp that disagrees with their row. The job changes no read path. It lists
+chunks ids-only, once per enterprise stamp and once for chunks no enterprise's
+stamp names, then reads the rows with the sweep's proof (§1b). It rewrites the
+stamp with a metadata merge, one document at a time, and only on chunks that
+still carried the stamp they were listed under at an id-only read just before
+the write. Chunks whose parent has no row are never written.
+
+**A dry run unless `--no-dry-run`.** Run the dry run first and read the counts:
+
+```bash
+python -m faultmaven.jobs.run kb_vector_enterprise_backfill
+python -m faultmaven.jobs.run kb_vector_enterprise_backfill --no-dry-run
+```
+
+**Standalone (in-process ChromaDB):** stop the API first (`./faultmaven.sh stop` or
+`./scripts/faultmaven-dev.sh stop`) and start it again after the run. The job
+opens its own `PersistentClient` on the vector store the running API holds,
+and ChromaDB does not support two processes on one persistent directory. In
+the Docker setup, run it in the API's image with the same `./data` mount:
+`docker compose run --rm api python -m faultmaven.jobs.run kb_vector_enterprise_backfill`
+(stop the `api` service first).
+
+**Multi-tenant (`TENANT_PROVIDER=multi`):** add `--cross-tenant-maintenance`
+and run it as the maintenance role, as a one-off Job (see
+[One-off operator run](#one-off-operator-run)). That Job's pod needs ChromaDB
+reach, which the cluster's network policy grants only to named workloads, and
+this job has none yet: admitting it (its own pod label, from a tracked Job
+manifest, as `kb_seed` has) is a deployment change that must land before the
+Cloud run. Do not borrow another workload's label.
+
+A row read that is not proven unfiltered writes nothing and fails the run.
+
+| Key | Meaning |
+|-----|---------|
+| `status` | `completed`; `failed` (exit 1) when the row read is not proven or a write raised, and with `error` set on any other error (a listing error); `skipped` with `reason` (`no_vector_store`, `no_enterprises`) when nothing was examined, and then every count is `null`. A ChromaDB unreachable at start fails the runner before the job runs: exit code 1, and no result. |
+| `dry_run` | `true` unless `--no-dry-run` was passed |
+| `proven` | the row read was proven unfiltered; `false` fails the run (`reason` says why) |
+| `items` | `knowledge_items` rows read |
+| `chunks` | listed chunks whose parent has a row |
+| `already_correct` | of those, chunks already stamped with their row's enterprise |
+| `unstamped` | of those, chunks with no enterprise's stamp, before the run. Includes a stamp no enterprise holds: an id-only listing cannot tell it from a missing key |
+| `mismatched` | of those, chunks stamped with another enterprise, before the run |
+| `stamped` / `corrected` | `unstamped` / `mismatched` chunks that carry their row's enterprise after this run's writes, read back from the store; `0` on a dry run |
+| `unattributable` | chunks with no enterprise's stamp whose parent has no row; never written (see below) |
+| `failed` | chunks of documents whose write raised; some of them may have landed. The run exits 1, and the next run counts them again |
+
+Every count except `items` is in chunks.
+
+**The check that unblocks #1775:** after the real run, a dry run reports
+`status: completed`, `proven: true`, `chunks > 0`, `already_correct == chunks`,
+`unstamped: 0` and `mismatched: 0`.
+
+**Reaching `unattributable: 0`** (the check above does not require it). After
+the backfill, the §1b sweep's `unattributed` bucket holds only orphans, so the
+sweep finds it disjoint and skips it. An armed `kb_seed` deletes those chunks
+only when run with `--allow-disjoint-enterprise unattributed`, and only while
+the run's total stays within `KB_REPAIR_MAX_ROWS`. Chunks of a built-in
+(`kb_<12 hex>`) parent with no row are not the sweep's: the KB bootstrap's
+reconcile removes them, at web startup (single-tenant) or in `kb_seed`.
+
 ---
 
 ### 2. Retry Queue Monitoring (Future)

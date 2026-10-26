@@ -53,10 +53,11 @@ no reader can observe a half-written one.
 
 import hashlib
 import logging
-import os
 import secrets
 from pathlib import Path
 from typing import Dict, Optional
+
+from faultmaven.config.secret_file import publish_secret_once, tighten_secret_file_mode
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,16 @@ MIN_KEY_LENGTH = 16
 #: read rather than re-hitting the filesystem per instance.
 _CACHE: Dict[str, bytes] = {}
 
+#: What a key file that group or others could read or write exposes, and how
+#: to rotate it; the tail of the WARNING ``tighten_secret_file_mode`` logs.
+_PSEUDONYM_FILE_EXPOSURE_ADVICE = (
+    "the redaction pseudonym key, and anyone who could write it may have "
+    "replaced it. To rotate it, set REDACTION_PSEUDONYM_KEY to a new key, or "
+    "delete the file to have one generated; with a Redis server, also delete "
+    "the redaction:pseudonym_key_fingerprint key; then restart every process. "
+    "Placeholders already stored under the old key will not match."
+)
+
 
 def _clean(raw: bytes) -> bytes:
     """Strip surrounding whitespace from a key.
@@ -90,81 +101,6 @@ def _clean(raw: bytes) -> bytes:
     HMACs and silently produce different placeholders for the same value.
     """
     return raw.strip()
-
-
-def _write_atomically(path: Path, key: bytes) -> bool:
-    """Publish ``key`` at ``path`` iff nothing is there. True if we won.
-
-    Written to a private temp file, flushed and fsynced, and only then linked
-    into place — ``os.link`` fails if the destination exists, so the name
-    appears only once and only with complete content.
-
-    ``O_CREAT|O_EXCL`` on the real path is NOT sufficient on its own: it
-    serializes the *create*, not the create-and-write. A second process that
-    reads between the winner's create and its write sees zero bytes, and a
-    crash in that window leaves an empty file that every later start reads as
-    an empty key — which is not a broken key, it is NO key, and HMAC under it
-    is publicly computable.
-    """
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(key)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(tmp, path)
-            return True
-        except FileExistsError:
-            # Another process published first; its key is the deployment's.
-            return False
-        except OSError:
-            # Filesystem without hardlink support (some network mounts, some
-            # Docker bind mounts). ``os.replace`` is atomic but unconditional,
-            # so it would clobber a key another process just published. It is
-            # serialized by an exclusive lock, and the publish decision is
-            # re-made UNDER that lock.
-            #
-            # Claiming the real path with O_CREAT|O_EXCL and writing afterwards
-            # is what this used to do, and it is the very create-then-write
-            # window described above: a crash or ENOSPC between the two left a
-            # permanent zero-byte key file, and a concurrent reader could
-            # observe it and refuse to boot.
-            return _publish_under_lock(path, tmp)
-    finally:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-
-
-def _publish_under_lock(path: Path, tmp: Path) -> bool:
-    """Move ``tmp`` onto ``path`` iff nothing is published yet. True if we won.
-
-    The lock file is never unlinked: removing it would let a later opener lock
-    a fresh inode while a current holder still holds the old one, so the two
-    would not exclude each other.
-    """
-    import fcntl
-
-    lock_path = path.with_name(f"{path.name}.lock")
-    with open(lock_path, "a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            # Re-read under the lock: whoever got here first has already
-            # published, and the loser must adopt that key rather than install
-            # its own. Deciding before taking the lock is what makes the naive
-            # version diverge.
-            try:
-                if path.read_bytes().strip():
-                    return False
-            except FileNotFoundError:
-                pass
-            os.replace(tmp, path)
-            return True
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _load_or_create(path: Path) -> bytes:
@@ -188,6 +124,9 @@ def _load_or_create(path: Path) -> bytes:
     So the failure is loud and the operator decides. The cost is real: this
     refusal stops the boot even for a deployment with redaction switched off.
     """
+    tighten_secret_file_mode(
+        path, advice=_PSEUDONYM_FILE_EXPOSURE_ADVICE, logger=logger
+    )
     try:
         existing = _clean(path.read_bytes())
     except FileNotFoundError:
@@ -217,7 +156,7 @@ def _load_or_create(path: Path) -> bytes:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     candidate = secrets.token_hex(32).encode()
-    if _write_atomically(path, candidate):
+    if publish_secret_once(path, candidate):
         return candidate
 
     # Lost the race. The winner linked complete content into place, so this
