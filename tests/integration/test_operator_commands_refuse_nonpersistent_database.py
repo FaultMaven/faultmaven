@@ -251,10 +251,10 @@ def test_every_dev_script_the_census_finds_is_driven_here():
     """The behavioural list follows the structural scan. A script the scan
     finds but this file never runs would be checked only for where its gate
     sits, never for what the process does."""
-    from tests.unit.cli.test_database_gate import LIVE_DATABASE_SCRIPTS
+    from tests.unit.cli.test_database_gate import DATABASE_SCRIPTS
 
-    assert set(DEV_SCRIPTS) == set(LIVE_DATABASE_SCRIPTS), (
-        f"scan finds {sorted(LIVE_DATABASE_SCRIPTS)}, this file drives "
+    assert set(DEV_SCRIPTS) == set(DATABASE_SCRIPTS), (
+        f"scan finds {sorted(DATABASE_SCRIPTS)}, this file drives "
         f"{sorted(DEV_SCRIPTS)}: give every script found a row in DEV_SCRIPTS"
     )
 

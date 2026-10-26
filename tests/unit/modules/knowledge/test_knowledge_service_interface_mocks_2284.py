@@ -1,7 +1,7 @@
 """KnowledgeService runs on mocks of the interfaces it is typed against (#2284).
 
-The service takes ``knowledge_ingester: IKnowledgeIngester``, ``sanitizer:
-ISanitizer``, ``tracer: ITracer`` and ``vector_store: IKnowledgeVectorStore``.
+The service takes ``sanitizer: ISanitizer``, ``tracer: ITracer`` and
+``vector_store: IKnowledgeVectorStore``.
 Until #2284 two of those types did not declare what the service calls:
 ``ISanitizer`` had no ``asanitize``, and the store was typed ``IVectorStore``,
 whose ``search`` takes ``filters`` where the service passes ``collection_name``
@@ -23,7 +23,6 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLEC
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.models.interfaces import (
-    IKnowledgeIngester,
     IKnowledgeVectorStore,
     ISanitizer,
     ITracer,
@@ -51,7 +50,6 @@ def _sanitizer() -> ISanitizer:
 
 def _service(sanitizer, tracer, vector_store) -> KnowledgeService:
     return KnowledgeService(
-        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
         sanitizer=sanitizer,
         tracer=tracer,
         vector_store=vector_store,
@@ -141,3 +139,18 @@ async def test_sanitizer_interface_mock_serves_every_asanitize_caller() -> None:
     )
     sanitizer.asanitize.assert_awaited_once_with("Pool exhaustion")
     sanitizer.sanitize.assert_not_called()
+
+
+def test_the_service_takes_no_ingester() -> None:
+    """The ingester parameter went with the KB ingester (#1782).
+
+    The service assigned it and never read it. A caller still passing one is
+    wiring a KB writer that no longer exists, and fails at construction.
+    """
+    with pytest.raises(TypeError, match="knowledge_ingester"):
+        KnowledgeService(
+            knowledge_ingester=object(),
+            sanitizer=_sanitizer(),
+            tracer=create_autospec(ITracer, instance=True),
+            db_session_factory=create_autospec(get_db_session),
+        )

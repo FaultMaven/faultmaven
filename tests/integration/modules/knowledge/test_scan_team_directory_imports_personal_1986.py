@@ -81,7 +81,6 @@ async def session_factory():
 @pytest.fixture
 def knowledge(session_factory) -> KnowledgeService:
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),

@@ -83,7 +83,6 @@ def _service() -> "object":
     )
 
     return KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=MagicMock(),
         tracer=MagicMock(),
         # Required since #899. The paths under test either replace it with a

@@ -124,7 +124,7 @@ Services are registered during initialization:
 | Layer | Provider | Key Services |
 |-------|----------|--------------|
 | Infrastructure | `infrastructure.py` | sanitizer, tracer, llm_provider, vector_store |
-| Tools | `tools.py` | knowledge_ingester, document_qa_tools |
+| Tools | `tools.py` | document_qa_tools |
 | Services | `services.py` | case_service, session_service, knowledge_service |
 
 ## Health Check

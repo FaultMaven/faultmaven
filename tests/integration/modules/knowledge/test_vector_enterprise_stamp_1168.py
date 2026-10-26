@@ -127,7 +127,6 @@ def chroma(tmp_path):
 def service(session_factory, chroma, tmp_path, monkeypatch) -> KnowledgeService:
     monkeypatch.chdir(tmp_path)
     return KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=_PassthroughSanitizer(),
         tracer=MagicMock(),
         vector_store=KnowledgeVectorStore(chroma),

@@ -57,7 +57,6 @@ import pytest
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.models.interfaces import (
-    IKnowledgeIngester,
     IKnowledgeVectorStore,
     ISanitizer,
     ITracer,
@@ -87,7 +86,6 @@ async def test_service_with_interface_mocks():
 
     # Pass the mocks to the constructor of the unit under test
     service = KnowledgeService(
-        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,
@@ -114,7 +112,7 @@ async def test_service_with_interface_mocks():
 **Key Principles**:
 - Mock interfaces, not concrete providers: mock the interface the code is
   typed against with `create_autospec(Interface, instance=True)`
-  (`ISanitizer`, `IKnowledgeVectorStore`, `ITracer`, `IKnowledgeIngester`)
+  (`ISanitizer`, `IKnowledgeVectorStore`, `ITracer`)
 - When the code calls a method its interface does not declare, declare it on
   the interface rather than spec the mock on a concrete class: until #2284,
   `ISanitizer` had no `asanitize` and `KnowledgeService`'s store was typed
@@ -264,7 +262,6 @@ async def test_error_handling_pattern():
 
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.models.interfaces import (
-        IKnowledgeIngester,
         IKnowledgeVectorStore,
         ISanitizer,
         ITracer,
@@ -278,7 +275,6 @@ async def test_error_handling_pattern():
 
     def knowledge_service(vector_store):
         return KnowledgeService(
-            knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
             sanitizer=sanitizer,
             tracer=create_autospec(ITracer, instance=True),
             vector_store=vector_store,
@@ -435,7 +431,6 @@ async def test_async_pattern():
 
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.models.interfaces import (
-        IKnowledgeIngester,
         IKnowledgeVectorStore,
         ISanitizer,
         ITracer,
@@ -454,7 +449,6 @@ async def test_async_pattern():
     sanitizer.asanitize.side_effect = lambda data: data
 
     knowledge_service = KnowledgeService(
-        knowledge_ingester=create_autospec(IKnowledgeIngester, instance=True),
         sanitizer=sanitizer,
         tracer=create_autospec(ITracer, instance=True),
         vector_store=vector_store,

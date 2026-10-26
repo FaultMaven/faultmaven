@@ -1072,8 +1072,6 @@ See also [Evidence Failure Modes](./evidence-failure-modes.md) for adjacent fail
 VECTORIZATION_MIN_SIZE_BYTES=50000       # Skip files smaller than this
 VECTORIZATION_MAX_SIZE_BYTES=50000000    # Skip files larger than this
 VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180  # Reactive bound (proactive unbounded)
-CHROMADB_HOST=localhost
-CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_
 
 # Chunking (read at startup via faultmaven/config/settings.py)
@@ -1499,8 +1497,6 @@ DEEP_ANALYSIS_MAX_TOKENS=2000        # 256–16000; deep-analysis LLM response c
 VECTORIZATION_MIN_SIZE_BYTES=50000        # Min file size for auto-vectorization eligibility
 VECTORIZATION_MAX_SIZE_BYTES=50000000     # 50MB hard cap (not configurable)
 VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180 # 30–600; bound on synchronous reactive vectorize inside the DA tool loop. Proactive vectorize is intentionally unbounded.
-CHROMADB_HOST=localhost
-CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_
 VECTOR_CHUNK_SIZE_TOKENS=500
 VECTOR_CHUNK_OVERLAP_TOKENS=50

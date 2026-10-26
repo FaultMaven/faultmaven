@@ -1,8 +1,8 @@
 """Frontmatter extraction utilities for knowledge base documents.
 
 Extracts RAG-relevant metadata from YAML frontmatter in markdown documents.
-Used by both ingestion paths (KnowledgeIngester and KnowledgeService) to
-enrich chunk metadata for hybrid search, reranking, and staleness-aware synthesis.
+Used by ``KnowledgeService`` and the conversion service to enrich chunk
+metadata for hybrid search, reranking, and staleness-aware synthesis.
 """
 
 import logging

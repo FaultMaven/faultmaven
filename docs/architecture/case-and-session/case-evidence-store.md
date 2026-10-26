@@ -72,8 +72,6 @@ Concise Answer with Citations
 SYNTHESIS_PROVIDER=gemini
 
 # ChromaDB Configuration (used by CaseVectorStore)
-CHROMADB_HOST=chromadb.faultmaven.local
-CHROMADB_PORT=30080
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
 ```
 

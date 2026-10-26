@@ -34,7 +34,7 @@ FaultMaven is a delivery mechanism and a growing framework for troubleshooting k
 - [knowledge-base-architecture.md](./knowledge-base-architecture.md) — Storage systems, vector stores, KB-neutral tool design
 - `faultmaven/modules/knowledge/domain/models/knowledge_item.py` — Domain model
 - `faultmaven/modules/knowledge/domain/services/conversion_service/` — Scan, verify, and ingestion workflow
-- `faultmaven/modules/knowledge/domain/services/ingestion.py` — Chunking and embedding (structure-aware chunking in `content_chunker.py`)
+- `faultmaven/modules/knowledge/domain/services/content_chunker.py` — Structure-aware chunking
 
 ---
 

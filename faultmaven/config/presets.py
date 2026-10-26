@@ -425,9 +425,7 @@ def list_available_presets() -> List[Dict[str, Any]]:
 #: The variables that name a Redis or ChromaDB server, with the meaning the
 #: settings give them. ``REDIS_URL`` and ``REDIS_HOST`` are the two the Redis
 #: client factory reads (``RedisClientFactory._build_config``; the URL wins).
-#: ``CHROMADB_URL`` selects the ChromaDB server. ``CHROMADB_HOST`` is in
-#: :func:`_names_a_server` below rather than here, because ``localhost``, its
-#: default, names the embedded store (``names_remote_chroma_host``).
+#: ``CHROMADB_URL`` selects the ChromaDB server.
 _SERVER_NAMING_VARIABLES = ("REDIS_URL", "REDIS_HOST", "CHROMADB_URL")
 
 
@@ -438,13 +436,9 @@ def _names_a_server(environ: Mapping[str, str]) -> Optional[str]:
     unpopulated ConfigMap key or a trailing ``=`` in a ``.env`` reads as set
     but empty.
     """
-    from faultmaven.config.deployment_coherence import names_remote_chroma_host
-
     for name in _SERVER_NAMING_VARIABLES:
         if (environ.get(name) or "").strip():
             return name
-    if names_remote_chroma_host(environ.get("CHROMADB_HOST")):
-        return "CHROMADB_HOST"
     return None
 
 
@@ -457,8 +451,8 @@ def detect_zero_config_preset() -> Optional[str]:
     zero-config only when it configures no LLM provider at all: any provider in
     the provider registry (an API key, or ``LOCAL_LLM_URL`` for the local one),
     a Redis server (``REDIS_URL`` or ``REDIS_HOST``), a ChromaDB server
-    (``CHROMADB_URL``, or a ``CHROMADB_HOST`` other than ``localhost``) or a
-    non-development ``ENVIRONMENT`` declines the preset.
+    (``CHROMADB_URL``) or a non-development ``ENVIRONMENT`` declines the
+    preset.
 
     Every one of those is read from the environment the settings are about to
     read (``environment_settings_read``): names case-insensitively, the process

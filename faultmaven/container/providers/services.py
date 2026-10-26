@@ -431,7 +431,6 @@ def create_data_service(
 
 def create_knowledge_service(
     vector_store: IKnowledgeVectorStore | None,
-    knowledge_ingester: Any | None,
     sanitizer: Any,
     tracer: Any,
     llm_provider: Any | None,
@@ -471,7 +470,6 @@ def create_knowledge_service(
     )
 
     return KnowledgeService(
-        knowledge_ingester=knowledge_ingester,
         sanitizer=sanitizer,
         tracer=tracer,
         vector_store=vector_store,
@@ -1340,7 +1338,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
-    knowledge_ingester = getattr(container, "knowledge_ingester", None)
     redis_client = getattr(container, "redis_client", None)
 
     # Token revocation store — created unconditionally (#767): both auth modes
@@ -1570,7 +1567,6 @@ def register_services(container: BaseDIContainer) -> None:
     knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
     knowledge_service = create_knowledge_service(
         knowledge_vector_store,
-        knowledge_ingester,
         container.get_service("sanitizer", required=True),
         container.get_service("tracer", required=True),
         container.get_service("llm_provider", required=False),

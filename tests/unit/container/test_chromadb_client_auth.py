@@ -1,22 +1,15 @@
-"""Both ChromaDB HTTP client paths must send the configured token (#1173).
+"""The ChromaDB HTTP client must send the configured token (#1173).
 
-Before this fix the deployment sent no credentials from either path, and each
-half hid the other — the server enforced nothing, so everything worked:
+Before this fix the deployment sent no credentials, and nothing showed it
+because the server enforced nothing. The container provider imported the
+pre-0.5 module path ``chromadb.auth.token`` inside a bare
+``except Exception: pass``. At every supported chromadb version the import
+raises, the failure was swallowed, and the client was built unauthenticated.
 
-- The container provider imported the pre-0.5 module path
-  ``chromadb.auth.token`` inside a bare ``except Exception: pass``. At every
-  supported chromadb version the import raises, the failure was swallowed, and
-  the client was built unauthenticated.
-- ``KnowledgeIngester`` had the correct ``token_authn`` path — but only on its
-  ``CHROMADB_HOST`` branch, while the deployed configuration sets
-  ``CHROMADB_URL`` and took the branch that passed no auth settings at all.
-  It also read a different setting (``chromadb_auth_token``) than the
-  container path (``chromadb_api_key``), with a hardcoded fallback token.
-
-These tests pin the repaired invariant: one shared resolver, both paths, both
-setting spellings, credentials actually placed on the client settings — and
-the provider path importable at the pinned chromadb version, so a revert to
-the dead path fails a test instead of failing silently in production.
+These tests pin the repaired invariant: one shared resolver, both setting
+spellings, credentials actually placed on the client settings — and the
+provider path importable at the pinned chromadb version, so a revert to the
+dead path fails a test instead of failing silently in production.
 """
 
 from importlib import import_module
@@ -31,7 +24,6 @@ from faultmaven.infrastructure.chroma_client import (
     ChromaClientConfigError,
     chroma_token_auth_kwargs,
 )
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from tests.unit.container.conftest import make_chroma_settings as _settings
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -184,127 +176,3 @@ def test_container_malformed_token_raises_instead_of_falling_back(tmp_path):
         _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
 
     assert not (tmp_path / "chroma").exists()
-
-
-# --------------------------------------------------------------------------- #
-# KnowledgeIngester — BOTH http branches, because the deployed configuration
-# (CHROMADB_URL set) took the one that used to send nothing
-# --------------------------------------------------------------------------- #
-
-
-def test_ingester_url_branch_carries_the_token(monkeypatch):
-    monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
-    settings = _settings(chromadb_url="http://chromadb:8000", auth_token="sekrit")
-
-    ingester = KnowledgeIngester(settings=settings)
-
-    assert ingester.degraded is False
-    (call,) = _CapturingHttpClient.captured
-    chroma_settings = call["settings"]
-    assert chroma_settings.chroma_client_auth_provider == CHROMA_TOKEN_AUTH_PROVIDER
-    assert chroma_settings.chroma_client_auth_credentials == "sekrit"
-
-
-def test_ingester_url_without_explicit_port_uses_scheme_default(monkeypatch):
-    """The old split(':')[-1] parse raised on any URL without an explicit
-    port — e.g. an https URL behind a TLS terminator or auth proxy — and the
-    ValueError escaped the degraded-mode guard, so the ingester silently
-    vanished while the container path (urlparse, scheme defaults) connected
-    fine. Both paths must read the same URL the same way."""
-    monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
-    settings = _settings(chromadb_url="https://chroma.internal", auth_token="sekrit")
-
-    ingester = KnowledgeIngester(settings=settings)
-
-    assert ingester.degraded is False
-    (call,) = _CapturingHttpClient.captured
-    assert call["host"] == "chroma.internal"
-    assert call["port"] == 443
-
-
-def test_ingester_dispatch_matches_the_container_predicate(monkeypatch, tmp_path):
-    """A legacy VECTOR_STORAGE_TYPE deselects the external server for the
-    container path; the ingester used to go over HTTP anyway — writes landing
-    on a server where reads never look. Both paths now dispatch on
-    is_external_chroma_configured."""
-
-    def _must_not_be_called(*args, **kwargs):  # pragma: no cover - the assertion
-        raise AssertionError("ingester must not open HTTP when deselected")
-
-    monkeypatch.setattr(chromadb, "HttpClient", _must_not_be_called)
-    settings = _settings(
-        chromadb_url="http://chromadb:8000",
-        chromadb_host="chromadb.faultmaven.svc",
-        vector_storage_type="inmemory",
-    )
-    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
-
-    ingester = KnowledgeIngester(settings=settings)
-
-    assert ingester.chroma_client is not None
-    assert (tmp_path / "chroma-kb").exists()
-
-
-@pytest.mark.parametrize(
-    "branch_settings",
-    [
-        {"chromadb_url": "http://chromadb:8000"},
-        {"chromadb_host": "chromadb.faultmaven.svc"},
-    ],
-)
-def test_ingester_malformed_token_raises_instead_of_degrading(
-    monkeypatch, tmp_path, branch_settings
-):
-    """The container twin's guarantee, on the ingester. The credential is now
-    resolved inside the builder, which runs inside the ingester's connection
-    guard; that guard answers any failure with ``degraded=True`` and carries
-    on. A malformed token is not an unreachable server, so it must escape it
-    (#1173, #2056)."""
-
-    def _must_not_be_called(*args, **kwargs):  # pragma: no cover - the assertion
-        raise AssertionError("no client may be built with a malformed token")
-
-    monkeypatch.setattr(chromadb, "HttpClient", _must_not_be_called)
-    settings = _settings(auth_token="bad token", **branch_settings)
-    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
-
-    with pytest.raises(ChromaClientConfigError, match="CHROMADB_AUTH_TOKEN"):
-        KnowledgeIngester(settings=settings)
-
-    assert not (tmp_path / "chroma-kb").exists()
-
-
-def test_ingester_host_branch_carries_the_token(monkeypatch):
-    monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
-    settings = _settings(chromadb_host="chromadb.faultmaven.svc", auth_token="sekrit")
-
-    KnowledgeIngester(settings=settings)
-
-    (call,) = _CapturingHttpClient.captured
-    assert call["settings"].chroma_client_auth_credentials == "sekrit"
-
-
-@pytest.mark.parametrize(
-    "branch_settings",
-    [
-        {"chromadb_url": "http://chromadb:8000"},
-        # The HOST branch is where the hardcoded fallback token lived — this
-        # parametrization is what makes a revert of its removal fail.
-        {"chromadb_host": "chromadb.faultmaven.svc"},
-    ],
-)
-def test_ingester_without_token_sends_nothing_not_a_default(
-    monkeypatch, branch_settings
-):
-    """The old code fell back to a hardcoded dev token. No configured token
-    must now mean NO credentials — a guessable default sent silently is the
-    same fail-open shape #1173 removes."""
-    monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
-    settings = _settings(**branch_settings)
-
-    KnowledgeIngester(settings=settings)
-
-    (call,) = _CapturingHttpClient.captured
-    chroma_settings = call["settings"]
-    assert chroma_settings.chroma_client_auth_provider is None
-    assert chroma_settings.chroma_client_auth_credentials is None

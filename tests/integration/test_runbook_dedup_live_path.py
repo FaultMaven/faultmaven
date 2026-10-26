@@ -130,7 +130,6 @@ def _production_knowledge_service(
 ) -> KnowledgeService:
     """KnowledgeService over the PRODUCTION writer store type."""
     return KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=writer_store,

@@ -156,12 +156,11 @@ def test_the_only_http_client_construction_is_the_builder() -> None:
     hits, scanned = _scan_package()
 
     # Where the rule can be violated, so a scan that stopped looking fails:
-    # the two former construction sites, and the door itself.
+    # the former construction site, and the door itself.
     assert len(scanned) > 500
     for must_scan in (
         _DOOR_FILE,
         "faultmaven/container/providers/infrastructure.py",
-        "faultmaven/modules/knowledge/domain/services/ingestion.py",
     ):
         assert must_scan in scanned
 

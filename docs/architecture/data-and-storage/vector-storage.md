@@ -39,7 +39,7 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries the **immutable visibility floor** — `scope` (`personal` or `global`) and `owner_id` — plus the owning tenant, `enterprise_id`: the `knowledge_items` row's own value, the Standalone enterprise for the global tier. Every chunk written **since #1168** carries it; chunks written before carry none until #1777's backfill, and the read conjunct (#1775) waits on that backfill. `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
 
-**One adapter writes this collection for the service.** `KnowledgeService` is wired with `knowledge_vector_store` and nothing else: the `or vector_store` fallback to the plain `ChromaDBVectorStore` was removed in #1168, because that store checks no tenant stamp and was never selectable anyway (both factories are gated on the same `SKIP_SERVICE_CHECKS` flag). `KnowledgeVectorStore.add_documents` refuses, before any retry, a metadata key `VectorMetadata` does not declare (fm#1035) and a KB chunk with no non-blank `enterprise_id` (#1168); it does not otherwise normalize values through `VectorMetadata` — the caller, `KnowledgeService._index_document_in_vector_store`, builds its dict as `VectorMetadata(...).to_chroma_metadata()`. Paths that can still reach the collection without this store — `ChromaDBVectorStore` (still registered over `faultmaven_kb`, though nothing writes through it), the dead `KnowledgeIngester._process_and_store` and the dead `scripts/migration_backfill_scopes.py` — are #1782.
+**One adapter writes this collection for the service.** `KnowledgeService` is wired with `knowledge_vector_store` and nothing else: the `or vector_store` fallback to the plain `ChromaDBVectorStore` was removed in #1168, because that store checks no tenant stamp and was never selectable anyway (both factories are gated on the same `SKIP_SERVICE_CHECKS` flag). `KnowledgeVectorStore.add_documents` refuses, before any retry, a metadata key `VectorMetadata` does not declare (fm#1035) and a KB chunk with no non-blank `enterprise_id` (#1168); it does not otherwise normalize values through `VectorMetadata` — the caller, `KnowledgeService._index_document_in_vector_store`, builds its dict as `VectorMetadata(...).to_chroma_metadata()`. The one other path that can still reach the collection without this store, `ChromaDBVectorStore`'s write methods (the store is still registered over `faultmaven_kb`, though nothing writes through it), is #1782.
 
 `KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. `build_kb_scope_filter` (in `knowledge_service.py`) builds the combined filter the unified `answer_from_kb` tool uses:
 
@@ -65,7 +65,7 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Location**: Loaded in-process (not external service)
 
-- `KnowledgeIngester`: For KB document ingestion
+- `KnowledgeService`: For KB document indexing
 - `PreprocessingService`: For case evidence chunking
 - Q&A Tools: Generate query embeddings on the fly
 
@@ -643,7 +643,7 @@ On Docker Compose this runs from the host (in the checkout's venv, against the b
 
 **Ingestion & Query**:
 
-- `faultmaven/modules/knowledge/domain/services/ingestion.py` - Batch document ingestion
+- `faultmaven/modules/knowledge/domain/services/knowledge_service.py` - Document indexing (`ingest_runbook`, `_index_document_in_vector_store`)
 - `faultmaven/modules/agent/tools/kb_qa.py` - Unified `answer_from_kb` tool (all scopes)
 - `faultmaven/modules/agent/tools/case_evidence_qa.py` - `answer_from_case_evidence` tool
 - `faultmaven/modules/preprocessing/` - Case evidence preprocessing

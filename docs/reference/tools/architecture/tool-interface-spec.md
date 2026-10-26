@@ -187,7 +187,6 @@ def _create_tools(self) -> List[BaseTool]:
         tool = tool_class(
             settings=self._settings,
             sanitizer=self.get_data_sanitizer(),
-            knowledge_ingester=self.get_knowledge_ingester()
         )
         tools.append(tool)
     return tools

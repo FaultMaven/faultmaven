@@ -181,15 +181,6 @@ questions that implies are answered from the settings the running server reads
   and restart the API so the bootstrap re-ingests the pack
   (`fm-wipe-deployment` with no flags writes nothing and reports what the
   configured store holds).
-
-  `CHROMADB_HOST` on its own is a **different** answer, not a second version of
-  the same one. The client factory still returns a local `PersistentClient`
-  there; only `KnowledgeIngester` opens an HTTP client off that knob. So the
-  local tree really is the store this deployment searches, the reset proceeds
-  against it, and it **warns** that a second copy of the KB's vectors lives on
-  the server and is not touched. (That split is a defect in its own right — the
-  writer and the reader disagree about where the KB is — and is out of this
-  command's hands.)
 * **Which local directory?** Whatever `CHROMADB_KB_PERSIST_DIR` says, read
   exactly as `create_persistent_client` reads it — so a relative value
   (including the shipped default `./data/chroma-kb`) is relative to **the

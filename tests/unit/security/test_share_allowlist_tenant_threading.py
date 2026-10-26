@@ -146,7 +146,6 @@ def _knowledge_service(share_repo, vector_store):
         return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: None)
     )
     return KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q)),
         tracer=tracer,
         vector_store=vector_store,

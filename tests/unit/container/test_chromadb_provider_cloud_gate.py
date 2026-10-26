@@ -22,7 +22,6 @@ import chromadb
 import pytest
 
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
-from faultmaven.container.providers.tools import create_knowledge_ingester
 from faultmaven.infrastructure.chroma_client import (
     ChromaUnavailableError,
     is_external_chroma_configured,
@@ -144,7 +143,7 @@ def test_standalone_without_url_gets_persistent_client(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# The shared predicate — both dispatch sites and the coherence gate read this
+# The shared predicate — the dispatch site and the coherence gate read this
 # --------------------------------------------------------------------------- #
 
 
@@ -163,45 +162,3 @@ def test_standalone_without_url_gets_persistent_client(tmp_path):
 def test_is_external_chroma_configured(url, storage_type, expected):
     settings = _settings(cloud=True, chromadb_url=url, vector_storage_type=storage_type)
     assert is_external_chroma_configured(settings) is expected
-
-
-# --------------------------------------------------------------------------- #
-# The third acquisition path: KnowledgeIngester (and its container wrapper)
-# --------------------------------------------------------------------------- #
-
-
-def test_knowledge_ingester_local_branch_refuses_under_cloud():
-    """KnowledgeIngester builds its own client; its PersistentClient branch
-    (no URL, localhost host) must hit the same gate, not bypass it (#894
-    lesson: the jobs path and web path must compose identically)."""
-    from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
-
-    settings = _settings(cloud=True, chromadb_url="")
-    settings.database.chromadb_host = "localhost"
-
-    with pytest.raises(ChromaUnavailableError):
-        KnowledgeIngester(settings=settings)
-
-
-def test_create_knowledge_ingester_propagates_the_refusal(monkeypatch):
-    """The container wrapper catches Exception and returns None — a refusal
-    swallowed into None would re-open exactly the fail-open path. It must
-    propagate; ordinary construction failures still degrade to None."""
-    settings = _settings(cloud=True, chromadb_url="")
-    settings.database.chromadb_host = "localhost"
-
-    with pytest.raises(ChromaUnavailableError):
-        create_knowledge_ingester(settings, sanitizer=object())
-
-
-def test_create_knowledge_ingester_still_softens_ordinary_failures(monkeypatch):
-    import faultmaven.modules.knowledge.domain.services.ingestion as ingestion_mod
-
-    class _Boom:
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("BGE-M3 model unavailable")
-
-    monkeypatch.setattr(ingestion_mod, "KnowledgeIngester", _Boom)
-    settings = _settings(cloud=False)
-
-    assert create_knowledge_ingester(settings, sanitizer=object()) is None

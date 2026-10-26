@@ -166,10 +166,6 @@ trees (fm#936). Where no local directory is the store — an external
 `CHROMADB_URL` — the command refuses **before** the SQL delete instead of
 leaving the two halves diverged, and it refuses likewise when the resolved path
 is blank, absent, or not store-shaped; `--keep-chroma` is the explicit opt-out.
-`CHROMADB_HOST` alone is *this module's* opt-in to an HTTP client and not the
-container's: the client factory still returns a local `PersistentClient`, so
-the reset proceeds against that tree and warns that the ingester's server-side
-copy is untouched.
 Operational detail:
 [data-storage-management.md](../../operations/data-storage-management.md#reset--hot-rebuild).
 

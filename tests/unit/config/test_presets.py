@@ -303,7 +303,6 @@ class TestZeroConfigDetection:
             ("REDIS_URL", "redis://redis.internal:6379/0"),
             ("REDIS_HOST", "redis.internal"),
             ("CHROMADB_URL", "http://chroma.internal:8000"),
-            ("CHROMADB_HOST", "chroma.internal"),
         ],
     )
     def test_any_variable_naming_a_redis_or_chromadb_server_declines_it(
@@ -314,9 +313,7 @@ class TestZeroConfigDetection:
         ``REDIS_URL`` is the Redis client factory's other way to name the
         server, and it wins over ``REDIS_HOST``. Detection asked ``REDIS_HOST``
         alone, so a Redis named by URL got the laptop preset: ``DEBUG`` on,
-        protection and PII redaction off (#2270). ``CHROMADB_HOST`` other than
-        ``localhost`` sends the KB ingester to a server
-        (``is_host_only_chroma_configured``).
+        protection and PII redaction off (#2270).
         """
         from faultmaven.config.presets import detect_zero_config_preset
 
@@ -341,21 +338,16 @@ class TestZeroConfigDetection:
             {"REDIS_URL": "   "},
             {"REDIS_HOST": ""},
             {"CHROMADB_URL": " "},
-            {"CHROMADB_HOST": "localhost"},
-            {"CHROMADB_HOST": ""},
         ],
         ids=[
             "blank_redis_url",
             "whitespace_redis_url",
             "blank_redis_host",
             "whitespace_chromadb_url",
-            "embedded_chromadb_host",
-            "blank_chromadb_host",
         ],
     )
-    def test_a_blank_value_or_the_embedded_chromadb_host_names_no_server(self, environ):
-        """Set but empty names nothing, and ``CHROMADB_HOST=localhost`` is its
-        default, the embedded store: the box is still zero-config."""
+    def test_a_blank_value_names_no_server(self, environ):
+        """Set but empty names nothing: the box is still zero-config."""
         from faultmaven.config.presets import detect_zero_config_preset
 
         with patch.dict(os.environ, environ, clear=True):
@@ -363,6 +355,41 @@ class TestZeroConfigDetection:
 
         assert result is not None
         assert result.value == "local"
+
+    def test_the_deleted_chromadb_host_variables_change_nothing(self):
+        """``CHROMADB_HOST``, ``CHROMADB_PORT`` and ``CHROMADB_CONNECT_TIMEOUT``
+        were read only by the dead KB ingester, and went with it (#1782). A
+        deployment that still sets them starts unchanged: the settings build
+        and hold no such fields, and the zero-config preset answers as it does
+        without them. ``CHROMADB_URL`` beside them still declines it, which is
+        what shows this test reads the environment it sets."""
+        from faultmaven.config.presets import detect_zero_config_preset
+        from faultmaven.config.settings import DatabaseSettings, FaultMavenSettings
+
+        leftover = {
+            "CHROMADB_HOST": "chroma.example",
+            "CHROMADB_PORT": "1",
+            "CHROMADB_CONNECT_TIMEOUT": "5",
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            without = detect_zero_config_preset()
+        with patch.dict(os.environ, leftover, clear=True):
+            settings = FaultMavenSettings(_env_file=None)
+            with_them = detect_zero_config_preset()
+        with patch.dict(
+            os.environ, {**leftover, "CHROMADB_URL": "http://chroma:8000"}, clear=True
+        ):
+            with_a_server = detect_zero_config_preset()
+
+        assert isinstance(settings.database, DatabaseSettings)
+        assert {
+            "chromadb_host",
+            "chromadb_port",
+            "chromadb_connect_timeout",
+        }.isdisjoint(DatabaseSettings.model_fields)
+        assert without is not None and without.value == "local"
+        assert with_them == without
+        assert with_a_server is None
 
     def test_detect_zero_config_returns_none_in_production(self):
         """Test that detect_zero_config_preset returns None in production."""

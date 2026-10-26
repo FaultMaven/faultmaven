@@ -3,9 +3,10 @@
 Every process that builds the DI container — the API pod *and* the cleanup
 CronJobs — used to pull the ~1.3Gi BGE-M3 SentenceTransformer during
 construction, because two constructors called ``get_bge_m3_model()``: the LLM
-response cache (built by ``LLMRouter``) and ``KnowledgeIngester``. A
-``storage_cleanup`` job that embeds nothing was OOMKilled at its 512Mi limit,
-which is how every app CronJob failed silently for 112 days (infra#131).
+response cache (built by ``LLMRouter``) and the KB ingester, since deleted
+(#1782). A ``storage_cleanup`` job that embeds nothing was OOMKilled at its
+512Mi limit, which is how every app CronJob failed silently for 112 days
+(infra#131).
 
 The invariant these tests pin: **construction is not embedding.** Whether the
 model is resident is decided by the documented policy (``LAZY_LOAD_ML_MODELS`` /
@@ -38,12 +39,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
 from faultmaven.infrastructure import model_cache as model_cache_module
 from faultmaven.infrastructure.llm import cache as llm_cache_module
 from faultmaven.infrastructure.llm.cache import LLMResponseCache
 from faultmaven.infrastructure.model_cache import BGE_M3_MODEL_ID, model_cache
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
 pytestmark = [pytest.mark.unit]
 
@@ -79,32 +78,9 @@ def isolated_model_cache(monkeypatch):
     return model_cache
 
 
-def _standalone_settings(tmp_path) -> FaultMavenSettings:
-    """REAL settings — a stand-in's ``is_cloud`` is truthy in both modes, which
-    would send the ingester down the wrong ChromaDB branch."""
-    settings = FaultMavenSettings(_env_file=None)
-    settings.deployment_mode = DeploymentMode.STANDALONE
-    settings.database.chromadb_url = ""
-    settings.database.chromadb_host = "localhost"
-    settings.database.vector_storage_type = "chromadb"
-    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
-    settings.server.skip_service_checks = False
-    # No Presidio health check from the ingester's own sanitizer (#2235).
-    settings.protection.protection_enabled = False
-    settings.protection.sanitize_pii = False
-    return settings
-
-
 # --------------------------------------------------------------------------- #
-# The two constructors that used to load
+# The response cache, which used to load at construction
 # --------------------------------------------------------------------------- #
-
-
-def test_knowledge_ingester_construction_loads_no_model(loader, tmp_path):
-    """The OOM path: the container builds one of these in every process."""
-    KnowledgeIngester(settings=_standalone_settings(tmp_path))
-
-    loader.assert_not_called()
 
 
 def test_response_cache_construction_loads_no_model(loader):
@@ -253,8 +229,8 @@ def test_importing_the_container_does_not_import_torch():
     assertion pass or fail for reasons that have nothing to do with the fix.
 
     Imports the modules actually under review, NOT just the container:
-    ``import faultmaven.container`` pulls in ~50 modules and none of these
-    three, so a container-only probe would sit green while a module-scope
+    ``import faultmaven.container`` pulls in ~50 modules and neither of these
+    two, so a container-only probe would sit green while a module-scope
     ``import sentence_transformers`` was added straight back into
     ``llm/cache.py`` — one of the two constructors that caused the OOM.
 
@@ -270,7 +246,6 @@ def test_importing_the_container_does_not_import_torch():
         "import faultmaven.container;"
         "import faultmaven.infrastructure.model_cache as mc;"
         "import faultmaven.infrastructure.llm.cache;"
-        "import faultmaven.modules.knowledge.domain.services.ingestion;"
         "print(mc.__file__);"
         "print(','.join(m for m in ('sentence_transformers','torch') "
         "if m in sys.modules))"

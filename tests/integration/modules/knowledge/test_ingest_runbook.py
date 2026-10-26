@@ -128,7 +128,6 @@ def make_service(
     want to assert SQL persistence without booting ChromaDB.
     """
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
@@ -337,7 +336,6 @@ class TestIngestRunbookDualWrite:
         """
         with pytest.raises(TypeError, match="db_session_factory"):
             KnowledgeService(
-                knowledge_ingester=MagicMock(),
                 sanitizer=MagicMock(),
                 tracer=MagicMock(),
                 vector_store=MagicMock(),

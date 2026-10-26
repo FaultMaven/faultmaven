@@ -1101,7 +1101,6 @@ def _wire_services(app, chroma) -> None:
     tracer = OpikTracer(settings=settings)
 
     knowledge_service = KnowledgeService(
-        knowledge_ingester=None,
         sanitizer=sanitizer,
         tracer=tracer,
         vector_store=KnowledgeVectorStore(chroma),

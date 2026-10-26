@@ -126,16 +126,14 @@ fix rather than the defect:
   ``_index_document_in_vector_store``'s ``getattr(document, "scope", "global")``
   all defaulted to the tier readable by every tenant, so a new publish path
   would have leaked by *omission* rather than by commission (Attack 4). Review
-  of the fix found the count was wrong in both directions: there are **six**
-  sites, not four — ``KnowledgeIngester.ingest_document`` and
-  ``KnowledgeIngester._process_and_store`` are a SECOND ChromaDB writer (dead,
-  but the revivable kind this finding is about), and ``kb_pack.py`` defaulted
-  the tier of a pack entry built in another repository, which is the one that
-  was live. All six now REQUIRE the tier through one shared refusal
-  (``domain/write_scope.require_write_scope``), and the two service methods
-  that could not name one were deleted. This was never exploitable (the gates
-  below held); what changed is the shape of the failure the next publish path
-  can have. The refusals are pinned as units in
+  of the fix found more sites than four: a second ChromaDB writer (dead, but
+  the revivable kind this finding is about; deleted in #1782), and
+  ``kb_pack.py``, which defaulted the tier of a pack entry built in another
+  repository and was the one that was live. Every site now REQUIRES the tier
+  through one shared refusal (``domain/write_scope.require_write_scope``), and
+  the two service methods that could not name one were deleted. This was never
+  exploitable (the gates below held); what changed is the shape of the failure
+  the next publish path can have. The refusals are pinned as units in
   ``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py``; Attack 4
   keeps the half that needs a real store — what each stated tier MEANS to a
   tenant that did not author it.
@@ -1269,39 +1267,4 @@ def test_the_unfiltered_kb_readers_stay_id_only():
         f"(lines {global_content_reads}). One is expected: the global-tier "
         "term-index build in _corpus_term_stats. A second one needs its own "
         "argument for why the tier it reads is safe to pool across tenants."
-    )
-
-
-def test_the_unguarded_chroma_only_writer_still_has_no_live_caller():
-    """``KnowledgeIngester`` reaches ChromaDB with no ``knowledge_items`` row.
-
-    Every live publish path writes the SQL row FIRST, which puts the insert
-    under the RLS write policies (migration 033) — the database's own refusal
-    of a tenant-authored global row. ``KnowledgeIngester._process_and_store``
-    calls ``collection.add`` directly: no row, no policy, no gate.
-
-    When this probe was written the path was reached through
-    ``KnowledgeService.ingest_document``/``update_document``, which built a
-    ``KnowledgeBaseDocument`` with neither ``scope`` nor ``owner_id`` — default
-    global, no owner. **Both service methods were deleted in #1166**: they could
-    not name a tier (nothing passed them one), and ``update_document`` would
-    have deleted a document's real chunks and replaced them with chunks matching
-    no arm of ``build_kb_scope_filter``. So the expected caller set is now
-    EMPTY, and the writer that remains no longer defaults its tier — it calls
-    ``require_write_scope`` like the live one
-    (``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py``).
-
-    The death is still pinned rather than trusted: reviving this path without
-    routing it through ``ingest_runbook`` puts content in ChromaDB that no RLS
-    policy ever saw.
-    """
-    callers = {
-        (rel, scope)
-        for rel, scope, name, _node in _walk_calls()
-        if name in {"ingest_document", "update_document"}
-        and not rel.endswith("models/interfaces.py")  # docstring examples
-    }
-
-    assert callers == set(), (
-        "a caller reached the unguarded Chroma-only write path: " f"{sorted(callers)}"
     )

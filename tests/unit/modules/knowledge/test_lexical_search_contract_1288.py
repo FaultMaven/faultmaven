@@ -92,7 +92,6 @@ CONFIG_DIVERGENCE_DOC = "\n".join(
 
 def _snippet_service(vector_store, content=DISCRIMINATING_DOC):
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=MagicMock(),
         tracer=MagicMock(),
         db_session_factory=MagicMock(),

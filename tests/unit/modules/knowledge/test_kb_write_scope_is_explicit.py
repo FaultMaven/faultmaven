@@ -1,6 +1,6 @@
 """The KB write side names its tier; it does not inherit one (#1166).
 
-``global`` is the platform corpus — the tier **every tenant reads**. Six
+``global`` is the platform corpus — the tier **every tenant reads**. These
 write-side sites defaulted to it, so a publish path that simply *neglected* to
 set a scope published tenant-authored content platform-wide, and the omission
 showed up nowhere in a diff:
@@ -12,29 +12,18 @@ Site                                                       Old default
 ``KnowledgeService.ingest_runbook(scope=...)``             ``"global"``
 ``KnowledgeService.upload_document(scope=...)``            ``"global"``
 ``KnowledgeService._index_document_in_vector_store``       ``getattr(d, "scope", "global") or "global"``
-``KnowledgeIngester.ingest_document(scope=...)``           ``"global"``
-``KnowledgeIngester._process_and_store``                   ``getattr(d, "scope", None) or "global"``
 ``KbPack.load`` (``bootstrap/kb_pack.py``)                 ``rb.get("scope", "global")``
 =========================================================  ===========================
 
-The two indexer reads reached ``global`` three separate ways — pass it, omit it,
-or pass a falsy value. The read side already fails CLOSED on the same omission
+The indexer read reached ``global`` three separate ways — pass it, omit it, or
+pass a falsy value. The read side already fails CLOSED on the same omission
 (an unidentifiable principal collapses to ``{"scope": "global"}``, i.e. reads
 LESS); these tests pin the write side doing the same.
 
-**Two ChromaDB writers, not one.** The original fix guarded
-``_index_document_in_vector_store`` and claimed every KB vector write funnelled
-through it. It does not: ``KnowledgeIngester._process_and_store`` writes with
-``collection.add`` directly — no ``knowledge_items`` row, hence no RLS write
-policy. It is **dead** (nothing routes to it, pinned by the probe's
-``test_the_unguarded_chroma_only_writer_still_has_no_live_caller``), so this was
-never a live leak there either — but #1166 is specifically about the shape the
-*next* publish path has, and a dead writer someone revives is that path.
-
-**And ``kb_pack`` is the live one.** A ``pack.json`` entry omitting ``scope``
-landed in the platform corpus by exactly the omission being closed. The pack is
-built in another repository, so that omission is one nobody reviews in the same
-diff as the code trusting it.
+**``kb_pack`` is a publish path outside the service.** A ``pack.json`` entry
+omitting ``scope`` landed in the platform corpus by exactly the omission being
+closed. The pack is built in another repository, so that omission is one nobody
+reviews in the same diff as the code trusting it.
 
 **Not a leak fix.** The adversarial probe that surfaced this (#1162, F3) found
 no reachable leak: every global-authoring entry point refuses a tenant session,
@@ -61,7 +50,6 @@ from pydantic import ValidationError
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.models.api import KnowledgeBaseDocument
 from faultmaven.models.exceptions import KnowledgeBaseError
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -73,9 +61,8 @@ pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 #: Every tree whose code may publish to the KB. ``scripts/`` is in deliberately:
-#: ``migration_backfill_scopes.py`` builds a ``KnowledgeBaseDocument`` and hands
-#: it to the private indexer, so it is a publish path by any honest reading even
-#: though the wheel excludes it.
+#: a script that builds a ``KnowledgeBaseDocument`` or calls a publishing method
+#: is a publish path by any honest reading, even though the wheel excludes it.
 _PUBLISHING_ROOTS = ("faultmaven", "scripts")
 
 #: Callees the walk must FIND calls to, so a pin cannot report "no violations"
@@ -83,12 +70,6 @@ _PUBLISHING_ROOTS = ("faultmaven", "scripts")
 #: floors stay at 1 so that legitimately deleting a call site does not fail a
 #: test about scanner health. See
 #: ``test_the_ast_pins_are_actually_scanning_something``.
-#:
-#: ``ingest_document`` is deliberately ABSENT: it has zero calls by design (both
-#: were deleted in #1166), and that zero is pinned by the probe's
-#: ``test_the_unguarded_chroma_only_writer_still_has_no_live_caller``. Demanding
-#: >=1 here would assert the opposite of what the codebase should hold. It stays
-#: in the call-site pin below, which is what catches a NEW tierless caller.
 _EXPECTED_AT_LEAST = {
     "KnowledgeBaseDocument": 1,
     "ingest_runbook": 1,
@@ -104,7 +85,7 @@ _OMITTED = object()
 
 
 # ---------------------------------------------------------------------------
-# Sites 1-3 and 5: the signatures
+# Sites 1-3: the signatures
 # ---------------------------------------------------------------------------
 
 
@@ -133,13 +114,10 @@ def test_the_document_model_requires_a_tier():
     [
         (KnowledgeService, "ingest_runbook"),
         (KnowledgeService, "upload_document"),
-        # The second writer's entry point. Absent from the original fix, and
-        # invisible to a pin that only knew about KnowledgeService.
-        (KnowledgeIngester, "ingest_document"),
     ],
 )
 def test_every_publishing_signature_requires_a_tier(owner, method):
-    """Sites 2, 3 and 5: no default to fall back on."""
+    """Sites 2 and 3: no default to fall back on."""
     param = inspect.signature(getattr(owner, method)).parameters["scope"]
     assert param.default is inspect.Parameter.empty, (
         f"{owner.__name__}.{method} defaults scope to {param.default!r} — "
@@ -178,7 +156,7 @@ async def test_a_publish_call_that_omits_the_tier_raises_instead_of_publishing(
 
 
 # ---------------------------------------------------------------------------
-# Sites 4 and 6: BOTH ChromaDB writers
+# Site 4: the ChromaDB writer
 # ---------------------------------------------------------------------------
 
 
@@ -225,66 +203,6 @@ async def test_the_live_indexer_refuses_a_document_with_no_tier(scope):
 
     assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
     assert added == [], "chunks were written for a document with no tier"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("scope", [_OMITTED, None, ""])
-async def test_the_second_chroma_writer_refuses_a_document_with_no_tier(scope):
-    """Site 6: ``KnowledgeIngester._process_and_store``.
-
-    The writer the original fix missed. It reaches ChromaDB through
-    ``collection.add`` with no ``knowledge_items`` row — so no RLS write policy
-    either — and it carried the same three-ways-to-global read. Dead today; the
-    guard is here because reviving it is the scenario #1166 describes.
-    """
-    ingester = KnowledgeIngester.__new__(KnowledgeIngester)
-    ingester.logger = MagicMock()
-    collection = MagicMock()
-    ingester._collection = collection  # `collection` is a read-only property
-
-    with pytest.raises(KnowledgeBaseError) as exc:
-        await ingester._process_and_store(_tierless_document(scope))
-
-    assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
-    collection.add.assert_not_called()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("content", "shape"),
-    [
-        ("   \n\t  \n", "whitespace-only, so it never reaches the chunk loop"),
-        ("# Tenant runbook\n\nRemediation.", "content-bearing, the ordinary case"),
-    ],
-)
-async def test_the_second_writer_refuses_before_chunking_or_embedding(content, shape):
-    """The refusal must not depend on the document having survived this far.
-
-    The guard originally sat AFTER ``if not chunks: return`` and after the embed,
-    which meant it did not guard: a tierless document with whitespace-only
-    content was ACCEPTED — returning None, writing nothing, raising nothing — and
-    where the embedder was unavailable the caller got ``RuntimeError('BGE-M3
-    model unavailable')`` instead of the scope refusal. Only the content-bearing
-    case was pinned, so the hole was invisible.
-
-    ``model_cache`` is left unpatched on purpose: reaching it at all means the
-    guard ran too late, and this test would then either load BGE-M3 for real
-    (~17s, live network) or raise the wrong error. Both are failures, and both
-    are louder than an assertion.
-    """
-    ingester = KnowledgeIngester.__new__(KnowledgeIngester)
-    ingester.logger = MagicMock()
-    collection = MagicMock()
-    ingester._collection = collection  # `collection` is a read-only property
-
-    document = _tierless_document()
-    type(document).content = content
-
-    with pytest.raises(KnowledgeBaseError) as exc:
-        await ingester._process_and_store(document)
-
-    assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED", shape
-    collection.add.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -424,7 +342,7 @@ async def test_a_stated_tier_is_stamped_exactly_as_before(stated, stamped):
 
 
 # ---------------------------------------------------------------------------
-# Site 7: the pack, and the one default that was LIVE
+# Site 5: the pack, and the one default that was LIVE
 # ---------------------------------------------------------------------------
 
 
@@ -602,9 +520,7 @@ def test_no_publishing_construction_of_the_document_model_omits_its_tier():
     )
 
 
-@pytest.mark.parametrize(
-    "callee", ["ingest_runbook", "upload_document", "ingest_document"]
-)
+@pytest.mark.parametrize("callee", ["ingest_runbook", "upload_document"])
 def test_no_publishing_call_omits_its_tier(callee):
     """The same guard one level up, for the methods rather than the model.
 
@@ -616,10 +532,7 @@ def test_no_publishing_call_omits_its_tier(callee):
     offenders = [
         f"{rel}:{line}"
         for rel, line, node in _walk_calls(callee)
-        # interfaces.py carries the abstract declaration and docstring examples,
-        # not calls that reach a store.
-        if not rel.endswith("models/interfaces.py")
-        and "scope" not in {kw.arg for kw in node.keywords}
+        if "scope" not in {kw.arg for kw in node.keywords}
         and None not in {kw.arg for kw in node.keywords}
     ]
 

@@ -27,7 +27,6 @@ writer                                scrubbed   test
 KB pack / ``kb_seed``                 NO, by     ``TestShippedPackTitle``
                                       decision
 ``update_document_metadata``          yes        ``TestUpdateDocument``
-``KnowledgeIngester`` (dead)          yes        ``TestDeadIngesterPaths``
 ====================================  =========  ==============================
 """
 
@@ -100,7 +99,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -189,7 +187,6 @@ def _cloud_sanitizer_without_a_key() -> DataSanitizer:
 
 def _knowledge(session_factory, sanitizer=None) -> KnowledgeService:
     service = KnowledgeService(
-        knowledge_ingester=MagicMock(),
         sanitizer=sanitizer if sanitizer is not None else regex_only_sanitizer(),
         tracer=MagicMock(),
         vector_store=MagicMock(),
@@ -804,91 +801,6 @@ class TestUpdateDocument:
         await service.update_document_metadata("kb_0123456789ab", title=PLAIN_TITLE)
 
         assert await _runbook_titles(session_factory) == [PLAIN_TITLE]
-
-
-class TestDeadIngesterPaths:
-    """``KnowledgeIngester.ingest_document`` / ``ingest_document_object`` have no
-    caller today (``write_scope`` pins them dead) but write a title into every
-    chunk's metadata, and a revived one must not be the path that publishes it
-    in clear. Built without ``__init__`` (which opens ChromaDB); the chunk
-    writer is the double, and what it is handed is what is asserted.
-
-    They also LOG what they ingest: by document id, never the raw title.
-
-    Mutation: delete the call in either method; log ``title`` again.
-    """
-
-    @staticmethod
-    def _ingester() -> KnowledgeIngester:
-        ingester = KnowledgeIngester.__new__(KnowledgeIngester)
-        ingester.logger = MagicMock()
-        ingester.sanitizer = regex_only_sanitizer()
-        ingester._process_and_store = AsyncMock()
-        ingester._extract_text = AsyncMock(return_value="# Body\n\ntext")
-        return ingester
-
-    @staticmethod
-    def _logged(ingester: KnowledgeIngester) -> str:
-        return " ".join(
-            str(call.args[0])
-            for method in ("debug", "info", "warning", "error")
-            for call in getattr(ingester.logger, method).call_args_list
-        )
-
-    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
-    async def test_ingest_document(self, label, secret, title):
-        ingester = self._ingester()
-
-        await ingester.ingest_document(
-            "/dev/null", title, scope="personal", owner_id="u1"
-        )
-
-        document = ingester._process_and_store.await_args.args[0]
-        _assert_scrubbed(document.title, secret)
-        assert secret not in self._logged(ingester)
-
-    @pytest.mark.parametrize("label,secret,title", SECRET_TITLES, ids=SECRET_IDS)
-    async def test_ingest_document_object(self, label, secret, title):
-        ingester = self._ingester()
-        document = KnowledgeBaseDocument(
-            document_id="d1",
-            title=title,
-            content="# Body",
-            document_type="runbook",
-            tags=[],
-            scope="personal",
-            owner_id="u1",
-            created_at="2026-10-14T00:00:00+00:00",
-            updated_at="2026-10-14T00:00:00+00:00",
-        )
-
-        await ingester.ingest_document_object(document)
-
-        _assert_scrubbed(ingester._process_and_store.await_args.args[0].title, secret)
-        assert secret not in self._logged(ingester)
-
-    async def test_a_failed_ingest_does_not_log_the_title(self):
-        ingester = self._ingester()
-        ingester._process_and_store = AsyncMock(side_effect=RuntimeError("store down"))
-
-        with pytest.raises(RuntimeError):
-            await ingester.ingest_document(
-                "/dev/null",
-                "Login fails (password=hunter2)",
-                scope="personal",
-                owner_id="u1",
-            )
-
-        assert "hunter2" not in self._logged(ingester)
-
-    async def test_an_ordinary_title_is_unchanged(self):
-        ingester = self._ingester()
-
-        await ingester.ingest_document(
-            "/dev/null", PLAIN_TITLE, scope="personal", owner_id="u1"
-        )
-
-        assert ingester._process_and_store.await_args.args[0].title == PLAIN_TITLE
 
 
 # ---------------------------------------------------------------------------

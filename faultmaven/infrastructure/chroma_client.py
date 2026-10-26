@@ -9,13 +9,12 @@ results, and for a Job (``kb_seed``) it is durable-state corruption: the
 Postgres rows land in the shared database while the vectors die with the pod,
 leaving a KB that lists fine and searches empty (#901).
 
-This module holds the pieces both client-acquisition paths (the container
-provider and ``KnowledgeIngester``) and the deployment coherence gate share,
-so they cannot drift apart on what "external ChromaDB is configured" means —
-the #881 lesson applied to the vector store. It is also the one door every
-``chromadb.HttpClient`` in ``faultmaven/`` is built through
-(:func:`build_http_client`), which is where the credential and the request
-timeout are applied (#2056, #1462).
+This module holds the pieces the container's client acquisition and the
+deployment coherence gate share, so they cannot drift apart on what "external
+ChromaDB is configured" means — the #881 lesson applied to the vector store.
+It is also the one door every ``chromadb.HttpClient`` in ``faultmaven/`` is
+built through (:func:`build_http_client`), which is where the credential and
+the request timeout are applied (#2056, #1462).
 """
 
 from __future__ import annotations
@@ -35,7 +34,6 @@ from faultmaven.config.deployment_coherence import (
     CHROMA_STORAGE_SYNONYMS,
     DeploymentCoherenceError,
     is_external_chroma_configured,
-    is_host_only_chroma_configured,
 )
 
 __all__ = [
@@ -49,7 +47,6 @@ __all__ = [
     "build_http_client",
     "chroma_token_auth_kwargs",
     "is_external_chroma_configured",
-    "is_host_only_chroma_configured",
     "is_http_client",
     "is_server_backed",
     "local_chroma_or_fail",
@@ -114,13 +111,12 @@ _VALID_TOKEN_CHARS = frozenset(
 class ChromaClientConfigError(RuntimeError):
     """A ChromaDB client that must not be built, for a reason that is not connectivity.
 
-    No caller may answer it with a fallback or a degraded mode: both client
-    acquisition paths, the ingester's container wrapper and
-    ``DIContainer.initialize`` re-raise it ahead of their failure handling.
-    That handling exists for an unreachable server, and answering a
-    configuration fault with it swaps the populated external store for an
-    empty local one on standalone, and blames connectivity on cloud (#1173,
-    #2056).
+    No caller may answer it with a fallback or a degraded mode: the
+    container's client acquisition and ``DIContainer.initialize`` re-raise it
+    ahead of their failure handling. That handling exists for an unreachable
+    server, and answering a configuration fault with it swaps the populated
+    external store for an empty local one on standalone, and blames
+    connectivity on cloud (#1173, #2056).
 
     A ``RuntimeError``, like ``TenancyConfigurationError``, because that is
     the container's fail-fast channel: the jobs runner and
@@ -135,9 +131,9 @@ def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     """Client-side token-auth ``ChromaSettings`` kwargs, or ``{}`` if no token.
 
     The single place every HTTP client resolves its ChromaDB credential —
-    :func:`build_http_client` calls it, and both acquisition paths (the
-    container provider and ``KnowledgeIngester``) build through that — so
-    they cannot drift on either axis again — before #1173 one path read
+    :func:`build_http_client` calls it, and every HTTP client is built
+    through that, so no two clients can drift on either axis again. Before
+    #1173 two acquisition paths resolved it separately: one read
     ``chromadb_api_key`` with a dead provider path while the other read
     ``chromadb_auth_token`` with the correct one, and neither actually sent a
     token on the deployed configuration. ``CHROMADB_AUTH_TOKEN`` is canonical;
@@ -157,9 +153,9 @@ def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     silent ``PersistentClient`` fallback (the populated external store swapped
     for an empty local one) and cloud with a boot refusal whose headline
     blames connectivity. It is raised as :class:`ChromaClientConfigError`
-    before any client is constructed, and both acquisition paths re-raise that
-    class ahead of their connection-failure handling, so a malformed
-    credential stays loud and named on both. Surrounding whitespace
+    before any client is constructed, and the container's acquisition
+    re-raises that class ahead of its connection-failure handling, so a
+    malformed credential stays loud and named. Surrounding whitespace
     is stripped first — the deployed secret is minted with shell tooling, and
     a trailing newline should not become a fleet-wide CrashLoop — but any
     interior violation of chromadb's own character rule (ASCII letters,
@@ -268,9 +264,7 @@ def chroma_client_kind(client: Any) -> Optional[str]:
     return "server" if is_server_backed(client) else "persistent"
 
 
-def build_http_client(
-    settings: Any, *, host: str, port: int, ssl: bool, **settings_overrides: Any
-) -> ClientAPI:
+def build_http_client(settings: Any, *, host: str, port: int, ssl: bool) -> ClientAPI:
     """Build a ``chromadb.HttpClient``: the one door every one in ``faultmaven/`` uses.
 
     It applies what no HTTP client may be built without, so a new acquisition
@@ -293,14 +287,11 @@ def build_http_client(
       so an ``https://`` server never receives the bearer token in plaintext.
     - **The mark** :func:`blocking_executor_for` checks.
 
-    ``settings_overrides`` are further ``ChromaSettings`` fields (the ingester
-    passes ``anonymized_telemetry=False, allow_reset=True``).
-
     Construction itself makes three round trips to the server, before the
-    timeout is set. On the ingester's path ``_call_with_timeout`` bounds them.
-    On the container's path nothing here does, and the boot's startup probe is
-    the bound. ``chromadb.HttpClient`` raises when the server is unreachable,
-    which the callers handle as connectivity.
+    timeout is set. Nothing here bounds them. The web boot's startup probe
+    bounds the API pod, and a Kubernetes Job only its pod's deadline; a CLI
+    has no bound on construction (#2339). ``chromadb.HttpClient`` raises when
+    the server is unreachable, which the caller handles as connectivity.
 
     Raises:
         ChromaClientConfigError: a malformed credential, or a chromadb whose
@@ -317,7 +308,7 @@ def build_http_client(
         host=host,
         port=port,
         ssl=ssl,
-        settings=ChromaSettings(**auth_kwargs, **settings_overrides),
+        settings=ChromaSettings(**auth_kwargs),
     )
     session = getattr(getattr(client, "_server", None), "_session", None)
     if session is None:

@@ -211,24 +211,6 @@ class TestObservabilityIntegration:
         # LogProcessor has @trace decorators on process methods
         assert hasattr(LogProcessor.process, "__wrapped__")
 
-    def test_knowledge_base_has_tracing(self):
-        """Verify knowledge base methods have trace decorators."""
-        # A `del sys.modules[...]` used to stand here, mirroring the one removed
-        # from test_data_processing_has_tracing. It was already dead -- the root
-        # conftest never stubbed this name -- and it is removed rather than left
-        # as a pattern for the next reader to copy: reaching past a stand-in by
-        # hand is what #942 replaced, and no conftest may install one now.
-        from faultmaven.modules.knowledge.domain.services.ingestion import (
-            KnowledgeIngester,
-        )
-
-        # Check that key methods have been wrapped with @trace.
-        # KnowledgeIngester.search was removed in #943 — it was reachable only
-        # via KnowledgeBaseTool, which the model could never call, and it
-        # queried the unified KB collection with no scope predicate. The live
-        # KB read path is kb_qa -> DocumentQATool -> KnowledgeVectorStore.
-        assert hasattr(KnowledgeIngester.ingest_document, "__wrapped__")
-
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
         from faultmaven.modules.auth.api.session import create_session

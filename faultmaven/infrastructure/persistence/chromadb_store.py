@@ -24,19 +24,18 @@ logger = logging.getLogger(__name__)
 def create_persistent_client(path: str) -> Any:
     """Open the process-wide ChromaDB client for a local persist path.
 
+    Its one caller is the container's ``_create_chromadb_client``
+    (``container/providers/infrastructure.py``), which opens the KB tree and
+    the evidence tree through it whenever the store is local.
+
     chromadb caches one System per path and refuses a second client for that
     path whose ``Settings`` differ *in any field* ("An instance of Chroma
-    already exists for <path> with different settings"). The container's KB
-    client and ``KnowledgeIngester`` both open ``data/chroma-kb``, so every
-    persistent client in the process is built here, with one set of settings —
-    two spellings of the same path is a startup crash, and was a cross-test
-    failure that surfaced hundreds of lines away from its cause (#823).
-
-    That constraint pulls towards granting whatever any call site asked for.
-    Do the opposite: reconciling call sites takes the NARROWER capability, and
-    every field is pinned rather than inherited, so the client is identified by
-    its path and nothing else. Widening here is silent — it grants a capability
-    to every caller of every path at once.
+    already exists for <path> with different settings"). So every field is
+    pinned rather than inherited, and the client is identified by its path and
+    nothing else: a second open of the same path in the same process shares
+    the cached System instead of crashing far from its cause (#823). Widening
+    a field here is silent — it grants a capability to every client of every
+    path at once.
     """
     import os
 
@@ -49,10 +48,7 @@ def create_persistent_client(path: str) -> Any:
         settings=ChromaSettings(
             anonymized_telemetry=False,
             # No caller resets a collection — wiping the KB is a deliberate
-            # operator act, not an API the app should hold open. The ingester
-            # asked for allow_reset=True and the container's KB client did not;
-            # taking the ingester's value would have handed the KB client a
-            # destructive capability it never had, for nobody's benefit.
+            # operator act, not an API the app should hold open.
             allow_reset=False,
             # chromadb's Settings picks ``environment`` up from the ambient
             # ENVIRONMENT variable — the same one that names OUR deployment
