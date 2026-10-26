@@ -179,7 +179,7 @@ async def test_a_chunk_written_between_the_listing_and_the_row_read_survives(
         await create_document()
         return found
 
-    real_read = kb_orphan_sweep._read_rows_if_complete
+    real_read = kb_orphan_sweep.read_rows_if_complete
 
     async def read_then_create(factory):
         rows = await real_read(factory)
@@ -187,7 +187,7 @@ async def test_a_chunk_written_between_the_listing_and_the_row_read_survives(
         return rows
 
     monkeypatch.setattr(world.store, "list_chunk_ids_by_parent", list_then_create)
-    monkeypatch.setattr(kb_orphan_sweep, "_read_rows_if_complete", read_then_create)
+    monkeypatch.setattr(kb_orphan_sweep, "read_rows_if_complete", read_then_create)
 
     result = await world.sweep()
 
@@ -237,7 +237,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
     A chunk rewritten under another enterprise's stamp after the listing (its
     document re-indexed by its owner) no longer matches, and stays."""
     restamped = f"{sc.E1_ORPHAN.item_id}_chunk_0"
-    real_read = kb_orphan_sweep._read_rows_if_complete
+    real_read = kb_orphan_sweep.read_rows_if_complete
 
     async def read_then_restamp(factory):
         rows = await real_read(factory)
@@ -253,7 +253,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
         )
         return rows
 
-    monkeypatch.setattr(kb_orphan_sweep, "_read_rows_if_complete", read_then_restamp)
+    monkeypatch.setattr(kb_orphan_sweep, "read_rows_if_complete", read_then_restamp)
 
     result = await world.sweep()
 
@@ -400,7 +400,7 @@ async def test_an_unproven_read_sweeps_nothing_and_says_what_it_left(
     async def unproven(_factory):
         return False, {}, kb_orphan_sweep.UNPROVEN_FILTERED
 
-    monkeypatch.setattr(kb_orphan_sweep, "_read_rows_if_complete", unproven)
+    monkeypatch.setattr(kb_orphan_sweep, "read_rows_if_complete", unproven)
 
     result = await world.sweep()
 

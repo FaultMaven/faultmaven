@@ -802,6 +802,26 @@ class TestJobTenantScopeGates:
 
         assert case_cleanup.JOB_TENANT_SCOPE == "cross_tenant"
 
+    def test_kb_vector_enterprise_backfill_is_cross_tenant(self):
+        """#1777: the backfill reads every enterprise's knowledge_items rows and
+        rewrites chunks of the KB collection, which no enterprise partitions.
+        An RLS-scoped view would leave every other tenant's chunks
+        unattributable. It must stay cross_tenant scoped, registered, and take
+        --dry-run / --no-dry-run."""
+        from faultmaven.jobs import kb_vector_enterprise_backfill
+        from faultmaven.jobs.run import AVAILABLE_JOBS, _reject_unsupported_job_flags
+
+        assert kb_vector_enterprise_backfill.JOB_TENANT_SCOPE == "cross_tenant"
+        assert AVAILABLE_JOBS["kb_vector_enterprise_backfill"] == (
+            "faultmaven.jobs.kb_vector_enterprise_backfill"
+        )
+        for dry_run in (True, False):
+            _reject_unsupported_job_flags(
+                kb_vector_enterprise_backfill,
+                "kb_vector_enterprise_backfill",
+                {"dry_run": dry_run},
+            )
+
     def test_storage_cleanup_is_cross_tenant(self):
         """storage_cleanup asks the DB whether an object is still referenced
         before deleting it (#1232), and a storage key carries no tenant the

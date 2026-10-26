@@ -1689,6 +1689,84 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             "delete_observed_chunk_ids", chunk_ids, None, collection_name
         )
 
+    async def restamp_chunk_ids(
+        self,
+        chunk_ids: Iterable[str],
+        enterprise_id: str,
+        where: Dict[str, Any],
+        collection_name: str = KB_COLLECTION,
+    ) -> List[str]:
+        """Write ``enterprise_id`` onto these chunk ids, only those matching ``where``.
+
+        The enterprise-stamp backfill's write (#1777), shaped like
+        :meth:`delete_chunk_ids`: an id-only ``get`` finds which of the
+        observed ids still carry the stamp they were listed under (``where``),
+        and ``collection.update`` writes only those. The guard holds as of that
+        ``get``, not the ``update``, which takes no ``where``: a stamp written
+        between the two is overwritten with ``enterprise_id``, the row's
+        enterprise, which is what every writer stamps. A vanished id is
+        skipped, not created.
+
+        ``update`` merges into the chunk's metadata: every other key, the
+        document and the embedding are kept. Never ``add``, which is
+        insert-or-ignore on an existing id. Measured on chromadb 1.5.8
+        in-process and on the 1.0.10 server Cloud runs (a local
+        ``chromadb/chroma:1.0.10`` driven by the 1.5.8 ``HttpClient``,
+        2026-10-26): ``update`` merges, ``$nin`` matches a missing key,
+        ``get(ids, where)`` is the intersection, and ``update`` on a missing id
+        is a no-op.
+
+        Returns the given ids that carry ``enterprise_id`` after the call, read
+        back id-only. A retry after a write that landed then finds nothing to
+        update and still returns them; an id deleted before the write is not
+        returned.
+        """
+        if not where:
+            raise ValueError(
+                "restamp_chunk_ids requires a where clause — the backfill "
+                "rewrites only chunks still carrying the stamp it listed them "
+                "under."
+            )
+        if not isinstance(enterprise_id, str) or not enterprise_id.strip():
+            raise ValueError("restamp_chunk_ids requires a non-blank enterprise_id")
+        ids = list(chunk_ids)
+        if not ids:
+            return []
+        stamped = {"enterprise_id": enterprise_id}
+
+        def _restamp_wrapper() -> List[str]:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except NotFoundError:
+                return []
+            matched = list(
+                collection.get(ids=ids, where=where, include=[]).get("ids") or []
+            )
+            if matched:
+                try:
+                    collection.update(ids=matched, metadatas=[stamped] * len(matched))
+                finally:
+                    # As the delete does (see _invalidate_term_stats).
+                    self._invalidate_term_stats(collection_name)
+                self.logger.info(
+                    f"Restamped {len(matched)} observed chunk(s) in KB collection "
+                    f"'{collection_name}' with enterprise_id={enterprise_id}"
+                )
+            return list(
+                collection.get(ids=ids, where=stamped, include=[]).get("ids") or []
+            )
+
+        self._invalidate_term_stats(collection_name)
+
+        return await self.call_external(
+            operation_name="restamp_chunk_ids",
+            call_func=_restamp_wrapper,
+            # A write: awaited to its end, like the delete (#2056).
+            timeout=None,
+            retries=2,
+            retry_delay=1.0,
+        )
+
     async def _delete_observed_ids(
         self,
         operation_name: str,

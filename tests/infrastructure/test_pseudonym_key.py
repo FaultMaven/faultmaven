@@ -77,7 +77,7 @@ class TestConfiguredKey:
         write anywhere else would slip past. Assert the publish never runs."""
         import faultmaven.infrastructure.security.pseudonym_key as mod
 
-        with patch.object(mod, "_write_atomically") as publish:
+        with patch.object(mod, "publish_secret_once") as publish:
             resolve_pseudonym_key(_settings(tmp_path, key=GOOD_KEY))
 
         publish.assert_not_called()
@@ -236,6 +236,28 @@ class TestAnEmptyKeyFileIsNeverHonoured:
         assert path.read_bytes() == b""
         assert [p.name for p in tmp_path.iterdir()] == [".redaction_key"]
 
+    def test_an_empty_file_that_appears_before_the_publish_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """Replacing a blank file is the JWT secret's rule. In the shared
+        publisher it replaced an empty key file that appeared between the
+        first read and the publish (#1788 review, 2/6)."""
+        import faultmaven.infrastructure.security.pseudonym_key as mod
+
+        path = tmp_path / ".redaction_key"
+        publish = mod.publish_secret_once
+
+        def an_empty_file_appears_first(target, data, **kwargs):
+            target.write_bytes(b"")
+            return publish(target, data, **kwargs)
+
+        monkeypatch.setattr(mod, "publish_secret_once", an_empty_file_appears_first)
+
+        with pytest.raises(PseudonymKeyUnavailableError):
+            _load_or_create(path)
+
+        assert path.read_bytes() == b""
+
     def test_resolve_never_returns_a_weak_key(self, tmp_path):
         """The backstop: what comes out is always usable, or nothing does."""
         (tmp_path / ".redaction_key").write_bytes(b"")
@@ -380,12 +402,12 @@ class TestTheNoHardlinkFallback:
 
     @staticmethod
     def _no_hardlinks(monkeypatch):
-        import faultmaven.infrastructure.security.pseudonym_key as mod
+        import faultmaven.config.secret_file as publisher
 
         def unsupported(_src, _dst):
             raise OSError(1, "Operation not permitted")
 
-        monkeypatch.setattr(mod.os, "link", unsupported)
+        monkeypatch.setattr(publisher.os, "link", unsupported)
 
     def test_the_fallback_publishes_a_complete_key(self, tmp_path, monkeypatch):
         self._no_hardlinks(monkeypatch)
@@ -419,6 +441,28 @@ class TestTheNoHardlinkFallback:
         assert len(keys) == 16
         assert len(set(keys)) == 1, f"racers diverged: {set(keys)}"
         assert keys[0] == path.read_bytes()
+
+    def test_an_empty_file_that_appears_before_the_locked_publish_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """The locked path replaces a blank file only for a caller that says
+        it holds no secret; the pseudonym key never does (#1788 review)."""
+        import faultmaven.infrastructure.security.pseudonym_key as mod
+
+        self._no_hardlinks(monkeypatch)
+        path = tmp_path / ".redaction_key"
+        publish = mod.publish_secret_once
+
+        def an_empty_file_appears_first(target, data, **kwargs):
+            target.write_bytes(b"")
+            return publish(target, data, **kwargs)
+
+        monkeypatch.setattr(mod, "publish_secret_once", an_empty_file_appears_first)
+
+        with pytest.raises(PseudonymKeyUnavailableError):
+            _load_or_create(path)
+
+        assert path.read_bytes() == b""
 
     def test_the_fallback_leaves_no_temp_file(self, tmp_path, monkeypatch):
         self._no_hardlinks(monkeypatch)
