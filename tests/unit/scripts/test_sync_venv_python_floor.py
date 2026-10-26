@@ -7,6 +7,7 @@ chosen version, so nothing is created or installed.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +26,11 @@ fields = "major minor micro releaselevel serial"
 sys.version_info = collections.namedtuple("version_info", fields)(*version, "final", 0)
 sys.version = sys.argv[1] + " (stand-in)"
 sys.argv = ["-c", *args]
-exec(compile(code, "<string>", "exec"))
+exec(compile(code, "<string>", "exec"), {"__name__": "__main__"})
 """
+
+# What the script and the stub call by name; their PATH holds nothing else.
+_TOOLS = ("dirname", "sha256sum", "mkdir", "cp")
 
 # Records each call; `uv venv` makes the venv a stand-in reporting the floor.
 _UV = """\
@@ -62,25 +66,20 @@ def run(tmp_path):
     stub = _executable(bin_dir / "uv", _UV.format(log=log, at_floor=at_floor))
     if not os.access(stub, os.X_OK):
         pytest.skip("tmp_path does not allow executing the stubs")
-    # No directory holding a real uv stays on PATH, so the script can only
-    # reach the stub; the uv settings are a second stop should one slip by.
-    path = [str(bin_dir)] + [
-        entry
-        for entry in os.environ["PATH"].split(os.pathsep)
-        if entry and not (Path(entry) / "uv").exists()
-    ]
-    env = {
-        **os.environ,
-        "PATH": os.pathsep.join(path),
-        "UV_OFFLINE": "1",
-        "UV_PYTHON_DOWNLOADS": "never",
-    }
+    bash = shutil.which("bash")
+    assert bash, "bash is not on PATH"
+    for tool in _TOOLS:
+        found = shutil.which(tool)
+        assert found, f"{tool} is not on PATH"
+        (bin_dir / tool).symlink_to(found)
+    # The stub's directory is the whole PATH, so no real uv can be reached.
+    env = {**os.environ, "PATH": str(bin_dir)}
 
     def _run(venv: Path, version: str = ""):
         if version:
             _interpreter(venv / "bin" / "python", stand_in, version)
         result = subprocess.run(
-            ["bash", str(SCRIPT), "test", str(venv)],
+            [bash, str(SCRIPT), "test", str(venv)],
             env=env,
             capture_output=True,
             text=True,
