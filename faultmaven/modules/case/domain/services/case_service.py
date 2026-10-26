@@ -1603,9 +1603,12 @@ class CaseService(CaseDriverMixin, ICaseService):
         import time
 
         from faultmaven.models.api import (
+            MESSAGE_PARSE_FAILED,
+            STORAGE_READ_FAILED,
             CaseMessagesResponse,
             Message,
             MessageRetrievalDebugInfo,
+            debug_error,
         )
 
         start_time = time.time()
@@ -1717,7 +1720,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                         f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}"
                     )
                     if include_debug:
-                        storage_errors.append(f"Message parsing error: {str(e)}")
+                        storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
 
             # Calculate performance metrics
             processing_time_ms = int((time.time() - start_time) * 1000)
@@ -1770,7 +1773,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                 debug_info = MessageRetrievalDebugInfo(
                     redis_key=f"case:{case_id}:messages",
                     redis_operation_time_ms=int((time.time() - start_time) * 1000),
-                    storage_errors=[f"Service error: {str(e)}"],
+                    storage_errors=[debug_error(STORAGE_READ_FAILED, e)],
                     message_parsing_errors=0,
                 )
 

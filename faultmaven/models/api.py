@@ -620,6 +620,19 @@ class Message(BaseModel):
     )
 
 
+# The failure kinds a ``MessageRetrievalDebugInfo.storage_errors`` entry names.
+# Any reader of a case can ask for debug info, so an entry carries a fixed code
+# and the exception's class name, never its text; the text goes to the server
+# log beside it (#2072).
+MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
+STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
+
+
+def debug_error(code: str, exc: BaseException) -> str:
+    """One ``storage_errors`` entry: ``CODE: ExceptionClass``, no exception text."""
+    return f"{code}: {type(exc).__name__}"
+
+
 class MessageRetrievalDebugInfo(BaseModel):
     """Debug information for message retrieval operations."""
 
@@ -628,7 +641,14 @@ class MessageRetrievalDebugInfo(BaseModel):
         ..., description="Time taken for Redis operation"
     )
     storage_errors: List[str] = Field(
-        default_factory=list, description="Any storage-related errors encountered"
+        default_factory=list,
+        description=(
+            "One entry per failure, as a fixed code and the exception's class "
+            "name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: "
+            "ValueError`). Codes: `MESSAGE_PARSE_FAILED` (a stored message "
+            "could not be converted), `STORAGE_READ_FAILED` (the messages "
+            "could not be read). The exception's text is in the server log."
+        ),
     )
     message_parsing_errors: int = Field(
         default=0, description="Number of messages that failed to parse"

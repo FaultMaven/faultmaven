@@ -5734,7 +5734,7 @@ Debug information for message retrieval operations.
 - `message_parsing_errors` (integer, optional) — Number of messages that failed to parse
 - `redis_key` (string, required) — Redis key used for message storage
 - `redis_operation_time_ms` (number, required) — Time taken for Redis operation
-- `storage_errors` (array, optional) — Any storage-related errors encountered
+- `storage_errors` (array, optional) — One entry per failure, as a fixed code and the exception's class name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: ValueError`). Codes: `MESSAGE_PARSE_FAILED` (a stored message could not be converted), `STORAGE_READ_FAILED` (the messages could not be read). The exception's text is in the server log.
 
 ---
 
