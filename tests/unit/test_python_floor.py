@@ -5,6 +5,7 @@ for an editable install made under an older floor and for a run from the source
 tree. That ``MINIMUM_PYTHON`` matches requires-python is test_packaging's job.
 """
 
+import os
 import subprocess
 import sys
 
@@ -51,6 +52,9 @@ def _import_as(version: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=60,
+        # 3.13+ colours tracebacks under FORCE_COLOR, which would split the
+        # strings the refusal test looks for.
+        env={**os.environ, "NO_COLOR": "1"},
     )
 
 

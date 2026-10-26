@@ -24,7 +24,7 @@ if sys.version_info[:3] < MINIMUM_PYTHON:
     raise RuntimeError(
         f"FaultMaven requires Python {'.'.join(map(str, MINIMUM_PYTHON))} or later; "
         f"{sys.executable or 'this interpreter'} is Python "
-        f"{'.'.join(map(str, sys.version_info[:3]))}. Earlier releases mis-match "
+        f"{'.'.join(map(str, sys.version_info[:3]))}. 3.11.0-3.11.4 mis-match "
         "the possessive regular expressions the secret redactor relies on "
         "(python/cpython#100061, #106052) and leave secrets in clear. Run "
         "FaultMaven on a newer Python."

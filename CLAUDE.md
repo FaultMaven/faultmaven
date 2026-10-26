@@ -25,7 +25,7 @@ Python ≥ 3.11.5 (`requires-python`: earlier 3.11 releases mis-match the posses
 
 | Layer | Technologies |
 |-------|--------------|
-| Framework | Python 3.11+, FastAPI, Uvicorn, AsyncIO, Pydantic v2 + pydantic-settings |
+| Framework | Python 3.11.5+, FastAPI, Uvicorn, AsyncIO, Pydantic v2 + pydantic-settings |
 | LLM/AI | 9 providers behind one router (`faultmaven/infrastructure/llm/`) |
 | Database | SQLAlchemy 2.0 async (aiosqlite, asyncpg), SQLite (standalone), PostgreSQL (cloud), Alembic |
 | Vector DB | ChromaDB (PersistentClient in-process by default), BGE-M3 via sentence-transformers |
