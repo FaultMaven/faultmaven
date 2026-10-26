@@ -1,12 +1,11 @@
 """``MinimalSessionService.get_session`` must honour ``validate``.
 
 This stand-in is not test-only scaffolding: ``create_session_service``
-(``container/providers/services.py``) returns it in PRODUCTION whenever the
-session store is unavailable (Redis down). Before this test it accepted
-``validate`` and discarded it, so a degraded deployment happily handed out
-expired sessions — and, in the other direction, a non-validating read must not
-delete what it reads (the heartbeat endpoint observes ``last_activity``
-through ``validate=False``).
+(``container/providers/services.py``) returns it given no session store, and
+``_create_minimal_container`` installs it. Before this test it accepted
+``validate`` and discarded it, so it handed out expired sessions — and, in the
+other direction, a non-validating read must not delete what it reads (the
+heartbeat endpoint observes ``last_activity`` through ``validate=False``).
 
 The store-contents assertions are the point: checking only the return value
 lets a "returns the right object but deletes it anyway" implementation pass.

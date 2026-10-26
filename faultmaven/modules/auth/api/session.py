@@ -533,8 +533,8 @@ async def get_session(
 # an anonymous caller could name a user and read back their session ids — and,
 # unfiltered, every session id with the identity it is bound to (#1447 §1,
 # measured against MinimalSessionService, which ships a working list_sessions
-# and which create_session_service installs whenever the real service cannot be
-# constructed).
+# and which create_session_service installed whenever the real service could not
+# be constructed, until #2103).
 #
 # The filter is REMOVED rather than ignored, for the argument contract 6.0.0
 # made about the identical parameter on `POST /api/v1/sessions`: once the

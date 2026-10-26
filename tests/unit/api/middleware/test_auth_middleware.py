@@ -640,13 +640,21 @@ class TestAuthServiceSingleton:
         assert retrieved == mock_auth_service
 
     @pytest.mark.asyncio
-    async def test_get_creates_default_service(self):
-        """get_auth_service creates default service if none set."""
-        # Clear any existing service
+    async def test_no_composed_service_answers_503(self):
+        """With none composed, 503 and never a stand-in (#2103): an
+        ``AuthService()`` built here would have no revocation store."""
         set_auth_service(None)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
-        service = await get_auth_service(request=None)
-        assert service is not None
+        with patch(
+            "faultmaven.api.middleware.auth.AuthService",
+            side_effect=AssertionError("built a stand-in AuthService"),
+        ):
+            with pytest.raises(HTTPException) as refused:
+                await get_auth_service(request=request)
+
+        assert refused.value.status_code == 503
+        assert refused.value.detail == "Authentication service unavailable"
 
     def teardown_method(self, method):
         """Reset auth service after each test."""

@@ -1036,7 +1036,7 @@ def request_with_authorization(authorization: Optional[str] = None) -> "Request"
 
 
 def minimal_session_service(settings=None):
-    """The session stand-in ``create_session_service`` installs when Redis is down.
+    """The session stand-in ``create_session_service`` returns given no store.
 
     ``settings`` is what the container would hold; the stand-in reads its
     ``session`` section (the TTL and the per-user limit) and defaults without it.
@@ -1072,6 +1072,21 @@ def minimal_session_service(settings=None):
     container = object.__new__(DIContainer)
     container.settings = settings
     return container._create_minimal_session_service()
+
+
+def uncomposed_auth_service():
+    """The ``AuthService`` for an app a test serves without composing it.
+
+    Composition publishes ``app.state.auth_service``. An app built in a test, or
+    served without its lifespan, has none, and ``get_auth_service`` then
+    refuses every request with 503 instead of building a stand-in per request
+    (#2103); the tenant binder is a global dependency, so that is every route.
+    This is the service the stand-in built: from the current settings, with no
+    revocation store.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    return AuthService()
 
 
 def log_field(record, name):

@@ -64,7 +64,10 @@ def rebuild_app():
     previous = sys.modules.pop("faultmaven.main", None)
     try:
         import faultmaven.main
+        from tests.utils import uncomposed_auth_service
 
+        # Served without its lifespan, so nothing composes this (#2103).
+        faultmaven.main.app.state.auth_service = uncomposed_auth_service()
         _REBUILT_APPS.append(faultmaven.main.app)
         return faultmaven.main.app
     finally:

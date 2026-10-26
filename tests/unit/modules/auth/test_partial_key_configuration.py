@@ -218,12 +218,12 @@ def test_constructor_supplied_pair_is_used_verbatim():
 @pytest.mark.unit
 @pytest.mark.security
 def test_the_container_factory_does_not_degrade_on_a_partial_pair():
-    """`create_auth_service` wraps construction in `except Exception` and returns
-    a fallback service. That handler must not absorb this refusal: the fallback
-    builds the same service from the same settings, so it cannot succeed where
-    this failed — it would only re-raise from inside a handler and bury the
-    cause under a chained traceback.
+    """The refusal leaves `create_auth_service` as a
+    `RequiredServiceConstructionError` caused by it, which `DIContainer.initialize`
+    re-raises in every environment (#2103). The factory once caught construction
+    errors and returned a revocation-less fallback.
     """
+    from faultmaven.container.errors import RequiredServiceConstructionError
     from faultmaven.container.providers.services import create_auth_service
 
     private_pem, _ = _keypair()
@@ -233,8 +233,9 @@ def test_the_container_factory_does_not_degrade_on_a_partial_pair():
         "faultmaven.modules.auth.domain.services.auth_service.get_settings",
         return_value=settings,
     ):
-        with pytest.raises(PartialKeyConfigurationError):
+        with pytest.raises(RequiredServiceConstructionError) as refused:
             create_auth_service(None, settings)
+    assert isinstance(refused.value.__cause__, PartialKeyConfigurationError)
 
 
 @pytest.mark.unit

@@ -451,12 +451,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
         Read straight off ``app.state`` — wired by the composition root in
         ``main.py`` beside the other auth services — rather than through
-        ``api.middleware.auth.get_auth_service``, whose fallback *constructs* an
-        ``AuthService`` when none is wired. Constructing one per request inside
-        a middleware would load keys (and generate a development RSA pair) on
-        the hot path. An app without the service wired simply falls back to the
-        raw-credential scope below, which is what this middleware did for every
-        request before fm#1087.
+        ``api.middleware.auth.get_auth_service``, which refuses with a 503 when
+        none is wired (#2103). An app without the service wired simply falls
+        back to the raw-credential scope below, which is what this middleware
+        did for every request before fm#1087.
         """
         try:
             return getattr(request.app.state, "auth_service", None)

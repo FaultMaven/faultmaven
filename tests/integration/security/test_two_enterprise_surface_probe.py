@@ -1155,11 +1155,11 @@ def _wire_services(app, chroma) -> None:
     # (Measured: the mint 500s with exactly that.) The minimal service is a
     # plain dict and is loop-free, so it survives module scope.
     #
-    # It is not a test double. ``create_session_service`` installs it in
-    # PRODUCTION whenever the session store cannot be constructed, and its
-    # docstring says so; its contract is to answer as ``AuthSessionService``
-    # does. It is also the implementation that made #1447 §1 live rather than
-    # theoretical, since it ships a working ``list_sessions``.
+    # It is not a test double. ``create_session_service`` returns it given no
+    # session store, and ``_create_minimal_container`` installs it; its
+    # contract is to answer as ``AuthSessionService`` does. It is also the
+    # implementation that made #1447 §1 live rather than theoretical, since it
+    # ships a working ``list_sessions``.
     app.state.session_service = minimal_session_service()
     app.state.investigation_service = _Tripwire("investigation_service")
     app.state.share_repository = share_repository
@@ -5941,8 +5941,8 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # caller, so no control exists". That was a property of `RedisSessionStore`,
     # whose `list_sessions()` was a stub until #2297, and not of the route:
     # `MinimalSessionService` ships a working one and `create_session_service`
-    # installs it in production whenever the real service cannot be
-    # constructed. Both routes ARE probed —
+    # installed it in production whenever the real service could not be
+    # constructed, until #2103. Both routes ARE probed —
     # `tests/integration/security/test_unauthenticated_session_surface.py`
     # drives them against that service, anonymously and as a foreign
     # authenticated caller, which is the arm this module has never had.

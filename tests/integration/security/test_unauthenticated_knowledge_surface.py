@@ -19,11 +19,11 @@ and :data:`DRIVEN` are what would widen.
 
 **Why the provider is forced to raise here, rather than simply left unwired.**
 On the case router that distinction was load-bearing: ``get_case_service``
-returns ``None`` and ``check_case_service_available`` turns that into a 401 of
-its own, so nineteen of those twenty-two answered 401 with the defect fully
-present. The knowledge module has NO such masking — measured, both of its
-providers (``_get_conversion_service``, ``get_knowledge_service``) raise a 503
-of their own — so on a service-less app
+returns ``None`` and ``check_case_service_available`` turned that into a 401 of
+its own (a 503 since #2103), so nineteen of those twenty-two answered 401 with
+the defect fully present. The knowledge module has NO such masking — measured,
+both of its providers (``_get_conversion_service``, ``get_knowledge_service``)
+raise a 503 of their own — so on a service-less app
 all eleven of these answered **503** before the fix, and the defect was
 visible. The provider is overridden to raise anyway, for the same reason the
 case module needed it: the battery must not depend on WHICH failure the
@@ -49,6 +49,7 @@ from faultmaven.modules.knowledge.api.conversion_routes import (
 )
 from faultmaven.modules.knowledge.api.routes import get_knowledge_service
 from faultmaven.modules.knowledge.api.routes import router as knowledge_router
+from tests.utils import uncomposed_auth_service
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -168,6 +169,7 @@ def _surface() -> FastAPI:
     app = FastAPI()
     app.include_router(knowledge_router, prefix="/api/v1")
     app.include_router(conversion_router, prefix="/api/v1")
+    app.state.auth_service = uncomposed_auth_service()
     for provider in _SERVICE_PROVIDERS:
         app.dependency_overrides[provider] = _explodes(
             f"{provider.__module__}.{provider.__name__}"
@@ -372,6 +374,7 @@ def test_the_probe_bites_when_the_gate_is_declared_after_the_service():
     app.dependency_overrides[_get_conversion_service] = _explodes(
         "the conversion service"
     )
+    app.state.auth_service = uncomposed_auth_service()
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.get("/gate-after-the-service").status_code == 500, (

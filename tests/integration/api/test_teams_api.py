@@ -16,6 +16,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.models.interfaces_user import Team
 from faultmaven.modules.auth.api.teams import router as teams_router
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from tests.utils import uncomposed_auth_service
 
 
 def _make_team(team_id: str, name: str, org: str = "org_1") -> Team:
@@ -111,6 +112,7 @@ class TestListMyTeams:
         app = FastAPI()
         app.include_router(teams_router, prefix="/api/v1")
         app.state.team_service = None
+        app.state.auth_service = uncomposed_auth_service()
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:

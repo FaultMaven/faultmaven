@@ -884,9 +884,9 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #:   ``tests/integration/security/test_unauthenticated_case_surface.py``, which
 #:   drives them against providers made to RAISE, because on that router a
 #:   service-less app is not a measurement: ``get_case_service`` returns
-#:   ``None`` rather than raising and ``check_case_service_available`` turns
-#:   that into a 401 of its own, so 19 of the 22 answered 401 with the defect
-#:   fully present.
+#:   ``None`` rather than raising and ``check_case_service_available`` turned
+#:   that into a 401 of its own (a 503 since #2103), so 19 of the 22
+#:   answered 401 with the defect fully present.
 #: * The second slice fixed the 11 behind ``_get_conversion_service``, pinned
 #:   by ``tests/integration/security/test_unauthenticated_knowledge_surface.py``
 #:   in the same shape. The knowledge module has NO equivalent masking 401 —
@@ -1242,6 +1242,9 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
             "passes is unchecked"
         )
 
+    from tests.utils import uncomposed_auth_service
+
+    probe.state.auth_service = uncomposed_auth_service()
     with TestClient(probe, raise_server_exceptions=False) as client:
         assert client.get("/gate-on-the-decorator").status_code == 401
         assert client.get("/gate-through-two-wrappers").status_code == 401, (

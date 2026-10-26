@@ -14,9 +14,8 @@ theoretical. ``RedisSessionStore.list_sessions()`` was then a stub returning
 hazard — but that store is one of **two** implementations. ``MinimalSessionService``
 (``_container_impl._create_minimal_session_service``) ships a working
 ``list_sessions`` with the ``user_id`` filter, and ``create_session_service``
-installs it whenever the real service cannot be constructed — *"Reachable in
-PRODUCTION, not only under test"*, in its own docstring. Measured on that path
-with no ``Authorization`` header, before the fix:
+installed it whenever the real service could not be constructed, until #2103.
+Measured on that path with no ``Authorization`` header, before the fix:
 
     GET /api/v1/sessions?user_id=<victim>     -> 200, that user's session id
     GET /api/v1/sessions                      -> 200, every session id + user
@@ -51,7 +50,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.session import router as session_router
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from tests.utils import minimal_session_service
+from tests.utils import minimal_session_service, uncomposed_auth_service
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -86,6 +85,7 @@ class _Surface:
         # instead doubles the segment and every assertion below quietly stops
         # describing a served route.
         app.include_router(session_router, prefix="/api/v1")
+        app.state.auth_service = uncomposed_auth_service()
 
         async def _service():
             return self.service
@@ -469,6 +469,7 @@ def test_the_refusal_precedes_service_resolution():
     app = FastAPI()
     app.include_router(session_router, prefix="/api/v1")
     # Deliberately NOT set: app.state.session_service
+    app.state.auth_service = uncomposed_auth_service()
     client = TestClient(app, raise_server_exceptions=False)
 
     refused = {

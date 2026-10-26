@@ -189,6 +189,22 @@ def pytest_sessionfinish(session, exitstatus):
         session.exitstatus = 1
 
 
+@pytest.fixture
+def uncomposed_main_app_auth_service(monkeypatch):
+    """Publish an auth service on ``faultmaven.main.app`` for the test.
+
+    For a module that serves the app without its lifespan: nothing composes
+    ``app.state.auth_service`` then, and every route answers 503 without it
+    (#2103). ``rebuild_app`` publishes one on the apps it builds.
+    """
+    from faultmaven.main import app
+    from tests.utils import uncomposed_auth_service
+
+    monkeypatch.setattr(
+        app.state, "auth_service", uncomposed_auth_service(), raising=False
+    )
+
+
 @pytest.fixture(autouse=True)
 async def _served_apps_end_their_service():
     """End the protection middleware's service after every test, deterministically.
