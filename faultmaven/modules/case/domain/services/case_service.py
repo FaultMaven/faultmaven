@@ -1717,7 +1717,11 @@ class CaseService(CaseDriverMixin, ICaseService):
                 except Exception as e:
                     message_parsing_errors += 1
                     logger.warning(
-                        f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}"
+                        "Failed to convert message %s of case %s: %s: %s",
+                        getattr(case_msg, "message_id", "unknown"),
+                        case_id,
+                        type(e).__name__,
+                        e,
                     )
                     if include_debug:
                         storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
@@ -1767,7 +1771,13 @@ class CaseService(CaseDriverMixin, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            logger.error(f"Failed to get enhanced messages for case {case_id}: {e}")
+            logger.error(
+                "Failed to get enhanced messages for case %s: %s: %s",
+                case_id,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
             # Return empty response with error info for graceful degradation
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(

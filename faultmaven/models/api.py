@@ -1,5 +1,6 @@
 # File: faultmaven/models/api.py
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
@@ -626,6 +627,10 @@ class Message(BaseModel):
 # log beside it (#2072).
 MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
 STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
+STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED, STORAGE_READ_FAILED)
+_STORAGE_ERROR_ENTRY = re.compile(
+    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): [A-Za-z_][A-Za-z0-9_]*$"
+)
 
 
 def debug_error(code: str, exc: BaseException) -> str:
@@ -645,14 +650,24 @@ class MessageRetrievalDebugInfo(BaseModel):
         description=(
             "One entry per failure, as a fixed code and the exception's class "
             "name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: "
-            "ValueError`). Codes: `MESSAGE_PARSE_FAILED` (a stored message "
-            "could not be converted), `STORAGE_READ_FAILED` (the messages "
-            "could not be read). The exception's text is in the server log."
+            "ValueError`). Codes: `STORAGE_READ_FAILED` (the page could not be "
+            "read or loaded: a storage error, or a stored row that could not "
+            "be loaded), `MESSAGE_PARSE_FAILED` (a loaded message could not be "
+            "converted to the response format). The exception's text is in "
+            "the server log."
         ),
     )
     message_parsing_errors: int = Field(
         default=0, description="Number of messages that failed to parse"
     )
+
+    @field_validator("storage_errors")
+    @classmethod
+    def _coded_entries_only(cls, entries: List[str]) -> List[str]:
+        """Refuse any entry ``debug_error`` did not produce: it could carry text."""
+        if not all(_STORAGE_ERROR_ENTRY.fullmatch(entry) for entry in entries):
+            raise ValueError("storage_errors entries must be `CODE: ExceptionClass`")
+        return entries
 
 
 class CaseMessagesResponse(BaseModel):

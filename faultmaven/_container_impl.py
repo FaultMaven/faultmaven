@@ -1348,9 +1348,10 @@ class DIContainer(BaseDIContainer):
                         except Exception as e:
                             message_parsing_errors += 1
                             logging.getLogger(__name__).warning(
-                                "Failed to convert message %s of case %s: %s",
-                                message_id or "<unknown>",
+                                "Failed to convert message %s of case %s: %s: %s",
+                                message_id or "unknown",
                                 case_id,
+                                type(e).__name__,
                                 e,
                             )
                             storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
@@ -1361,7 +1362,10 @@ class DIContainer(BaseDIContainer):
 
                 except Exception as e:
                     logging.getLogger(__name__).warning(
-                        "Failed to read messages of case %s: %s", case_id, e
+                        "Failed to read messages of case %s: %s: %s",
+                        case_id,
+                        type(e).__name__,
+                        e,
                     )
                     storage_errors.append(debug_error(STORAGE_READ_FAILED, e))
                     total_count = 0
