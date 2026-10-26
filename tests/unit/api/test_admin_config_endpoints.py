@@ -1510,10 +1510,12 @@ class TestGetEnvConfigStatus:
     ):
         """LLM_REQUEST_TIMEOUT=30 against AGENT_REQUEST_TIMEOUT=120 fits.
 
-        3x30 + 14s of backoff = 104s inside a 120s turn. The env var is cleared
-        because ``resolve_request_timeout`` honours it over the settings value,
-        and this box's own ``.env`` sets it to a breaching 90 — a test that read
-        the developer's environment would assert nothing about the code.
+        Both ladders (#1294): a hung provider's 2x30 + 2s = 62s, and a slow
+        5xx's 3x30 + 14s of backoff = 104s, each inside a 120s turn. The env
+        var is cleared because ``resolve_request_timeout`` honours it over the
+        settings value, and this box's own ``.env`` sets it to a breaching 90 —
+        a test that read the developer's environment would assert nothing about
+        the code.
         """
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
 
@@ -1524,7 +1526,12 @@ class TestGetEnvConfigStatus:
 
         feature = result.features["llm_retry_ladder_fits_turn_budget"]
         assert feature.enabled is True
-        assert "3 of 3 attempts" in feature.description
+        assert "hung or 504-answering LLM provider gets 2 of 2 attempts" in (
+            feature.description
+        )
+        assert "62s" in feature.description
+        assert "slow non-504 5xx gets 3 of 3 attempts: 104s" in feature.description
+        assert "the tool loop's own attempt comes first" in feature.description
 
     @pytest.mark.asyncio
     async def test_retry_ladder_reports_incoherent_on_the_cluster_shape(
@@ -1532,9 +1539,10 @@ class TestGetEnvConfigStatus:
     ):
         """The live-cluster configuration: gemini pinned to 120s / 240s.
 
-        3x120 + 14 = 374s against a 240s turn — a 134s breach. Nothing else in
-        the system reports it, which is why it sat unnoticed: turns look fine
-        until a provider hangs, and then the answer is an opaque 504.
+        A hung provider's 2x120 + 2 = 242s and a slow 5xx's 3x120 + 14 = 374s,
+        both against a 240s turn. Nothing else in the system reports it, which
+        is why it sat unnoticed: turns look fine until a provider hangs, and
+        then the answer is an opaque 504.
         """
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
         mock_settings.llm.request_timeout = 30
@@ -1549,10 +1557,77 @@ class TestGetEnvConfigStatus:
         feature = result.features["llm_retry_ladder_fits_turn_budget"]
         assert feature.enabled is False
         # The number that matters to an operator: a hung provider gets ONE of
-        # its three configured attempts.
-        assert "1 of 3 attempts" in feature.description
-        assert "374s" in feature.description
+        # its two attempts, a slow 5xx one of three.
+        assert "gets 1 of 2 attempts" in feature.description
+        assert "242s" in feature.description
+        assert "gets 1 of 3 attempts: 374s" in feature.description
         assert "LLM_REQUEST_TIMEOUT" in feature.config_hint
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "deadline_fits,status_fits", [(True, False), (False, True), (True, True)]
+    )
+    async def test_retry_ladder_is_coherent_only_when_both_ladders_fit(
+        self,
+        monkeypatch,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        deadline_fits,
+        status_fits,
+    ):
+        """One verdict over two ladders (#1294): either breaching reads false.
+
+        The shipped ``RetryConfig`` cannot make the deadline ladder breach
+        alone (``2T + 2 < 3T + 14``), so the report's composition is replaced
+        with plans whose verdicts are set, to reach both arms of the ``and``.
+        """
+        import dataclasses
+
+        from faultmaven.config import retry_budget
+
+        shipped = retry_budget.model_retry_ladders(
+            agent_timeout=120, attempt_seconds=30
+        )
+        budget = retry_budget.RetryLadderBudget(
+            deadline_shaped=dataclasses.replace(
+                shipped.deadline_shaped, fits=deadline_fits
+            ),
+            status_shaped=dataclasses.replace(shipped.status_shaped, fits=status_fits),
+        )
+        monkeypatch.setattr(
+            retry_budget, "describe_retry_ladder_budget", lambda settings: budget
+        )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["llm_retry_ladder_fits_turn_budget"]
+        assert feature.enabled is (deadline_fits and status_fits)
+
+    @pytest.mark.asyncio
+    async def test_retry_ladder_breach_on_the_long_ladder_alone_reads_false(
+        self, monkeypatch, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """T=40 at a 120s turn: a hung provider's 82s ladder fits, a slow 5xx's
+        134s one does not, and the entry says so for each."""
+        monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+        mock_settings.llm.request_timeout = 30
+        mock_settings.llm.timeout_for_provider.return_value = 40
+        mock_settings.agent.timeout_for_provider.return_value = 120
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["llm_retry_ladder_fits_turn_budget"]
+        assert feature.enabled is False
+        assert "gets 2 of 2 attempts" in feature.description
+        assert "82s" in feature.description
+        assert "gets 2 of 3 attempts: 134s" in feature.description
 
     @pytest.mark.asyncio
     async def test_retry_ladder_honours_the_env_override_the_router_honours(
@@ -1608,10 +1683,12 @@ class TestGetEnvConfigStatus:
         from faultmaven.config.retry_budget import describe_retry_ladder_budget
         from faultmaven.config.settings import get_settings
 
-        plan = describe_retry_ladder_budget(get_settings())
-        assert plan.paid_attempts == 3
-        assert plan.attempts >= 1
-        assert plan.full_ladder_seconds > 0
+        budget = describe_retry_ladder_budget(get_settings())
+        assert budget.status_shaped.paid_attempts == 3
+        assert budget.deadline_shaped.paid_attempts == 2
+        for plan in (budget.deadline_shaped, budget.status_shaped):
+            assert plan.attempts >= 1
+            assert plan.full_ladder_seconds > 0
 
     @pytest.mark.asyncio
     async def test_consent_skip_matches_the_predicate_that_actually_gates_it(

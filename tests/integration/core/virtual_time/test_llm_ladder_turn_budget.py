@@ -41,7 +41,11 @@ from faultmaven.core.investigation.turn_budget import (
     bind_turn_deadline,
     clamp_to_turn_budget,
 )
-from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, ExternalCallTimeout
+from faultmaven.exceptions import (
+    TURN_BUDGET_EXHAUSTED,
+    ExternalCallTimeout,
+    LLMException,
+)
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from tests.utils import sockets_refused
 from tests.wallclock import virtual_now, virtual_time_module
@@ -66,6 +70,16 @@ SCALED_RESERVE = 0.5
 SCALED_COMMIT_RESERVE = 0.25
 
 CANCELLED = "cancelled"
+
+# The failure each attempt ends in, after ``hang_seconds`` (#1294). The two
+# shapes get different ladders, so every turn below names the one it measures.
+#: The provider never answers; the router's own deadline fires. Deadline-shaped:
+#: one retry.
+HUNG = "hung"
+#: The provider answers 503. Status-shaped: the full ladder. With a non-zero
+#: ``hang_seconds`` this is the slow non-504 5xx, the one failure whose ladder
+#: can still cost ``3T + 14``.
+ANSWERS_503 = "answers_503"
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +121,7 @@ class _Outcome:
 
 async def _run_turn(
     *,
+    failure,
     hang_seconds,
     turn_seconds,
     base_delay,
@@ -116,13 +131,17 @@ async def _run_turn(
     """One 'turn': the ladder(s), under the turn-wide wait_for the route applies.
 
     ``bind`` is the whole treatment: whether the deadline the ``wait_for`` will
-    enforce is also visible to the ladder inside it.
+    enforce is also visible to the ladder inside it. ``failure`` is the shape
+    every attempt ends in (``HUNG`` or ``ANSWERS_503``).
     """
     attempts = {"n": 0}
 
     async def hanging_provider():
         attempts["n"] += 1
         await asyncio.sleep(hang_seconds)
+        if failure == ANSWERS_503:
+            raise LLMException("upstream 503 over capacity", status_code=503)
+        assert failure == HUNG, failure
         raise ExternalCallTimeout(
             f"External call to LLM_Providers.generate timed out after {hang_seconds}s",
             service="LLM_Providers",
@@ -161,7 +180,7 @@ class TestOneAttemptCostsMoreThanTheWholeTurn:
     whatever the retry policy says.
     """
 
-    PARAMS = dict(hang_seconds=5.0, turn_seconds=2.0, base_delay=0.05)
+    PARAMS = dict(failure=HUNG, hang_seconds=5.0, turn_seconds=2.0, base_delay=0.05)
 
     async def test_control_the_turn_is_cancelled_mid_attempt(self):
         outcome = await _run_turn(**self.PARAMS, bind=False)
@@ -180,10 +199,16 @@ class TestOneAttemptCostsMoreThanTheWholeTurn:
 class TestTheLadderOverrunsTheTurn:
     """Each attempt fits; the ladder as a whole does not.
 
-    This is the production shape: 3x120s + 14s of backoff against a 240s turn.
+    The production shape for a provider answering a slow non-504 5xx: 3x120s +
+    14s of backoff against a 240s turn. A HUNG provider no longer has this
+    shape (#1294): its two-attempt ladder either fits the turn or cannot make
+    its second attempt, so "fits per attempt, overruns as a ladder, still
+    spends two attempts" is reachable only on the long ladder.
     """
 
-    PARAMS = dict(hang_seconds=0.5, turn_seconds=2.0, base_delay=0.2)
+    PARAMS = dict(
+        failure=ANSWERS_503, hang_seconds=0.5, turn_seconds=2.0, base_delay=0.2
+    )
 
     async def test_control_the_turn_is_cancelled_part_way_down_the_ladder(self):
         outcome = await _run_turn(**self.PARAMS, bind=False)
@@ -213,12 +238,13 @@ class TestTheBackoffIsPartOfWhatIsBudgeted:
     A ladder that only decided whether to *start an attempt* would still sleep a
     backoff it cannot afford and be cancelled inside it — the same failure with
     a longer fuse, and one that no amount of clamping the attempts can reach.
-    Sized so the ladder's third backoff alone outlives what is left: with the
-    check the turn answers at ~1.4s of its 2s, without it the turn is cancelled
-    asleep.
+    Sized so the hung provider's one backoff alone outlives what is left: with
+    the check the turn answers at 0.2s of its 2s, without it the turn is
+    cancelled asleep. (At a 1s backoff the two-attempt ladder now finishes
+    inside the turn, #1294, and the control would measure nothing.)
     """
 
-    PARAMS = dict(hang_seconds=0.2, turn_seconds=2.0, base_delay=1.0)
+    PARAMS = dict(failure=HUNG, hang_seconds=0.2, turn_seconds=2.0, base_delay=2.0)
 
     async def test_control_is_cancelled_inside_a_backoff(self):
         outcome = await _run_turn(**self.PARAMS, bind=False)
@@ -242,13 +268,16 @@ class TestACoherentConfigurationIsUnaffected:
 
     PARAMS = dict(hang_seconds=0.1, turn_seconds=3.0, base_delay=0.05)
 
-    async def test_control_and_treatment_agree(self):
-        control = await _run_turn(**self.PARAMS, bind=False)
-        treatment = await _run_turn(**self.PARAMS, bind=True)
+    @pytest.mark.parametrize(
+        "failure,attempts", [(HUNG, 2), (ANSWERS_503, 4)], ids=["hung", "503"]
+    )
+    async def test_control_and_treatment_agree(self, failure, attempts):
+        control = await _run_turn(**self.PARAMS, failure=failure, bind=False)
+        treatment = await _run_turn(**self.PARAMS, failure=failure, bind=True)
 
         assert control.error_code == "RETRY_EXHAUSTED"
         assert treatment.error_code == control.error_code
-        assert treatment.attempts == control.attempts == 4
+        assert treatment.attempts == control.attempts == attempts
 
     async def test_a_fast_failing_provider_keeps_every_retry(self):
         """The retry budget is estimated from what attempts actually COST.
@@ -258,7 +287,11 @@ class TestACoherentConfigurationIsUnaffected:
         two-minute wait for a system that gives up on the first transient blip.
         """
         outcome = await _run_turn(
-            hang_seconds=0.0, turn_seconds=1.0, base_delay=0.02, bind=True
+            failure=ANSWERS_503,
+            hang_seconds=0.0,
+            turn_seconds=1.0,
+            base_delay=0.02,
+            bind=True,
         )
         assert outcome.error_code == "RETRY_EXHAUSTED"
         assert outcome.attempts == 4
@@ -320,6 +353,7 @@ class TestLaterLaddersInTheSameTurn:
 
     async def test_control_the_turn_is_cancelled_re_laddering(self):
         outcome = await _run_turn(
+            failure=HUNG,
             hang_seconds=0.3,
             turn_seconds=2.0,
             base_delay=0.05,
@@ -330,6 +364,7 @@ class TestLaterLaddersInTheSameTurn:
 
     async def test_treatment_the_turn_answers_before_its_deadline(self):
         outcome = await _run_turn(
+            failure=HUNG,
             hang_seconds=0.3,
             turn_seconds=2.0,
             base_delay=0.05,
@@ -355,7 +390,9 @@ class TestLaterLaddersInTheSameTurn:
         clock this module now runs on (#1579) both cost 2 calls and exactly
         1.00s — the ideal schedule, with no CPU time between the steps.
         """
-        params = dict(hang_seconds=0.5, turn_seconds=1.5, base_delay=0.05, bind=True)
+        params = dict(
+            failure=HUNG, hang_seconds=0.5, turn_seconds=1.5, base_delay=0.05, bind=True
+        )
         few = await _run_turn(**params, ladders=2)
         many = await _run_turn(**params, ladders=50)
 
@@ -382,7 +419,7 @@ class TestEveryExitCarriesAClassifiedCode:
 
     async def test_the_gate_exit_is_classified(self):
         outcome = await _run_turn(
-            hang_seconds=5.0, turn_seconds=2.0, base_delay=0.05, bind=True
+            failure=HUNG, hang_seconds=5.0, turn_seconds=2.0, base_delay=0.05, bind=True
         )
         assert outcome.error_code == TURN_BUDGET_EXHAUSTED
 
@@ -565,34 +602,101 @@ class TestWhichVerdictTheBudgetReports:
     whose state this layer cannot observe.
     """
 
-    async def test_full_length_ladder_reports_a_provider_verdict(self):
-        """3 of 3 paid attempts made; only the breaker-refused iteration was
-        skipped, and skipping it cannot have changed the answer."""
+    @pytest.mark.parametrize(
+        "failure,attempts", [(HUNG, 2), (ANSWERS_503, 3)], ids=["hung", "503"]
+    )
+    async def test_full_length_ladder_reports_a_provider_verdict(
+        self, failure, attempts
+    ):
+        """Every paid attempt the class allows was made: a hung provider's 2 of
+        2 (its cap ends the ladder, #1294), a 503's 3 of 3 (only the
+        breaker-refused iteration was skipped, and skipping it cannot have
+        changed the answer)."""
         outcome = await _run_turn(
-            hang_seconds=0.1, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
+            failure=failure,
+            hang_seconds=0.1,
+            turn_seconds=_VERDICT_TURN,
+            base_delay=0.1,
+            bind=True,
         )
-        assert outcome.attempts == 3
+        assert outcome.attempts == attempts
         assert outcome.error_code == "RETRY_EXHAUSTED"
 
     async def test_a_lost_attempt_reports_a_configuration_verdict(self):
         outcome = await _run_turn(
-            hang_seconds=0.5, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
+            failure=HUNG,
+            hang_seconds=0.5,
+            turn_seconds=_VERDICT_TURN,
+            base_delay=0.1,
+            bind=True,
         )
-        assert outcome.attempts < 3
+        assert outcome.attempts == 1  # its one retry refused
         assert outcome.error_code == TURN_BUDGET_EXHAUSTED
 
     async def test_the_two_verdicts_discriminate_on_the_same_turn_budget(self):
         """Same A, same backoffs — only the attempt cost differs, and the code
         flips exactly where a paid attempt starts being lost. A single shape
         would not show that the code tracks anything."""
-        full = await _run_turn(
-            hang_seconds=0.1, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
-        )
-        lost = await _run_turn(
-            hang_seconds=0.5, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
-        )
+        verdict = dict(failure=HUNG, turn_seconds=_VERDICT_TURN, base_delay=0.1)
+        full = await _run_turn(**verdict, hang_seconds=0.1, bind=True)
+        lost = await _run_turn(**verdict, hang_seconds=0.5, bind=True)
         assert full.error_code != lost.error_code
         assert full.attempts > lost.attempts
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestEachClassCostsWhatTheReportSays:
+    """The running ladder and ``GET /admin/config/status`` read the same counts.
+
+    ``config/retry_budget.model_retry_ladders`` is what the report models; each
+    class's ladder, run on the virtual clock with no deadline and no breaker,
+    must cost exactly the ``full_ladder_seconds`` it states (#1294). A report
+    reading one ``RetryConfig`` and a ladder obeying another would disagree
+    here, which is the one way the operator's "fits" could be wrong.
+    """
+
+    BASE_DELAY = 0.1
+
+    def _plans(self, attempt_seconds):
+        from faultmaven.config.retry_budget import model_retry_ladders
+
+        return model_retry_ladders(
+            agent_timeout=60.0,
+            attempt_seconds=attempt_seconds,
+            config=RetryConfig(base_delay_seconds=self.BASE_DELAY),
+        )
+
+    async def test_a_hung_provider_costs_the_deadline_plan(self):
+        outcome = await _run_turn(
+            failure=HUNG,
+            hang_seconds=0.3,
+            turn_seconds=60.0,
+            base_delay=self.BASE_DELAY,
+            bind=False,
+        )
+        plan = self._plans(0.3).deadline_shaped
+
+        assert outcome.attempts == plan.paid_attempts == 2
+        assert outcome.elapsed == pytest.approx(plan.full_ladder_seconds)  # 2T + b
+        assert outcome.error_code == "RETRY_EXHAUSTED"
+
+    async def test_a_prompt_503_costs_the_status_plan(self):
+        """At zero attempt cost the status plan is its backoffs alone, which is
+        every second a prompt 503 ladder spends (its fourth iteration, which
+        the breaker would refuse, is free)."""
+        outcome = await _run_turn(
+            failure=ANSWERS_503,
+            hang_seconds=0.0,
+            turn_seconds=60.0,
+            base_delay=self.BASE_DELAY,
+            bind=False,
+        )
+
+        assert outcome.attempts == 4
+        assert outcome.elapsed == pytest.approx(
+            self._plans(0.0).status_shaped.full_ladder_seconds
+        )
 
 
 @pytest.mark.integration

@@ -264,6 +264,34 @@ def _transient_by_structure(error: BaseException) -> bool:
     return False
 
 
+# Statuses a provider answers with once it has spent its own deadline: 504
+# Gateway Timeout, and Cloudflare's 524 (an origin timeout, which OpenRouter
+# passes through with its status).
+_DEADLINE_STATUSES = (504, 524)
+
+
+def is_deadline_shaped(error: BaseException) -> bool:
+    """True when the failed attempt spent its deadline before failing (#1294).
+
+    What the failure WAS, never which layer timed out: a ``TimeoutError``
+    anywhere on the ``__cause__`` chain (the router's ``ExternalCallTimeout``,
+    the backstop ``wait_for``), or a status saying the provider spent its own
+    deadline, read off any exception that carries one (every adapter turns its
+    client timeout into a 504; an untyped aiohttp/httpx 504 counts too). Such
+    an attempt cost a full deadline and learned nothing, so it gets
+    ``max_deadline_retries``; a prompt 5xx or a 429 was cheap to try and keeps
+    ``max_retries``. By kind, not elapsed time: the handler has no per-call
+    ceiling to compare against (``with_retry`` does not re-derive the router's),
+    so a non-504 5xx that arrives late keeps the full ladder.
+    """
+    for cursor in walk_cause_chain(error):
+        if isinstance(cursor, TimeoutError):
+            return True
+        if _declared_http_status(cursor) in _DEADLINE_STATUSES:
+            return True
+    return False
+
+
 class ErrorAction(str, Enum):
     """Actions to take after error handling.
 
@@ -283,6 +311,12 @@ class RetryConfig:
     base_delay_seconds: float = 2.0
     max_delay_seconds: float = 30.0
     exponential_base: float = 2.0
+    # Retries a deadline-shaped failure (``is_deadline_shaped``) gets in one
+    # ladder, under ``max_retries``. One, the floor: a hung
+    # provider got zero before #1287, and that was the bug. Two would cost
+    # ``3T + 6`` (three paid attempts under the breaker), barely under the full
+    # ladder's ``3T + 14`` (#1294).
+    max_deadline_retries: int = 1
 
 
 @dataclass
@@ -308,6 +342,10 @@ class ErrorResult:
     # exception is not on the resulting ``__cause__`` chain and nothing
     # downstream could recover this by walking. Set in ``with_retry``.
     category: Optional[LLMErrorCategory] = None
+    # True on a RETRY granted under ``max_deadline_retries`` (#1294). The
+    # function that grants a retry records its class, and ``with_retry`` counts
+    # from it, so the cap and the count cannot classify one failure twice.
+    deadline_retry: bool = False
 
 
 class LLMErrorHandler:
@@ -469,6 +507,7 @@ class LLMErrorHandler:
         error: Exception,
         retry_count: int = 0,
         next_attempt_seconds: float = 0.0,
+        deadline_retries_spent: int = 0,
     ) -> ErrorResult:
         """
         Handle LLM API error with appropriate recovery.
@@ -482,6 +521,10 @@ class LLMErrorHandler:
                 attempt after it still fit. Defaults to 0.0, which makes the
                 budget check guard the BACKOFF alone — the honest reading for a
                 caller that has no cost estimate to offer.
+            deadline_retries_spent: Retries already granted to deadline-shaped
+                failures in this ladder (``is_deadline_shaped``);
+                a deadline-shaped ``error`` is retried only while it is below
+                ``max_deadline_retries``.
 
         Returns:
             ErrorResult with recovery action and message
@@ -557,9 +600,19 @@ class LLMErrorHandler:
         # AUTH_FAILED an unwrapped 401 gets, rather than to a transient code
         # that invites the user to resend.
         #
-        # NOT retryable: the breaker's recovery window (30s) outlasts the whole
-        # backoff ladder (2+4+8 = 14s), so every retry would be spent on a
-        # breaker guaranteed to still be open.
+        # NOT retryable: the breaker's recovery window (30s) outlasts either
+        # backoff ladder (2+4+8 = 14s; a deadline-shaped failure's is 2s, #1294),
+        # so every retry would be spent on a breaker guaranteed to still be open.
+        # At the shipped timeouts (T = 30, A = 120), a hung provider (every
+        # attempt a timeout) reaches two breaker failures of three on a
+        # ladder-only turn: that turn ends RETRY_EXHAUSTED, and the next
+        # ladder's first attempt pays one timeout and opens the breaker, so its
+        # retry lands here. A turn with tools reaches three (the tool loop's
+        # attempt, then the ladder's two) and opens it in its first turn. Where
+        # the turn affords fewer attempts (T = 120, A = 240), each turn pays
+        # fewer and the breaker opens a turn or two later. A provider that
+        # fails fast (a refused connection) is status-shaped, and opens it
+        # inside its first ladder.
         #
         # Tested on ``error`` itself rather than walked down ``__cause__``,
         # because on this path it arrives unwrapped and that is a property of
@@ -659,7 +712,12 @@ class LLMErrorHandler:
         # Billing stays ahead of this: quota exhaustion is permanent whatever
         # the transport said, and ``is_billing_error`` walks the same chain.
         if self._declares_retryable(error) is True:
-            return await self._retry_or_exhaust(retry_count, next_attempt_seconds)
+            return await self._retry_or_exhaust(
+                retry_count,
+                next_attempt_seconds,
+                deadline_shaped=is_deadline_shaped(error),
+                deadline_retries_spent=deadline_retries_spent,
+            )
 
         # A configuration failure the LLM layer diagnosed for itself: no
         # provider is configured, or the registry cannot build one. Permanent
@@ -700,7 +758,12 @@ class LLMErrorHandler:
 
         # Check for retryable errors
         if self.is_retryable_error(error):
-            return await self._retry_or_exhaust(retry_count, next_attempt_seconds)
+            return await self._retry_or_exhaust(
+                retry_count,
+                next_attempt_seconds,
+                deadline_shaped=is_deadline_shaped(error),
+                deadline_retries_spent=deadline_retries_spent,
+            )
 
         # Unknown error — fail fast and surface details for diagnostics.
         logger.error(
@@ -723,6 +786,9 @@ class LLMErrorHandler:
         retry_count: int,
         next_attempt_seconds: float = 0.0,
         no_budget_code: Optional[str] = None,
+        *,
+        deadline_shaped: bool = False,
+        deadline_retries_spent: int = 0,
     ) -> ErrorResult:
         """Back off and retry, or report the attempts spent.
 
@@ -738,6 +804,11 @@ class LLMErrorHandler:
         what the ladder spends: deciding after the sleep would already have
         burnt 2, 4 or 8 seconds of a budget that could not afford them.
 
+        The attempt count has two caps (#1294). ``max_retries`` bounds every
+        ladder; a ``deadline_shaped`` failure is also stopped once
+        ``deadline_retries_spent`` reaches ``max_deadline_retries``, with the
+        same ``RETRY_EXHAUSTED`` a spent full ladder reports.
+
         ``no_budget_code`` lets a caller name the code to report when the turn
         budget is what stopped the ladder. Only the truncation branch passes
         one: its recovery is the engine's minimal-prompt degrade, which is
@@ -745,7 +816,12 @@ class LLMErrorHandler:
         budget/availability code there would silently disable the NO-COLLAPSE
         recovery (#662) instead of degrading.
         """
-        if retry_count >= self.config.max_retries:
+        # The cap that governs this failure's class, for the check and the logs.
+        if deadline_shaped:
+            granted, cap = deadline_retries_spent, self.config.max_deadline_retries
+        else:
+            granted, cap = retry_count, self.config.max_retries
+        if retry_count >= self.config.max_retries or granted >= cap:
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message="LLM service temporarily unavailable. Please try again in a few minutes.",
@@ -784,6 +860,12 @@ class LLMErrorHandler:
             # PROVIDER_CIRCUIT_OPEN here would assert something unverified, and
             # would collide with the genuine open-breaker path, which reports
             # that code because it actually ASKED and got CircuitBreakerError.
+            #
+            # The class's own cap was settled by the early return above, so a
+            # retry refused here is one its class still grants, and the
+            # structural test alone decides (#1294). A hung provider whose ONE
+            # retry is refused lost a paid attempt; measuring against
+            # ``max_deadline_retries`` would read ``1 < 1`` there.
             lost_a_provider_attempt = retry_count + 1 < self.config.max_retries
             code = (
                 no_budget_code
@@ -798,8 +880,8 @@ class LLMErrorHandler:
                 "Turn budget cannot afford retry %d/%d: %.1fs spendable, "
                 "%.1fs backoff + %.1fs estimated attempt. Reporting %s now "
                 "rather than being cancelled mid-attempt.",
-                retry_count + 1,
-                self.config.max_retries,
+                granted + 1,
+                cap,
                 spendable,
                 delay,
                 next_attempt_seconds,
@@ -822,15 +904,17 @@ class LLMErrorHandler:
                 retry_count=retry_count,
             )
 
+        shape = "deadline-shaped " if deadline_shaped else ""
         logger.info(
-            f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}"
+            f"Retryable {shape}error, waiting {delay:.1f}s before retry {granted + 1}/{cap}"
         )
         await asyncio.sleep(delay)
 
         return ErrorResult(
             action=ErrorAction.RETRY,
-            message=f"Transient error. Retrying ({retry_count + 1}/{self.config.max_retries})...",
+            message=f"Transient error. Retrying ({granted + 1}/{cap})...",
             retry_count=retry_count + 1,
+            deadline_retry=deadline_shaped,
         )
 
     async def with_retry(
@@ -865,6 +949,10 @@ class LLMErrorHandler:
         reads ``None``, nothing is clamped and nothing is refused — which is the
         behaviour direct-call tests, background jobs and the CLI already had.
 
+        A deadline-shaped failure (``is_deadline_shaped``) is retried at most
+        ``max_deadline_retries`` times in this ladder; every other retryable
+        failure keeps the ``max_retries`` ladder (#1294).
+
         Args:
             operation: Async operation to execute
 
@@ -872,6 +960,7 @@ class LLMErrorHandler:
             Tuple of (result, error_result) where result is None if all attempts failed
         """
         retry_count = 0
+        deadline_retries_spent = 0
         last_error_result: Optional[ErrorResult] = None
         # Worst attempt cost seen in THIS ladder. Local, not instance state: one
         # handler serves every turn in the process, so an instance attribute
@@ -931,7 +1020,10 @@ class LLMErrorHandler:
                     worst_attempt_seconds, time.monotonic() - started
                 )
                 error_result = await self.handle_error(
-                    e, retry_count, worst_attempt_seconds
+                    e,
+                    retry_count,
+                    worst_attempt_seconds,
+                    deadline_retries_spent=deadline_retries_spent,
                 )
                 # Preserve the triggering exception so the caller can surface its
                 # real message (see ErrorResult.original_exception — callers fold
@@ -942,6 +1034,8 @@ class LLMErrorHandler:
 
                 if error_result.action == ErrorAction.RETRY:
                     retry_count = error_result.retry_count
+                    # Counted from the grant, which recorded its class.
+                    deadline_retries_spent += error_result.deadline_retry
                     continue
 
                 else:

@@ -1,7 +1,7 @@
 # Error Handling and Recovery Patterns
 
 **Version**: 3.0
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-10-25
 **Status**: Operational Design
 **Architecture**: Evidence-Driven Investigation Framework
 
@@ -200,7 +200,9 @@ class LLMErrorHandler:
             return await self._handle_rate_limit(error, retry_count)
 
         elif isinstance(error, TimeoutError):
-            return await self._handle_timeout(error, case, retry_count)
+            return await self._handle_timeout(
+                error, case, retry_count, deadline_retries_spent
+            )
 
         elif isinstance(error, AuthenticationError):
             return self._handle_auth_error(error)
@@ -242,21 +244,26 @@ class LLMErrorHandler:
         self,
         error: TimeoutError,
         case: Case,
-        retry_count: int
+        retry_count: int,
+        deadline_retries_spent: int,
     ) -> ErrorResult:
-        """Handle request timeouts."""
+        """Handle a deadline-shaped failure: its own count and cap (§2.3)."""
 
-        if retry_count >= self.config.max_retries:
+        if (
+            retry_count >= self.config.max_retries
+            or deadline_retries_spent >= self.config.max_deadline_retries
+        ):
             return ErrorResult(
                 action=ErrorAction.FAIL,
-                message="Request timed out after every retry.",
-                error_code="TIMEOUT_EXCEEDED"
+                message="LLM service temporarily unavailable. Please try again in a few minutes.",
+                error_code="RETRY_EXHAUSTED"
             )
 
         return ErrorResult(
             action=ErrorAction.RETRY,
-            message="Request timed out. Retrying...",
-            retry_count=retry_count + 1
+            message="Transient error. Retrying (1/1)...",
+            retry_count=retry_count + 1,
+            deadline_retry=True,  # with_retry counts the grant from this
         )
 
     def _handle_billing(self, error: Exception) -> ErrorResult:
@@ -317,6 +324,67 @@ class ErrorResult:
     error_code: str = None
     retry_count: int = 0
 ```
+
+### 2.3 Two ladders: deadline-shaped and status-shaped failures (#1294)
+
+A failure that spent its deadline gets fewer attempts than one that did not.
+`is_deadline_shaped` (`core/investigation/llm_error_handler.py`) names the class
+by what the failure WAS, never by which layer timed out: a `TimeoutError`
+anywhere on the `__cause__` chain (the router's `ExternalCallTimeout`, the
+ladder's backstop `wait_for`), or a 504 or 524 status on any exception that
+carries one, typed or not (every adapter turns its own client timeout into a
+504; Cloudflare's 524 is an origin timeout OpenRouter passes through). Such an attempt cost a full `T` and
+learned nothing. A prompt 502/503/500 and a 429 are cheap to have tried and
+weaker evidence the provider is down.
+
+| Class | Retries (`RetryConfig`) | Worst case, one ladder |
+|---|---|---|
+| Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
+| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder, a mixed one included (a timeout, then slow 503s) |
+
+`T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`.
+The class is by kind, not by elapsed time: the handler has no `T` to compare an
+attempt against, so a non-504 5xx that arrives late keeps the full ladder. The
+floor is one retry, never zero (#1287). When the deadline cap stops a ladder the
+result is the same `FAIL` / `RETRY_EXHAUSTED` a spent full ladder reports, so
+the HTTP mapping does not move. A budget refusal of a hung provider's one retry
+still reports `TURN_BUDGET_EXHAUSTED`: a paid attempt was lost.
+
+**A turn with tools pays the tool loop's attempt first.** The count is per
+ladder. The tool loop's attempt fails outside any ladder (the loop raises
+`ToolCallingUnsupportedError` chained from the provider's failure), and the
+fallback ladder then makes its own attempts, so a turn with tools against a hung
+provider pays `T` for the tool attempt and then the ladder's `2T + 2`, bounded by
+the turn budget. Telling the ladder about that paid attempt is #2319. The retry
+a grant makes is recorded on the `ErrorResult` (`deadline_retry`), and
+`with_retry` counts from it.
+
+Measured on a virtual clock (`asyncio` timers at nominal cost) against a
+provider that never answers, through the real `_generate_structured_output_inner`
+and the router's breaker, before → after:
+
+| Turn | T = 30 s, A = 120 s | T = 30 s, A = 240 s | T = 120 s, A = 240 s |
+|---|---|---|---|
+| Ladder only | 96 → 62 s | 104 → 62 s | 120 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
+| With tools | 92 → 92 s | 96 → 92 s | 235.5 → 235.5 s (`TURN_BUDGET_EXHAUSTED`) |
+
+**Breaker consequence.** The router's breaker opens on the third consecutive
+failure. At the shipped timeouts (T = 30 s, A = 120 s), a hung provider (every
+attempt a timeout) reaches two breaker failures of three on a ladder-only turn,
+so that turn ends `RETRY_EXHAUSTED`, where it ended `PROVIDER_CIRCUIT_OPEN`
+whenever the full ladder fit; both answer 503 with `Retry-After: 30`, with
+different messages. The next turn pays one `T`, opens the breaker, and its
+retry is refused at once; the turn after is refused without an attempt. Over
+three turns: 62 + 32 + 0 s where it was 96 + 0 + 0 s. A turn with tools reaches
+three failures in its first turn (the tool loop's attempt, then the ladder's
+two) and opens it there: 92 + 0 + 0 s. Where the turn affords fewer attempts
+(T = 120 s, A = 240 s), each turn pays fewer and the breaker opens a turn or two
+later. A provider that fails fast (a refused connection) is status-shaped, and
+opens it inside its first ladder. The breaker threshold is #1513's question.
+
+`GET /admin/config/status`'s `llm_retry_ladder_fits_turn_budget` models both
+ladders from the same `RetryConfig` the running ladder reads
+(`config/retry_budget.model_retry_ladders`) and is true only when both fit.
 
 ### 2.x Context-overflow degrade (NO-COLLAPSE)
 

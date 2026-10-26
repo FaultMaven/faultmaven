@@ -1748,6 +1748,11 @@ class StructuredOutputGenerator:
                         "Falling back to non-tool structured output path.",
                         e,
                     )
+                    # The fallback ladder below starts fresh: a hung provider's
+                    # tool-loop attempt is paid here, outside it, and the
+                    # ladder then makes up to two deadline-shaped attempts of
+                    # its own, as the turn budget allows.
+                    # Telling the ladder about that attempt is #2319.
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file
                     # would run (directed-analysis index+stub). On the non-tool

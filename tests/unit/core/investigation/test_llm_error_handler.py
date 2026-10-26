@@ -1145,3 +1145,230 @@ class TestNoResultClaimsCompression:
         assert error.action == ErrorAction.FAIL
         assert error.error_code == TOKEN_LIMIT
         assert error.retry_count == 1
+
+
+# =============================================================================
+# #1294 — a deadline-shaped failure gets one retry, a status-shaped one three
+# =============================================================================
+
+
+def _external_timeout():
+    from faultmaven.exceptions import ExternalCallTimeout
+
+    return ExternalCallTimeout(
+        "External call to LLM_Providers.route_llm_request timed out after 30.0s",
+        service="LLM_Providers",
+        operation="route_llm_request",
+        timeout=30.0,
+    )
+
+
+def _wrapped_external_timeout():
+    try:
+        try:
+            raise _external_timeout()
+        except TimeoutError as inner:
+            raise RuntimeError("engine wrapper") from inner
+    except RuntimeError as outer:
+        return outer
+
+
+def _aiohttp_504():
+    import aiohttp
+
+    return aiohttp.ClientResponseError(None, (), status=504, message="Gateway Timeout")
+
+
+def _httpx_504():
+    import httpx
+
+    request = httpx.Request("GET", "http://upstream.invalid/")
+    return httpx.HTTPStatusError(
+        "504", request=request, response=httpx.Response(504, request=request)
+    )
+
+
+def _breaker_open():
+    from faultmaven.infrastructure.base_client import CircuitBreakerError
+
+    return CircuitBreakerError(
+        "Circuit breaker is open for LLM_Providers", service="LLM_Providers"
+    )
+
+
+# (id, failure, deadline-shaped, the retryability its raiser DECLARED).
+# Negatives first: each is a failure that is cheap to have tried, or one the
+# ladder never retries at all.
+_SHAPES = [
+    ("prompt_503", lambda: LLMException("over capacity", status_code=503), False, True),
+    ("prompt_502", lambda: LLMException("bad gateway", status_code=502), False, True),
+    ("prompt_500", lambda: LLMException("internal", status_code=500), False, True),
+    ("rate_limit_429", lambda: LLMException("slow down", status_code=429), False, True),
+    (
+        "transport_fault",
+        lambda: LLMException("cannot connect to host", retryable=True),
+        False,
+        True,
+    ),
+    ("breaker_open", _breaker_open, False, None),
+    (
+        "gateway_504",
+        lambda: LLMException("upstream timeout", status_code=504),
+        True,
+        True,
+    ),
+    (
+        "cloudflare_524",
+        lambda: LLMException("origin timeout", status_code=524),
+        True,
+        True,
+    ),
+    # Untyped: the status they carry decides, not their class.
+    ("aiohttp_504", _aiohttp_504, True, None),
+    ("httpx_504", _httpx_504, True, None),
+    ("external_call_timeout", _external_timeout, True, True),
+    ("bare_asyncio_timeout", asyncio.TimeoutError, True, None),
+    # The chain walk reaches the cause's declaration, so this one DECLARES.
+    ("wrapped_external_call_timeout", _wrapped_external_timeout, True, True),
+]
+
+
+@pytest.fixture
+def ladder():
+    """The shipped retry counts, with the backoffs taken out of the wall clock."""
+    return LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
+
+
+def _failing(*failures):
+    """An operation raising ``failures`` in turn, then repeating the last one."""
+    calls = {"n": 0}
+
+    async def operation():
+        calls["n"] += 1
+        raise failures[min(calls["n"], len(failures)) - 1]()
+
+    return operation, calls
+
+
+class TestDeadlineShapedFailures:
+    """#1294: what a failure WAS decides its ladder, never which layer timed out."""
+
+    @pytest.mark.parametrize(
+        "make,deadline_shaped,declared",
+        [pytest.param(*row[1:], id=row[0]) for row in _SHAPES],
+    )
+    def test_the_predicate_keys_on_the_shape(self, make, deadline_shaped, declared):
+        from faultmaven.core.investigation.llm_error_handler import is_deadline_shaped
+
+        error = make()
+        assert is_deadline_shaped(error) is deadline_shaped
+        assert LLMErrorHandler._declares_retryable(error) is declared
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(_external_timeout, id="router_timeout"),
+            pytest.param(asyncio.TimeoutError, id="backstop_timeout"),
+            pytest.param(lambda: LLMException("t", status_code=504), id="504"),
+            pytest.param(lambda: LLMException("t", status_code=524), id="524"),
+        ],
+    )
+    async def test_a_deadline_shaped_failure_gets_one_retry(self, ladder, make):
+        """Two attempts, not four, and never one (#1287's zero-retry bug)."""
+        operation, calls = _failing(make)
+
+        result, error = await ladder.with_retry(operation)
+
+        assert result is None
+        assert calls["n"] == 2
+        assert error.error_code == "RETRY_EXHAUSTED"
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_503_keeps_the_full_ladder(self, ladder):
+        operation, calls = _failing(lambda: LLMException("busy", status_code=503))
+
+        result, error = await ladder.with_retry(operation)
+
+        assert result is None
+        assert calls["n"] == 4
+        assert error.error_code == "RETRY_EXHAUSTED"
+
+    @pytest.mark.asyncio
+    async def test_a_mixed_ladder_stops_at_the_second_timeout(self, ladder):
+        """A 503 spends a status retry, the first timeout the deadline one, so
+        the second timeout ends the ladder with retries of the long cap left."""
+        operation, calls = _failing(
+            lambda: LLMException("busy", status_code=503),
+            _external_timeout,
+            _external_timeout,
+        )
+
+        result, error = await ladder.with_retry(operation)
+
+        assert calls["n"] == 3
+        assert error.error_code == "RETRY_EXHAUSTED"
+        assert error.retry_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_then_a_success_returns_the_success(self, ladder):
+        calls = {"n": 0}
+
+        async def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _external_timeout()
+            return "answered"
+
+        result, error = await ladder.with_retry(operation)
+
+        assert (result, error, calls["n"]) == ("answered", None, 2)
+
+    @pytest.mark.asyncio
+    async def test_the_retry_message_cites_the_cap_that_governs(self, ladder):
+        hang = await ladder.handle_error(_external_timeout(), 0)
+        busy = await ladder.handle_error(LLMException("b", status_code=503), 0)
+
+        assert hang.message == "Transient error. Retrying (1/1)..."
+        assert busy.message == "Transient error. Retrying (1/3)..."
+        # The grant records its class, and with_retry counts from it.
+        assert (hang.deadline_retry, busy.deadline_retry) == (True, False)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_deadline_retry_reports_the_budget(
+        self, ladder, monkeypatch
+    ):
+        """A hung provider whose ONE retry the turn budget refuses lost a paid
+        attempt, so the verdict is TURN_BUDGET_EXHAUSTED. Once that retry has
+        been made, the cap ends the ladder first and nothing was lost."""
+        from faultmaven.core.investigation import llm_error_handler as module
+        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+
+        refused = await ladder.handle_error(_external_timeout(), 0, 30.0)
+        spent = await ladder.handle_error(
+            _external_timeout(), 1, 30.0, deadline_retries_spent=1
+        )
+
+        assert refused.error_code == TURN_BUDGET_EXHAUSTED
+        assert spent.error_code == "RETRY_EXHAUSTED"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_deadline_retry_after_a_503_reports_the_budget(
+        self, ladder, monkeypatch
+    ):
+        """A 503 spent a status retry (``retry_count = 1``); the timeout's own
+        retry is still owed and would reach the provider, so refusing it loses
+        a paid attempt. Measuring ``retry_count`` against the deadline cap
+        would read ``1 < 1`` and blame the provider."""
+        from faultmaven.core.investigation import llm_error_handler as module
+        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+
+        result = await ladder.handle_error(
+            _external_timeout(), 1, 30.0, deadline_retries_spent=0
+        )
+
+        assert result.error_code == TURN_BUDGET_EXHAUSTED

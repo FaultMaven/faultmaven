@@ -371,14 +371,16 @@ def worst_case_ladder_plan(
     is never the configuration that breaches.
 
     ``paid_attempts`` is how many attempts actually reach a provider, which is
-    NOT ``max_retries + 1``: the router's circuit breaker opens at its own
+    NOT ``retries + 1``: the router's circuit breaker opens at its own
     threshold and short-circuits the rest of the ladder in microseconds. With
     the shipped ``max_retries=3`` and ``circuit_breaker_threshold=3`` that is 3
-    paid attempts and 4 backoff-separated iterations, so the full ladder costs
-    ``3T + (2 + 4 + 8) = 3T + 14`` — the eight seconds ARE spent, before the
-    attempt the breaker refuses. Callers pass both numbers rather than having
-    them assumed here, so the coupling to the breaker threshold is visible at
-    the call site instead of hidden in this arithmetic.
+    paid attempts and 4 backoff-separated iterations, so the status-shaped
+    ladder costs ``3T + (2 + 4 + 8) = 3T + 14`` — the eight seconds ARE spent,
+    before the attempt the breaker refuses. A deadline-shaped failure's ladder
+    (``max_deadline_retries=1``, #1294) is 2 paid attempts and one backoff,
+    ``2T + 2``. Callers pass both numbers rather than having them assumed here,
+    so the coupling to the breaker threshold is visible at the call site
+    instead of hidden in this arithmetic (``config/retry_budget``).
 
     Returns the plan the deadline-aware ladder would follow, using the same
     ``can_afford_next_attempt`` predicate the running ladder uses, so the report

@@ -298,10 +298,13 @@ def _opik_track_llm(name: str):
 # of the engine's retry ladder, which is not obvious from the retry
 # configuration alone: with ``max_retries=3`` the ladder iterates four times,
 # but the breaker opens on the third failure, so the fourth iteration never
-# reaches a provider. A hung provider therefore costs THREE request timeouts and
-# all FOUR backoffs (2 + 4 + 8 = 14s) — the eight seconds are spent before the
-# attempt the breaker refuses. ``turn_budget.worst_case_ladder_plan`` is given
-# this number so the configuration report models the ladder that actually runs.
+# reaches a provider. A provider failing with a slow non-504 5xx therefore costs
+# THREE request timeouts and all three backoffs (2 + 4 + 8 = 14s) — the eight
+# seconds are spent before the attempt the breaker refuses. A hung or
+# 504-answering provider gets one retry (``max_deadline_retries``, #1294): two
+# timeouts and one backoff, ``2T + 2``, under the threshold. The configuration
+# report (``config/retry_budget``) is given this number so it models the ladders
+# that actually run.
 LLM_CIRCUIT_BREAKER_THRESHOLD = 3
 LLM_CIRCUIT_BREAKER_TIMEOUT = 30
 
