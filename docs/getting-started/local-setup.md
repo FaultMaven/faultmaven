@@ -14,7 +14,7 @@ For the quickest setup, use [Docker Compose](../../README.md#quick-start) instea
 
 | Component | Requirement |
 |-----------|-------------|
-| **API Backend** | Python 3.11+ |
+| **API Backend** | Python at the version `pyproject.toml` declares (`requires-python`, 3.11.5 or later) |
 | **Dashboard** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
 | **Copilot** | Node and pnpm at the versions its `package.json` declares (`engines.node`, `packageManager`) |
 | **LLM Provider** | API key (OpenAI, Anthropic, etc.) or Ollama |
@@ -150,7 +150,7 @@ This will check:
 
 ### API won't start
 
-1. Check Python version: `python --version` (requires 3.11+)
+1. Check Python version: `python --version` (requires 3.11.5+)
 2. Verify virtual environment is activated
 3. Check `.env` has valid LLM API keys
 4. Review logs: `LOG_LEVEL=DEBUG ./scripts/faultmaven-dev.sh start`
