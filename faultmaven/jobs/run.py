@@ -57,8 +57,10 @@ Most flags configure the *runner* and apply to whatever job is named
 (``--verbose``, ``--enterprise-id``, ``--cross-tenant-maintenance``). A few
 configure ONE job: ``--ttl-hours`` belongs to ``storage_cleanup``,
 ``--allow-disjoint-enterprise`` to ``kb_seed``, and ``--dry-run``/``--no-dry-run``
-to both (for ``kb_seed`` it governs only the authored-orphan sweep). A job accepts a job-specific flag only by declaring it as
-an explicit parameter of its ``run()``; passing one to a job that merely
+to both (for ``kb_seed`` it governs only the authored-orphan sweep) and to
+``kb_vector_enterprise_backfill`` (a dry run unless ``--no-dry-run``). A job
+accepts a job-specific flag only by declaring it as an explicit parameter of
+its ``run()``; passing one to a job that merely
 absorbs ``**kwargs`` is refused (``JobArgumentError``) rather than delivered as
 a stray kwarg nothing reads.
 
@@ -119,6 +121,7 @@ JOB_SPECIFIC_FLAGS: Dict[str, str] = {
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
     "kb_seed": "faultmaven.jobs.kb_seed",
+    "kb_vector_enterprise_backfill": "faultmaven.jobs.kb_vector_enterprise_backfill",
     "llm_usage_retention": "faultmaven.jobs.llm_usage_retention",
     "storage_cleanup": "faultmaven.modules.agent.jobs.storage_cleanup",
 }
@@ -634,13 +637,15 @@ Examples:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "storage_cleanup / kb_seed. --dry-run logs 'would delete' without "
+            "storage_cleanup / kb_seed / kb_vector_enterprise_backfill. "
+            "--dry-run logs 'would delete' without "
             "deleting; --no-dry-run asks for real deletion. Omit to defer to "
             "ORPHAN_CLEANUP_DRY_RUN (storage_cleanup) or KB_ORPHAN_SWEEP_DRY_RUN "
             "(kb_seed, where it governs only the authored-orphan sweep: "
             "seeding always runs). --no-dry-run is not an enabler: with "
             "ORPHAN_CLEANUP_ENABLED / KB_ORPHAN_SWEEP_ENABLED false nothing is "
-            "deleted."
+            "deleted. kb_vector_enterprise_backfill writes its stamps only "
+            "with --no-dry-run; omitted is a dry run."
         ),
     )
     parser.add_argument(

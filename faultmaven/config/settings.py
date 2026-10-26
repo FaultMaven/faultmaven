@@ -34,6 +34,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+from faultmaven.config.secret_file import publish_secret_once, tighten_secret_file_mode
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -1379,6 +1380,68 @@ class CaseSettings(BaseSettings):
 #: point it under its own data root (#1772).
 DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
 
+#: What a JWT secret file that group or others could read or write exposes,
+#: and how to rotate it; the tail of the WARNING ``tighten_secret_file_mode``
+#: logs.
+_JWT_FILE_EXPOSURE_ADVICE = (
+    "the local JWT signing secret, and anyone who could write it may have "
+    "replaced it, so tokens it signed may be forged. To rotate it, delete the "
+    "file (or set JWT_SECRET_KEY) and restart every process; every user then "
+    "signs in again."
+)
+
+
+class LocalJwtSecretFileError(RuntimeError):
+    """The local JWT secret file exists but is not UTF-8 text (#1788).
+
+    Refused, never regenerated: the file may be a damaged copy of a secret the
+    operator can restore, and a new secret signs every user out.
+    """
+
+
+def _jwt_secret_from_bytes(raw: bytes, path: Path) -> str:
+    """The secret a JWT secret file's bytes hold, stripped ("" if none).
+
+    The one rule both for reading the file and for deciding it holds no secret.
+    Bytes that are not UTF-8 raise :class:`LocalJwtSecretFileError`, naming
+    ``path`` and the recovery.
+    """
+    try:
+        return raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise LocalJwtSecretFileError(
+            f"The local JWT secret file {path} is not UTF-8 text, so it holds no "
+            "usable secret and startup stops here; its contents are left as "
+            "they are. To recover, restore the previous file, or set "
+            "JWT_SECRET_KEY, or delete the file to have a new secret generated, "
+            "which signs every user out. Then restart every process."
+        ) from None
+
+
+def _holds_no_jwt_secret(raw: bytes, path: Path) -> bool:
+    """Whether a JWT secret file decodes and strips to "", so it is replaced.
+
+    An undecodable file is not blank: it is refused when read, never replaced.
+    """
+    try:
+        return not _jwt_secret_from_bytes(raw, path)
+    except LocalJwtSecretFileError:
+        return False
+
+
+def _read_local_jwt_secret_file(path: Path, logger: logging.Logger) -> str:
+    """The secret in the existing file at ``path``, stripped ("" if none).
+
+    A file that holds something is made private before its value is used; a
+    blank one is about to be replaced at 0600, so it is not. One that is not
+    UTF-8 text raises :class:`LocalJwtSecretFileError`.
+    """
+    raw = path.read_bytes()
+    if _holds_no_jwt_secret(raw, path):
+        return ""
+    tighten_secret_file_mode(path, advice=_JWT_FILE_EXPOSURE_ADVICE, logger=logger)
+    return _jwt_secret_from_bytes(raw, path)
+
 
 def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     """Give local auth its HS256 secret, on the BUILT settings (#1703).
@@ -1403,10 +1466,18 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         wins), or
       - ``settings.auth.auth_mode`` is not local (OAuth uses RS256 keys).
     Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
-    data/.jwt_secret) or generates a secret, and writes the file (0600) only
-    when the database is persistent. A process with no persistent database has
-    nothing durable for a durable secret to protect, so it creates nothing and
-    signs with the existing file's value or a per-process one. The value is set
+    data/.jwt_secret) or generates a secret, and publishes the file only when
+    the database is persistent. ``publish_secret_once`` publishes it whole, at
+    0600, from exactly one process; a process that loses that race signs with
+    the winner's value, so processes starting together agree (#1788). An empty
+    or whitespace-only file holds no secret and is replaced, through a symlink
+    onto its target. Before an existing file's secret is used, a file that group
+    or others can read or write is tightened to 0600 with a WARNING, and one
+    that is not UTF-8 text is refused (:class:`LocalJwtSecretFileError`)
+    wherever it is read, never regenerated. An empty secret is never set. A
+    process with no persistent database has nothing durable for a durable
+    secret to protect, so it creates nothing and signs with the existing file's
+    value or a per-process one. The value is set
     on ``settings.security.jwt_secret_key`` and exported as ``JWT_SECRET_KEY``
     (every other letter case of the name removed) for child processes and
     settings built later.
@@ -1432,7 +1503,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
     try:
         value = (
-            secret_path.read_text(encoding="utf-8").strip()
+            _read_local_jwt_secret_file(secret_path, logger)
             if secret_path.is_file()
             else ""
         )
@@ -1440,11 +1511,15 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
             value = secrets.token_urlsafe(48)
             if persist:
                 secret_path.parent.mkdir(parents=True, exist_ok=True)
-                secret_path.write_text(value, encoding="utf-8")
-                try:
-                    secret_path.chmod(0o600)
-                except OSError as exc:
-                    logger.debug("Could not chmod %s to 0600: %s", secret_path, exc)
+                if not publish_secret_once(
+                    secret_path,
+                    value.encode("utf-8"),
+                    replace_if=lambda raw: _holds_no_jwt_secret(raw, secret_path),
+                ):
+                    # Another process published first: sign with its secret.
+                    value = _read_local_jwt_secret_file(secret_path, logger)
+                    if not value:  # blank after all: never export an empty one
+                        raise OSError("the published secret file holds no secret")
     except OSError as exc:
         if persist:
             logger.warning(

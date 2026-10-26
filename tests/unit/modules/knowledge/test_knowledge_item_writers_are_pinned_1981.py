@@ -321,7 +321,7 @@ class TestOneCreatorOfAKnowledgeItem:
         # ``row_security_active(<table>)`` proof (#1982) reads its full name.
         (
             "faultmaven/bootstrap/kb_orphan_sweep.py",
-            "_read_rows_if_complete",
+            "read_rows_if_complete",
             "__table__",
         ),
     }

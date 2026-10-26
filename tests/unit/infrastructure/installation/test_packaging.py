@@ -10,6 +10,7 @@ Tests both community and enterprise installation modes to ensure:
 Design Reference: docs/FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md (Week 11)
 """
 
+import re
 import subprocess
 import sys
 import tomllib
@@ -18,6 +19,8 @@ from typing import List, Set
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+
+import faultmaven
 
 # ============================================================================
 # TEST FIXTURES
@@ -89,17 +92,23 @@ class TestProjectMetadata:
         assert all(part.isdigit() for part in parts), "Version parts should be numeric"
 
     def test_python_requirement(self, pyproject_data: dict, pyproject_path: Path):
-        """The floor is 3.11.5, and the script that builds venvs uses the same.
+        """requires-python sets the floor; the import check and the venv script follow it.
 
-        3.11.0-3.11.4 mis-match possessive regexes (python/cpython#100061,
-        #106052), which the secret redactor relies on: on 3.11.4 it leaves
-        passwords, tokens and private keys in clear that 3.11.5 masks.
-        What the script does with the floor is tested in
+        It never goes below 3.11.5: 3.11.0-3.11.4 mis-match possessive regexes
+        (python/cpython#100061, #106052), which the secret redactor relies on,
+        and on 3.11.4 it leaves passwords, tokens and private keys in clear that
+        3.11.5 masks. What each follower does with the floor is tested in
+        tests/unit/test_python_floor.py and
         tests/unit/scripts/test_sync_venv_python_floor.py.
         """
-        assert pyproject_data["project"]["requires-python"] == ">=3.11.5"
+        requires = pyproject_data["project"]["requires-python"]
+        match = re.fullmatch(r">=(\d+)\.(\d+)\.(\d+)", requires)
+        assert match, f"expected '>=X.Y.Z', got {requires!r}"
+        floor = tuple(map(int, match.groups()))
+        assert floor >= (3, 11, 5)
+        assert faultmaven.MINIMUM_PYTHON == floor
         script = (pyproject_path.parent / "scripts" / "sync-venv.sh").read_text()
-        assert '\nPYTHON_FLOOR="3.11.5"\n' in script
+        assert f'\nPYTHON_FLOOR="{requires[2:]}"\n' in script
 
     def test_license_present(self, pyproject_data: dict):
         """Verify license is specified."""
