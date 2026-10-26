@@ -118,7 +118,8 @@ jobs:
           # Not `type=sha`, and a revision label and annotation of our own:
           # metadata-action reads all three from github.sha, which is not the
           # commit built on a workflow_run. A custom entry replaces the
-          # generated one.
+          # generated one. No build step passes the annotations output yet; the
+          # override keeps it right for when one does.
           #
           # The build pushes only the sha- tag and any semver tags. latest and
           # the branch tag move in the last step, only while this commit is
@@ -195,8 +196,15 @@ jobs:
       # answer went stale while the image built, and an older commit's push
       # could then move both tags back over a newer one's: on 2026-10-25,
       # :latest sat a commit behind main for 5 h 15 min. It runs whenever the
-      # build pushed, whatever the queue steps did, and the move itself never
-      # fails the job; ci-actions' README states the rule.
+      # build pushed, whatever the queue steps did.
+      #
+      # CD deploys sha- tags through the image queue; `latest` is what a local
+      # `docker compose` pulls by default (FM_IMAGE_TAG). A move that fails is
+      # retried, then left with a warning, not a red run (a re-run would push
+      # the queued sha- tag again under a new digest), so those pulls stay one
+      # build behind until the next publish at the tip. An invalid input fails
+      # the step: a wiring error, which no re-run fixes. ci-actions' README
+      # states the rule.
       - name: Move latest and the branch tag
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: FaultMaven/ci-actions/move-branch-tags@d01fb8619a0df2b2f71ef8e7e807b9373561b722 # v1.3.0
