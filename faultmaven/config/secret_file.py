@@ -47,10 +47,12 @@ def publish_secret_once(
     A symlink is published through: the secret lands on its resolved target,
     so a link to a persistent volume keeps pointing at it.
     """
-    if not path.name:
-        raise IsADirectoryError(errno.EISDIR, "no file name", str(path))
     # realpath, not Path.resolve(): a symlink loop then fails as an OSError.
-    path = Path(os.path.realpath(path))
+    resolved = Path(os.path.realpath(path))
+    # No name before resolving ('' is the cwd) or after ('/..', a link to '/').
+    if not path.name or not resolved.name:
+        raise IsADirectoryError(errno.EISDIR, "no file name", str(path))
+    path = resolved
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}")
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
@@ -104,7 +106,8 @@ def _publish_under_lock(
 
     Without ``fcntl`` (Windows) the same decision is made with no lock. Two
     processes publishing over a BLANK file at once can then each install their
-    own; a published secret is still never overwritten.
+    own; a secret published before either process read the file is still never
+    overwritten.
     """
     try:
         import fcntl

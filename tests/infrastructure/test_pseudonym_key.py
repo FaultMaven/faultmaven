@@ -442,6 +442,28 @@ class TestTheNoHardlinkFallback:
         assert len(set(keys)) == 1, f"racers diverged: {set(keys)}"
         assert keys[0] == path.read_bytes()
 
+    def test_an_empty_file_that_appears_before_the_locked_publish_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """The locked path replaces a blank file only for a caller that says
+        it holds no secret; the pseudonym key never does (#1788 review)."""
+        import faultmaven.infrastructure.security.pseudonym_key as mod
+
+        self._no_hardlinks(monkeypatch)
+        path = tmp_path / ".redaction_key"
+        publish = mod.publish_secret_once
+
+        def an_empty_file_appears_first(target, data, **kwargs):
+            target.write_bytes(b"")
+            return publish(target, data, **kwargs)
+
+        monkeypatch.setattr(mod, "publish_secret_once", an_empty_file_appears_first)
+
+        with pytest.raises(PseudonymKeyUnavailableError):
+            _load_or_create(path)
+
+        assert path.read_bytes() == b""
+
     def test_the_fallback_leaves_no_temp_file(self, tmp_path, monkeypatch):
         self._no_hardlinks(monkeypatch)
         path = tmp_path / ".redaction_key"

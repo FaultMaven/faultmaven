@@ -323,6 +323,24 @@ def test_without_flock_an_empty_secret_file_is_still_regenerated(
     assert _secret(settings) == clean_jwt_env.read_text(encoding="utf-8")
 
 
+@pytest.mark.unit
+def test_a_blank_file_left_by_a_lost_race_sets_no_secret(
+    clean_jwt_env, monkeypatch, caplog
+):
+    """A loser re-reads the winner's file. Should it hold no secret after all,
+    nothing is set or exported, and the persistent-path WARNING says so
+    (#1788 review, 2/6)."""
+    clean_jwt_env.write_bytes(b"")
+    monkeypatch.setattr(S, "publish_secret_once", lambda path, data, **kw: False)
+    caplog.set_level(logging.WARNING)
+
+    settings = _resolved()
+
+    assert settings.security.jwt_secret_key is None
+    assert "JWT_SECRET_KEY" not in os.environ
+    assert "Could not generate/persist a local JWT secret" in caplog.text
+
+
 def test_write_failure_is_nonfatal(monkeypatch, tmp_path):
     """A filesystem error must log+return, not raise (auth then errors clearly)."""
     monkeypatch.setenv("AUTH_MODE", "local")
@@ -502,13 +520,21 @@ def test_a_secret_file_that_is_not_utf8_stops_startup_naming_it(
 
 
 @pytest.mark.unit
-def test_an_empty_secret_file_setting_warns_and_sets_no_secret(
-    empty_cwd, monkeypatch, through_get_settings, caplog
+@pytest.mark.parametrize(
+    "secret_file",
+    ["", "/..", "root-link"],
+    ids=["empty", "root-dotdot", "link-to-root"],
+)
+def test_a_secret_file_setting_that_names_no_file_warns_and_sets_no_secret(
+    empty_cwd, monkeypatch, through_get_settings, caplog, secret_file
 ):
-    """``JWT_SECRET_FILE=''`` names the cwd. Main logs the persistent-path
-    WARNING and sets no secret; the shared publisher raised ValueError, a
-    SETTINGS_INIT_ERROR (#1788 review, 12)."""
-    monkeypatch.setenv("JWT_SECRET_FILE", "")
+    """``JWT_SECRET_FILE=''`` names the cwd; ``/..`` and a link to ``/``
+    resolve to ``/``. Main logs the persistent-path WARNING and sets no secret;
+    the shared publisher raised ValueError, a SETTINGS_INIT_ERROR (#1788
+    review, 12)."""
+    if secret_file == "root-link":
+        (empty_cwd / secret_file).symlink_to("/")
+    monkeypatch.setenv("JWT_SECRET_FILE", secret_file)
     caplog.set_level(logging.WARNING)
 
     settings = through_get_settings()

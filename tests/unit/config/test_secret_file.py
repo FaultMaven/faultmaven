@@ -71,6 +71,42 @@ def test_a_link_that_fails_for_another_reason_is_never_a_win(tmp_path, monkeypat
     assert not path.exists() or path.read_bytes() == b"the-peers-secret"
 
 
+def test_a_peer_that_links_while_we_hold_the_lock_keeps_its_secret(
+    tmp_path, monkeypatch
+):
+    """Under the lock an absent target is published with ``os.link``, never an
+    unconditional ``os.replace``. The blank file we chose to replace vanishes
+    while we wait for the lock, and a peer links its secret between our locked
+    read and our publish: the peer's secret stays, and ours is not a win
+    (#1788 review, 7)."""
+    path = tmp_path / "secret"
+    path.write_bytes(b"")
+    peer = tmp_path / "peer"
+    peer.write_bytes(b"the-peers-secret")
+    real_link = os.link
+
+    def blank_until_deleted(raw):
+        path.unlink()  # deleted while we wait for the lock
+        return not raw
+
+    def peer_links_first(publish):
+        def wrapped(src, dst):
+            if not path.exists() and peer.exists():  # the peer, mid-publish
+                real_link(peer, dst)
+                peer.unlink()
+            return publish(src, dst)
+
+        return wrapped
+
+    monkeypatch.setattr(publisher.os, "link", peer_links_first(os.link))
+    monkeypatch.setattr(publisher.os, "replace", peer_links_first(os.replace))
+
+    published = publish_secret_once(path, b"our-secret", replace_if=blank_until_deleted)
+
+    assert published is False
+    assert path.read_bytes() == b"the-peers-secret"
+
+
 def test_a_directory_at_the_key_path_keeps_its_mode(tmp_path):
     """Only a regular file is tightened: a directory went to 0600 before the
     read refused it (#1788 review, 1)."""
