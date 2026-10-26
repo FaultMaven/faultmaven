@@ -576,6 +576,14 @@ class BackendCapabilityFeatures(BaseModel):
     )
     caseHistory: bool
     sso: bool
+    multiTenant: bool = Field(
+        description=(
+            "True when this backend runs the multi-tenant provider "
+            "(TENANT_PROVIDER=multi). Derived from the same setting the KB "
+            "write policy reads; a client gates operator-only KB writes on "
+            "it, and treats an absent field as true."
+        )
+    )
 
 
 class BackendCapabilityLimits(BaseModel):

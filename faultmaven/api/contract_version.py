@@ -2225,4 +2225,28 @@ asked to accept, and it belongs to a person.
 # and reads neither response field (its heartbeat interval is its own, 10
 # minutes, inside the 30-minute default), the dashboard runs the copilot's
 # session code, and the slack agent makes no session call.
-API_CONTRACT_VERSION = "14.6.0"
+
+# 14.7.0 — MINOR. `GET /api/v1/meta/capabilities` (and its deprecated `/v1`
+# alias) reports `features.multiTenant`, a required boolean on
+# `BackendCapabilityFeatures` (#1489). It is `requested_tenant_provider() ==
+# BUILTIN_MULTI`, the term the KB document write policy evaluates
+# (`ensure_global_authoring_allowed`), resolved per request: true exactly when
+# that policy refuses the platform operator's arm on a `global` document and
+# on a `team` or `personal` document the operator does not own. It is not
+# `deploymentMode`, which comes from the dashboard URL and is `cloud` on a
+# single-tenant cloud as well. No client could mirror the policy before, so
+# the Dashboard offered a platform administrator Edit on documents a
+# multi-tenant server answers 403.
+#
+# The client rule: an absent field reads as `true` (multi-tenant), the
+# conservative answer, so a client running against a core older than this
+# contract offers no operator arm rather than one the server may refuse. That
+# is the opposite polarity of the feature flags beside it, which read absent
+# as `false`.
+#
+# MINOR for the reasons 12.4.0 and 14.5.0 were: a new field on a
+# response-only schema clients already parse; no request shape changes and
+# nothing is removed. A generated client type only widens, and the
+# Dashboard's hand-declared `MetaCapabilityFeatures` declares every field
+# optional.
+API_CONTRACT_VERSION = "14.7.0"
