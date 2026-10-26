@@ -288,9 +288,10 @@ def build_http_client(settings: Any, *, host: str, port: int, ssl: bool) -> Clie
     - **The mark** :func:`blocking_executor_for` checks.
 
     Construction itself makes three round trips to the server, before the
-    timeout is set. Nothing here bounds them: the boot's startup probe is the
-    bound. ``chromadb.HttpClient`` raises when the server is unreachable,
-    which the caller handles as connectivity.
+    timeout is set. Nothing here bounds them. The web boot's startup probe
+    bounds the API pod; a job or CLI has no bound on construction (#2339).
+    ``chromadb.HttpClient`` raises when the server is unreachable, which the
+    caller handles as connectivity.
 
     Raises:
         ChromaClientConfigError: a malformed credential, or a chromadb whose

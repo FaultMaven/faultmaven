@@ -1,4 +1,4 @@
-"""Tests for the shared frontmatter extraction utility."""
+"""Tests for ``faultmaven.utils.frontmatter.extract_frontmatter_metadata``."""
 
 from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 

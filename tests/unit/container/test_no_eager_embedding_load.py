@@ -4,8 +4,9 @@ Every process that builds the DI container — the API pod *and* the cleanup
 CronJobs — used to pull the ~1.3Gi BGE-M3 SentenceTransformer during
 construction, because two constructors called ``get_bge_m3_model()``: the LLM
 response cache (built by ``LLMRouter``) and the KB ingester, since deleted
-(#1782). A ``storage_cleanup`` job that embeds nothing was OOMKilled at its 512Mi limit,
-which is how every app CronJob failed silently for 112 days (infra#131).
+(#1782). A ``storage_cleanup`` job that embeds nothing was OOMKilled at its
+512Mi limit, which is how every app CronJob failed silently for 112 days
+(infra#131).
 
 The invariant these tests pin: **construction is not embedding.** Whether the
 model is resident is decided by the documented policy (``LAZY_LOAD_ML_MODELS`` /

@@ -41,6 +41,7 @@ has no ``=`` left for a pattern to match.
   ``verify_draft``. A draft is NOT author-only: ``GET /knowledge/drafts`` lists
   every global-scope draft to every user and a case's drafts are listed to its
   readers.
+
 A fifth writer belongs here as well.
 """
 

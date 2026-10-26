@@ -131,9 +131,9 @@ fix rather than the defect:
   ``kb_pack.py``, which defaulted the tier of a pack entry built in another
   repository and was the one that was live. Every site now REQUIRES the tier
   through one shared refusal (``domain/write_scope.require_write_scope``), and
-  the two service methods that could not name one were deleted. This was never exploitable (the gates
-  below held); what changed is the shape of the failure the next publish path
-  can have. The refusals are pinned as units in
+  the two service methods that could not name one were deleted. This was never
+  exploitable (the gates below held); what changed is the shape of the failure
+  the next publish path can have. The refusals are pinned as units in
   ``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py``; Attack 4
   keeps the half that needs a real store — what each stated tier MEANS to a
   tenant that did not author it.

@@ -12,8 +12,8 @@ The three providers run here as composition runs them, in order, against a
 private container. Stubs stand in only at the boundaries: the infrastructure
 services that own a socket or a model, and the ChromaDB client (a stand-in that
 is not an HTTP client, so the store runs no blocking executor and touches
-nothing at construction). ``SKIP_SERVICE_CHECKS`` is off, because under it no store and no
-Q&A tool is built and every identity below would hold vacuously.
+nothing at construction). ``SKIP_SERVICE_CHECKS`` is off, because under it no
+store and no Q&A tool is built and every identity below would hold vacuously.
 """
 
 from __future__ import annotations

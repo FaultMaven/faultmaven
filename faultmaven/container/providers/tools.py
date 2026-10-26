@@ -34,11 +34,12 @@ def create_registry_tools(
     # `container.tools`, which is read in exactly one place (a length count for
     # health status), and never in the registry built by
     # `_create_investigation_tools`. The agent's real KB tool is `kb_qa`,
-    # registered below. Deleted rather than wired: their retrieval path
-    # queried the unified `faultmaven_kb` collection with only caller-supplied
-    # metadata filters and NO scope predicate, while ChromaDB metadata
-    # filtering is the only thing isolating one user's runbooks from another's. Wiring them would have handed the model an
-    # unscoped read over every tenant's personal KB (#943).
+    # registered below. Deleted rather than wired: their retrieval path queried
+    # the unified `faultmaven_kb` collection with only caller-supplied metadata
+    # filters and NO scope predicate, while ChromaDB metadata filtering is the
+    # only thing isolating one user's runbooks from another's. Wiring them
+    # would have handed the model an unscoped read over every tenant's personal
+    # KB (#943).
 
     # Web search tool is optional (may be disabled if no API key configured).
     try:

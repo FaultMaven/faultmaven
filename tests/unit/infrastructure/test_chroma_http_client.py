@@ -569,15 +569,20 @@ def _real_container_refusing(settings: Any) -> Iterator[MagicMock]:
     def _must_not_be_called(**kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("no client may be built with a malformed token")
 
-    with (
-        patch("faultmaven._container_impl.get_settings", return_value=settings),
-        patch.object(chromadb, "HttpClient", _must_not_be_called),
-        patch("faultmaven._container_impl.register_tools") as tools,
-        patch("faultmaven._container_impl.register_services") as services,
-    ):
-        yield services
-    tools.assert_not_called()
-    assert container._initialized is False
+    try:
+        with (
+            patch("faultmaven._container_impl.get_settings", return_value=settings),
+            patch.object(chromadb, "HttpClient", _must_not_be_called),
+            patch("faultmaven._container_impl.register_tools") as tools,
+            patch("faultmaven._container_impl.register_services") as services,
+        ):
+            yield services
+        tools.assert_not_called()
+        assert container._initialized is False
+    finally:
+        # The refused composition left what it registered before the refusal
+        # on the process-wide singleton; no later test may inherit it.
+        container.reset()
 
 
 _MODES = pytest.mark.parametrize(
