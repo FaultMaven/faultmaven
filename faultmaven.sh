@@ -292,6 +292,12 @@ compose_files_args() {
     fi
     if [ "$BUILD_DASHBOARD" = true ]; then
         COMPOSE_FILES+=(-f docker-compose.dashboard-build.yml)
+        # docker-compose.dashboard-build.yml passes this as the Dashboard's
+        # PKG_REFRESH, the build arg its `apk upgrade` layer is keyed on
+        # (#2349). One value per UTC day: the first source build of a day
+        # upgrades Alpine's packages, and later builds that day reuse the
+        # layer. A value already in the environment wins.
+        export FM_DASHBOARD_PKG_REFRESH="${FM_DASHBOARD_PKG_REFRESH:-$(date -u +%Y-%m-%d)}"
     fi
 }
 

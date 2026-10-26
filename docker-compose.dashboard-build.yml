@@ -3,7 +3,8 @@
 # Layered on top of docker-compose.yml (and docker-compose.build.yml).
 #
 # Invoked by:  ./faultmaven.sh start --build-dashboard
-# Equivalent:  docker compose -f docker-compose.yml -f docker-compose.build.yml \
+# Equivalent:  FM_DASHBOARD_PKG_REFRESH=$(date -u +%Y-%m-%d) \
+#              docker compose -f docker-compose.yml -f docker-compose.build.yml \
 #                             -f docker-compose.dashboard-build.yml up -d --build
 #
 # REQUIRES the dashboard source checked out next to this repo:
@@ -14,3 +15,10 @@ services:
     build:
       context: ../faultmaven-dashboard
       dockerfile: Dockerfile
+      # The Dashboard's Dockerfile re-runs its `apk upgrade` layer only when
+      # PKG_REFRESH changes (faultmaven-dashboard#240); nothing else in it
+      # busts that layer's cache. faultmaven.sh sets the variable to the UTC
+      # date (#2349), so a source build refreshes Alpine's packages once a
+      # day. Unset, as in a bare `docker compose` call, the layer stays cached.
+      args:
+        PKG_REFRESH: ${FM_DASHBOARD_PKG_REFRESH:-}
