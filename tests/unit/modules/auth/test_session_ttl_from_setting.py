@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
 import pytest
-from fastapi import Response
+from fastapi import Request, Response
 
 from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.container.providers.infrastructure import create_session_store
@@ -279,6 +279,8 @@ async def test_the_mint_reports_the_server_timeout_and_the_session_expiry(
     # preset's 60), which a reload could move away from it.
     # 30 is below the 60 the field used to require: accepted, and ignored.
     body = await create_session(
+        # Authenticated, so the anonymous-mint counter (#1460) never reads it.
+        http_request=Request({"type": "http", "headers": []}),
         request=AuthSessionCreateRequest(timeout_minutes=30),
         session_service=service,
         response=Response(),

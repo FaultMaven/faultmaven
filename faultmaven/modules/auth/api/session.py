@@ -29,9 +29,9 @@ Core Design Principles:
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import (
@@ -51,6 +51,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.infrastructure.metrics import session_metrics
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
@@ -146,6 +147,36 @@ class AuthSessionCreateRequest(BaseModel):
     )
 
 
+class MintCaller(NamedTuple):
+    """The labels an anonymous mint is counted under (``session_metrics``)."""
+
+    bearer: str
+    origin: str
+
+
+def mint_caller(http_request: Request) -> MintCaller:
+    """Classify an anonymous mint's caller from its raw headers (#1460).
+
+    A plain function, called only on the anonymous branch: it is telemetry, not
+    a dependency, so an authenticated mint does no work for it. Reads the raw
+    ``Authorization`` header, not ``extract_bearer_token``'s result, which is
+    ``None`` for a malformed header and would count it as absent. The scheme is
+    split by hand: ``urlsplit`` raises on some malformed values.
+    """
+    authorization = http_request.headers.get("authorization", "").strip()
+    origin = http_request.headers.get("origin", "").strip()
+    scheme = origin.partition(":")[0].lower()
+    if not origin or origin.lower() == "null":
+        origin_kind = "none"
+    elif scheme in session_metrics.EXTENSION_SCHEMES:
+        origin_kind = scheme
+    else:
+        origin_kind = "web"
+    return MintCaller(
+        bearer="unresolved" if authorization else "absent", origin=origin_kind
+    )
+
+
 @router.post(
     "",
     status_code=201,
@@ -221,6 +252,7 @@ class AuthSessionCreateRequest(BaseModel):
 )
 @trace("api_create_session")
 async def create_session(
+    http_request: Request,
     request: Optional[AuthSessionCreateRequest] = Body(None),
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
@@ -290,6 +322,7 @@ async def create_session(
         # accepted as proof of this identity in places (see the note in
         # `api/middleware/idempotency.py`). Minting is therefore a credential
         # operation, and a credential operation must not take dictation.
+        caller: Optional[MintCaller] = None
         if current_user:
             # Use authenticated user's ID from JWT token
             user_id = current_user.user_id
@@ -301,12 +334,7 @@ async def create_session(
             import uuid
 
             user_id = f"user_{str(uuid.uuid4())[:8]}"
-            logger.warning(
-                f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
-                f"If user just logged in, frontend should pass JWT token in Authorization header. "
-                f"This will cause cases to be invisible after re-login. "
-                f"Client ID: {request.client_id if request else 'none'}"
-            )
+            caller = mint_caller(http_request)
 
         # Create session with metadata and client_id
         session_result = await session_service.create_session(
@@ -320,6 +348,21 @@ async def create_session(
             session, was_resumed = session_result
         else:
             session, was_resumed = session_result, False
+
+        if caller is not None:
+            # After the store write: this counts anonymous sessions minted, and
+            # the warning below is the same event, one line per count (#1460).
+            session_metrics.session_anonymous_mints_total.labels(
+                bearer=caller.bearer, origin=caller.origin
+            ).inc()
+            logger.warning(
+                "Minted anonymous session (user_id=%s, bearer=%s, origin=%s, "
+                "client_id=%s): no Authorization header resolved to a user",
+                user_id,
+                caller.bearer,
+                caller.origin,
+                request.client_id if request else "none",
+            )
 
         action_verb = "resumed" if was_resumed else "created"
 

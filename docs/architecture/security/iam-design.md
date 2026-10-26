@@ -522,6 +522,81 @@ deleting the user's `password_reset:*` keys inside `revoke_user_tokens` — a
 second cleanup path a future reset flow could forget, which is the
 fragmentation #767 removed.)*
 
+**Anonymous session mints are counted (#1460).** `POST /api/v1/sessions`
+resolves its caller through the optional-auth dependency, and when no bearer
+resolves to a user it mints an anonymous identity. The route cannot require
+authentication until no client mints without a credential, so those mints are
+counted, on `faultmaven_auth_session_anonymous_mints_total{bearer, origin}`:
+
+- `bearer="absent"`: no `Authorization` header, or a blank one.
+  `bearer="unresolved"`: a non-blank header that resolved to nobody (not
+  `Bearer`, malformed, invalid, expired, or revoked but not yet expired).
+- `origin`, from the `Origin` header: for a browser extension, its scheme,
+  lower-cased (`chrome-extension`, `moz-extension`, `safari-web-extension`);
+  `none` when the header is missing, blank or `null` (an opaque origin: a
+  sandboxed frame, `file://`, some redirects); `web` for any other origin.
+  Browsers send `Origin` on every `POST`, so a panel's mint carries one and an
+  uptime probe or crawler does not.
+
+The route counts after the session is stored, so the counter counts anonymous
+sessions minted, and a mint that fails counts nothing. Each count writes one
+warning line at the same point:
+`Minted anonymous session (user_id=…, bearer=…, origin=…, client_id=…)`. No
+auth decision reads the counter. All ten series exist at zero from import
+(#1787). The counter records only with `ENABLE_METRICS=true` and is served only
+with `METRICS_EXPORTER=prometheus_http`. The count that decides the flip:
+
+```promql
+sum(increase(faultmaven_auth_session_anonymous_mints_total{bearer="absent", origin!="none"}[7d]))
+```
+
+- **`sum()` and this query hold at `WORKERS=1`**: one registry per pod. With
+  several workers, each keeps its own registry and `/metrics` answers from one
+  of them, so neither the sum nor the increase is the pod's count.
+- **The query is paired with the log.** `increase()` sees only what a scrape
+  saw. It misses a mint between a pod's readiness and its first scrape, and one
+  after its last scrape before the pod is replaced. While real traffic is near
+  zero, those are exactly the mints that decide the flip. So the decision also
+  counts, in the log store over the same window, the warning lines above with
+  `bearer=absent` and an `origin` other than `none`. One line is written per
+  counted mint, so the log sees the mints no scrape did.
+
+A zero is trusted only after two positive controls:
+
+- after the counter deploys and before any client update, `bearer="absent"`
+  has been seen above zero for each extension family the copilot ships:
+  `origin="chrome-extension"` and `origin="moz-extension"`. A family whose
+  mints arrived without `Origin` would hide under `none`, and the count could
+  read zero falsely. Firefox ships as a release zip loaded through
+  `about:debugging`, so organic `moz-extension` traffic may never appear: one
+  deliberate header-less mint from the shipped Firefox build meets the control,
+  and likewise from the shipped Chrome build if its organic traffic is absent.
+  Such a mint is made before the window opens, because it increments the
+  series the decision reads. `web` is not required here: the old Dashboard
+  panel mints without a bearer only when a token refresh fails, so its traffic
+  may never show;
+- before the window opens, one deliberate header-less `POST /api/v1/sessions`
+  carrying a web `Origin` moves `origin="web"`. That proves the `web`
+  classification end to end. It is run before the window, never inside it,
+  because it increments the series the decision reads.
+
+`bearer="unresolved"` never reaches zero, by design: a revoked bearer that has
+not yet expired still mints anonymously, once per occurrence. Mints under
+`origin="none"` (no, blank or `null` `Origin`) keep making anonymous sessions
+too.
+
+Seven days of zero says that no header-less mint was counted under an `origin`
+other than `none` in that window. It does not say that no anonymous session is
+still live. A session lapses
+`SESSION_TIMEOUT_MINUTES` (default 30) after its last write, and every write
+re-arms it, a heartbeat included. The heartbeat route takes no authentication
+until step 4, and nothing caps a session's total lifetime. So an anonymous
+session minted before the window stays live for as long as an old client keeps
+heartbeating it within every `SESSION_TIMEOUT_MINUTES`. Step 4's ownership check
+on the heartbeat answers such a session 403, and the old client swallows that
+403, so its keep-alive stops with no signal (#1460). The window bounds new
+header-less mints counted under an `origin` other than `none`, not this residue.
+
 ## Local Mode Authentication
 
 ### Endpoint Design
