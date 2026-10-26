@@ -17,6 +17,8 @@ answer whatever the test assumed.
 
 import logging
 import os
+import pathlib
+import threading
 
 import pytest
 
@@ -160,6 +162,104 @@ def test_a_persistent_database_persists_the_secret_at_0600(
     assert secret_file.exists(), "a persistent deployment did not persist its secret"
     assert _secret(settings) == secret_file.read_text().strip()
     assert (secret_file.stat().st_mode & 0o777) == 0o600
+
+
+def _refuse_chmod(monkeypatch):
+    def refuse(self, mode, *args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", str(self))
+
+    monkeypatch.setattr(pathlib.Path, "chmod", refuse)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "existing", [None, b"", b"\n"], ids=["no-file", "empty-file", "blank-file"]
+)
+def test_processes_starting_together_sign_with_the_secret_on_disk(
+    clean_jwt_env, monkeypatch, existing
+):
+    """Both racers generate before either publishes. Each used to write its
+    own secret, so the last writer won on disk and the other signed with a
+    value that was not there (#1788). An empty file is still regenerated, by
+    exactly one of them."""
+    if existing is not None:
+        clean_jwt_env.write_bytes(existing)
+    racers = [S.FaultMavenSettings() for _ in range(2)]
+    barrier = threading.Barrier(2, timeout=60)  # a hang guard, not a measure
+    generate = S.secrets.token_urlsafe
+
+    def generate_together(nbytes):
+        candidate = generate(nbytes)
+        barrier.wait()  # both hold a candidate before either publishes
+        return candidate
+
+    monkeypatch.setattr(S.secrets, "token_urlsafe", generate_together)
+    errors = []
+
+    def resolve(settings):
+        try:
+            S.resolve_local_jwt_secret(settings)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve, args=(s,)) for s in racers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == [], errors
+    on_disk = clean_jwt_env.read_text(encoding="utf-8")
+    assert on_disk.strip()
+    assert [_secret(s) for s in racers] == [on_disk, on_disk]
+    assert (clean_jwt_env.stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.unit
+def test_a_new_secret_file_is_0600_from_creation_even_when_chmod_fails(
+    clean_jwt_env, monkeypatch
+):
+    """Written under the umask and chmodded afterwards, the file was 0644 until
+    the chmod ran, and stayed 0644 when the chmod failed (#1788)."""
+    _refuse_chmod(monkeypatch)
+    umask = os.umask(0o022)
+    try:
+        settings = _resolved()
+    finally:
+        os.umask(umask)
+
+    assert (clean_jwt_env.stat().st_mode & 0o777) == 0o600
+    assert _secret(settings) == clean_jwt_env.read_text(encoding="utf-8")
+    assert [p.name for p in clean_jwt_env.parent.iterdir()] == [".jwt_secret"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chmod_fails", [False, True], ids=["tightened", "chmod-fails"])
+def test_an_existing_secret_file_others_can_read_is_tightened_with_a_warning(
+    clean_jwt_env, monkeypatch, caplog, chmod_fails
+):
+    """A pre-existing 0644 file was read silently (#1788). Ruled: tighten it to
+    0600 and warn that the key may have been read and how to rotate it; its
+    secret is still the one this install signs with."""
+    clean_jwt_env.write_text("existing-secret\n", encoding="utf-8")
+    clean_jwt_env.chmod(0o644)
+    if chmod_fails:
+        _refuse_chmod(monkeypatch)
+    caplog.set_level(logging.WARNING)
+
+    settings = _resolved()
+
+    assert _secret(settings) == "existing-secret"
+    mode = clean_jwt_env.stat().st_mode & 0o777
+    assert mode == (0o644 if chmod_fails else 0o600)
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and str(clean_jwt_env) in r.getMessage()
+    ]
+    assert len(warned) == 1, caplog.text
+    assert "JWT_SECRET_KEY" in warned[0], warned[0]  # how to rotate
+    assert "existing-secret" not in caplog.text
 
 
 def test_write_failure_is_nonfatal(monkeypatch, tmp_path):
@@ -311,6 +411,33 @@ def test_settings_that_do_not_validate_write_nothing(
 
     assert _written(empty_cwd) == []
     assert "JWT_SECRET_KEY" not in os.environ
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "database_url",
+    [None, "sqlite+aiosqlite:///:memory:"],
+    ids=["persistent", "non-persistent"],
+)
+def test_a_secret_file_that_is_not_utf8_stops_startup_naming_it(
+    empty_cwd, monkeypatch, through_get_settings, database_url
+):
+    """It raised a bare UnicodeDecodeError out of get_settings(): an opaque
+    SETTINGS_INIT_ERROR naming neither the file nor a recovery (#1788). Ruled:
+    refuse, naming the file, wherever it is read; never regenerate it."""
+    secret_file = empty_cwd / "data" / ".jwt_secret"
+    secret_file.parent.mkdir()
+    secret_file.write_bytes(b"\xff\xfe\x00bad")
+    if database_url is not None:
+        monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(ConfigurationError) as refused:
+        through_get_settings()
+
+    assert "data/.jwt_secret" in str(refused.value)
+    assert "UTF-8" in str(refused.value)
+    assert secret_file.read_bytes() == b"\xff\xfe\x00bad"
+    assert _written(empty_cwd) == ["data", "data/.jwt_secret"]
 
 
 @pytest.mark.unit

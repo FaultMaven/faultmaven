@@ -77,7 +77,7 @@ class TestConfiguredKey:
         write anywhere else would slip past. Assert the publish never runs."""
         import faultmaven.infrastructure.security.pseudonym_key as mod
 
-        with patch.object(mod, "_write_atomically") as publish:
+        with patch.object(mod, "publish_secret_once") as publish:
             resolve_pseudonym_key(_settings(tmp_path, key=GOOD_KEY))
 
         publish.assert_not_called()
@@ -380,12 +380,12 @@ class TestTheNoHardlinkFallback:
 
     @staticmethod
     def _no_hardlinks(monkeypatch):
-        import faultmaven.infrastructure.security.pseudonym_key as mod
+        import faultmaven.config.secret_file as publisher
 
         def unsupported(_src, _dst):
             raise OSError(1, "Operation not permitted")
 
-        monkeypatch.setattr(mod.os, "link", unsupported)
+        monkeypatch.setattr(publisher.os, "link", unsupported)
 
     def test_the_fallback_publishes_a_complete_key(self, tmp_path, monkeypatch):
         self._no_hardlinks(monkeypatch)
