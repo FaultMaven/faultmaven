@@ -3453,15 +3453,16 @@ every request: an operator who switches the chat provider changes which
 per-provider ceiling applies, so a client re-reads them per session rather
 than caching them for the life of an install.
 
-``features.multiTenant`` is ``requested_tenant_provider() == BUILTIN_MULTI``,
-the term the KB document write policy evaluates
-(``ensure_global_authoring_allowed``): it is true exactly when that policy
-refuses the platform operator's arm, so a client can mirror the policy
-rather than offer a control the server answers 403 (#1489). It is not
-``deploymentMode``, which is derived from the dashboard URL
-(``settings.is_cloud``) and answers a different question: a cloud
-deployment can run the single-tenant provider. Resolved per request, like
-the turn limits.
+``features.multiTenant`` is ``operator_authoring_refused()``, the KB write
+policy's own predicate, derived from ``requested_tenant_provider()``: true
+under ``TENANT_PROVIDER=multi``, exactly when the policy refuses the
+platform operator's arm (``ensure_global_authoring_allowed`` on a global
+document, ``ensure_document_write_allowed`` on someone else's team or
+personal document), so a client can mirror the policy rather than offer a
+control the server answers 403 (#1489). ``deploymentMode`` is
+``DEPLOYMENT_MODE`` (``settings.is_cloud``), which answers a different
+question: a cloud deployment can run the single-tenant provider. Resolved
+per request, like the turn limits.
 
 Returns:
     Backend capabilities including deployment mode, dashboard URL, and feature flags

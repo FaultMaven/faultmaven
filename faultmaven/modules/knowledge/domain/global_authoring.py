@@ -52,6 +52,18 @@ GLOBAL_AUTHORING_ADMIN_MSG = (
 )
 
 
+def operator_authoring_refused() -> bool:
+    """True when no tenant session may author global content, and the platform
+    operator's arm of the KB document write policy is refused.
+
+    Derived from ``requested_tenant_provider()``: true under
+    ``TENANT_PROVIDER=multi``. The one place this term is evaluated: the
+    policy below reads it, and ``GET /meta/capabilities`` publishes it as
+    ``features.multiTenant`` so a client can mirror the policy (#1489).
+    """
+    return requested_tenant_provider() == BUILTIN_MULTI
+
+
 def ensure_global_authoring_allowed(is_platform_admin: bool) -> None:
     """Enforce the global-tier authoring policy, raising on refusal.
 
@@ -66,7 +78,7 @@ def ensure_global_authoring_allowed(is_platform_admin: bool) -> None:
             non-platform-admin.
             The global exception handler maps it to HTTP 403.
     """
-    if requested_tenant_provider() == BUILTIN_MULTI:
+    if operator_authoring_refused():
         raise AuthorizationError(GLOBAL_AUTHORING_MULTI_MSG)
     if not is_platform_admin:
         raise AuthorizationError(GLOBAL_AUTHORING_ADMIN_MSG)

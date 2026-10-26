@@ -998,26 +998,54 @@ def test_capabilities_publish_multi_tenant_from_the_tenant_provider(
             ), (tenant_provider, path)
 
 
-def test_capabilities_multi_tenant_is_true_exactly_when_the_operator_arm_is_refused(
+def test_capabilities_multi_tenant_is_true_exactly_when_the_write_policy_refuses_the_operator(
     booted_app_client, monkeypatch
 ):
-    """The served flag agrees with the write policy it lets a client mirror
-    (#1489): ``multiTenant`` is true exactly when the global-authoring policy
-    refuses even a platform administrator, under either provider. Both sides
-    are read through the same setting, not through either one's source."""
+    """The served flag agrees with the write policy the Dashboard's Edit button
+    meets (#1489): under either provider, a platform administrator writing a
+    global document, or someone else's team or personal one, is refused by
+    ``ensure_document_write_allowed`` exactly when ``multiTenant`` is true.
+    Both sides are read through the same setting, not through either one's
+    source; under ``single`` the same calls pass, so a refusal for another
+    reason cannot satisfy the check."""
     from faultmaven.config.settings import TenantProvider
+    from faultmaven.exceptions import AuthorizationError
+    from faultmaven.modules.knowledge.domain.document_write import (
+        ensure_document_write_allowed,
+    )
     from faultmaven.modules.knowledge.domain.global_authoring import (
         is_global_authoring_allowed,
     )
+
+    def operator_refused(scope: str, owner_id) -> bool:
+        try:
+            ensure_document_write_allowed(
+                scope=scope,
+                owner_id=owner_id,
+                actor_user_id="admin",
+                is_platform_admin=True,
+            )
+        except AuthorizationError:
+            return True
+        return False
 
     providers = get_settings().providers
     for tenant_provider in (TenantProvider.SINGLE, TenantProvider.MULTI):
         monkeypatch.setattr(providers, "tenant_provider", tenant_provider)
         response = booted_app_client.get("/api/v1/meta/capabilities")
         assert response.status_code == 200
-        assert response.json()["features"]["multiTenant"] is (
-            not is_global_authoring_allowed(True)
-        ), tenant_provider
+        multi_tenant = response.json()["features"]["multiTenant"]
+        assert multi_tenant is (tenant_provider == TenantProvider.MULTI)
+        assert multi_tenant is (not is_global_authoring_allowed(True))
+        for scope, owner_id in (
+            ("global", None),
+            ("team", "someone-else"),
+            ("personal", "someone-else"),
+        ):
+            assert operator_refused(scope, owner_id) is multi_tenant, (
+                tenant_provider,
+                scope,
+            )
 
 
 async def test_capabilities_handler_returns_exactly_its_published_model():
