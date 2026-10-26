@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.models.api import (
     STORAGE_ERROR_CODES,
+    STORAGE_READ_FAILED,
     MessageRetrievalDebugInfo,
     debug_error,
 )
@@ -49,12 +50,13 @@ def _service(repo) -> CaseService:
     )
 
 
-def _logged(caplog, exc) -> bool:
-    """A WARNING-or-worse record names the exception's class and its text."""
-    return any(
-        f"{type(exc).__name__}: {exc}" in r.getMessage()
+def _logged(caplog, exc) -> logging.LogRecord:
+    """The WARNING-or-worse record naming the exception's class and its text."""
+    return next(
+        r
         for r in caplog.records
         if r.levelno >= logging.WARNING
+        and f"{type(exc).__name__}: {exc}" in r.getMessage()
     )
 
 
@@ -80,7 +82,10 @@ async def test_the_route_returns_a_code_and_logs_the_text(
     assert debug["storage_errors"] == [f"{arm}: {type(exc).__name__}"]
     assert debug["message_parsing_errors"] == int(arm == "MESSAGE_PARSE_FAILED")
     assert "hunter2" not in response.text
-    assert _logged(caplog, exc)
+    record = _logged(caplog, exc)
+    assert CASE_ID in record.getMessage()
+    if arm == "STORAGE_READ_FAILED":
+        assert record.exc_info is not None
 
 
 async def test_a_stored_row_the_loader_rejects_is_a_read_failure(build_app, call_api):
@@ -137,13 +142,38 @@ async def test_the_fallback_returns_a_code_and_logs_the_text(caplog, arm, exc):
 
     assert response.debug_info.storage_errors == [f"{arm}: {type(exc).__name__}"]
     assert "hunter2" not in response.model_dump_json()
-    assert _logged(caplog, exc)
+    record = _logged(caplog, exc)
+    assert CASE_ID in record.getMessage()
+    if arm == "MESSAGE_PARSE_FAILED":
+        assert "m-1" in record.getMessage()
 
 
-def test_the_model_refuses_an_entry_that_is_not_coded():
-    fields = {"redis_key": "k", "redis_operation_time_ms": 0}
+def _debug_info(*entries: str) -> MessageRetrievalDebugInfo:
+    return MessageRetrievalDebugInfo(
+        redis_key="k", redis_operation_time_ms=0, storage_errors=list(entries)
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        f"Storage error: {SECRET}",
+        # A valid code and class, then text: the class half is pinned too.
+        f"{debug_error(STORAGE_READ_FAILED, ValueError('x'))}: {SECRET}",
+    ],
+)
+def test_the_model_refuses_an_entry_that_is_not_coded(entry):
     with pytest.raises(ValueError):
-        MessageRetrievalDebugInfo(storage_errors=[f"Storage error: {SECRET}"], **fields)
+        _debug_info(entry)
 
+
+def test_debug_error_produces_only_entries_the_model_accepts():
     coded = [debug_error(code, TimeoutError()) for code in STORAGE_ERROR_CODES]
-    assert MessageRetrievalDebugInfo(storage_errors=coded, **fields).storage_errors
+    assert _debug_info(*coded).storage_errors == coded
+
+    odd = type("pkg.Odd", (Exception,), {})()
+    assert _debug_info(debug_error(STORAGE_READ_FAILED, odd)).storage_errors == [
+        "STORAGE_READ_FAILED: Exception"
+    ]
+    with pytest.raises(ValueError):
+        debug_error("NOT_A_CODE", ValueError())

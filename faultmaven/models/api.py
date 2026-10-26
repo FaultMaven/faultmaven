@@ -628,14 +628,24 @@ class Message(BaseModel):
 MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
 STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
 STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED, STORAGE_READ_FAILED)
+_CLASS_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 _STORAGE_ERROR_ENTRY = re.compile(
-    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): [A-Za-z_][A-Za-z0-9_]*$"
+    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): {_CLASS_NAME}$"
 )
 
 
 def debug_error(code: str, exc: BaseException) -> str:
-    """One ``storage_errors`` entry: ``CODE: ExceptionClass``, no exception text."""
-    return f"{code}: {type(exc).__name__}"
+    """One ``storage_errors`` entry: ``CODE: ExceptionClass``, no exception text.
+
+    Always an entry the model accepts: an unknown code is a programming error,
+    and a class name that is not a plain identifier is reported as ``Exception``.
+    """
+    if code not in STORAGE_ERROR_CODES:
+        raise ValueError(f"Unknown storage error code: {code!r}")
+    name = type(exc).__name__
+    if not re.fullmatch(_CLASS_NAME, name):
+        name = "Exception"
+    return f"{code}: {name}"
 
 
 class MessageRetrievalDebugInfo(BaseModel):
