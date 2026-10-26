@@ -236,6 +236,28 @@ class TestAnEmptyKeyFileIsNeverHonoured:
         assert path.read_bytes() == b""
         assert [p.name for p in tmp_path.iterdir()] == [".redaction_key"]
 
+    def test_an_empty_file_that_appears_before_the_publish_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """Replacing a blank file is the JWT secret's rule. In the shared
+        publisher it replaced an empty key file that appeared between the
+        first read and the publish (#1788 review, 2/6)."""
+        import faultmaven.infrastructure.security.pseudonym_key as mod
+
+        path = tmp_path / ".redaction_key"
+        publish = mod.publish_secret_once
+
+        def an_empty_file_appears_first(target, data, **kwargs):
+            target.write_bytes(b"")
+            return publish(target, data, **kwargs)
+
+        monkeypatch.setattr(mod, "publish_secret_once", an_empty_file_appears_first)
+
+        with pytest.raises(PseudonymKeyUnavailableError):
+            _load_or_create(path)
+
+        assert path.read_bytes() == b""
+
     def test_resolve_never_returns_a_weak_key(self, tmp_path):
         """The backstop: what comes out is always usable, or nothing does."""
         (tmp_path / ".redaction_key").write_bytes(b"")

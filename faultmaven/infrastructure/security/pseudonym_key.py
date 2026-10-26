@@ -81,12 +81,14 @@ MIN_KEY_LENGTH = 16
 #: read rather than re-hitting the filesystem per instance.
 _CACHE: Dict[str, bytes] = {}
 
-#: What a key file that group or others could read exposes, and how to rotate
-#: it; the tail of the WARNING ``tighten_secret_file_mode`` logs.
+#: What a key file that group or others could read or write exposes, and how
+#: to rotate it; the tail of the WARNING ``tighten_secret_file_mode`` logs.
 _KEY_FILE_ROTATION = (
-    "the redaction pseudonym key. To rotate it, set REDACTION_PSEUDONYM_KEY to "
-    "a new key, or delete the file to have one generated, then restart every "
-    "process; placeholders already stored under the old key will not match."
+    "the redaction pseudonym key, and anyone who could write it may have "
+    "replaced it. To rotate it, set REDACTION_PSEUDONYM_KEY to a new key, or "
+    "delete the file to have one generated; with a Redis server, also delete "
+    "the redaction:pseudonym_key_fingerprint key; then restart every process. "
+    "Placeholders already stored under the old key will not match."
 )
 
 

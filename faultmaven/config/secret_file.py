@@ -6,14 +6,26 @@ Two secrets can live in local files: the standalone HS256 JWT secret
 file is published, and the one rule applied before one is read (#1788).
 """
 
+import errno
 import logging
 import os
 import secrets
 import stat
 from pathlib import Path
+from typing import Callable, Optional
+
+#: ``os.link`` failing with one of these means the filesystem has no hard
+#: links. Only then is the secret published by ``os.replace`` under the lock;
+#: any other failure (EIO, ENOSPC, EDQUOT, ...) propagates.
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
 
 
-def publish_secret_once(path: Path, data: bytes) -> bool:
+def publish_secret_once(
+    path: Path,
+    data: bytes,
+    *,
+    replace_if: Optional[Callable[[bytes], bool]] = None,
+) -> bool:
     """Publish ``data`` at ``path`` iff nothing is there. True if we won.
 
     Written to a private temp file, flushed and fsynced, and only then linked
@@ -27,11 +39,18 @@ def publish_secret_once(path: Path, data: bytes) -> bool:
     an empty secret — which is not a broken secret, it is NO secret, and an
     HMAC under it is publicly computable.
 
-    An existing file that is empty or whitespace-only is not a published
-    secret: a file published here never appears empty. It is replaced through
-    the locked path, which re-decides under the lock, so racers that all found
-    it empty still converge on one secret.
+    An existing file is never replaced, unless the caller passes ``replace_if``
+    and it returns True for the file's bytes: the caller's own rule for a file
+    that holds no secret. A file published here never holds none, so that
+    replacement cannot overwrite a racer's secret.
+
+    A symlink is published through: the secret lands on its resolved target,
+    so a link to a persistent volume keeps pointing at it.
     """
+    if not path.name:
+        raise IsADirectoryError(errno.EISDIR, "no file name", str(path))
+    # realpath, not Path.resolve(): a symlink loop then fails as an OSError.
+    path = Path(os.path.realpath(path))
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}")
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
@@ -44,10 +63,12 @@ def publish_secret_once(path: Path, data: bytes) -> bool:
             return True
         except FileExistsError:
             # Another process published first; its secret is the deployment's.
-            if path.read_bytes().strip():
+            if replace_if is None or not replace_if(path.read_bytes()):
                 return False
-            return _publish_under_lock(path, tmp)
-        except OSError:
+            return _publish_under_lock(path, tmp, replace_if)
+        except OSError as exc:
+            if exc.errno not in _NO_HARD_LINKS:
+                raise
             # Filesystem without hardlink support (some network mounts, some
             # Docker bind mounts). ``os.replace`` is atomic but unconditional,
             # so it would clobber a secret another process just published. It
@@ -59,7 +80,7 @@ def publish_secret_once(path: Path, data: bytes) -> bool:
             # window described above: a crash or ENOSPC between the two left a
             # permanent zero-byte file, and a concurrent reader could observe
             # it and refuse to boot.
-            return _publish_under_lock(path, tmp)
+            return _publish_under_lock(path, tmp, replace_if)
     finally:
         try:
             os.unlink(tmp)
@@ -67,58 +88,91 @@ def publish_secret_once(path: Path, data: bytes) -> bool:
             pass
 
 
-def _publish_under_lock(path: Path, tmp: Path) -> bool:
-    """Move ``tmp`` onto ``path`` iff nothing is published yet. True if we won.
+def _publish_under_lock(
+    path: Path, tmp: Path, replace_if: Optional[Callable[[bytes], bool]]
+) -> bool:
+    """Publish ``tmp`` at ``path`` iff nothing is published yet. True if we won.
+
+    An absent target is published with ``os.link`` where it works, so a racer
+    linking without the lock is never overwritten; ``os.replace`` lands only on
+    a filesystem without hard links, or over a file ``replace_if`` says holds
+    no secret.
 
     The lock file is never unlinked: removing it would let a later opener lock
     a fresh inode while a current holder still holds the old one, so the two
     would not exclude each other.
+
+    Without ``fcntl`` (Windows) the same decision is made with no lock. Two
+    processes publishing over a BLANK file at once can then each install their
+    own; a published secret is still never overwritten.
     """
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None  # type: ignore[assignment]
 
     lock_path = path.with_name(f"{path.name}.lock")
     with open(lock_path, "a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)  # released on close
+        # Re-read under the lock: whoever got here first has already
+        # published, and the loser must adopt that secret rather than install
+        # its own. Deciding before taking the lock is what makes the naive
+        # version diverge.
         try:
-            # Re-read under the lock: whoever got here first has already
-            # published, and the loser must adopt that secret rather than
-            # install its own. Deciding before taking the lock is what makes
-            # the naive version diverge.
+            existing = path.read_bytes()
+        except FileNotFoundError:
             try:
-                if path.read_bytes().strip():
-                    return False
-            except FileNotFoundError:
-                pass
-            os.replace(tmp, path)
-            return True
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                os.link(tmp, path)
+                return True
+            except FileExistsError:
+                return False
+            except OSError as exc:
+                if exc.errno not in _NO_HARD_LINKS:
+                    raise
+        else:
+            if replace_if is None or not replace_if(existing):
+                return False
+        os.replace(tmp, path)
+        return True
 
 
 def tighten_secret_file_mode(path: Path, *, what: str, logger: logging.Logger) -> None:
     """Make an existing secret file private to its owner before it is read.
 
-    A file that group or others can read may already have been read, so it is
-    chmodded to 0600 and a WARNING names the file, the mode it had, and
-    ``what``: the secret it holds and how to rotate it. A failed chmod is a
-    WARNING too. Never raises: the read that follows reports a missing or
-    unreadable file, and a secret that may have leaked is still this
-    deployment's secret until the operator rotates it.
+    A regular file that group or others can read or write may already have
+    been read or replaced, so it is chmodded to 0600 and a WARNING names the
+    file, the mode it had, the mode it has now, and ``what``: the secret it
+    holds and how to rotate it. Anything else at the path (nothing, a
+    directory, a FIFO) is left alone for the read that follows to report, and
+    so is every file where POSIX modes do not apply (Windows). Never raises: a
+    secret that may have leaked is still this deployment's secret until the
+    operator rotates it.
     """
+    if os.name == "nt":
+        return
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        st = path.stat()
     except OSError:
         return
-    if not mode & 0o077:
+    mode = stat.S_IMODE(st.st_mode)
+    if not stat.S_ISREG(st.st_mode) or not mode & 0o077:
         return
     try:
         path.chmod(0o600)
-        outcome = "it is now 0600"
+        now = stat.S_IMODE(path.stat().st_mode)
     except OSError as exc:
         outcome = f"it could not be made 0600 ({exc})"
+    else:
+        outcome = (
+            "it is now 0600"
+            if now == 0o600
+            else f"chmod reported success but the mode is still {now:04o}, so "
+            "this filesystem does not keep file modes"
+        )
     logger.warning(
-        "Secret file %s was readable by group or others (mode %04o); %s. Anyone "
-        "who could read it may hold %s",
+        "Secret file %s was readable or writable by group or others (mode %04o); "
+        "%s. Anyone who could read it may hold %s",
         path,
         mode,
         outcome,
