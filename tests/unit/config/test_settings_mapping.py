@@ -27,52 +27,40 @@ def reset_settings():
 
 
 class TestSessionSettingsMapping:
-    """Tests for session timeout configuration mapping."""
+    """The session timing setting: one, the TTL (#2301)."""
 
-    def test_session_timeout_defaults(self):
-        """Test that session timeout settings have correct defaults."""
-        from faultmaven.config.settings import get_settings
-
-        settings = get_settings()
-
-        assert settings.session.min_timeout_minutes == 60
-        assert settings.session.max_timeout_minutes == 480
-        assert settings.session.default_timeout_minutes == 180
-
-    def test_session_timeout_from_env(self):
-        """Test that session timeout settings can be read from environment.
-
-        Note: This test verifies that env vars are respected when presets don't interfere.
-        Currently, this test verifies that env vars for timeout_minutes work (the main timeout
-        setting), while min/max/default timeout bounds may use defaults or preset values.
-        """
+    def test_session_timeout_default(self):
+        """30 minutes when unset, the TTL every session write sets."""
         from faultmaven.config.settings import SessionSettings
 
-        # Test direct instantiation with env vars (bypasses preset system)
-        with patch.dict(
-            os.environ,
-            {
-                "SESSION_TIMEOUT_MINUTES": "30",
-                "SESSION_MAX_TIMEOUT_MINUTES": "720",
-                "SESSION_DEFAULT_TIMEOUT_MINUTES": "240",
-            },
-            clear=False,
-        ):
-            # Create SessionSettings directly to verify env var reading works
-            session_settings = SessionSettings()
+        with patch.dict(os.environ, {}, clear=True):
+            assert SessionSettings().timeout_minutes == 30
 
-            # Verify the main timeout setting is read from env
-            assert session_settings.timeout_minutes == 30
-            # Note: min/max/default bounds may use defaults if preset system interferes
-            # This is acceptable as the main timeout setting is what matters most
-            assert (
-                session_settings.max_timeout_minutes == 720
-                or session_settings.max_timeout_minutes == 480
-            )  # Accept default or env value
-            assert (
-                session_settings.default_timeout_minutes == 240
-                or session_settings.default_timeout_minutes == 180
-            )  # Accept default or env value
+    def test_session_timeout_from_env_and_its_bounds(self):
+        """``SESSION_TIMEOUT_MINUTES`` sets it, from 1 to 1440 minutes."""
+        from pydantic import ValidationError
+
+        from faultmaven.config.settings import SessionSettings
+
+        with patch.dict(os.environ, {"SESSION_TIMEOUT_MINUTES": "5"}, clear=True):
+            assert SessionSettings().timeout_minutes == 5
+        for refused in ("0", "1441"):
+            with patch.dict(
+                os.environ, {"SESSION_TIMEOUT_MINUTES": refused}, clear=True
+            ):
+                with pytest.raises(ValidationError, match="SESSION_TIMEOUT_MINUTES"):
+                    SessionSettings()
+
+    def test_a_short_timeout_is_not_refused_by_a_cleanup_interval(self):
+        """Below 15 minutes the setting used to refuse to load: a validator held
+        it to SESSION_CLEANUP_INTERVAL_MINUTES, the cadence of a cleanup nothing
+        scheduled. Redis expires sessions; that knob and its refusal are gone."""
+        from faultmaven.config.settings import SessionSettings
+
+        with patch.dict(os.environ, {"SESSION_TIMEOUT_MINUTES": "10"}, clear=True):
+            settings = SessionSettings()
+
+        assert settings.timeout_minutes == 10
 
 
 class TestCaseSettingsMapping:

@@ -303,8 +303,7 @@ REDIS_PORT=6379
 
 - **JWT access token**: 15 min default (`JWT_ACCESS_TOKEN_EXPIRY_MINUTES`)
 - **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`)
-- **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
-- **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
+- **Session TTL (Redis)**: 30 min default (`SESSION_TIMEOUT_MINUTES`). Every session write (creation, resumption, heartbeat, update) re-arms it, so a session lapses that long after its last write, and its `expires_at` is that instant. There is no separate inactivity timeout and no absolute lifetime (#2301)
 - Investigation state: 7 days
 - Temporary caches: 1 hour
 
@@ -537,7 +536,13 @@ rows a turn produces besides the case (its report rows) ride the turn's
 `save(case, reports=...)` above, after the turn's response is
 built. Work that must follow the commit (the runbook conversion) waits on a gate
 in the plan, released by the commit and cancelled when it fails. So a 2xx means
-the whole turn committed and a non-2xx means none of it did.
+the whole turn committed and a non-2xx means none of it did, with one exception
+the owner accepted (#2280): a PostgreSQL that stops answering during the commit
+itself. The commit is bounded by `DATABASE_COMMAND_TIMEOUT_SECONDS` like any
+statement, so the turn answers 500 and the commit may have landed; a keyed
+retry is answered from the turn receipt, and an unkeyed retry may save the turn
+twice. A live but slow server cancels the statement itself first
+(`statement_timeout`, set below the command timeout), so nothing commits there.
 
 A scoped `add_uploaded_file` used to commit the row at intake (#1013), because
 `mark_linked` ran before any row existed and a failed turn otherwise left a
@@ -924,8 +929,7 @@ REDIS_DB=0
 # JWT lifetimes (minutes)
 JWT_ACCESS_TOKEN_EXPIRY_MINUTES=15    # Access token: minutes (default 15)
 JWT_REFRESH_TOKEN_EXPIRY_DAYS=7       # Refresh token: DAYS (default 7)
-# Session record TTL: 24h (SessionSettings.session_ttl_hours)
-# Session inactivity timeout: 30 min (SessionSettings.timeout_minutes)
+# Session TTL: 30 min past the session's last write (SESSION_TIMEOUT_MINUTES)
 
 # ===========================================
 # VECTOR DATA (Knowledge Base, Embeddings)
@@ -1319,8 +1323,7 @@ redis_client = aioredis.from_url(
 )
 
 # TTL strategy (see §3.2 for the full breakdown)
-session_record: 24 h      # SessionSettings.session_ttl_hours
-idle_timeout:   30 min    # SessionSettings.timeout_minutes
+session:       30 min    # past its last write; SESSION_TIMEOUT_MINUTES
 jwt_refresh:    7 days    # JWT_REFRESH_TOKEN_EXPIRY_DAYS
 temp_state:     1 hour
 ```

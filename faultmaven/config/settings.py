@@ -1106,6 +1106,80 @@ class DatabaseSettings(BaseSettings):
     database_pool_timeout: int = Field(default=30)
     database_pool_recycle: int = Field(default=1800)
 
+    # Bounds on a PostgreSQL that stops answering (#2280). Built into the engine
+    # by faultmaven/infrastructure/persistence/pg_connection.py; 0 disables one.
+    database_command_timeout_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds one PostgreSQL command may take before the client aborts "
+            "its connection (asyncpg command_timeout). The aborted connection "
+            "is discarded and no CancelRequest is sent, so a silent server "
+            "cannot hold the caller. 0 disables the bound, for an operator "
+            "command with a legitimately long statement."
+        ),
+    )
+    database_connect_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0,
+        description=(
+            "Seconds a new PostgreSQL connection may take to open "
+            "(asyncpg's connect timeout). 0 disables the bound."
+        ),
+    )
+    database_statement_timeout_margin_seconds: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "How far below DATABASE_COMMAND_TIMEOUT_SECONDS the server's "
+            "statement_timeout is set, per transaction, so a live but slow "
+            "server cancels its own statement before the client aborts the "
+            "connection. Must be less than the command timeout while that is "
+            "on; with the command timeout off, no statement_timeout is set."
+        ),
+    )
+    database_client_connection_check_interval_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "PostgreSQL 14+ client_connection_check_interval, set per "
+            "transaction: how often the server checks, during a long query, "
+            "that the client is still connected. 0 sets nothing and leaves "
+            "the server's own value; a server older than 14 refuses any "
+            "other value on every transaction."
+        ),
+    )
+    revocation_read_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        description=(
+            "Seconds the database token-revocation store may take to answer "
+            "the read every authenticated request makes. Past it the request "
+            "fails closed with 503 REVOCATION_STATE_UNKNOWN. 0 disables the "
+            "bound."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def statement_timeout_fits_below_the_command_timeout(self) -> "DatabaseSettings":
+        """Refuse a margin that leaves the server's statement_timeout at or below zero.
+
+        The server is meant to cancel a slow statement before the client gives
+        up on the connection; a margin at or above the command timeout would
+        set no usable statement_timeout, so the client abort would be the only
+        bound left on a live but slow server.
+        """
+        command = self.database_command_timeout_seconds
+        margin = self.database_statement_timeout_margin_seconds
+        if command > 0 and margin >= command:
+            raise ValueError(
+                f"DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS ({margin:g}) must be "
+                f"less than DATABASE_COMMAND_TIMEOUT_SECONDS ({command:g}): the "
+                "server's statement_timeout is the command timeout minus the "
+                "margin."
+            )
+        return self
+
     # ============================================
     # Redis Configuration (K8s ClusterIP internal service)
     # ============================================
@@ -1271,59 +1345,19 @@ class DatabaseSettings(BaseSettings):
 class SessionSettings(BaseSettings):
     """Session management configuration"""
 
+    # A session's lifetime: the TTL the session store sets on every session
+    # write (create, resume, heartbeat, update), so a session lapses this long
+    # after its last write and its ``expires_at`` names that instant (#2301).
+    # Clients pace their heartbeats inside it; the server has no heartbeat
+    # interval of its own.
     timeout_minutes: int = Field(
         default=30, validation_alias="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
-    )
-    cleanup_interval_minutes: int = Field(
-        default=15, validation_alias="SESSION_CLEANUP_INTERVAL_MINUTES"
-    )
-    max_memory_mb: int = Field(default=100, validation_alias="SESSION_MAX_MEMORY_MB")
-    heartbeat_interval_seconds: int = Field(
-        default=30, validation_alias="SESSION_HEARTBEAT_INTERVAL_SECONDS"
     )
     # At least one: the limit evicts the oldest session to make room, and at 0
     # every create would fail (#2297 made the limit live).
     max_sessions_per_user: int = Field(
         default=10, validation_alias="SESSION_MAX_SESSIONS_PER_USER", ge=1
     )
-
-    # Session timeout bounds for validation (used by API routes)
-    min_timeout_minutes: int = Field(
-        default=60, validation_alias="SESSION_MIN_TIMEOUT_MINUTES", ge=1
-    )
-    max_timeout_minutes: int = Field(
-        default=480, validation_alias="SESSION_MAX_TIMEOUT_MINUTES", le=1440
-    )
-    default_timeout_minutes: int = Field(
-        default=180, validation_alias="SESSION_DEFAULT_TIMEOUT_MINUTES"
-    )
-
-    @field_validator("heartbeat_interval_seconds")
-    @classmethod
-    def validate_heartbeat_vs_timeout(cls, v, info):
-        """Ensure heartbeat is less than timeout for frontend compatibility"""
-        values = info.data
-        timeout_seconds = values.get("timeout_minutes", 30) * 60
-        if v >= timeout_seconds:
-            raise ValueError(
-                f"Heartbeat interval ({v}s) must be less than session timeout ({timeout_seconds}s)"
-            )
-        return v
-
-    @field_validator("cleanup_interval_minutes")
-    @classmethod
-    def validate_cleanup_interval(cls, v, info):
-        """Ensure cleanup interval is reasonable vs timeout"""
-        values = info.data
-        timeout = values.get("timeout_minutes", 180)
-
-        if v > timeout:
-            raise ValueError(
-                f"SESSION_CLEANUP_INTERVAL_MINUTES ({v}) should not exceed "
-                f"SESSION_TIMEOUT_MINUTES ({timeout}). "
-                f"Cleanup should run at least as often as session expiration."
-            )
-        return v
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -3494,69 +3528,6 @@ class FaultMavenSettings(BaseSettings):
             "allow_headers": ["*"],
             "expose_headers": self.security.cors_expose_headers,
         }
-
-    def validate_frontend_compatibility(self) -> Dict[str, Any]:
-        """
-        Validate configuration for frontend compatibility.
-
-        Returns:
-            Dict with compatibility status and any issues found
-        """
-        issues = []
-        warnings = []
-
-        # Session timeout validation
-        if self.session.timeout_minutes < 5:
-            issues.append("Session timeout too short - frontend expects >= 5 minutes")
-
-        # Heartbeat validation
-        if self.session.heartbeat_interval_seconds >= (
-            self.session.timeout_minutes * 60
-        ):
-            issues.append("Heartbeat interval must be less than session timeout")
-
-        # CORS validation
-        browser_origins = [
-            "chrome-extension://*",
-            "moz-extension://*",
-            "http://localhost:3333",
-        ]
-        missing_origins = []
-        for origin in browser_origins:
-            if not any(
-                origin in allowed for allowed in self.security.cors_allow_origins
-            ):
-                missing_origins.append(origin)
-
-        if missing_origins:
-            issues.append(f"Missing CORS origins: {missing_origins}")
-
-        # Required exposed headers for frontend
-        required_headers = ["X-RateLimit-Remaining", "X-Total-Count", "Location"]
-        missing_headers = []
-        for header in required_headers:
-            if header not in self.security.cors_expose_headers:
-                missing_headers.append(header)
-
-        if missing_headers:
-            issues.append(f"Missing exposed headers: {missing_headers}")
-
-        # Rate limiting is deliberately NOT checked here. This report answers
-        # "can a browser client work against this configuration?", and rate
-        # limiting is not part of the configuration — both protection presets
-        # pin it on, and whether the middleware is installed is a property of
-        # the built app, which a settings object cannot see. The check that used
-        # to live here read a field no enforcement path consulted, so it warned
-        # under CONFIG_PRESET=local — which used to set RATE_LIMIT_ENABLED=false
-        # while rate limiting anyway — and stayed silent when protection setup
-        # was skipped outright. GET /admin/config/status answers this question
-        # from the middleware stack instead.
-
-        # Upload size warnings
-        if self.upload.max_upload_size_mb > 50:
-            warnings.append("Upload size > 50MB may cause timeout or processing issues")
-
-        return {"compatible": len(issues) == 0, "issues": issues, "warnings": warnings}
 
     def is_development(self) -> bool:
         """Check if running in development mode"""

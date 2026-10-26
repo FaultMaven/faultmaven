@@ -13,7 +13,9 @@ they are the reason the design changed rather than growing a type list.
 """
 
 import io
+import json
 import logging
+import tracemalloc
 
 import pytest
 import structlog
@@ -76,8 +78,10 @@ class TestRedactUrls:
 
         With "?" allowed in the pre-query class, the greedy group backtracked
         to the LAST question mark, so only the trailing one was replaced and
-        the key shipped verbatim. RFC 3986 permits "?" inside a query, and a
-        sentence ending in "?" right after a URL produces the same shape.
+        the key shipped verbatim. With the query optional (#2312) the same
+        mutation swallows the query into the run and replaces nothing. RFC 3986
+        permits "?" inside a query, and a sentence ending in "?" right after a
+        URL produces the same shape.
         """
         assert redact_urls(
             f"Failed to reach https://api.x/v1?key={API_KEY_SHAPE}?"
@@ -138,6 +142,95 @@ class TestRedactUrls:
             lambda count: "a" * count + "? ://x",
             small=256,
             label="redact_urls on a long near-miss run",
+        )
+
+    @pytest.mark.performance
+    def test_a_line_of_many_scheme_separators_does_not_blow_up(self):
+        """‼ #2312. The guard above has one "://", so it cannot see this.
+
+        With the query required, a run with no "?" after it was retried at
+        every "://" inside it, each retry scanning to the run's end. Measured on
+        that version: 1.3 s for 16 KB of "://", 18.6 s for 64 KB; on this one,
+        0.33 ms and 0.82 ms. The leading "?" only gets the line past the
+        substring pre-check.
+        """
+        assert_linear_growth(
+            redact_urls,
+            lambda count: "?" + "://" * count,
+            small=256,
+            label='redact_urls on a run of "://" with no query',
+        )
+
+    def test_a_url_after_a_run_with_no_query_is_still_redacted(self):
+        """A run with no query matches whole and the scan resumes past it, so
+        what follows the run's end must still be scanned."""
+        assert redact_urls("x://a://b'https://h/p?key=K") == (
+            "x://a://b'https://h/p?<redacted>"
+        )
+        assert redact_urls_bytes(b"x://a://b'https://h/p?key=K") == (
+            b"x://a://b'https://h/p?<redacted>"
+        )
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            'bad url "https://h.example/p?a=X"',  # the URL ends a quoted span
+            'x "https://h/p?a=1\\" y',  # a backslash ends the query, then a quote
+            "q https://h/p?a=b\\c&key=K end",  # a backslash inside the query
+            # The query's last character is a backslash, at the end of the
+            # string: serialised, an escaped backslash then the closing quote.
+            # Pins the escaped pair being tried before the lone backslash.
+            "see https://h/p?a=1\\",
+        ],
+    )
+    def test_a_json_line_stays_json_and_loses_its_whole_query(self, event):
+        """‼ #2309. The renderer redacts the serialised line, where a quote
+        ending a string is escaped. The query class swallowed that escape's
+        backslash and left a bare quote: an invalid JSON line. Excluding every
+        backslash instead would stop at an escaped backslash and leak the rest
+        of the query."""
+        line = json.dumps({"event": event})
+
+        redacted = json.loads(redact_urls(line))["event"]
+
+        assert "<redacted>" in redacted
+        assert "a=" not in redacted and "key=" not in redacted
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "a" * (1 << 20),  # ordinary characters only: the first run
+            "a\\" * (1 << 19),  # a lone backslash every other character
+            "a\\\\" * (1 << 18),  # escaped pairs: the outer group repeats
+        ],
+        ids=["plain", "lone-backslashes", "escaped-pairs"],
+    )
+    def test_a_long_query_holds_no_memory_in_proportion_to_its_length(self, query):
+        """A starred alternation made Python's engine keep a backtrack frame per
+        character: ~180 MB for a 1 MiB query, on a path every emitted record
+        takes. The backslash shapes are what reach the outer group, where a
+        non-possessive star held ~90 MB. Measured with tracemalloc, not a clock;
+        the peak is reset first, so a tracing caller does not inflate it."""
+        line = "://h?" + query
+        tracing_already = tracemalloc.is_tracing()
+        if not tracing_already:
+            tracemalloc.start()
+        tracemalloc.reset_peak()
+        try:
+            before, _ = tracemalloc.get_traced_memory()
+            redact_urls(line)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            if not tracing_already:
+                tracemalloc.stop()
+
+        # The result is under ~1 MiB; the match must add nothing in proportion
+        # to the query.
+        assert peak - before < 8 * (1 << 20), f"{(peak - before) / (1 << 20):.1f} MiB"
+
+    def test_plain_text_with_a_backslash_in_the_query_loses_all_of_it(self):
+        assert redact_urls(f"GET https://h/p?a=b\\c&key={API_KEY_SHAPE} end") == (
+            "GET https://h/p?<redacted> end"
         )
 
     def test_the_bytes_form_matches_the_str_form(self):
@@ -279,6 +372,15 @@ class TestNothingWrittenLeaks:
         except RuntimeError:
             get_logger("p").exception("failed")
         assert CANARY not in written.getvalue()
+
+    def test_a_line_quoting_a_url_is_still_json(self, written):
+        """#2309: through the real JSON renderer, a message that quotes a URL
+        (an exception text, a repr) stays one parseable line."""
+        get_logger("p").error(f'request failed for "{URL}"')
+        (line,) = [
+            line for line in written.getvalue().splitlines() if "request failed" in line
+        ]
+        assert CANARY not in json.loads(line)["event"]
 
     def test_a_dsn(self, written):
         get_logger("p").error("db down", url=f"postgresql://h/db?opt={CANARY}")

@@ -391,12 +391,22 @@ async def _database_revisions(database_url: str) -> frozenset[str]:
     """The revisions in ``alembic_version``, empty without the table or a row.
 
     Plain SQL, so a fresh install never imports alembic here. On SQLite the
-    connection creates a missing file, empty, as the subprocess would."""
+    connection creates a missing file, empty, as the subprocess would. On
+    PostgreSQL the connection is bounded like the app's own (#2280), so the
+    deadline the caller puts on this read aborts the connection rather than
+    waiting on a CancelRequest a silent server never answers."""
     from sqlalchemy import inspect, text
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
-    engine = create_async_engine(database_url, poolclass=NullPool)
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.persistence.pg_connection import pg_connect_args
+
+    engine = create_async_engine(
+        database_url,
+        poolclass=NullPool,
+        connect_args=pg_connect_args(database_url, get_settings().database),
+    )
     try:
         async with engine.connect() as conn:
             if not await conn.run_sync(

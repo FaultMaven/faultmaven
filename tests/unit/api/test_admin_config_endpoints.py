@@ -1068,6 +1068,45 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == expected
 
     @pytest.mark.asyncio
+    async def test_session_ttl_is_the_built_stores_not_the_setting(
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        live_backends,
+        monkeypatch,
+    ):
+        """The TTL the store gives every session write, read off the store the
+        composition root built (#2301): the setting and the store disagreed
+        for as long as the store ignored it, and only the store could show it."""
+        from faultmaven.config.settings import FaultMavenSettings
+        from faultmaven.container.providers.infrastructure import (
+            create_session_store,
+        )
+
+        redis = live_backends.fake_redis()
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=redis,
+            kb=None,
+            evidence=None,
+        )
+        monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "7")
+        rate_limited_app.state.session_store = create_session_store(
+            redis, FaultMavenSettings(_env_file=None)
+        )
+        # What the endpoint must NOT read: the settings it is handed.
+        mock_settings.session.timeout_minutes = 45
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.session_ttl_seconds == 7 * 60
+
+    @pytest.mark.asyncio
     async def test_db_backend_is_the_engine_not_the_configured_url(
         self, mock_admin_user, mock_settings, rate_limited_app, live_backends
     ):
@@ -1151,6 +1190,7 @@ class TestGetEnvConfigStatus:
 
         assert result.db_backend == "not initialized"
         assert result.session_storage == "not initialized"
+        assert result.session_ttl_seconds is None
         assert result.vector_storage == "disabled"
 
     @pytest.mark.asyncio
@@ -2962,3 +3002,101 @@ class TestSelectedModelPricedPassthrough:
         assert all(
             detail.selected_model_priced is None for detail in result.providers.values()
         )
+
+
+# ============================================================
+# database_timeouts: the bounds in force on a silent database (#2280)
+# ============================================================
+
+
+class TestDatabaseTimeoutsAreTheOnesInForce:
+    """Read from the engine ``get_engine`` built and the revocation store on
+    ``app.state``, never from settings: the settings mock here holds none of
+    the timeout keys, so an answer read from it could not validate."""
+
+    @pytest.fixture
+    async def fresh_engine(self, monkeypatch):
+        from faultmaven.infrastructure.persistence import database
+
+        monkeypatch.setattr(database, "_engine", None)
+        monkeypatch.setattr(database, "_engine_bounds", None)
+        monkeypatch.setattr(database, "_session_factory", None)
+        yield database
+        if database._engine is not None:
+            await database._engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_sqlite_engine_with_no_store_reports_no_bound(
+        self, mock_admin_user, mock_settings, rate_limited_app, fresh_engine
+    ):
+        fresh_engine.get_engine("sqlite+aiosqlite:///:memory:")
+        rate_limited_app.state.token_revocation_store = None
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        timeouts = result.database_timeouts
+        assert timeouts.command_timeout_seconds is None
+        assert timeouts.connect_timeout_seconds is None
+        assert timeouts.statement_timeout_seconds is None
+        assert timeouts.client_connection_check_interval_seconds is None
+        assert timeouts.revocation_read_timeout_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_a_postgresql_engine_and_the_database_store_report_their_bounds(
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        fresh_engine,
+        monkeypatch,
+        tmp_path,
+    ):
+        pytest.importorskip("asyncpg")
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            SqlTokenRevocationStore,
+        )
+        from tests.utils import reset_settings_singleton
+
+        for key, value in {
+            "DATABASE_COMMAND_TIMEOUT_SECONDS": "12",
+            "DATABASE_CONNECT_TIMEOUT_SECONDS": "4",
+            "DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS": "1.5",
+            "DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS": "2",
+        }.items():
+            monkeypatch.setenv(key, value)
+        reset_settings_singleton()
+        try:
+            # Built from the real settings, before the endpoint's mock applies;
+            # lazy, so it never connects.
+            fresh_engine.get_engine("postgresql+asyncpg://fm@127.0.0.1:5432/fm")
+        finally:
+            for key in (
+                "DATABASE_COMMAND_TIMEOUT_SECONDS",
+                "DATABASE_CONNECT_TIMEOUT_SECONDS",
+                "DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS",
+                "DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS",
+            ):
+                monkeypatch.delenv(key)
+            reset_settings_singleton()
+        store, store_engine = _store_over_a_real_schema(tmp_path, with_table=True)
+        rate_limited_app.state.token_revocation_store = SqlTokenRevocationStore(
+            session_factory=store._session_factory, read_timeout_seconds=7.0
+        )
+        try:
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+        finally:
+            await store_engine.dispose()
+
+        timeouts = result.database_timeouts
+        assert timeouts.command_timeout_seconds == 12.0
+        assert timeouts.connect_timeout_seconds == 4.0
+        assert timeouts.statement_timeout_seconds == 10.5
+        assert timeouts.client_connection_check_interval_seconds == 2.0
+        assert timeouts.revocation_read_timeout_seconds == 7.0

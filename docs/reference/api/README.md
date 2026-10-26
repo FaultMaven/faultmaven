@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.4.0
+**Version:** 14.6.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2459,6 +2459,7 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 - `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
 - `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).
 - `504` — Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).
 
 ---
@@ -3691,9 +3692,10 @@ cannot name the user its session is bound to; see the note on the
 resolution below.
 
 **Session Timeout:**
-- Sessions automatically expire after `timeout_minutes` of inactivity
-- Default timeout: 180 minutes (3 hours)
-- Min timeout: 60 minutes, Max timeout: 480 minutes
+- A session expires `SESSION_TIMEOUT_MINUTES` (default 30) after its last
+  write: creation, resumption, a heartbeat or an update re-arms it
+- The response's `timeout_minutes` is that setting and `expires_at` the
+  instant this write lapses; the request's `timeout_minutes` is ignored
 - Expired sessions cannot be resumed and return 404/410 errors
 
 **Frontend Crash Recovery:**
@@ -3720,7 +3722,7 @@ Returns:
 - `201` — Session created or resumed successfully
 - `404` — Session expired or not found (when resuming with client_id)
 - `410` — Session gone (alternative to 404 for expired sessions)
-- `422` — Validation error (invalid timeout_minutes)
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4603,7 +4605,7 @@ See: docs/architecture/case-and-session/case-and-session-concepts.md.
 - `client_id` (object, optional) — Client/device identifier for session resumption. If provided, existing session for this client will be resumed.
 - `metadata` (object, optional)
 - `session_type` (object, optional)
-- `timeout_minutes` (object, optional) — Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)
+- `timeout_minutes` (object, optional) — Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last write (the server's setting); the response's timeout_minutes and expires_at report it.
 
 ---
 
@@ -5224,6 +5226,26 @@ Request to update an existing case.
 
 ---
 
+### DatabaseTimeoutsStatus
+
+The bounds in force on a database that stops answering (#2280).
+
+Read from what the running process built — the database engine and the
+token-revocation store — not from settings. Each value is in seconds;
+``null`` means no bound is set: the setting is ``0``, or the bound does not
+apply to this deployment (the four PostgreSQL bounds on a SQLite engine,
+the revocation read on the Redis store).
+
+**Properties:**
+
+- `client_connection_check_interval_seconds` (object, required) — DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS: the server's client_connection_check_interval, set per transaction (opt-in).
+- `command_timeout_seconds` (object, required) — DATABASE_COMMAND_TIMEOUT_SECONDS: how long one PostgreSQL command may take before the client aborts its connection.
+- `connect_timeout_seconds` (object, required) — DATABASE_CONNECT_TIMEOUT_SECONDS: how long a new PostgreSQL connection may take to open.
+- `revocation_read_timeout_seconds` (object, required) — REVOCATION_READ_TIMEOUT_SECONDS: the deadline on the database token-revocation read every authenticated request makes; past it the request fails closed with 503 REVOCATION_STATE_UNKNOWN.
+- `statement_timeout_seconds` (object, required) — The server's statement_timeout, set per transaction: the command timeout less DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS, so a slow server cancels its own statement before the client gives up.
+
+---
+
 ### DerivedEvidenceSummary
 
 Summary of evidence derived from an uploaded file.
@@ -5292,6 +5314,7 @@ Read-only environment configuration status for dashboard display.
 **Properties:**
 
 - `auth_mode` (string, required) — 'local' or 'oauth'
+- `database_timeouts` (object, required) — The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read.
 - `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status
@@ -5300,6 +5323,7 @@ Read-only environment configuration status for dashboard display.
 - `pii_redaction_enabled` (boolean, required)
 - `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and no environment variable turns it off. A deployment reports false here only if protection setup raised and the development carve-out let it boot anyway.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
+- `session_ttl_seconds` (object, required) — The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.
 - `timestamp` (string, required)
 - `turn_timing` (object, required) — The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities.
 - `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ

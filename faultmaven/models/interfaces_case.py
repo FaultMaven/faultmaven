@@ -650,34 +650,6 @@ class ICaseIntegrationService(ABC):
         pass
 
     @abstractmethod
-    async def list_cases_by_session(
-        self, session_id: str, limit: int, offset: int
-    ) -> List[Dict[str, Any]]:
-        """List cases associated with a session.
-
-        Args:
-            session_id: Session identifier
-            limit: Maximum number of cases to return
-            offset: Number of cases to skip for pagination
-
-        Returns:
-            List of case dictionaries (empty list if no cases found)
-        """
-        pass
-
-    @abstractmethod
-    async def count_cases_by_session(self, session_id: str) -> int:
-        """Count total cases for a session (for pagination).
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            Total number of cases for the session
-        """
-        pass
-
-    @abstractmethod
     async def create_external_ticket(
         self, case_id: str, system: str, ticket_data: Dict[str, Any]
     ) -> Optional[str]:

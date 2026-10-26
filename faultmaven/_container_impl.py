@@ -618,12 +618,13 @@ class DIContainer(BaseDIContainer):
         import uuid
         from datetime import timedelta
 
-        # Session TTL, sourced exactly as AuthSessionService.__init__ sources it
-        # (settings.session.ttl_hours when present, else the 24h default), so
-        # the stand-in expires sessions on the same clock as the real service.
+        # The session lifetime the real store gives every write (#2301):
+        # SESSION_TIMEOUT_MINUTES past the last one. The stand-in has no TTL,
+        # so each write here re-arms ``expires_at`` instead, and expiry is
+        # enforced on read, as AuthSessionService enforces it.
         _settings = getattr(self, "settings", None)
-        _session_ttl = timedelta(
-            hours=getattr(getattr(_settings, "session", None), "ttl_hours", 24)
+        _session_timeout = timedelta(
+            minutes=getattr(getattr(_settings, "session", None), "timeout_minutes", 30)
         )
         # The per-user session limit, sourced as AuthSessionService sources it.
         _max_sessions = getattr(
@@ -635,12 +636,13 @@ class DIContainer(BaseDIContainer):
                 self.session_id = session_id
                 self.user_id = user_id
                 self.metadata = metadata or {}
+                self.provider_session_id = None
                 self.created_at = datetime.now(timezone.utc)
                 self.last_activity = datetime.now(timezone.utc)
                 # Sessions carry an explicit expiry from creation: without one,
                 # `validate=True` could never distinguish a live session from an
                 # expired one and would silently behave as `validate=False`.
-                self.expires_at = self.created_at + _session_ttl
+                self.expires_at = self.created_at + _session_timeout
                 self.data_uploads = []
                 self.case_history = []
 
@@ -651,12 +653,18 @@ class DIContainer(BaseDIContainer):
                 self.sessions = {}
 
         class MinimalSessionService:
+            #: What every write here gives a session, as the real service's
+            #: store reports its TTL.
+            session_ttl_seconds = int(_session_timeout.total_seconds())
+
             def __init__(self):
                 self.sessions = {}  # Store sessions in memory for testing
                 self.session_manager = MockSessionManager()  # Add mock session manager
                 self.session_manager.sessions = self.sessions  # Share session storage
 
-            async def create_session(self, user_id, client_id=None, metadata=None):
+            async def create_session(
+                self, user_id, client_id=None, metadata=None, provider_session_id=None
+            ):
                 """Create or resume a session.
 
                 Mirrors ``AuthSessionService.create_session``, including the
@@ -675,26 +683,28 @@ class DIContainer(BaseDIContainer):
 
                 # Session resumption for a known (user_id, client_id) pair,
                 # mirroring the real service: extend the existing session and
-                # report it as resumed rather than minting a second one.
+                # report it as resumed rather than minting a second one. Only
+                # a live one: the real service's lookup is a validating read,
+                # so an expired session is deleted and a new one minted, never
+                # revived. ``get_session`` here does the same.
                 if client_id:
-                    for existing in self.sessions.values():
+                    for existing in list(self.sessions.values()):
                         if (
                             existing.user_id == user_id
                             and getattr(existing, "client_id", None) == client_id
+                            and await self.get_session(existing.session_id)
                         ):
-                            existing.expires_at = (
-                                datetime.now(timezone.utc) + _session_ttl
-                            )
-                            existing.last_activity = datetime.now(timezone.utc)
+                            now = datetime.now(timezone.utc)
+                            existing.expires_at = now + _session_timeout
+                            existing.last_activity = now
                             existing.session_resumed = True
                             return existing, True
 
                 # The per-user limit, by AuthSessionService's eviction rule:
                 # delete the least recently active sessions until there is room
                 # for one more, so a user already over it converges (#2297).
-                # What counts differs: this stand-in has no inactivity clock, so
-                # it counts every unexpired session, where AuthSessionService
-                # counts only those active within its inactivity threshold.
+                # Both count every unexpired session: the expiry is the
+                # inactivity clock (#2301).
                 now = datetime.now(timezone.utc)
                 live = sorted(
                     (
@@ -712,6 +722,7 @@ class DIContainer(BaseDIContainer):
 
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
+                session.provider_session_id = provider_session_id
                 session.client_id = client_id
                 session.session_resumed = False
                 self.sessions[session_id] = session
@@ -777,6 +788,7 @@ class DIContainer(BaseDIContainer):
                 now = datetime.now(timezone.utc)
                 session.last_activity = now
                 session.updated_at = now
+                session.expires_at = now + _session_timeout
                 return True
 
         return MinimalSessionService()
@@ -993,30 +1005,6 @@ class DIContainer(BaseDIContainer):
                 # No repository behind this stand-in, so no turn ever
                 # committed a receipt here (#1888): every keyed turn is new.
                 return None
-
-            def _active_session_cases(self, session_id):
-                """Non-terminal, non-empty cases for a session.
-
-                CaseService.list_cases_by_session/count_cases_by_session take no
-                filters, so neither does this stand-in; the default exclusions
-                below are the only behaviour a caller can reach.
-                """
-                return [
-                    case
-                    for case in self.cases.values()
-                    if case.current_session_id == session_id
-                    and case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    and case.current_turn > 0
-                ]
-
-            async def list_cases_by_session(self, session_id, limit=50, offset=0):
-                """List active cases for a session (mirrors CaseService)."""
-                session_cases = self._active_session_cases(session_id)
-                return session_cases[offset : offset + limit]
-
-            async def count_cases_by_session(self, session_id):
-                """Count active cases for a session (mirrors CaseService)."""
-                return len(self._active_session_cases(session_id))
 
             async def close_case(self, case_id, user_id):
                 # Mirrors CaseService.close_case: one closure rule — the

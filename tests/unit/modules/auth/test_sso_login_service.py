@@ -206,8 +206,16 @@ class FakeSessionService:
         self.reads: list[dict] = []
         self.sessions: dict = {}
 
-    async def create_session(self, user_id, client_id=None, metadata=None):
-        self.created.append({"user_id": user_id, "metadata": metadata or {}})
+    async def create_session(
+        self, user_id, client_id=None, metadata=None, provider_session_id=None
+    ):
+        self.created.append(
+            {
+                "user_id": user_id,
+                "metadata": metadata or {},
+                "provider_session_id": provider_session_id,
+            }
+        )
         return SimpleNamespace(session_id=f"sess-{user_id}"), False
 
     async def get_session(self, session_id, validate=True):
@@ -1305,10 +1313,13 @@ class RevokingProvider(FakeProvider):
         return self.result
 
 
-def _service_with_session(store, provider, metadata):
+def _service_with_session(store, provider, provider_session_id):
     sessions = FakeSessionService()
     sessions.sessions["sess-1"] = SimpleNamespace(
-        session_id="sess-1", metadata=metadata
+        session_id="sess-1",
+        user_id="u-1",
+        metadata={},
+        provider_session_id=provider_session_id,
     )
     service = build_service(store, provider=provider, session_service=sessions)
     return service, sessions
@@ -1329,16 +1340,54 @@ async def test_exchange_persists_the_provider_session_on_the_session(store):
 
     await service.exchange(code)
 
-    assert sessions.created[0]["metadata"]["provider_session_id"] == "session_01HSID"
+    assert sessions.created[0]["provider_session_id"] == "session_01HSID"
+    # In the server-set field, never in the client-writable metadata.
+    assert "provider_session_id" not in sessions.created[0]["metadata"]
+
+
+async def test_the_sso_login_stores_its_handle_server_side_and_revokes_it(store):
+    """Through the real session service and store: the IdP handle lands in the
+    server-set field, not in the client-writable ``metadata``, and the owner's
+    teardown revokes it (#2301 review)."""
+    from faultmaven.modules.auth.domain.services.auth_session_service import (
+        AuthSessionService,
+    )
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
+    )
+
+    user = make_user()
+    provider = RevokingProvider()
+    sessions = AuthSessionService(
+        session_store=RedisSessionStore(
+            # A private server: the default one is process-wide, so this
+            # session and its user index would outlive the test.
+            fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True),
+            session_ttl_seconds=1800,
+        )
+    )
+    service = build_service(
+        store,
+        provider=provider,
+        users_by_subject={("workos", "user_wos_123"): user},
+        users_by_id={"u-1": user},
+        session_service=sessions,
+    )
+
+    result = await service.exchange(await _login_and_get_code(service, store))
+
+    stored = await sessions.get_session(result.session_id)
+    assert stored.provider_session_id == "session_01HSID"
+    assert "provider_session_id" not in stored.metadata
+    assert await service.end_idp_session(result.session_id, user_id="u-1") is True
+    assert provider.revoked == ["session_01HSID"]
 
 
 async def test_end_idp_session_revokes_the_stored_handle(store):
     provider = RevokingProvider()
-    service, _ = _service_with_session(
-        store, provider, {"provider_session_id": "session_01HSID"}
-    )
+    service, _ = _service_with_session(store, provider, "session_01HSID")
 
-    assert await service.end_idp_session("sess-1") is True
+    assert await service.end_idp_session("sess-1", user_id="u-1") is True
     assert provider.revoked == ["session_01HSID"]
 
 
@@ -1350,37 +1399,45 @@ async def test_end_idp_session_reads_the_session_without_validating(store):
     behaviour, not an optimisation.
     """
     provider = RevokingProvider()
-    service, sessions = _service_with_session(
-        store, provider, {"provider_session_id": "session_01HSID"}
-    )
+    service, sessions = _service_with_session(store, provider, "session_01HSID")
 
-    await service.end_idp_session("sess-1")
+    await service.end_idp_session("sess-1", user_id="u-1")
 
     assert sessions.reads == [{"session_id": "sess-1", "validate": False}]
 
 
 @pytest.mark.parametrize(
-    ("metadata", "why"),
+    ("handle", "why"),
     [
-        ({}, "session carries no provider handle (dev/password login)"),
-        ({"provider_session_id": ""}, "handle present but empty"),
-        ({"provider_session_id": 123}, "handle present but not a string"),
+        (None, "session carries no provider handle (dev/password login)"),
+        ("", "handle present but empty"),
+        (123, "handle present but not a string"),
     ],
 )
-async def test_end_idp_session_without_a_usable_handle(store, metadata, why):
+async def test_end_idp_session_without_a_usable_handle(store, handle, why):
     provider = RevokingProvider()
-    service, _ = _service_with_session(store, provider, metadata)
+    service, _ = _service_with_session(store, provider, handle)
 
-    assert await service.end_idp_session("sess-1") is False, why
+    assert await service.end_idp_session("sess-1", user_id="u-1") is False, why
     # Never call the IdP with a handle we do not have.
+    assert provider.revoked == []
+
+
+async def test_end_idp_session_refuses_another_users_session(store):
+    """The session id is the caller's ``X-Session-Id``: naming another user's
+    session must not end that user's IdP session (#2301 review)."""
+    provider = RevokingProvider()
+    service, _ = _service_with_session(store, provider, "session_01HSID")
+
+    assert await service.end_idp_session("sess-1", user_id="u-2") is False
     assert provider.revoked == []
 
 
 async def test_end_idp_session_unknown_session(store):
     provider = RevokingProvider()
-    service, _ = _service_with_session(store, provider, {})
+    service, _ = _service_with_session(store, provider, None)
 
-    assert await service.end_idp_session("no-such-session") is False
+    assert await service.end_idp_session("no-such-session", user_id="u-1") is False
     assert provider.revoked == []
 
 
@@ -1388,8 +1445,6 @@ async def test_end_idp_session_never_raises(store):
     """Runs after the local token is already revoked: raising would report a
     failed sign-out for one that already succeeded in the part that matters."""
     provider = RevokingProvider(raises=RuntimeError("idp unreachable"))
-    service, _ = _service_with_session(
-        store, provider, {"provider_session_id": "session_01HSID"}
-    )
+    service, _ = _service_with_session(store, provider, "session_01HSID")
 
-    assert await service.end_idp_session("sess-1") is False
+    assert await service.end_idp_session("sess-1", user_id="u-1") is False

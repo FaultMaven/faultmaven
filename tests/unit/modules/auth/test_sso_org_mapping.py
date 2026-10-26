@@ -286,7 +286,9 @@ class FakeTokenGenerator:
 
 
 class FakeSessionService:
-    async def create_session(self, user_id, client_id=None, metadata=None):
+    async def create_session(
+        self, user_id, client_id=None, metadata=None, provider_session_id=None
+    ):
         return SimpleNamespace(session_id=f"sess-{user_id}"), False
 
 

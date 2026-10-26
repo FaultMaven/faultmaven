@@ -420,6 +420,50 @@ for when that job runs.
 | `LLM_USAGE_DAILY_RETENTION_DAYS` | int (>= 1) | 400 | Days of `llm_usage_daily` rows kept; a row goes when its UTC `usage_date` is older than today minus this |
 | `LLM_USAGE_TURN_RETENTION_DAYS` | int (>= 1) | 90 | Days of `llm_turn_spend` rows kept; a row goes when its `occurred_at` is older than now minus this |
 
+## Database Pool and Timeouts
+
+`DatabaseSettings` fields (`settings.database`). The pool and the PostgreSQL
+bounds apply when `DATABASE_URL` names PostgreSQL (`postgresql+asyncpg://`);
+SQLite opens a connection per checkout and none of them applies there. The
+revocation-read deadline applies to the database revocation store on either
+backend. The bounds in force are reported under `database_timeouts` on
+`GET /api/v1/admin/config/status`.
+
+Why the bounds exist (#2280): a PostgreSQL that stops answering once a
+connection is open used to hold every request that read it. Past the command
+timeout the client aborts the connection instead of sending a CancelRequest,
+which a silent server never answers, and the pool discards it. Design and the
+private asyncpg hook it relies on: `faultmaven/infrastructure/persistence/pg_connection.py`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `DATABASE_POOL_SIZE` | int | 5 | Connections the pool keeps open |
+| `DATABASE_MAX_OVERFLOW` | int | 10 | Connections opened beyond the pool size under load, closed when returned |
+| `DATABASE_POOL_TIMEOUT` | int | 30 | Seconds a caller waits for a free connection once all `POOL_SIZE + MAX_OVERFLOW` are checked out |
+| `DATABASE_POOL_RECYCLE` | int | 1800 | Seconds after which a pooled connection is replaced on its next checkout |
+| `DATABASE_COMMAND_TIMEOUT_SECONDS` | float (>= 0) | 30.0 | Seconds one PostgreSQL command may take before the client aborts its connection; `0` disables it, for an operator command with a legitimately long statement |
+| `DATABASE_CONNECT_TIMEOUT_SECONDS` | float (>= 0) | 10.0 | Seconds a new PostgreSQL connection may take to open; `0` disables it |
+| `DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS` | float (>= 0) | 2.0 | The server's `statement_timeout` is the command timeout less this, set per transaction, so a live but slow server cancels its own statement and the connection survives. Must be less than the command timeout (startup refuses otherwise); with the command timeout at `0` no `statement_timeout` is set. It overrides a `statement_timeout` configured on the role or database for that transaction |
+| `DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS` | float (>= 0) | 0.0 | PostgreSQL 14+ `client_connection_check_interval`, set per transaction: how often the server checks, during a long query, that the client is still there. `0` sets nothing; a server older than 14 refuses any other value on every transaction |
+| `REVOCATION_READ_TIMEOUT_SECONDS` | float (>= 0) | 5.0 | Deadline on the token-revocation read every authenticated request makes. Past it the request fails closed with 503 `REVOCATION_STATE_UNKNOWN` (#1478); `0` disables it |
+
+Bounds that follow, at the defaults, measured against a paused `postgres:16`:
+an authenticated request against a silent PostgreSQL answers 503 in 5.0 s. A
+read with no deadline of its own fails in 30 s when it draws a stale pooled
+connection (its pre-ping meets the command timeout) and in 10 s when the
+connection has to be reopened (the connect timeout); allow 40 s for both. The
+16th concurrent caller can wait the 30 s pool timeout first. A turn whose commit meets a database that stops
+answering mid-commit fails with the outcome unknown: a retry under the same
+`Idempotency-Key` is answered from the turn receipt, an unkeyed retry may save
+the turn twice. Alembic is outside these bounds: it runs on the sync driver in
+a subprocess bounded at 60 s.
+
+On PostgreSQL connections over TCP the engine also sets keepalive (30 s idle,
+3 probes 10 s apart) and `TCP_USER_TIMEOUT` (30 s), so a connection whose
+packets are lost while it sits idle in the pool is found dead. These are fixed,
+not settings. They do nothing for a frozen server or behind a pooler such as
+PgBouncer; the command timeout covers those.
+
 ## API Server Keep-Alive
 
 `ServerSettings.timeout_keep_alive` (`settings.server`), passed to `uvicorn.run`
@@ -430,6 +474,25 @@ How the server is launched, and what `run_server` fixes: [Logging policy, launch
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `TIMEOUT_KEEP_ALIVE` | int (>= 1) | 75 | Seconds uvicorn holds an idle keep-alive connection. Keep it above the fronting proxy's upstream keep-alive (ingress-nginx `upstream-keepalive-timeout`, 60 s) and every client's idle expiry (slack-agent httpx `keepalive_expiry`, 5 s), so a POST is never sent on a connection the API just closed |
+
+## Sessions
+
+`SessionSettings` (`settings.session`). A session lives in Redis (FakeRedis on
+standalone) under one clock: the session store is built with
+`SESSION_TIMEOUT_MINUTES` and every session write (creation, resumption, a
+heartbeat, an update) sets it as the key's TTL, so a session lapses that long
+after its last write. Its `expires_at` is that instant, and
+`POST /api/v1/sessions` answers it with `timeout_minutes`. There is no separate
+inactivity timeout, no absolute lifetime and no server-side heartbeat interval:
+clients pace their own heartbeats (the Copilot pings every 10 minutes,
+`VITE_HEARTBEAT_INTERVAL_MS`), so keep the timeout at least twice their
+interval. `GET /admin/config/status` reports the TTL the running store applies
+as `session_ttl_seconds`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. A preset fills it in when it is unset: `local` sets 60, `standard` and `enterprise` set 30. A preset applies when `CONFIG_PRESET` names it, and `local` also applies by itself to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server) |
+| `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
 
 ## Related Documentation
 

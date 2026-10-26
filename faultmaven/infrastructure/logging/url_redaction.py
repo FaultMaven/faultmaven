@@ -53,18 +53,56 @@ from typing import Callable
 # DSNs all carry credentials in query options.
 #
 # The pre-query class excludes "?" so the greedy run stops at the FIRST question
-# mark. Admitting it let the group backtrack to the LAST one, which shipped the
-# credential verbatim; RFC 3986 permits "?" inside a query. That exclusion is
-# the ONLY thing pinning the match, which is why the replacement below is a
-# capture group rather than a function -- a function that truncated at the first
-# "?" would mask the bug and make the mutation test for it vacuous.
+# mark. Admitting it shipped the credential verbatim (RFC 3986 permits "?"
+# inside a query): the group backtracked to the LAST one, and with the query
+# optional the run would swallow the query whole. That exclusion is the ONLY
+# thing pinning the match, which is why the replacement below reuses the
+# group's boundary and never looks for a "?" itself -- one that truncated at the
+# first "?" would mask the bug and make the mutation test for it vacuous.
+#
+# The query is optional, so a run with no "?" after it still matches, whole,
+# and is put back unchanged; the scan resumes past it. With the query required,
+# a rejected run was retried at every "://" inside it, each retry scanning to
+# the same end: a line of n "://" cost O(n^2), 18.6 seconds at 64 KB (#2312).
+# Skipping those retries changes no output: every "://" inside the run stops
+# where the run does, and that stop is not a "?". The price, once a line holds
+# a "?", is a Python call per "://" run, query or not, and a copy of each run
+# with no query into the result: both linear in the line.
 #
 # ESC is excluded so the console renderer's colour reset after a URL is not
 # swallowed with the query string.
-_URL_QUERY = re.compile(r"(://[^\s\"'<>?\x1b]*)\?[^\s\"'<>\x1b]*")
+#
+# The query runs over a JSON-serialised line, where a quote ending the string
+# is escaped (\"). A backslash is part of the query only as an escaped pair
+# (\\) or before anything but a quote: a lone backslash before a quote is that
+# quote's escape, and swallowing it left a bare quote and an invalid JSON line
+# (#2309). Excluding every backslash instead would stop the redaction at an
+# escaped backslash and leave the rest of the query visible.
+#
+# Written unrolled and possessive -- a run of ordinary characters, then any
+# number of (escape-ish backslash, run) -- rather than as a starred
+# alternation: Python's engine keeps a backtrack frame per pass of a starred
+# alternation, so that form held ~180 MB for a 1 MiB query. This one holds none
+# and runs at the speed of the plain class. It needs CPython 3.11.5's fix for a
+# possessive repeat whose last pass fails inside a lookahead (python/cpython
+# #106052): on 3.11.0-3.11.4 the escape backslash may be swallowed again, which
+# breaks the JSON line but leaks nothing. The image and CI run current 3.11.
+_QUERY_CHAR = r"[^\s\"'<>\x1b\\]"
+_URL_QUERY = re.compile(
+    r"(://[^\s\"'<>?\x1b]*)"
+    rf"(\?{_QUERY_CHAR}*+(?:(?:\\\\|\\(?!\")){_QUERY_CHAR}*+)*+)?"
+)
 _URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
-_REPLACEMENT = r"\1?<redacted>"
-_REPLACEMENT_BYTES = rb"\1?<redacted>"
+
+
+# A match that ends where the run does has no query. Testing the group itself
+# (``match[2] is None``) would copy the whole query to find that out.
+def _redact_query(match: re.Match[str]) -> str:
+    return match[0] if match.end() == match.end(1) else match[1] + "?<redacted>"
+
+
+def _redact_query_bytes(match: re.Match[bytes]) -> bytes:
+    return match[0] if match.end() == match.end(1) else match[1] + b"?<redacted>"
 
 
 def redact_urls(text: str) -> str:
@@ -76,14 +114,14 @@ def redact_urls(text: str) -> str:
     """
     if "?" not in text or "://" not in text:
         return text
-    return _URL_QUERY.sub(_REPLACEMENT, text)
+    return _URL_QUERY.sub(_redact_query, text)
 
 
 def redact_urls_bytes(data: bytes) -> bytes:
     """``redact_urls`` for renderers that emit bytes."""
     if b"?" not in data or b"://" not in data:
         return data
-    return _URL_QUERY_BYTES.sub(_REPLACEMENT_BYTES, data)
+    return _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
 
 
 def redacting_renderer(renderer: Callable) -> Callable:

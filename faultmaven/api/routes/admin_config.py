@@ -1300,6 +1300,7 @@ async def get_env_config_status(
         # built, and every one of these has a path where the two differ.
         from faultmaven.api.dependencies import (
             database_backend_name,
+            database_timeouts_status,
             session_storage_backend_name,
             vector_storage_backend_name,
         )
@@ -1309,6 +1310,13 @@ async def get_env_config_status(
         # ``alembic/env.py`` replaces with ``DATABASE_URL``, so reading it
         # reported "sqlite" on every deployment that ships the file.
         db_backend = database_backend_name()
+
+        # The bounds on a database that stops answering (#2280), read from the
+        # engine and the revocation store this process built: a setting is
+        # only a claim about either.
+        database_timeouts = database_timeouts_status(
+            revocation_store.read_timeout_seconds if is_database_store else None
+        )
 
         # Vector storage: whether the KB and evidence clients the container built
         # (published on ``app.state`` by the composition root) talk to a ChromaDB
@@ -1330,12 +1338,21 @@ async def get_env_config_status(
         session_storage = session_storage_backend_name(
             getattr(request.app.state, "redis_client", None)
         )
+        # The session TTL the built store applies, not the setting read again:
+        # the setting said one thing while the store wrote every session for a
+        # fixed 1800 s, and only the store could show it (#2301).
+        session_ttl_seconds = getattr(
+            getattr(request.app.state, "session_store", None),
+            "session_ttl_seconds",
+            None,
+        )
 
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
             db_backend=db_backend,
             session_storage=session_storage,
+            session_ttl_seconds=session_ttl_seconds,
             vector_storage=vector_storage,
             llm_provider=(
                 settings.llm.provider.value if settings.llm.provider else "not_set"
@@ -1345,6 +1362,7 @@ async def get_env_config_status(
             features=features,
             turn_timing=turn_timing,
             personal_tenant_limits=personal_tenant_limits,
+            database_timeouts=database_timeouts,
             timestamp=datetime.now(timezone.utc),
         )
 

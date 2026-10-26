@@ -908,12 +908,11 @@ VALUES ('john@acme.com', 'google', 'google_user_12345');
 - ✅ Secure flag (HTTPS only)
 - ✅ SameSite=Strict
 
-**TTL concepts (distinct values — see `faultmaven/config/settings.py` and `auth_session_service.py`)**:
+**TTL concepts (distinct values — see `faultmaven/config/settings.py` and `redis_session_store.py`)**:
 
 - **JWT access token**: 15 min default (`JWT_ACCESS_TOKEN_EXPIRY_MINUTES`)
 - **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`)
-- **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
-- **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
+- **Session TTL (Redis)**: 30 min default (`SESSION_TIMEOUT_MINUTES`). Every session write (creation, resumption, heartbeat, update) re-arms it, so a session lapses that long after its last write, and its `expires_at` is that instant. There is no separate inactivity timeout and no absolute lifetime (#2301)
 
 ---
 

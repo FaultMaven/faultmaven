@@ -610,21 +610,13 @@
           "timeout_minutes": {
             "anyOf": [
               {
-                "maximum": 480.0,
-                "minimum": 60.0,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "default": 180,
-            "description": "Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
-            "examples": [
-              180,
-              240,
-              360
-            ],
+            "description": "Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last write (the server's setting); the response's timeout_minutes and expires_at report it.",
             "title": "Timeout Minutes"
           }
         },
@@ -2719,6 +2711,80 @@
         "title": "CaseUpdateRequest",
         "type": "object"
       },
+      "DatabaseTimeoutsStatus": {
+        "description": "The bounds in force on a database that stops answering (#2280).\n\nRead from what the running process built \u2014 the database engine and the\ntoken-revocation store \u2014 not from settings. Each value is in seconds;\n``null`` means no bound is set: the setting is ``0``, or the bound does not\napply to this deployment (the four PostgreSQL bounds on a SQLite engine,\nthe revocation read on the Redis store).",
+        "properties": {
+          "client_connection_check_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_CLIENT_CONNECTION_CHECK_INTERVAL_SECONDS: the server's client_connection_check_interval, set per transaction (opt-in).",
+            "title": "Client Connection Check Interval Seconds"
+          },
+          "command_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_COMMAND_TIMEOUT_SECONDS: how long one PostgreSQL command may take before the client aborts its connection.",
+            "title": "Command Timeout Seconds"
+          },
+          "connect_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DATABASE_CONNECT_TIMEOUT_SECONDS: how long a new PostgreSQL connection may take to open.",
+            "title": "Connect Timeout Seconds"
+          },
+          "revocation_read_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "REVOCATION_READ_TIMEOUT_SECONDS: the deadline on the database token-revocation read every authenticated request makes; past it the request fails closed with 503 REVOCATION_STATE_UNKNOWN.",
+            "title": "Revocation Read Timeout Seconds"
+          },
+          "statement_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The server's statement_timeout, set per transaction: the command timeout less DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS, so a slow server cancels its own statement before the client gives up.",
+            "title": "Statement Timeout Seconds"
+          }
+        },
+        "required": [
+          "command_timeout_seconds",
+          "connect_timeout_seconds",
+          "statement_timeout_seconds",
+          "client_connection_check_interval_seconds",
+          "revocation_read_timeout_seconds"
+        ],
+        "title": "DatabaseTimeoutsStatus",
+        "type": "object"
+      },
       "DerivedEvidenceSummary": {
         "description": "Summary of evidence derived from an uploaded file.",
         "properties": {
@@ -2938,6 +3004,10 @@
             "title": "Auth Mode",
             "type": "string"
           },
+          "database_timeouts": {
+            "$ref": "#/components/schemas/DatabaseTimeoutsStatus",
+            "description": "The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read."
+          },
           "db_backend": {
             "description": "'sqlite' or 'postgresql' \u2014 the dialect of the database engine the running process built; 'not initialized' before it has built one",
             "title": "Db Backend",
@@ -2979,6 +3049,18 @@
             "title": "Session Storage",
             "type": "string"
           },
+          "session_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.",
+            "title": "Session Ttl Seconds"
+          },
           "timestamp": {
             "format": "date-time",
             "title": "Timestamp",
@@ -2999,12 +3081,14 @@
           "deployment",
           "db_backend",
           "session_storage",
+          "session_ttl_seconds",
           "vector_storage",
           "llm_provider",
           "pii_redaction_enabled",
           "rate_limit_enabled",
           "turn_timing",
           "personal_tenant_limits",
+          "database_timeouts",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -6987,7 +7071,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.4.0"
+    "version": "14.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11283,6 +11367,23 @@
             },
             "description": "Validation Error"
           },
+          "503": {
+            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds; sent with every 503 this route answers.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "Which dependency was unavailable.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "504": {
             "description": "Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).",
             "headers": {
@@ -13329,7 +13430,7 @@
         ]
       },
       "post": {
-        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Authenticated user from the JWT token, when one is presented\n- Auto-generated anonymous user otherwise (development/unauthenticated only)\n\nThe identity minted is the server's answer, never the caller's. A request\ncannot name the user its session is bound to; see the note on the\nresolution below.\n\n**Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
+        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Authenticated user from the JWT token, when one is presented\n- Auto-generated anonymous user otherwise (development/unauthenticated only)\n\nThe identity minted is the server's answer, never the caller's. A request\ncannot name the user its session is bound to; see the note on the\nresolution below.\n\n**Session Timeout:**\n- A session expires `SESSION_TIMEOUT_MINUTES` (default 30) after its last\n  write: creation, resumption, a heartbeat or an update re-arms it\n- The response's `timeout_minutes` is that setting and `expires_at` the\n  instant this write lapses; the request's `timeout_minutes` is ignored\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
         "operationId": "create_session_api_v1_sessions_post",
         "requestBody": {
           "content": {
@@ -13358,13 +13459,13 @@
                     "value": {
                       "client_id": "browser-client-abc123",
                       "created_at": "2025-01-15T10:00:00Z",
-                      "expires_at": "2025-01-15T13:00:00Z",
+                      "expires_at": "2025-01-15T10:30:00Z",
                       "message": "Session created successfully",
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": false,
                       "session_type": "troubleshooting",
                       "status": "inquiry",
-                      "timeout_minutes": 180,
+                      "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
                   },
@@ -13373,13 +13474,13 @@
                     "value": {
                       "client_id": "browser-client-abc123",
                       "created_at": "2025-01-15T09:30:00Z",
-                      "expires_at": "2025-01-15T14:30:00Z",
+                      "expires_at": "2025-01-15T10:45:00Z",
                       "message": "Session resumed successfully",
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": true,
                       "session_type": "troubleshooting",
                       "status": "inquiry",
-                      "timeout_minutes": 300,
+                      "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
                   }
@@ -13396,7 +13497,7 @@
                   "session_expired": {
                     "summary": "Session expired",
                     "value": {
-                      "detail": "Session expired after 180 minutes of inactivity"
+                      "detail": "Session expired after 30 minutes of inactivity"
                     }
                   }
                 }
@@ -13422,17 +13523,12 @@
           "422": {
             "content": {
               "application/json": {
-                "examples": {
-                  "invalid_timeout": {
-                    "summary": "Invalid timeout value",
-                    "value": {
-                      "detail": "timeout_minutes must be between 60 and 480 minutes"
-                    }
-                  }
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             },
-            "description": "Validation error (invalid timeout_minutes)"
+            "description": "Validation Error"
           }
         },
         "summary": "Create Session",

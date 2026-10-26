@@ -343,7 +343,9 @@ class TestRedisErasers:
             await CaseRedactionRegistryEraser(broken).erase_case("case_a", "e")
 
     async def test_the_session_pointers_naming_this_case_only(self):
-        store = RedisSessionStore(fakeredis_aio.FakeRedis(decode_responses=True))
+        store = RedisSessionStore(
+            fakeredis_aio.FakeRedis(decode_responses=True), session_ttl_seconds=1800
+        )
         for session_id, case_id in (
             ("s1", "case_a"),
             ("s2", "case_a"),
@@ -446,7 +448,7 @@ class TestComposition:
         storage = FileStorageService(backend=FilesystemStorageBackend(str(tmp_path)))
         return create_case_service(
             InMemoryCaseRepository(),
-            RedisSessionStore(redis),
+            RedisSessionStore(redis, session_ttl_seconds=1800),
             case_vector_store,
             settings,
             lambda: pytest.fail("fell back to MinimalCaseService"),

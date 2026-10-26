@@ -8,6 +8,8 @@ Features:
 - Settings-based database URL configuration
 - Context manager for session lifecycle
 - Pool pre-ping for connection health
+- Bounded PostgreSQL connections: a silent server fails a command instead of
+  holding it (``pg_connection``, #2280)
 - Proper transaction handling
 
 Configuration is read from the unified settings system (faultmaven.config.settings).
@@ -26,6 +28,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import event, text
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -34,7 +37,15 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
+from faultmaven.exceptions import DatabaseTimeout, walk_cause_chain
+from faultmaven.infrastructure.persistence.db_errors import sqlstate
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.pg_connection import (
+    PgBounds,
+    enable_tcp_liveness,
+    pg_bounds,
+    pg_connect_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +92,22 @@ def active_database_backend() -> Optional[str]:
     return _engine.dialect.name if _engine is not None else None
 
 
+def active_database_bounds() -> Optional[PgBounds]:
+    """The bounds the PostgreSQL engine this process built runs with (#2280).
+
+    ``None`` before :func:`get_engine` has built one, and for a SQLite engine,
+    which none of them applies to. Read from what the engine was built with,
+    for the reason :func:`active_database_backend` is.
+    """
+    return _engine_bounds
+
+
 # ============================================================
 # Engine Configuration
 # ============================================================
 
 _engine: Optional[AsyncEngine] = None
+_engine_bounds: Optional[PgBounds] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 
@@ -99,7 +121,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
     Returns:
         AsyncEngine instance
     """
-    global _engine
+    global _engine, _engine_bounds
 
     if _engine is not None:
         return _engine
@@ -184,7 +206,10 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
                 cursor.close()
 
     else:
-        # PostgreSQL: Use connection pooling
+        # PostgreSQL: Use connection pooling. The connect args bound a server
+        # that stops answering (#2280): a command or connect past its timeout
+        # aborts the connection instead of sending a CancelRequest, which a
+        # silent server never answers. ``pg_connection`` holds the reasoning.
         _engine = create_async_engine(
             url,
             echo=db_config.database_echo,
@@ -193,7 +218,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             max_overflow=db_config.database_max_overflow,
             pool_timeout=db_config.database_pool_timeout,
             pool_recycle=db_config.database_pool_recycle,
+            connect_args=pg_connect_args(url, db_config),
         )
+        _engine_bounds = pg_bounds(url, db_config)
+        event.listen(_engine.sync_engine, "connect", enable_tcp_liveness)
+        _begin_statement = _transaction_settings_statement(_engine_bounds)
+        _begin_params = _transaction_settings_params(_engine_bounds)
 
         # Re-apply the RLS tenant scope on EVERY transaction begin. The scope is
         # transaction-local (set_config(..., is_local=true)), so setting it once
@@ -214,6 +244,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # transactions rather than inside one. Code that holds a single session
         # across several steps (the fm-* provisioning CLIs) does not get that
         # for free and must bind first or not at all; #935 was this bug.
+        #
+        # The same SELECT sets the server's statement_timeout (and the opted-in
+        # client_connection_check_interval), transaction-scoped too, so a live
+        # but slow server cancels its own statement before the client's command
+        # timeout aborts the connection (#2280). No extra round trip, and safe
+        # behind a pooler, which refuses or drops a startup parameter.
         @event.listens_for(_engine.sync_engine, "begin")
         def _scope_tenant_per_transaction(conn):
             from faultmaven.config.tenant_context import (
@@ -221,14 +257,36 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             )
 
             conn.execute(
-                text(
-                    "SELECT set_config('app.current_enterprise_id', "
-                    ":enterprise_id, true)"
-                ),
-                {"enterprise_id": get_current_enterprise_id()},
+                _begin_statement,
+                {"enterprise_id": get_current_enterprise_id(), **_begin_params},
             )
 
     return _engine
+
+
+def _transaction_settings_statement(timeouts: PgBounds):
+    """The ``begin`` listener's one SELECT: the tenant GUC, then each server timeout set."""
+    settings = ["set_config('app.current_enterprise_id', :enterprise_id, true)"]
+    if timeouts.statement_timeout_ms is not None:
+        settings.append("set_config('statement_timeout', :statement_timeout, true)")
+    if timeouts.client_connection_check_interval_ms is not None:
+        settings.append(
+            "set_config('client_connection_check_interval', "
+            ":client_connection_check_interval, true)"
+        )
+    return text("SELECT " + ", ".join(settings))
+
+
+def _transaction_settings_params(timeouts: PgBounds) -> dict[str, str]:
+    """The timeouts' bind values, in milliseconds as text, as ``set_config`` takes them."""
+    params = {}
+    if timeouts.statement_timeout_ms is not None:
+        params["statement_timeout"] = str(timeouts.statement_timeout_ms)
+    if timeouts.client_connection_check_interval_ms is not None:
+        params["client_connection_check_interval"] = str(
+            timeouts.client_connection_check_interval_ms
+        )
+    return params
 
 
 def get_session_factory(
@@ -276,6 +334,7 @@ async def get_db_session(
     - Session creation
     - Automatic commit on success
     - Automatic rollback on exception
+    - A database timeout raised as ``DatabaseTimeout`` (#2280)
     - Session cleanup
 
     Args:
@@ -283,6 +342,11 @@ async def get_db_session(
 
     Yields:
         AsyncSession for database operations
+
+    Raises:
+        DatabaseTimeout: The database did not answer in time: a driver or pool
+            timeout, or the server's statement_timeout, escaped the session,
+            bare or wrapped.
 
     Example:
         async with get_db_session() as session:
@@ -299,11 +363,49 @@ async def get_db_session(
         # commits. No-op on SQLite.
         yield session
         await session.commit()
-    except Exception:
+    except Exception as failure:
         await session.rollback()
+        # A timeout out of a session is the database's (#2280): a session body
+        # awaits nothing else. Named here, at the one door every repository
+        # goes through, so the callers above can tell it from their own
+        # timeouts by type, however a repository wrapped it on the way out.
+        if _is_database_timeout(failure):
+            raise DatabaseTimeout(
+                f"The database did not answer in time: {failure}"
+            ) from failure
         raise
     finally:
         await session.close()
+
+
+#: SQLSTATE ``query_canceled``: what PostgreSQL sends when its own
+#: ``statement_timeout`` cancels a statement, the first bound a live but slow
+#: server meets (set below the command timeout by the ``begin`` listener). An
+#: operator's ``pg_cancel_backend`` sends the same code, and only the message
+#: tells them apart; both mean nothing was saved and a retry is safe, so both
+#: are a ``DatabaseTimeout``.
+QUERY_CANCELED_SQLSTATE = "57014"
+
+
+def _is_database_timeout(failure: BaseException) -> bool:
+    """A database timeout on ``failure``'s cause chain, not yet named.
+
+    Three shapes, each read by type or by the SQLSTATE the server sent, never by
+    message: the driver's command and connect timeouts arrive as a bare
+    ``TimeoutError`` (SQLAlchemy does not wrap it), the pool's as
+    ``sqlalchemy.exc.TimeoutError``, and the server's ``statement_timeout`` as a
+    ``DBAPIError`` carrying SQLSTATE 57014. One already named
+    ``DatabaseTimeout`` (an inner session's) is left as it is, so it is never
+    wrapped twice.
+    """
+    chain = list(walk_cause_chain(failure))
+    if any(isinstance(cause, DatabaseTimeout) for cause in chain):
+        return False
+    return any(
+        isinstance(cause, (TimeoutError, PoolTimeoutError))
+        or sqlstate(cause) == QUERY_CANCELED_SQLSTATE
+        for cause in chain
+    )
 
 
 # ============================================================
@@ -361,11 +463,12 @@ async def close_database() -> None:
 
     Call this during application shutdown or between tests.
     """
-    global _engine, _session_factory
+    global _engine, _engine_bounds, _session_factory
 
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+        _engine_bounds = None
         _session_factory = None
         logger.info("Database connections closed")
 
@@ -376,8 +479,9 @@ def reset_engine() -> None:
 
     Use for testing to create fresh database connections.
     """
-    global _engine, _session_factory
+    global _engine, _engine_bounds, _session_factory
     _engine = None
+    _engine_bounds = None
     _session_factory = None
 
 

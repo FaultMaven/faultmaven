@@ -153,6 +153,55 @@ class TestTheHorizon:
         assert (second.daily_rows_deleted, second.turn_rows_deleted) == (0, 0)
 
 
+class TestTheBatches:
+    """#2280: a large backlog is deleted in bounded batches, each its own
+    transaction, so no single DELETE outlasts the database's command timeout,
+    and the counts still add up across batches."""
+
+    async def test_the_counts_hold_across_several_bounded_batches(self, usage_db):
+        from sqlalchemy import event
+
+        from faultmaven.infrastructure.persistence.database import get_engine
+
+        daily_days, turn_days = 30, 7
+        daily_horizon = NOW.date() - timedelta(days=daily_days)
+        turn_horizon = NOW - timedelta(days=turn_days)
+        await _seed(
+            usage_db,
+            # seven daily rows past the horizon, one AT it
+            days=[daily_horizon - timedelta(days=n) for n in range(1, 8)]
+            + [daily_horizon],
+            # turns 1-7 past the horizon, turn 8 inside it
+            turn_ages=[turn_horizon - timedelta(hours=n) for n in range(1, 8)]
+            + [turn_horizon + timedelta(days=1)],
+        )
+        deletes = []
+
+        def record(_conn, _cursor, statement, *_rest):
+            if statement.lstrip().upper().startswith("DELETE"):
+                deletes.append(statement)
+
+        engine = get_engine().sync_engine
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            pruned = await prune_expired_usage(
+                daily_retention_days=daily_days,
+                turn_retention_days=turn_days,
+                now=NOW,
+                batch_rows=3,
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+
+        assert (pruned.daily_rows_deleted, pruned.turn_rows_deleted) == (7, 7)
+        days, turns = await _left(usage_db)
+        assert days == [daily_horizon]
+        assert turns == [8]
+        # 7 rows at 3 a batch is 3 + 3 + 1, per table; every DELETE is bounded.
+        assert len(deletes) == 6
+        assert all("LIMIT" in statement.upper() for statement in deletes), deletes
+
+
 class TestTheJob:
     async def test_the_job_reads_the_knobs(self, usage_db, monkeypatch):
         monkeypatch.setenv("LLM_USAGE_DAILY_RETENTION_DAYS", "10")

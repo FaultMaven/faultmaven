@@ -1222,7 +1222,9 @@ async def logout(
             # token. Nothing to revoke *by identifier* — but the account-wide
             # watermark above covers it anyway, provided it took.
             logger.warning(f"Logout without jti claim: {current_user.user_id}")
-            await _end_idp_session_best_effort(request, x_session_id)
+            await _end_idp_session_best_effort(
+                request, x_session_id, current_user.user_id
+            )
             return LogoutResponse(
                 message=(
                     "Logged out successfully"
@@ -1248,7 +1250,7 @@ async def logout(
         # sign-out is not less successful because the IdP was unreachable. Needs
         # the session id, which the client sends as X-Session-Id; absent (older
         # clients, non-SSO logins) it is simply skipped.
-        await _end_idp_session_best_effort(request, x_session_id)
+        await _end_idp_session_best_effort(request, x_session_id, current_user.user_id)
 
         logger.info(f"User logout: {current_user.user_id}")
         return LogoutResponse(
@@ -1607,9 +1609,13 @@ async def _revoke_account_wide(auth_service: Any, user_id: str) -> bool:
 
 
 async def _end_idp_session_best_effort(
-    request: Request, session_id: Optional[str]
+    request: Request, session_id: Optional[str], user_id: str
 ) -> None:
     """End the IdP session behind ``session_id``, swallowing every failure.
+
+    ``user_id`` is the authenticated caller's: the service ends the IdP session
+    only when the FaultMaven session is theirs, since ``session_id`` is the
+    caller's ``X-Session-Id`` header and names whatever session they choose.
 
     Separated from the endpoint so the swallowing is explicit and narrow. This
     runs *after* the local token is revoked, so there is nothing a caller could
@@ -1626,7 +1632,7 @@ async def _end_idp_session_best_effort(
     if service is None:
         return
     try:
-        ended = await service.end_idp_session(session_id)
+        ended = await service.end_idp_session(session_id, user_id=user_id)
     except Exception as e:  # pragma: no cover - service is already fail-soft
         logger.warning(f"IdP session teardown raised, ignoring: {type(e).__name__}")
         return

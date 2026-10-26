@@ -6,9 +6,11 @@ declare was dropped without a word. ``RedisSessionStore.create_session`` passed
 fixture passed four more. Nothing read any of them. ``extra='forbid'`` makes
 such a keyword a construction error.
 
-The second half drives the production writers themselves over FakeRedis. A
-model-level check says nothing about whether the code that builds the model
-still constructs under ``forbid``.
+The second half drives the production writer itself over FakeRedis: the
+session service, through the store's ``save`` and its read back. A model-level
+check says nothing about whether the code that builds the model still
+constructs under ``forbid``. (The store's own ``create_session`` went in
+#2301: nothing called it.)
 """
 
 import pytest
@@ -55,16 +57,9 @@ def test_an_undeclared_field_is_refused_as_extra_forbidden(field):
 def store():
     import fakeredis.aioredis as fakeredis_aio
 
-    return RedisSessionStore(fakeredis_aio.FakeRedis(decode_responses=True))
-
-
-@pytest.mark.unit
-async def test_the_redis_store_writers_construct_under_forbid(store):
-    created = await store.create_session(user_id="u1")
-    loaded = await store.get_session(created.session_id)
-
-    assert loaded is not None
-    assert (loaded.session_id, loaded.user_id) == (created.session_id, "u1")
+    return RedisSessionStore(
+        fakeredis_aio.FakeRedis(decode_responses=True), session_ttl_seconds=1800
+    )
 
 
 @pytest.mark.unit

@@ -21,6 +21,14 @@ of it is: the only writes a failed turn leaves behind are the ones whose truth
 does not depend on the turn committing (the turn-cap unit, the LLM spend
 ledger, an unlinked upload blob the orphan sweep reclaims, redaction mappings,
 evidence vectors, and the log line).
+
+One exception, accepted by the owner (#2280, 2026-10-25): a database that stops
+answering DURING the commit. The commit is bounded by
+``DATABASE_COMMAND_TIMEOUT_SECONDS`` like every other statement, so the turn
+fails (a 500) and the commit may have landed. A keyed retry is answered from the
+turn receipt; an unkeyed one may save the turn twice. A live but slow server
+does not reach this: its ``statement_timeout``, below the command timeout,
+cancels the statement first, and a cancelled statement commits nothing.
 """
 
 import asyncio

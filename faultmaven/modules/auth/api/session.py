@@ -28,7 +28,7 @@ Core Design Principles:
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import NamedTuple, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
@@ -39,7 +39,6 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
@@ -63,53 +62,6 @@ logger = logging.getLogger(__name__)
 # Rate-limited logging for repeated session not found errors
 _session_not_found_log_tracker = {}
 _SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
-
-
-def _get_session_timeout_bounds() -> tuple[int, int, int]:
-    """Get session timeout bounds from settings.
-
-    Returns:
-        Tuple of (min_timeout, max_timeout, default_timeout) in minutes
-    """
-    settings = get_settings()
-    return (
-        settings.session.min_timeout_minutes,
-        settings.session.max_timeout_minutes,
-        settings.session.default_timeout_minutes,
-    )
-
-
-def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
-    """
-    Validate and clamp session timeout parameter to safe ranges.
-
-    Frontend crash recovery requires specific timeout behavior:
-    - Min: 60 minutes (1 hour) - prevents too-frequent expiration
-    - Max: 480 minutes (8 hours) - prevents indefinite sessions
-    - Default: 180 minutes (3 hours) - good balance for troubleshooting sessions
-
-    Args:
-        timeout_minutes: Requested timeout in minutes
-
-    Returns:
-        Validated timeout in minutes, clamped to safe range
-    """
-    min_timeout, max_timeout, default_timeout = _get_session_timeout_bounds()
-
-    if not timeout_minutes or timeout_minutes <= 0:
-        logger.debug(f"Using default session timeout: {default_timeout} minutes")
-        return default_timeout
-
-    original_timeout = timeout_minutes
-    # Clamp to safe range
-    validated_timeout = max(min_timeout, min(max_timeout, timeout_minutes))
-
-    if validated_timeout != original_timeout:
-        logger.info(
-            f"Session timeout clamped from {original_timeout} to {validated_timeout} minutes"
-        )
-
-    return validated_timeout
 
 
 def _safe_datetime_to_utc_string(dt: datetime) -> str:
@@ -174,12 +126,15 @@ class AuthSessionCreateRequest(BaseModel):
     See: docs/architecture/case-and-session/case-and-session-concepts.md.
     """
 
+    # Accepted and ignored, with no bounds to fail on: the Copilot sends 180.
+    # Removing it is a REMOVE, client first (#2301).
     timeout_minutes: Optional[int] = Field(
-        default=180,
-        ge=60,
-        le=480,
-        description="Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
-        examples=[180, 240, 360],
+        default=None,
+        description=(
+            "Ignored. Every session lapses SESSION_TIMEOUT_MINUTES after its last "
+            "write (the server's setting); the response's timeout_minutes and "
+            "expires_at report it."
+        ),
     )
     session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
     metadata: Optional[dict] = None
@@ -238,11 +193,11 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "user_id": "user_123",
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T10:00:00Z",
-                                "expires_at": "2025-01-15T13:00:00Z",
+                                "expires_at": "2025-01-15T10:30:00Z",
                                 "status": "inquiry",
                                 "session_type": "troubleshooting",
                                 "session_resumed": False,
-                                "timeout_minutes": 180,
+                                "timeout_minutes": 30,
                                 "message": "Session created successfully",
                             },
                         },
@@ -253,11 +208,11 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "user_id": "user_123",
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T09:30:00Z",
-                                "expires_at": "2025-01-15T14:30:00Z",
+                                "expires_at": "2025-01-15T10:45:00Z",
                                 "status": "inquiry",
                                 "session_type": "troubleshooting",
                                 "session_resumed": True,
-                                "timeout_minutes": 300,
+                                "timeout_minutes": 30,
                                 "message": "Session resumed successfully",
                             },
                         },
@@ -273,7 +228,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                         "session_expired": {
                             "summary": "Session expired",
                             "value": {
-                                "detail": "Session expired after 180 minutes of inactivity"
+                                "detail": "Session expired after 30 minutes of inactivity"
                             },
                         }
                     }
@@ -288,21 +243,6 @@ def mint_caller(http_request: Request) -> MintCaller:
                         "session_gone": {
                             "summary": "Session no longer available",
                             "value": {"detail": "Session not found"},
-                        }
-                    }
-                }
-            },
-        },
-        422: {
-            "description": "Validation error (invalid timeout_minutes)",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "invalid_timeout": {
-                            "summary": "Invalid timeout value",
-                            "value": {
-                                "detail": "timeout_minutes must be between 60 and 480 minutes"
-                            },
                         }
                     }
                 }
@@ -335,9 +275,10 @@ async def create_session(
     resolution below.
 
     **Session Timeout:**
-    - Sessions automatically expire after `timeout_minutes` of inactivity
-    - Default timeout: 180 minutes (3 hours)
-    - Min timeout: 60 minutes, Max timeout: 480 minutes
+    - A session expires `SESSION_TIMEOUT_MINUTES` (default 30) after its last
+      write: creation, resumption, a heartbeat or an update re-arms it
+    - The response's `timeout_minutes` is that setting and `expires_at` the
+      instant this write lapses; the request's `timeout_minutes` is ignored
     - Expired sessions cannot be resumed and return 404/410 errors
 
     **Frontend Crash Recovery:**
@@ -352,20 +293,19 @@ async def create_session(
         Session creation/resumption response with expiration information
     """
     try:
-        # Prepare metadata from request with validated timeout
-        metadata = {}
-        validated_timeout_minutes = validate_session_timeout(
-            request.timeout_minutes if request else None
-        )
+        # The lifetime is the server's: the session store gives every write
+        # this TTL, whatever the request asked for (#2301). Read off the
+        # service's store, the source GET /admin/config/status reports too,
+        # not the settings again.
+        ttl_seconds = session_service.session_ttl_seconds
+        timeout_minutes = ttl_seconds // 60 if ttl_seconds is not None else None
 
+        metadata = {}
         if request:
             if request.session_type:
                 metadata["session_type"] = request.session_type
             if request.metadata:
                 metadata.update(request.metadata)
-
-        # Always set validated timeout in metadata
-        metadata["timeout_minutes"] = validated_timeout_minutes
 
         # WHOSE identity this session is minted for is the SERVER's answer.
         #
@@ -431,32 +371,33 @@ async def create_session(
             "session_id": session.session_id,
             "user_id": user_id,
             "client_id": request.client_id if request else None,
-            "timeout_minutes": validated_timeout_minutes,
+            "timeout_minutes": timeout_minutes,
             "session_type": metadata.get("session_type", "troubleshooting"),
             "was_resumed": was_resumed,
         }
         logger.info(
-            f"Session {action_verb} successfully: {session.session_id} (timeout: {validated_timeout_minutes}min, client: {request.client_id if request else 'none'})"
+            f"Session {action_verb} successfully: {session.session_id} (timeout: {timeout_minutes}min, client: {request.client_id if request else 'none'})"
         )
 
         # Set Location header for REST compliance
         response.headers["Location"] = f"/api/v1/sessions/{session.session_id}"
-
-        # Calculate expires_at timestamp
-        expires_at = session.created_at + timedelta(minutes=validated_timeout_minutes)
 
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
             "client_id": request.client_id if request else None,
             "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "expires_at": _safe_datetime_to_utc_string(
-                expires_at
-            ),  # NEW: Session expiration time
+            # The instant this write lapses, as the store stamped it: when the
+            # session expires unless something writes it again.
+            "expires_at": (
+                _safe_datetime_to_utc_string(session.expires_at)
+                if session.expires_at
+                else None
+            ),
             "status": AuthSessionStatus.ACTIVE.value,
             "session_type": metadata.get("session_type", "troubleshooting"),
             "session_resumed": was_resumed,
-            "timeout_minutes": validated_timeout_minutes,  # Return validated timeout to frontend
+            "timeout_minutes": timeout_minutes,
             "message": f"Session {action_verb} successfully",
         }
     except Exception as e:

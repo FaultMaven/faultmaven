@@ -662,7 +662,8 @@ asked to accept, and it belongs to a person.
 # this entry, one level up: declared in configuration, accepted, never applied.
 # (Later, #2297 removed `cleanup_expired_sessions` and `cleanup_inactive_sessions`:
 # the store's listing they walked was a stub, so neither could ever read a
-# session, and Redis TTL expires sessions.)
+# session, and Redis TTL expires sessions. #2301 then removed
+# `cleanup_interval_minutes` and its validator: nothing scheduled on it.)
 #
 # THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
 # than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE
@@ -2155,4 +2156,73 @@ asked to accept, and it belongs to a person.
 # MINOR because the list keeps its type and every client survives a shorter
 # one: the dashboard's source has no reader of it, and the copilot and the slack
 # agent do not call the route.
-API_CONTRACT_VERSION = "14.4.0"
+#
+# 14.5.0 — MINOR. `EnvConfigStatusResponse` gains a required
+# `database_timeouts` object, and `DatabaseTimeoutsStatus` joins `components`
+# (#2280). It reports the bounds in force on a database that stops answering:
+# the PostgreSQL command, connect and statement timeouts the engine was built
+# with, the opted-in client_connection_check_interval, and the deadline on the
+# token-revocation read every authenticated request makes. Each is seconds or
+# null (no bound). MINOR for the reasons 2.5.0 was: a new field on a
+# response-only schema reached by one operator endpoint, GET
+# /api/v1/admin/config/status; no request shape changes and nothing is removed.
+# The Dashboard's hand-declared `EnvConfigStatus` ignores an extra key, and the
+# generated client types only widen.
+#
+# `POST /cases/{case_id}/turns` documents a 503 (it answered several without
+# documenting one): `DATABASE_UNAVAILABLE` (new, `Retry-After: 5`, nothing
+# committed) when the database does not answer while the turn is prepared,
+# beside the 503 codes the route already answered (`TENANT_TURN_CAP_UNAVAILABLE`,
+# `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_INVALID_RESPONSE`, and
+# `REVOCATION_STATE_UNKNOWN` from authentication). Its two 504s keep their
+# meaning: a database timeout is never answered `REQUEST_TIMEOUT` or
+# `LLM_TIMEOUT`. MINOR: a newly documented status on a route that already
+# answered 503s, with one new code under it; no request shape changes.
+#
+# Behaviour a client may notice without a schema change: against a PostgreSQL
+# that stops answering, an authenticated request is answered 503
+# `REVOCATION_STATE_UNKNOWN` after REVOCATION_READ_TIMEOUT_SECONDS (5 s) where
+# it used to hang, and other reads fail after the command timeout. A turn whose
+# commit meets a database that stops answering mid-commit answers 500 with the
+# outcome unknown; a keyed retry is answered from the receipt.
+
+# 14.6.0 — MINOR. A session lives `SESSION_TIMEOUT_MINUTES` past its last write
+# (#2301). The session store wrote every session for a fixed 1800 s whatever
+# the setting said, and a session also carried a 24-hour `expires_at` that its
+# heartbeats never moved. Now the store is built with the setting, every
+# session write (creation, resumption, heartbeat, update, archive) sets that
+# TTL, and the record's `expires_at` is the instant the write lapses.
+#
+# * `EnvConfigStatusResponse` gains `session_ttl_seconds`
+#   (`GET /api/v1/admin/config/status`): the TTL the built store applies, null
+#   before composition.
+#
+# Behaviour a client may notice without a schema change, on
+# `POST /api/v1/sessions`: `timeout_minutes` in the response is the server's
+# `SESSION_TIMEOUT_MINUTES` (it echoed the request's clamped value, 180 by
+# default), and `expires_at` is the session's own expiry, now plus that timeout
+# (it was `created_at` plus the requested minutes, a time nothing enforced, and
+# in the past on a resume of an old session). The request's `timeout_minutes`
+# is accepted and ignored, as it always was in effect, and loses its 60-480
+# bounds (a value outside them answered 422) and its 180 default; its removal
+# is a REMOVE, client first. The minted session's `metadata` no longer gains a
+# server-written `timeout_minutes`. A session heartbeated for more than 24
+# hours no longer expires at the 24-hour mark.
+#
+# And on `POST /api/v1/auth/logout`: the IdP (SSO) session is ended only when
+# the `X-Session-Id` sent names a session of the signed-in caller. Any
+# signed-in user could end another user's IdP session by sending that user's
+# session id; with the 24-hour cap gone, a heartbeat kept such an id alive
+# indefinitely, so the check lands with the change that widened it. The IdP
+# handle it revokes moved out of the session's client-writable `metadata` into
+# a server-set field no route accepts: a client could plant another user's
+# IdP session id in `metadata` on create or update and log out. An SSO
+# session's `metadata` (echoed by `PUT /sessions/{id}` and
+# `POST /sessions/search`) no longer carries `provider_session_id`, and a
+# `provider_session_id` a client writes there is inert.
+#
+# MINOR because every client survives it: the copilot sends `timeout_minutes`
+# and reads neither response field (its heartbeat interval is its own, 10
+# minutes, inside the 30-minute default), the dashboard runs the copilot's
+# session code, and the slack agent makes no session call.
+API_CONTRACT_VERSION = "14.6.0"

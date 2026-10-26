@@ -60,6 +60,15 @@ class SessionContext(BaseModel):
     session_resumed: bool = Field(
         False, description="Whether this session was resumed from existing"
     )
+    # Server-set only: the IdP session an SSO login opened, which logout
+    # revokes with the deployment's IdP key. It lived in ``metadata``, which
+    # clients write on create and replace on update, so a client could plant
+    # another user's IdP session id on a session of its own and have logout
+    # end it (#2301 review). No route accepts it.
+    provider_session_id: Optional[str] = Field(
+        None,
+        description="The IdP session this session's SSO login opened; server-set",
+    )
 
     # Timestamps
     created_at: datetime = Field(
@@ -75,22 +84,17 @@ class SessionContext(BaseModel):
         description="Last update timestamp",
     )
     expires_at: Optional[datetime] = Field(
-        None, description="Session expiration time (TTL-based)"
+        None,
+        description=(
+            "When the session lapses: its last write plus SESSION_TIMEOUT_MINUTES, "
+            "the TTL the session store set with that write"
+        ),
     )
 
     # Session metadata (authentication context only)
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional session metadata"
     )
-
-    @property
-    def active(self) -> bool:
-        """Check if session is considered active based on last activity (24 hours default)"""
-        from datetime import timedelta, timezone
-
-        inactive_threshold = timedelta(hours=24)
-        time_since_activity = datetime.now(timezone.utc) - self.last_activity
-        return time_since_activity < inactive_threshold
 
     # json_encoders removed in Pydantic V2 - datetime serialization handled by default.
     # extra="forbid": a writer passing an undeclared field fails at construction
