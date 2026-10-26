@@ -4,8 +4,8 @@ version = "1.0.0"
 description = "AI-powered troubleshooting copilot for incident investigation"
 readme = "README.md"
 # 3.11.0-3.11.4 mis-match possessive regexes (python/cpython#100061, #106052),
-# and the secret and URL redactors use them: measured on 3.11.4, they leave
-# passwords, tokens and private keys in clear that 3.11.5+ masks.
+# which the secret redactor relies on: measured on 3.11.4, it leaves passwords,
+# tokens and private keys in clear that 3.11.5 masks.
 requires-python = ">=3.11.5"
 license = {text = "FSL-1.1-ALv2"}
 authors = [

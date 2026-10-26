@@ -85,8 +85,8 @@ from typing import Callable
 # alternation, so that form held ~180 MB for a 1 MiB query. This one holds none
 # and runs at the speed of the plain class. It needs CPython 3.11.5's fixes for
 # possessive repeats (python/cpython#100061, #106052), which requires-python
-# sets as the floor: on 3.11.4 the escape backslash is swallowed again, which
-# breaks the JSON line.
+# sets as the floor: on 3.11.4 the escaped quote after a query goes with it, so
+# a JSON line stays valid but loses that quote. Nothing leaks.
 _QUERY_CHAR = r"[^\s\"'<>\x1b\\]"
 _URL_QUERY = re.compile(
     r"(://[^\s\"'<>?\x1b]*)"

@@ -92,8 +92,10 @@ class TestProjectMetadata:
         """The floor is 3.11.5, and the script that builds venvs uses the same.
 
         3.11.0-3.11.4 mis-match possessive regexes (python/cpython#100061,
-        #106052), and the redactors use them: on 3.11.4 they leave passwords,
-        tokens and private keys in clear that 3.11.5+ masks.
+        #106052), which the secret redactor relies on: on 3.11.4 it leaves
+        passwords, tokens and private keys in clear that 3.11.5 masks.
+        What the script does with the floor is tested in
+        tests/unit/scripts/test_sync_venv_python_floor.py.
         """
         assert pyproject_data["project"]["requires-python"] == ">=3.11.5"
         script = (pyproject_path.parent / "scripts" / "sync-venv.sh").read_text()
