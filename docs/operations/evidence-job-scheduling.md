@@ -386,7 +386,7 @@ A row read that is not proven unfiltered writes nothing and fails the run.
 
 | Key | Meaning |
 |-----|---------|
-| `status` | `completed`; `failed` (exit 1) when the row read is not proven or a write raised, and with `error` set on any other error (a listing error, ChromaDB unreachable); `skipped` with `reason` (`no_vector_store`, `no_enterprises`) when nothing was examined, and then every count is `null` |
+| `status` | `completed`; `failed` (exit 1) when the row read is not proven or a write raised, and with `error` set on any other error (a listing error); `skipped` with `reason` (`no_vector_store`, `no_enterprises`) when nothing was examined, and then every count is `null`. A ChromaDB unreachable at start fails the runner before the job runs: exit code 1, and no result. |
 | `dry_run` | `true` unless `--no-dry-run` was passed |
 | `proven` | the row read was proven unfiltered; `false` fails the run (`reason` says why) |
 | `items` | `knowledge_items` rows read |
