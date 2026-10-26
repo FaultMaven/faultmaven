@@ -1258,9 +1258,12 @@ class DIContainer(BaseDIContainer):
                 import time
 
                 from faultmaven.models.api import (
+                    MESSAGE_PARSE_FAILED,
+                    STORAGE_READ_FAILED,
                     CaseMessagesResponse,
                     Message,
                     MessageRetrievalDebugInfo,
+                    debug_error,
                 )
 
                 start_time = time.time()
@@ -1288,6 +1291,7 @@ class DIContainer(BaseDIContainer):
                     # Convert to Message format
                     messages = []
                     for msg in paginated_messages:
+                        message_id = None
                         try:
                             # Handle both dict and object formats
                             if isinstance(msg, dict):
@@ -1339,14 +1343,27 @@ class DIContainer(BaseDIContainer):
                             )
                         except Exception as e:
                             message_parsing_errors += 1
-                            storage_errors.append(f"Failed to parse message: {str(e)}")
+                            logging.getLogger(__name__).warning(
+                                "Failed to convert message %s of case %s: %s: %s",
+                                message_id or "unknown",
+                                case_id,
+                                type(e).__name__,
+                                e,
+                            )
+                            storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
 
                     retrieved_count = len(messages)
                     has_more = (start + limit) < total_count
                     next_offset = (start + limit) if has_more else None
 
                 except Exception as e:
-                    storage_errors.append(f"Storage error: {str(e)}")
+                    logging.getLogger(__name__).warning(
+                        "Failed to read messages of case %s: %s: %s",
+                        case_id,
+                        type(e).__name__,
+                        e,
+                    )
+                    storage_errors.append(debug_error(STORAGE_READ_FAILED, e))
                     total_count = 0
                     retrieved_count = 0
                     messages = []

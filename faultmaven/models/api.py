@@ -1,5 +1,6 @@
 # File: faultmaven/models/api.py
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
@@ -618,6 +619,33 @@ class Message(BaseModel):
     )
 
 
+# The failure kinds a ``MessageRetrievalDebugInfo.storage_errors`` entry names.
+# Any reader of a case can ask for debug info, so an entry carries a fixed code
+# and the exception's class name, never its text; the text goes to the server
+# log beside it (#2072).
+MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
+STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
+STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED, STORAGE_READ_FAILED)
+_CLASS_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_STORAGE_ERROR_ENTRY = re.compile(
+    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): {_CLASS_NAME}$"
+)
+
+
+def debug_error(code: str, exc: BaseException) -> str:
+    """One ``storage_errors`` entry: ``CODE: ExceptionClass``, no exception text.
+
+    Always an entry the model accepts: an unknown code is a programming error,
+    and a class name that is not a plain identifier is reported as ``Exception``.
+    """
+    if code not in STORAGE_ERROR_CODES:
+        raise ValueError(f"Unknown storage error code: {code!r}")
+    name = type(exc).__name__
+    if not re.fullmatch(_CLASS_NAME, name):
+        name = "Exception"
+    return f"{code}: {name}"
+
+
 class MessageRetrievalDebugInfo(BaseModel):
     """Debug information for message retrieval operations."""
 
@@ -626,11 +654,28 @@ class MessageRetrievalDebugInfo(BaseModel):
         ..., description="Time taken for Redis operation"
     )
     storage_errors: List[str] = Field(
-        default_factory=list, description="Any storage-related errors encountered"
+        default_factory=list,
+        description=(
+            "One entry per failure, as a fixed code and the exception's class "
+            "name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: "
+            "ValueError`). Codes: `STORAGE_READ_FAILED` (the page could not be "
+            "read or loaded: a storage error, or a stored row that could not "
+            "be loaded), `MESSAGE_PARSE_FAILED` (a loaded message could not be "
+            "converted to the response format). The exception's text is in "
+            "the server log."
+        ),
     )
     message_parsing_errors: int = Field(
         default=0, description="Number of messages that failed to parse"
     )
+
+    @field_validator("storage_errors")
+    @classmethod
+    def _coded_entries_only(cls, entries: List[str]) -> List[str]:
+        """Refuse any entry ``debug_error`` did not produce: it could carry text."""
+        if not all(_STORAGE_ERROR_ENTRY.fullmatch(entry) for entry in entries):
+            raise ValueError("storage_errors entries must be `CODE: ExceptionClass`")
+        return entries
 
 
 class CaseMessagesResponse(BaseModel):

@@ -1603,9 +1603,12 @@ class CaseService(CaseDriverMixin, ICaseService):
         import time
 
         from faultmaven.models.api import (
+            MESSAGE_PARSE_FAILED,
+            STORAGE_READ_FAILED,
             CaseMessagesResponse,
             Message,
             MessageRetrievalDebugInfo,
+            debug_error,
         )
 
         start_time = time.time()
@@ -1714,10 +1717,14 @@ class CaseService(CaseDriverMixin, ICaseService):
                 except Exception as e:
                     message_parsing_errors += 1
                     logger.warning(
-                        f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}"
+                        "Failed to convert message %s of case %s: %s: %s",
+                        getattr(case_msg, "message_id", "unknown"),
+                        case_id,
+                        type(e).__name__,
+                        e,
                     )
                     if include_debug:
-                        storage_errors.append(f"Message parsing error: {str(e)}")
+                        storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
 
             # Calculate performance metrics
             processing_time_ms = int((time.time() - start_time) * 1000)
@@ -1764,13 +1771,19 @@ class CaseService(CaseDriverMixin, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            logger.error(f"Failed to get enhanced messages for case {case_id}: {e}")
+            logger.error(
+                "Failed to get enhanced messages for case %s: %s: %s",
+                case_id,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
             # Return empty response with error info for graceful degradation
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(
                     redis_key=f"case:{case_id}:messages",
                     redis_operation_time_ms=int((time.time() - start_time) * 1000),
-                    storage_errors=[f"Service error: {str(e)}"],
+                    storage_errors=[debug_error(STORAGE_READ_FAILED, e)],
                     message_parsing_errors=0,
                 )
 
