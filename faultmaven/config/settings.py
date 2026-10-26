@@ -1383,7 +1383,7 @@ DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
 #: What a JWT secret file that group or others could read or write exposes,
 #: and how to rotate it; the tail of the WARNING ``tighten_secret_file_mode``
 #: logs.
-_JWT_SECRET_ROTATION = (
+_JWT_FILE_EXPOSURE_ADVICE = (
     "the local JWT signing secret, and anyone who could write it may have "
     "replaced it, so tokens it signed may be forged. To rotate it, delete the "
     "file (or set JWT_SECRET_KEY) and restart every process; every user then "
@@ -1439,7 +1439,7 @@ def _read_local_jwt_secret_file(path: Path, logger: logging.Logger) -> str:
     raw = path.read_bytes()
     if _holds_no_jwt_secret(raw, path):
         return ""
-    tighten_secret_file_mode(path, what=_JWT_SECRET_ROTATION, logger=logger)
+    tighten_secret_file_mode(path, advice=_JWT_FILE_EXPOSURE_ADVICE, logger=logger)
     return _jwt_secret_from_bytes(raw, path)
 
 

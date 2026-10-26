@@ -104,8 +104,9 @@ def _publish_under_lock(
     a fresh inode while a current holder still holds the old one, so the two
     would not exclude each other.
 
-    Without ``fcntl`` (Windows) the same decision is made with no lock. Two
-    processes publishing over a BLANK file at once can then each install their
+    Without ``fcntl`` (Windows) the same decision is made with no lock.
+    Without flock, two processes publishing at once over a blank file, or over
+    an absent one on a filesystem without hard links, can each install their
     own; a secret published before either process read the file is still never
     overwritten.
     """
@@ -140,12 +141,14 @@ def _publish_under_lock(
         return True
 
 
-def tighten_secret_file_mode(path: Path, *, what: str, logger: logging.Logger) -> None:
+def tighten_secret_file_mode(
+    path: Path, *, advice: str, logger: logging.Logger
+) -> None:
     """Make an existing secret file private to its owner before it is read.
 
     A regular file that group or others can read or write may already have
     been read or replaced, so it is chmodded to 0600 and a WARNING names the
-    file, the mode it had, the mode it has now, and ``what``: the secret it
+    file, the mode it had, the mode it has now, and ``advice``: the secret it
     holds and how to rotate it. Anything else at the path (nothing, a
     directory, a FIFO) is left alone for the read that follows to report, and
     so is every file where POSIX modes do not apply (Windows). Never raises: a
@@ -179,5 +182,5 @@ def tighten_secret_file_mode(path: Path, *, what: str, logger: logging.Logger) -
         path,
         mode,
         outcome,
-        what,
+        advice,
     )

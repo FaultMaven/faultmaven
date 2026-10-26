@@ -83,7 +83,7 @@ _CACHE: Dict[str, bytes] = {}
 
 #: What a key file that group or others could read or write exposes, and how
 #: to rotate it; the tail of the WARNING ``tighten_secret_file_mode`` logs.
-_KEY_FILE_ROTATION = (
+_PSEUDONYM_FILE_EXPOSURE_ADVICE = (
     "the redaction pseudonym key, and anyone who could write it may have "
     "replaced it. To rotate it, set REDACTION_PSEUDONYM_KEY to a new key, or "
     "delete the file to have one generated; with a Redis server, also delete "
@@ -124,7 +124,9 @@ def _load_or_create(path: Path) -> bytes:
     So the failure is loud and the operator decides. The cost is real: this
     refusal stops the boot even for a deployment with redaction switched off.
     """
-    tighten_secret_file_mode(path, what=_KEY_FILE_ROTATION, logger=logger)
+    tighten_secret_file_mode(
+        path, advice=_PSEUDONYM_FILE_EXPOSURE_ADVICE, logger=logger
+    )
     try:
         existing = _clean(path.read_bytes())
     except FileNotFoundError:
