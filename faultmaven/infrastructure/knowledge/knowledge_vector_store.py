@@ -1696,19 +1696,30 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         where: Dict[str, Any],
         collection_name: str = KB_COLLECTION,
     ) -> List[str]:
-        """Write ``enterprise_id`` onto these chunk ids, only those still matching ``where``.
+        """Write ``enterprise_id`` onto these chunk ids, only those matching ``where``.
 
         The enterprise-stamp backfill's write (#1777), shaped like
-        :meth:`delete_chunk_ids`: it writes the intersection of the observed
-        ids and ``where`` (the stamp they were listed under), asked by an
-        id-only ``get``. A chunk restamped since the listing is not
-        overwritten; a vanished id is skipped, not created.
+        :meth:`delete_chunk_ids`: an id-only ``get`` finds which of the
+        observed ids still carry the stamp they were listed under (``where``),
+        and ``collection.update`` writes only those. The guard holds as of that
+        ``get``, not the ``update``, which takes no ``where``: a stamp written
+        between the two is overwritten with ``enterprise_id``, the row's
+        enterprise, which is what every writer stamps. A vanished id is
+        skipped, not created.
 
-        ``collection.update`` merges into the chunk's metadata on chromadb
-        1.5.8: every other key, the document and the embedding are kept. Never
-        ``add``, which is insert-or-ignore on an existing id.
+        ``update`` merges into the chunk's metadata: every other key, the
+        document and the embedding are kept. Never ``add``, which is
+        insert-or-ignore on an existing id. Measured on chromadb 1.5.8
+        in-process and on the 1.0.10 server Cloud runs (a local
+        ``chromadb/chroma:1.0.10`` driven by the 1.5.8 ``HttpClient``,
+        2026-10-26): ``update`` merges, ``$nin`` matches a missing key,
+        ``get(ids, where)`` is the intersection, and ``update`` on a missing id
+        is a no-op.
 
-        Returns the chunk ids written.
+        Returns the given ids that carry ``enterprise_id`` after the call, read
+        back id-only. A retry after a write that landed then finds nothing to
+        update and still returns them; an id deleted before the write is not
+        returned.
         """
         if not where:
             raise ValueError(
@@ -1721,6 +1732,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         ids = list(chunk_ids)
         if not ids:
             return []
+        stamped = {"enterprise_id": enterprise_id}
 
         def _restamp_wrapper() -> List[str]:
             try:
@@ -1730,21 +1742,19 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             matched = list(
                 collection.get(ids=ids, where=where, include=[]).get("ids") or []
             )
-            if not matched:
-                return []
-            try:
-                collection.update(
-                    ids=matched,
-                    metadatas=[{"enterprise_id": enterprise_id}] * len(matched),
+            if matched:
+                try:
+                    collection.update(ids=matched, metadatas=[stamped] * len(matched))
+                finally:
+                    # As the delete does (see _invalidate_term_stats).
+                    self._invalidate_term_stats(collection_name)
+                self.logger.info(
+                    f"Restamped {len(matched)} observed chunk(s) in KB collection "
+                    f"'{collection_name}' with enterprise_id={enterprise_id}"
                 )
-            finally:
-                # As the delete does (see _invalidate_term_stats).
-                self._invalidate_term_stats(collection_name)
-            self.logger.info(
-                f"Restamped {len(matched)} observed chunk(s) in KB collection "
-                f"'{collection_name}' with enterprise_id={enterprise_id}"
+            return list(
+                collection.get(ids=ids, where=stamped, include=[]).get("ids") or []
             )
-            return matched
 
         self._invalidate_term_stats(collection_name)
 

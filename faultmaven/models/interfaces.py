@@ -769,13 +769,13 @@ class IKnowledgeVectorStore(ABC):
     async def restamp_chunk_ids(
         self, chunk_ids: Iterable[str], enterprise_id: str, where: Dict[str, Any]
     ) -> List[str]:
-        """Write ``enterprise_id`` onto these chunk ids, only those still matching ``where``.
+        """Write ``enterprise_id`` onto these chunk ids, only those matching ``where``.
 
         A metadata merge: every other key, the document and the embedding are
         kept. An id no longer in the collection is skipped, not created.
 
         Returns:
-            The chunk ids written.
+            The given ids that carry ``enterprise_id`` after the call.
 
         Raises:
             ValueError: An empty ``where`` or a blank ``enterprise_id``.

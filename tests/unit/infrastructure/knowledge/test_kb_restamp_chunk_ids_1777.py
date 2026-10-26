@@ -22,6 +22,7 @@ from typing import Any
 
 import chromadb
 import pytest
+from chromadb.api.models.Collection import Collection
 from chromadb.config import Settings as ChromaSettings
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -148,6 +149,56 @@ async def test_restamp_skips_a_vanished_id_and_does_not_create_it(tmp_path):
     written = await store.restamp_chunk_ids(listed["A"], "ent-1", UNKNOWN)
 
     assert written == ["A_chunk_1"]
+    assert _stamp(collection, "A_chunk_0") == "<absent>"
+    assert _stamp(collection, "A_chunk_1") == "ent-1"
+
+
+async def test_a_retry_after_a_write_that_landed_returns_the_ids_now_stamped(
+    tmp_path, monkeypatch
+):
+    """The write lands and its response is lost; ``call_external`` retries,
+    and the retry's guarded get finds nothing still matching ``where``. The
+    ids carry the enterprise, so they are returned."""
+    client = _client(tmp_path)
+    real_update = Collection.update
+    raised: list[bool] = []
+
+    def land_then_raise(self, **kwargs):
+        real_update(self, **kwargs)
+        if not raised:
+            raised.append(True)
+            raise ConnectionError("the response was lost after the write landed")
+
+    monkeypatch.setattr(Collection, "update", land_then_raise)
+    store = KnowledgeVectorStore(client)
+
+    written = await store.restamp_chunk_ids(
+        ["A_chunk_0", "A_chunk_1"], "ent-1", UNKNOWN
+    )
+
+    assert raised == [True]
+    assert sorted(written) == ["A_chunk_0", "A_chunk_1"]
+
+
+async def test_an_id_deleted_between_the_get_and_the_update_is_not_returned(
+    tmp_path, monkeypatch
+):
+    client = _client(tmp_path)
+    real_update = Collection.update
+
+    def delete_then_update(self, **kwargs):
+        self.delete(ids=["A_chunk_0"])
+        real_update(self, **kwargs)
+
+    monkeypatch.setattr(Collection, "update", delete_then_update)
+    store = KnowledgeVectorStore(client)
+
+    written = await store.restamp_chunk_ids(
+        ["A_chunk_0", "A_chunk_1"], "ent-1", UNKNOWN
+    )
+
+    assert written == ["A_chunk_1"]
+    collection = client.get_collection(KB_COLLECTION)
     assert _stamp(collection, "A_chunk_0") == "<absent>"
     assert _stamp(collection, "A_chunk_1") == "ent-1"
 

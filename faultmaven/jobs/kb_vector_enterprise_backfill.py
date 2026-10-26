@@ -27,8 +27,15 @@ Orphans are never written.
 
 Each write is ``restamp_chunk_ids``, one parent document at a time: a metadata
 merge (``collection.update``) onto the observed ids that still carry the stamp
-they were listed under. Never ``add``, which is insert-or-ignore on an
-existing id.
+they were listed under, as of an id-only ``get`` (``update`` takes no
+``where``). A stamp written between the two is overwritten with the row's
+enterprise, which is what every writer stamps. Never ``add``, which is
+insert-or-ignore on an existing id. ``stamped`` / ``corrected`` count the ids
+read back as carrying the row's enterprise after the write. The same behaviour
+was measured on chromadb 1.5.8 in-process and on the 1.0.10 server Cloud runs
+(a local ``chromadb/chroma:1.0.10`` driven by the 1.5.8 ``HttpClient``,
+2026-10-26): ``update`` merges, ``$nin`` matches a missing key,
+``get(ids, where)`` is the intersection, ``update`` on a missing id is a no-op.
 
 Tenant scope: **cross_tenant** (every enterprise's rows; a collection no
 enterprise partitions). Under multi it runs only on the audited maintenance
@@ -68,13 +75,15 @@ async def run(
 
     Returns ``job``, ``status`` ("completed"; "failed" when the row read is not
     proven or a write raised; "skipped" with ``reason`` when there is no
-    vector store or no enterprise), ``dry_run``, ``proven``, ``reason``, and:
-    ``items`` (rows read); ``chunks`` (listed chunks whose parent has a row);
+    vector store or no enterprise, and every count None: nothing was
+    examined), ``dry_run``, ``proven``, ``reason``, and: ``items`` (rows
+    read); ``chunks`` (listed chunks whose parent has a row);
     ``already_correct`` / ``unstamped`` / ``mismatched`` (those chunks, before
     any write; ``unstamped`` includes a stamp no enterprise holds);
-    ``stamped`` / ``corrected`` (written this run, 0 on a dry run);
-    ``unattributable`` (no enterprise's stamp and no row; never written);
-    ``failed`` (chunks of documents whose write raised).
+    ``stamped`` / ``corrected`` (chunks carrying the row's enterprise after
+    this run's writes, 0 on a dry run); ``unattributable`` (no enterprise's
+    stamp and no row; never written); ``failed`` (chunks of documents whose
+    write raised, some of which may have landed; the next run counts them).
     """
     effective_dry_run = dry_run is not False
     result: Dict[str, Any] = {
@@ -86,7 +95,7 @@ async def run(
     }
     store = getattr(container, "knowledge_vector_store", None)
     if store is None:
-        result.update(status="skipped", reason="no_vector_store")
+        _skip(result, "no_vector_store")
         return result
 
     from faultmaven.infrastructure.persistence.database import get_db_session
@@ -112,7 +121,7 @@ async def _backfill(
     enterprises = await read_enterprise_ids(db_session_factory)
     if not enterprises:
         # ``$nin`` refuses an empty list, and no row exists without one.
-        result.update(status="skipped", reason="no_enterprises")
+        _skip(result, "no_enterprises")
         return
 
     # 1. Chunks FIRST (ids only): per enterprise stamp, then no known stamp.
@@ -165,6 +174,11 @@ async def _backfill(
         result["status"] = "failed"
     counts = " ".join(f"{key}={result[key]}" for key in _COUNTS)
     logger.info(f"KB vector enterprise backfill (dry_run={dry_run}): {counts}")
+
+
+def _skip(result: Dict[str, Any], reason: str) -> None:
+    """Nothing was examined: no count may read as a pass."""
+    result.update({key: None for key in _COUNTS}, status="skipped", reason=reason)
 
 
 # Job metadata for CLI discovery
