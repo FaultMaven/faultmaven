@@ -14,9 +14,9 @@ theoretical. ``RedisSessionStore.list_sessions()`` was then a stub returning
 hazard — but that store is one of **two** implementations. ``MinimalSessionService``
 (``_container_impl._create_minimal_session_service``) ships a working
 ``list_sessions`` with the ``user_id`` filter, and ``create_session_service``
-installs it whenever the real service cannot be constructed — *"Reachable in
-PRODUCTION, not only under test"*, in its own docstring. Measured on that path
-with no ``Authorization`` header, before the fix:
+installed it whenever the real service could not be constructed, until #2103 —
+*"Reachable in PRODUCTION, not only under test"*, in its own docstring. Measured
+on that path with no ``Authorization`` header, before the fix:
 
     GET /api/v1/sessions?user_id=<victim>     -> 200, that user's session id
     GET /api/v1/sessions                      -> 200, every session id + user

@@ -218,11 +218,9 @@ def test_constructor_supplied_pair_is_used_verbatim():
 @pytest.mark.unit
 @pytest.mark.security
 def test_the_container_factory_does_not_degrade_on_a_partial_pair():
-    """`create_auth_service` wraps construction in `except Exception` and returns
-    a fallback service. That handler must not absorb this refusal: the fallback
-    builds the same service from the same settings, so it cannot succeed where
-    this failed — it would only re-raise from inside a handler and bury the
-    cause under a chained traceback.
+    """The refusal propagates out of `create_auth_service` as itself, on every
+    container path. The factory once caught construction errors and returned a
+    revocation-less fallback; since #2103 no construction failure is absorbed.
     """
     from faultmaven.container.providers.services import create_auth_service
 

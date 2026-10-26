@@ -5942,8 +5942,8 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # caller, so no control exists". That was a property of `RedisSessionStore`,
     # whose `list_sessions()` was a stub until #2297, and not of the route:
     # `MinimalSessionService` ships a working one and `create_session_service`
-    # installs it in production whenever the real service cannot be
-    # constructed. Both routes ARE probed —
+    # installed it in production whenever the real service could not be
+    # constructed, until #2103. Both routes ARE probed —
     # `tests/integration/security/test_unauthenticated_session_surface.py`
     # drives them against that service, anonymously and as a foreign
     # authenticated caller, which is the arm this module has never had.

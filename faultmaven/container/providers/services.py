@@ -86,13 +86,21 @@ def create_case_service(
     file_storage_service: Any | None = None,
     redis_client: Any | None = None,
 ) -> Any:
-    """Create case service for case persistence and management."""
+    """Create case service for case persistence and management.
+
+    The in-memory ``minimal_factory`` service answers only when no case
+    repository is configured. With one configured, a failure to build the
+    service or its erasers propagates out of composition (#2103), which
+    refuses the boot wherever ``settings.must_not_degrade`` holds. Never a
+    stand-in: the in-memory one lost every case on restart, differed per
+    replica, and reported success for a delete that cleared nothing.
+    """
     if not case_repository:
         logger.debug("Case service using minimal implementation (no repository)")
         return minimal_factory()
 
-    # Outside the fallback below: an error building the erasers propagates out of
-    # this function instead of degrading to a case service that clears no store (#1016).
+    from faultmaven.modules.case.domain.services.case_service import CaseService
+
     erasers, not_configured = case_store_erasers(
         session_store=session_store,
         file_storage_service=file_storage_service,
@@ -100,25 +108,19 @@ def create_case_service(
         redis_client=redis_client,
         settings=settings,
     )
-    try:
-        from faultmaven.modules.case.domain.services.case_service import CaseService
-
-        service = CaseService(
-            case_repository=case_repository,
-            session_store=session_store,
-            store_erasers=erasers,
-            stores_not_configured=not_configured,
-            settings=settings,
-            team_service=team_service,  # Team-membership resolution (None in standalone)
-            share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
-            # Display names and driver candidacy (ADR-020 D4/D5).
-            account_reader=account_reader,
-        )
-        logger.debug("Case service initialized with milestone-based repository")
-        return service
-    except Exception as e:
-        logger.warning(f"Case service initialization failed: {e}")
-        return minimal_factory()
+    service = CaseService(
+        case_repository=case_repository,
+        session_store=session_store,
+        store_erasers=erasers,
+        stores_not_configured=not_configured,
+        settings=settings,
+        team_service=team_service,  # Team-membership resolution (None in standalone)
+        share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
+        # Display names and driver candidacy (ADR-020 D4/D5).
+        account_reader=account_reader,
+    )
+    logger.debug("Case service initialized with milestone-based repository")
+    return service
 
 
 def create_runbook_dedup_kb(
@@ -381,25 +383,29 @@ def create_session_service(
     settings: FaultMavenSettings,
     minimal_factory: callable,
 ) -> Any:
-    """Create session service for session management."""
+    """Create session service for session management.
+
+    The in-memory ``minimal_factory`` service answers only when no session
+    store is configured. With one configured, a construction failure
+    propagates out of composition (#2103), which refuses the boot wherever
+    ``settings.must_not_degrade`` holds. Never a stand-in: the in-memory one
+    kept sessions in one process, lost on restart and unseen by every other
+    replica, so the per-user limit counted per process.
+    """
     if not session_store:
         logger.info("Session store unavailable; using minimal session service")
         return minimal_factory()
 
-    try:
-        from faultmaven.modules.auth.domain.services.auth_session_service import (
-            AuthSessionService as SessionService,
-        )
+    from faultmaven.modules.auth.domain.services.auth_session_service import (
+        AuthSessionService as SessionService,
+    )
 
-        service = SessionService(
-            session_store=session_store,
-            settings=settings,
-        )
-        logger.debug("SessionService initialized")
-        return service
-    except Exception as e:
-        logger.warning(f"SessionService initialization failed: {e}")
-        return minimal_factory()
+    service = SessionService(
+        session_store=session_store,
+        settings=settings,
+    )
+    logger.debug("SessionService initialized")
+    return service
 
 
 def create_data_service(
@@ -736,55 +742,38 @@ def create_auth_service(
 
     Returns:
         AuthService instance
+
+    A construction failure (a ``PartialKeyConfigurationError`` included)
+    propagates out of composition on every container path, jobs and CLI
+    workers included (#2103), which refuses the boot wherever
+    ``settings.must_not_degrade`` holds. Never a stand-in: the
+    ``AuthService()`` it used to return had no revocation store, so a revoked
+    or logged-out token kept working until it expired.
     """
-    # Imported before the try, not inside it: the handler below names
-    # PartialKeyConfigurationError, and a name bound inside the try is not
-    # guaranteed to exist when the handler runs. A failed import here would
-    # otherwise turn a key-configuration refusal into a NameError raised while
-    # matching the handler.
-    from faultmaven.modules.auth.domain.services.auth_service import (
-        AuthService,
-        PartialKeyConfigurationError,
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    # Load keys from settings if available
+    private_key = None
+    public_key = None
+    if settings.security.jwt_private_key:
+        private_key = settings.security.jwt_private_key.get_secret_value()
+    if settings.security.jwt_public_key:
+        public_key = settings.security.jwt_public_key
+
+    service = AuthService(
+        revocation_store=revocation_store,
+        private_key=private_key,
+        public_key=public_key,
     )
-
-    try:
-        # Load keys from settings if available
-        private_key = None
-        public_key = None
-        if settings.security.jwt_private_key:
-            private_key = settings.security.jwt_private_key.get_secret_value()
-        if settings.security.jwt_public_key:
-            public_key = settings.security.jwt_public_key
-
-        service = AuthService(
-            revocation_store=revocation_store,
-            private_key=private_key,
-            public_key=public_key,
+    if revocation_store:
+        logger.info(
+            "✅ AuthService initialized with revocation store (token revocation enabled)"
         )
-        if revocation_store:
-            logger.info(
-                "✅ AuthService initialized with revocation store (token revocation enabled)"
-            )
-        else:
-            logger.info(
-                "✅ AuthService initialized without revocation store (token revocation disabled)"
-            )
-        return service
-    except PartialKeyConfigurationError:
-        # Half an RSA key pair is an operator error, not an infrastructure
-        # hiccup. Never degrade to the fallback below: it constructs the same
-        # service off the same settings, so it cannot succeed where this failed
-        # — it would only re-raise from inside an exception handler and bury the
-        # cause under a chained traceback. Fail closed on EVERY container path,
-        # jobs and CLI workers included, not just the web lifespan that also
-        # runs the coherence gate.
-        raise
-    except Exception as e:
-        logger.warning(f"AuthService initialization failed: {e}")
-        # Return a minimal AuthService without a revocation store
-        from faultmaven.modules.auth.domain.services.auth_service import AuthService
-
-        return AuthService()
+    else:
+        logger.info(
+            "✅ AuthService initialized without revocation store (token revocation disabled)"
+        )
+    return service
 
 
 def create_user_service(
