@@ -348,6 +348,47 @@ in the `kb_seed` result's `authored_orphans`.
 The job's status stays `completed` for every sweep outcome. The seeding
 succeeded, and these counts are the report.
 
+### 1c. KB Vector Enterprise Backfill (`kb_vector_enterprise_backfill`, #1777)
+
+**Purpose:** Stamp every KB chunk whose parent has a `knowledge_items` row with
+that row's `enterprise_id`. Chunks written before #1780 carry no stamp, or a
+stamp that disagrees with their row. The job changes no read path. It lists
+chunks ids-only, once per enterprise stamp and once for chunks no enterprise's
+stamp names, then reads the rows with the sweep's proof (§1b). It rewrites the
+stamp with a metadata merge, one document at a time, and only on chunks that
+still carry the stamp they were listed under. Chunks whose parent has no row
+are never written.
+
+**A dry run unless `--no-dry-run`.** Run the dry run first and read the counts:
+
+```bash
+python -m faultmaven.jobs.run kb_vector_enterprise_backfill
+python -m faultmaven.jobs.run kb_vector_enterprise_backfill --no-dry-run
+```
+
+Under `TENANT_PROVIDER=multi`, add `--cross-tenant-maintenance` and run it as
+the maintenance role, as a one-off Job (see
+[One-off operator run](#one-off-operator-run)). The Job needs ChromaDB reach,
+as `kb_seed` does. A row read that is not proven unfiltered writes nothing and
+fails the run.
+
+| Key | Meaning |
+|-----|---------|
+| `dry_run` | `true` unless `--no-dry-run` was passed |
+| `proven` | the row read was proven unfiltered; `false` fails the run (`reason` says why) |
+| `items` | `knowledge_items` rows read |
+| `chunks` | listed chunks whose parent has a row |
+| `already_correct` | of those, chunks already stamped with their row's enterprise |
+| `unstamped` | of those, chunks with no enterprise's stamp, before the run. Includes a stamp no enterprise holds: an id-only listing cannot tell it from a missing key |
+| `mismatched` | of those, chunks stamped with another enterprise, before the run |
+| `stamped` / `corrected` | `unstamped` / `mismatched` chunks written this run; `0` on a dry run |
+| `unattributable` | chunks with no enterprise's stamp whose parent has no row; never written. The §1b sweep deletes them once armed |
+| `failed` | chunks of documents whose write raised; the run exits 1 and the next run retries them |
+
+Every count is in chunks. **The check that unblocks #1775:** after the real
+run, a dry run reports `unstamped: 0` and `mismatched: 0`, and
+`unattributable: 0` once the orphan sweep has removed the unstamped orphans.
+
 ---
 
 ### 2. Retry Queue Monitoring (Future)

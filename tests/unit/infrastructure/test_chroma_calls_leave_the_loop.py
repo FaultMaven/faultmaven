@@ -54,6 +54,9 @@ class _RecordingCollection:
     def add(self, **kwargs: Any) -> None:
         self._record("add")
 
+    def update(self, **kwargs: Any) -> None:
+        self._record("update")
+
     def query(self, **kwargs: Any) -> Dict[str, Any]:
         self._record("query")
         return {
@@ -202,6 +205,13 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         KnowledgeVectorStore,
         lambda s: s.delete_observed_chunk_ids(["parent-1_chunk_0"]),
     ),
+    (
+        "kb.restamp_chunk_ids",
+        KnowledgeVectorStore,
+        lambda s: s.restamp_chunk_ids(
+            ["parent-1_chunk_0"], "ent-1", where={"enterprise_id": {"$nin": ["e"]}}
+        ),
+    ),
     # -- ChromaDBVectorStore --------------------------------------------------
     (
         "chromadb.add_documents",
@@ -250,6 +260,7 @@ _PUBLIC_METHODS = {
         "list_chunk_ids_by_parent",
         "delete_chunk_ids",
         "delete_observed_chunk_ids",
+        "restamp_chunk_ids",
     },
     ChromaDBVectorStore: {
         "add_documents",

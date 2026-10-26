@@ -72,6 +72,10 @@ between the two steps look orphaned.
 No database session is held across a ChromaDB call: each read closes before
 the next listing or delete (the maintenance role reaps a transaction left idle
 for 60 s).
+
+The enterprise-stamp backfill job (``faultmaven.jobs.kb_vector_enterprise_backfill``,
+#1777) reads through the same functions: ``read_enterprise_ids``,
+``read_rows_if_complete``, ``enterprise_where`` and ``unattributed_where``.
 """
 
 from __future__ import annotations
@@ -261,11 +265,11 @@ def _authored(by_parent: Dict[str, List[str]]) -> Dict[str, List[str]]:
     return {p: ids for p, ids in by_parent.items() if not is_builtin_item_id(p)}
 
 
-def _enterprise_where(enterprise_id: str) -> Dict[str, Any]:
+def enterprise_where(enterprise_id: str) -> Dict[str, Any]:
     return {"enterprise_id": enterprise_id}
 
 
-def _unattributed_where(enterprise_ids: List[str]) -> Dict[str, Any]:
+def unattributed_where(enterprise_ids: List[str]) -> Dict[str, Any]:
     # ``$nin`` matches a chunk with no ``enterprise_id`` key AND one whose
     # value is outside the list (measured on chromadb 1.5.8 in-process and the
     # 1.0.10 server); there is no ``$exists``, so an id-only listing cannot
@@ -273,7 +277,7 @@ def _unattributed_where(enterprise_ids: List[str]) -> Dict[str, Any]:
     return {"enterprise_id": {"$nin": enterprise_ids}}
 
 
-async def _read_enterprise_ids(
+async def read_enterprise_ids(
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> List[str]:
     """Every enterprise, live or retired (``enterprises`` carries no RLS)."""
@@ -284,7 +288,7 @@ async def _read_enterprise_ids(
         return sorted({r[0] for r in rows.all()})
 
 
-async def _read_rows_if_complete(
+async def read_rows_if_complete(
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> Tuple[bool, Dict[str, Set[str]], Optional[str]]:
     """``(proven, item ids by enterprise, why not proven)``.
@@ -438,7 +442,7 @@ async def _sweep(
     dry_run: bool,
     acknowledged: frozenset,
 ) -> None:
-    enterprise_ids = await _read_enterprise_ids(db_session_factory)
+    enterprise_ids = await read_enterprise_ids(db_session_factory)
     if not enterprise_ids:
         result.skipped = "no_enterprises"
         return
@@ -453,12 +457,12 @@ async def _sweep(
     stamped: Dict[str, Dict[str, List[str]]] = {}
     for enterprise_id in enterprise_ids:
         found = _authored(
-            await store.list_chunk_ids_by_parent(_enterprise_where(enterprise_id))
+            await store.list_chunk_ids_by_parent(enterprise_where(enterprise_id))
         )
         if found:
             stamped[enterprise_id] = found
     unattributed_all = await store.list_chunk_ids_by_parent(
-        _unattributed_where(enterprise_ids)
+        unattributed_where(enterprise_ids)
     )
     result.unattributed_chunks = sum(len(ids) for ids in unattributed_all.values())
     unattributed = _authored(unattributed_all)
@@ -466,7 +470,7 @@ async def _sweep(
         return
 
     # 2. THEN the rows, with both guards in the same transaction.
-    proven, rows, why_not = await _read_rows_if_complete(db_session_factory)
+    proven, rows, why_not = await read_rows_if_complete(db_session_factory)
     result.proven = proven
     result.unproven_reason = why_not
     for enterprise_id in stamped:
@@ -566,9 +570,9 @@ async def _sweep(
     #    under. No database session is open here.
     for bucket, orphans in plan.items():
         where = (
-            _unattributed_where(enterprise_ids)
+            unattributed_where(enterprise_ids)
             if bucket == UNATTRIBUTED
-            else _enterprise_where(bucket)
+            else enterprise_where(bucket)
         )
         await _delete(
             store,

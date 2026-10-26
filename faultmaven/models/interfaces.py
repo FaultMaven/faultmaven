@@ -616,7 +616,8 @@ class IKnowledgeVectorStore(ABC):
 
     Declares what its consumers call: ``KnowledgeService`` (search, hybrid
     search, write, delete) and the boot-time reconcile pass and authored-orphan
-    sweep, which reach the store through that service. Parameter names and
+    sweep, which reach the store through that service, plus the enterprise-stamp
+    backfill job, which reaches it on the container. Parameter names and
     defaults are the implementation's. An optional parameter no consumer
     passes belongs to the implementation and is not part of this port: the
     per-call ``collection_name`` of the write, delete and listing methods
@@ -761,6 +762,23 @@ class IKnowledgeVectorStore(ABC):
 
         Returns:
             The chunk ids deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def restamp_chunk_ids(
+        self, chunk_ids: Iterable[str], enterprise_id: str, where: Dict[str, Any]
+    ) -> List[str]:
+        """Write ``enterprise_id`` onto these chunk ids, only those still matching ``where``.
+
+        A metadata merge: every other key, the document and the embedding are
+        kept. An id no longer in the collection is skipped, not created.
+
+        Returns:
+            The chunk ids written.
+
+        Raises:
+            ValueError: An empty ``where`` or a blank ``enterprise_id``.
         """
         pass
 
