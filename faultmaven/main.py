@@ -777,8 +777,7 @@ async def get_capabilities(request: Request):
     settings = get_settings()
     turn_ceiling = resolve_turn_ceiling(settings)
 
-    # deploymentMode is DEPLOYMENT_MODE (``settings.is_cloud``): "cloud" for
-    # the managed SaaS, "self-hosted" for a customer-run deployment.
+    # deploymentMode is DEPLOYMENT_MODE (settings.is_cloud), not the tenant provider.
     is_cloud = settings.is_cloud
     deployment_mode = "cloud" if is_cloud else "self-hosted"
 

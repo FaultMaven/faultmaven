@@ -13,18 +13,15 @@ service layer via
 :func:`faultmaven.modules.knowledge.domain.global_authoring.ensure_global_authoring_allowed`
 — the knowledge-module layer contract forbids the domain importing this API
 module, so the multi arm is re-checked there rather than reused by import (the
-canonical refusal message :data:`GLOBAL_AUTHORING_FORBIDDEN_MSG` IS shared, from
-the domain policy).
+canonical refusal message :data:`GLOBAL_AUTHORING_FORBIDDEN_MSG` and the
+predicate :func:`operator_authoring_refused` ARE shared, from the domain policy).
 """
 
 from fastapi import HTTPException
 
 from faultmaven.modules.knowledge.domain.global_authoring import (
     GLOBAL_AUTHORING_MULTI_MSG,
-)
-from faultmaven.providers.tenancy.factory import (
-    BUILTIN_MULTI,
-    requested_tenant_provider,
+    operator_authoring_refused,
 )
 
 # Backward-compatible public name; the canonical string lives in the domain
@@ -34,5 +31,5 @@ GLOBAL_AUTHORING_FORBIDDEN_MSG = GLOBAL_AUTHORING_MULTI_MSG
 
 def require_global_authoring_allowed() -> None:
     """Refuse (403) any tenant-session attempt to author global-scope KB under multi."""
-    if requested_tenant_provider() == BUILTIN_MULTI:
+    if operator_authoring_refused():
         raise HTTPException(status_code=403, detail=GLOBAL_AUTHORING_FORBIDDEN_MSG)

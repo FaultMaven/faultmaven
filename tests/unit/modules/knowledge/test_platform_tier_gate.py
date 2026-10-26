@@ -35,11 +35,11 @@ from faultmaven.modules.knowledge.api.routes import router as knowledge_router
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 _MULTI = patch(
-    "faultmaven.modules.knowledge.api.platform_tier.requested_tenant_provider",
+    "faultmaven.modules.knowledge.domain.global_authoring.requested_tenant_provider",
     return_value=BUILTIN_MULTI,
 )
 _SINGLE = patch(
-    "faultmaven.modules.knowledge.api.platform_tier.requested_tenant_provider",
+    "faultmaven.modules.knowledge.domain.global_authoring.requested_tenant_provider",
     return_value=BUILTIN_SINGLE,
 )
 
