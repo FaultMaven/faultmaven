@@ -17,13 +17,15 @@ import sys
 # install, so an editable install made under an older floor, or a run from the
 # source tree, gets here unchecked. RuntimeError, not ImportError: an
 # `except ImportError` or pytest.importorskip would turn a refusal into a skip.
+# The message gives the floor's reason; a new floor brings its own.
 MINIMUM_PYTHON = (3, 11, 5)
 
 if sys.version_info[:3] < MINIMUM_PYTHON:
     raise RuntimeError(
         f"FaultMaven requires Python {'.'.join(map(str, MINIMUM_PYTHON))} or later; "
-        f"{sys.executable} is Python {'.'.join(map(str, sys.version_info[:3]))}. "
-        "Earlier releases mis-match the possessive regular expressions the secret "
-        "redactor relies on (python/cpython#100061, #106052) and leave secrets in "
-        "clear. Recreate the environment on a newer Python."
+        f"{sys.executable or 'this interpreter'} is Python "
+        f"{'.'.join(map(str, sys.version_info[:3]))}. Earlier releases mis-match "
+        "the possessive regular expressions the secret redactor relies on "
+        "(python/cpython#100061, #106052) and leave secrets in clear. Run "
+        "FaultMaven on a newer Python."
     )
