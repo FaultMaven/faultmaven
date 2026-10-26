@@ -1,4 +1,4 @@
-"""scripts/sync-venv.sh builds and keeps venvs at requires-python's floor.
+"""scripts/sync-venv.sh builds and keeps venvs at or above requires-python's floor.
 
 The floor (pyproject.toml) is 3.11.5: earlier 3.11 releases mis-match the
 possessive regexes the secret redactor relies on. The script runs here against
@@ -18,10 +18,11 @@ SCRIPT = REPO_ROOT / "scripts" / "sync-venv.sh"
 
 # Runs `-c CODE [ARGS]` on the real interpreter, reporting VERSION.
 _STAND_IN = """\
-import sys
+import collections, sys
 version = tuple(int(part) for part in sys.argv[1].split("."))
 code, args = sys.argv[3], sys.argv[4:]
-sys.version_info = (*version, "final", 0)
+fields = "major minor micro releaselevel serial"
+sys.version_info = collections.namedtuple("version_info", fields)(*version, "final", 0)
 sys.version = sys.argv[1] + " (stand-in)"
 sys.argv = ["-c", *args]
 exec(compile(code, "<string>", "exec"))
@@ -58,8 +59,22 @@ def run(tmp_path):
     at_floor = _interpreter(tmp_path / "at-floor" / "python", stand_in, "3.11.5")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _executable(bin_dir / "uv", _UV.format(log=log, at_floor=at_floor))
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    stub = _executable(bin_dir / "uv", _UV.format(log=log, at_floor=at_floor))
+    if not os.access(stub, os.X_OK):
+        pytest.skip("tmp_path does not allow executing the stubs")
+    # No directory holding a real uv stays on PATH, so the script can only
+    # reach the stub; the uv settings are a second stop should one slip by.
+    path = [str(bin_dir)] + [
+        entry
+        for entry in os.environ["PATH"].split(os.pathsep)
+        if entry and not (Path(entry) / "uv").exists()
+    ]
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join(path),
+        "UV_OFFLINE": "1",
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
 
     def _run(venv: Path, version: str = ""):
         if version:
@@ -79,7 +94,7 @@ def run(tmp_path):
 
 @pytest.mark.unit
 class TestSyncVenvPythonFloor:
-    def test_a_new_venv_is_asked_for_a_3_11_at_the_floor(self, run, tmp_path):
+    def test_a_new_venv_is_asked_for_a_3_11_at_or_above_the_floor(self, run, tmp_path):
         venv = tmp_path / "new-venv"
 
         result, calls = run(venv)
@@ -96,8 +111,12 @@ class TestSyncVenvPythonFloor:
         assert "below pyproject.toml's floor of 3.11.5" in result.stderr
         assert calls == []
 
-    def test_an_existing_venv_at_the_floor_is_synced(self, run, tmp_path):
-        result, calls = run(tmp_path / "venv", "3.11.5")
+    @pytest.mark.parametrize("version", ["3.11.5", "3.11.15"])
+    def test_an_existing_venv_at_or_above_the_floor_is_synced(
+        self, run, tmp_path, version
+    ):
+        """3.11.15 sorts below 3.11.5 as text: a string comparison refuses it."""
+        result, calls = run(tmp_path / "venv", version)
 
         assert result.returncode == 0, result.stderr
         assert [call.split()[:2] for call in calls] == [
