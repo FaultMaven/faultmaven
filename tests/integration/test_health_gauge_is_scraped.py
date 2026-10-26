@@ -72,6 +72,10 @@ from faultmaven.infrastructure.health.component_monitor import (
     HealthStatus,
     component_monitor,
 )
+from tests.utils import uncomposed_auth_service
+
+# Served without its lifespan, so nothing composes this (#2103).
+app.state.auth_service = uncomposed_auth_service()
 
 async def _no_io():
     return component_monitor.component_health
