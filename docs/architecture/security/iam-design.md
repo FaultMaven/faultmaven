@@ -581,14 +581,20 @@ A zero is trusted only after two positive controls:
   because it increments the series the decision reads.
 
 `bearer="unresolved"` never reaches zero, by design: a revoked bearer that has
-not yet expired still mints anonymously, once per occurrence. Seven days of
-zero leaves no live anonymous session from a header-less client that sent an
-`Origin` other than `null`: a session's stored expiry (`expires_at`, 24 hours
-today) is fixed when it is minted, a heartbeat does not move it, and an
-anonymous id is never resumed. Mints under `origin="none"` (no, blank or `null`
-`Origin`) and `unresolved` mints keep making anonymous sessions, by design. The
-480-minute cap on a requested `timeout_minutes` is only reported back to the
-client; it does not expire the stored session.
+not yet expired still mints anonymously, once per occurrence. Mints under
+`origin="none"` (no, blank or `null` `Origin`) keep making anonymous sessions
+too.
+
+Seven days of zero says that no header-less client minted in that window. It
+does not say that no anonymous session is still live. A session lapses
+`SESSION_TIMEOUT_MINUTES` (default 30) after its last write, and every write
+re-arms it, a heartbeat included. The heartbeat route takes no authentication
+until step 4, and nothing caps a session's total lifetime. So an anonymous
+session minted before the window stays live for as long as an old client keeps
+heartbeating it within every `SESSION_TIMEOUT_MINUTES`. Step 4's ownership check
+on the heartbeat answers such a session 403, and the old client swallows that
+403, so its keep-alive stops with no signal (#1460). The window bounds new
+anonymous sessions, not this residue.
 
 ## Local Mode Authentication
 
