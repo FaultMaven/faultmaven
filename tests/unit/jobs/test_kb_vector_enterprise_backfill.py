@@ -268,6 +268,28 @@ async def test_a_write_that_landed_and_then_raised_is_counted_as_stamped(
     assert {stamps[cid] for cid in A.chunk_ids()} == {"ent-1"}
 
 
+async def test_a_chunk_deleted_after_the_listing_is_not_counted_as_stamped(
+    world, monkeypatch
+):
+    """The job counts what the store reads back, not the ids it listed."""
+    store = world.container.knowledge_vector_store
+    real = store.restamp_chunk_ids
+    vanished = A.chunk_ids()[0]
+
+    async def delete_then_restamp(ids, enterprise_id, where):
+        if vanished in ids:
+            world.client.get_collection(KB_COLLECTION).delete(ids=[vanished])
+        return await real(ids, enterprise_id, where)
+
+    monkeypatch.setattr(store, "restamp_chunk_ids", delete_then_restamp)
+
+    result = await job.run(settings=None, container=world.container, dry_run=False)
+
+    assert result["unstamped"] == 4
+    assert (result["stamped"], result["corrected"], result["failed"]) == (3, 2, 0)
+    assert vanished not in _stamps(world.client)
+
+
 async def test_a_parent_with_an_unstamped_and_a_mismatched_chunk_ends_on_its_row(
     make_world, monkeypatch
 ):

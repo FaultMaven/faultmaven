@@ -369,20 +369,24 @@ python -m faultmaven.jobs.run kb_vector_enterprise_backfill --no-dry-run
 **Standalone (in-process ChromaDB):** stop the API first (`./faultmaven.sh stop` or
 `./scripts/faultmaven-dev.sh stop`) and start it again after the run. The job
 opens its own `PersistentClient` on the vector store the running API holds,
-and ChromaDB does not support two processes on one persistent directory.
+and ChromaDB does not support two processes on one persistent directory. In
+the Docker setup, run it in the API's image with the same `./data` mount:
+`docker compose run --rm api python -m faultmaven.jobs.run kb_vector_enterprise_backfill`
+(stop the `api` service first).
 
 **Multi-tenant (`TENANT_PROVIDER=multi`):** add `--cross-tenant-maintenance`
 and run it as the maintenance role, as a one-off Job (see
 [One-off operator run](#one-off-operator-run)). That Job's pod needs ChromaDB
-reach, and `allow-chromadb-ingress` admits no pod identity it can carry yet:
-the same gap that section describes for `kb_seed`'s one-off Job. The run waits
-on that NetworkPolicy amendment.
+reach, which the cluster's network policy grants only to named workloads, and
+this job has none yet: admitting it (its own pod label, from a tracked Job
+manifest, as `kb_seed` has) is a deployment change that must land before the
+Cloud run. Do not borrow another workload's label.
 
 A row read that is not proven unfiltered writes nothing and fails the run.
 
 | Key | Meaning |
 |-----|---------|
-| `status` | `completed`; `failed` (exit 1) when the row read is not proven or a write raised; `skipped` with `reason` (`no_vector_store`, `no_enterprises`) when nothing was examined, and then every count is `null` |
+| `status` | `completed`; `failed` (exit 1) when the row read is not proven or a write raised, and with `error` set on any other error (a listing error, ChromaDB unreachable); `skipped` with `reason` (`no_vector_store`, `no_enterprises`) when nothing was examined, and then every count is `null` |
 | `dry_run` | `true` unless `--no-dry-run` was passed |
 | `proven` | the row read was proven unfiltered; `false` fails the run (`reason` says why) |
 | `items` | `knowledge_items` rows read |

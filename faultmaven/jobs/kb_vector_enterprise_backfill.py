@@ -31,7 +31,8 @@ they were listed under, as of an id-only ``get`` (``update`` takes no
 ``where``). A stamp written between the two is overwritten with the row's
 enterprise, which is what every writer stamps. Never ``add``, which is
 insert-or-ignore on an existing id. ``stamped`` / ``corrected`` count the ids
-read back as carrying the row's enterprise after the write. The same behaviour
+that carry their row's enterprise when read back after this run's write calls,
+which also covers a chunk a concurrent writer stamped. The same behaviour
 was measured on chromadb 1.5.8 in-process and on the 1.0.10 server Cloud runs
 (a local ``chromadb/chroma:1.0.10`` driven by the 1.5.8 ``HttpClient``,
 2026-10-26): ``update`` merges, ``$nin`` matches a missing key,
