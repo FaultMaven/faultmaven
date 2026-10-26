@@ -2225,4 +2225,33 @@ asked to accept, and it belongs to a person.
 # and reads neither response field (its heartbeat interval is its own, 10
 # minutes, inside the 30-minute default), the dashboard runs the copilot's
 # session code, and the slack agent makes no session call.
-API_CONTRACT_VERSION = "14.6.0"
+
+# 14.7.0 — MINOR. `GET /api/v1/meta/capabilities` (and its deprecated `/v1`
+# alias) reports `features.multiTenant`, a required boolean on
+# `BackendCapabilityFeatures` (#1489). It is `operator_authoring_refused()`
+# (`modules/knowledge/domain/global_authoring.py`), derived from
+# `requested_tenant_provider()` and resolved per request: true under
+# `TENANT_PROVIDER=multi`, exactly when the KB write policy refuses the
+# platform operator's arm, on a `global` document
+# (`ensure_global_authoring_allowed`) and on a `team` or `personal` document
+# the operator does not own (`ensure_document_write_allowed`). The policy
+# reads the same predicate. `deploymentMode` is `DEPLOYMENT_MODE`
+# (`settings.is_cloud`), which answers a different question: a cloud
+# deployment can run the single-tenant provider. No client could mirror the
+# policy before, so the Dashboard offered a platform administrator Edit on
+# documents a multi-tenant server answers 403.
+#
+# The client rule: an absent field reads as `true` (multi-tenant), the
+# conservative answer, so a client running against a core older than this
+# contract offers no operator arm rather than one the server may refuse. That
+# is the opposite polarity of the feature flags beside it, which read absent
+# as `false`.
+#
+# MINOR for the reasons 12.4.0 and 14.5.0 were: a new field on a
+# response-only schema clients already parse; no request shape changes and
+# nothing is removed. Clients that construct `BackendCapabilities` by hand
+# (the copilot's fallback literal and an e2e fixture) must add `multiTenant`
+# when they adopt 14.7.0, and a fallback built without an answer from the
+# core must set it to `true`. The Dashboard's hand-declared
+# `MetaCapabilityFeatures` declares every field optional.
+API_CONTRACT_VERSION = "14.7.0"

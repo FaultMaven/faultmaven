@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.6.0
+**Version:** 14.7.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -3453,6 +3453,17 @@ every request: an operator who switches the chat provider changes which
 per-provider ceiling applies, so a client re-reads them per session rather
 than caching them for the life of an install.
 
+``features.multiTenant`` is ``operator_authoring_refused()``, the KB write
+policy's own predicate, derived from ``requested_tenant_provider()``: true
+under ``TENANT_PROVIDER=multi``, exactly when the policy refuses the
+platform operator's arm (``ensure_global_authoring_allowed`` on a global
+document, ``ensure_document_write_allowed`` on someone else's team or
+personal document), so a client can mirror the policy rather than offer a
+control the server answers 403 (#1489). ``deploymentMode`` is
+``DEPLOYMENT_MODE`` (``settings.is_cloud``), which answers a different
+question: a cloud deployment can run the single-tenant provider. Resolved
+per request, like the turn limits.
+
 Returns:
     Backend capabilities including deployment mode, dashboard URL, and feature flags
 
@@ -4711,6 +4722,7 @@ Feature gates a client reads to show or hide surfaces.
 - `caseHistory` (boolean, required)
 - `extensionKB` (boolean, required) — Always false: the extension KB was removed.
 - `managementConsole` (boolean, required) — The org/team management console; same signal as teamSharing.
+- `multiTenant` (boolean, required) — True when this backend runs the multi-tenant provider (TENANT_PROVIDER=multi). Derived from the same setting the KB write policy reads; a client gates operator-only KB writes on it, and treats an absent field as true.
 - `sso` (boolean, required)
 - `teamSharing` (boolean, required) — Team-based KB/case sharing; true only when team management is live.
 

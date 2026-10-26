@@ -119,7 +119,7 @@ def test_capabilities_endpoint_feature_flags(booted_app_client):
     # Retired misnomer must be gone (no dual key on the wire).
     assert "teamWorkspaces" not in features
     # Sibling capability flags remain intact.
-    for flag in ("extensionKB", "adminKB", "caseHistory", "sso"):
+    for flag in ("extensionKB", "adminKB", "caseHistory", "sso", "multiTenant"):
         assert flag in features and isinstance(features[flag], bool)
 
 
@@ -976,6 +976,76 @@ def test_capabilities_publish_the_turn_ceiling_for_the_chat_provider(
     for path in ("/api/v1/meta/capabilities", "/v1/meta/capabilities"):
         assert seen[("groq", path)] == (300.0, 300.0 + after_ceiling)
         assert seen[("gemini", path)] == (200.0, 200.0 + after_ceiling)
+
+
+def test_capabilities_publish_multi_tenant_from_the_tenant_provider(
+    booted_app_client, monkeypatch
+):
+    """``features.multiTenant`` is served from ``TENANT_PROVIDER`` (#1489):
+    false under ``single``, true under ``multi``, on both paths, resolved per
+    request. The setting is patched on the singleton, which is what the KB
+    write policy reads too."""
+    from faultmaven.config.settings import TenantProvider
+
+    providers = get_settings().providers
+    for tenant_provider in (TenantProvider.SINGLE, TenantProvider.MULTI):
+        monkeypatch.setattr(providers, "tenant_provider", tenant_provider)
+        for path in ("/api/v1/meta/capabilities", "/v1/meta/capabilities"):
+            response = booted_app_client.get(path)
+            assert response.status_code == 200
+            assert response.json()["features"]["multiTenant"] is (
+                tenant_provider == TenantProvider.MULTI
+            ), (tenant_provider, path)
+
+
+def test_capabilities_multi_tenant_is_true_exactly_when_the_write_policy_refuses_the_operator(
+    booted_app_client, monkeypatch
+):
+    """The served flag agrees with the write policy the Dashboard's Edit button
+    meets (#1489): under either provider, a platform administrator writing a
+    global document, or someone else's team or personal one, is refused by
+    ``ensure_document_write_allowed`` exactly when ``multiTenant`` is true.
+    Both sides are read through the same setting, not through either one's
+    source; under ``single`` the same calls pass, so a refusal for another
+    reason cannot satisfy the check."""
+    from faultmaven.config.settings import TenantProvider
+    from faultmaven.exceptions import AuthorizationError
+    from faultmaven.modules.knowledge.domain.document_write import (
+        ensure_document_write_allowed,
+    )
+    from faultmaven.modules.knowledge.domain.global_authoring import (
+        is_global_authoring_allowed,
+    )
+
+    def operator_refused(scope: str, owner_id) -> bool:
+        try:
+            ensure_document_write_allowed(
+                scope=scope,
+                owner_id=owner_id,
+                actor_user_id="admin",
+                is_platform_admin=True,
+            )
+        except AuthorizationError:
+            return True
+        return False
+
+    providers = get_settings().providers
+    for tenant_provider in (TenantProvider.SINGLE, TenantProvider.MULTI):
+        monkeypatch.setattr(providers, "tenant_provider", tenant_provider)
+        response = booted_app_client.get("/api/v1/meta/capabilities")
+        assert response.status_code == 200
+        multi_tenant = response.json()["features"]["multiTenant"]
+        assert multi_tenant is (tenant_provider == TenantProvider.MULTI)
+        assert multi_tenant is (not is_global_authoring_allowed(True))
+        for scope, owner_id in (
+            ("global", None),
+            ("team", "someone-else"),
+            ("personal", "someone-else"),
+        ):
+            assert operator_refused(scope, owner_id) is multi_tenant, (
+                tenant_provider,
+                scope,
+            )
 
 
 async def test_capabilities_handler_returns_exactly_its_published_model():
