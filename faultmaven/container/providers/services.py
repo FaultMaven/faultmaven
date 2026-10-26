@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
+from faultmaven.container.errors import RequiredServiceConstructionError
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
@@ -90,35 +92,40 @@ def create_case_service(
 
     The in-memory ``minimal_factory`` service answers only when no case
     repository is configured. With one configured, a failure to build the
-    service or its erasers propagates out of composition (#2103), which
-    refuses the boot wherever ``settings.must_not_degrade`` holds. Never a
-    stand-in: the in-memory one lost every case on restart, differed per
-    replica, and reported success for a delete that cleared nothing.
+    service or its erasers raises ``RequiredServiceConstructionError``, which
+    refuses startup in every environment (#2103). Never a stand-in: the
+    in-memory one lost every case on restart, differed per replica, and
+    reported success for a delete that cleared nothing.
     """
     if not case_repository:
         logger.debug("Case service using minimal implementation (no repository)")
         return minimal_factory()
 
-    from faultmaven.modules.case.domain.services.case_service import CaseService
+    try:
+        from faultmaven.modules.case.domain.services.case_service import CaseService
 
-    erasers, not_configured = case_store_erasers(
-        session_store=session_store,
-        file_storage_service=file_storage_service,
-        case_vector_store=case_vector_store,
-        redis_client=redis_client,
-        settings=settings,
-    )
-    service = CaseService(
-        case_repository=case_repository,
-        session_store=session_store,
-        store_erasers=erasers,
-        stores_not_configured=not_configured,
-        settings=settings,
-        team_service=team_service,  # Team-membership resolution (None in standalone)
-        share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
-        # Display names and driver candidacy (ADR-020 D4/D5).
-        account_reader=account_reader,
-    )
+        erasers, not_configured = case_store_erasers(
+            session_store=session_store,
+            file_storage_service=file_storage_service,
+            case_vector_store=case_vector_store,
+            redis_client=redis_client,
+            settings=settings,
+        )
+        service = CaseService(
+            case_repository=case_repository,
+            session_store=session_store,
+            store_erasers=erasers,
+            stores_not_configured=not_configured,
+            settings=settings,
+            team_service=team_service,  # Team-membership resolution (None in standalone)
+            share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
+            # Display names and driver candidacy (ADR-020 D4/D5).
+            account_reader=account_reader,
+        )
+    except Exception as e:
+        raise RequiredServiceConstructionError(
+            f"CaseService could not be constructed: {e}"
+        ) from e
     logger.debug("Case service initialized with milestone-based repository")
     return service
 
@@ -386,24 +393,29 @@ def create_session_service(
     """Create session service for session management.
 
     The in-memory ``minimal_factory`` service answers only when no session
-    store is configured. With one configured, a construction failure
-    propagates out of composition (#2103), which refuses the boot wherever
-    ``settings.must_not_degrade`` holds. Never a stand-in: the in-memory one
-    kept sessions in one process, lost on restart and unseen by every other
-    replica, so the per-user limit counted per process.
+    store is configured. With one configured, a construction failure raises
+    ``RequiredServiceConstructionError``, which refuses startup in every
+    environment (#2103). Never a stand-in: the in-memory one kept sessions in
+    one process, lost on restart and unseen by every other replica, so the
+    per-user limit counted per process.
     """
     if not session_store:
         logger.info("Session store unavailable; using minimal session service")
         return minimal_factory()
 
-    from faultmaven.modules.auth.domain.services.auth_session_service import (
-        AuthSessionService as SessionService,
-    )
+    try:
+        from faultmaven.modules.auth.domain.services.auth_session_service import (
+            AuthSessionService as SessionService,
+        )
 
-    service = SessionService(
-        session_store=session_store,
-        settings=settings,
-    )
+        service = SessionService(
+            session_store=session_store,
+            settings=settings,
+        )
+    except Exception as e:
+        raise RequiredServiceConstructionError(
+            f"AuthSessionService could not be constructed: {e}"
+        ) from e
     logger.debug("SessionService initialized")
     return service
 
@@ -743,28 +755,33 @@ def create_auth_service(
     Returns:
         AuthService instance
 
-    A construction failure (a ``PartialKeyConfigurationError`` included)
-    propagates out of composition on every container path, jobs and CLI
-    workers included (#2103), which refuses the boot wherever
-    ``settings.must_not_degrade`` holds. Never a stand-in: the
-    ``AuthService()`` it used to return had no revocation store, so a revoked
-    or logged-out token kept working until it expired.
+    A construction failure, a ``PartialKeyConfigurationError`` included,
+    raises ``RequiredServiceConstructionError``, which refuses startup in
+    every environment and on every container path, jobs and CLI workers
+    included (#2103). Never a stand-in: the ``AuthService()`` it used to
+    return had no revocation store, so a revoked or logged-out token kept
+    working until it expired.
     """
-    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+    try:
+        from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
-    # Load keys from settings if available
-    private_key = None
-    public_key = None
-    if settings.security.jwt_private_key:
-        private_key = settings.security.jwt_private_key.get_secret_value()
-    if settings.security.jwt_public_key:
-        public_key = settings.security.jwt_public_key
+        # Load keys from settings if available
+        private_key = None
+        public_key = None
+        if settings.security.jwt_private_key:
+            private_key = settings.security.jwt_private_key.get_secret_value()
+        if settings.security.jwt_public_key:
+            public_key = settings.security.jwt_public_key
 
-    service = AuthService(
-        revocation_store=revocation_store,
-        private_key=private_key,
-        public_key=public_key,
-    )
+        service = AuthService(
+            revocation_store=revocation_store,
+            private_key=private_key,
+            public_key=public_key,
+        )
+    except Exception as e:
+        raise RequiredServiceConstructionError(
+            f"AuthService could not be constructed: {e}"
+        ) from e
     if revocation_store:
         logger.info(
             "✅ AuthService initialized with revocation store (token revocation enabled)"

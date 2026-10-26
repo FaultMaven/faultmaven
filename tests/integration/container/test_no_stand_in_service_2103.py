@@ -1,30 +1,48 @@
-"""A configured service that cannot be built never serves as a stand-in (#2103).
+"""A configured service that cannot be built refuses startup everywhere (#2103).
 
-Drives the real composition. Where the deployment must not degrade, the boot
-refuses and names the constructor's error. Where it may serve partially, the
-service is absent: in neither case is an in-memory case or session service,
-or an ``AuthService`` without a revocation store, put in its place.
+Drives the real composition. The case repository and the case, session and
+auth services were replaced by a stand-in when their construction failed, and
+a development deployment that composed without them served anyway. Now
+``DIContainer.initialize`` re-raises ``RequiredServiceConstructionError`` ahead
+of its lenient path, so the process does not start in any environment, and
+the refusal names the cause.
 """
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 
-from faultmaven.modules.auth.domain.services.auth_service import AuthService
-from faultmaven.modules.auth.domain.services.auth_session_service import (
-    AuthSessionService,
+from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.modules.auth.domain.services.auth_service import (
+    PartialKeyConfigurationError,
 )
-from faultmaven.modules.case.domain.services.case_service import CaseService
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
-SERVICES = pytest.mark.parametrize(
-    "cls,name",
+CONSTRUCTORS = pytest.mark.parametrize(
+    "target,name",
     [
-        (CaseService, "case_service"),
-        (AuthSessionService, "session_service"),
-        (AuthService, "auth_service"),
+        (
+            "faultmaven.modules.case.infrastructure.sessionless_case_repository."
+            "SessionlessCaseRepository",
+            "Case repository",
+        ),
+        (
+            "faultmaven.modules.case.domain.services.case_service.CaseService",
+            "CaseService",
+        ),
+        (
+            "faultmaven.modules.auth.domain.services.auth_session_service."
+            "AuthSessionService",
+            "AuthSessionService",
+        ),
+        (
+            "faultmaven.modules.auth.domain.services.auth_service.AuthService",
+            "AuthService",
+        ),
     ],
-    ids=["case", "session", "auth"],
+    ids=["case_repository", "case", "session", "auth"],
 )
 
 
@@ -46,53 +64,64 @@ def environment(monkeypatch):
 
 @pytest.fixture
 def boom(monkeypatch):
-    """Make the configured call of ``cls`` raise. A bare construction, the
-    ``AuthService()`` the auth factory used to fall back to, still builds."""
     error = RuntimeError("boom")
 
-    def _break(cls):
-        original = cls.__init__
+    def _break(target: str):
+        def _raise(*_args, **_kwargs):
+            raise error
 
-        def _refuse_the_configured_call(self, *args, **kwargs):
-            if args or kwargs:
-                raise error
-            original(self)
-
-        monkeypatch.setattr(cls, "__init__", _refuse_the_configured_call)
+        monkeypatch.setattr(f"{target}.__init__", _raise)
         return error
 
     return _break
 
 
-@SERVICES
+@CONSTRUCTORS
+@pytest.mark.parametrize("env", ["development", "production"])
 async def test_the_boot_refuses_and_names_the_error(
-    cls, name, boom, environment, fresh_container, monkeypatch
+    target, name, env, boom, environment, fresh_container, monkeypatch
 ):
-    settings = environment("production")
-    assert settings.must_not_degrade
-    error = boom(cls)
+    settings = environment(env)
+    error = boom(target)
 
     async def _went_on(*_args, **_kwargs):
-        pytest.fail(f"composition went on past the {cls.__name__} it could not build")
+        pytest.fail(f"composition went on past a {name} it could not build")
 
     monkeypatch.setattr("faultmaven.bootstrap.startup.bootstrap_application", _went_on)
     from faultmaven.bootstrap.composition import compose_application
 
-    with pytest.raises(RuntimeError) as refused:
+    with pytest.raises(RequiredServiceConstructionError) as refused:
         await compose_application(FastAPI(), settings)
     assert refused.value.__cause__ is error
-    assert "ENVIRONMENT=production: boom" in str(refused.value)
+    assert str(refused.value) == f"{name} could not be constructed: boom"
 
 
-@SERVICES
-async def test_a_partial_deployment_serves_without_it(
-    cls, name, boom, environment, fresh_container
+@CONSTRUCTORS
+async def test_a_lenient_container_refuses_too(
+    target, name, boom, environment, fresh_container
 ):
-    settings = environment("development")
-    assert not settings.must_not_degrade
-    boom(cls)
+    """``allow_degraded`` asks for the partial container; it gets the refusal."""
+    assert not environment("development").must_not_degrade
+    error = boom(target)
 
-    await fresh_container.initialize(allow_degraded=True)
+    with pytest.raises(RequiredServiceConstructionError) as refused:
+        await fresh_container.initialize(allow_degraded=True)
 
+    assert refused.value.__cause__ is error
     assert not fresh_container.is_initialized
-    assert fresh_container.get_service(name) is None
+
+
+async def test_half_a_key_pair_refuses_a_development_boot(
+    environment, fresh_container, monkeypatch
+):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    monkeypatch.setenv("JWT_PUBLIC_KEY", public_pem.decode())
+    assert not environment("development").must_not_degrade
+
+    with pytest.raises(RequiredServiceConstructionError) as refused:
+        await fresh_container.initialize(allow_degraded=True)
+
+    assert isinstance(refused.value.__cause__, PartialKeyConfigurationError)

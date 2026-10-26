@@ -15,7 +15,10 @@ from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.usefixtures("uncomposed_main_app_auth_service"),
+]
 
 
 def _client() -> AsyncClient:

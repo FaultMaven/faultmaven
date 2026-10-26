@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from faultmaven.container.errors import RequiredServiceConstructionError
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
@@ -463,7 +465,7 @@ def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any
     return store
 
 
-def create_case_repository(settings: FaultMavenSettings) -> Any | None:
+def create_case_repository(settings: FaultMavenSettings) -> Any:
     """Create case repository based on deployment configuration.
 
     Follows Architectural Design Principles:
@@ -482,7 +484,10 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
       composing (fm#1647, #1659), so this arm is a test seam. An UNSET
       ``DATABASE_URL`` is the persistent SQLite default.
 
-    Returns None if initialization fails.
+    A construction failure raises ``RequiredServiceConstructionError``, which
+    refuses startup in every environment (#2103). It used to return None,
+    which read as "not configured", so the case service fell back to its
+    in-memory stand-in.
     """
     try:
         from faultmaven.config.settings import persistent_database_configured
@@ -532,8 +537,9 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         return repository
 
     except Exception as e:
-        logger.error(f"❌ Case repository initialization failed: {e}", exc_info=True)
-        return None
+        raise RequiredServiceConstructionError(
+            f"Case repository could not be constructed: {e}"
+        ) from e
 
 
 def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
@@ -781,21 +787,11 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         logger.error(f"❌ Failed to create user store: {e}", exc_info=True)
         raise
 
-    # Case repository (database persistence for cases)
-    try:
-        case_repository = create_case_repository(settings)
-        if case_repository:
-            container.case_repository = case_repository
-            container._register_service("case_repository", case_repository)
-            logger.info(
-                f"✅ Case repository registered: {type(case_repository).__name__}"
-            )
-        else:
-            container.case_repository = None
-            logger.warning("⚠️ Case repository not available (database not configured)")
-    except Exception as e:
-        logger.error(f"❌ Failed to create case repository: {e}", exc_info=True)
-        container.case_repository = None
-        # Don't fail startup - investigation service will be unavailable
+    # Case repository (database persistence for cases). One that cannot be
+    # constructed refuses startup (#2103), so nothing here catches it.
+    case_repository = create_case_repository(settings)
+    container.case_repository = case_repository
+    container._register_service("case_repository", case_repository)
+    logger.info(f"✅ Case repository registered: {type(case_repository).__name__}")
 
     logger.info("✅ Infrastructure layer registered")

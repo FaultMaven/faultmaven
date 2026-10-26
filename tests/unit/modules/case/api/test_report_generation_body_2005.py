@@ -30,6 +30,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
 from faultmaven.modules.case.api.routes.router import router as case_router
+from tests.utils import uncomposed_auth_service
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -73,6 +74,7 @@ def _app(user_id: str | None, service: MagicMock) -> FastAPI:
     app = FastAPI()
     app.include_router(case_router, prefix="/api/v1")
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: service
+    app.state.auth_service = uncomposed_auth_service()
     if user_id is not None:
         app.dependency_overrides[require_authentication] = lambda: SimpleNamespace(
             user_id=user_id, email="u@example.com", enterprise_id="e"

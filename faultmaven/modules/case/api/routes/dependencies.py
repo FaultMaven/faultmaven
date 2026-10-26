@@ -142,13 +142,16 @@ async def _di_get_runbook_kb_dependency(request: Request):
 
 
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
-    """Check if case service is available and raise appropriate error if not"""
+    """Return the case service, or refuse with 503 when none is composed.
+
+    A 503, not a 401: a missing service is the server's failure, not the
+    caller's credential (#2103). It is called from a route's body, so the
+    route's dependencies, its authentication gate included, have already run.
+    """
     if case_service is None:
-        # For protected endpoints that require authentication, return 401 instead of 500
-        # This prevents pre-auth calls from getting 500 errors
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required - case service unavailable",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Case service unavailable",
         )
     return case_service
 

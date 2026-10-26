@@ -25,7 +25,11 @@ from typing import Any, List, Optional
 
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
-from faultmaven.container.errors import InitializationError, ServiceUnavailableError
+from faultmaven.container.errors import (
+    InitializationError,
+    RequiredServiceConstructionError,
+    ServiceUnavailableError,
+)
 from faultmaven.container.providers import (
     register_infrastructure,
     register_services,
@@ -224,6 +228,13 @@ class DIContainer(BaseDIContainer):
             )
 
             if isinstance(e, ChromaClientConfigError):
+                raise
+
+            # Nor does a service the deployment configured and could not
+            # construct (#2103), in any environment, pytest and allow_degraded
+            # included: serving without it, or with an in-memory stand-in, is
+            # what the refusal replaces.
+            if isinstance(e, RequiredServiceConstructionError):
                 raise
 
             # A deployment that must not degrade never serves a half-composed
@@ -610,10 +621,13 @@ class DIContainer(BaseDIContainer):
     def _create_minimal_session_service(self):
         """Create a minimal session service.
 
-        Reachable in PRODUCTION, not only under test: ``create_session_service``
-        falls back to this stand-in whenever the session store is unavailable
-        (Redis down), so its semantics must mirror ``AuthSessionService`` — a
-        degraded deployment must not answer differently from a healthy one.
+        ``create_session_service`` returns it only when given no session
+        store, which composition never passes: ``create_session_store``
+        always builds one and opens no connection, so Redis being down does
+        not select it, and a store whose service cannot be built refuses
+        startup (#2103). ``_create_minimal_container`` installs it (#2338).
+        Its semantics mirror ``AuthSessionService``, so the tests that drive
+        the session routes against it measure what the real service answers.
         """
         import uuid
         from datetime import timedelta

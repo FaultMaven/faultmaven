@@ -57,27 +57,29 @@ async def get_auth_service(request: Request) -> AuthService:
         request: FastAPI request object (automatically injected by FastAPI)
 
     Returns:
-        AuthService instance from app.state (properly configured with Redis if available)
+        The AuthService the composition root published on ``app.state``, or
+        the module-level test service when one is set.
 
-    Note:
-        Uses app.state which is initialized at app startup (Composition Root pattern).
-        Falls back to test service or creating a new instance if not available.
+    Raises:
+        HTTPException 503: No AuthService is composed. Never a stand-in built
+            here (#2103): one would have no revocation store, so a revoked or
+            logged-out token would keep working until it expired.
     """
     # Check test service first (for unit tests)
     if _test_auth_service is not None:
         return _test_auth_service
 
-    # Try to get from app.state
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
-        if auth_service is not None:
-            return auth_service
-    except Exception as e:
-        logger.warning(f"Failed to get AuthService from app.state: {e}")
-
-    # Fallback: create a minimal AuthService without Redis
-    logger.debug("Creating fallback AuthService (no Redis for token revocation)")
-    return AuthService()
+    except AttributeError:
+        auth_service = None
+    if auth_service is None:
+        logger.error("No AuthService is composed; refusing the request")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        )
+    return auth_service
 
 
 def set_auth_service(

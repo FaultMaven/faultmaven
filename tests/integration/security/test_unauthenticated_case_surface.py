@@ -17,11 +17,11 @@ on this router the distinction bites. Measured on a service-less app before the
 fix, three of the twenty-two answered 500 and the other nineteen already
 answered 401 — not because the ordering was right, but because
 ``get_case_service`` is ``getattr(app.state, "case_service", None)`` and
-``check_case_service_available`` turns that ``None`` into a 401 of its own. A
-probe that only dropped the services would therefore have passed on nineteen
-rows with the defect fully present, and would go on passing the day that
-provider learns to raise. Overriding the providers to raise removes that
-accident: the ONLY way to answer 401 is for the gate to have run first.
+``check_case_service_available`` turned that ``None`` into a 401 of its own (a
+503 since #2103). A probe that only dropped the services would therefore have
+passed on nineteen rows with the defect fully present, and would go on passing
+the day that provider learns to raise. Overriding the providers to raise removes
+that accident: the ONLY way to answer 401 is for the gate to have run first.
 
 Two batteries, because the ordering claim and the 401-with-a-credential claim
 are different claims: **anonymous** (no header at all) and **rejected
@@ -45,6 +45,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_session_service_dependency,
 )
 from faultmaven.modules.case.api.routes.router import router as case_router
+from tests.utils import uncomposed_auth_service
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -187,6 +188,7 @@ def _surface() -> FastAPI:
     """The case router, mounted as ``main`` mounts it, over failing services."""
     app = FastAPI()
     app.include_router(case_router, prefix="/api/v1")
+    app.state.auth_service = uncomposed_auth_service()
     for provider in _SERVICE_PROVIDERS:
         app.dependency_overrides[provider] = _explodes(
             f"{provider.__module__}.{provider.__name__}"
@@ -302,6 +304,7 @@ def test_the_probe_bites_when_the_gate_is_declared_after_the_service():
     app.dependency_overrides[_di_get_case_service_dependency] = _explodes(
         "the case service"
     )
+    app.state.auth_service = uncomposed_auth_service()
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.get("/gate-after-the-service").status_code == 500, (

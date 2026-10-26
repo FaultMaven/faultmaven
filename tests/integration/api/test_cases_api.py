@@ -34,6 +34,8 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 
+pytestmark = pytest.mark.usefixtures("uncomposed_main_app_auth_service")
+
 
 @pytest.fixture
 def mock_user():
