@@ -4,7 +4,7 @@ Welcome to FaultMaven! This guide will help you get started with the AI-powered 
 
 ## 1. System Requirements
 
-* **Python:** Version 3.11 or higher
+* **Python:** Version 3.11.5 or higher
 * **Docker & Docker Compose:** For running backing services
 * **Browser:** Chrome or Firefox (for the Copilot Extension)
 

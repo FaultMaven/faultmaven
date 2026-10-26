@@ -1,7 +1,7 @@
 # FaultMaven
 
 [![License](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/Python-3.11.5%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
 **AI Troubleshooting Copilot — run it yourself, or let us run it for you.**

@@ -4,7 +4,7 @@ Get FaultMaven running locally in under 5 minutes with zero external dependencie
 
 ## Prerequisites
 
-- **Python 3.11+** ([Download](https://www.python.org/downloads/))
+- **Python 3.11.5+** ([Download](https://www.python.org/downloads/))
 - **Git** ([Download](https://git-scm.com/downloads))
 - **(Optional)** OpenAI, Anthropic, or Fireworks AI API key
 

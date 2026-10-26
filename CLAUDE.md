@@ -19,7 +19,7 @@ FaultMaven is an **AI-powered troubleshooting copilot**. It correlates the logs,
 | FaultMaven Copilot | Browser extension for in-context troubleshooting |
 | FaultMaven Slack Agent | Answers in the incident thread; while the beta runs, workspaces are connected by hand (fm#1457) |
 
-Python ≥ 3.11 (`requires-python`; classifiers cover 3.11–3.13). License: FSL-1.1-ALv2 (`LICENSE`). Versions are not written here: the package version is `pyproject.toml` `version`, the contract version clients pin is `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
+Python ≥ 3.11.5 (`requires-python`: earlier 3.11 releases mis-match the possessive regexes the secret redactors use; classifiers cover 3.11–3.13). License: FSL-1.1-ALv2 (`LICENSE`). Versions are not written here: the package version is `pyproject.toml` `version`, the contract version clients pin is `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
 
 ## Tech Stack
 
