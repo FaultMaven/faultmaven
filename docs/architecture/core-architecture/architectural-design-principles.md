@@ -401,7 +401,7 @@ async def generate_bulk_report(case_ids: list[str]):
 | Component | Multiple Implementations? | Use Protocol? |
 |-----------|---------------------------|---------------|
 | LLM providers | Yes (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM) | ✅ Yes |
-| Vector stores | Yes (ChromaDB PersistentClient, HttpClient) | ✅ Yes |
+| Vector stores | No (one class per store; PersistentClient or HttpClient is the injected client, not a second implementation) | KB only: `IKnowledgeVectorStore`, which `KnowledgeService` is typed against (#2284). No generic vector-store protocol (#1782) |
 | Storage backends | Yes (S3, Azure Blob, filesystem) | ✅ Yes |
 | Session stores | Yes (Redis, FakeRedis) | ✅ Yes |
 | Module contracts | Yes (for cross-module calls) | ✅ Yes |
@@ -417,39 +417,10 @@ If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will
 | Interface | Purpose | Implementations |
 |-----------|---------|-----------------|
 | `ILLMProvider` | LLM integration | Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local (Ollama/vLLM) |
-| `IVectorStore` | Vector search | ChromaDB (PersistentClient local, HttpClient cloud) |
 | `IKnowledgeVectorStore` | Knowledge-base search and writes (one collection, every scope) | `KnowledgeVectorStore` over ChromaDB |
 | `ISessionStore` | Session management | Redis (cloud), FakeRedis (local) |
 | `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
 | `ICaseRepository` | Cross-module case access | SQLite, PostgreSQL hybrid, sessionless variants |
-
-### Example: IVectorStore Protocol
-
-```python
-from typing import Protocol
-
-class IVectorStore(Protocol):
-    """Interface for vector storage backends."""
-
-    async def add_documents(
-        self,
-        collection_name: str,
-        documents: list[str],
-        metadatas: list[dict],
-        ids: list[str]
-    ) -> None:
-        """Add documents to vector store."""
-        ...
-
-    async def search(
-        self,
-        collection_name: str,
-        query_text: str,
-        n_results: int = 5
-    ) -> list[dict]:
-        """Search for similar documents."""
-        ...
-```
 
 ---
 

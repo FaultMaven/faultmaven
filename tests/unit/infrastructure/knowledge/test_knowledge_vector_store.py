@@ -515,8 +515,8 @@ class _FakeClient:
 class TestAddDocumentsAllowlistRefusal:
     """fm#1035: the production KB writer refuses undeclared metadata keys.
 
-    ``VectorMetadata`` is an allowlist; the sibling ``ChromaDBVectorStore``
-    already refuses undeclared keys, but this class — the writer the container
+    ``VectorMetadata`` is an allowlist; ``ChromaDBVectorStore``'s write path
+    (deleted in #1782) already refused undeclared keys, but this class — the writer the container
     wires into ``KnowledgeService`` whenever the KB Chroma client exists —
     sanitized inline with no allowlist check, so a key the schema does not
     declare vanished silently and read back later as the reader's fallback

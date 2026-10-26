@@ -145,7 +145,7 @@ Core repository interface signatures live in **[repository-pattern.md](./reposit
 
 - `CaseRepository` (>30 methods; §4.1 illustrates the core 11) — §4.1
 - `ISessionStore` — §4.2
-- `IVectorStore` — §4.3
+- `IKnowledgeVectorStore` — §4.3
 
 `UserRepository` is defined in `faultmaven/infrastructure/persistence/user_repository.py`. `IJobService` and `IGlobalConfidenceService` are defined in `faultmaven/models/interfaces.py`. These interfaces are not documented separately in repository-pattern.md.
 

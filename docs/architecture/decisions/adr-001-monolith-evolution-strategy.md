@@ -171,6 +171,7 @@ FaultMaven-Mono has:
 **Deliverables**:
 - Module structure (`auth/`, `session/`, `case/`, `knowledge/`, `evidence/`, `agent/`, `api-gateway/`)
 - Interface-based design (`ILLMProvider`, `ISessionStore`, `IVectorStore`, etc.)
+  - *Note (2026-10-26): `IVectorStore` was removed in #1782; the knowledge-base vector port is `IKnowledgeVectorStore`.*
 - Dependency injection container
 - Clean architecture layers (API → Service → Core → Infrastructure)
 - Documentation site (MkDocs or Docusaurus)

@@ -324,8 +324,10 @@ REDIS_PORT=6379
 
 | Backend | Implementation | Status | Use Case |
 |---------|----------------|--------|----------|
-| PersistentClient (in-process) | `ChromaDBVectorStore` | ✅ Implemented | Local deployment |
-| HttpClient (external server) | `ChromaDBVectorStore` | ✅ Implemented | Cloud/K8s deployment |
+| PersistentClient (in-process) | `KnowledgeVectorStore` (KB), `CaseVectorStore` (case evidence) | ✅ Implemented | Local deployment |
+| HttpClient (external server) | `KnowledgeVectorStore` (KB), `CaseVectorStore` (case evidence) | ✅ Implemented | Cloud/K8s deployment |
+
+`ChromaDBVectorStore` writes no documents; see §4.3.
 
 > **Note**: `InMemoryVectorStore` has been removed. ChromaDB `PersistentClient` is always
 > available (chromadb is a base dependency), so no fallback is needed — same principle as FakeRedis.
@@ -701,67 +703,21 @@ class SessionStore(ABC):
 
 ### 4.3 Vector Store Interface (Vector Data)
 
-**File**: `faultmaven/infrastructure/persistence/vector_store.py` (or similar)
+**File**: `faultmaven/models/interfaces.py` (`IKnowledgeVectorStore`), implemented by `KnowledgeVectorStore` (`faultmaven/infrastructure/knowledge/knowledge_vector_store.py`).
 
-**Abstract Interface**:
-```python
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+The knowledge base is one ChromaDB collection (`faultmaven_kb`) holding every scope. `IKnowledgeVectorStore` declares what its consumers call: `KnowledgeService`, the boot-time reconcile pass and authored-orphan sweep, and the enterprise-stamp backfill job.
 
+| Method | Purpose |
+|--------|---------|
+| `search(collection_name, query, k, where)` | Pure vector search of one collection; on the KB collection `where` must name a scope key |
+| `hybrid_search(collection_name, query, k, where, *, min_score)` | Vector plus keyword-constrained recall, then a multi-signal rerank |
+| `add_documents(documents, embeddings)` | Write chunks; refuses a KB chunk with no `enterprise_id` (#1168) |
+| `delete_documents_by_parent_id(parent_document_id, *, retries)` | Delete every chunk of one document |
+| `list_all_chunk_ids_by_parent()`, `list_chunk_ids_by_parent(where)` | Chunk ids keyed by parent document |
+| `delete_chunk_ids(chunk_ids, where)`, `delete_observed_chunk_ids(chunk_ids)` | Delete named chunk ids |
+| `restamp_chunk_ids(chunk_ids, enterprise_id, where)` | Write `enterprise_id` onto named chunk ids |
 
-class VectorStore(ABC):
-    """
-    Abstract store for vector embeddings.
-
-    Technology: Vector database (ChromaDB)
-
-    Implementations:
-    - ChromaDB (local mode): Local persistent storage
-    - ChromaDB (server mode): Client-server K8s deployment
-    """
-
-    @abstractmethod
-    async def add_documents(
-        self,
-        documents: List[str],
-        embeddings: List[List[float]],
-        metadatas: List[Dict[str, Any]],
-        ids: List[str]
-    ) -> bool:
-        """Add documents with embeddings to collection."""
-        pass
-
-    @abstractmethod
-    async def query(
-        self,
-        query_embedding: List[float],
-        n_results: int = 10,
-        where: Optional[Dict] = None
-    ) -> Dict[str, Any]:
-        """Query for similar documents."""
-        pass
-
-    @abstractmethod
-    async def get(self, ids: List[str]) -> Dict[str, Any]:
-        """Retrieve documents by IDs."""
-        pass
-
-    @abstractmethod
-    async def delete(self, ids: List[str]) -> bool:
-        """Delete documents by IDs."""
-        pass
-
-    @abstractmethod
-    async def update(
-        self,
-        ids: List[str],
-        documents: Optional[List[str]] = None,
-        embeddings: Optional[List[List[float]]] = None,
-        metadatas: Optional[List[Dict]] = None
-    ) -> bool:
-        """Update existing documents."""
-        pass
-```
+`KnowledgeVectorStore` is the only writer of the KB collection in this codebase (#1782). Case evidence lives in per-case collections behind `CaseVectorStore` (`faultmaven/infrastructure/persistence/case_vector_store.py`). `ChromaDBVectorStore` (`faultmaven/infrastructure/persistence/chromadb_store.py`) writes no documents and implements no interface. `container.vector_store` is one over `CHROMADB_COLLECTION` (default `faultmaven_kb`), read only by the vector-store health check (#2325); runbook dedup builds its own over `KB_COLLECTION` (`RunbookKnowledgeBase.over_kb_collection`), deliberately not `container.vector_store`.
 
 ---
 
@@ -867,7 +823,7 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 **Implementations**:
 - ✅ `PostgreSQLHybridCaseRepository` - Cases in K8s PostgreSQL
 - ✅ `RedisSessionStore` - Sessions in K8s Redis
-- ✅ `ChromaDBVectorStore` - Vectors in K8s ChromaDB
+- ✅ `KnowledgeVectorStore` and `CaseVectorStore` - Vectors in K8s ChromaDB
 
 **Configuration**:
 ```bash
@@ -1013,9 +969,11 @@ class Container:
         # VECTOR DATA: Vector Store (ChromaDB only)
         # ==========================================
         # InMemoryVectorStore is removed — ChromaDB PersistentClient is always available.
-        # Client created by DI container via create_kb_chromadb_client() or create_evidence_chromadb_client().
-        from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
-        self.vector_store = ChromaDBVectorStore(client=chromadb_client)
+        # Clients created by DI container via create_kb_chromadb_client() and create_evidence_chromadb_client().
+        from faultmaven.infrastructure.knowledge.knowledge_vector_store import KnowledgeVectorStore
+        from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+        self.knowledge_vector_store = KnowledgeVectorStore(kb_chromadb_client)
+        self.case_vector_store = CaseVectorStore(evidence_chromadb_client)
 ```
 
 **Key Points**:
@@ -1296,7 +1254,7 @@ async def test_case_service_all_combinations(case_backend, session_backend):
 
 | Operation | Local ChromaDB | Server ChromaDB |
 |-----------|----------------|-----------------|
-| add_documents() | 50-200 ms | 100-500 ms |
+| add_documents() (`KnowledgeVectorStore`, `CaseVectorStore`) | 50-200 ms | 100-500 ms |
 | query(n=10) | 10-50 ms | 20-100 ms |
 | get() | 5-20 ms | 10-50 ms |
 
@@ -1331,7 +1289,7 @@ temp_state:     1 hour
 **ChromaDB (Vector Data)**:
 ```python
 # Batch operations for efficiency
-await vector_store.add_documents(
+await knowledge_vector_store.add_documents(
     documents=batch_docs,    # Process in batches of 100
     embeddings=batch_embeds
 )

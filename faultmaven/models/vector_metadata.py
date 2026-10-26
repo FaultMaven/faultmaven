@@ -53,14 +53,12 @@ class VectorMetadata(BaseModel):
     # and dedup reads what it writes (``document_type``, ``scope``,
     # ``owner_id``, ``title``, ``parent_document_id``). The schema earns a key
     # only when a live reader needs it, and ``reject_undeclared_keys`` makes a
-    # write of an undeclared key fail loudly rather than silently — on the
-    # writers that consult it: ``KnowledgeVectorStore.add_documents``, the one
-    # store ``KnowledgeService`` writes through and so every KB vector write
-    # with a live production caller (it also refuses a chunk with no tenant
-    # stamp, #1168); and ``ChromaDBVectorStore``, which is still registered
-    # over the same collection but has no live KB writer and checks no tenant
-    # stamp — #1782. A new writer of the collection that bypasses both reopens
-    # the silent-key gap this schema exists to close.
+    # write of an undeclared key fail loudly rather than silently — in
+    # ``KnowledgeVectorStore.add_documents``. ``KnowledgeVectorStore`` is the
+    # only writer of the KB collection in this codebase (#1782), and that
+    # method also refuses a chunk with no tenant stamp (#1168). A new writer of
+    # the collection that bypasses it reopens the silent-key gap this schema
+    # exists to close.
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion

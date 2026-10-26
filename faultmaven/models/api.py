@@ -447,9 +447,10 @@ class KnowledgeBaseDocument(BaseModel):
     # unidentifiable principal collapses to {"scope": "global"}, i.e. reads
     # LESS); the write side now does too, by refusing to be silent. The
     # dangerous tier is still reachable — it is just no longer reachable by
-    # accident. The ChromaDB writer, `_index_document_in_vector_store`,
-    # re-checks through `domain/write_scope.require_write_scope`, for
-    # documents that reach it without passing through this model.
+    # accident. The ChromaDB writer in this codebase,
+    # `_index_document_in_vector_store`, re-checks through
+    # `domain/write_scope.require_write_scope`, for documents that reach it
+    # without passing through this model.
     scope: str
     owner_id: Optional[str] = None
     created_at: str
