@@ -585,8 +585,8 @@ not yet expired still mints anonymously, once per occurrence. Mints under
 `origin="none"` (no, blank or `null` `Origin`) keep making anonymous sessions
 too.
 
-Seven days of zero says that no header-less client sending an `Origin` (other
-than `null`) minted in that window. It does not say that no anonymous session is
+Seven days of zero says that no header-less mint was counted under an `origin`
+other than `none` in that window. It does not say that no anonymous session is
 still live. A session lapses
 `SESSION_TIMEOUT_MINUTES` (default 30) after its last write, and every write
 re-arms it, a heartbeat included. The heartbeat route takes no authentication
@@ -595,7 +595,7 @@ session minted before the window stays live for as long as an old client keeps
 heartbeating it within every `SESSION_TIMEOUT_MINUTES`. Step 4's ownership check
 on the heartbeat answers such a session 403, and the old client swallows that
 403, so its keep-alive stops with no signal (#1460). The window bounds new
-header-less mints from clients that send an `Origin`, not this residue.
+header-less mints counted under an `origin` other than `none`, not this residue.
 
 ## Local Mode Authentication
 
