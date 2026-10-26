@@ -15,7 +15,8 @@ codebase (#1782). They go into each test's own collection, for which that
 store skips its KB-only tenant-stamp refusal, so ``seed`` applies the same
 refusal itself with the same helper (``require_enterprise_id_value``, #1168):
 a row production would refuse is refused here too. The ``where`` clause is
-evaluated by a real ephemeral ChromaDB. Neither half is negotiable: a stand-in that wrote raw metadata would prove isolation only on
+evaluated by a real ephemeral ChromaDB. Neither half is negotiable: a stand-in
+that wrote raw metadata would prove isolation only on
 rows production cannot write (the old ``report_type`` predicate "isolated"
 perfectly because *nobody* saw anything), and a permissive fake would agree
 with a clause the engine rejects. Every isolation assertion is therefore
