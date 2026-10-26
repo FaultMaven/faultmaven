@@ -701,67 +701,21 @@ class SessionStore(ABC):
 
 ### 4.3 Vector Store Interface (Vector Data)
 
-**File**: `faultmaven/infrastructure/persistence/vector_store.py` (or similar)
+**File**: `faultmaven/models/interfaces.py` (`IKnowledgeVectorStore`), implemented by `KnowledgeVectorStore` (`faultmaven/infrastructure/knowledge/knowledge_vector_store.py`).
 
-**Abstract Interface**:
-```python
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+The knowledge base is one ChromaDB collection (`faultmaven_kb`) holding every scope. `IKnowledgeVectorStore` declares what its consumers call: `KnowledgeService`, the boot-time reconcile pass and authored-orphan sweep, and the enterprise-stamp backfill job.
 
+| Method | Purpose |
+|--------|---------|
+| `search(collection_name, query, k, where)` | Pure vector search of one collection; on the KB collection `where` must name a scope key |
+| `hybrid_search(collection_name, query, k, where, *, min_score)` | Vector plus keyword-constrained recall, then a multi-signal rerank |
+| `add_documents(documents, embeddings)` | Write chunks; refuses a KB chunk with no `enterprise_id` (#1168) |
+| `delete_documents_by_parent_id(parent_document_id, *, retries)` | Delete every chunk of one document |
+| `list_all_chunk_ids_by_parent()`, `list_chunk_ids_by_parent(where)` | Chunk ids keyed by parent document |
+| `delete_chunk_ids(chunk_ids, where)`, `delete_observed_chunk_ids(chunk_ids)` | Delete named chunk ids |
+| `restamp_chunk_ids(chunk_ids, enterprise_id, where)` | Write `enterprise_id` onto named chunk ids |
 
-class VectorStore(ABC):
-    """
-    Abstract store for vector embeddings.
-
-    Technology: Vector database (ChromaDB)
-
-    Implementations:
-    - ChromaDB (local mode): Local persistent storage
-    - ChromaDB (server mode): Client-server K8s deployment
-    """
-
-    @abstractmethod
-    async def add_documents(
-        self,
-        documents: List[str],
-        embeddings: List[List[float]],
-        metadatas: List[Dict[str, Any]],
-        ids: List[str]
-    ) -> bool:
-        """Add documents with embeddings to collection."""
-        pass
-
-    @abstractmethod
-    async def query(
-        self,
-        query_embedding: List[float],
-        n_results: int = 10,
-        where: Optional[Dict] = None
-    ) -> Dict[str, Any]:
-        """Query for similar documents."""
-        pass
-
-    @abstractmethod
-    async def get(self, ids: List[str]) -> Dict[str, Any]:
-        """Retrieve documents by IDs."""
-        pass
-
-    @abstractmethod
-    async def delete(self, ids: List[str]) -> bool:
-        """Delete documents by IDs."""
-        pass
-
-    @abstractmethod
-    async def update(
-        self,
-        ids: List[str],
-        documents: Optional[List[str]] = None,
-        embeddings: Optional[List[List[float]]] = None,
-        metadatas: Optional[List[Dict]] = None
-    ) -> bool:
-        """Update existing documents."""
-        pass
-```
+`KnowledgeVectorStore` is the only writer of the KB collection (#1782). Case evidence lives in per-case collections behind `CaseVectorStore` (`faultmaven/infrastructure/persistence/case_vector_store.py`). `ChromaDBVectorStore` (`faultmaven/infrastructure/persistence/chromadb_store.py`) is a read-only store over one collection, used by runbook dedup and the vector-store health check; it implements no interface.
 
 ---
 

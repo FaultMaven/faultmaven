@@ -116,7 +116,8 @@ async def test_service_with_interface_mocks():
 - When the code calls a method its interface does not declare, declare it on
   the interface rather than spec the mock on a concrete class: until #2284,
   `ISanitizer` had no `asanitize` and `KnowledgeService`'s store was typed
-  `IVectorStore`, whose `search` takes neither `collection_name` nor `where`
+  by a generic vector-store port (since deleted, #1782) whose `search` took
+  neither `collection_name` nor `where`
 - Use `create_autospec`, not `Mock(spec=...)`: it checks every call against the
   real signature. `Mock(spec=...)` checks attribute names only, and a bare
   `AsyncMock` accepts any call, which is how a vector-store call with the wrong

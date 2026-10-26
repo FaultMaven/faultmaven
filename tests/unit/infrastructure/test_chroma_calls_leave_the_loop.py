@@ -213,14 +213,6 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         ),
     ),
     # -- ChromaDBVectorStore --------------------------------------------------
-    (
-        "chromadb.add_documents",
-        ChromaDBVectorStore,
-        lambda s: s.add_documents(
-            [{"id": "d1", "content": "text", "metadata": {}}],
-            embeddings=[_EMBEDDING],
-        ),
-    ),
     ("chromadb.search", ChromaDBVectorStore, lambda s: s.search("disk full")),
     (
         "chromadb.query_by_embedding",
@@ -228,16 +220,6 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         lambda s: s.query_by_embedding(_EMBEDDING, where=_KB_WHERE),
     ),
     ("chromadb.count", ChromaDBVectorStore, lambda s: s.count()),
-    (
-        "chromadb.delete_documents",
-        ChromaDBVectorStore,
-        lambda s: s.delete_documents(["d1"]),
-    ),
-    (
-        "chromadb.delete_documents_by_parent_id",
-        ChromaDBVectorStore,
-        lambda s: s.delete_documents_by_parent_id("parent-1"),
-    ),
 ]
 
 _PUBLIC_METHODS = {
@@ -262,13 +244,11 @@ _PUBLIC_METHODS = {
         "delete_observed_chunk_ids",
         "restamp_chunk_ids",
     },
+    # Read-only: the KB collection's one writer is KnowledgeVectorStore (#1782).
     ChromaDBVectorStore: {
-        "add_documents",
         "search",
         "query_by_embedding",
         "count",
-        "delete_documents",
-        "delete_documents_by_parent_id",
     },
 }
 

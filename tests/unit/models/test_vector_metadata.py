@@ -115,3 +115,113 @@ class TestTheTenantKey:
         downstream and match no enterprise, so the model refuses it instead."""
         with pytest.raises(ValidationError, match="enterprise_id"):
             VectorMetadata(scope="personal", enterprise_id=value)
+
+
+class TestTheSchemaIsAnAllowlist:
+    """What ``VectorMetadata`` declares is what a KB row carries, and no more.
+
+    ``KnowledgeService`` builds every chunk's metadata with
+    ``to_chroma_metadata``, and ``KnowledgeVectorStore.add_documents`` refuses
+    an undeclared key through ``reject_undeclared_keys``.
+    """
+
+    def test_to_chroma_metadata_emits_every_key_the_schema_declares(self):
+        """The allowlist stores everything it declares — the refusal's other half.
+
+        ``reject_undeclared_keys`` (below) only covers keys the schema does NOT
+        declare. The
+        opposite defect — a field declared on the model but never emitted by
+        ``to_chroma_metadata`` — passes it and still drops the value on every
+        write. That is not hypothetical: it is exactly the state ``report_type``
+        and the runbook identity keys were in (#912).
+
+        Asserted over EVERY field rather than a sample, because a sample only
+        protects the fields someone thought to list: with eight of twenty-four
+        covered, dropping ``severity`` and ``symptom_class`` from the emitter
+        left the whole suite green while every KB row silently lost them. The
+        coverage assertion below makes adding a schema field force a decision
+        here rather than silently widening the gap.
+        """
+        # Every value is UNIQUE, and that is load-bearing rather than tidy: a
+        # cross-wire mutation is only detectable if the two fields it confuses
+        # hold different values. An earlier version of this sample reused
+        # "runbook" for document_type and report_type, and "doc-77" for
+        # original_document_id and parent_document_id — so swapping either pair
+        # in to_chroma_metadata passed the whole suite. The uniqueness assertion
+        # below keeps that from creeping back.
+        sample = {
+            "title": "Runbook: Connection pool exhaustion",
+            "document_type": "operational_runbook",
+            "tags": "postgresql,database",
+            "source_url": "https://example.invalid/runbook",
+            "scope": "global",
+            "owner_id": "user-1",
+            "enterprise_id": "ent-a",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "domain": "database",
+            "service": "postgresql",
+            "last_updated": "2026-01-01",
+            "status": "verified",
+            "severity": "high",
+            "symptom_class": "resource_exhaustion",
+            "chunk_index": 0,
+            "total_chunks": 3,
+            "parent_document_id": "parentdoc-99",
+        }
+
+        values = [str(v) for v in sample.values()]
+        assert len(set(values)) == len(values), (
+            "two fields share a value, so a mutation swapping them would be "
+            "invisible here — give every field a distinct one"
+        )
+
+        assert set(sample) == set(VectorMetadata.model_fields), (
+            "every declared field needs a sample value here — a new field "
+            "without one is a field this test does not protect"
+        )
+
+        VectorMetadata.reject_undeclared_keys(sample)
+        stored = VectorMetadata(**sample).to_chroma_metadata()
+
+        missing = set(sample) - set(stored)
+        assert not missing, (
+            f"declared but not emitted by to_chroma_metadata: {sorted(missing)} — "
+            f"these are written by callers and silently dropped"
+        )
+
+        # VALUES, not just keys. A key-presence assertion cannot tell a correct
+        # emitter from one that cross-wires fields (`data["severity"] =
+        # self.status`), and a declared key carrying another field's value is
+        # the same "wrong value stated as fact" defect this issue is about —
+        # arguably worse, since the row looks complete. The uniqueness
+        # assertion above is what makes this able to see a swap at all.
+        expected = dict(sample)
+        expected["tags"] = "postgresql,database"  # list -> comma-joined
+        expected["created_at"] = "2026-01-01T00:00:00Z"  # datetime -> ISO-8601
+        expected["updated_at"] = "2026-01-02T00:00:00Z"
+        assert stored == expected
+
+    @pytest.mark.parametrize(
+        "retired_key",
+        [
+            "report_type",
+            "case_id",
+            "case_title",
+            "runbook_source",
+            "document_title",
+            "original_document_id",
+        ],
+    )
+    def test_a_retired_runbook_identity_key_is_refused_not_dropped(self, retired_key):
+        """The keys the dead runbook writer stamped now fail loudly (fm#1030).
+
+        #912 declared these for ``RunbookKnowledgeBase.index_runbook``, a
+        writer with no live caller; fm#1030 deleted that write half and
+        repointed dedup at the live writer's keys. Removal is fail-loud by
+        construction — ``reject_undeclared_keys`` refuses them — which is the
+        safe direction: a writer that still believes in these keys finds out
+        at its first write, not as a silent drop read back arbitrarily later.
+        """
+        with pytest.raises(ValueError, match=retired_key):
+            VectorMetadata.reject_undeclared_keys({retired_key: "value"})

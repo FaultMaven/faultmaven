@@ -89,7 +89,6 @@ from .interfaces import (  # Phase 3.2 additions; Phase 3.3 additions
     ISessionStore,
     IStorageBackend,
     ITracer,
-    IVectorStore,
     ToolResult,
 )
 
@@ -133,7 +132,6 @@ __all__ = [
     "ILLMProvider",
     "ITracer",
     "ISanitizer",
-    "IVectorStore",
     "ISessionStore",
     "IDataClassifier",
     "ILogProcessor",

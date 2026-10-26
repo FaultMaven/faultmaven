@@ -1,14 +1,16 @@
 """
-ChromaDB implementation of IVectorStore interface.
+A read-only ChromaDB store over one named collection.
 
-Global KB vector store — operates on a single named collection.
-Receives a shared ChromaDB client via constructor injection (Principle 5).
+Registered as ``container.vector_store`` over the KB collection, where it is
+the reader behind runbook dedup (``RunbookKnowledgeBase``) and the vector-store
+health check. It writes nothing: the only writer of the KB collection is
+``KnowledgeVectorStore``, which refuses a chunk with no tenant stamp (#1168,
+#1782). Receives a shared ChromaDB client via constructor injection
+(Principle 5).
 """
 
 import logging
 from typing import Any, Dict, List, Optional
-
-from pydantic import ValidationError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.chroma_client import blocking_executor_for
@@ -16,7 +18,6 @@ from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
-from faultmaven.models.interfaces import IVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,12 @@ def create_persistent_client(path: str) -> Any:
     )
 
 
-class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
-    """ChromaDB implementation of the IVectorStore interface.
+class ChromaDBVectorStore(BaseExternalClient):
+    """Read-only ChromaDB store over a single named collection (global KB).
 
-    Operates on a single named collection (global KB).
-    The ChromaDB client is injected — works with both PersistentClient (local)
-    and HttpClient (cloud) transparently.
+    It searches, queries by embedding and counts; it has no write method. The
+    ChromaDB client is injected — works with both PersistentClient (local) and
+    HttpClient (cloud) transparently.
     """
 
     def __init__(self, client, collection_name: str = "faultmaven_kb"):
@@ -120,107 +121,6 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         except Exception as e:
             self.logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
-
-    @staticmethod
-    def _normalize_metadata(md: Optional[Dict]) -> Dict:
-        """Put one metadata dict through the canonical ``VectorMetadata`` schema.
-
-        ``VectorMetadata`` is an ALLOWLIST: it declares the keys a row in this
-        collection may carry, and anything else it simply does not copy. That
-        used to happen silently, which is how a writer could build a dict, watch
-        the write succeed, and store none of it — the since-deleted
-        ``index_runbook`` stamped its identity keys on every runbook and
-        ChromaDB received none of them, so its read path reconstructed
-        each one from ``.get()`` defaults (#912). A silently dropped key is
-        indistinguishable from a stored one at the call site: the write returns
-        success either way, and the loss only surfaces as a wrong value at read
-        time, arbitrarily later and somewhere else.
-
-        So an undeclared key is refused rather than dropped. It is always a
-        programming error — the writer believes the store holds something it
-        does not — and the fix is a one-line schema addition, so failing at the
-        first write turns a silent data-loss bug into an immediate, local one.
-
-        The check runs BEFORE the model is constructed, so the fallback below
-        can only ever see allowlisted KEYS. Note what that does and does not
-        buy: the two paths agree on which keys a row may carry, not on how the
-        values are encoded. The fallback stringifies rather than normalizing, so
-        a dict that fails validation still stores ``tags`` as ``"['a', 'b']"``
-        instead of ``"a,b"`` and a ``datetime`` in Python's default format
-        instead of ISO-8601. Pre-existing, and out of scope here; do not read
-        this guard as making the two paths interchangeable.
-        """
-        from faultmaven.models.vector_metadata import VectorMetadata
-
-        md = md or {}
-        # The schema owns this rule; a second hand-rolled copy of the check
-        # would be free to drift from it.
-        VectorMetadata.reject_undeclared_keys(md)
-
-        try:
-            return VectorMetadata(**md).to_chroma_metadata()
-        except ValidationError:
-            # A VALUE the schema could not coerce (a malformed timestamp, say),
-            # never an unknown key — those were refused above. Degrading to a
-            # type-sanitized copy keeps one bad field from failing the whole
-            # write; the keys are allowlisted either way.
-            sanitized: Dict = {}
-            for k, v in md.items():
-                if v is None:
-                    continue
-                if isinstance(v, (str, int, float, bool)):
-                    sanitized[k] = v
-                else:
-                    try:
-                        sanitized[k] = str(v)
-                    except Exception:
-                        continue
-            return sanitized
-
-    async def add_documents(
-        self,
-        documents: List[Dict],
-        embeddings: Optional[List[List[float]]] = None,
-    ) -> None:
-        """Add documents to the vector store.
-
-        Raises:
-            ValueError: If any metadata dict carries a key ``VectorMetadata``
-                does not declare. See :meth:`_normalize_metadata`.
-        """
-        ids = [doc["id"] for doc in documents]
-        contents = [doc["content"] for doc in documents]
-
-        # Normalized OUTSIDE call_external, deliberately. This is pure CPU with
-        # no external dependency, and the refusal below is a programming error,
-        # not a ChromaDB failure: raising it inside the wrapper would burn the
-        # retry budget on a deterministic failure and, worse, count towards the
-        # circuit breaker — five bad writes would then open the breaker and
-        # block the *healthy* KB writes sharing this client.
-        metadatas = [
-            self._normalize_metadata(doc.get("metadata", {})) for doc in documents
-        ]
-
-        def _add_wrapper():
-            add_kwargs: Dict = dict(ids=ids, documents=contents, metadatas=metadatas)
-            if embeddings is not None:
-                add_kwargs["embeddings"] = embeddings
-            self.collection.add(**add_kwargs)
-
-            self.logger.info(
-                f"Added documents to vector store",
-                extra={"count": len(documents), "collection": self.collection_name},
-            )
-
-        await self.call_external(
-            operation_name="add_documents",
-            call_func=_add_wrapper,
-            # A write: awaited to its end, so its caller never compensates
-            # for a write still landing (#2056).
-            timeout=None,
-            retries=2,
-            retry_delay=2.0,
-        )
 
     async def search(
         self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
@@ -325,55 +225,3 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retries=1,
             retry_delay=1.0,
         )
-
-    async def delete_documents(self, ids: List[str]) -> None:
-        """Delete documents by IDs."""
-
-        def _delete_wrapper():
-            self.collection.delete(ids=ids)
-            self.logger.info(f"Deleted {len(ids)} documents from vector store")
-
-        await self.call_external(
-            operation_name="delete_documents",
-            call_func=_delete_wrapper,
-            # A write: awaited to its end, so its caller never compensates
-            # for a write still landing (#2056).
-            timeout=None,
-            retries=2,
-            retry_delay=1.0,
-        )
-
-    async def delete_documents_by_parent_id(
-        self, parent_document_id: str, *, retries: int = 2
-    ) -> int:
-        """Delete all chunks belonging to a parent document.
-
-        ``retries`` counts the attempts after a failed one (see
-        ``IVectorStore.delete_documents_by_parent_id``).
-        """
-        deleted_count = 0
-
-        def _delete_by_parent_wrapper():
-            nonlocal deleted_count
-            results = self.collection.get(
-                where={"parent_document_id": parent_document_id},
-                include=[],
-            )
-            chunk_ids = results.get("ids", [])
-            if chunk_ids:
-                self.collection.delete(ids=chunk_ids)
-                deleted_count = len(chunk_ids)
-                self.logger.info(
-                    f"Deleted {deleted_count} chunks for parent {parent_document_id}"
-                )
-
-        await self.call_external(
-            operation_name="delete_documents_by_parent_id",
-            call_func=_delete_by_parent_wrapper,
-            # A write: awaited to its end, so its caller never compensates
-            # for a write still landing (#2056).
-            timeout=None,
-            retries=retries,
-            retry_delay=1.0,
-        )
-        return deleted_count

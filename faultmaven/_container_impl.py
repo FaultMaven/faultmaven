@@ -45,7 +45,6 @@ try:
         ISanitizer,
         ISessionStore,
         ITracer,
-        IVectorStore,
     )
     from faultmaven.models.interfaces_case import ICaseService, ICaseStore
 
@@ -58,7 +57,6 @@ except ImportError as e:
     ITracer = Any
     ISanitizer = Any
     BaseTool = Any
-    IVectorStore = Any
     ISessionStore = Any
     ICaseStore = Any
     ICaseService = Any

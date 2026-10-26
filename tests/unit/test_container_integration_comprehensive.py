@@ -22,6 +22,7 @@ import pytest
 
 from faultmaven.config.settings import get_settings, reset_settings
 from faultmaven.container import DIContainer
+from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
 # Import interfaces with fallback for testing
 try:
@@ -31,7 +32,6 @@ try:
         ISanitizer,
         ISessionStore,
         ITracer,
-        IVectorStore,
     )
     from faultmaven.models.interfaces_case import ICaseService, ICaseStore
 
@@ -42,7 +42,6 @@ except ImportError:
     ITracer = Mock
     ISanitizer = Mock
     BaseTool = Mock
-    IVectorStore = Mock
     ISessionStore = Mock
     ICaseStore = Mock
     ICaseService = Mock
@@ -115,9 +114,8 @@ def mock_services():
     services["tracer"] = tracer
 
     # Mock Vector Store
-    vector_store = Mock(spec=IVectorStore)
+    vector_store = Mock(spec=ChromaDBVectorStore)
     vector_store.search = AsyncMock(return_value=[])
-    vector_store.add_documents = AsyncMock(return_value=True)
     services["vector_store"] = vector_store
 
     # Mock Session Store

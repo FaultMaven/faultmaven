@@ -1,10 +1,10 @@
 """KnowledgeService runs on mocks of the interfaces it is typed against (#2284).
 
 The service takes ``sanitizer: ISanitizer``, ``tracer: ITracer`` and
-``vector_store: IKnowledgeVectorStore``.
-Until #2284 two of those types did not declare what the service calls:
-``ISanitizer`` had no ``asanitize``, and the store was typed ``IVectorStore``,
-whose ``search`` takes ``filters`` where the service passes ``collection_name``
+``vector_store: IKnowledgeVectorStore``. Until #2284 two of those types did
+not declare what the service calls: ``ISanitizer`` had no ``asanitize``, and
+the store was typed by a generic vector-store port (since deleted, #1782)
+whose ``search`` took ``filters`` where the service passes ``collection_name``
 and ``where``. A test that mocked the interfaces, as the testing standards say
 to, got mocks that raised on the first call, so the tests and the testing docs
 specced their mocks on ``DataSanitizer`` and ``KnowledgeVectorStore`` instead.
