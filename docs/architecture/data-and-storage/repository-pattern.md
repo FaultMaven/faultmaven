@@ -324,8 +324,10 @@ REDIS_PORT=6379
 
 | Backend | Implementation | Status | Use Case |
 |---------|----------------|--------|----------|
-| PersistentClient (in-process) | `ChromaDBVectorStore` | ✅ Implemented | Local deployment |
-| HttpClient (external server) | `ChromaDBVectorStore` | ✅ Implemented | Cloud/K8s deployment |
+| PersistentClient (in-process) | `KnowledgeVectorStore` (KB), `CaseVectorStore` (case evidence) | ✅ Implemented | Local deployment |
+| HttpClient (external server) | `KnowledgeVectorStore` (KB), `CaseVectorStore` (case evidence) | ✅ Implemented | Cloud/K8s deployment |
+
+`ChromaDBVectorStore` writes no documents; see §4.3.
 
 > **Note**: `InMemoryVectorStore` has been removed. ChromaDB `PersistentClient` is always
 > available (chromadb is a base dependency), so no fallback is needed — same principle as FakeRedis.
@@ -715,7 +717,7 @@ The knowledge base is one ChromaDB collection (`faultmaven_kb`) holding every sc
 | `delete_chunk_ids(chunk_ids, where)`, `delete_observed_chunk_ids(chunk_ids)` | Delete named chunk ids |
 | `restamp_chunk_ids(chunk_ids, enterprise_id, where)` | Write `enterprise_id` onto named chunk ids |
 
-`KnowledgeVectorStore` is the only writer of the KB collection (#1782). Case evidence lives in per-case collections behind `CaseVectorStore` (`faultmaven/infrastructure/persistence/case_vector_store.py`). `ChromaDBVectorStore` (`faultmaven/infrastructure/persistence/chromadb_store.py`) is a read-only store over one collection, used by runbook dedup and the vector-store health check; it implements no interface.
+`KnowledgeVectorStore` is the only writer of the KB collection in this codebase (#1782). Case evidence lives in per-case collections behind `CaseVectorStore` (`faultmaven/infrastructure/persistence/case_vector_store.py`). `ChromaDBVectorStore` (`faultmaven/infrastructure/persistence/chromadb_store.py`) writes no documents and implements no interface. `container.vector_store` is one over `CHROMADB_COLLECTION` (default `faultmaven_kb`), read only by the vector-store health check (#2325); runbook dedup builds its own over `KB_COLLECTION` (`RunbookKnowledgeBase.over_kb_collection`), deliberately not `container.vector_store`.
 
 ---
 
@@ -821,7 +823,7 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 **Implementations**:
 - ✅ `PostgreSQLHybridCaseRepository` - Cases in K8s PostgreSQL
 - ✅ `RedisSessionStore` - Sessions in K8s Redis
-- ✅ `ChromaDBVectorStore` - Vectors in K8s ChromaDB
+- ✅ `KnowledgeVectorStore` and `CaseVectorStore` - Vectors in K8s ChromaDB
 
 **Configuration**:
 ```bash
@@ -967,9 +969,11 @@ class Container:
         # VECTOR DATA: Vector Store (ChromaDB only)
         # ==========================================
         # InMemoryVectorStore is removed — ChromaDB PersistentClient is always available.
-        # Client created by DI container via create_kb_chromadb_client() or create_evidence_chromadb_client().
-        from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
-        self.vector_store = ChromaDBVectorStore(client=chromadb_client)
+        # Clients created by DI container via create_kb_chromadb_client() and create_evidence_chromadb_client().
+        from faultmaven.infrastructure.knowledge.knowledge_vector_store import KnowledgeVectorStore
+        from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+        self.knowledge_vector_store = KnowledgeVectorStore(kb_chromadb_client)
+        self.case_vector_store = CaseVectorStore(evidence_chromadb_client)
 ```
 
 **Key Points**:
@@ -1250,7 +1254,7 @@ async def test_case_service_all_combinations(case_backend, session_backend):
 
 | Operation | Local ChromaDB | Server ChromaDB |
 |-----------|----------------|-----------------|
-| add_documents() | 50-200 ms | 100-500 ms |
+| add_documents() (`KnowledgeVectorStore`, `CaseVectorStore`) | 50-200 ms | 100-500 ms |
 | query(n=10) | 10-50 ms | 20-100 ms |
 | get() | 5-20 ms | 10-50 ms |
 
@@ -1285,7 +1289,7 @@ temp_state:     1 hour
 **ChromaDB (Vector Data)**:
 ```python
 # Batch operations for efficiency
-await vector_store.add_documents(
+await knowledge_vector_store.add_documents(
     documents=batch_docs,    # Process in batches of 100
     embeddings=batch_embeds
 )

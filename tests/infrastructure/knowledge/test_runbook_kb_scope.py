@@ -7,13 +7,15 @@ that it is mandatory, that it fails closed, and that it actually filters —
 with the filter built by the REAL ``build_kb_scope_filter`` (the consumer's
 semantics, not a hand-rolled copy).
 
-**Both halves of the round trip are the real code.** Rows are written the way
-the LIVE writer writes them: metadata built by ``VectorMetadata`` as
-``KnowledgeService._index_document_in_vector_store`` builds it, carrying the
-exact key set it stamps, and written by ``KnowledgeVectorStore.add_documents``,
-the KB's one writer (#1782). The ``where`` clause is evaluated by a real
-ephemeral ChromaDB. Neither half is
-negotiable: a stand-in that wrote raw metadata would prove isolation only on
+**Both halves of the round trip are the real code.** Rows carry the exact key
+set ``KnowledgeService._index_document_in_vector_store`` stamps, built by
+``VectorMetadata`` as it builds them, and are written by
+``KnowledgeVectorStore.add_documents``, the KB collection's one writer in this
+codebase (#1782). They go into each test's own collection, for which that
+store skips its KB-only tenant-stamp refusal, so ``seed`` applies the same
+refusal itself with the same helper (``require_enterprise_id_value``, #1168):
+a row production would refuse is refused here too. The ``where`` clause is
+evaluated by a real ephemeral ChromaDB. Neither half is negotiable: a stand-in that wrote raw metadata would prove isolation only on
 rows production cannot write (the old ``report_type`` predicate "isolated"
 perfectly because *nobody* saw anything), and a permissive fake would agree
 with a clause the engine rejects. Every isolation assertion is therefore
@@ -63,11 +65,11 @@ class _ChromaBackedStore(ChromaDBVectorStore):
 
     Not a hand-written double. ``query_by_embedding`` is the production read,
     and ``seed`` writes through the production writer, so both halves of the
-    round trip are real: writes pass through ``VectorMetadata`` (an allowlist
-    that refuses undeclared keys) and the ``where`` clause is evaluated by real
-    ChromaDB, which rejects the multi-key implicit-AND form outright rather
-    than quietly ANDing it. Only the query half is overridden here, and only
-    to record the clause.
+    round trip are real: writes pass the checks that writer applies to the KB
+    collection (``VectorMetadata``'s undeclared-key refusal and its tenant
+    stamp) and the ``where`` clause is evaluated by real ChromaDB, which
+    rejects the multi-key implicit-AND form outright rather than quietly ANDing
+    it. Only the query half is overridden here, and only to record the clause.
     """
 
     def __init__(self, name: str):
@@ -94,22 +96,27 @@ class _ChromaBackedStore(ChromaDBVectorStore):
             collection_name=name,
         )
         self.queries: List[Optional[Dict[str, Any]]] = []
+        self._writer = KnowledgeVectorStore(self.client)
 
     async def seed(
         self, chunk_id: str, metadata: Dict[str, Any], embedding: List[float]
     ) -> None:
-        """Write a row **the way production writes one**: ``VectorMetadata``
-        builds the metadata, and ``KnowledgeVectorStore`` writes it into this
-        store's collection over the same client."""
+        """Write a row **the way production writes one** into this store's
+        collection.
+
+        Refuses an undeclared key, builds the metadata with ``VectorMetadata``
+        as ``KnowledgeService`` does, refuses a row with no tenant stamp as
+        ``KnowledgeVectorStore.add_documents`` does for the KB collection, and
+        writes through that store over the same client. The store applies the
+        stamp refusal only to ``KB_COLLECTION``, so it is applied here.
+        """
         VectorMetadata.reject_undeclared_keys(metadata)
-        await KnowledgeVectorStore(self.client).add_documents(
-            [
-                {
-                    "id": chunk_id,
-                    "content": f"# Runbook {chunk_id}",
-                    "metadata": VectorMetadata(**metadata).to_chroma_metadata(),
-                }
-            ],
+        md = VectorMetadata(**metadata).to_chroma_metadata()
+        VectorMetadata.require_enterprise_id_value(
+            md.get("enterprise_id"), document_id=chunk_id
+        )
+        await self._writer.add_documents(
+            [{"id": chunk_id, "content": f"# Runbook {chunk_id}", "metadata": md}],
             embeddings=[embedding],
             collection_name=self.collection_name,
         )
@@ -137,10 +144,11 @@ def _chunk_metadata(
     (immutable floor only — never team), ``owner_id``, the owning tenant's
     ``enterprise_id`` (#1168: Standalone for the global tier, the row's tenant
     otherwise), ``title``, ``parent_document_id``, chunk tracking.
-    ``seed`` refuses any key ``VectorMetadata`` does not declare, as
-    ``KnowledgeVectorStore.add_documents`` does, so a hand-seeded dict that
-    drifts from the production one fails here instead of silently seeding rows
-    production could never write (#912).
+    ``seed`` refuses any key ``VectorMetadata`` does not declare, and a row
+    with no ``enterprise_id``, as ``KnowledgeVectorStore.add_documents`` does
+    for the KB collection, so a hand-seeded dict that drifts from the
+    production one fails here instead of silently seeding rows production could
+    never write (#912, #1168).
     """
     md: Dict[str, Any] = {
         "document_type": document_type,

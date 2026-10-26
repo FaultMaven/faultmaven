@@ -1,12 +1,17 @@
 """
-A read-only ChromaDB store over one named collection.
+A ChromaDB store over one named collection that writes no documents.
 
-Registered as ``container.vector_store`` over the KB collection, where it is
-the reader behind runbook dedup (``RunbookKnowledgeBase``) and the vector-store
-health check. It writes nothing: the only writer of the KB collection is
-``KnowledgeVectorStore``, which refuses a chunk with no tenant stamp (#1168,
-#1782). Receives a shared ChromaDB client via constructor injection
-(Principle 5).
+Two instances exist. ``container.vector_store`` is one over
+``settings.database.chromadb_collection`` (``CHROMADB_COLLECTION``, default
+``faultmaven_kb``; ``create_vector_store`` in
+``container/providers/infrastructure.py``), and its live reader is the
+vector-store health check, which counts its ``collection`` (#2325). Runbook
+dedup builds its own over ``KB_COLLECTION``
+(``RunbookKnowledgeBase.over_kb_collection``), deliberately not
+``container.vector_store``. Neither adds, updates or deletes a document: the
+only writer of the KB collection in this codebase is ``KnowledgeVectorStore``,
+which refuses a chunk with no tenant stamp (#1168, #1782). Receives a shared
+ChromaDB client via constructor injection (Principle 5).
 """
 
 import logging
@@ -78,11 +83,13 @@ def create_persistent_client(path: str) -> Any:
 
 
 class ChromaDBVectorStore(BaseExternalClient):
-    """Read-only ChromaDB store over a single named collection (global KB).
+    """ChromaDB store over a single named collection that writes no documents.
 
-    It searches, queries by embedding and counts; it has no write method. The
-    ChromaDB client is injected — works with both PersistentClient (local) and
-    HttpClient (cloud) transparently.
+    It searches, queries by embedding and counts; it has no method that adds,
+    updates or deletes a document. Its constructor does write one thing: it
+    creates the collection if it is absent (``get_or_create_collection``), the
+    wiring #2325 is about. The ChromaDB client is injected — works with both
+    PersistentClient (local) and HttpClient (cloud) transparently.
     """
 
     def __init__(self, client, collection_name: str = "faultmaven_kb"):

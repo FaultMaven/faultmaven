@@ -85,15 +85,14 @@ async def test_the_composed_knowledge_service_writes_only_through_the_guarded_st
     fresh_container,
 ):
     """The KB writer is ``KnowledgeVectorStore`` — the store whose
-    ``add_documents`` refuses a KB chunk with no tenant stamp (#1168) — and
-    never the plain ``ChromaDBVectorStore`` the container also registers, which
-    checks no stamp. The container used to wire ``knowledge_vector_store or
-    vector_store``; the fallback is gone, and the dedup reader is bound to the
-    same writer's collection.
+    ``add_documents`` refuses a KB chunk with no tenant stamp (#1168). The
+    container used to wire ``knowledge_vector_store or vector_store``; that
+    fallback is gone, and the dedup reader is bound to the same writer's
+    collection.
 
     Runs under either ambient ``SKIP_SERVICE_CHECKS`` value (see
     ``service_checks_on``): it never skips, because a skipped pin would let the
-    service be rewired to the plain store with CI still green.
+    service's store change with CI still green.
     """
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -110,8 +109,8 @@ async def test_the_composed_knowledge_service_writes_only_through_the_guarded_st
     knowledge_service = fresh_container.get_knowledge_service()
     plain_store = fresh_container.get_service("vector_store")
 
-    # Precondition: both stores exist, so "the guarded one was chosen" is a
-    # choice and not the only option.
+    # The service holds the KB store, not the plain one the container also
+    # registers.
     assert isinstance(plain_store, ChromaDBVectorStore)
     assert isinstance(knowledge_service._vector_store, KnowledgeVectorStore)
     assert knowledge_service._vector_store is fresh_container.knowledge_vector_store

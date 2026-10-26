@@ -244,7 +244,8 @@ _PUBLIC_METHODS = {
         "delete_observed_chunk_ids",
         "restamp_chunk_ids",
     },
-    # Read-only: the KB collection's one writer is KnowledgeVectorStore (#1782).
+    # No document writes: the KB collection's one writer in this codebase is
+    # KnowledgeVectorStore (#1782).
     ChromaDBVectorStore: {
         "search",
         "query_by_embedding",

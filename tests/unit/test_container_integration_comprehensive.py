@@ -16,7 +16,7 @@ import logging
 import os
 import tempfile
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, create_autospec, patch
 
 import pytest
 
@@ -114,8 +114,8 @@ def mock_services():
     services["tracer"] = tracer
 
     # Mock Vector Store
-    vector_store = Mock(spec=ChromaDBVectorStore)
-    vector_store.search = AsyncMock(return_value=[])
+    vector_store = create_autospec(ChromaDBVectorStore, instance=True)
+    vector_store.search.return_value = []
     services["vector_store"] = vector_store
 
     # Mock Session Store

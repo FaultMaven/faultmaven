@@ -8,7 +8,7 @@ is worst at catching. The read side already fails CLOSED on the same omission
 (an unidentifiable principal collapses to ``{"scope": "global"}``, i.e. reads
 LESS); this is what makes the write side do the same.
 
-The ChromaDB writer that publishes to a tier is
+The ChromaDB writer in this codebase that publishes to a tier is
 ``KnowledgeService._index_document_in_vector_store`` — the live path (uploads,
 conversions, the shipped-runbook bootstrap, re-index and repair). It calls
 :func:`require_write_scope`, so it cannot grow its own idea of what an absent

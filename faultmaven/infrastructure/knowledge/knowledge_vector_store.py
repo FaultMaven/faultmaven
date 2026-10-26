@@ -1398,7 +1398,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             # (#1775) conjuncts on read. Refused here, at the one store every
             # KB write the service makes goes through (the container wires no
             # other), so a new service writer cannot skip the stamp. It is the
-            # only writer of the KB collection (#1782).
+            # only writer of the KB collection in this codebase (#1782).
             # Case-evidence collections are scoped by case and carry no stamp.
             if collection_name == KB_COLLECTION:
                 VectorMetadata.require_enterprise_id_value(

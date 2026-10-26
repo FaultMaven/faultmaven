@@ -1565,11 +1565,9 @@ def register_services(container: BaseDIContainer) -> None:
             user_service.bind_case_creator_count(case_service)
 
     # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
-    # its add_documents refuses a KB chunk with no tenant stamp (#1168). There
-    # is deliberately no fallback to the generic ChromaDBVectorStore, which
-    # checks no stamp — and which was never selectable anyway, since both
-    # store factories are gated on the same SKIP_SERVICE_CHECKS flag. With no
-    # knowledge_vector_store the service indexes nothing (its no-store exit).
+    # its add_documents refuses a KB chunk with no tenant stamp (#1168). With
+    # no knowledge_vector_store the service indexes nothing (its no-store
+    # exit).
     knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
     knowledge_service = create_knowledge_service(
         knowledge_vector_store,

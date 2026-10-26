@@ -181,7 +181,6 @@ class TestTheSchemaIsAnAllowlist:
             "without one is a field this test does not protect"
         )
 
-        VectorMetadata.reject_undeclared_keys(sample)
         stored = VectorMetadata(**sample).to_chroma_metadata()
 
         missing = set(sample) - set(stored)

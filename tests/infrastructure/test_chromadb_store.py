@@ -164,9 +164,12 @@ class TestChromaDBVectorStore:
         assert "query_embeddings" in call_args.kwargs
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("method", ["count", "search"])
+    @pytest.mark.parametrize("method", ["query_by_embedding", "count", "search"])
     async def test_error_handling(self, vector_store, method):
-        """A ChromaDB failure reaches the caller, not an empty answer."""
+        """A ChromaDB failure reaches the caller, not an empty answer.
+
+        ``query_by_embedding`` is the method with a live caller: runbook dedup
+        (``RunbookKnowledgeBase.search_runbooks``)."""
         store, client, collection = vector_store
 
         collection.count.side_effect = Exception("ChromaDB error")
@@ -179,7 +182,9 @@ class TestChromaDBVectorStore:
         ):
             mock_cache.aembed_query = AsyncMock(return_value=[0.1] * 1024)
             with pytest.raises(Exception, match="ChromaDB error"):
-                if method == "count":
+                if method == "query_by_embedding":
+                    await store.query_by_embedding([0.1] * 1024, top_k=3)
+                elif method == "count":
                     await store.count()
                 else:
                     await store.search("pool exhaustion")
