@@ -36,35 +36,43 @@ _MODEL_ARGUMENT = (
     "error in the value the model passed."
 )
 
+_RECLASSIFY = "faultmaven/modules/agent/tools/reclassify_evidence_tool.py"
+_SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_tool.py"
+
 #: Reported sites that are not leaks, keyed on (path, function, the handler's
-#: exception type), each also justified by a comment at the site.
-_ALLOWED: dict[tuple[str, str, str], str] = {
+#: exception type, what the site shows the model), each also justified by a
+#: comment at the site. The last part is in the key so that new text under an
+#: allowed arm is a new site, not a covered one.
+_ALLOWED: dict[tuple[str, str, str, str], str] = {
     (
         "faultmaven/modules/agent/tools/list_evidence_by_time_tool.py",
         "_parse_iso_bound",
         "(ValueError, TypeError)",
+        "(None, f'Invalid ISO-8601 timestamp for {bound_name}: {value!r}. "
+        "Expected format: YYYY-MM-DDTHH:MM:SS[+00:00]. Error: {e}')",
     ): _MODEL_ARGUMENT,
     (
-        "faultmaven/modules/agent/tools/search_file_tool.py",
+        _SEARCH_FILE,
         "_count_search",
         "re.error",
+        "[{'line': 0, 'content': f'Invalid regex: {e}'}]",
     ): _MODEL_ARGUMENT,
     (
-        "faultmaven/modules/agent/tools/search_file_tool.py",
+        _SEARCH_FILE,
         "_regex_search",
         "re.error",
+        "[{'error': f'Invalid regex pattern: {e}'}]",
     ): _MODEL_ARGUMENT,
     **{
-        (
-            "faultmaven/modules/agent/tools/reclassify_evidence_tool.py",
-            "execute_with_context",
-            arm,
-        ): _TYPED_ARM
-        for arm in (
-            "AuthorizationError",
-            "ConflictError",
-            "ValidationException",
-            "ServiceException",
+        (_RECLASSIFY, "execute_with_context", arm, shown): _TYPED_ARM
+        for arm, shown in (
+            ("AuthorizationError", "data=None, error=str(e)"),
+            ("ConflictError", "data=None, error=str(e)"),
+            (
+                "ValidationException",
+                "data=None, error=f'{e}. Inform the user and do not retry.'",
+            ),
+            ("ServiceException", "data=None, error=str(e)"),
         )
     },
 }
@@ -91,10 +99,35 @@ def _scanned() -> list[tuple[pathlib.Path, bool]]:
     return [(p, True) for p in tools] + [(p, False) for p in others]
 
 
-def _keys(path: pathlib.Path, returns: bool) -> list[tuple[str, str, str, int]]:
-    """(path, function, handler type, line) for each reported site."""
+def _shown(tree: ast.AST, line: int) -> str:
+    """What the site reported at ``line`` shows the model, rendered: a
+    ``ToolResult``'s ``data`` and ``error``, or a returned value."""
+    nodes = [n for n in ast.walk(tree) if getattr(n, "lineno", None) == line]
+    for node in nodes:
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ToolResult":
+            fields = [
+                f"{kw.arg}={ast.unparse(kw.value)}"
+                for kw in node.keywords
+                if kw.arg in {"data", "error"}
+            ]
+            fields += [
+                f"{name}={ast.unparse(arg)}"
+                for name, arg in zip(("data", "error"), node.args[1:3])
+            ]
+            return ", ".join(fields)
+    returned = [n.value for n in nodes if isinstance(n, ast.Return) and n.value]
+    return ast.unparse(returned[0]) if returned else "<unmapped>"
+
+
+def _keys(
+    path: pathlib.Path, returns: bool, rel: str | None = None
+) -> list[tuple[str, str, str, str, int]]:
+    """(path, function, handler type, what it shows, line) per reported site.
+
+    ``rel`` names a copy of a module by the module's own path.
+    """
     tree = parse_file(path)
-    rel = path.relative_to(_REPO).as_posix()
+    rel = rel or path.relative_to(_REPO).as_posix()
     keys = []
     for site in tool_result_leak_sites(path, returns=returns):
         line = int(site.rsplit(":", 1)[1])
@@ -113,7 +146,7 @@ def _keys(path: pathlib.Path, returns: bool) -> list[tuple[str, str, str, int]]:
             if isinstance(h, ast.ExceptHandler) and h.lineno <= line <= h.end_lineno
         ]
         arm = ast.unparse(handlers[-1].type) if handlers else "<after a handler>"
-        keys.append((rel, fn.name, arm, line))
+        keys.append((rel, fn.name, arm, _shown(tree, line), line))
     return keys
 
 
@@ -134,10 +167,10 @@ def test_the_scan_reaches_every_tool():
 @pytest.mark.unit
 def test_no_tool_result_carries_a_caught_exceptions_text():
     offenders = [
-        f"{rel}:{line} in {fn}() under except {arm}"
+        f"{rel}:{line} in {fn}() under except {arm}: {shown}"
         for path, returns in _scanned()
-        for rel, fn, arm, line in _keys(path, returns)
-        if (rel, fn, arm) not in _ALLOWED
+        for rel, fn, arm, shown, line in _keys(path, returns)
+        if (rel, fn, arm, shown) not in _ALLOWED
     ]
     assert offenders == [], (
         "tool results carrying a caught exception's text, which the model can "
@@ -149,12 +182,40 @@ def test_no_tool_result_carries_a_caught_exceptions_text():
 
 @pytest.mark.unit
 def test_every_allowlist_entry_still_matches_a_real_site():
-    live = {
-        (rel, fn, arm)
-        for path, returns in _scanned()
-        for rel, fn, arm, _line in _keys(path, returns)
-    }
+    live = {key[:4] for path, returns in _scanned() for key in _keys(path, returns)}
     assert sorted(set(_ALLOWED) - live) == []
+
+
+@pytest.mark.unit
+def test_new_text_under_an_allowed_arm_is_reported(tmp_path):
+    """The allowlist covers what an arm shows, not the arm: the
+    ``ServiceException`` arm handing over its cause's text is a new site."""
+    path = _REPO / _RECLASSIFY
+    arm = (
+        "        except ServiceException as e:\n"
+        "            return ToolResult(success=False, data=None, error=str(e))\n"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert arm in source
+    mutated = tmp_path / path.name
+    mutated.write_text(
+        source.replace(arm, arm.replace("str(e)", "str(e.__cause__)")),
+        encoding="utf-8",
+    )
+
+    new = [
+        key[:4]
+        for key in _keys(mutated, True, rel=_RECLASSIFY)
+        if key[:4] not in _ALLOWED
+    ]
+    assert new == [
+        (
+            _RECLASSIFY,
+            "execute_with_context",
+            "ServiceException",
+            "data=None, error=str(e.__cause__)",
+        )
+    ]
 
 
 def _text(exc: ast.expr) -> ast.Call:

@@ -946,7 +946,7 @@ Three independent fallback trigger signals remain for cases where proactive vect
 
 | Signal | Threshold | Rationale |
 |--------|-----------|-----------|
-| **Tool timeout** | Any `deep_analysis` or `search_file` call times out | File is too large for point queries |
+| **Tool timeout** | Any `deep_analysis` or `search_file` call fails on a timeout, its storage read's included (an S3 read or connect timeout). Decided by exception class along the failure's cause chain (`ToolResult.timed_out`, #2332), never by message | File is too large for point queries, or too slow to read whole from storage; the index answers without that read |
 | **Repeated empty searches** | 3+ consecutive `search_file` calls return 0 results | Agent's keyword strategy is failing; semantic search may find what keywords miss |
 | **Low confidence** | Any `deep_analysis` returns confidence < 0.2 | Analysis produced unreliable results |
 

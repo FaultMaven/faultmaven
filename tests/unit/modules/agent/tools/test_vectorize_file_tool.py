@@ -199,8 +199,9 @@ class TestVectorization:
         self, tool, mock_settings, caplog
     ):
         """#2332: the model reads the class and what it may conclude; the
-        server log, the text. Raised by the case read, which can fail in
-        production (the store catches everything itself)."""
+        server log, the text. The case read cannot fail in production, where
+        the context carries the turn's case; this pins the catch-all's text
+        for a defect that reaches it (the store catches everything itself)."""
         repo = MagicMock()
         repo.get = AsyncMock(side_effect=leaky_error())
         context = ToolContext(
