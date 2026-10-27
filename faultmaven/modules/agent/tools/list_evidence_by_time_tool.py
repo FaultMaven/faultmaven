@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +146,7 @@ class ListEvidenceByTimeTool(AgentTool):
                 context.case_id,
                 e,
             )
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Time-window query failed: {e}",
-            )
+            return tool_failure("Time-window query failed", e)
 
         results = _format_evidence_summaries(evidence_list, context.in_memory_case)
         results.extend(

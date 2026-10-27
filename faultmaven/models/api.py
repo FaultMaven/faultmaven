@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from faultmaven.utils.exception_name import CLASS_NAME_PATTERN, exception_class_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)
@@ -627,9 +628,8 @@ class Message(BaseModel):
 MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
 STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
 STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED, STORAGE_READ_FAILED)
-_CLASS_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 _STORAGE_ERROR_ENTRY = re.compile(
-    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): {_CLASS_NAME}$"
+    rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): {CLASS_NAME_PATTERN}$"
 )
 
 
@@ -641,10 +641,7 @@ def debug_error(code: str, exc: BaseException) -> str:
     """
     if code not in STORAGE_ERROR_CODES:
         raise ValueError(f"Unknown storage error code: {code!r}")
-    name = type(exc).__name__
-    if not re.fullmatch(_CLASS_NAME, name):
-        name = "Exception"
-    return f"{code}: {name}"
+    return f"{code}: {exception_class_name(exc)}"
 
 
 class MessageRetrievalDebugInfo(BaseModel):

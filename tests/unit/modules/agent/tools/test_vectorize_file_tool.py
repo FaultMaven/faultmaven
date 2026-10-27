@@ -19,6 +19,10 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import (
     append_vectorization_advisory,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 def _make_evidence(
@@ -189,6 +193,22 @@ class TestVectorization:
         assert call_kwargs["case_id"] == "case_123"
         assert call_kwargs["evidence_id"] == "ev_abc"
         assert "Structural index" in call_kwargs["structural_index"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_store_names_its_class_not_its_text(
+        self, tool, context, mock_settings, caplog
+    ):
+        """#2332: the model reads the class; the server log, the text."""
+        with patch(
+            "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
+            new=AsyncMock(side_effect=leaky_error()),
+        ):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc"}, context=context
+            )
+
+        assert result.success is False
+        assert_reported_by_class(result.error, caplog.text)
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):

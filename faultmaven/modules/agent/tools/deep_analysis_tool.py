@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.agent.tools.search_file_tool import enumerate_readable_files
 
 logger = logging.getLogger(__name__)
@@ -293,8 +293,4 @@ class DeepAnalysisTool(AgentTool):
                 exc_info=True,
                 extra={"case_id": context.case_id, "evidence_id": evidence_id},
             )
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Deep analysis failed: {str(e)[:200]}",
-            )
+            return tool_failure("Deep analysis failed", e)

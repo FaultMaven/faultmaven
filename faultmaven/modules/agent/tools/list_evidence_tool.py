@@ -10,7 +10,12 @@ import logging
 from typing import Any, Dict, List
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
+from faultmaven.modules.agent.tools.base import (
+    AgentTool,
+    ToolContext,
+    tool_failure,
+    tool_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +149,7 @@ class ListEvidenceTool(AgentTool):
 
         except Exception as e:
             logger.exception(f"Failed to list evidence for case {context.case_id}: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Failed to list evidence: {str(e)}",
-            )
+            return tool_failure("Failed to list evidence", e)
 
     def _format_evidence_list(
         self,

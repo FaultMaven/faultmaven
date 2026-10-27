@@ -11,6 +11,10 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 from faultmaven.modules.case.contracts import UploadedFile
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 @pytest.fixture
@@ -1231,3 +1235,32 @@ class TestSyntheticFilenameNotReported:
         assert result.success is False
         assert self.MINTED not in result.error
         assert "ev_paste (pasted text (turn 1))" in result.error
+
+
+class TestFailureNamesItsClassNotItsText:
+    """#2332: the model reads the class; the text and the storage key, the log."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raising, reported",
+        [
+            ("find_uploaded_file", "Search failed (RuntimeError)."),
+            ("retrieve_file", "could not be retrieved (RuntimeError)."),
+        ],
+    )
+    async def test_the_model_reads_the_class_and_the_log_the_text(
+        self, tool, context, raising, reported, caplog
+    ):
+        if raising == "retrieve_file":
+            tool.storage_service.retrieve_file.side_effect = leaky_error()
+        else:
+            context.in_memory_case.find_uploaded_file.side_effect = leaky_error()
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR"}, context=context
+        )
+
+        assert result.success is False
+        assert reported in result.error
+        assert "evidence/case_123/app.log" not in result.error
+        assert_reported_by_class(result.error, caplog.text)

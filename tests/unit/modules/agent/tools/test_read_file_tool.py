@@ -20,6 +20,10 @@ from faultmaven.modules.agent.tools.read_file_tool import (
 )
 from faultmaven.modules.case.contracts import UploadedFile
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -425,6 +429,51 @@ class TestSyntheticFilenameNotReported:
         assert result.success is True
         assert "[Large file: pasted text (turn 1)" in result.data["content"]
         assert self.MINTED not in result.data["content"]
+
+
+class _Undecodable(bytes):
+    """Stored bytes whose decode raises: the content readers' own catch-alls."""
+
+    def decode(self, *args, **kwargs):
+        raise leaky_error()
+
+
+class TestFailureNamesItsClassNotItsText:
+    """#2332, through ``execute``: the result is what the model reads."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "site, reported",
+        [
+            ("storage", "Could not read evidence file (RuntimeError)."),
+            ("lookup", "Failed to read evidence (RuntimeError)."),
+            ("text", "[Error reading file: RuntimeError]"),
+            ("large", "bytes, error reading: RuntimeError]"),
+        ],
+    )
+    async def test_the_model_reads_the_class_and_the_log_the_text(
+        self, read_file_tool, site, reported, caplog
+    ):
+        context = _make_context()
+        retrieve = AsyncMock(return_value=b"line\n")
+        if site == "storage":
+            retrieve.side_effect = leaky_error()
+        elif site == "lookup":
+            context.in_memory_case.find_uploaded_file.side_effect = leaky_error()
+        else:
+            size = MAX_TEXT_SIZE + 1 if site == "large" else 5
+            retrieve.return_value = _Undecodable(b"x" * size)
+        with patch(
+            "faultmaven.modules.evidence.domain.services.file_storage_service.FileStorageService.retrieve_file",
+            new=retrieve,
+        ):
+            result = await read_file_tool.execute_with_context(
+                params={"evidence_id": "ev_test123"}, context=context
+            )
+
+        model_text = result.error or result.data["content"]
+        assert reported in model_text
+        assert_reported_by_class(model_text, caplog.text)
 
 
 class TestConstants:

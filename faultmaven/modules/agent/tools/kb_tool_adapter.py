@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
 )
@@ -111,13 +111,13 @@ class KBToolAdapter(AgentTool):
             # claim about the KB's contents — the model would then reason
             # from "the KB is empty" (#943). A failed query establishes
             # nothing about what the knowledge base holds.
-            return ToolResult(
-                success=False,
-                data=None,
-                error=(
-                    f"Knowledge base query failed: {e}. This is a retrieval "
-                    f"failure, not a statement about the knowledge base's "
-                    f"contents — draw no conclusion about what it holds."
+            return tool_failure(
+                "Knowledge base query failed",
+                e,
+                guidance=(
+                    "This is a retrieval failure, not a statement about the "
+                    "knowledge base's contents — draw no conclusion about what "
+                    "it holds."
                 ),
             )
 
@@ -208,12 +208,12 @@ class CaseEvidenceQAAdapter(AgentTool):
             # Same rule as KBToolAdapter above: a failed search says nothing
             # about whether evidence exists. "may not be vectorized yet" was a
             # guess that reads as a finding about the case (#943).
-            return ToolResult(
-                success=False,
-                data=None,
-                error=(
-                    f"Case evidence search failed: {e}. This is a retrieval "
-                    f"failure, not a statement about what evidence exists — "
-                    f"draw no conclusion about the case's evidence."
+            return tool_failure(
+                "Case evidence search failed",
+                e,
+                guidance=(
+                    "This is a retrieval failure, not a statement about what "
+                    "evidence exists — draw no conclusion about the case's "
+                    "evidence."
                 ),
             )

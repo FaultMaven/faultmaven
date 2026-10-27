@@ -23,7 +23,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -387,11 +388,7 @@ class SearchFileTool(AgentTool):
 
         except Exception as e:
             logger.exception("search_file failed for %s: %s", evidence_id, e)
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Search failed: {str(e)}",
-            )
+            return tool_failure("Search failed", e)
 
     def _execute_count_format(
         self,
@@ -652,7 +649,7 @@ class SearchFileTool(AgentTool):
                 alts = format_searchable_alternatives(all_evidence, evidence_id, case)
                 return (
                     f"Evidence {evidence_id}: stored file could not be "
-                    f"retrieved (storage_ref={storage_ref}, error: {e}).{alts}"
+                    f"retrieved ({exception_class_name(e)}).{alts}"
                 )
 
         logger.warning(

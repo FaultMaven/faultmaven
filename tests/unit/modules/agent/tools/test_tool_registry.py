@@ -20,6 +20,10 @@ from faultmaven.modules.agent.tools.base import (
     tool_registry,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 # =============================================================================
 # Test Fixtures
@@ -368,9 +372,9 @@ class TestToolRegistry:
 
     @pytest.mark.asyncio
     async def test_registry_execute_tool_handles_exception(
-        self, fresh_registry, sample_context
+        self, fresh_registry, sample_context, caplog
     ):
-        """Test execute_tool handles tool exceptions."""
+        """A raising tool fails by its class; its text goes to the log (#2332)."""
 
         class FailingTool(AgentTool):
             @property
@@ -388,7 +392,7 @@ class TestToolRegistry:
             async def execute_with_context(
                 self, params: Dict[str, Any], context: ToolContext
             ) -> ToolResult:
-                raise RuntimeError("Intentional failure")
+                raise leaky_error()
 
         fresh_registry.register(FailingTool())
 
@@ -399,7 +403,8 @@ class TestToolRegistry:
         )
 
         assert result.success is False
-        assert "failed" in result.error.lower()
+        assert result.error == "Tool execution failed (RuntimeError)."
+        assert_reported_by_class(result.error, caplog.text)
 
     def test_registry_clear(self, fresh_registry):
         """Test clearing all registered tools."""

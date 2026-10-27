@@ -11,7 +11,13 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
+from faultmaven.modules.agent.tools.base import (
+    AgentTool,
+    ToolContext,
+    tool_failure,
+    tool_registry,
+)
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -189,11 +195,11 @@ class ReadFileTool(AgentTool):
             try:
                 file_data = await storage.retrieve_file(storage_ref)
             except Exception as e:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error=f"Could not read evidence file: {e}",
+                logger.exception(
+                    f"Could not read evidence file {storage_ref} "
+                    f"for evidence {evidence_id}: {e}"
                 )
+                return tool_failure("Could not read evidence file", e)
 
             # Domain Evidence has no mime_type; infer a loose default so the
             # text-vs-binary heuristics in _process_file_content keep working.
@@ -227,11 +233,7 @@ class ReadFileTool(AgentTool):
 
         except Exception as e:
             logger.exception(f"Failed to read evidence {evidence_id}: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Failed to read evidence: {str(e)}",
-            )
+            return tool_failure("Failed to read evidence", e)
 
     def _process_file_content(
         self,
@@ -369,7 +371,8 @@ class ReadFileTool(AgentTool):
             return content
 
         except Exception as e:
-            return f"[Error reading file: {str(e)}]"
+            logger.exception(f"Failed to read text file content: {e}")
+            return f"[Error reading file: {exception_class_name(e)}]"
 
     def _handle_large_file(
         self,
@@ -418,8 +421,10 @@ class ReadFileTool(AgentTool):
             return "\n".join(result)
 
         except Exception as e:
+            logger.exception(f"Failed to summarize large file {filename}: {e}")
             return (
-                f"[Large file: {filename}, {len(file_data)} bytes, error reading: {e}]"
+                f"[Large file: {filename}, {len(file_data)} bytes, "
+                f"error reading: {exception_class_name(e)}]"
             )
 
     def _summarize_image(

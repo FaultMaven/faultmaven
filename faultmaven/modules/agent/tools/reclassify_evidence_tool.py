@@ -30,7 +30,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 
 logger = logging.getLogger(__name__)
 
@@ -196,11 +196,7 @@ class ReclassifyEvidenceTool(AgentTool):
             return ToolResult(success=False, data=None, error=str(e))
         except Exception as e:
             logger.exception("reclassify_evidence tool failed: %s", e)
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Reclassification failed: {str(e)}",
-            )
+            return tool_failure("Reclassification failed", e)
 
         return ToolResult(
             success=True,

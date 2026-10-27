@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, IAgentToolRegistry, ToolResult
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,21 @@ class AgentTool(BaseTool, ABC):
         return isinstance(value, expected)
 
 
+def tool_failure(reason: str, exc: BaseException, *, guidance: str = "") -> ToolResult:
+    """A failed result naming ``exc``'s class, never its text (#2332).
+
+    A tool's result goes into the model's context, and the model can repeat it
+    into the stored answer every reader of the case is served. An exception's
+    text can carry a connection URI, SQL with its values, or an internal host or
+    storage key, so the model is told the failure, the exception's class and
+    what it may conclude (``guidance``). The caller logs the text.
+    """
+    error = f"{reason} ({exception_class_name(exc)})."
+    if guidance:
+        error = f"{error} {guidance}"
+    return ToolResult(success=False, data=None, error=error)
+
+
 class AgentToolRegistry(IAgentToolRegistry):
     """Registry for agent-specific tools.
 
@@ -348,11 +364,7 @@ class AgentToolRegistry(IAgentToolRegistry):
             raise
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Tool execution failed: {str(e)}",
-            )
+            return tool_failure("Tool execution failed", e)
 
     def clear(self) -> None:
         """Clear all registered tools (useful for testing)."""
