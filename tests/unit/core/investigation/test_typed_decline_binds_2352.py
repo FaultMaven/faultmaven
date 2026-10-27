@@ -23,6 +23,7 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
     revision_pending,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _SCANNED_EDGE,
     card_reads_as_bare_reply,
     declines_offer_explicitly,
     revision_offer_key,
@@ -116,6 +117,11 @@ NOT_A_DECLINE = [
     "No, keep it open.",
     "no, not yet",
     "No. Keep it open.",
+    # Review delta: a question mark the gate reads is a question mark.
+    f"{DECLINE[:-1]}\u2753",
+    f"{DECLINE[:-1]}\u203d",
+    # A line break before a lowercase letter wraps the sentence.
+    "Why do you say it's not resolved\nif the errors stopped?",
 ]
 
 #: Against a pending RESOLVE, each declines.
@@ -140,6 +146,16 @@ DECLINES = [
     "Not resolved yet.",
     f"The AssumeRole errors are gone since the fix, but {DECLINE}",
     "Don't mark this case as resolved.",
+    # Review delta: a paragraph break, or a line break before an uppercase
+    # letter, ends a sentence.
+    "I can't call it resolved yet\n\nWhat about the replica lag?",
+    "Not resolved yet\nWhy is node-3 still failing?",
+    "It's not resolved \u2014 errors are back\n\nCan you check node-3?",
+    # Review delta: every question mark the gate reads ends a sentence.
+    f"Can you explain\u2753 {DECLINE}",
+    f"Can you explain\u2753\ufe0f {DECLINE}",
+    f"Can you explain\u203d {DECLINE}",
+    f"Can you explain :INTERROBANG: {DECLINE}",
 ]
 
 
@@ -178,6 +194,22 @@ def test_a_long_paste_is_scanned_at_its_ends():
     log = "2026-10-27 12:00:00 ERROR AssumeRole failed. " * 2500
     assert declines_offer_explicitly(f"{log}{DECLINE}", "resolved", bare_token=False)
     assert declines_offer_explicitly(f"{DECLINE} {log}", "resolved", bare_token=False)
+
+
+def test_the_edge_cut_never_drops_a_question_mark():
+    """A question straddling the first edge is dropped whole, not read without
+    its "?" as a decline."""
+    filler = "The pods restarted cleanly. "
+    question = f"Why do you keep saying {DECLINE[:-1]} when the errors stopped?"
+    head = filler * (_SCANNED_EDGE // len(filler) - 1)
+    message = f"{head}{question} {filler * 40}"
+    assert message.index("resolved") < _SCANNED_EDGE < message.index("?")
+    assert len(message) - _SCANNED_EDGE > message.index("?"), "outside the tail"
+    # The premise: cut at the edge, the question reads as a decline.
+    assert declines_offer_explicitly(
+        message[:_SCANNED_EDGE], "resolved", bare_token=False
+    )
+    assert not declines_offer_explicitly(message, "resolved", bare_token=False)
 
 
 @pytest.mark.parametrize(
@@ -305,6 +337,51 @@ class TestADeclineSentWithTheConfirmationBinds:
         assert closure_verdict(case) == ClosureReadiness.SUGGEST_RESOLVE
         assert case.pending_transition is None, "the offer was promoted"
         assert _declined(case)
+
+    @pytest.mark.parametrize(
+        "message, offered",
+        [
+            ("The batch ran clean overnight.", True),
+            (f"The batch ran clean overnight, but {DECLINE}", False),
+        ],
+    )
+    async def test_the_deferred_proposer_does_not_offer_on_that_turn(
+        self, message, offered
+    ):
+        """Review delta F1: on a DEFERRED-feasibility case the deferred
+        proposer runs inside the apply step, before the turn's re-stamp. The
+        first row is the control: without the decline it offers."""
+        case = _not_yet_ready()
+        engine = _engine()
+        _model_records_the_problem_gone(
+            engine, milestones={"solution_feasible": "deferred"}
+        )
+        case.current_turn += 1
+        await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
+        assert closure_verdict(case) == ClosureReadiness.SUGGEST_RESOLVE
+        pending = case.pending_transition or {}
+        assert (pending.get("to_state") == "resolved") is offered
+        if offered:
+            assert "out-of-band" in pending["summary"], "not the deferred proposer"
+        else:
+            assert _declined(case)
+
+
+class TestADeclineBeforeAQuestionOnTheNextLineBinds:
+    async def test_recorded_after_a_withdrawn_offer(self):
+        """Review delta F2: the line break before "What" ends the decline's
+        sentence, so the question on the next line does not swallow it."""
+        case = _confirmed_case()
+        engine = _engine()
+        await _turn(engine, case, "errors gone")
+        await _turn(engine, case, QUESTION)
+        assert case.pending_transition is None
+        assert _declined(case) == []
+
+        await _turn(engine, case, f"{DECLINE[:-1]}\nWhat about the replica lag?")
+
+        assert case.pending_transition is None
+        assert _declined(case), "the decline was not recorded"
 
 
 class TestADeclineOfARevisionIsNotADeclineOfResolution:

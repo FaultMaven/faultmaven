@@ -12,13 +12,15 @@ confirmation card carries its offer's key (``terminal_offer_key``,
 executes nothing. A typed decline is as bare as a typed consent (#1813), or
 is a sentence of the reply in one of the named target's decline
 constructions, a question beside it or not (``declines_offer_explicitly``,
-#2352). Gate 1 reads a typed consent through the same bare test (#1794),
-which the engine now reads itself while Gate 1 is pending (#1841).
+#2352). A request to close at a pending RESOLVE answers neither way
+(``requests_close``, #2222): no offered choice is it, so it escapes the gate,
+whatever its length. Gate 1 reads a typed consent through the same bare test
+(#1794), which the engine now reads itself while Gate 1 is pending (#1841).
 
 Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
 of the pending target re-shows the offer's card, and no LLM-written card ships
-a text the gate reads as a bare reply, as written or as a client sends it
-(``card_reads_as_bare_reply``).
+a text the gate reads as a bare reply or as an explicit decline, as written or
+as a client sends it (``card_reads_as_bare_reply``).
 
 The grammar has two strengths (#1840). Every reader that decides what the
 gate DOES with a turn stays strict: the bare readers
@@ -40,6 +42,7 @@ import unicodedata
 from typing import Any, Literal, Optional
 
 from faultmaven.core.investigation.terminal_transitions import (
+    QUESTION_MARKS,
     QUESTION_SHORTCODES,
     is_question,
     is_substantive_reply,
@@ -207,11 +210,12 @@ _DECLINE_TOKENS = (
     "stop",
 )
 
-#: How much of a reply the decline and close-request readers scan: its first
-#: and last ``_SCANNED_EDGE`` characters. Either is a remark the user types
-#: around whatever they paste, so it sits at one end of the message; the cap
-#: keeps a pasted log from costing a scan of every sentence in it, on every
-#: turn (an unbounded scan of a 95 KB paste measured about 300 ms).
+#: How much of a reply the decline and close-request readers scan: the whole
+#: sentences within its first and last ``_SCANNED_EDGE`` characters. Either is
+#: a remark the user types around whatever they paste, so it sits at one end
+#: of the message; the cap keeps a pasted log from costing a scan of every
+#: sentence in it, on every turn (an unbounded scan of a 95 KB paste measured
+#: about 300 ms). Whole sentences, so the cut never drops a question's mark.
 _SCANNED_EDGE = 1000
 
 #: The constructions that decline a named target (#2352): a CLOSED list, so a
@@ -256,14 +260,43 @@ _CLOSE_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _NEGATED_CLOSE_RE = re.compile(
-    r"\b(?:don't|dont|do\s+not|can't|cannot|won't|wouldn't|shouldn't|not)\s+"
-    r"(?:\w+\s+){0,2}close\b",
+    r"\b(?:don't|dont|do\s+not|can't|cannot|won't|wouldn't|shouldn't|mustn't"
+    r"|never|no\s+need\s+to|not)\s+(?:\w+\s+){0,2}close\b",
     re.IGNORECASE,
 )
+#: Resolution asked for or affirmed, which a close request may not carry
+#: ("Please close it as resolved.", "You can close it now, it's fixed."):
+#: "resolve it", "(as) resolved", "mark it resolved", "it's fixed".
+_RESOLUTION_AFFIRMED_RE = re.compile(
+    r"\b(?:resolve\s+(?:it|this|the\s+case|this\s+case|this\s+one)|resolved"
+    r"|(?:it|this)(?:'s|s|\s+is)\s+(?:now\s+)?fixed)\b",
+    re.IGNORECASE,
+)
+#: A negator within two words before a match: "can't call it resolved",
+#: "isn't fully resolved".
+_NEGATED_BEFORE_RE = re.compile(
+    r"(?:\bnot|n't|\bnever|\bno)(?:\s+\w+){0,2}\s+$", re.IGNORECASE
+)
 
-#: A sentence keeps its terminators, so ``no?`` stays a question. Fullwidth
-#: and ideographic marks end a sentence too.
-_SENTENCE_RE = re.compile(r"[^.?!？！。]+[.?!？！。]*")
+#: Line breaks that end a sentence, read on the original casing before the
+#: whitespace is collapsed: a paragraph break, and a line break before an
+#: uppercase letter. A line break before a lowercase letter wraps a sentence
+#: ("I can't call it\nresolved yet.") and is a space.
+_PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n")
+_LINE_BREAK_RE = re.compile(r"\n[ \t]*(?=\S)")
+#: Every question mark the gate reads (#1840) becomes ``?`` before the text is
+#: split, Slack's shortcodes included, and a presentation selector is dropped.
+_QUESTION_SHORTCODE_RE = re.compile(
+    "|".join(re.escape(code) for code in QUESTION_SHORTCODES), re.IGNORECASE
+)
+_AS_ASCII_QUESTION = str.maketrans(
+    {**{mark: "?" for mark in QUESTION_MARKS}, "\ufe0e": None, "\ufe0f": None}
+)
+#: A sentence ends at ``.``, ``!``, ``?`` and the fullwidth ``!`` and
+#: ideographic full stop, and keeps its terminators, so ``no?`` stays a
+#: question.
+_SENTENCE_END_RE = re.compile(r"[.?!\uff01\u3002]+")
+_SENTENCE_RE = re.compile(r"[^.?!\uff01\u3002]+[.?!\uff01\u3002]*")
 
 
 PendingGateVerdict = Literal["confirm", "decline", "reask", "not_an_answer"]
@@ -590,14 +623,28 @@ def _user_declines_transition(user_message: str) -> bool:
 
 
 def _scanned(user_message: str) -> str:
-    """``user_message`` normalised (``_normalize_reply``), cut to its first and
-    last ``_SCANNED_EDGE`` characters with a sentence break between, and every
-    run of whitespace made one space, so a line break inside a sentence does
-    not split it."""
-    text = _normalize_reply(user_message or "")
+    """``user_message`` as the decline and close-request readers split it.
+
+    On the original casing, a paragraph break and a line break before an
+    uppercase letter become sentence ends, and every question mark becomes
+    ``?``. A reply over ``2 * _SCANNED_EDGE`` characters keeps only the whole
+    sentences within its first and last ``_SCANNED_EDGE``. Then it is
+    normalised (``_normalize_reply``) and its whitespace collapsed.
+    """
+    text = _PARAGRAPH_BREAK_RE.sub(". ", (user_message or "").strip())
+    text = _LINE_BREAK_RE.sub(
+        lambda m: ". " if m.string[m.end()].isupper() else " ", text
+    )
+    text = _QUESTION_SHORTCODE_RE.sub("?", text).translate(_AS_ASCII_QUESTION)
     if len(text) > 2 * _SCANNED_EDGE:
-        text = f"{text[:_SCANNED_EDGE]}. {text[-_SCANNED_EDGE:]}"
-    return " ".join(text.split())
+        head, tail = text[:_SCANNED_EDGE], text[-_SCANNED_EDGE:]
+        head_ends = [m.end() for m in _SENTENCE_END_RE.finditer(head)]
+        tail_end = _SENTENCE_END_RE.search(tail)
+        text = (
+            f"{head[: head_ends[-1]] if head_ends else ''} "
+            f"{tail[tail_end.end() :] if tail_end else ''}"
+        )
+    return " ".join(_normalize_reply(text).split())
 
 
 def _statements(text: str):
@@ -635,12 +682,9 @@ def declines_offer_explicitly(
     constructions = _DECLINE_CONSTRUCTIONS.get(to_state or "", ())
     if not constructions:
         return False
-    text = _scanned(user_message)
-    for code in QUESTION_SHORTCODES:
-        text = text.replace(code, "?")
     return any(
-        pattern.search(sentence.rstrip(".!！。").strip())
-        for sentence in _statements(text)
+        pattern.search(sentence.rstrip(".!\uff01\u3002").strip())
+        for sentence in _statements(_scanned(user_message))
         for pattern in constructions
     )
 
@@ -652,15 +696,23 @@ def requests_close(user_message: str) -> bool:
     (``Please close the case.``, ``Just close it.``, ``We're out of time on
     this one — please close the case.``).
 
-    Not ``yes``, ``Don't close it yet.``, ``Can you close it?``, ``It's close to
-    resolved.`` or ``Please close the dashboard tab and resolve it.``. The
-    engine reads it at a pending RESOLVE offer, where it is a request no offered
-    choice answers: it escapes the gate, whatever its length.
+    Not ``yes``, ``Don't close it yet.``, ``Never close it without the
+    postmortem.``, ``Can you close it?``, ``It's close to resolved.`` or
+    ``Please close the dashboard tab and resolve it.``; and never a message
+    that also asks for or affirms resolution, not negated (``Please close it
+    as resolved.``, ``You can close it now, it's fixed.``). The engine reads it
+    at a pending RESOLVE offer, where it is a request no offered choice
+    answers: it escapes the gate, whatever its length.
     """
     text = _scanned(user_message)
+    if any(
+        not _NEGATED_BEFORE_RE.search(text[max(0, m.start() - 40) : m.start()])
+        for m in _RESOLUTION_AFFIRMED_RE.finditer(text)
+    ):
+        return False
     if (
-        confirmation_token_class(text, "closed") is not None
-        and confirmation_token_class(text, "resolved") is None
+        confirmation_token_class(user_message, "closed") is not None
+        and confirmation_token_class(user_message, "resolved") is None
     ):
         return True
     return any(

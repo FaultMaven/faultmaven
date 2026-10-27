@@ -252,6 +252,11 @@ NOT_CLOSE_REQUESTS = [
     "Yes, mark it resolved.",
     "yes",
     "Close enough, mark it resolved.",
+    # Review delta F3: resolution asked for or affirmed, or the close negated.
+    "Please close it as resolved.",
+    "No need to close it, just resolve it.",
+    "You can close it now, it's fixed.",
+    "Never close it without the postmortem.",
 ]
 
 

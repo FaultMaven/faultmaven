@@ -102,7 +102,8 @@ def restamp_resolve_decline(case: "Case", metadata: dict) -> None:
     would take the model's same-turn resolve proposal and the backstop would
     re-offer on the next turn, both against an answer the user has just given.
     So, immediately before ``check_automatic_transitions``, the signature is
-    re-derived and appended when no entry covers it.
+    re-derived and appended when no entry covers it; and earlier still, in the
+    apply step, before ``_maybe_propose_deferred_close`` reads the list.
 
     Only while the closure verdict is still SUGGEST_RESOLVE — the gate the
     writer applies to a derived signature. A same-turn disconfirmation that

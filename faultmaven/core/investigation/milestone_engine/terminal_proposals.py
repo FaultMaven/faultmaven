@@ -24,6 +24,7 @@ from faultmaven.modules.case.contracts import (
 from .response_synthesis import (
     _DISPOSITION_GATE_ANSWERED_KEY,
     _ENGINE_DISPOSITION_WITHDRAWN_KEY,
+    restamp_resolve_decline,
 )
 from .stage_gates import (
     _close_confirmation_suggestions,
@@ -142,6 +143,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     if metadata.get(_DISPOSITION_GATE_ANSWERED_KEY):
         return
 
+    # A resolve declined on THIS turn covers what the model recorded from the
+    # same message (#2352): "the batch ran clean, but I can't call it resolved
+    # yet" brings the confirmation that makes the case ready. This proposer
+    # runs inside the apply step, before the turn's re-stamp (step 3b), so it
+    # re-stamps first, or it would offer the resolution just declined.
+    restamp_resolve_decline(case, metadata)
     closure = assess_closure_readiness(case)
     # A decline POSTPONES the offer until the case changes underneath it.
     # Re-proposing every turn regardless is what produced five identical
