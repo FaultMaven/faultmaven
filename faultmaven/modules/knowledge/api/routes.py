@@ -136,6 +136,12 @@ async def get_knowledge_service(request: Request) -> KnowledgeService:
     be papered over one layer up, where the container substituted an in-memory
     stub that answered reads with invented content (#899); a 503 an operator
     can act on is strictly better than a 200 nobody can trust.
+
+    A route that requires a caller declares the gate on its decorator as well
+    as ``current_user``. FastAPI solves ``dependencies=[...]`` first, so the
+    gate resolves before this provider whatever it does: with the knowledge
+    base down, an anonymous caller still gets 401, not this 503 (#1494). The
+    parameter copy is cached per request, so the gate runs once.
     """
     service = getattr(request.app.state, "knowledge_service", None)
     if service is None:
@@ -144,12 +150,6 @@ async def get_knowledge_service(request: Request) -> KnowledgeService:
             detail="Knowledge base unavailable",
         )
     return service
-
-
-# A route that requires a caller declares the gate on the decorator as well as
-# ``current_user``: FastAPI solves ``dependencies=[...]`` first, so an anonymous
-# caller gets a 401 rather than this provider's 503 (#1494). The parameter copy
-# is cached per request, so the gate still runs once.
 
 
 async def _resolve_team_ids(request: Request, user_id: Optional[str]) -> List[str]:

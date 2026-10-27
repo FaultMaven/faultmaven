@@ -64,9 +64,9 @@ _SERVICE_PROVIDERS = (
 )
 
 #: The auth gate, named the way the guard module names it, so "is this route
-#: gated" is asked of the dependency tree rather than of the source text. The
-#: module under test imports it as ``_require_auth``; an alias does not change
-#: the qualified name.
+#: gated" is asked of the dependency tree rather than of the source text.
+#: ``conversion_routes`` imports it as ``_require_auth``; an alias does not
+#: change the qualified name.
 _GATE = "faultmaven.api.v1.auth_dependencies.require_authentication"
 
 #: The providers whose routes #1494 was split on here: eleven behind the
@@ -276,6 +276,9 @@ def test_no_knowledge_route_resolves_a_service_for_an_unauthenticated_caller(
     refusal.
     """
     client = TestClient(_surface(), raise_server_exceptions=False)
+
+    shared = set(DRIVEN) & set(KNOWLEDGE_DRIVEN)
+    assert not shared, f"a row in both maps would be driven once: {shared}"
 
     answered = {}
     for (method, template), request in sorted({**DRIVEN, **KNOWLEDGE_DRIVEN}.items()):

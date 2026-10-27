@@ -119,8 +119,10 @@ MANDATORY_AUTH_DEPENDENCIES = frozenset(
 # that is the #1467 shape, where an anonymous caller reaches the collaborator
 # and gets its 500 instead of the 401. Importing the flat union there would
 # excuse the four service providers below the day one of them lands ahead of a
-# gate; measured, the two sets answer the same today (18 mis-ordered
-# operations, #1494). The union is preserved for this module's own use.
+# gate. On the served app the two sets answer the same (no mis-ordered
+# operation since #1494), so the difference is pinned on a synthetic route by
+# `test_no_unauthenticated_operations.test_an_auth_module_service_provider_ahead_of_the_gate_is_reported`.
+# The union is preserved for this module's own use.
 
 #: Optional authentication: returns None instead of raising, so it cannot
 #: pre-empt a refusal.

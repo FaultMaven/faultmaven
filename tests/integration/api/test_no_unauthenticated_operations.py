@@ -1023,9 +1023,9 @@ def _gate_failure(dependant) -> str | None:
     # gate", and for a service provider the answer is no — that IS the #1467
     # shape. Importing the union would make the predicate silently excuse
     # ``get_auth_service`` or ``get_oauth_service`` the day one of them is
-    # declared ahead of a gate, with nothing to notice. The mutation that swaps
-    # them (M24) therefore kills nothing today, which is reported rather than
-    # hidden.
+    # declared ahead of a gate, with nothing to notice. On the served app the
+    # swap (M24) changes nothing, so a synthetic route kills it:
+    # :func:`test_an_auth_module_service_provider_ahead_of_the_gate_is_reported`.
     excusable = (
         _PERMITTED_BEFORE_A_GATE
         | DELIBERATE_PRE_AUTH_REFUSALS
@@ -1533,6 +1533,53 @@ def test_the_mount_report_does_not_depend_on_how_the_app_was_composed():
     )
 
 
+#: The served operation the guard's canaries are cloned from. It is #1494's
+#: fixed shape: the gate on the decorator, ``get_knowledge_service`` as a
+#: parameter, and the gate again as ``current_user``.
+_CANARY_TEMPLATE = ("GET", "/api/v1/knowledge/stats")
+
+
+def _canaries(routes, mandatory) -> list:
+    """Two clones of the template's SERVED tree, as ``(path, methods, dependant)``.
+
+    ``/canary/misordered`` drops the decorator's copy of the gate, which is the
+    route as it stood before #1494: the provider resolves first.
+    ``/canary/gate-first`` is the same tree with the remaining gate moved to
+    the front. Cloned from the composed app rather than built on a probe app,
+    so the canary carries the tenant binder and everything else a real route
+    carries, and the guard's own loop is what has to tell the two apart.
+    """
+    import dataclasses
+
+    method, path = _CANARY_TEMPLATE
+    (template,) = [
+        dependant
+        for served_path, methods, dependant in routes
+        if served_path == path and method in methods
+    ]
+    dependencies = list(template.dependencies)
+    gates = [d for d in dependencies if _qualified(d.call) in mandatory]
+    assert len(gates) == 2, (
+        f"{method} {path} no longer declares the gate on its decorator and as "
+        "a parameter, so it is no template for the canaries — pick another"
+    )
+    decorator_copy, parameter_copy = gates
+    dropped = [d for d in dependencies if d is not decorator_copy]
+    gate_first = [parameter_copy] + [d for d in dropped if d is not parameter_copy]
+    return [
+        (
+            "/canary/misordered",
+            {method},
+            dataclasses.replace(template, dependencies=dropped),
+        ),
+        (
+            "/canary/gate-first",
+            {method},
+            dataclasses.replace(template, dependencies=gate_first),
+        ),
+    ]
+
+
 @pytest.mark.integration
 @pytest.mark.security
 def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
@@ -1545,6 +1592,11 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     rest were fixed one blocker per slice, the last of them by #1494, so the
     class is closed and nothing is carried: any gated operation that resolves
     a collaborator before its gate fails here.
+
+    With nothing carried, "nothing is misordered" would also be the answer of
+    a predicate that stopped firing. So two canaries cloned from a served route
+    go through the same loop: the misordered clone must be reported, and the
+    clone with its gate first must not.
 
     Scoped to operations that ARE gated. An operation with no auth dependency at
     all is a different finding and belongs to the two guards above, which is why
@@ -1575,7 +1627,10 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     # operations that HAVE a gate with something resolving ahead of it.
     misordered = set()
     ungated = set()
-    for path, methods, dependant in routes:
+    for path, methods, dependant in [
+        *routes,
+        *_canaries(routes, MANDATORY_AUTH_DEPENDENCIES),
+    ]:
         if _gate_failure(dependant) is None:
             continue
         gated = bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependant))
@@ -1583,6 +1638,18 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
             if method in {"HEAD", "OPTIONS"}:
                 continue
             (misordered if gated else ungated).add((method, path))
+
+    method = _CANARY_TEMPLATE[0]
+    assert (method, "/canary/misordered") in misordered, (
+        "the canary — a served route with its provider declared ahead of the "
+        "gate — was not reported, so the loop or the predicate has stopped "
+        "finding the #1467 shape and an empty result below proves nothing"
+    )
+    assert (method, "/canary/gate-first") not in misordered | ungated, (
+        "the canary with its gate FIRST was reported, so the predicate reports "
+        "correctly gated routes too and the canary above proves nothing"
+    )
+    misordered.discard((method, "/canary/misordered"))
 
     assert ungated, (
         "no ungated operation was found, so the split above is not splitting "
@@ -1867,11 +1934,12 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     The second half is about which set is imported. The excusal must NOT be the
     flat ``NON_MANDATORY_AUTH_DEPENDENCIES``: that union also contains the four
     service providers, and a service provider ahead of a gate IS the #1467
-    shape. Measured honestly — both sets have always given the same answer,
-    because no dependency found ahead of a gate has been one of those four.
-    So this is a guard against a future excusal, not a present
-    difference, and it is asserted structurally (the groups stay disjoint)
-    rather than by a count that would pass either way.
+    shape. Measured honestly — on the served app both sets have always given
+    the same answer, because no dependency found ahead of a gate has been one
+    of those four. So here it is asserted structurally (the groups stay
+    disjoint) rather than by a count that would pass either way; the import
+    itself is pinned on a synthetic route by
+    :func:`test_an_auth_module_service_provider_ahead_of_the_gate_is_reported`.
     """
     from tests.integration.api.test_openapi_documents_auth import (
         DELIBERATE_PRE_AUTH_REFUSALS,
@@ -1949,6 +2017,53 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     assert SERVICE_PROVIDER_DEPENDENCIES, (
         "the service-provider group is empty, so the disjointness assertion "
         "above holds vacuously"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_an_auth_module_service_provider_ahead_of_the_gate_is_reported():
+    """M24: the excusal is the sibling's narrow groups, not its flat union.
+
+    ``get_user_store`` lives in an auth module and is in the flat
+    ``NON_MANDATORY_AUTH_DEPENDENCIES``, because it does not by itself refuse an
+    anonymous caller. Ahead of a gate it is still a service provider that an
+    anonymous caller reaches first, the #1467 shape, so the predicate must
+    report it. Swapping ``excusable`` for the flat union excuses it, and only a
+    route like this one notices: on the served app no auth-module provider sits
+    ahead of a gate, so the two sets have always given the same answer there.
+    """
+    from fastapi import Depends as _Depends
+    from fastapi import FastAPI
+    from fastapi.routing import APIRoute
+
+    from faultmaven.api.v1.auth_dependencies import (
+        get_user_store,
+        require_authentication,
+    )
+    from tests.integration.api.test_openapi_documents_auth import (
+        SERVICE_PROVIDER_DEPENDENCIES,
+    )
+
+    assert _qualified(get_user_store) in SERVICE_PROVIDER_DEPENDENCIES, (
+        "get_user_store is no longer one of the sibling's service providers, so "
+        "this route no longer tells the narrow excusal from the flat union"
+    )
+
+    probe = FastAPI()
+
+    @probe.get(
+        "/store-ahead-of-the-gate",
+        dependencies=[_Depends(get_user_store), _Depends(require_authentication)],
+    )
+    async def _store_first():  # pragma: no cover
+        return {}
+
+    (route,) = [r for r in probe.routes if isinstance(r, APIRoute)]
+    assert _gate_failure(route.dependant) is not None, (
+        "a service provider declared ahead of the gate was excused because it "
+        "lives in an auth module. The predicate's excusal has widened to the "
+        "flat NON_MANDATORY_AUTH_DEPENDENCIES, which excuses the #1467 shape"
     )
 
 
