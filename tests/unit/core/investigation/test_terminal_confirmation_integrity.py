@@ -149,13 +149,32 @@ class TestMintedIntentTerminalConsentGuard:
             self.GUARD(case, minted, "yes but what about the replication lag?") is True
         )
 
-    def test_bare_unlisted_confirmation_mint_adopts(self):
-        """A bare phrasing outside the pattern list ("affirmative") is the
-        classifier tier's legitimate value — it must still adopt."""
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "affirmative",
+            "that works",
+            "We're out of time on this one — please close the case.",
+        ],
+    )
+    def test_a_mint_on_anything_but_a_bare_consent_is_rejected(self, message):
+        """#2222: the gate executes a typed consent only when it is bare, so a
+        mint on any other text ("affirmative", outside the token list, or a
+        close request beside a resolve offer) could only re-ask what the text
+        would escape on. It is dropped, and the gate reads the text."""
         case = _make_investigating_case()
         _pending_resolve(case)
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
-        assert self.GUARD(case, minted, "affirmative") is False
+        assert not is_substantive_reply(message), "premise: main adopted it"
+        assert self.GUARD(case, minted, message) is True
+
+    @pytest.mark.parametrize("message", ["yes", "mark as resolved", "ok 👍"])
+    def test_a_mint_on_a_bare_consent_adopts(self, message):
+        case = _make_investigating_case()
+        _pending_resolve(case)
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert confirmation_token_class(message, "resolved") is not None
+        assert self.GUARD(case, minted, message) is False
 
     def test_no_pending_transition_and_no_gate_one_adopts(self):
         """With no pending transition AND no Gate 1 to commit, a minted

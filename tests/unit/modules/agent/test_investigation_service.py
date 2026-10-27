@@ -1367,20 +1367,31 @@ class TestMintedIntentTerminalConsentAdoption:
         assert kwargs.get("intent_type") == "conversation"
 
     @pytest.mark.asyncio
-    async def test_bare_message_still_dispatches_minted_confirmation(
-        self, mock_milestone_engine, mock_case_repository, sample_user_id
+    @pytest.mark.parametrize(
+        "query, dispatched",
+        [("yes", "confirmation"), ("affirmative", "conversation")],
+    )
+    async def test_only_a_bare_consent_dispatches_minted_confirmation(
+        self,
+        mock_milestone_engine,
+        mock_case_repository,
+        sample_user_id,
+        query,
+        dispatched,
     ):
-        """The classifier tier's legitimate value: a bare phrasing outside
-        the engine's pattern list still confirms via the minted intent."""
+        """#2222: the engine's pending gate executes a typed consent only when
+        it is a bare token, so a mint on anything else ("affirmative", outside
+        the token list) could only re-ask. Only a bare consent dispatches the
+        minted confirmation; the rest reaches the gate as text."""
         case = self._pending_case(sample_user_id)
         kwargs = await self._run_turn(
-            "affirmative",
+            query,
             sample_user_id,
             case,
             mock_milestone_engine,
             mock_case_repository,
         )
-        assert kwargs.get("intent_type") == "confirmation"
+        assert kwargs.get("intent_type") == dispatched
 
 
 class TestObservedAtSeedsFileCoverage:

@@ -323,9 +323,11 @@ SHAPE_ROWS = [
         "not_an_answer",
         True,
     ),
+    # It negates the target, so it is an explicit decline (#2352): recorded and
+    # processed, as the escape lane did with it before.
     (
         "don't close it, the fix has not been verified in the east region yet",
-        "not_an_answer",
+        "decline",
         True,
     ),
     (

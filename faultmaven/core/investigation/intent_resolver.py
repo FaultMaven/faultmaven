@@ -8,8 +8,10 @@ is answering one of those choices or is unrelated conversational input.
 A resolver match is an INFERENCE from typed text, not a deterministic
 click. The adoption site (``InvestigationService``) therefore applies the
 INV-26 substance guard before adopting a minted intent that would confirm
-a pending TERMINAL transition (#721): substantive typed input is never
-consumed as consent to an irreversible RESOLVED/CLOSED.
+a pending TERMINAL transition (#721): typed input that is not a bare consent
+is never consumed as consent to an irreversible RESOLVED/CLOSED (#2222). And the
+classifier tier never mints a terminal step at all: a ``status_transition``
+choice is matched only by its exact text (#2222).
 
 Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 """
@@ -24,6 +26,7 @@ from faultmaven.infrastructure.llm.dispatch import (
 )
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
+from faultmaven.models.api_models import IntentType
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +104,21 @@ class IntentResolver:
             )
             return matched
 
-        # Tier 2: LLM classifier for semantic matching
-        matched = await self._classify(msg, choices, redaction_ctx=redaction_ctx)
+        # Tier 2: LLM classifier for semantic matching. Never offered a
+        # TERMINAL step (#2222): asked which choice the user is "responding
+        # to", it matched "I can't call it resolved yet." and "please close the
+        # case" to the "Mark it resolved" chip, and the chip re-proposed the
+        # resolution the user had just declined. A terminal step is taken only
+        # by its click or its exact text (tier 1). With no other choice left,
+        # the classifier is not called.
+        classifiable = [
+            c
+            for c in choices
+            if c["intent"].get("type") != IntentType.STATUS_TRANSITION.value
+        ]
+        if not classifiable:
+            return None
+        matched = await self._classify(msg, classifiable, redaction_ctx=redaction_ctx)
         if matched is not None:
             logger.info(
                 f"Intent resolved via classifier: {matched.get('type', 'unknown')}"

@@ -7,6 +7,7 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
     revision_pending,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    confirmation_token_class,
     gate1_bare_consent,
 )
 from faultmaven.models.api_models import (
@@ -25,8 +26,9 @@ def _minted_intent_swallows_gate_consent(
     """INV-26 guard for resolver-minted intents (#721, widened by fm#918).
 
     True when adopting ``minted`` would let typed text that is not consent
-    COMMIT A GATE: a SUBSTANTIVE message for the pending terminal transition,
-    and, for Gate 1, any message that is not one bare consent token
+    COMMIT A GATE: for the pending terminal transition, any message that is
+    not one bare consent token to its target (``confirmation_token_class``,
+    #2222), and, for Gate 1, any message that is not one bare consent token
     (``gate1_bare_consent``, #1794 ruling (a)). The IntentResolver's classifier tier semantically
     matches typed text against the previous turn's DECIDE suggestions and
     can mint ``confirmation``/``status_transition`` intents — but the
@@ -143,9 +145,10 @@ def _minted_intent_swallows_gate_consent(
         and gate1_statement_is_confirmable(_standing_statement)
     )
 
-    # Each gate by its own screen. The terminal arm keeps the substance test:
-    # the engine's pending gate already executes a typed consent only when it
-    # is bare, and re-asks anything else it adopts. The Gate-1 arm applies the
+    # Each gate by its own screen. The terminal arm applies the substance test
+    # and the bare test (#2222, below): the engine's pending gate executes a
+    # typed consent only when it is bare, so a mint on anything else could
+    # only re-ask what the text would escape on. The Gate-1 arm applies the
     # bare test here (#1794, ruling (a)), and section 0c is its second reader:
     # it screens any minted Gate-1 confirmation that reaches it the same way.
     # So a mint on "ok, don't start yet" or "yes please" is dropped here, and
@@ -162,8 +165,18 @@ def _minted_intent_swallows_gate_consent(
         and revision_pending(case)
     )
 
+    # The terminal arm adopts a mint only on a BARE consent to the pending
+    # target (#2222). Any other text it would only turn from an escape into a
+    # re-ask, since the gate executes nothing else: "We're out of time on this
+    # one, please close the case." met a pending resolve, was minted "Yes",
+    # and was re-asked on every turn. Dropped, it reaches the gate as text.
+    terminal_consent_is_not_bare = bool(pending) and (
+        is_substantive_reply(user_message)
+        or confirmation_token_class(user_message, pending.get("to_state")) is None
+    )
+
     return (
-        (confirms_pending_transition and is_substantive_reply(user_message))
+        (confirms_pending_transition and terminal_consent_is_not_bare)
         or (commits_gate_one and not gate1_bare_consent(user_message))
         or (commits_revision and not gate1_bare_consent(user_message))
     )

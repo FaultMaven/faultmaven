@@ -9,9 +9,11 @@ typed reply is re-asked, and a re-ask never records a refusal.
 A click is consent only to the offer it names (#1812, ruling (a)): every
 confirmation card carries its offer's key (``terminal_offer_key``,
 ``gate1_offer_key``), and a click whose key is not the standing offer's
-executes nothing. A typed decline is as bare as a typed consent (#1813), and
-Gate 1 reads a typed consent through the same bare test (#1794), which the
-engine now reads itself while Gate 1 is pending (#1841).
+executes nothing. A typed decline is as bare as a typed consent (#1813), or
+is a sentence of the reply that declines the named target, a question beside
+it or not (``declines_offer_explicitly``, #2352). Gate 1 reads a typed consent
+through the same bare test (#1794), which the engine now reads itself while
+Gate 1 is pending (#1841).
 
 Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
 of the pending target re-shows the offer's card, and no LLM-written card ships
@@ -203,6 +205,32 @@ _DECLINE_TOKENS = (
     "hold on",
     "stop",
 )
+
+#: An explicit decline of a named target, inside a sentence (#2352,
+#: ``declines_offer_explicitly``): a present-tense negator, then the target
+#: within 25 characters, with no clause break and no relative pronoun between.
+#: No past-tense negator: "the rollback didn't resolve it, the config change
+#: did" confirms a fix. ``that`` and ``what`` keep "That's not what resolved
+#: it." from reading as one.
+_DECLINE_NEGATORS = (
+    r"(?:not|cannot|can't|can not|don't|do not|won't|wouldn't|isn't|is not"
+    r"|aren't|shouldn't|cant|dont|wont|wouldnt|isnt|arent|shouldnt)"
+)
+_DECLINED_OBJECT = r"(?:it|this|the\s+case|this\s+case)"
+_NEGATED_TARGET_RE = {
+    target: re.compile(
+        rf"\b{_DECLINE_NEGATORS}\b"
+        r"(?:(?!\b(?:what|which|that|who|how)\b)[^.?!,;:\u2014\u2013\n]){0,25}?"
+        rf"\b{named}",
+        re.IGNORECASE,
+    )
+    for target, named in (
+        ("resolved", rf"(?:resolved\b|resolve\s+{_DECLINED_OBJECT}\b)"),
+        ("closed", rf"(?:closed\b|close\s+{_DECLINED_OBJECT}\b)"),
+    )
+}
+#: A sentence keeps its terminators, so ``no?`` stays a question.
+_SENTENCE_RE = re.compile(r"[^.?!\n]+[.?!]*")
 
 PendingGateVerdict = Literal["confirm", "decline", "reask", "not_an_answer"]
 
@@ -526,6 +554,40 @@ def _user_declines_transition(user_message: str) -> bool:
     return _undecorated(user_message).rstrip(".!, ") in _DECLINE_TOKENS
 
 
+def declines_offer_explicitly(user_message: str, to_state: Optional[str]) -> bool:
+    """Whether ``user_message`` says, in a sentence of its own, that the case is
+    not to go to ``to_state`` (#2352).
+
+    True when the reply does not open with consent
+    (``opens_with_consent_loosely``) and one sentence that is not a question
+    (``is_question``) is a bare decline (``_user_declines_transition``) or
+    negates the target: ``I can't call it resolved yet``, ``Don't resolve it
+    yet``, ``It's not resolved — the errors are back`` (``_NEGATED_TARGET_RE``).
+    A question beside it does not undo it: ``Can you explain the evidence? I
+    can't call it resolved yet.`` declines. With no target (the revision gate)
+    only the bare-decline sentence counts.
+
+    Not a decline: ``Why isn't it resolved yet?``, ``Yes, go ahead and resolve
+    it. I can't think of anything else.``, ``Note the latency didn't resolve
+    until 09:40.``, ``That's not what resolved it.``, ``no?``. Nor, by #1813
+    ruling (a), a decline token joined to more by a comma or a dash (``No,
+    keep it open.``, ``no, not yet``): those are re-asked.
+    """
+    text = _normalize_reply(user_message or "")
+    if not text or opens_with_consent_loosely(text):
+        return False
+    negated = _NEGATED_TARGET_RE.get(to_state or "")
+    for sentence in _SENTENCE_RE.findall(text):
+        sentence = sentence.strip()
+        if not sentence or is_question(sentence):
+            continue
+        if _user_declines_transition(sentence) or (
+            negated is not None and negated.search(sentence)
+        ):
+            return True
+    return False
+
+
 def is_bare_gate_reply(text: str) -> bool:
     """Whether ``text`` is a reply a gate reads deterministically (#1839).
 
@@ -584,16 +646,19 @@ def pending_gate_verdict(
 
     * ``confirm`` — execute. Only a click (``"intent"``), or a bare consent
       token (``confirmation_token_class``) that no minted decline contradicts;
-    * ``decline`` — an explicit decline: the Not-yet click, a BARE typed
-      decline token (``_user_declines_transition``), or a minted decline on
-      text that is neither consent-shaped nor a question;
+    * ``decline`` — an explicit decline: the Not-yet click, a typed reply with
+      a sentence that declines (``declines_offer_explicitly``: a BARE decline
+      token, or one negating the target, a question beside it or not; #2352),
+      or a minted decline on text that is neither consent-shaped nor a
+      question;
     * ``reask`` — show the proposal's buttons again, and record nothing: a
-      consent-shaped reply that is not bare, a reply whose text and minted
-      intent disagree, or a minted confirmation on text that is not bare;
+      consent-shaped reply that is not bare, a bare consent a minted decline
+      contradicts, or a minted confirmation on text that is not bare;
     * ``not_an_answer`` — the reply answers neither way, a minted decline on
-      a question included (#1813; ``is_question``, #1840): the escape lane's question rule then withdraws the
-      proposal and records nothing. The caller re-asks a short one and sends
-      a substantive one down the escape lane.
+      a question with no declining sentence in it included (#1813;
+      ``is_question``, #1840): the escape lane's question rule then withdraws
+      the proposal and records nothing. The caller re-asks a short one and
+      sends a substantive one down the escape lane.
 
     First match wins, so a minted intent never overrides the typed text. A
     click's offer key is checked by the engine before this runs (#1812).
@@ -603,14 +668,17 @@ def pending_gate_verdict(
     bare = confirmation_token_class(user_message, to_state)
     if bare is not None:
         return ("reask", None) if intent_value is False else ("confirm", bare)
-    # A minted decline on a question is not a refusal (#1813): once, here,
-    # ahead of both decline returns below, so "no?" (not bare) lands here too.
+    # An explicit decline binds even beside a question (#2352): "Can you
+    # explain the evidence? I can't call it resolved yet." declines. Ahead of
+    # the question rule below, which keeps "no?" and a bare question.
+    if declines_offer_explicitly(user_message, to_state):
+        return "decline", None
+    # A minted decline on a question with no declining sentence is not a
+    # refusal (#1813), so "no?" (not bare) lands here too.
     if typed and intent_value is False and is_question(user_message):
         return "not_an_answer", None
     if opens_with_consent_token(user_message):
         return "reask", None
-    if _user_declines_transition(user_message):
-        return ("reask", None) if intent_value is True else ("decline", None)
     if intent_value is True:
         return "reask", None
     if intent_value is False:

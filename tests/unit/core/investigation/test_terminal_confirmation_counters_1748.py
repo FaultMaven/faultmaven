@@ -299,7 +299,9 @@ GATE_TABLE = [
     ("ok, don't close it yet", None, True, "reask", None),
     ("ok, don't close it yet", False, True, "reask", None),
     ("no", None, True, "decline", None),
-    ("no", True, True, "reask", None),
+    # The text declines, and a minted intent never overrides the text (#2352).
+    # Unreachable from the service: a mint on "no" is not adopted (#2222).
+    ("no", True, True, "decline", None),
     # #1813: a typed decline is BARE. This one opens with "no" and says more,
     # so it answers neither way; carrying "?", it takes the escape lane.
     (
@@ -848,7 +850,9 @@ class TestTheConfirmationCounter:
     ):
         """#1783: what was ``typed_other``. The resolver minted a confirmation
         from "that works", which is not a click, and the text is no bare
-        token, so the proposal is re-asked and nothing is counted."""
+        token, so the proposal is re-asked and nothing is counted. Since #2222
+        the mint is dropped at the adoption site, and the gate re-asks the
+        text."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
         _offer_the_resolution_cards(store)
@@ -858,8 +862,7 @@ class TestTheConfirmationCounter:
 
         await _turn(svc, "that works")
 
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["typed"] is True
+        assert engine.await_args.kwargs["intent_type"] == "conversation"
         assert store.row().state == CaseState.INVESTIGATING
         assert store.row().pending_transition["to_state"] == "resolved"
         confirmation.labels.assert_not_called()
@@ -991,11 +994,10 @@ class TestOnlyAClickOrABareTokenExecutes:
 
         response = await _turn(svc, "ok go ahead")
 
-        # The mint reached the gate as a typed confirmation, so the re-ask is
-        # the gate's answer to it, not to plain text.
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["intent_data"]["value"] is True
-        assert engine.await_args.kwargs["typed"] is True
+        # The mint is dropped at the adoption site (#2222): at a pending
+        # terminal gate only a bare consent is adopted. The re-ask is the
+        # gate's answer to the consent-shaped text.
+        assert engine.await_args.kwargs["intent_type"] == "conversation"
         _assert_re_asked(store, response)
         confirmation.labels.assert_not_called()
 

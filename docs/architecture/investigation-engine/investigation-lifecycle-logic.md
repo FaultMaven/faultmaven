@@ -586,7 +586,10 @@ together, first match wins:
   its content is not lost. A typed reply that opens with a decline token and says
   more is not a decline but a non-answer, below; so is a minted decline on a
   question (`is_question`; #1840), so a question
-  is never recorded as a refusal
+  is never recorded as a refusal, unless a sentence beside it declines
+  explicitly (a bare decline token, or a present-tense negator before the
+  target: "Can you explain the evidence? I can't call it resolved yet.";
+  `declines_offer_explicitly`, #2352), which declines
 - **Short (≤40 characters) question-free non-answer** ("hmm maybe") and **blank
   input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
   as above
@@ -594,7 +597,8 @@ together, first match wins:
   question** (`is_question`: a question mark in the scripts `QUESTION_MARKS`
   lists, from ASCII and fullwidth to Arabic, Greek, Armenian and Ethiopic, the
   question emoji, the interrobang and the double marks, or Slack's `:question:`,
-  `:grey_question:` and `:interrobang:`; #1840) → the message is *not an answer
+  `:grey_question:` and `:interrobang:`; #1840), with no explicitly declining
+  sentence in it (#2352) → the message is *not an answer
   to the gate*: the proposal is **withdrawn** (`cancel_pending_transition`) and
   the message processed as a normal investigation turn. It is recorded as a
   refusal only when the text is such a non-answer without a question that does

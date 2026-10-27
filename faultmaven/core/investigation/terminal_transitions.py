@@ -108,7 +108,9 @@ def is_question(user_message: "str | None") -> bool:
     ``¿ok`` and ``friday :question:`` were recorded as refusals. Its readers:
     ``is_substantive_reply`` below; the engine's ``message_is_substantive`` and its escape-lane record
     rule (a question withdraws an offer and is never recorded as a refusal);
-    and ``pending_gate_verdict``'s minted decline on a question (#1813).
+    ``pending_gate_verdict``'s minted decline on a question (#1813); and
+    ``declines_offer_explicitly``, which skips a question sentence but not the
+    sentence beside it: an explicit decline binds beside a question (#2352).
     """
     text = user_message or ""
     return any(c in QUESTION_MARKS for c in text) or any(
@@ -136,9 +138,12 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     (``is_question``) and `` but ``. Measured,
     the two disagree in a real band: "we will do it in friday's maintenance
     window instead of now" (59 chars) is substantive to 0b and bare consent
-    here. Whether those two should be one predicate is an open question on
-    fm#918 — it cannot be settled by narrowing this docstring, because
-    unifying them moves shipped terminal-consent behaviour.
+    here. For a MINTED confirmation that band no longer matters (#2222): the
+    adoption guard adopts one at a pending terminal gate only on a bare
+    consent (``confirmation_token_class``), so a mint can no longer turn a
+    reply 0b would let escape into a re-ask. For typed text the band still
+    decides one thing: a consent-shaped reply in it is re-asked
+    (``opens_with_consent_token``) where a longer one escapes.
 
     A message is substantive — and therefore can never be consumed as consent
     to an irreversible RESOLVED/CLOSED transition — when it is long (>

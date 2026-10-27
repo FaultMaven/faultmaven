@@ -39,6 +39,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    declines_offer_explicitly,
     gate1_bare_consent,
     gate1_offer_key,
     offer_click_refusal,
@@ -110,6 +111,7 @@ from .response_synthesis import (
     _DISPOSITION_GATE_ANSWERED_KEY,
     _note_engine_disposition_withdrawn,
     _record_deferred_disposition_decline,
+    _record_resolve_decline_without_offer,
 )
 from .stage_gates import _add_system_feedback
 from .statement_revision import (
@@ -666,6 +668,13 @@ class MilestoneEngine:
             # with no offer left standing, and 0c must not refuse it there.
             click_answered_by_gate = False
 
+            # Whether the turn BEGAN with an offer standing: 0b or 0b' answers
+            # such a turn, withdrawals included, and 0b'' below reads only the
+            # others ("Not yet." to a revision declines the revision only).
+            turn_began_with_offer = bool(
+                getattr(case, "pending_transition", None)
+            ) or revision_pending(case)
+
             # 0b. Pending transition confirmation — short-circuit before LLM
             # When a pending transition exists (User-Agent Handshake), check if
             # the user is confirming or declining BEFORE calling the LLM. This
@@ -886,6 +895,9 @@ class MilestoneEngine:
                             # affordance disappear, unexplained, until a
                             # premise moved: the same engine-acts-without-
                             # saying-why defect this PR family exists to kill.
+                            # A question beside an explicit decline sentence
+                            # never reaches here: the verdict is ``decline``
+                            # (``declines_offer_explicitly``, #2352).
                             # A long non-question non-answer is a deflection
                             # ("we'll do it in Friday's window") and IS a
                             # refusal. Either way the withdrawal is noted for
@@ -987,6 +999,22 @@ class MilestoneEngine:
                             else ""
                         ),
                     )
+
+            # 0b''. A typed decline of resolution with no offer standing
+            # (#2352). The offer it answers was withdrawn on an earlier turn, or
+            # made in the model's prose alone, so 0b never saw it, and the
+            # backstop re-proposed at the end of this very turn. Recorded here,
+            # before the model and every proposer run, against the state it
+            # was given on: the backstop's covering check then holds the offer
+            # and the "Mark it resolved" chip goes on the reply (#1895). Typed
+            # text only: a click carries its own answer.
+            if (
+                not turn_began_with_offer
+                and (typed or intent_type in (None, "conversation"))
+                and case.state == CaseState.INVESTIGATING
+                and declines_offer_explicitly(user_message, CaseState.RESOLVED.value)
+            ):
+                _record_resolve_decline_without_offer(case, metadata)
 
             # 0c. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"

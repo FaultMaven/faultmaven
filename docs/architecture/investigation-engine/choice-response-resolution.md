@@ -193,15 +193,17 @@ A resolver match is an **inference** from typed text, not a deterministic click 
 
 So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is not consent to it. Each gate has its own screen:
 
-- **the pending terminal transition:** the message is **substantive** per `terminal_transitions.is_substantive_reply`, the same predicate `confirmation_token_class` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift. A shorter mint that is adopted still executes only when its text is a bare consent token, because the engine's pending gate reads the text (#1783);
+- **the pending terminal transition:** the message is not one **bare** consent token to the pending target, per `transition_consent.confirmation_token_class` (#2222), which applies `terminal_transitions.is_substantive_reply` first (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift. The engine's pending gate executes a typed consent only when it is bare (#1783), so a mint on any other text could only turn a reply that escapes the gate into a re-ask: "We're out of time on this one — please close the case." met a pending resolve, was minted "Yes", and was re-asked on every turn. Dropped, it reaches the gate as text, which withdraws the offer and hands it to the model;
 - **Gate 1:** the message is not one **bare** consent token, per `transition_consent.gate1_bare_consent` (#1794, ruling (a)). Gate 1 has no text reader downstream, so the guard applies the bare test itself: a mint on "yes please" or "ok, don't start yet" is dropped, and the LLM's flag on the same text meets the same test. The engine's section 0c applies it again to any minted confirmation that reaches it.
 
 There are two gates, and #721 guarded only the first:
 
 | Gate | "Would commit" means |
 |---|---|
-| The pending terminal transition | the case has a `pending_transition` (always `resolved`/`closed`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target |
+| The pending terminal transition | the case has a `pending_transition` (always `resolved`/`closed`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target; adopted only on a bare consent to that target (#2222) |
 | **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about `pending_transition`, deliberately** — see below |
+
+**The classifier tier never mints a terminal step (#2222).** It is asked which choice the user is *responding to*, and a decline of a choice, or a request none offers, is a response to it: "I can't call it resolved yet." and "please close the case" were both matched to the "Mark it resolved" chip, whose `status_transition → resolved` re-proposed the resolution the user had just declined. So `IntentResolver.resolve` passes the classifier no `status_transition` choice, and skips it when none other is left; such a choice (the reopen chip, the declined-close cards) is matched only by its exact text (tier 1). The typed paraphrase reaches the model, and a resolve or close the model then proposes on the declined state is refused with the card appended again (#1895, `declined_close_reask` #1889).
 
 #721 scoped this to the first gate on the reasoning that a mint with no pending transition "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3).
 

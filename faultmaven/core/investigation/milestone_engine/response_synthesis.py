@@ -205,7 +205,9 @@ def _record_deferred_disposition_decline(
     affordance vanish, unexplained, until a premise moved. The same-turn
     re-take those messages would otherwise cause is handled by
     ``_note_engine_disposition_withdrawn`` instead, which expires with the
-    turn.
+    turn. The exception is a question beside an explicit decline ("Can you
+    explain the evidence? I can't call it resolved yet."): the gate reads it
+    as a decline (``declines_offer_explicitly``, #2352) and records it here.
 
     **A declined RESOLVE marks the turn** (``metadata``, #1895): the marker
     re-stamps the decline against the confirmations this turn records
@@ -278,6 +280,48 @@ def _record_deferred_disposition_decline(
         case.case_id,
         signature,
     )
+
+
+def _record_resolve_decline_without_offer(case: "Case", metadata: dict) -> None:
+    """Record a typed decline of resolution given with no offer standing
+    (#2352).
+
+    The offer a user declines is not always pending when they answer it: a
+    question withdrew it on the turn before, or the model asked in prose ("Would
+    you like me to resolve the case?") and stood nothing behind it. Unrecorded,
+    "I can't call it resolved yet." declined nothing, and the backstop
+    re-proposed at the end of that same turn. So the engine, on a typed turn
+    that began with no offer standing and declines resolution explicitly
+    (``declines_offer_explicitly``), records the decline here against the state
+    it was given on: the signature derived as for a declined LLM-opened offer
+    (``_record_deferred_disposition_decline``), and only on SUGGEST_RESOLVE,
+    the verdict every resolve proposer's signature carries.
+
+    The turn is marked even when an entry already covers the signature (a
+    repeat decline): ``restamp_resolve_decline`` then covers a confirmation
+    the model records from this turn's words too.
+    """
+    if not getattr(case, "progress", None):
+        return
+    from faultmaven.core.investigation.terminal_transitions import (
+        ClosureReadiness,
+        closure_verdict,
+        deferred_disposition_signature,
+    )
+
+    verdict = closure_verdict(case)
+    if verdict != ClosureReadiness.SUGGEST_RESOLVE:
+        return
+    metadata[_RESOLVE_DECLINED_THIS_TURN_KEY] = True
+    signature = deferred_disposition_signature(case, verdict)
+    if _append_declined_signature(case, signature):
+        logger.info(
+            "Resolve declined in typed text with no offer standing for case "
+            "%s; not re-proposing until the justifying state changes "
+            "(signature=%s)",
+            case.case_id,
+            signature,
+        )
 
 
 # Placeholders the engine writes when the model gave no usable
